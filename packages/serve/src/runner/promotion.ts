@@ -481,7 +481,7 @@ export const differentDecisionWords = (k: number, n: number, example: string | u
  *  or its owner acts, and `extra` on the record (a connected agent's check: what its reservation carries). Kept only while
  *  `still` holds of the digest's record (the one write), and logged. */
 async function holdUnchecked(deps: DecideDeps, name: string, digest: string, bar: CheckBar, reason: string, still: Parameters<typeof recordPromotion>[3], { stopped = false, check = {}, extra = {} }: { stopped?: boolean; check?: Partial<CheckRecord>; extra?: Partial<PromotionRecord> } = {}) {
-  const decided = await recordPromotion(deps.store.settings, deps.agentId, { workflow: name, digest, at: iso((deps.now ?? Date.now)()), decided: "hold", reason, check: { ...bar, n: 0, agreed: 0, alone: 0, of: [], ...check, ...(stopped ? { stopped: true } : {}) }, ...seedOf(deps), ...extra }, still, deps.refused);
+  const decided = await recordPromotion(deps.store.settings, deps.agentId, { workflow: name, digest, at: iso((deps.now ?? Date.now)()), decided: "hold", reason, check: { ...bar, n: 0, agreed: 0, alone: 0, agent_agreed: 0, of: [], ...check, ...(stopped ? { stopped: true } : {}) }, ...seedOf(deps), ...extra }, still, deps.refused);
   if (decided.won) deps.log(`workflow-first: ${name} at ${digest} ${stopped ? "stopped" : "held"}: ${reason}`);
   return decided;
 }
@@ -643,7 +643,7 @@ async function judgeRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: r
   // grades are compared as values (checkInputOf).
   const on = bar.agree_on?.length ? bar.agree_on : undefined;
   const judged = new Map(rows.map((row) => [row, checkInputOf(row, on)]));
-  const verdict = checkFields([...judged.values()].map((one) => one.input), bar, before ? tallyBefore(before, on) : undefined);
+  const verdict = checkFields([...judged.values()].map((one) => one.input), bar, before);
   const missed = new Map<string, string[]>();
   for (const miss of verdict.misses) missed.set(miss.input_id, [...(missed.get(miss.input_id) ?? []), miss.field]);
   const grader = [...judged.values()].find((one) => one.compared?.grader !== undefined)?.compared?.grader;
@@ -671,14 +671,6 @@ async function judgeRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: r
   })];
   return { verdict, disagreements, grader };
 }
-
-/** A connected agent's turns counted so far, as the field check adds to them. Turns kept before the per-field tally
- *  (no `fields`, yet answered alone) count each field from the same turns as `alone`: agent-known, right on `agreed` of
- *  them (right on every field), so no field is judged on fewer turns than the check counts. */
-const tallyBefore = (before: CheckTurns, on: readonly string[] | undefined): CheckTally => ({
-  n: before.n, alone: before.alone, agreed: before.agreed, agent_agreed: before.agent_agreed ?? before.alone,
-  fields: before.fields ?? (before.alone > 0 ? Object.fromEntries((on ?? [WHOLE_ANSWER]).map((name) => [name, { agent: { n: before.alone, workflow_right: before.agreed, agent_right: before.alone } }])) : {}),
-});
 
 /** Two outcome counts added. */
 const outcomesAdded = (a: ReplayOutcomes, b: ReplayOutcomes | undefined): ReplayOutcomes =>
@@ -869,7 +861,7 @@ export async function sdkCheckTurn(deps: DecideDeps, record: PromotionRecord & {
   }
   const { verdict: { tally }, disagreements } = await judgeRows(deps, bar, [row], before);
   const fresh = (before?.fresh_reads ?? 0) + (read.fresh_reads ?? 0);
-  const turns: CheckTurns = { n: tally.n, agreed: tally.agreed, alone: tally.alone, agent_agreed: tally.agent_agreed, ...(Object.keys(tally.fields).length ? { fields: tally.fields } : {}), of: [row.of, ...(before?.of ?? [])], outcomes: outcomesAdded(outcomes, before?.outcomes), ...(disagreements.length ? { disagreements } : {}), ...(fresh ? { fresh_reads: fresh } : {}) };
+  const turns: CheckTurns = { n: tally.n, agreed: tally.agreed, alone: tally.alone, agent_agreed: tally.agent_agreed, fields: tally.fields, of: [row.of, ...(before?.of ?? [])], outcomes: outcomesAdded(outcomes, before?.outcomes), ...(disagreements.length ? { disagreements } : {}), ...(fresh ? { fresh_reads: fresh } : {}) };
   const check = { ...bar, turns };
   const kept = await waitAgain(deps, record, check, `Waiting for the next native turn of the connected agent that it takes: ${sdkTurnsWords(check)}. Nothing was promoted.`, still);
   if (kept.won) deps.log(`workflow-first: ${record.workflow} at ${record.digest}: ${sdkTurnsWords(check)}`);
@@ -1231,10 +1223,9 @@ async function checkView(ask: ReplayAsk, record: PromotionRecord, id: string, na
     const n = check.n ?? 0;
     const handedBack = check.outcomes.handed_back;
     const wf = n ? Math.round(((check.agreed ?? 0) + handedBack) / n * 1e4) / 1e4 : 0;
-    // The agent's misses are counted where the workflow's are, on the inputs it answered alone (agent_agreed; a record
-    // kept before that was counted judged against the agent's own answers, so none).
+    // The agent's misses are counted where the workflow's are, on the inputs it answered alone (agent_agreed).
     const alone = check.alone ?? 0;
-    const agent = n ? Math.round((n - (alone - (check.agent_agreed ?? alone))) / n * 1e4) / 1e4 : 0;
+    const agent = n ? Math.round((n - (alone - (check.agent_agreed ?? 0))) / n * 1e4) / 1e4 : 0;
     const neverStarted = inputs > 0 && check.unstarted === inputs;
     return { replay: id, workflow: name, digest, status: neverStarted ? "failed" : "done", inputs, outcomes: check.outcomes, score: { n, agree: check.agreed ?? 0, agent_acc: agent, wf_acc: wf, delta: n ? Math.round((wf - agent) * 1e4) / 1e4 : 0, handed_back: handedBack }, cost_usd: check.cost_usd ?? null, decided, reason: record.reason };
   }

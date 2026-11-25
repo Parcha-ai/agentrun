@@ -2847,15 +2847,33 @@ class _ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired(TypedDict)
     n: int
     agreed: int
     alone: int
+    agent_agreed: int
+    fields: dict[str, ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue]
     of: list[str]
     outcomes: ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurns(_ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired, total=False):
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem]
-    agent_agreed: int
-    fields: dict[str, ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue]
     fresh_reads: int
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue(TypedDict, total=False):
+    grade: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade
+    agent: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent
+    unjudged: int
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes(TypedDict):
@@ -2887,24 +2905,6 @@ class _ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemEx
 
 class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
     value: str
-
-
-class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValue(TypedDict, total=False):
-    grade: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade
-    agent: ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent
-    unjudged: int
-
-
-class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueGrade(TypedDict):
-    n: int
-    workflow_right: int
-    agent_right: int
-
-
-class ListLearningPromotionsResponsePromotionsItemCheckTurnsFieldsValueAgent(TypedDict):
-    n: int
-    workflow_right: int
-    agent_right: int
 
 
 class _ListLearningPromotionsResponsePromotionsItemAuditRequired(TypedDict):
@@ -3071,15 +3071,33 @@ class _ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired(Typed
     n: int
     agreed: int
     alone: int
+    agent_agreed: int
+    fields: dict[str, ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue]
     of: list[str]
     outcomes: ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurns(_ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired, total=False):
     disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem]
-    agent_agreed: int
-    fields: dict[str, ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue]
     fresh_reads: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue(TypedDict, total=False):
+    grade: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade
+    agent: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent
+    unjudged: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent(TypedDict):
+    n: int
+    workflow_right: int
+    agent_right: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes(TypedDict):
@@ -3111,24 +3129,6 @@ class _ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsI
 
 class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItem(_ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemExpectedItemRequired, total=False):
     value: str
-
-
-class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValue(TypedDict, total=False):
-    grade: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade
-    agent: ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent
-    unjudged: int
-
-
-class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueGrade(TypedDict):
-    n: int
-    workflow_right: int
-    agent_right: int
-
-
-class ListLearningPromotionsResponseServingItemChampionCheckTurnsFieldsValueAgent(TypedDict):
-    n: int
-    workflow_right: int
-    agent_right: int
 
 
 MoveSourceAgentBody: TypeAlias = "dict[str, Any]"

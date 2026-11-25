@@ -68,16 +68,15 @@ export const AGREE_ON_PATH_MAX = 128;
 export const AGREE_ON_SEGMENTS_MAX = 8;
 /** An agree_on path's segments: each a key of an object, from the answer's top level down (a dot always splits). */
 export const pathSegments = (path: string): string[] => path.split(".");
-/** The segment a new agree_on path may not hold: the one name an object literal's prototype setter answers to. The check
- *  keys its fields in Maps and reads answers by own keys only, so this is defense in depth, refused on a write only: a
- *  definition saved before keeps its setting on read (`stored`). */
-const RESERVED_SEGMENT = "__proto__";
+/** The one name an object literal's prototype setter answers to: never an agree_on segment, nor a key of a grade's
+ *  expected answer (server.ts), so no field a check or an audit reads is named by it. Refused on a write and on a read. */
+export const RESERVED_SEGMENT = "__proto__";
 /** What is wrong with one agree_on path, in words, or undefined. */
-function pathIssue(path: string, stored: boolean): string | undefined {
+function pathIssue(path: string): string | undefined {
   if (path.length > AGREE_ON_PATH_MAX) return `over ${AGREE_ON_PATH_MAX} characters`;
   const segments = pathSegments(path);
   if (segments.some((segment) => !segment)) return "an empty segment";
-  if (!stored && segments.includes(RESERVED_SEGMENT)) return `a reserved segment (${RESERVED_SEGMENT})`;
+  if (segments.includes(RESERVED_SEGMENT)) return `a reserved segment (${RESERVED_SEGMENT})`;
   if (segments.length > AGREE_ON_SEGMENTS_MAX) return `more than ${AGREE_ON_SEGMENTS_MAX} segments`;
   return undefined;
 }
@@ -129,9 +128,8 @@ export function repickOf(learning: unknown): RepickLoop {
 export const isRepickMaxChars = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= 1 && (n as number) <= REPICK_MAX_CHARS_MAX;
 
 /** What is wrong with a definition's `learning`, in words naming the field (`at` its path), or undefined when it is one
- *  of true, false or an object of the loop's numbers. `stored`: a saved definition read back, which keeps an agree_on
- *  path a write now refuses (pathIssue). */
-export function learningSettingIssue(value: unknown, at = "learning", stored = false): string | undefined {
+ *  of true, false or an object of the loop's numbers. */
+export function learningSettingIssue(value: unknown, at = "learning"): string | undefined {
   if (typeof value === "boolean") return undefined;
   if (!isLoop(value)) return `${at} is true, false or an object of the loop's numbers ({${LOOP_KEYS.map((key) => `${key}?`).join(", ")}}, on with those set)`;
   const other = Object.keys(value).find((key) => !(LOOP_KEYS as readonly string[]).includes(key));
@@ -140,7 +138,7 @@ export function learningSettingIssue(value: unknown, at = "learning", stored = f
   if (on !== undefined) {
     if (!(Array.isArray(on) && on.length >= 1 && on.length <= AGREE_ON_MAX && on.every((one) => typeof one === "string") && new Set(on).size === on.length)) return `${at}.agree_on is a list of 1 to ${AGREE_ON_MAX} distinct dotted paths into the answer's JSON object (e.g. verdict.decision)`;
     for (const [i, path] of (on as string[]).entries()) {
-      const why = pathIssue(path, stored);
+      const why = pathIssue(path);
       if (why) return `${at}.agree_on[${i}] is not a dotted path into the answer's JSON object (e.g. verdict.decision): ${why}`;
     }
   }

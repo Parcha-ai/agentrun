@@ -1817,6 +1817,20 @@ export type ListLearningPromotionsResponse = {
         n: number;
         agreed: number;
         alone: number;
+        agent_agreed: number;
+        fields: Record<string, {
+          grade?: {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+          };
+          agent?: {
+            n: number;
+            workflow_right: number;
+            agent_right: number;
+          };
+          unjudged?: number;
+        }>;
         of: Array<string>;
         outcomes: {
           answered: number;
@@ -1838,20 +1852,6 @@ export type ListLearningPromotionsResponse = {
             known: "grade" | "unknown";
             value?: string;
           }>;
-        }>;
-        agent_agreed?: number;
-        fields?: Record<string, {
-          grade?: {
-            n: number;
-            workflow_right: number;
-            agent_right: number;
-          };
-          agent?: {
-            n: number;
-            workflow_right: number;
-            agent_right: number;
-          };
-          unjudged?: number;
         }>;
         fresh_reads?: number;
       };
@@ -1978,6 +1978,20 @@ export type ListLearningPromotionsResponse = {
           n: number;
           agreed: number;
           alone: number;
+          agent_agreed: number;
+          fields: Record<string, {
+            grade?: {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+            };
+            agent?: {
+              n: number;
+              workflow_right: number;
+              agent_right: number;
+            };
+            unjudged?: number;
+          }>;
           of: Array<string>;
           outcomes: {
             answered: number;
@@ -1999,20 +2013,6 @@ export type ListLearningPromotionsResponse = {
               known: "grade" | "unknown";
               value?: string;
             }>;
-          }>;
-          agent_agreed?: number;
-          fields?: Record<string, {
-            grade?: {
-              n: number;
-              workflow_right: number;
-              agent_right: number;
-            };
-            agent?: {
-              n: number;
-              workflow_right: number;
-              agent_right: number;
-            };
-            unjudged?: number;
           }>;
           fresh_reads?: number;
         };

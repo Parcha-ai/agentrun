@@ -64,15 +64,6 @@ test("check on live-shaped answers: same mcc and riskTier, other rationale, evid
   assert.ok(whole.record.reason.includes(NEVER_WORD_FOR_WORD), `compared whole and never once the same: the owner is told to name the fields: ${whole.record.reason}`);
 });
 
-test("a connected agent's turns counted before per-field tallies existed: each field counts from the same turns as alone does", async () => {
-  // 19 turns kept with numbers only (no per-field tally), 10 of them agreeing, then one more that agrees: 11 of 20.
-  const before = { n: 19, agreed: 10, alone: 19, of: Array.from({ length: 19 }, (_, i) => `t-${i}`), outcomes: { answered: 19, handed_back: 0, failed: 0, skipped_write: 0 } };
-  const held = await decide({ compile_after: 20 }, { ...readOf(() => agentSays(AGENT), 1), before });
-  assert.equal(held.record.decided, "hold", held.record.reason);
-  const { answer } = held.stored.check.fields;
-  assert.deepEqual([answer.n, answer.workflow_right, held.stored.check.alone, held.stored.check.agreed], [20, 11, 20, 11]);
-});
-
 /** The known answer of a row whose agent said AGENT and whose grade expects `expected`: AGENT with the grade's keys
  *  written over it, as JSON. */
 const correctedText = (expected) => JSON.stringify({ ...AGENT, ...expected });
@@ -204,15 +195,12 @@ test("a decided check's record (its fields, its disagreements' fields and known 
   assert.equal(stored.check.agent_agreed, 0, "the agent right on every field at once: on none (graded wrong on each)");
 });
 
-test("a decided replay's score: the agent's accuracy on the same inputs and known answers as the workflow's (agent_agreed), 1 on a record kept before it was counted", async () => {
+test("a decided replay's score: the agent's accuracy on the same inputs and known answers as the workflow's (agent_agreed)", async () => {
   const settings = settingsOf();
   const check = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 4, alone: 4, agent_agreed: 2, of: [], outcomes: { answered: 4, handed_back: 1, failed: 0, skipped_write: 0 } };
   await recordPromotion(settings, "a", { workflow: "classify", digest: "d1", at: new Date().toISOString(), decided: "promote", reason: "promoted", replay_id: "p1", check }, () => true);
   const view = await replayView({ store: { settings }, agentId: "a" }, "classify", "d1", "p1");
   assert.deepEqual(view.score, { n: 5, agree: 4, agent_acc: 0.6, wf_acc: 1, delta: 0.4, handed_back: 1 }, "the agent wrong on 2 of the 4 it answered alone: 3 of 5");
-  const { agent_agreed: _, ...before } = check;
-  await recordPromotion(settings, "a", { workflow: "classify", digest: "d2", at: new Date().toISOString(), decided: "promote", reason: "promoted", replay_id: "p2", check: before }, () => true);
-  assert.equal((await replayView({ store: { settings }, agentId: "a" }, "classify", "d2", "p2")).score.agent_acc, 1);
 });
 
 test("check on dotted paths: verdict.decision agrees though the rationale differs; a draft that differs on it disagrees, counted per input", async () => {
@@ -330,14 +318,11 @@ test("a draft that repeats the answer a grade marked wrong is never right on tha
   assert.equal(again.stored.check.fields.answer.workflow_right, 0);
 });
 
-test("an edit that leaves learning out carries the saved agree_on forward, a `__proto__` segment included; a write naming one is still refused", async (t) => {
+test("a `__proto__` agree_on segment is refused on a read as on a write: a stored definition naming one reads with no learning setting", async (t) => {
   const { api, store } = await serve(t);
   const learning = { agree_on: ["__proto__.decision", "mcc"] };
   await store.agents.create({ id: "kept", name: "kept" }, { id: "rev-kept", kind: "agentic", body: { instructions: "Classify the merchant.", skills: {}, tools: [], learning }, skills: {} });
-  assert.deepEqual((await api("GET", "/agents/kept")).body.definition.learning, learning);
-  const put = await api("PUT", "/agents/kept/definition", { definition: { name: "kept", instructions: "Classify the merchant again.", skills: [], tools: [] } });
-  assert.equal(put.status, 200, JSON.stringify(put.body));
-  assert.deepEqual((await api("GET", "/agents/kept")).body.definition.learning, learning, "carried, not dropped");
+  assert.equal((await api("GET", "/agents/kept")).body.definition.learning, undefined);
   const wrote = await api("PUT", "/agents/kept/definition", { definition: { name: "kept", instructions: "Classify the merchant.", skills: [], tools: [], learning } });
   assert.equal(wrote.status, 422, JSON.stringify(wrote.body));
 });

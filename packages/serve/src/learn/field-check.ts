@@ -17,9 +17,9 @@
 // workflow serves only when it answered at least `alone_min` of the inputs alone, at least `agree_min` of those were
 // right on every field at once (the joint floor: misses spread over several fields add up, and an unjudged field is not
 // right), and every field passes; a hold names each failing field and its misses, an unjudged input among them (known
-// "unknown": marked wrong, with no right answer to show). Field names are the caller's (agree_on paths, else the whole
-// answer): they key Maps here, never a plain object's lookup, so a name Object.prototype holds (`__proto__`,
-// `constructor`) is a field like any other.
+// "unknown": marked wrong, with no right answer to show). Field names are the caller's (agree_on paths, which never hold
+// `__proto__`, else the whole answer): they key Maps here, never a plain object's lookup, so a name Object.prototype
+// holds (`constructor`, `toString`) is a field like any other.
 
 /** Where a field's known answer came from, strongest first. */
 export const KNOWN = ["grade", "agent"] as const;
@@ -150,11 +150,9 @@ const NO_TALLY: CheckTally = { n: 0, alone: 0, agreed: 0, agent_agreed: 0, field
 
 type Counting = { -readonly [K in Known]?: FieldCount } & { unjudged?: number };
 
-/** `rows` counted, added to `before` (a check's inputs counted so far; one kept before `agent_agreed` was counted had
- *  the agent's answers as its only known ones, so the agent was right on each it answered alone). */
+/** `rows` counted, added to `before` (a check's inputs counted so far). */
 export function tallyOf(rows: readonly CheckInput[], before: CheckTally = NO_TALLY): CheckTally {
-  let { n, alone, agreed } = before;
-  let agentAgreed = before.agent_agreed ?? before.alone;
+  let { n, alone, agreed, agent_agreed: agentAgreed } = before;
   const fields = new Map<string, Counting>(Object.entries(before.fields).map(([name, by]) => [name, countsOf(by)]));
   for (const row of rows) {
     if (row.outcome === "skipped") continue;

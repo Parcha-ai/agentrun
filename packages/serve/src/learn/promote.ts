@@ -184,8 +184,7 @@ export type CheckRecord = CheckBar & {
   readonly agreed?: number;
   readonly alone?: number;
   /** Of `alone`, how many the agent's own answers were right on every field, against the same known answers (an answer
-   *  graded wrong is its miss): the agent's side of `agreed`. Absent on a record kept before it was counted, which was
-   *  judged against the agent's own answers only (so all of them). */
+   *  graded wrong is its miss): the agent's side of `agreed`. Set with `agreed` on every decided check. */
   readonly agent_agreed?: number;
   /** The joint floor's verdict, as the check decided it (learn/field-check.ts CheckVerdict.joint.pass): of `alone`, at
    *  least `agree_min` right on every field at once. What a hold's words and the cost summary's `cleared` read. */
@@ -222,8 +221,8 @@ export interface CheckTurns {
   readonly n: number;
   readonly agreed: number;
   readonly alone: number;
-  readonly agent_agreed?: number;
-  readonly fields?: CheckTally["fields"];
+  readonly agent_agreed: number;
+  readonly fields: CheckTally["fields"];
   readonly of: readonly string[];
   readonly outcomes: ReplayOutcomes;
   readonly disagreements?: readonly CheckDisagreement[];

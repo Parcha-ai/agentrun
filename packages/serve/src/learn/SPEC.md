@@ -140,9 +140,9 @@ each a grade gave (`expected`, its value cut and redacted, and its source), whic
 say. An unjudged input is listed too, its field marked `unknown` with no value: the recompile is told the owner marked
 the agent's answer wrong without giving the right one. A purge blanks each value and keeps the field and source. The recompile prompt is not reached: it quotes each disagreement's input, the agent's answer and the grade's expected value, and it is asked in the agent's next user run, whose journal keeps it; purging the graded run leaves that copy, as it leaves the traces of other runs a compile prompt quotes. Phase 4d moves the compile turn into a learning run of its own, made from the runs it quotes, so a purge of any of them deletes it. The record counts
 the agent's side too (`check.agent_agreed`: of the inputs answered alone, those the agent's own answers had right on
-every field against the same known answers), which the cost summary's `agent_pct` and a replay's `agent_acc` read. A
-connected agent's turns kept before the per-field tally count each field from the same turns as `alone`. No new
-agree_on path may hold a `__proto__` segment (a saved definition keeps its setting on read). Against the agent, the answers are compared on the fields
+every field against the same known answers), which the cost summary's `agent_pct` and a replay's `agent_acc` read. No
+agree_on path may hold a `__proto__` segment, on a write or a read, nor a grade's expected answer a `__proto__` key.
+Against the agent, the answers are compared on the fields
 that say the decision, as the definition declares them in `learning.agree_on` (`learning-setting.ts` agreeOnOf): dotted
 paths into the answer's JSON object (`verdict.decision`, `["mcc", "riskTier"]`), each segment an object's own key; each
 path must resolve in both answers' values (bare JSON, a whole fence, or the last fenced json block) to equal values, and

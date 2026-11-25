@@ -177,8 +177,8 @@ test("values compare as JSON values: keys in any order, arrays in order; `agrees
   assert.deepEqual(Object.fromEntries(Object.entries(verdict.fields).map(([name, one]) => [name, one.workflow_right])), { x: 1, y: 0, z: 1 });
 });
 
-test("field names that are Object.prototype's own (__proto__, constructor, toString) are fields like any other: counted, gating, and nothing leaks onto every object", () => {
-  const names = ["__proto__", "constructor", "toString"];
+test("field names that are Object.prototype's own (constructor, toString; agree_on never names __proto__) are fields like any other: counted, gating, and nothing leaks onto every object", () => {
+  const names = ["constructor", "toString"];
   const row = (id, wrong) => answered(id, Object.fromEntries(names.map((name) => [name, { workflow: name === wrong ? "b" : "a", agent: "a" }])));
   try {
     const verdict = check([row("in-0"), row("in-1", "constructor")], { ...BAR, agree_min: 0.5 });
