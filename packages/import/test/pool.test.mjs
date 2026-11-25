@@ -155,6 +155,24 @@ test("a read's strings are charged as V8 holds them: one byte a character up to 
   assert.equal(stringBytes({ firstPrompt: "日", titleText: "ab", turns: 3 }), 4, "each string on its own; numbers count nothing");
 });
 
+test("a read's strings in its objects and arrays are charged too: each object once, at any depth", () => {
+  // A session's turns (types.ts: Turn[], each with its text, its calls' ids, names and arguments) and a read's requests.
+  const turns = [
+    { role: "user", text: "日本", at: 1 },
+    { role: "assistant", text: "", calls: [{ type: "toolCall", id: "c1", name: "ls", arguments: { path: "a".repeat(100) } }], at: 2 },
+  ];
+  assert.equal(stringBytes({ session: { id: "s", turns }, requests: [] }), 1 + 4 + 4 + 9 + 8 + 2 + 2 + 100, "nested in objects and arrays");
+  const shared = { text: "a".repeat(10) };
+  assert.equal(stringBytes({ a: shared, b: [shared, shared] }), 10, "an object held twice is charged once");
+  const cycle = { text: "ab" };
+  cycle.self = cycle;
+  assert.equal(stringBytes(cycle), 2, "a cycle ends");
+  assert.equal(stringBytes({ counts: { models: ["m"], values: new Float64Array(1 << 10) } }), 1, "typed arrays hold no strings (their bytes count apart)");
+  let deep = ["z"];
+  for (let i = 0; i < 100_000; i += 1) deep = [deep];
+  assert.equal(stringBytes(deep), 1, "no depth runs the call stack out");
+});
+
 test("the default read-ahead is 1 GiB, or a sixteenth of the machine's memory when that is less", () => {
   assert.equal(readAheadBytes(8 * 2 ** 30), 512 * 2 ** 20);
   assert.equal(readAheadBytes(16 * 2 ** 30), 2 ** 30);
@@ -177,17 +195,23 @@ async function sameShape(t) {
 
 /** Waits until no worker reads: no read is in flight, and none is sent until one is taken or dropped. */
 async function settled(pool) {
-  for (let i = 0; i < 2_000 && pool.running.size; i += 1) await new Promise((done) => setTimeout(done, 5));
-  assert.equal(pool.running.size, 0, "the pool settles");
+  for (let i = 0; i < 2_000 && pool.reading; i += 1) await new Promise((done) => setTimeout(done, 5));
+  assert.equal(pool.reading, 0, "the pool settles");
 }
 
+/** A pool of `threads` and read-ahead `ahead` over `items`, nothing taken, once it settles: the reads its workers sent
+ *  back (each one waiting, as none is taken), and the bytes they hold. */
 async function aheadOf(items, threads, ahead) {
+  let reads = 0;
+  const counted = (worker) => worker.on("message", () => (reads += 1));
+  process.on("worker", counted);
   const pool = new ReadPool(threads, ahead);
   try {
     pool.readAll(items);
     await settled(pool);
-    return { peak: pool.peakWaiting, held: pool.held, waiting: pool.jobs.filter((job) => job.state === "waiting").length };
+    return { peak: pool.peakWaiting, held: pool.held, waiting: reads };
   } finally {
+    process.off("worker", counted);
     pool.close();
   }
 }
@@ -204,7 +228,8 @@ test("the read-ahead caps the reads waiting: none at 0, else at most the reads i
   assert.deepEqual(await aheadOf(items, 1, 2.5 * one), { peak: 3 * one, held: 3 * one, waiting: 3 });
   // More threads: past the read-ahead by at most the reads in flight when it was reached.
   for (const [threads, ahead] of [[2, 1], [3, 2.5 * one], [4, 4 * one]]) {
-    const { peak, waiting } = await aheadOf(items, threads, ahead);
+    const { peak, held, waiting } = await aheadOf(items, threads, ahead);
+    assert.equal(held, waiting * one, `threads ${threads}, read-ahead ${ahead}: each read back is waiting`);
     assert.ok(peak >= Math.min(ahead, SAME * one) && peak <= ahead + threads * one, `threads ${threads}, read-ahead ${ahead}: peak ${peak}`);
     assert.ok(waiting < SAME, `threads ${threads}, read-ahead ${ahead}: ${waiting} of ${SAME} read ahead`);
   }
@@ -212,21 +237,55 @@ test("the read-ahead caps the reads waiting: none at 0, else at most the reads i
 
 test("reads dropped let the read-ahead go: the pool reads on past them, and a dropped read is not taken", async (t) => {
   const items = await sameShape(t);
-  const pool = new ReadPool(1, 2.5 * 4096);
+  const one = (await aheadOf(items, 1, Number.POSITIVE_INFINITY)).held / SAME;
+  assert.ok(one > 0, "with no cap, the pool reads ahead");
+  // One thread, nothing taken: reads go in the import's order, three of them under 2.5 reads of read-ahead.
+  const pool = new ReadPool(1, 2.5 * one);
   try {
     pool.readAll(items);
     await settled(pool);
-    const first = pool.jobs.filter((job) => job.state === "waiting").map((job) => job.id);
-    assert.ok(first.length > 0 && first.length < SAME, `${first.length} read ahead`);
-    pool.drop(first);
-    assert.equal(pool.held, 0);
+    assert.equal(pool.held, 3 * one, "three read ahead");
+    pool.drop([0, 1, 2]);
+    assert.equal(pool.held, 0, "the reads dropped are the three waiting");
     await settled(pool);
-    const next = pool.jobs.filter((job) => job.state === "waiting").map((job) => job.id);
-    assert.deepEqual(next, first.map((id) => id + first.length), "the next files are read ahead");
-    assert.deepEqual(await pool.take(first[0]), { ok: false });
-    assert.equal((await pool.take(next[0])).ok, true);
+    assert.equal(pool.held, 3 * one, "three more read ahead");
+    // Each of the next three is waiting: taking it lets go of its bytes (one not read yet would be read, and hold none).
+    for (const id of [3, 4, 5]) {
+      const held = pool.held;
+      assert.equal((await pool.take(id)).ok, true);
+      assert.equal(pool.held, held - one, `file ${id} was read ahead`);
+    }
+    assert.deepEqual(await pool.take(0), { ok: false }, "a dropped read is not taken");
   } finally {
     pool.close();
+  }
+});
+
+test("a source read again whole lets go of its reads in the pool: once the pool settles, none waits", async (t) => {
+  const home = await tempHome(t);
+  // The second file's tokens take the sums past 2^53 - 1: the source is read again whole, and the last two files' reads,
+  // made ahead (the read-ahead is the default), are never taken.
+  for (let k = 0; k < 4; k += 1) {
+    const session = `00000000-0000-4000-8000-0000000000f${k}`;
+    await utimes(await writeJsonl(claudeFile(home, session), [claudeUser({ uuid: `f${k}-u`, text: "Big.", i: 0, session }), claudeAnswer({ uuid: `f${k}-a`, msg: `msg_f${k}`, req: `req_f${k}`, usage: anthropicUsage(2 ** 52, 1), i: 1, session })]), 1_000 + k, 1_000 + k);
+  }
+  // The pool parseHome made, kept open past its close until it settles.
+  const pools = [];
+  const close = ReadPool.prototype.close;
+  ReadPool.prototype.close = function () {
+    pools.push(this);
+  };
+  try {
+    assert.deepEqual(await parseHome(home, { sources: ["claude-code"], catalog: false, threads: 2 }), await parseHome(home, { sources: ["claude-code"], catalog: false, threads: 1 }));
+  } finally {
+    ReadPool.prototype.close = close;
+  }
+  assert.equal(pools.length, 1, "one pool");
+  try {
+    await settled(pools[0]);
+    assert.equal(pools[0].held, 0, "no read of the source read again waits in the pool");
+  } finally {
+    pools[0].close();
   }
 });
 

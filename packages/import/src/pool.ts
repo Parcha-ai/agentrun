@@ -54,9 +54,23 @@ const SESSION_BYTES = 1024;
 /** A string past U+00FF: V8 holds it at two bytes a UTF-16 code unit, any other at one. */
 const WIDE = /[^\u0000-\u00ff]/;
 
-/** A session's strings (its first prompt and title can run to megabytes) as V8 holds them. */
-export const stringBytes = (session: object): number =>
-  Object.values(session).reduce((sum: number, value) => sum + (typeof value === "string" ? (WIDE.test(value) ? 2 : 1) * value.length : 0), 0);
+/** A read's strings as V8 holds them (a session's first prompt and title can run to megabytes), wherever they are in its
+ *  objects and arrays (a session's turns, a read's requests and paths): each object once, on a stack of its own, so no
+ *  depth runs the call stack out and a cycle ends. A typed array holds none: heldBytes counts its bytes apart. */
+export function stringBytes(read: object): number {
+  let bytes = 0;
+  const visited = new Set<object>();
+  const stack: unknown[] = [read];
+  while (stack.length) {
+    const value = stack.pop();
+    if (typeof value === "string") bytes += (WIDE.test(value) ? 2 : 1) * value.length;
+    else if (typeof value === "object" && value !== null && !ArrayBuffer.isView(value) && !visited.has(value)) {
+      visited.add(value);
+      for (const inner of Array.isArray(value) ? value : Object.values(value)) stack.push(inner);
+    }
+  }
+  return bytes;
+}
 
 type Job = { id: number; source: string; locator: Locator; size: number; state: "queued" | "running" | "waiting" | "taken"; read?: PoolRead; bytes: number };
 
@@ -67,7 +81,10 @@ const indexBytes = (index: RecordIndex): number =>
 function heldBytes(read: PoolRead): number {
   if (!read.ok) return 0;
   let bytes = indexBytes(read.mine) + indexBytes(read.missed);
-  for (const { session, counts } of read.sessions) bytes += SESSION_BYTES + stringBytes(session) + (counts ? counts.model.byteLength + counts.values.byteLength + counts.has.byteLength : 0);
+  for (const sessionRead of read.sessions) {
+    const { counts } = sessionRead;
+    bytes += SESSION_BYTES + stringBytes(sessionRead) + (counts ? counts.model.byteLength + counts.values.byteLength + counts.has.byteLength : 0);
+  }
   return bytes;
 }
 
@@ -104,6 +121,11 @@ export class ReadPool {
   /** The bytes of reads waiting to be taken now. */
   get held(): number {
     return this.waiting;
+  }
+
+  /** The reads in flight now. At none, no read is sent until one is taken or dropped. */
+  get reading(): number {
+    return this.running.size;
   }
 
   /** Queues each locator; a job's id is its place in the import's order, so `items` come in that order. The ids, for take. */
