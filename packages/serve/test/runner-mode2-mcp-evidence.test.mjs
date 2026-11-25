@@ -7,7 +7,7 @@
 // file API, and a fal result is filed nowhere: that Workspace has no writeNew until Parcha-ai/agentrun#3777. An answer too
 // long for the model is filed whole at evidence/mcp in both. The answer the model reads is fal's, byte for byte.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -147,4 +147,32 @@ test("Mode 2, a run's own process (its runner's MCP, heldFor), no computer: the 
   assert.ok(tool, "the run's wait_for_jobs");
   const [first, second] = await callTwice(tool);
   assertFiledOverTheDisk({ data, agentId: "agent-own", runId: "run-own", disk, key: runKey("agent-own", "run-own"), first, second });
+});
+
+test("Mode 1, a run's own process (its runner's MCP, heldFor): the MCP files in the run's folder on this machine, as it did before, a fal result included", { timeout: 120_000 }, async (t) => {
+  const { fake, register } = await fakeFal(t);
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "mode1-mcp-evidence-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await register(store);
+  const revision = { kind: "agentic", body: { instructions: "Answer.", tools: GRANTS }, mcpPin: PIN(fake.url) };
+  await store.agents.create({ id: "agent-own", name: "Own" }, { id: "rev-own", ...revision });
+  await store.runs.create({ id: "run-own", agentId: "agent-own", revisionId: "rev-own" });
+  const deps = { store, sealKey: SEAL_KEY, env: {}, data, mcpLoopback: true };
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision, claimed: {} };
+  // The run's folder, as the run's process makes it when it opens its Mode 1 Workspace (run-workspace.ts).
+  mkdirSync(runFolder(data, "agent-own", "run-own"), { recursive: true, mode: 0o700 });
+  const side = host.heldFor(deps, reads, (text) => text, () => {});
+  t.after(() => side.release());
+  const mcp = await side.held.mcp({ appendRoot: async () => {} });
+  const tool = mcp?.tools.find((one) => one.catalog === "mcp:fal/wait_for_jobs");
+  assert.ok(tool, "the run's wait_for_jobs");
+  const [first, second] = await callTwice(tool);
+  assert.equal(first.text, JSON.stringify(JOB), "the model reads fal's answer byte for byte");
+  assert.match(second.text, /the whole answer is in the run's files at evidence\/mcp\/fal\//);
+  const local = runFolder(data, "agent-own", "run-own");
+  const filed = readdirSync(join(local, "evidence", "mcp", "fal"));
+  assert.equal(filed.length, 1, JSON.stringify(filed));
+  assert.equal(readFileSync(join(local, "evidence", "mcp", "fal", filed[0]), "utf8"), LONG, "the whole answer, in the run's folder");
+  assert.deepEqual(JSON.parse(readFileSync(join(local, "evidence", "fal", `${ID}.json`), "utf8")), RESULT, "fal's result, in the run's folder");
 });
