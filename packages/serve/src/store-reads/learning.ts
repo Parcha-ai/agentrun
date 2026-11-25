@@ -514,8 +514,9 @@ export async function pastRunsOverStore(store: Store, agentId: string): Promise<
 }
 
 /** The money rule's decision for agent `agentId` (runner/workflow-first.ts costStopOf) over the runs a run's launch reads
- *  (pastRunsOverStore), as the launch reads them: runs that can't be read now stop nothing (workflowFirstOf serves). What
- *  the promotions read and the learning view fold into each workflow's state (learn/promote.ts servingStateOf). */
+ *  (pastRunsOverStore), as the launch reads them; runs that can't be read stop nothing here (the view's state), while a
+ *  launch then leaves the run to the agent (workflowFirstOf fails closed). What the promotions read and the learning view
+ *  fold into each workflow's state (learn/promote.ts servingStateOf). */
 export const costStopOverStore = async (store: Store, agentId: string) => costStopOf(await pastRunsOverStore(store, agentId).catch(() => NO_PAST_RUNS));
 
 /** The path run `runId` took and the learned workflow it ran, the one classifier its run record keeps (metrics.path,

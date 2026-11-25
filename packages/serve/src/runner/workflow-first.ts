@@ -21,7 +21,8 @@
 // first: the agent takes the run, the run's journal keeps why with the two numbers (WORKFLOW_FIRST, outcome
 // needs_revision), and the agent's cost per run shows it stopped. The stop asks for no compile. A new revision of it (a
 // new digest: one its hold asked, or its owner's) serves again from zero. Fewer than
-// COST_WINDOW served runs, or no by-hand cost at all (said in the log): it serves. Every input is the run record's path
+// COST_WINDOW served runs: it serves. Past runs it can't read, or no by-hand cost at all: the agent takes the run (said
+// in the log), never served unchecked. Every input is the run record's path
 // (metrics.path, one classifier: store-reads/learning.ts runPathOverStore). The rule catches a workflow that costs more
 // than doing the job by hand; it does not catch one that answers wrong with confidence. The spec builders
 // (adapter-run-spec.ts, cli-run-spec.ts) choose here, once per claim; the adapter loop serves it (adapter-loop.ts, before
@@ -226,7 +227,8 @@ export const workflowDigest = (workflow: Pick<LearnedWorkflow, "workflow">): str
  *  champion whose revision on the folder changed its input, a new required field say): exactly one champion that fits
  *  serves. `outputSchema`: the agent's, when it has one: the workflow's answer is served shaped to it (answer-json.ts
  *  answerAsServed), on a replay too, so a replay scores the answer a run would serve. `log`: one line when the launch
- *  forces the agent, more than one fits, there is no by-hand cost to hold the workflow to, or the rule stops it. A replay
+ *  forces the agent, more than one fits, or the rule stops it. The rule fails closed: past runs it can't read, or COST_WINDOW
+ *  served runs and no by-hand cost to hold them to, leave the run to the agent, in one log line; never served unchecked. A replay
  *  run (launch.replay) serves the workflow it replays, by name, alone: no promotion, no money rule; none when its claim
  *  laid no workflow by that name at that digest (runner/promotion.ts replayClaimed then refuses the claim: the run ends
  *  failed, never on the agent's path). */
@@ -282,16 +284,17 @@ export async function workflowFirstOf(kind: string, workflows: readonly LearnedW
   const digest = workflowDigest(chosen);
   const serve = { ...champion, serve: { name: chosen.name, digest, ...(promotion !== undefined ? { promotion } : {}), input: launch.input as Record<string, unknown>, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) } };
   if (!past) return serve;
-  // Runs it can't read stop nothing: the run is served unchecked, and the log says so.
+  // Fails closed: runs it can't read leave the run to the agent, and the log says why.
   const read = await past().catch((error: unknown) => {
-    log?.(`workflow-first: the money rule could not read the agent's past runs (${error instanceof Error ? error.message : String(error)}); ${chosen.name} serves this run unchecked`);
-    return NO_PAST_RUNS;
+    log?.(`workflow-first: the money rule could not read the agent's past runs (${error instanceof Error ? error.message : String(error)}); ${chosen.name} does not run first, the agent takes this run`);
+    return undefined;
   });
+  if (!read) return {};
   const line = costLineOf(read, chosen.name, digest);
   if (line.served.runs < COST_WINDOW) return serve;
   if (line.by_hand === null) {
-    log?.(`workflow-first: no by-hand cost to hold ${chosen.name} to (no run of known cost on the agent's path before a learned workflow first served); it runs first`);
-    return serve;
+    log?.(`workflow-first: no by-hand cost to hold ${chosen.name} to (no run of known cost on the agent's path since the reset, among its newest ${PAST_RUNS} runs or the ${COST_WINDOW} by hand before them); the agent takes this run`);
+    return {};
   }
   if (!overLine(line)) return serve;
   const revise = { workflow: chosen.name, digest, served_usd: line.served.mean_usd!, by_hand_usd: line.by_hand.mean_usd, runs: line.served.runs, revision: launch.learning.seed, ...(outputSchema !== undefined ? { outputSchema } : {}) };
