@@ -7,6 +7,10 @@
 //   - a keyed run its promoted workflow served gets its shadow audit, on the run's key;
 //   - while the children run the run reads `running`, listing them; once they end, `ended` at the last one's end;
 //   - each child's copy opens for that child alone, and is erased by the write that ends it; a purge leaves no byte of it;
+//   - what the replays spent on the run's key is the run's own learning (cost.learning_usd, its part check_usd), as its
+//     shadow's is;
+//   - a purge of the run while its replays run cancels them and erases their copies before it answers: no child left
+//     running, no copy in the store's bytes, nothing spent after it;
 //   - a cap that leaves too little drops the check (`no_budget`): no replay, nothing reserved, the run reads `ended`;
 //   - the key is in no log line, and nowhere in the store's bytes in the clear.
 // The agent's runs are real runs of the store on a pi run of the faux gateway, its route reading the run's model env.
@@ -31,6 +35,8 @@ const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { seedOf } = await import("../dist/learning.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { openRunLaunch, sealRunLaunch } = await import("../dist/store/seal.js");
+const { runAllInOverStore } = await import("../dist/store-reads/learning.js");
+const { purgeRun } = await import("../dist/agent-delete.js");
 
 const SEAL_KEY = Buffer.alloc(32, 9);
 const MODEL = "claude-sonnet-5-5";
@@ -204,11 +210,52 @@ test("a keyed run's new workflow is checked at its end on the run's own key: eac
   const lastEnd = Math.max(...(await Promise.all(ids.map((id) => w.server.runs.get(id)))).map((row) => row.endedAt));
   assert.deepEqual(done, { state: "ended", runs: [], ended_at: new Date(lastEnd).toISOString() }, "ended at the last child's end");
   assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "replaying", "the check's record: decided at a later claim");
+  // What the replays spent on the run's key is the run's own learning, as its shadow's would be: its cost.learning_usd
+  // carries it (its part check_usd), and its all-in with it.
+  const spent = (await Promise.all(ids.map((id) => w.server.runs.get(id)))).map((row) => row.costUsd);
+  assert.ok(spent.every((usd) => typeof usd === "number" && usd > 0), `each replay's cost is booked: ${spent}`);
+  const micro = (usd) => Math.round(usd * 1e6);
+  const cost = await runAllInOverStore(w.server, "run-1");
+  const near = (a, b) => Math.abs(a - b) <= ids.length;
+  assert.ok(near(micro(cost.check_usd ?? 0), spent.reduce((sum, usd) => sum + micro(usd), 0)), `the run's check_usd is its replays' cost (${spent}): ${JSON.stringify(cost)}`);
+  assert.ok(micro(cost.learning_usd) >= micro(cost.check_usd), `in its learning_usd: ${JSON.stringify(cost)}`);
+  assert.ok(near(micro(cost.all_in_usd), micro(cost.usd) + micro(cost.learning_usd)), `and its all-in: ${JSON.stringify(cost)}`);
   // A purge leaves nothing of the copies: the children's and the run's launches gone, no byte of the key kept.
   const KEPT = { meters: null, spend: { usd: 0, basis: "list" }, learning: null };
   for (const id of [...ids, "run-1"]) await w.server.runs.purge(id, KEPT);
   for (const id of [...ids, "run-1"]) assert.equal((await w.server.runs.launch(id).catch(() => undefined))?.sealed ?? null, null, `${id}: no sealed bytes after purge`);
   await assertNowhere(w);
+});
+
+test("a purge of a keyed run while its check's replays run cancels them and erases their copies before it answers: no child left running, no copy in the store's bytes, nothing spent after it", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { prior: 6, hold: (body) => body.includes('"name":"submit"') });
+  await w.keyed("run-1", "What is six times seven", 5);
+  await w.ended("run-1");
+  const replays = await until(async () => {
+    const rows = await w.children("replay");
+    return rows.length === 6 && w.front.waiting.size === 6 && rows;
+  }, "six replay runs, each at its node's request");
+  const ids = replays.map((row) => row.id);
+  assert.equal((await w.view("run-1")).learning_work.state, "running");
+  // The purge as DELETE /v2/runs/{run_id} runs it (agent-delete.ts purgeRun) over the store, the run's things outside its
+  // rows aside. The replays are made from the runs they replay, not from it: they never make it refuse.
+  const KEPT = { meters: null, spend: { usd: 0, basis: "list" }, learning: null };
+  const host = { store: w.server, madeFrom: (id) => w.server.runs.madeFrom(id), forgetCopies: async () => {}, forgetRun: async () => {}, kept: async () => KEPT, turnOver: async () => false, waitMs: 60_000, pollMs: 20 };
+  await purgeRun(host, "run-1");
+  assert.notEqual((await w.server.runs.get("run-1")).purgedAt, null, "the run is purged");
+  // Read the moment it answers, never waited for: each replay ended and let go, its copy gone, the key nowhere.
+  for (const id of ids) {
+    const row = await w.server.runs.get(id);
+    assert.ok(FINAL.includes(row.state) && row.runner === null, `replay ${id} is not running once the purge answers: ${JSON.stringify([row.state, row.runner])}`);
+    assert.equal((await w.server.runs.launch(id)).sealed, null, `replay ${id}'s copy of the run's key is erased`);
+  }
+  await assertNowhere(w);
+  // Nothing spent after it: no model request reaches the gateway, and no replay's booked cost moves.
+  const asked = w.gw.requests.length;
+  const booked = await Promise.all(ids.map(async (id) => (await w.server.runs.get(id)).costUsd));
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+  assert.equal(w.gw.requests.length, asked, "no model request after the purge");
+  assert.deepEqual(await Promise.all(ids.map(async (id) => (await w.server.runs.get(id)).costUsd)), booked, "no spend booked after the purge");
 });
 
 test("a keyed run its promoted workflow served gets its shadow audit on the run's own key: the shadow's copy sealed for it alone, erased at its end; the run reads ended once it ends", { timeout: 240_000 }, async (t) => {

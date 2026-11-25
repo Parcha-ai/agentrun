@@ -42,6 +42,7 @@ test("record: one ledger row a run, and a spend row for each compile turn, check
     ["an unknown cost", endOf({}), { row: row({ cost: "unknown" }), spend: [] }],
     ["a served run", endOf({ costUsd: 0.1, metrics: served }), { row: row({ path: "workflow", workflow: "answer", digest: C, jobUsd: 0.1 }), spend: [] }],
     ["a check's replay: its cost is its revision's", endOf({ costUsd: 0.3, metrics: { ...served, path: "replay" } }), { row: row({ path: "replay", workflow: "answer", digest: C, jobUsd: 0.3 }), spend: [spendRow({ kind: "check", workflow: "answer", digest: C, usd: 0.3 })] }],
+    ["a check's replay on a run's own key: its cost is that run's", endOf({ costUsd: 0.3, metrics: { ...served, path: "replay", replay: { of: "o", paid_by: "p", outcome: "answered" } } }), { row: row({ path: "replay", workflow: "answer", digest: C, jobUsd: 0.3 }), spend: [spendRow({ kind: "check", ofRun: "p", workflow: "answer", digest: C, usd: 0.3 })] }],
     ["an audit's shadow: its cost is the run it audits'", endOf({ costUsd: 0.05, metrics: { path: "audit", audit: { of: "s", workflow: "answer", digest: C } } }), { row: row({ path: "audit", workflow: "answer", digest: C, jobUsd: 0.05 }), spend: [spendRow({ kind: "audit", ofRun: "s", workflow: "answer", digest: C, usd: 0.05 })] }],
     ["the money rule stopped its workflow", endOf({ costUsd: 0.4, metrics: { path: "agent", not_served: "cost_stop" } }), { row: row({ notServed: "cost_stop", jobUsd: 0.4 }), spend: [] }],
     ["a restart cut its workflow's call: handed back, cut, never the workflow's own hand-back", endOf({ costUsd: 0.2, metrics: { ...served, path: "handed_back", workflow_cut: true } }), { row: row({ path: "handed_back", workflow: "answer", digest: C, notServed: "cut", jobUsd: 0.2 }), spend: [] }],
@@ -50,12 +51,15 @@ test("record: one ledger row a run, and a spend row for each compile turn, check
   ]) assert.deepEqual(record(end), want, why);
 });
 
-test("figuresOf: one formula; the series' learning is the look-back and the shadow, the run read's the follow-ups, the shadow and the share", () => {
-  const figures = (over, parts) => figuresOf(row(over), { compile: 0, shadow: 0, share: 0, ...parts });
-  assert.deepEqual(figures({ jobUsd: 1, lookBackUsd: 0.3 }, { compile: 0.3 }), { usd: 1, compile_usd: 0.3, followup_usd: 0, shadow_usd: 0, share_usd: 0, series_learning_usd: 0.3, series_total_usd: 1.3, learning_usd: 0, all_in_usd: 1 }, "its compile turn is its revision's, never its own learning");
-  assert.deepEqual(figures({ jobUsd: 0.5, lookBackUsd: 0.7 }, { compile: 0.3 }), { usd: 0.5, compile_usd: 0.3, followup_usd: 0.4, shadow_usd: 0, share_usd: 0, series_learning_usd: 0.7, series_total_usd: 1.2, learning_usd: 0.4, all_in_usd: 0.9 }, "a follow-up's turns are its learning");
-  assert.deepEqual(figures({ path: "workflow", jobUsd: 0.1 }, { shadow: 0.05, share: 0.3 }), { usd: 0.1, compile_usd: 0, followup_usd: 0, shadow_usd: 0.05, share_usd: 0.3, series_learning_usd: 0.05, series_total_usd: 0.15, learning_usd: 0.35, all_in_usd: 0.45 }, "a served run carries its shadow and its share");
-  assert.deepEqual(figures({ path: "replay", jobUsd: 0.3 }, { share: 0.2 }), { usd: 0.3, compile_usd: 0, followup_usd: 0, shadow_usd: 0, share_usd: 0, series_learning_usd: 0, series_total_usd: 0.3, learning_usd: 0, all_in_usd: 0 }, "a replay carries none: its spend is on the runs it serves");
+test("figuresOf: one formula; the series' learning is the look-back, the shadow and the own-key check, the run read's the follow-ups, the shadow, the own-key check and the share", () => {
+  const figures = (over, parts) => figuresOf(row(over), { compile: 0, shadow: 0, check: 0, share: 0, ...parts });
+  assert.deepEqual(figures({ jobUsd: 1, lookBackUsd: 0.3 }, { compile: 0.3 }), { usd: 1, compile_usd: 0.3, followup_usd: 0, shadow_usd: 0, check_usd: 0, share_usd: 0, series_learning_usd: 0.3, series_total_usd: 1.3, learning_usd: 0, all_in_usd: 1 }, "its compile turn is its revision's, never its own learning");
+  assert.deepEqual(figures({ jobUsd: 0.5, lookBackUsd: 0.7 }, { compile: 0.3 }), { usd: 0.5, compile_usd: 0.3, followup_usd: 0.4, shadow_usd: 0, check_usd: 0, share_usd: 0, series_learning_usd: 0.7, series_total_usd: 1.2, learning_usd: 0.4, all_in_usd: 0.9 }, "a follow-up's turns are its learning");
+  assert.deepEqual(figures({ path: "workflow", jobUsd: 0.1 }, { shadow: 0.05, share: 0.3 }), { usd: 0.1, compile_usd: 0, followup_usd: 0, shadow_usd: 0.05, check_usd: 0, share_usd: 0.3, series_learning_usd: 0.05, series_total_usd: 0.15, learning_usd: 0.35, all_in_usd: 0.45 }, "a served run carries its shadow and its share");
+  assert.deepEqual(figures({ path: "replay", jobUsd: 0.3 }, { share: 0.2 }), { usd: 0.3, compile_usd: 0, followup_usd: 0, shadow_usd: 0, check_usd: 0, share_usd: 0, series_learning_usd: 0, series_total_usd: 0.3, learning_usd: 0, all_in_usd: 0 }, "a replay carries none: its spend is on the runs it serves");
+  assert.deepEqual(figures({ jobUsd: 1 }, { check: 0.2 }), { usd: 1, compile_usd: 0, followup_usd: 0, shadow_usd: 0, check_usd: 0.2, share_usd: 0, series_learning_usd: 0.2, series_total_usd: 1.2, learning_usd: 0.2, all_in_usd: 1.2 }, "a check on its own key is its learning, as its shadow is");
+  const checking = figures({ jobUsd: 1 }, { check: null });
+  assert.deepEqual([checking.series_total_usd, checking.learning_usd, checking.all_in_usd], [null, null, null], "an own-key check at work: unknown, never $0");
   const open = figures({ path: "workflow", jobUsd: 0.1 }, { shadow: null });
   assert.deepEqual([open.series_total_usd, open.learning_usd, open.all_in_usd], [null, null, null], "a shadow at work: unknown, never $0");
   const bound = figures({ cost: "at_most", jobUsd: null });
@@ -97,6 +101,21 @@ test("summarize: a compile's spend sits on its revision whether or not a record 
   const r3 = bare.runs.find((run) => run.run_id === "r3");
   assert.deepEqual([r3.audited, r3.shadow_usd, r3.share_usd, r3.total_usd], [true, 0.05, 0.3, 0.15]);
   assert.equal(bare.figures.get("r3").learning_usd, 0.35);
+});
+
+test("summarize: a check's replays on a run's own key are that run's learning, never their revision's: the run's check_usd, learning_usd and all-in carry them, the revision's check does not, and the sums still meet the booked total", () => {
+  const minute = (i) => Date.UTC(2026, 10, 24, 0, i);
+  const keyed = { path: "replay", workflow: "answer", workflow_digest: C, replay: { of: "r1", paid_by: "r2", outcome: "answered" } };
+  const own = [record(endOf({ id: "keyed-1", startedAt: minute(8), costUsd: 0.15, metrics: keyed })), record(endOf({ id: "keyed-2", startedAt: minute(9), costUsd: 0.05, metrics: keyed }))];
+  const out = summarize({ ...SERIES, rows: [...SERIES.rows, ...own.map((one) => one.row)], spend: [...SERIES.spend, ...own.flatMap((one) => one.spend)], revisions: [] });
+  assert.deepEqual(out.bill.revisions.map((one) => [one.digest, one.compile_usd, one.check_usd]), [[C, 0.3, 0.3]], "the revision's check is the server's replays alone");
+  const r2 = out.figures.get("r2");
+  assert.deepEqual([r2.check_usd, r2.learning_usd, r2.all_in_usd, r2.series_learning_usd], [0.2, 0.2, 1.2, 0.5], "r2's own-key check is its learning");
+  const series = out.runs.find((run) => run.run_id === "r2");
+  assert.deepEqual([series.check_usd, series.learning_usd, series.total_usd], [0.2, 0.5, 1.5], "and its series row's");
+  assert.equal(out.bill.booked_usd, 3.15);
+  const carried = [...out.figures.values()].reduce((total, one) => total + Math.round(one.all_in_usd * 1e6), 0);
+  assert.equal(carried + Math.round(out.bill.unattributed_usd * 1e6), Math.round(out.bill.booked_usd * 1e6), "Σ all_in + unattributed = booked");
 });
 
 test("pastRunsOf: the by-hand side is the job's own cost of the agent's runs on its own path among the same runs as the served side: its newest PAST_RUNS on no named disk since its learning's reset", () => {
