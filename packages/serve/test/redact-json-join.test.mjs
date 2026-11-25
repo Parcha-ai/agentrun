@@ -15,6 +15,7 @@ import { SdkRuns, sdkInbox } from "../dist/sdk/runs.js";
 import { viewOverStore } from "../dist/store-view.js";
 import { callsOf, graderInput } from "../dist/template-eval.js";
 import { CALL_RESULT_CHARS, scrubUrls, timelineOf } from "../dist/timeline/index.js";
+import { landWorkflows, promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { storeOn, T0 } from "./store-helpers.mjs";
 import { serve } from "./support.mjs";
 import { assistant, call, result, user } from "./timeline-lib-support.mjs";
@@ -412,6 +413,40 @@ test("an SDK run's completion with its answer withheld by itself and an error th
   const run = await sdkRunOf(t, BOTH);
   assert.deepEqual(await run.sdk.complete(run.id, { status: "failed", answer: `stopped at ${HEAD} ${REST}`, error: "the search was refused" }), { accepted: true });
   assert.deepEqual((await run.inbox()).completion, { status: "failed", answer: "[redacted]", error: "the search was refused" });
+});
+
+/** An SDK run given the learned workflow "release", whose one step calls `STATUS`, and its inbox read as the server
+ *  cuts what it reports, against the held values. */
+const STATUS = "mcp:backend/status";
+async function sdkWorkflowRunOf(t) {
+  const server = await serve(t, { runner: false });
+  const workflow = { v: 2, name: "release", schemas: { In: { type: "object" }, Out: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" }, root: { node: "call", label: "status", via: "tool", tool: STATUS, args: {}, out: "Out", as: "answer", deadline_s: 5 } };
+  assert.equal((await server.api("POST", "/agents", { definition: { id: "sdk-flow", name: "SDK flow", instructions: "Read release status.", sdk: { runtime: "claude-agent-sdk" }, learning: true, tools: [] } })).status, 201);
+  await landWorkflows(server.data, "sdk-flow", [{ name: "release", description: "Read release status.", workflow }]);
+  await promoteChecked(server.store.settings, "sdk-flow", [{ name: "release", workflow }]);
+  const started = await server.api("POST", "/agents/sdk-flow/sdk-runs", { runtime: "claude-agent-sdk", input: "Read release status.", instructions: "Read release status.", workflow_tools: [{ name: STATUS, description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 }] }, { "Idempotency-Key": "flow" });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  assert.deepEqual(started.body.learning.workflows.map((flow) => flow.name), ["release"]);
+  const id = started.body.run_id;
+  return { id, sdk: new SdkRuns(server.store, server.data, "fake-test-key", () => [...SECRETS]), inbox: () => sdkInbox(server.store, id) };
+}
+const workflowStart = (name) => ({ type: "tool", id: "workflow", name: "learned_workflow", status: "started", input: { name, input: { note: `see ${HEAD}`, more: `${REST} next` } } });
+const callback = { type: "tool", id: "callback", name: STATUS, status: "started", parent_tool_use_id: "workflow" };
+
+test("an SDK run's learned_workflow start whose arguments hold a split held value is stored withheld, and a callback nested in it is taken", async (t) => {
+  const run = await sdkWorkflowRunOf(t);
+  assert.deepEqual(await run.sdk.events(run.id, { sequence: 1, events: [workflowStart("release")] }), { accepted: true });
+  assert.deepEqual(await run.sdk.events(run.id, { sequence: 2, events: [callback] }), { accepted: true });
+  const inbox = await run.inbox();
+  assert.deepEqual(shows(JSON.stringify(inbox)), []);
+  assert.deepEqual(inbox.batches.map((batch) => batch.events), [[{ ...workflowStart("release"), input: "[redacted]" }], [callback]]);
+});
+
+test("an SDK run's learned_workflow start whose arguments hold a split held value and that names no workflow the run was given still refuses a callback nested in it (control)", async (t) => {
+  const run = await sdkWorkflowRunOf(t);
+  assert.deepEqual(await run.sdk.events(run.id, { sequence: 1, events: [workflowStart("invented")] }), { accepted: true });
+  await assert.rejects(run.sdk.events(run.id, { sequence: 2, events: [callback] }), /nested SDK callback must name an open learned_workflow|was not supplied to this run/);
+  assert.deepEqual(shows(JSON.stringify(await run.inbox())), []);
 });
 
 test("an SDK run's completion with a held value whole in its answer is cut in place, its error as given (control)", async (t) => {
