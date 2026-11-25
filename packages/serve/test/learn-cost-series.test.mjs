@@ -83,7 +83,8 @@ test("the summary's replay is the serving promotion's record, read from the stor
   await end("run-2", { path: "workflow", workflow: "answer" }, 0.1);
   assert.equal((await agentCostOverStore(store, "agent-1")).summary.replay, null, "no promotion recorded");
   const check = { compile_after: 20, agree_min: 0.8, alone_min: 0.5, attempt: 1, n: 40, agreed: 34, alone: 40, of: [] };
-  await recordPromotion(store.learning, "agent-1", { workflow: "answer", digest: "d".repeat(16), at: "2026-11-12T00:00:00Z", decided: "promote", reason: "as good as the agent", check }, () => true);
+  // A made-up digest, laid down exempt from the store's check that a version holds it (anyDigest).
+  await recordPromotion(store.learning, "agent-1", { workflow: "answer", digest: "d".repeat(16), at: "2026-11-12T00:00:00Z", decided: "promote", reason: "as good as the agent", check }, () => true, { anyDigest: true });
   assert.deepEqual((await agentCostOverStore(store, "agent-1")).summary.replay, { n: 40, workflow_pct: 85, agent_pct: 100, cleared: true, agreed: 34, alone: 40, agree_min: 0.8 });
 });
 

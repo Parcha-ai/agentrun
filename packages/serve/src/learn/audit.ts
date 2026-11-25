@@ -9,7 +9,7 @@
 // (learn/promote.ts sameAnswer) and what each run cost.
 import { createHash } from "node:crypto";
 import { COMPUTER_TOOLS } from "@parcha/agentrun-kernel/kernel";
-import type { LearningRecord, LearningRecordWrite, Store } from "../store/store.js";
+import { type LearningRecord, LearningRecordRefused, type LearningRecordWrite, type Store } from "../store/store.js";
 import type { AuditLoop } from "../learning-setting.js";
 import type { McpPin } from "../mcp-gateway.js";
 import type { RunLaunch } from "../run-launch.js";
@@ -161,9 +161,26 @@ export const lineKey = (line: LedgerLine): string => `${line.source}:${line.run}
 
 /** Appends `lines` to the ledger, each not there yet (lineKey), in one transaction: `replace`, a line whose key is there
  *  takes the place of the one there (a grade's row of a run graded again). The ledger after (`all`) with the lines it
- *  appended. */
-export function addAuditLines(rows: AuditRecords, agentId: string, lines: readonly LedgerLine[], replace = false): Promise<{ all: LedgerLine[]; added: LedgerLine[] }> {
-  return rows.changeRecords(agentId, "audit", (records) => {
+ *  appended. A line of a digest no version of its workflow holds (a run's purge took it since the line was read), or of a
+ *  run that was purged, is never appended (Store.learning changeRecords refuses it): the others are. */
+export async function addAuditLines(rows: AuditRecords, agentId: string, lines: readonly LedgerLine[], replace = false): Promise<{ all: LedgerLine[]; added: LedgerLine[] }> {
+  let left = lines;
+  for (let tries = 0; ; tries++) {
+    try {
+      return await appendLines(rows, agentId, left, replace);
+    } catch (error) {
+      // A purged run's line, refused in the write's own transaction: the write again without it.
+      if (!(error instanceof LearningRecordRefused) || tries >= 2) throw error;
+      const refused = new Set(error.records.map((one) => one.runId));
+      const kept = left.filter((line) => !refused.has(line.run));
+      if (kept.length === left.length) throw error;
+      left = kept;
+    }
+  }
+}
+
+function appendLines(rows: AuditRecords, agentId: string, lines: readonly LedgerLine[], replace: boolean): Promise<{ all: LedgerLine[]; added: LedgerLine[] }> {
+  return rows.changeRecords(agentId, "audit", (records, held) => {
     const keys = new Set(lines.map(lineKey));
     const kept = records.filter((one) => { const line = lineOf(one.data); return !replace || !line || !keys.has(lineKey(line)); });
     const before = linesOf(kept);
@@ -171,6 +188,7 @@ export function addAuditLines(rows: AuditRecords, agentId: string, lines: readon
     const added: LedgerLine[] = [];
     for (const line of lines) {
       if (known.has(lineKey(line))) continue;
+      if (held !== undefined && !held(line.workflow, line.digest)) continue;
       known.add(lineKey(line));
       added.push(line);
     }

@@ -4,7 +4,8 @@
 //     newest version as it was at the run's seed (or its `bases` save) is a conflict, never written over;
 //   - one line of an owner's feedback appended to corrections.md (appendCorrection), after the refusals;
 //   - corrections.md replaced whole by a person (putCorrections), under the ETag they read.
-// A purged run's text needs no write here: its purge deletes its rows (Store.learning.purgeRun).
+// A purged run's text needs no write here: its purge deletes its rows (Store.learning.purgeRun). A run's merge read at a
+// save a purge came after (its seed, a revised workflow's base) is refused whole: `purged`.
 import type { Problem } from "./check.js";
 import { CORRECTIONS_CAP, CORRECTIONS_FILE, correctionLine, correctionsProblems } from "./corrections.js";
 import { type AgentLearning, blobOid, type LearningRead, type LearningWrite, LearningBusy, LearningMerged, LearningRefused, readLearning, readView, type RunDiff, runDiffKey, runMergeOf, writeLearning } from "./rows.js";
@@ -44,6 +45,9 @@ export type LearningCommitResult =
   | { ok: true; main: string; commit: string; files: string[]; already?: true; refusedCorrection?: Problem[] }
   | { ok: false; reason: "conflict"; problems: Problem[] }
   | { ok: false; reason: "refused"; problems: Problem[] }
+  /** A run's purge came after the save the run's merge was read at (its seed): that purge rewrote what the run started
+   *  from, so its draft can't be told apart from the purged run's bytes, and nothing of it is written. */
+  | { ok: false; reason: "purged"; problems: Problem[] }
   | { ok: false; reason: "unavailable"; error: string };
 
 type Computed = LearningCommitResult | { pending: true; refusedCorrection?: Problem[] };
@@ -51,6 +55,7 @@ type Computed = LearningCommitResult | { pending: true; refusedCorrection?: Prob
 /** A write's failure as a result: a precondition (a file changed since the seed, or the seed gone: a conflict), or the
  *  store unavailable (retry later). */
 function failure(error: unknown): LearningCommitResult {
+  if (error instanceof LearningRefused && error.purged !== undefined) return { ok: false, reason: "purged", problems: [{ rule: "kept", detail: "a run's learning was purged after this run started, so what it learned can't be told apart from what the purge took" }] };
   if (error instanceof LearningRefused && error.seed !== undefined) return { ok: false, reason: "conflict", problems: [{ rule: "kept", detail: "the agent's learning was reset after the run started, so what it learned has nothing to land on" }] };
   if (error instanceof LearningRefused) return { ok: false, reason: "conflict", problems: error.same.map((path): Problem => ({ rule: "kept", path, detail: `${path} changed on main after the run started` })) };
   return { ok: false, reason: "unavailable", error: (error as Error)?.message ?? String(error) };
@@ -59,7 +64,8 @@ function failure(error: unknown): LearningCommitResult {
 /**
  * A run's merge on the agent's learning, one save: its files (a held README with `status: pending`) and its owner's
  * correction appended to corrections.md. `ok` with the new version and the paths it changed; `conflict` when a file is
- * not at the newest version as it was at the run's seed; `refused` when the correction holds what must never be stored,
+ * not at the newest version as it was at the run's seed; `purged` when a run's purge came after its seed (or a revised
+ * workflow's base), nothing written; `refused` when the correction holds what must never be stored,
  * or, with no draft beside it, would take corrections.md past its cap (nothing written); `unavailable` when the store
  * failed. The draft and the correction are judged apart: a correction past the cap beside a draft (the file filled by
  * another write after the run's check, correctionRefused) is left out alone, and the draft merges, `ok` with the cap's
@@ -81,6 +87,8 @@ export async function learningCommit(learning: AgentLearning, change: LearningCh
       const at = change.bases?.[path] ?? change.seed;
       return at ? [{ at, path }] : [];
     });
+    // Every save the merge was read at: a purge after any of them refuses it whole (its correction too).
+    const readAt = [...new Set([change.seed, change.mustHold, ...Object.values(change.bases ?? {})].filter((id): id is string => id !== undefined))];
     const done = await writeLearning<Computed>(learning, async (read) => {
       const writes = [...drafts];
       let refusedCorrection: Problem[] | undefined;
@@ -92,7 +100,7 @@ export async function learningCommit(learning: AgentLearning, change: LearningCh
         else writes.push({ path: CORRECTIONS_FILE, text });
       }
       // `mustHold`: the whole merge is refused when the agent's learning no longer holds it (a reset removed it).
-      return { result: { pending: true, ...(refusedCorrection ? { refusedCorrection } : {}) }, change: { by: run(change.runId, change.reason, change.round), writes, ...(same.length ? { same } : {}), ...(change.mustHold ? { seed: change.mustHold } : {}) } };
+      return { result: { pending: true, ...(refusedCorrection ? { refusedCorrection } : {}) }, change: { by: run(change.runId, change.reason, change.round), writes, ...(same.length ? { same } : {}), ...(change.mustHold ? { seed: change.mustHold } : {}), ...(readAt.length ? { readAt } : {}) } };
     }, opts.retries ?? 3);
     const { result, saved } = done;
     return "pending" in result ? { ok: true, main: saved!.id, commit: saved!.id, files: [...saved!.files], ...(result.refusedCorrection ? { refusedCorrection: result.refusedCorrection } : {}) } : result;

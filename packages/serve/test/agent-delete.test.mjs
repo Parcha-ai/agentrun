@@ -53,9 +53,11 @@ function fakeLearning(order = []) {
  *  audit record. */
 async function learned(store, agentId) {
   await putLearning(store, agentId, { "corrections.md": "- Six times seven is 42.", "workflows/multiply/workflow.json": "{}", "workflows/multiply/README.md": "---\nname: multiply\ndescription: Multiplies\n---\n" }, { runId: "run-learned" });
-  await store.learning.addRecord(agentId, "promotion", { runId: null, workflow: "multiply", digest: "d1", data: { workflow: "multiply", digest: "d1", decided: "promote", at: new Date(0).toISOString(), reason: "checked" } });
+  // Each record names the digest the saved version holds (a record of one no version holds is refused).
+  const digest = (await store.learning.versions(agentId, "workflow", "multiply"))[0].digest;
+  await store.learning.addRecord(agentId, "promotion", { runId: null, workflow: "multiply", digest, data: { workflow: "multiply", digest, decided: "promote", at: new Date(0).toISOString(), reason: "checked" } });
   await store.learning.addRecord(agentId, "grade", { runId: "r1", workflow: null, digest: null, data: { run: "r1", correct: true } });
-  await store.learning.addRecord(agentId, "audit", { runId: "r1", workflow: "multiply", digest: "d1", data: {} });
+  await store.learning.addRecord(agentId, "audit", { runId: "r1", workflow: "multiply", digest, data: {} });
 }
 
 /** The kinds of learning row the store still keeps of the agent (none once its learning is deleted): its saves, then

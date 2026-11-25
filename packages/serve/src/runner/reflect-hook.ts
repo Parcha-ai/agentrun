@@ -33,7 +33,7 @@ export type DraftCommit = {
  *  LearningCommitResult `refusedCorrection`), or why it did not. */
 export type Committed =
   | { readonly ok: true; readonly commit: string; readonly refusedCorrection?: readonly Problem[] }
-  | { readonly ok: false; readonly reason: "conflict" | "refused" | "unavailable"; readonly problems: readonly Problem[] };
+  | { readonly ok: false; readonly reason: "conflict" | "refused" | "purged" | "unavailable"; readonly problems: readonly Problem[] };
 
 /** What the step reads of the run and the host. */
 export interface ReflectDeps {
@@ -197,6 +197,8 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(corrections ? { corrections } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, corrections, problems) }));
       }
       if (done.reason === "unavailable") return close(dropped("reflect_failed", said.stopped(STOPPED.failed), compiledFields));
+      // A run's purge came after this run's seed: nothing of its merge was written (learn/commit.ts `purged`).
+      if (done.reason === "purged") return close(dropped("purged_since_seed", said.purgedSinceSeed, compiledFields));
       return close(dropped("checker", correctionWords(done.problems), { problems: [...done.problems], ...compiledFields }));
     }
     if (refusedCorrection.length) return close(dropped("checker", correctionWords(refusedCorrection), { problems: [...refusedCorrection, ...draftProblems], ...compiledFields }));

@@ -19,7 +19,9 @@ import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { shadowRunId } from "../dist/learn/audit.js";
+import { learningCommit } from "../dist/learn/commit.js";
 import { answersPair, recordPromotion } from "../dist/learn/promote.js";
+import { learningOf } from "../dist/learn/rows.js";
 import { openapiDocument } from "../dist/openapi.js";
 import { decideCheck } from "../dist/runner/promotion.js";
 import { dropSchema, freshSchema, onPostgres, PG_URL, raw } from "./store-target.mjs";
@@ -157,12 +159,17 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   const graded = await api("PUT", `/runs/${gone}/grade`, { correct: false, expected: { answer: word }, label: `It should say ${word}.` });
   assert.equal(graded.status, 200, JSON.stringify(graded.body));
   await halt();
+  // The check's and the connected agent's revisions, learned by the kept run: a promotion names a digest a version of its
+  // workflow holds (the store writes no record of another).
+  const landed = await learningCommit(learningOf(store, "calc"), { runId: kept.body.run_id, reason: "It learned two workflows.", files: ["flow", "turns"].flatMap((name) => [{ path: `workflows/${name}/README.md`, text: `---\nname: ${name}\ndescription: Answers a question; use when asked\n---\n` }, { path: `workflows/${name}/workflow.json`, text: JSON.stringify({ v: 2, name }) }]) });
+  assert.equal(landed.ok, true, JSON.stringify(landed));
+  const [dCheck, dTurns] = await Promise.all(["flow", "turns"].map(async (name) => (await store.learning.versions("calc", "workflow", name))[0].digest));
 
   // The runs made from it: its audit's shadow run and a replay of its input, each holding its input.
   const shadow = shadowRunId(gone);
   const replay = `replay-of-${gone}`;
   await endedRun(store, "calc", shadow, { input: { content: `Keep ${word} everywhere.` }, title: "Audit", place: { mode: "runner" }, audit: { of: gone, workflow: "flow", digest: "d-audit" } });
-  await endedRun(store, "calc", replay, { input: { content: `Keep ${word} everywhere.` }, title: "Replay", place: { mode: "runner" }, replay: { of: gone, workflow: "flow", digest: "d-check" } });
+  await endedRun(store, "calc", replay, { input: { content: `Keep ${word} everywhere.` }, title: "Replay", place: { mode: "runner" }, replay: { of: gone, workflow: "flow", digest: dCheck } });
   // A workflow check that disagreed with it, decided as a claim decides one (its copy of the input, the agent's answer,
   // the draft's answer, and the grader's words, which its reason quotes); and one input it agreed on, the sibling's.
   const draft = `Draft of ${word}`;
@@ -177,17 +184,17 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
     { of: gone, input: `Keep ${word} everywhere.`, agent: agentJson, outcome: "answered", answer: draft, correct: false, expected, compared: { same: false, grader: "faux-fast", differs_on: `whether it says ${word}`, pair: answersPair(draft, corrected) } },
     { of: kept.body.run_id, input: "What is six times seven?", agent: "The answer is 42.", outcome: "answered", answer: "The answer is 42." },
   ];
-  const decided = await decideCheck({ store, agentId: "calc", log: () => {}, shown: async () => ({ text: (text) => text }) }, "flow", "d-check", bar, { rows, cost: 0.02, outcomes: { answered: 2, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was === undefined, {});
+  const decided = await decideCheck({ store, agentId: "calc", log: () => {}, shown: async () => ({ text: (text) => text }) }, "flow", dCheck, bar, { rows, cost: 0.02, outcomes: { answered: 2, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, (was) => was === undefined, {});
   assert.equal(decided.won, true, "the check is decided");
   assert.equal(decided.record.decided, "hold", `it disagreed, so it is held: ${decided.record.reason}`);
   // An audit hold that disagreed with it, as runner/audit.ts applyHold writes one.
   await recordPromotion(store.learning, "calc", {
     workflow: "flow", digest: "d-audit", at: new Date().toISOString(), decided: "hold", reason: "its audits disagreed with the agent on 1 of 1",
     audit: { window: 1, disagree: 1, rows: 1, disagreements: [{ run: shadow, served: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] },
-  }, () => true);
+  }, () => true, { anyDigest: true });
   // A connected agent's check still collecting native turns, which disagreed on it (runner/promotion.ts sdkCheckTurn).
   const collecting = {
-    workflow: "turns", digest: "d-turns", at: new Date().toISOString(), decided: "replaying", via: "sdk", replay_id: "turns-check", reason: "Waiting for the next native turn of the connected agent that it takes.",
+    workflow: "turns", digest: dTurns, at: new Date().toISOString(), decided: "replaying", via: "sdk", replay_id: "turns-check", reason: "Waiting for the next native turn of the connected agent that it takes.",
     check: { ...bar, turns: { n: 1, agreed: 0, alone: 1, of: [gone], outcomes: { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [{ run: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] } },
   };
   await recordPromotion(store.learning, "calc", collecting, () => true);
@@ -200,7 +207,7 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   }
 
   const fill = {
-    agent_id: ["calc"], run_id: [gone, kept.body.run_id, shadow, replay], path: ["kept.md"], name: ["flow"], digest: ["d-check", "d-audit"],
+    agent_id: ["calc"], run_id: [gone, kept.body.run_id, shadow, replay], path: ["kept.md"], name: ["flow"], digest: [dCheck, "d-audit"],
     file: ["audits.jsonl"], replay_id: [], file_id: [], trigger_id: [], provider: [],
   };
   const { paths, unread } = getRoutes(fill);
@@ -226,13 +233,13 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
 
   // What a purge keeps of what it blanked: each record's decision, counts and run ids.
   const { promotions } = (await api("GET", "/agents/calc/learning/promotions")).body;
-  const [check, audit] = ["d-check", "d-audit"].map((digest) => promotions.find((one) => one.digest === digest));
+  const [check, audit] = [dCheck, "d-audit"].map((digest) => promotions.find((one) => one.digest === digest));
   assert.deepEqual([check?.decided, check?.check.n, check?.check.agreed, check?.check.alone, check?.check.of], ["hold", 2, 1, 2, [gone, kept.body.run_id]], `the check's decision and numbers are kept: ${JSON.stringify(check)}`);
   assert.deepEqual(check.check.disagreements, [{ run: gone, input: "", agent: null, draft: "", fields: ["answer"], expected: [{ field: "answer", known: "grade", value: "" }] }], "its disagreement names the run, the field it had wrong and where its known answer came from still, its content and that answer blanked");
   assert.deepEqual(Object.keys(check.check.fields), ["answer"], "no field is named from its grade's keys");
   assert.match(check.reason, /answer: 0 of 1 right against the grades' expected answers \(0\.0%, the bar 90\.0%\).*; 1 of 1 said what the agent said/, "its reason keeps its numbers, the grade's answer and the grader's words gone");
   assert.deepEqual([audit?.decided, audit?.audit.rows, audit?.audit.disagreements], ["hold", 1, [{ run: shadowRunId(gone), served: gone, input: "", agent: null, draft: null }]], `the audit's hold keeps its numbers and run ids: ${JSON.stringify(audit)}`);
-  const turns = promotions.find((one) => one.digest === "d-turns")?.check.turns;
+  const turns = promotions.find((one) => one.digest === dTurns)?.check.turns;
   assert.deepEqual([turns?.n, turns?.agreed, turns?.alone, turns?.of, turns?.disagreements], [1, 0, 1, [gone], [{ run: gone, input: "", agent: null, draft: "" }]], `the turns collected keep their numbers and run ids: ${JSON.stringify(turns)}`);
   // A next turn's write built on the turns read before the purge (sdkCheckTurn, racing it) keeps what the purge blanked.
   const next = { ...collecting, at: new Date().toISOString(), check: { ...collecting.check, turns: { ...collecting.check.turns, n: 2, alone: 2, agreed: 1, of: [kept.body.run_id, gone] } } };

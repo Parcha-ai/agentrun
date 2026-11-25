@@ -12,9 +12,9 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, learningRowsUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_AGENT, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
-  ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
+  ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunnerBelowFloor, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -473,9 +473,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // it. Version 12 names no minting runner on a machine's token and keeps no runner's relay: the server adds them
     // (schema.ts relayUpgrade). Version 13 keeps no purge time on a run or an agent: the server adds them (schema.ts
     // purgeUpgrade). Version 14 keeps no disk on a run: the server adds it and writes each run's from its launch (schema.ts
-    // diskUpgrade). A runner refuses 11 to 14 until that server has.
-    const upgrading = found === 11 || found === 12 || found === 13 || found === 14;
+    // diskUpgrade). Version 15 keeps no learning as rows: the server adds them (schema.ts learningRowsUpgrade). A runner
+    // refuses 11 to 15 until that server has. A later version is refused too, a runner in words that name its floor (a
+    // SQLite runner opens only its own version, so the floor is the version): RunnerBelowFloor.
+    const upgrading = found === 11 || found === 12 || found === 13 || found === 14 || found === 15;
     if (upgrading && role === "runner") throw new StoreAwaitsServer(`bring this store from version ${found} to ${SCHEMA_VERSION}`);
+    if (role === "runner" && found !== null && found > SCHEMA_VERSION) throw new RunnerBelowFloor(file, found, SCHEMA_VERSION, found);
     if (found !== SCHEMA_VERSION && !upgrading) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
     // Every column a runner of this build needs that an earlier build of this version may lack (SQLITE_RUNNER_NEEDS), read
@@ -620,8 +623,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       }
       if (upgrading) {
         const named = async (table: string) => new Set((await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).map((column) => column.name));
-        if (found !== 14) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
-        await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
+        if (found !== 14 && found !== 15) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
+        if (found !== 15) await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
+        await connection.write(learningRowsUpgrade().map((sql) => ({ sql })), { full: true });
       }
     }
   } catch (error) {
@@ -726,7 +730,7 @@ async function dropLedger(tx: SqliteExecutor, runId: string): Promise<void> {
 
 /** A run's content in every table that keeps it by the run's id, gone: what a run's purge (Runs.purge) and its delete
  *  (Runs.remove) both drop. A table added for a run's content goes here, so neither path leaves it behind. */
-async function dropRunContent(tx: Tx, runId: string): Promise<void> {
+async function dropRunContent(tx: Tx, runId: string, at: number): Promise<void> {
   for (const table of PI_TABLES) await tx.run(`DELETE FROM ${table} WHERE run_id = ?`, runId);
   await tx.run("DELETE FROM commands WHERE run_id = ?", runId);
   await tx.run("DELETE FROM run_origins WHERE run_id = ?", runId);
@@ -742,17 +746,17 @@ async function dropRunContent(tx: Tx, runId: string): Promise<void> {
   // Its claims' attempts: what each cost is in its tombstone's money, and no read of a purged run splits it.
   await tx.run("DELETE FROM run_attempts WHERE run_id = ?", runId);
   // What it learned and what its agent's learning kept of it (learning-rows.ts dropRunLearning), its agent's alone,
-  // under the lock a save of that agent's learning takes.
+  // under the lock a save of that agent's learning takes: the purge is a save of its own at `at`.
   const agentId = (await tx.get<{ agent_id: string }>("SELECT agent_id FROM runs WHERE id = ?", runId))?.agent_id;
   if (agentId !== undefined) {
     await tx.dialect.lockKey(tx, `learning:${agentId}`);
-    await dropRunLearning(tx, agentId, runId);
+    await dropRunLearning(tx, agentId, runId, at);
   }
 }
 
-/** An agent's own rows no tombstone keeps (its learning, its saved sign-ins and their tombstones), gone: what an agent's
- *  purge (Agents.purge) and its delete (Agents.remove) both drop. */
-async function dropAgentPrivate(tx: SqliteExecutor, agentId: string): Promise<void> {
+/** An agent's own rows no tombstone keeps (its learning, under its learning locks: dropAgentLearning; its saved sign-ins
+ *  and their tombstones), gone: what an agent's purge (Agents.purge) and its delete (Agents.remove) both drop. */
+async function dropAgentPrivate(tx: Tx, agentId: string): Promise<void> {
   await tx.run("DELETE FROM learning WHERE agent_id = ?", agentId);
   await dropAgentLearning(tx, agentId);
   await tx.run("DELETE FROM sign_ins WHERE agent_id = ?", agentId);
@@ -1656,7 +1660,7 @@ class SqliteStore implements Store {
             if ((await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM runs WHERE id = ?", id))?.purged_at === null) left.push(id);
           }
           if (left.length) throw new RunsMadeFromLeft(runId, left);
-          await dropRunContent(tx, runId);
+          await dropRunContent(tx, runId, now());
           // What names it, let go: a trigger's last run, the firing that started it (its key and status kept, so it never
           // fires again; the event it was given, its payload and attributes, gone), a firing's wait behind it (the
           // trigger's room is read again, as for a run that ended), the run a machine's token was minted for.
@@ -1688,7 +1692,7 @@ class SqliteStore implements Store {
           const run = await tx.get<{ state: RunState }>("SELECT state FROM runs WHERE id = ?", runId);
           if (!run) return;
           if (!(FINAL_STATES as readonly string[]).includes(run.state)) throw new StoreConstraint(`run ${runId} is ${run.state}: only a final run is removed`);
-          await dropRunContent(tx, runId);
+          await dropRunContent(tx, runId, now());
           await tx.run("DELETE FROM learning_proposals WHERE run_id = ?", runId);
           // Its ledger row and every spend row it booked or that audits it, as a purge takes them.
           await dropLedger(tx, runId);

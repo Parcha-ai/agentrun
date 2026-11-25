@@ -495,7 +495,7 @@ export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "l
     const failed = input.errors.join("; ").slice(0, CHECK_TEXT_MAX) || "no draft passed";
     const reason = `${DRAFT_FAILED}: ${failed}. ${attempt === 2 ? "It was the recompile, so it stops: nothing compiles again until its owner acts" : "It is not promoted; the next due run compiles it once more"}`;
     const check = { compile_after, agree_min, alone_min, attempt, n: 0, agreed: 0, alone: 0, of: [], ...(attempt === 2 ? { stopped: true as const } : {}) };
-    const kept = await recordPromotion(deps.store.learning, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined);
+    const kept = await recordPromotion(deps.store.learning, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined, { anyDigest: true });
     if (kept.won) deps.log?.(`learning: run ${input.runId}: the compile of ${workflow} failed its checks (attempt ${attempt}${attempt === 2 ? ", stopped" : ""})`);
   } catch (error) {
     deps.log?.(`learning: run ${input.runId}: the compile's failed drafts were not recorded: ${error instanceof Error ? error.message : String(error)}`);

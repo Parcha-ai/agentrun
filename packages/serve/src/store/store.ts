@@ -501,25 +501,32 @@ export interface Learning {
   /** What save `id` changed: each item it wrote, with its body just before the save and at it (null: none there). */
   diff(agentId: string, id: string): Promise<LearningDiff | undefined>;
   /** One save, in one transaction: refused as stale unless the agent's newest version is `base`, as already done when a
-   *  save with its merge key is there, and as refused when its seed is not held. */
+   *  save with its merge key is there, as refused when its seed is not held, and as purged when a run's purge came after
+   *  a save it was read at (`readAt`). */
   save(agentId: string, save: LearningSaveInput): Promise<LearningSaved>;
   /** Run `runId`'s learning gone from its agent `agentId`'s (no other agent's row is touched): the item versions it
    *  wrote (a person's change of its text with them), its grades, its audits, and the promotions and audits of each
-   *  workflow version it wrote. Its saves stay as facts with no text (their merge keys still taken). Idempotent. */
+   *  workflow version it wrote. Its saves stay as facts with no text (their merge keys still taken). A purge that
+   *  changed a row is a save too, the host's (kind `purged`, no item) at the newest version + 1, so every save computed
+   *  before it is stale. Idempotent: a purge that finds nothing of the run's adds none. */
   purgeRun(agentId: string, runId: string): Promise<void>;
-  /** The agent's learning gone: items, saves and records. Its runs and what they cost stay. */
+  /** The agent's learning gone: items, saves and records. Its runs and what they cost stay. Under the agent's learning
+   *  lock, then its records' lock, as a purge takes them: a records write that began before it is in before it. */
   reset(agentId: string): Promise<void>;
-  /** Every learning row of the agent gone, its reset's included: its delete. */
+  /** Every learning row of the agent gone, its reset's included: its delete. Locked as reset is. */
   erase(agentId: string): Promise<void>;
   /** The agent's records of `kind`, oldest first. */
   records(agentId: string, kind: LearningRecordKind): Promise<LearningRecord[]>;
-  /** Adds one record of `kind`, after every other. */
+  /** Adds one record of `kind`, after every other; refused as changeRecords refuses one it adds. */
   addRecord(agentId: string, kind: LearningRecordKind, record: LearningRecordWrite): Promise<LearningRecord>;
   /** The agent's records of `kind` changed in one transaction: `update` reads them all and answers the list they become
    *  (a record with its `seq` kept is that record, one without is added after the others), or undefined for no change.
-   *  With `digestsOf` (a workflow's name), `update` reads too the digests its versions hold, in the same transaction: a
-   *  run's purge takes the records' lock before it changes a version, so none goes between the read and the write. */
-  changeRecords<T>(agentId: string, kind: LearningRecordKind, update: (records: readonly LearningRecord[], digests?: ReadonlySet<string>) => { records: readonly LearningRecordWrite[]; result: T } | { result: T }, options?: { readonly digestsOf?: string }): Promise<T>;
+   *  `update` reads too, in the same transaction, whether a version of a workflow holds a digest (`held`): a run's purge
+   *  takes the records' lock before it changes a version, so none goes between the read and the write. Each record the
+   *  write adds (or moves to another workflow, digest or run) is checked in that transaction: a promotion's or an
+   *  audit's digest must be held by a version of its workflow (unless it is `anyDigest`, a failed draft's, which no
+   *  version holds), and no record names a purged run. Else the write throws LearningRecordRefused and writes nothing. */
+  changeRecords<T>(agentId: string, kind: LearningRecordKind, update: (records: readonly LearningRecord[], held?: (workflow: string, digest: string) => boolean) => { records: readonly LearningRecordWrite[]; result: T } | { result: T }, options?: { readonly anyDigest?: string }): Promise<T>;
   /** Agent `agentId`'s ledger (learn/ledger.ts), in one read (one snapshot of both tables): every run's row its end
    *  recorded, oldest first, each with the end it was recorded for (`epoch`, its run's epoch then), and every spend row.
    *  With `runIds`, those runs' rows alone and the spend rows they booked or that audit them (none for none). Written
@@ -585,11 +592,16 @@ export interface LearningSaveInput {
   readonly mergeKey?: string;
   /** A version id the agent's learning must still hold (a run's seed). */
   readonly seed?: string;
+  /** The saves the write's text was read at (a run's seed, and each save its compile turn read a workflow at): refused
+   *  as purged when a run's purge came after any of them (its host save, kind `purged`, is newer), since that purge
+   *  rewrote what was read in place and the write can't be told apart from the purged run's bytes. */
+  readonly readAt?: readonly string[];
 }
 export type LearningSaved =
   | { readonly saved: LearningSave }
   | { readonly stale: number }
   | { readonly refused: { readonly seed: string } }
+  | { readonly purged: { readonly readAt: string } }
   | { readonly already: LearningSave };
 export interface LearningDiff {
   readonly save: LearningSave;
@@ -2218,6 +2230,20 @@ export class SchemaVersionUnknown extends Error {
     this.name = "SchemaVersionUnknown";
     this.found = found;
     this.known = known;
+  }
+}
+
+/** A learning record write refused in its own transaction, nothing written (Store.learning changeRecords, addRecord): a
+ *  promotion or audit of a digest no version of its workflow holds (a run's purge took it since the write read it), or
+ *  a record of a run that was purged. */
+export class LearningRecordRefused extends Error {
+  readonly records: readonly LearningRecordWrite[];
+  constructor(agentId: string, records: readonly LearningRecordWrite[], why: "unheld" | "purged") {
+    super(why === "unheld"
+      ? `agent ${agentId}'s learning holds no version of ${records.map((one) => `${one.workflow}@${one.digest}`).join(", ")}: a run's purge took it, so no record of it is written`
+      : `run ${records.map((one) => one.runId).join(", ")} was purged, so no learning record of it is written`);
+    this.name = "LearningRecordRefused";
+    this.records = records;
   }
 }
 

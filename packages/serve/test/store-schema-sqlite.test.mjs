@@ -65,14 +65,14 @@ test("every wait the SQLite runner's open says for a column is on SQLITE_RUNNER_
   assert.deepEqual(said.filter((why) => !listed.has(why)), [], "each is listed");
 });
 
-test("on SQLite, a runner waits only for a version its server upgrades in place (11-14); any other earlier one, and a later one, is refused", () => {
+test("on SQLite, a runner waits only for a version its server upgrades in place (11-15); any other earlier one, and a later one, is refused", () => {
   const target = { kind: "sqlite", dataDir: "/data" };
   const verdict = (version) => {
     const report = storeSchemaReport(target, { version, runnerFloor: version }, SCHEMA_VERSION);
     return [report.server, report.runner];
   };
   assert.deepEqual(verdict(10), ["refuses", "refused"], "10: no in-place upgrade, so neither waits on it");
-  for (const version of [11, 12, 13, 14]) assert.deepEqual(verdict(version), ["migrates", "waits"], String(version));
+  for (const version of [11, 12, 13, 14, 15]) assert.deepEqual(verdict(version), ["migrates", "waits"], String(version));
   assert.deepEqual(verdict(SCHEMA_VERSION), ["opens", "opens"]);
   assert.deepEqual(verdict(SCHEMA_VERSION + 1), ["refuses", "refused"], "a later server's file");
   assert.deepEqual(verdict(null), ["sets up", "refused"]);

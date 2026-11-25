@@ -27,10 +27,17 @@ export async function promoteChecked(target, agentId, flows) {
   });
 }
 
-/** Agent `agentId`'s promotion records replaced by `items` (each a PromotionRecord), as a test lays them down whole. */
-export const putPromotions = (target, agentId, items) => overStore(target, (store) => store.learning.changeRecords(agentId, "promotion", () => ({
-  records: items.map((record) => ({ runId: null, workflow: record.workflow, digest: record.digest, data: record })), result: undefined,
-})));
+/** Agent `agentId`'s promotion records replaced by `items` (each a PromotionRecord), as a test lays them down whole: each
+ *  written with its digest exempt from the store's check that a version holds it (`anyDigest`, as a failed draft's
+ *  record is), since a fixture names made-up digests. */
+export const putPromotions = (target, agentId, items) => overStore(target, async (store) => {
+  await store.learning.changeRecords(agentId, "promotion", () => ({ records: [], result: undefined }));
+  for (const record of items) {
+    await store.learning.changeRecords(agentId, "promotion", (saved) => ({
+      records: [...saved.map(({ seq, runId, workflow, digest, data }) => ({ seq, runId, workflow, digest, data })), { runId: null, workflow: record.workflow, digest: record.digest, data: record }], result: undefined,
+    }), { anyDigest: record.digest });
+  }
+});
 
 /** A learned workflow's README.md, as a merge keeps it: its name and the line its tool's description says it with. */
 export const readmeOf = (name, description, extra = "") => `---\nname: ${name}\ndescription: ${description}\n${extra}---\n`;

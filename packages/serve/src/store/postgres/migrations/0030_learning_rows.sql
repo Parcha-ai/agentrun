@@ -1,6 +1,9 @@
+-- runners: breaking
 -- The store's schema on Postgres, version 30: each agent's learning as versioned rows, as store/schema.ts keeps it on
 -- SQLite (LEARNING_ROWS). Applied once, after 0029, inside the transaction migrate.ts opens. Never edit this file once
--- applied: a change is a new file. Additive: no table or column an earlier build reads changes.
+-- applied: a change is a new file. No table or column an earlier build reads changes, but it is breaking for runners
+-- all the same: a runner of an earlier build keeps a run's learning in a git folder and settings keys, which this
+-- release neither reads nor purges, so the floor rises to 30 and every earlier runner stops (RunnerBelowFloor).
 --
 -- learning_saves: each save of an agent's learning, one version, its random id (what a run's seed and the log name),
 -- its kind (init, run, person, purged), who saved it and why (`change`), and a run's merge key (one merge a run's

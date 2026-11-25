@@ -522,8 +522,9 @@ test('a newer revision\'s hold that lands while a release is written is not hidd
   await server.start('racing');
   const pending = await server.latest(flow.name);
   const owner = { workflow: flow.name, digest: workflowDigest({ workflow: JSON.stringify(nextFlow.workflow) }), at: new Date().toISOString(), decided: 'hold', reason: 'The owner held this revision for correction.' };
-  // The newer hold lands during the release's own await, after its first read of the records.
-  const shown = async () => { await recordPromotion(server.store.learning, server.id, owner, () => true); return secretsShown([]); };
+  // The newer hold lands during the release's own await, after its first read of the records (a revision not landed here:
+  // its digest exempt from the store's check that a version holds it, anyDigest).
+  const shown = async () => { await recordPromotion(server.store.learning, server.id, owner, () => true, { anyDigest: true }); return secretsShown([]); };
   await releaseSdkCheck({ store: server.store, agentId: server.id, shown, log() {} }, pending, 'its native turn was cancelled');
   assert.deepEqual(await server.latest(flow.name), owner);
 });

@@ -134,7 +134,9 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   const seed = learned ? await landWorkflows(dir, "agent-1", flows) : undefined;
   // `promotions`: the agent's promotion records before the run (learn/promote.ts), as its replays left them; none given,
   // each landed workflow as its check promoted it (no run of the agent's to check it on here, so it would stop unchecked).
-  for (const record of promotions ?? (learned ? checkedOf(flows) : [])) await recordPromotion(server.learning, "agent-1", record, () => true);
+  // Laid down as they were left: a digest no version holds yet (main's, landed by beforeRun; a failed draft's) is exempt
+  // from the store's check (anyDigest).
+  for (const record of promotions ?? (learned ? checkedOf(flows) : [])) await recordPromotion(server.learning, "agent-1", record, () => true, { anyDigest: true });
   // `saved`: keys saved on the server after the learning landed (a value in a workflow that became a secret).
   for (const [name, value] of Object.entries(saved)) await putSealedKey(server, SEAL_KEY, name, value);
   // `beforeRun(dir)`: what changes on the agent's main after the run's seed was pinned, before the run starts.

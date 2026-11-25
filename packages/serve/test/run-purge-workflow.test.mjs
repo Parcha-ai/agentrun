@@ -334,7 +334,7 @@ test("a check that outlives the purge of its revision's run lands no promote for
   const deps = { store, agentId: "late", log: () => {}, shown: async () => secretsShown([]) };
   await decideCheck(deps, "answer", digestOf(v2[path]), bar, { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, () => true, replay);
   const late = promotionOf(await promotionsOf(store.learning, "late"), "answer", digestOf(v2[path]));
-  assert.deepEqual({ decided: late?.decided, said: /purged/.test(late?.reason ?? "") }, { decided: "hold", said: true }, "the late check records no promote for v2: a hold that says its run was purged");
+  assert.equal(late, undefined, "the late check writes nothing for v2: no version holds it");
   assert.deepEqual(await servedNow(api, store, "late", "What is six times seven?"), { champion: kept, served: digestOf(v1[path]) }, "past the late check's write, the champion read names v1's save, and a run that fits it is served v1");
 });
 
@@ -386,9 +386,9 @@ test("a workflow a purged run wrote leaves with its run's purge at the store: it
 });
 
 // A check that outlives its revision's run, with the inputs it did not agree on: the run's purge deletes v2 while its
-// check replays other runs' inputs, and the check lands a hold for v2. No version holds v2 then, so the next run's
-// compile ask asks no revision of the purged v2.
-test("a hold a check lands after its revision's run is purged asks no compile of the purged revision", { timeout: 120_000 }, async (t) => {
+// check replays other runs' inputs, and the check's hold for v2 writes nothing: no version holds v2 then. The next
+// run's compile ask asks no revision of the purged v2.
+test("a hold a check decides after its revision's run is purged writes nothing and asks no compile of the purged revision", { timeout: 120_000 }, async (t) => {
   const { api, data, store } = await serve(t, { runner: false });
   await endedRuns(api, store, "rehold", ["rehold-first", "rehold-gone", "rehold-next"]);
   const path = "workflows/answer/workflow.json";
@@ -409,10 +409,60 @@ test("a hold a check lands after its revision's run is purged asks no compile of
   const rows = ["a", "b", "c", "d", "e"].map((one) => ({ of: `rehold-input-${one}`, input: "What is six?", agent: "6", outcome: "answered", answer: "seven" }));
   const deps = { store, agentId: "rehold", log: () => {}, shown: async () => secretsShown([]) };
   await decideCheck(deps, "answer", digestOf(v2[path]), bar, { rows, cost: 0, outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 }, unstarted: 0 }, () => true, replay);
-  assert.equal(promotionOf(await promotionsOf(store.learning, "rehold"), "answer", digestOf(v2[path]))?.decided, "hold", "the late check lands a hold for v2");
+  assert.equal(promotionOf(await promotionsOf(store.learning, "rehold"), "answer", digestOf(v2[path])), undefined, "the late check's hold for v2 writes nothing");
 
   const ask = await compileAskOf({ store, data }, { runId: "rehold-next", agentId: "rehold", outcome: "completed", refuse: [], input: { content: "What is six?", question: "What is six?" }, seedWorkflows: 1 });
   assert.equal(ask?.held?.digest ?? null, null, "the next compile ask holds no revision of the purged v2");
+});
+
+// A run live across another run's purge (DELETE /v2/runs/{id}): its seed was read before the purge rewrote it, so a file
+// its draft gives back unchanged from the seed is the purged run's bytes. Its merge is refused whole (purged_since_seed),
+// nothing written; a run seeded after the purge merges.
+test("a run seeded before another run's DELETE has its merge refused: nothing of the purged run's text, or its own, is written; a run seeded after merges", { timeout: 120_000 }, async (t) => {
+  const mark = `PURGED-SEEDED-${randomBytes(6).toString("hex")}`;
+  const { api, store } = await serve(t, { runner: false });
+  await endedRuns(api, store, "seeded", ["seeded-gone", "seeded-live", "seeded-after"]);
+  const seed = await learned(store, "seeded", (learning) => learningCommit(learning, { runId: "seeded-gone", reason: "It learned answer.", files: filesOf(mark) }));
+  assert.equal((await api("DELETE", "/runs/seeded-gone")).status, 204);
+  const [readme] = filesOf(mark);
+  const before = await heldOf(store, "seeded");
+  const done = await learningCommit(learningOf(store, "seeded"), { runId: "seeded-live", reason: "It revised answer.", seed, mustHold: seed, files: [readme, { path: "workflows/answer/workflow.json", text: JSON.stringify(answerFlow("Answer the question, LIVEWORD.")) }], correction: "Use the LIVEWORD rule." });
+  assert.deepEqual([done.ok, done.reason], [false, "purged"], JSON.stringify(done));
+  assert.deepEqual(await heldOf(store, "seeded"), before, "nothing written");
+  assert.doesNotMatch(before.text, new RegExp(`${mark}|LIVEWORD`));
+  const after = (await store.learning.newest("seeded")).save.id;
+  await learned(store, "seeded", (learning) => learningCommit(learning, { runId: "seeded-after", reason: "It learned answer.", seed: after, files: filesOf("in whole numbers") }));
+});
+
+// The production path's scoping: DELETE /v2/runs/{id} (Runs.purge, its agent read from the run's row) takes the run's
+// learning rows from its own agent's learning alone. Another agent's rows that name the same run id stay.
+test("a run's DELETE takes its learning from its own agent's alone: another agent's rows naming the same run id stay", { timeout: 120_000 }, async (t) => {
+  const { api, store } = await serve(t, { runner: false });
+  await endedRuns(api, store, "scope-mine", ["scope-run"]);
+  await endedRuns(api, store, "scope-theirs", []);
+  await learned(store, "scope-mine", (learning) => learningCommit(learning, { runId: "scope-run", reason: "It learned answer.", files: filesOf("MINEWORD"), correction: "MINEWORD line." }));
+  await learned(store, "scope-theirs", (learning) => learningCommit(learning, { runId: "scope-run", reason: "It learned answer.", files: filesOf("THEIRWORD"), correction: "THEIRWORD line." }));
+  const digest = digestOf(answerAt("THEIRWORD")["workflows/answer/workflow.json"]);
+  await putPromotions(store, "scope-theirs", [recordOf("answer", digest, "promote", null)]);
+  const theirs = await heldOf(store, "scope-theirs");
+  assert.equal((await api("DELETE", "/runs/scope-run")).status, 204);
+  assert.doesNotMatch(await learningText(store, "scope-mine"), /MINEWORD/);
+  assert.deepEqual(await heldOf(store, "scope-theirs"), theirs, "the other agent's learning is as it was");
+  assert.equal((await store.learning.records("scope-theirs", "promotion")).length, 1);
+});
+
+// A grade's write that a run's purge overtook (another process purged it past the route's check): the write refuses it
+// in its own transaction, nothing kept.
+test("a grade written for a run purged since is refused in its own write: nothing is kept", { timeout: 120_000 }, async (t) => {
+  const { api, store } = await serve(t, { runner: false });
+  await endedRuns(api, store, "graded", ["graded-gone", "graded-live"]);
+  const { putGrade, gradesOf } = await import("../dist/learn/promote.js");
+  const { LearningRecordRefused } = await import("../dist/store/index.js");
+  const grade = (run) => ({ run, correct: false, expected: { answer: "GRADEWORD" }, source: "feedback", at: new Date().toISOString(), path: "agent", feedback: null });
+  await store.runs.purge("graded-gone", { meters: null, spend: { usd: 0.1, basis: "list" }, learning: null });
+  await assert.rejects(putGrade(store.learning, "graded", grade("graded-gone")), LearningRecordRefused);
+  await putGrade(store.learning, "graded", grade("graded-live"));
+  assert.deepEqual((await gradesOf(store.learning, "graded")).map((one) => one.run), ["graded-live"]);
 });
 
 // Over runs that end cheaply (no runner): (c) a workflow the purged run wrote new leaves the learning whole; (d) a later
@@ -436,7 +486,7 @@ test("a purge leaves only what no purged run wrote: a new workflow leaves the le
   for (const [runId, said] of [["later-first", "v1"], ["later-gone", "v2"], ["later-last", "v3"]]) await wrote("later", runId, said);
   const kept = await onMain(store, "later");
   await purge("later-gone");
-  assert.deepEqual(await onMain(store, "later"), kept, "a later run's v3 stays untouched");
+  assert.deepEqual((await onMain(store, "later")).files, kept.files, "a later run's v3 stays untouched (the purge's own save is the newest now)");
   assert.deepEqual(kept.files, answerAt("v3"));
   assert.doesNotMatch(await learningText(store, "later"), /question, v2\./, "no learning row holds the purged run's v2");
 
@@ -455,7 +505,7 @@ test("a purge leaves only what no purged run wrote: a new workflow leaves the le
   for (const [runId, said] of [["back-first", "v1"], ["back-gone1", "v2"], ["back-gone2", "v3"]]) await wrote("back", runId, said);
   const v3 = await onMain(store, "back");
   await purge("back-gone1");
-  assert.deepEqual(await onMain(store, "back"), v3, "the purge of gone1 leaves gone2's v3");
+  assert.deepEqual((await onMain(store, "back")).files, v3.files, "the purge of gone1 leaves gone2's v3");
   await purge("back-gone2");
   assert.deepEqual((await onMain(store, "back")).files, answerAt("v1"), "the purge of gone2 leaves first's v1, never gone1's purged v2");
   assert.equal(await writer("back"), "back-first");

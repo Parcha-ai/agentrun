@@ -995,6 +995,7 @@ const LEARNING_REASON = {
     "`empty`: the compile turn kept no workflow and the owner gave no correction, or the run was not asked its compile turn because its only tool work was its learned workflows, each answering, with nothing said after its first message (its `detail` says so). `checker`: the checks (or the workflow's dry run) refused it, or the owner's correction would pass corrections.md's cap, and nothing was written to git.",
     "`use`: the run was started with `learning: \"use\"`: it started from what its agent learned and keeps nothing, so it was never asked its end-of-run turn.",
     "`reset`: the run read what its agent learned before a reset of the agent's learning (DELETE /v2/agents/{agent_id}/learning), so nothing it learned is kept and it was never asked its end-of-run turn.",
+    "`purged_since_seed`: another run of its agent was purged (DELETE /v2/runs/{run_id}) after this run read what its agent learned, so nothing this run learned is kept: the purge rewrote what it started from, and what it gives back can't be told apart from the purged run's text.",
   ].join(" "),
 };
 // ---- learning/1: what a person sees and controls of an agent's learning (learning-routes.ts) ---------------------------

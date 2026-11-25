@@ -3641,7 +3641,7 @@ class RunErrorDetails(TypedDict):
 
 class _RunSummaryLearningRequired(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset", "purged_since_seed"] | None
     detail: str | None
 
 
@@ -5900,7 +5900,7 @@ class RunComputerHeld(_RunComputerHeldRequired, total=False):
 
 class _RunLearningRequired(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset", "purged_since_seed"] | None
     detail: str | None
     at: str
 
@@ -7674,7 +7674,7 @@ GetRunLearningResponse: TypeAlias = "GetRunLearningResponseObject | None"
 class _GetRunLearningResponseObjectRequired(TypedDict):
     run: str
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset", "purged_since_seed"] | None
     detail: str | None
     at: str
     seed: str | None
@@ -8026,7 +8026,7 @@ class TimelineRowComputerCallsItemStepsItemOn(_TimelineRowComputerCallsItemSteps
 
 class TimelineRowLearning(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset", "purged_since_seed"] | None
     detail: str | None
 
 

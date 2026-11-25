@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
+import { client, postgresOnly, schemaOf } from "./store-target.mjs";
 
 const { learningCommit, putCorrections } = await import("../dist/learn/commit.js");
 const { learningOf, readAt, readView, runMergeOf, writeLearning } = await import("../dist/learn/rows.js");
@@ -127,8 +128,9 @@ test("a reset takes every row: a save that must hold a seed from before it is re
 test("erase takes every row of the agent and none of another's", async (t) => {
   const { store } = await storeOn(t);
   await merge(learningOf(store, AGENT), { runId: "run-a", correction: "Mine." });
-  await merge(learningOf(store, "agent-2"), { runId: "run-z", correction: "Theirs." });
-  await store.learning.addRecord("agent-2", "audit", { runId: "run-z", workflow: "x", digest: "d", data: {} });
+  await merge(learningOf(store, "agent-2"), { runId: "run-z", correction: "Theirs.", files: flow("x", "THEIRS") });
+  const digest = (await store.learning.versions("agent-2", "workflow", "x"))[0].digest;
+  await store.learning.addRecord("agent-2", "audit", { runId: "run-z", workflow: "x", digest, data: {} });
   await store.learning.erase(AGENT);
   assert.equal(await store.learning.newest(AGENT), undefined);
   assert.deepEqual((await store.learning.saves(AGENT)).total, 0);
@@ -167,12 +169,19 @@ test("a run's merge writes each workflow whole: a file it does not give is gone 
 
 test("records: added in order, changed whole in one transaction (a kept seq is that record), each kind its own", async (t) => {
   const { store } = await storeOn(t);
-  const a = await store.learning.addRecord(AGENT, "promotion", { runId: null, workflow: "x", digest: "d1", data: { n: 1 } });
-  const b = await store.learning.addRecord(AGENT, "promotion", { runId: null, workflow: "x", digest: "d2", data: { n: 2 } });
+  // Each promotion names a digest a version of its workflow holds (a record of one no version holds is refused).
+  const learning = learningOf(store, AGENT);
+  await merge(learning, { runId: "run-a", files: flow("x", "ALPHA") });
+  await merge(learning, { runId: "run-b", files: flow("x", "BRAVO") });
+  await merge(learning, { runId: "run-c", files: flow("y", "CHARLIE") });
+  const [d2, d1] = (await store.learning.versions(AGENT, "workflow", "x")).map((one) => one.digest);
+  const [d3] = (await store.learning.versions(AGENT, "workflow", "y")).map((one) => one.digest);
+  const a = await store.learning.addRecord(AGENT, "promotion", { runId: null, workflow: "x", digest: d1, data: { n: 1 } });
+  const b = await store.learning.addRecord(AGENT, "promotion", { runId: null, workflow: "x", digest: d2, data: { n: 2 } });
   assert.deepEqual([a.seq, b.seq], [1, 2]);
-  const result = await store.learning.changeRecords(AGENT, "promotion", (records) => ({ records: [{ ...records[1], data: { n: 22 } }, { runId: "run-c", workflow: "y", digest: "d3", data: { n: 3 } }], result: records.length }));
+  const result = await store.learning.changeRecords(AGENT, "promotion", (records) => ({ records: [{ ...records[1], data: { n: 22 } }, { runId: "run-c", workflow: "y", digest: d3, data: { n: 3 } }], result: records.length }));
   assert.equal(result, 2);
-  assert.deepEqual((await store.learning.records(AGENT, "promotion")).map((one) => [one.seq, one.digest, one.data]), [[2, "d2", { n: 22 }], [3, "d3", { n: 3 }]]);
+  assert.deepEqual((await store.learning.records(AGENT, "promotion")).map((one) => [one.seq, one.digest, one.data]), [[2, d2, { n: 22 }], [3, d3, { n: 3 }]]);
   assert.equal(await store.learning.changeRecords(AGENT, "promotion", () => ({ result: "unchanged" })), "unchanged");
   assert.deepEqual(await store.learning.records(AGENT, "grade"), []);
   const raced = await Promise.all(Array.from({ length: 5 }, (_, i) => store.learning.changeRecords(AGENT, "grade", (records) => ({ records: [...records, { runId: `run-${i}`, workflow: null, digest: null, data: { i } }], result: undefined }))));
@@ -400,8 +409,10 @@ test("the audit ledger keeps its newest AUDITS_KEPT rows and every open started 
   const { store } = await storeOn(t);
   const { AUDITS_KEPT, addAuditLines, ledgerOf } = await import("../dist/learn/audit.js");
   assert.equal(typeof AUDITS_KEPT, "number");
+  await merge(learningOf(store, AGENT), { runId: "run_q", files: flow("x", "QWORD") });
+  const digest = (await store.learning.versions(AGENT, "workflow", "x"))[0].digest;
   const at = "2026-11-25T00:00:00.000Z";
-  const common = (run) => ({ run, shadow_run: `audit.${run}`, workflow: "x", digest: "d", promoted_at: null, at });
+  const common = (run) => ({ run, shadow_run: `audit.${run}`, workflow: "x", digest, promoted_at: null, at });
   const shadow = (run) => ({ ...common(run), source: "shadow", agreed: true, served_cost: 0.1, shadow_cost: 0.1 });
   const lines = [{ ...common("open-0"), source: "started" }, { ...common("closed-0"), source: "started" }, shadow("closed-0")];
   for (let i = 0; i < AUDITS_KEPT + 5; i++) lines.push(shadow(`r-${i}`));
@@ -412,14 +423,170 @@ test("the audit ledger keeps its newest AUDITS_KEPT rows and every open started 
   assert.deepEqual(kept.slice(1).map((line) => line.run), lines.slice(-AUDITS_KEPT).map((line) => line.run), "the newest rows");
 });
 
-test("a promote recorded for a digest no version of its workflow holds (a purge took it since its check read it) lands held, in the one write", async (t) => {
+test("a promotion recorded for a digest no version of its workflow holds (a purge took it since its check read it) writes nothing, in the one write; a failed draft's record is the one exception", async (t) => {
   const { store } = await storeOn(t);
   const { recordPromotion } = await import("../dist/learn/promote.js");
+  const { LearningRecordRefused } = await import("../dist/store/index.js");
   await merge(learningOf(store, AGENT), { runId: "run_q", files: flow("x", "QWORD") });
   const record = { workflow: "x", digest: "0123456789abcdef", at: "2026-11-25T00:00:00.000Z", decided: "promote", reason: "checked: promoted" };
-  const done = await recordPromotion(store.learning, AGENT, record, () => true, "held, never promoted: a purged run wrote this revision");
-  assert.equal(done.record.decided, "hold");
-  assert.deepEqual((await store.learning.records(AGENT, "promotion")).map((one) => [one.data.decided, one.data.reason]), [["hold", "held, never promoted: a purged run wrote this revision"]]);
+  for (const decided of ["promote", "hold", "replaying"]) {
+    const done = await recordPromotion(store.learning, AGENT, { ...record, decided }, () => true);
+    assert.deepEqual([done.won, done.record], [false, undefined], `a ${decided} of an unheld digest is not won`);
+  }
+  assert.deepEqual(await store.learning.records(AGENT, "promotion"), [], "nothing written");
+  await assert.rejects(store.learning.addRecord(AGENT, "promotion", { runId: null, workflow: "x", digest: record.digest, data: record }), LearningRecordRefused, "a raw add of an unheld digest is refused too");
+  await assert.rejects(store.learning.addRecord(AGENT, "audit", { runId: null, workflow: "x", digest: record.digest, data: record }), LearningRecordRefused);
+  const failed = await recordPromotion(store.learning, AGENT, { ...record, digest: "draftfailed00001", decided: "hold" }, () => true, { anyDigest: true });
+  assert.equal(failed.won, true, "a failed draft's hold names its run's own digest, which no version holds");
   const held = (await store.learning.versions(AGENT, "workflow", "x"))[0].digest;
-  assert.equal((await recordPromotion(store.learning, AGENT, { ...record, digest: held }, () => true, "never")).record.decided, "promote", "a digest a version holds is promoted");
+  assert.equal((await recordPromotion(store.learning, AGENT, { ...record, digest: held }, () => true)).record.decided, "promote", "a digest a version holds is promoted");
+});
+
+// A record's write read before a purge, written after it: the purge took the digest it names, so its write (in its own
+// transaction) writes nothing. In order, never by timing: the reservation reads the digest, the purge commits, then the
+// reservation and an audit line are written.
+test("a promotion reservation and an audit line prepared before a purge and written after it write nothing for the digest the purge took", async (t) => {
+  const { store } = await storeOn(t);
+  const { recordPromotion, promotionsOf } = await import("../dist/learn/promote.js");
+  const { addAuditLines, ledgerOf } = await import("../dist/learn/audit.js");
+  const learning = learningOf(store, AGENT);
+  await merge(learning, { runId: "run_q", files: flow("x", "QWORD") });
+  await merge(learning, { runId: "run_r", files: flow("x", "RWORD") });
+  const [taken, kept] = [(await store.learning.versions(AGENT, "workflow", "x"))[0].digest, (await store.learning.versions(AGENT, "workflow", "x")).at(-1).digest];
+  assert.notEqual(taken, kept);
+  const at = "2026-11-25T00:00:00.000Z";
+  const reservation = { workflow: "x", digest: taken, at, decided: "replaying", reason: "checking", runs: ["replay-1"], inputs: ["run_q"], replay_id: "replay" };
+  const line = (digest, run) => ({ run, shadow_run: `audit.${run}`, workflow: "x", digest, promoted_at: null, at, source: "started" });
+  await store.learning.purgeRun(AGENT, "run_r");
+  const reserved = await recordPromotion(store.learning, AGENT, reservation, (was) => was === undefined);
+  assert.equal(reserved.won, false, "the reservation is not won: its claim starts no replay");
+  assert.deepEqual(await promotionsOf(store.learning, AGENT), []);
+  const { added } = await addAuditLines(store.learning, AGENT, [line(taken, "served-1"), line(kept, "served-2")]);
+  assert.deepEqual(added.map((one) => one.run), ["served-2"], "the line of the taken digest is not appended; the other is");
+  assert.deepEqual((await ledgerOf(store.learning, AGENT)).map((one) => one.digest), [kept]);
+});
+
+test("a person's restore after a retire outlives a purge of the run whose text it restored: the version that comes back is active", async (t) => {
+  const { store } = await storeOn(t);
+  const learning = learningOf(store, AGENT);
+  await merge(learning, { runId: "run_q", files: flow("x", "QWORD") });
+  await merge(learning, { runId: "run_r", files: flow("x", "RWORD") });
+  const act = async (action) => {
+    const item = (await readView(learning)).workflows[0];
+    assert.equal((await changeWorkflow(store, AGENT, item.file, { action, ifMatch: etagOf(item.oid), refuse: [] })).status, 200, action);
+  };
+  await act("retire");
+  await act("restore");
+  assert.equal((await readView(learning)).workflows[0].status, "active");
+  await store.learning.purgeRun(AGENT, "run_r");
+  assert.doesNotMatch(await everything(store), /RWORD/);
+  assert.deepEqual((await readView(learning)).workflows.map(({ name, status, run }) => [name, status, run]), [["x", "active", "run_q"]], "the owner's newest decision, restore, stands");
+});
+
+test("a purge scrubs every other save of a path only the purged run wrote: a later run's save and a person's save name it nowhere", async (t) => {
+  const { store } = await storeOn(t);
+  const learning = learningOf(store, AGENT);
+  await merge(learning, { runId: "run_q", files: flow("x", "QWORD") });
+  // run_r adds a file of its own to x (a path only it wrote), a person edits it (its writer still run_r), and run_s's
+  // merge gives x without it: run_s's save names it among the files it changed (deleted).
+  await merge(learning, { runId: "run_r", files: [...flow("x", "RWORD"), { path: "workflows/x/rsecretpath.md", text: "RWORD notes" }] });
+  await writeLearning(learning, async () => ({ result: null, change: { by: { person: "edited", file: "workflows/x/rsecretpath.md" }, writes: [{ path: "workflows/x/rsecretpath.md", text: "edited RWORD notes" }] } }));
+  await merge(learning, { runId: "run_s", files: flow("x", "SWORD") });
+  assert.ok((await store.learning.saves(AGENT)).saves[0].files.includes("workflows/x/rsecretpath.md"), "run_s's save names the path it deleted");
+  assert.match(await everything(store), /rsecretpath/);
+  await store.learning.purgeRun(AGENT, "run_r");
+  assert.doesNotMatch(await everything(store), /RWORD|rsecretpath/, "no save, file list or reason names the purged run's path");
+  assert.match((await readAt(learning, (await readView(learning)).main)).text("workflows/x/README.md"), /SWORD/, "run_s's own change stays");
+  assert.deepEqual((await store.learning.saves(AGENT)).saves.map((save) => [save.by.run ?? save.by.person, save.files]), [["run_s", ["workflows/x/README.md", "workflows/x/workflow.json"]], ["run_q", ["workflows/x/README.md", "workflows/x/workflow.json"]]]);
+});
+
+test("a purge that changed a row is a host save (kind purged) at the newest version plus one, which the log never shows; one that changed nothing adds none", async (t) => {
+  const { store } = await storeOn(t);
+  const learning = learningOf(store, AGENT);
+  await merge(learning, { runId: "run_q", files: flow("x", "QWORD") });
+  await merge(learning, { runId: "run_r", files: flow("y", "RWORD") });
+  const before = (await store.learning.newest(AGENT)).save;
+  await store.learning.purgeRun(AGENT, "run_r");
+  const after = (await store.learning.newest(AGENT)).save;
+  assert.deepEqual([after.version, after.by], [before.version + 1, { host: "purged" }]);
+  await store.learning.purgeRun(AGENT, "run_r");
+  await store.learning.purgeRun(AGENT, "run_never");
+  assert.equal((await store.learning.newest(AGENT)).save.version, after.version, "a second purge, and a purge of a run that learned nothing, add no save");
+  assert.deepEqual((await store.learning.saves(AGENT)).saves.map((save) => save.by.run ?? save.by.host), ["run_q"], "the log shows neither the purged run's save nor the purge's");
+});
+
+// A purge is a save: a host save at the agent's newest version + 1 in the purge's own transaction, so a save computed
+// before the purge (its base read before it) is stale and computed again on the rewritten rows. Driven in order, never
+// by timing: the save is prepared, the purge commits, then the save is submitted.
+test("a save prepared before a purge and submitted after it is stale: it never writes the purged run's text back", async (t) => {
+  const { store } = await storeOn(t);
+  const learning = learningOf(store, AGENT);
+  await merge(learning, { runId: "run_q", files: flow("x", "QWORD") });
+  await merge(learning, { runId: "run_r", files: flow("x", "RWORD") });
+  // The store's own compare and swap: a save whose base is the version read before the purge.
+  const before = await store.learning.newest(AGENT);
+  const json = before.items.find((item) => item.kind === "workflow" && item.name === "x");
+  await store.learning.purgeRun(AGENT, "run_r");
+  const late = await store.learning.save(AGENT, { base: before.save.version, by: { person: "edited", file: "workflows/x/README.md" }, reason: "edited by a person", files: ["workflows/x/README.md"], items: [{ ...json, body: json.body.replace("RWORD description", "RWORD edited"), change: "edited", person: true, pos: 0 }] });
+  assert.doesNotMatch(await everything(store), /RWORD/, "the purged run's text is not written back");
+  assert.ok("stale" in late, JSON.stringify(late));
+  // A person's write through writeLearning, read before the purge (its compute runs once on the version read before it):
+  // computed again on the rewritten rows.
+  await merge(learning, { runId: "run_s", files: flow("x", "SWORD") });
+  let purged = false;
+  const { saved } = await writeLearning(learning, async (read) => {
+    if (!purged) {
+      purged = true;
+      await store.learning.purgeRun(AGENT, "run_s");
+    }
+    const text = read.text("workflows/x/README.md");
+    return { result: null, change: { by: { person: "edited", file: "workflows/x/README.md" }, writes: [{ path: "workflows/x/README.md", text: text.replace(/description: (\w+) description/, "description: $1 edited description") }] } };
+  });
+  assert.doesNotMatch(await everything(store), /SWORD/, "the write read before the purge is computed again after it");
+  assert.match((await readAt(learning, saved.id)).text("workflows/x/README.md"), /QWORD edited description/);
+});
+
+// A run live across a purge: its seed was read before the purge rewrote it, so its draft can hold the purged run's bytes
+// as its own (a file given unchanged from the seed). Its merge is refused whole, nothing written.
+test("a run seeded before a purge has its merge refused: the purged run's bytes are never saved as its own", async (t) => {
+  const { store } = await storeOn(t);
+  const learning = learningOf(store, AGENT);
+  const created = await merge(learning, { runId: "run_r", files: flow("x", "RWORD") });
+  // run_s was seeded at run_r's save: its sandbox holds run_r's README.md, which its draft gives back unchanged.
+  const seed = created.commit;
+  await store.learning.purgeRun(AGENT, "run_r");
+  const [readme] = flow("x", "RWORD");
+  const done = await learningCommit(learning, { runId: "run_s", reason: "run_s reason words", seed, mustHold: seed, files: [readme, { path: "workflows/x/workflow.json", text: JSON.stringify({ v: 2, name: "x", word: "SWORD" }) }], correction: "Use the SWORD rule." });
+  assert.doesNotMatch(await everything(store), /RWORD/, "run_r's README is not saved as run_s's");
+  assert.deepEqual([done.ok, done.reason], [false, "purged"], JSON.stringify(done));
+  assert.doesNotMatch(await everything(store), /SWORD/, "nothing of the refused merge is written");
+  assert.equal(await runMergeOf(learning, "run_s"), undefined);
+  // A run seeded after the purge merges.
+  const after = (await store.learning.newest(AGENT)).save.id;
+  const later = await learningCommit(learning, { runId: "run_t", reason: "run_t reason words", seed: after, files: flow("x", "TWORD") });
+  assert.equal(later.ok, true, JSON.stringify(later));
+});
+
+// The lock order a reset and a run's purge take: the agent's learning lock, then its records' lock. On Postgres a records
+// write in flight (its transaction holding the records' lock, its row written, not yet committed) is in before the
+// reset's or the purge's delete, never left after it. Driven by the locks, never by timing: the reset or purge is seen
+// waiting in pg_locks before the write commits.
+for (const [what, drop] of [["a reset", (store) => store.learning.reset(AGENT)], ["a run's purge", (store) => store.learning.purgeRun(AGENT, "run_r")]]) test(`on Postgres, ${what} waits for a records write that holds the agent's records lock, then deletes what it wrote: no record of what it took outlives it`, postgresOnly("advisory locks"), async (t) => {
+  const { store, file } = await storeOn(t);
+  const schema = schemaOf(file);
+  await merge(learningOf(store, AGENT), { runId: "run_r", files: flow("x", "RWORD") });
+  const digest = (await store.learning.versions(AGENT, "workflow", "x"))[0].digest;
+  const [writer, watcher] = [await client(schema), await client(schema)];
+  t.after(() => Promise.all([writer.end(), watcher.end()]));
+  await writer.query("BEGIN");
+  await writer.query("SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))", [schema, `learning.records:${AGENT}`]);
+  await writer.query("INSERT INTO learning_records (agent_id, kind, seq, run_id, workflow, digest, data, at) VALUES ($1, 'promotion', 1, NULL, 'x', $2, '{}', 0)", [AGENT, digest]);
+  let done = false;
+  const dropping = drop(store).then(() => { done = true; });
+  const waiting = async () => (await watcher.query("SELECT COUNT(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND classid = hashtext($1)::oid AND objid = hashtext($2)::oid AND objsubid = 2", [schema, `learning.records:${AGENT}`])).rows[0].n;
+  while (!done && (await waiting()) === 0) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(done, false, `${what} waits on the records' lock`);
+  await writer.query("COMMIT");
+  await dropping;
+  assert.deepEqual(await store.learning.records(AGENT, "promotion"), [], "the write that held the lock is in before the delete, and goes with it");
 });

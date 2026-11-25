@@ -249,6 +249,9 @@ export type LearningWrite = {
   deletes?: readonly string[];
   same?: readonly { at: string; path: string }[];
   seed?: string;
+  /** The saves the write's text was read at (a run's seed, a revised workflow's base): refused whole when a run's purge
+   *  came after one (Store.learning save's `readAt`). */
+  readAt?: readonly string[];
 };
 
 /** A write that kept moving under its compute, WRITE_TRIES times: routes answer 503. */
@@ -263,11 +266,14 @@ export class LearningRefused extends Error {
   readonly same: string[];
   /** A run's merge whose seed the agent's learning no longer holds: its learning was reset. */
   readonly seed: string | undefined;
-  constructor(refused: { same: string[]; seed?: string }) {
-    super(`the agent's learning refused the write: ${[...(refused.seed !== undefined ? [`the run's seed ${refused.seed} is not held`] : []), ...refused.same.map((path) => `${path} changed`)].join(", ")}`);
+  /** A run's merge read at a save (`purged`, its id) that a run's purge came after: purged since its seed. */
+  readonly purged: string | undefined;
+  constructor(refused: { same: string[]; seed?: string; purged?: string }) {
+    super(`the agent's learning refused the write: ${[...(refused.seed !== undefined ? [`the run's seed ${refused.seed} is not held`] : []), ...(refused.purged !== undefined ? [`a run's purge came after save ${refused.purged}, which it was read at`] : []), ...refused.same.map((path) => `${path} changed`)].join(", ")}`);
     this.name = "LearningRefused";
     this.same = refused.same;
     this.seed = refused.seed;
+    this.purged = refused.purged;
   }
 }
 /** A run's round that merged already (another call: a reclaimed run racing its first claim): its save. */
@@ -356,8 +362,9 @@ function itemsFor(at: LearningAt | undefined, read: LearningRead, change: Learni
 /**
  * A write to the agent's learning: `compute` reads it at its newest save and says what to write, or nothing (its result
  * stands alone). Saved by compare and swap on that version; another write landing first computes it again on the newest
- * (WRITE_TRIES in all, then LearningBusy). Throws LearningRefused when a precondition fails, LearningMerged when a run's
- * round merged already.
+ * (WRITE_TRIES in all, then LearningBusy). Throws LearningRefused when a precondition fails (a file changed since it was
+ * read, a seed a reset removed, a run's purge since a save it was read at), LearningMerged when a run's round merged
+ * already.
  */
 export async function writeLearning<T>(learning: AgentLearning, compute: (folder: LearningRead) => Promise<{ result: T; change?: LearningWrite }>, maxTries = WRITE_TRIES): Promise<{ result: T; saved?: LearningSave }> {
   const { rows, agentId } = learning;
@@ -385,10 +392,12 @@ export async function writeLearning<T>(learning: AgentLearning, compute: (folder
       reason: "run" in by ? by.reason : `${by.person} by a person: ${by.file}`,
       ...("run" in by ? { mergeKey: runDiffKey(by.run, by.round) } : {}),
       ...(change.seed !== undefined ? { seed: change.seed } : {}),
+      ...(change.readAt?.length ? { readAt: change.readAt } : {}),
     });
     if ("saved" in done) return { result: out.result, saved: done.saved };
     if ("already" in done) throw new LearningMerged(done.already);
     if ("refused" in done) throw new LearningRefused({ same: [], seed: done.refused.seed });
+    if ("purged" in done) throw new LearningRefused({ same: [], purged: done.purged.readAt });
   }
   throw new LearningBusy();
 }

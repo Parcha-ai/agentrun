@@ -124,7 +124,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type AgentRow, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type AgentRow, LearningRecordRefused, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { agentDeleting, answerOf, logged, purgedAgent } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
@@ -5539,7 +5539,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const kept = await runWrite(row.agentId, row.id, async () => {
           // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
           // Its feedback round is a turn with no caller's model key: on the server's key for the run's route, else not opened.
-          const graded = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
+          // A purge of the run from another process, past the check above: the grade's write refuses it in its own
+          // transaction (Store.learning changeRecords), nothing written, and it answers as a purged run's grade does.
+          const graded = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })).catch(async (error) => {
+            const now = error instanceof LearningRecordRefused ? await store.runs.get(row.id) : undefined;
+            throw now && now.purgedAt !== null ? purgedRun(now) : error;
+          }));
           // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
           // reads it with the shadows'. A row not written now is logged, never the grade refused.
           const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));

@@ -36,7 +36,7 @@ export interface StoreSchemaReport {
 }
 
 /** The SQLite store's versions the server upgrades in place (sqlite/store.ts openSqliteStore). */
-const SQLITE_UPGRADES = new Set([11, 12, 13, 14]);
+const SQLITE_UPGRADES = new Set([11, 12, 13, 14, 15]);
 
 /** What a build that knows `build` does with a store at `state`, on `kind`. `earlier`: the data directory holds an earlier
  *  version's files (SQLite only), which this build's server refuses to start beside (StoreFromEarlierVersion). `awaits`:

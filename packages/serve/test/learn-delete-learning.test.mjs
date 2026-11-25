@@ -23,8 +23,10 @@ async function learned(t) {
   for (const agentId of ["agent-1", "agent-10"]) {
     await store.agents.create({ id: agentId, name: agentId }, { id: `rev-${agentId}`, kind: "agentic", body: { instructions: "Go.", learning: true } });
     await putLearning(store, agentId, { "corrections.md": "Answer in one line.", "workflows/answer/workflow.json": "{}", "workflows/answer/README.md": "---\nname: answer\ndescription: Answers\n---\n" }, { runId: "run-1" });
-    await addAuditLines(store.learning, agentId, [ROW]);
-    await store.learning.addRecord(agentId, "promotion", { runId: null, workflow: PROMOTION.workflow, digest: PROMOTION.digest, data: PROMOTION });
+    // Its records name the digest the saved version holds (the store writes no record of an unheld one).
+    const digest = (await store.learning.versions(agentId, "workflow", "answer"))[0].digest;
+    await addAuditLines(store.learning, agentId, [{ ...ROW, digest }]);
+    await store.learning.addRecord(agentId, "promotion", { runId: null, workflow: PROMOTION.workflow, digest, data: { ...PROMOTION, digest } });
     await store.learning.addRecord(agentId, "grade", { runId: "run-1", workflow: null, digest: null, data: GRADE });
   }
   return { store };

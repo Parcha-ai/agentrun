@@ -40,9 +40,12 @@
 // such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). Version 14 keeps when a run or
 // an agent was purged (runs.purged_at, agents.purged_at; DELETE /runs/{id} and /agents/{id}, agent-delete.ts): its row is
 // then a tombstone, its content gone and its cost kept. Version 15 keeps the disk a run's launch named as its own
-// (runs.disk; a run on one learns nothing, learn/learning-of.ts). The server upgrades these in place at its open
-// (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13, then diskUpgrade from 14); a runner waits for it.
-export const SCHEMA_VERSION = 15;
+// (runs.disk; a run on one learns nothing, learn/learning-of.ts). Version 16 keeps each agent's learning as rows
+// (LEARNING_ROWS) in place of a git folder and settings keys: a runner of an earlier build would still write learning
+// where this server neither reads nor purges it, so it must not open the store (it opens only its own version). The
+// server upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13,
+// diskUpgrade from 14, then learningRowsUpgrade from 15); a runner of this build waits for it.
+export const SCHEMA_VERSION = 16;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -82,6 +85,11 @@ export function diskUpgrade(runColumns: ReadonlySet<string>): readonly string[] 
     "UPDATE runs SET disk = (SELECT json_extract(body, '$.archil_disk.disk_id') FROM run_launch WHERE run_launch.run_id = runs.id AND json_extract(body, '$.archil_disk.kind') = 'launch')",
     "UPDATE store_meta SET schema_version = 15 WHERE singleton = 1",
   ];
+}
+/** Version 15 → 16 on SQLite (the server's open, sqlite/store.ts): each agent's learning as rows (LEARNING_ROWS, made at
+ *  the same open) and the version, so no runner of an earlier build (which knows 15) opens the store again. */
+export function learningRowsUpgrade(): readonly string[] {
+  return [...LEARNING_ROWS, "UPDATE store_meta SET schema_version = 16 WHERE singleton = 1"];
 }
 /** A trigger's package mark (TriggerRow.templateId): the id of the template package whose apply made or last kept it, null
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as

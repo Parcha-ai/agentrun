@@ -78,8 +78,8 @@ async function purgedRun(store, id, launch) {
   await store.runs.purge(id, KEPT);
 }
 
-test("a store as the run purge left it (version 14, no runs.disk) comes to 15 at its server's open, never at a runner's: each run's disk from its launch, a run purged before as the default disk's", async (t) => {
-  assert.equal(SCHEMA_VERSION, 15);
+test("a store as the run purge left it (version 14, no runs.disk) comes to this version (16) at its server's open, never at a runner's: each run's disk from its launch, a run purged before as the default disk's", async (t) => {
+  assert.equal(SCHEMA_VERSION, 16);
   const dir = scratch("agentrun-per-disk-upgrade-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const first = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -106,17 +106,17 @@ test("a store as the run purge left it (version 14, no runs.disk) comes to 15 at
       db.close();
     }
   };
-  await assert.rejects(openSqliteStore({ dataDir: dir, role: "runner" }), /Start the AgentRun server to bring this store from version 14 to 15 before opening a runner/, "a runner, whose learning reads runs by disk, waits for the server");
+  await assert.rejects(openSqliteStore({ dataDir: dir, role: "runner" }), /Start the AgentRun server to bring this store from version 14 to 16 before opening a runner/, "a runner, whose learning reads runs by disk, waits for the server");
   assert.equal(version(), 14, "a runner's refusal changes nothing");
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   try {
-    assert.equal(version(), 15);
+    assert.equal(version(), 16);
     assert.deepEqual(await Promise.all(["on-a", "on-own", "on-none", "purged-b"].map(async (id) => (await store.runs.get(id)).disk)), ["disk-a", null, null, null], "each run's disk from its launch: a named one by its id, the agent's own or none as the default; a purged run, its launch gone, the default's");
   } finally {
     await store.close();
   }
   await (await openSqliteStore({ dataDir: dir, role: "server" })).close();
-  assert.equal(version(), 15, "a second open changes nothing");
+  assert.equal(version(), 16, "a second open changes nothing");
   await (await openSqliteStore({ dataDir: dir, role: "runner" })).close();
 });
 

@@ -740,7 +740,10 @@ test("a run's purge removes what its agent's learning keeps of it (its feedback 
 
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
   assert.equal((await learningAt(store, "calc")).text("corrections.md"), "- Answer in words.\n", "its line leaves the learning, another run's stays");
-  assert.equal((await store.learning.newest("calc")).save.id, main, "no save is made: its line leaves every version");
+  // The purge is the host's save (kind purged, no words) after the newest, which the log never shows.
+  const after = (await store.learning.newest("calc")).save;
+  assert.notEqual(after.id, main);
+  assert.deepEqual(after.by, { host: "purged" }, "the purge is a save of its own: its line leaves every version");
   assert.doesNotMatch(await learningText(store, "calc"), /six times seven/, "no row of the agent's learning holds its line");
   assert.equal(await runMergeOf(learningOf(store, "calc"), gone), undefined, "its merge's diff is gone");
   assert.deepEqual((await store.learning.saveOf("calc", { id: merge }))?.by, { host: "purged" }, "its merge stays a save, the host's, with no text");
@@ -830,10 +833,11 @@ test("a run's purge scrubs its text from its agent's learning rows: its workflow
 
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
   // a. No row of the agent's learning holds the marker (every version of every item, every save, diff and record); the
-  //    other run's line stays; no save is made.
+  //    other run's line stays; the purge's own save, the host's with no words, is the newest.
   const scrubbed = await heldOf(store, "keeper");
   assert.ok(!scrubbed.text.includes(mark), "no learning row holds the marker");
-  assert.equal(scrubbed.main, main, "no save is made");
+  assert.notEqual(scrubbed.main, main);
+  assert.deepEqual((await store.learning.newest("keeper")).save.by, { host: "purged" }, "the purge is a save of its own");
   const now = await learningAt(store, "keeper");
   assert.deepEqual(await linesOf(store, "keeper"), ["- Answer in whole numbers."]);
   // b. Its merges' diffs are gone, round 1's and round 7's.
