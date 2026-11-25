@@ -592,15 +592,21 @@ export class McpServersOverStore {
     const removed = expected === undefined ? await removeMcpServer(this.store, this.sealKey, name)
       : expected === null ? undefined : await removeMcpServerIfCredential(this.store, this.sealKey, name, expected, byToken ? { record: mcpSourceKey(name) } : undefined);
     if (expected !== undefined && !removed) changedMeanwhile(name, undefined);
-    // Its record goes with it, unless a server saved again under the name meanwhile wrote its own: one left behind is
-    // never read for another row (mcp-sources.ts), so a server saved again says what it is afresh.
-    if (!recordedForAnother(await this.store.settings.get(mcpSourceKey(name)), row.createdAt)) await this.store.settings.remove(mcpSourceKey(name));
-    if (!recordedForAnother(await this.store.settings.get(composioAccountKey(name)), row.createdAt)) await this.store.settings.remove(composioAccountKey(name));
+    // Its records go with it, each only while it is still the one read here, compared in the deleting statement
+    // (Settings.removeIf): one a server saved again under the name wrote meanwhile stays (the token's first save writes its
+    // marked record with its row, so the row it saved never reads as the owner's). One left behind is never read for
+    // another row (mcp-sources.ts), so a server saved again says what it is afresh.
+    const drop = async (key: string) => {
+      const recorded = await this.store.settings.get(key);
+      if (recorded !== undefined && !recordedForAnother(recorded, row.createdAt)) await this.store.settings.removeIf(key, recorded);
+    };
+    await drop(mcpSourceKey(name));
+    await drop(composioAccountKey(name));
     // What it made at Composio that another saved server uses stays, that one's now (its record rewritten to own it); the
     // rest the delete route removes there.
     let cleanup: Cleanup | undefined;
     if (stands) {
-      if (!recordedForAnother(await this.store.settings.get(composioMadeKey(name)), row.createdAt)) await this.store.settings.remove(composioMadeKey(name));
+      await drop(composioMadeKey(name));
       const others = (await this.composioRecords()).filter(([other]) => other !== name);
       const done = cleanupOf(stands, others.map(([other, record]): [string, ComposioMade] => [other, record]));
       await this.handOver(others, done.handover);
