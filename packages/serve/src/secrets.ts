@@ -297,6 +297,14 @@ const URL_HEAD = /(?:[A-Za-z][\w+.-]{0,31}:)?\/\//y;
 const MAX_READINGS = 16;
 const READINGS_BUDGET = 4096;
 
+/** How many characters of URL queries one header value's read (innerCredentials) takes after the first query it reads:
+ *  a value of URLs nested each in the last's query gives each a query running to the value's end, and reading every one
+ *  would hold their count times the value's length. The pair read (pairValues) still covers every query's text. */
+const QUERY_BUDGET = 4096;
+
+/** The URL queries one header value's read has taken (`spans`, each its `from to`) and the QUERY_BUDGET characters left. */
+type QueriesRead = { spans: Set<string>; left: number };
+
 /** A URL as RFC 3986 reads it, `text` from `start` (its scheme, or the `//` of a scheme-relative one) to `end`: its
  *  authority, up to the first `/`, `?` or `#`; the readings of its userinfo, the RFC's first (everything before the
  *  authority's last `@`, so a password's `;`, `&`, `=`, `,`, `'` or raw `@` stays in it), then, when the authority holds
@@ -339,9 +347,9 @@ const asParsed = (part: string): string => {
  *  reading at any length and each shorter reading's only at MIN_SECRET or more (so a short piece of a password, `pa` of
  *  `pa@ss...`, cuts no ordinary word), and the value of each query parameter whose name says it is one
  *  (credentialNamed), the query split at `&` alone and again at `&` and `;`, as written and decoded; none when no URL
- *  starts at `start`. A
- *  query already in `queriesRead` (several URLs nested in one share it) is not read again. */
-const urlCredentials = (text: string, start = 0, end = text.length, queriesRead = new Set<string>()): string[] => {
+ *  starts at `start`. A query already in `queriesRead` (several URLs nested in one share it) is not read again, and
+ *  after the first one read, one is read only while QUERY_BUDGET has room for all of it. */
+const urlCredentials = (text: string, start = 0, end = text.length, queriesRead: QueriesRead = { spans: new Set(), left: QUERY_BUDGET }): string[] => {
   const url = urlParts(text, start, end);
   if (!url) return [];
   const userinfo = url.readings.flatMap((reading, at) => {
@@ -350,8 +358,13 @@ const urlCredentials = (text: string, start = 0, end = text.length, queriesRead 
     return at === 0 ? parts : parts.filter((part) => part.replace(/\s+/g, "").length >= MIN_SECRET);
   });
   const [from, to] = url.query;
-  if (from === to || queriesRead.has(`${from} ${to}`)) return userinfo;
-  queriesRead.add(`${from} ${to}`);
+  const span = `${from} ${to}`;
+  if (from === to || queriesRead.spans.has(span)) return userinfo;
+  if (queriesRead.spans.size > 0) {
+    if (to - from > queriesRead.left) return userinfo;
+    queriesRead.left -= to - from;
+  }
+  queriesRead.spans.add(span);
   // Read split at `&` alone (a WHATWG parser's reading, a value's raw `;` kept), and each `&` piece holding a `;` split
   // at it too (a path parameter's or a cookie's reading): both, so a key with a `;` in it is held whole and a pair after
   // a `;` alone. A query writes a space as `+`; a user and password do not.
@@ -436,7 +449,7 @@ const pairValues = (text: string, breaks: RegExp): string[] =>
  *  no credential (`theme=dark`) is not taken. */
 const innerCredentials = (value: string): string[] => {
   const read = (text: string): string[] => {
-    const queriesRead = new Set<string>();
+    const queriesRead: QueriesRead = { spans: new Set(), left: QUERY_BUDGET };
     return [
       ...pairValues(text, PAIR_BREAK),
       ...pairValues(text, PIECE_BREAK),

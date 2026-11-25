@@ -820,6 +820,17 @@ test("an OTLP endpoint's or header value's credential with a raw ; in it is held
   assert.deepEqual(missed, [], "every credential with a ; is held whole and by its pairs, and cut with nothing after the ; left; region and the ordinary words are not");
 });
 
+test("after a header value's first URL query, a later URL's query is read while 4,096 characters of them in all fit: one that fits has its + read as a space, and a longer one's key is still held as written by the pair read", () => {
+  // A key of `length` characters with a + in it; the second URL's query is `api_key=` and the key.
+  const key = (length) => `dummy+key-${"x".repeat(length - 10)}`;
+  const envOf = (query) => ({ ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Upstream=https://a.invalid/?region=us-east-1 https://b.invalid/?api_key=${key(query - 8)}` });
+  const fits = runnerSecrets(envOf(4096));
+  assert.equal(fits.includes(key(4088).replace("+", " ")), true, "a later query of 4,096 characters is read, its + as a space");
+  const over = runnerSecrets(envOf(4097));
+  assert.equal(over.includes(key(4089)), true, "a later query over 4,096 characters still has its key held as written (the pair read)");
+  assert.equal(over.includes(key(4089).replace("+", " ")), false, "a later query over 4,096 characters is not read as a query");
+});
+
 test("an OTLP header value of 16 KB holding 8,000 @, 4,000 URL starts, or 1,000 URLs each in the last's query, starts the tracer and cuts an [otel] line in well under a second, and still holds its URL's user as RFC 3986 reads it (before the last @)", () => {
   const user = `${"a@".repeat(7999)}a`;
   const header = `X-Upstream=https://${user}@relay.invalid`;
