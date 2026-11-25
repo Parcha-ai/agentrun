@@ -17,7 +17,7 @@ const ORIGIN = "https://run.test";
 const deps = { origin: ORIGIN, serverSecrets: () => [] };
 const ROOT = 1;
 /** A run that started no learning work (learning-work.ts): what its caller may revoke its key on at once. */
-const NO_WORK = { state: "none", runs: [], ended_at: null };
+const NO_WORK = { state: "none", runs: [], ended_at: null, deadline_at: null };
 
 /** An agentic agent with one revision. */
 async function agent(store, { kind = "agentic" } = {}) {

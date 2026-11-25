@@ -12,6 +12,9 @@
 //   - a purge of the run while its replays run cancels them and erases their copies before it answers: no child left
 //     running, no copy in the store's bytes, nothing spent after it;
 //   - a cap that leaves too little drops the check (`no_budget`): no replay, nothing reserved, the run reads `ended`;
+//   - `deadline_at` is set while the run reads running (each child's start + LEARNING_CHILD_MS, the latest) and null once
+//     it ended; a child still at work at its deadline is cancelled by its runner (on the runner's injected clock), as a
+//     person's cancel is: it ends, nothing more reaches the gateway, and the run reads ended;
 //   - the key is in no log line, and nowhere in the store's bytes in the clear.
 // The agent's runs are real runs of the store on a pi run of the faux gateway, its route reading the run's model env.
 import assert from "node:assert/strict";
@@ -37,6 +40,7 @@ const { viewOverStore } = await import("../dist/store-view.js");
 const { openRunLaunch, sealRunLaunch } = await import("../dist/store/seal.js");
 const { runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { purgeRun } = await import("../dist/agent-delete.js");
+const { LEARNING_CHILD_MS } = await import("../dist/learning-work.js");
 
 const SEAL_KEY = Buffer.alloc(32, 9);
 const MODEL = "claude-sonnet-5-5";
@@ -113,8 +117,8 @@ async function holdingFront(t, origin, held) {
 /** An agent of `learning` with `prior` earlier runs of its own, on no key (the server's path), and `answer` landed in its
  *  learning folder (`promoted`: as its check's record promotes it, so it serves first). The runner's env names the
  *  gateway and holds no key of its own; its route reads the key the claim's model env holds. `hold`: requests whose body
- *  it matches wait until `front.release()`. */
-async function world(t, { learning = true, prior = 0, promoted = false, hold } = {}) {
+ *  it matches wait until `front.release()`. `learningClock`: the runner's clock for its learning children's deadlines. */
+async function world(t, { learning = true, prior = 0, promoted = false, hold, learningClock } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-keyed-learning-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -140,7 +144,7 @@ async function world(t, { learning = true, prior = 0, promoted = false, hold } =
   const logs = [];
   const deps = { env: { AGENT_MODEL_BASE_URL: origin }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
-  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
+  runner = startRunner({ store, name: "runner-a", ...TIMING, ...(learningClock ? { learningClock } : {}), createLoop: createAdapterLoop(specOf) });
   const ended = (id) => until(async () => {
     const row = await server.runs.get(id);
     return FINAL.includes(row?.state) && row.runner === null && row;
@@ -189,6 +193,9 @@ test("a keyed run's new workflow is checked at its end on the run's own key: eac
   const ids = replays.map((row) => row.id);
   const running = (await w.view("run-1")).learning_work;
   assert.deepEqual([running.state, [...running.runs].sort(), running.ended_at], ["running", [...ids].sort(), null], JSON.stringify(running));
+  // Its deadline: the last replay's start + LEARNING_CHILD_MS, so between the run's start and now, that bound on.
+  const deadline = Date.parse(running.deadline_at) - LEARNING_CHILD_MS;
+  assert.ok(deadline >= parent.startedAt && deadline <= Date.now(), `deadline_at is a replay's start + LEARNING_CHILD_MS: ${JSON.stringify(running)}`);
   for (const id of ids) {
     const sealed = (await w.server.runs.launch(id)).sealed;
     assert.deepEqual(openRunLaunch(SEAL_KEY, id, sealed)?.model, { key: RUN_KEY, origin: new URL(w.front.url).origin }, "the run's key, bound to the gateway's origin, sealed for the replay");
@@ -208,7 +215,7 @@ test("a keyed run's new workflow is checked at its end on the run's own key: eac
   assert.deepEqual([...new Set(nodes.map(keyOf))], [RUN_KEY], "the replays ran on the run's own key");
   const done = (await w.view("run-1")).learning_work;
   const lastEnd = Math.max(...(await Promise.all(ids.map((id) => w.server.runs.get(id)))).map((row) => row.endedAt));
-  assert.deepEqual(done, { state: "ended", runs: [], ended_at: new Date(lastEnd).toISOString() }, "ended at the last child's end");
+  assert.deepEqual(done, { state: "ended", runs: [], ended_at: new Date(lastEnd).toISOString(), deadline_at: null }, "ended at the last child's end, its deadline gone");
   assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "replaying", "the check's record: decided at a later claim");
   // What the replays spent on the run's key is the run's own learning, as its shadow's would be: its cost.learning_usd
   // carries it (its part check_usd), and its all-in with it.
@@ -258,6 +265,41 @@ test("a purge of a keyed run while its check's replays run cancels them and eras
   assert.deepEqual(await Promise.all(ids.map(async (id) => (await w.server.runs.get(id)).costUsd)), booked, "no spend booked after the purge");
 });
 
+test("a learning child still at work at its deadline (its start + LEARNING_CHILD_MS, on the runner's clock) is cancelled by its runner as a person's cancel is: it ends cancelled, nothing more reaches the gateway, its spend booked once, and the run reads ended", { timeout: 240_000 }, async (t) => {
+  // The runner's clock for learning deadlines, injected: real time until the test moves it past every replay's deadline.
+  let ahead = 0;
+  const w = await world(t, { prior: 6, hold: (body) => body.includes('"name":"submit"'), learningClock: () => Date.now() + ahead });
+  await w.keyed("run-1", "What is six times seven", 5);
+  await w.ended("run-1");
+  const replays = await until(async () => {
+    const rows = await w.children("replay");
+    return rows.length === 6 && w.front.waiting.size === 6 && rows;
+  }, "six replay runs, each held at its node's request");
+  const ids = replays.map((row) => row.id);
+  const running = (await w.view("run-1")).learning_work;
+  assert.equal(running.state, "running");
+  assert.ok(Date.parse(running.deadline_at) > Date.now(), `deadline_at set, ahead: ${JSON.stringify(running)}`);
+  for (const id of ids) {
+    const { state } = await w.server.runs.get(id);
+    assert.ok(state === "running" || state === "queued", `${id} still at work before its deadline: ${state}`);
+  }
+  const nodes = () => w.gw.requests.filter((request) => offers(request.body, "submit")).length;
+  assert.equal(nodes(), 0, "every node request held at the front: none reached the gateway");
+  // Past every replay's deadline on the runner's clock: each is cancelled, the held request never sent on.
+  ahead = LEARNING_CHILD_MS + 60_000;
+  for (const id of ids) {
+    const row = await w.ended(id);
+    assert.deepEqual([row.state, row.outcome], ["stopped", "cancelled"], `replay ${id} cancelled at its deadline: ${JSON.stringify([row.state, row.outcome, row.summary])}`);
+    assert.equal((await w.server.runs.launch(id)).sealed, null, `replay ${id}'s copy erased by the write that ends it`);
+  }
+  const booked = await Promise.all(ids.map(async (id) => (await w.server.runs.get(id)).costUsd));
+  const work = (await w.view("run-1")).learning_work;
+  assert.deepEqual([work.state, work.runs, work.deadline_at], ["ended", [], null], JSON.stringify(work));
+  assert.equal(nodes(), 0, "no node request of a cancelled replay reached the gateway");
+  assert.deepEqual(await Promise.all(ids.map(async (id) => (await w.server.runs.get(id)).costUsd)), booked, "each replay's spend booked once, at its end");
+  await assertNowhere(w);
+});
+
 test("a keyed run its promoted workflow served gets its shadow audit on the run's own key: the shadow's copy sealed for it alone, erased at its end; the run reads ended once it ends", { timeout: 240_000 }, async (t) => {
   const w = await world(t, { learning: { audit_every: 1 }, promoted: true, hold: (body) => !body.includes('"name":"submit"') });
   const before = w.gw.requests.length;
@@ -271,7 +313,9 @@ test("a keyed run its promoted workflow served gets its shadow audit on the run'
   const sealed = (await w.server.runs.launch(shadow.id)).sealed;
   assert.equal(openRunLaunch(SEAL_KEY, shadow.id, sealed)?.model?.key, RUN_KEY, "the shadow's copy of the run's key");
   assert.equal(openRunLaunch(SEAL_KEY, "served-1", sealed), undefined, "sealed for the shadow alone");
-  assert.deepEqual((await w.view("served-1")).learning_work, { state: "running", runs: [shadow.id], ended_at: null });
+  const going = (await w.view("served-1")).learning_work;
+  assert.deepEqual([going.state, going.runs, going.ended_at], ["running", [shadow.id], null], JSON.stringify(going));
+  assert.ok(Date.parse(going.deadline_at) - LEARNING_CHILD_MS >= served.startedAt, `the shadow's start + LEARNING_CHILD_MS: ${JSON.stringify(going)}`);
   w.front.release();
   const ended = await w.ended(shadow.id);
   assert.deepEqual([ended.state, ended.metrics?.path], ["ended", "audit"], JSON.stringify(ended));
@@ -279,7 +323,7 @@ test("a keyed run its promoted workflow served gets its shadow audit on the run'
   const asked = w.gw.requests.slice(before);
   assert.ok(asked.some((request) => !offers(request.body, "submit")), "the shadow asked the agent");
   assert.deepEqual([...new Set(asked.map(keyOf))], [RUN_KEY], "the served run and its shadow both ran on the run's own key");
-  assert.deepEqual((await w.view("served-1")).learning_work, { state: "ended", runs: [], ended_at: new Date(ended.endedAt).toISOString() });
+  assert.deepEqual((await w.view("served-1")).learning_work, { state: "ended", runs: [], ended_at: new Date(ended.endedAt).toISOString(), deadline_at: null });
   await assertNowhere(w);
 });
 
