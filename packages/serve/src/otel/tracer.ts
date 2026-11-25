@@ -12,8 +12,11 @@
 //  - one trace per run: its id is the run id's hash, so every claim of a run (a resume, a takeover) is in one trace, and
 //    the sampler (always parent-based, its root's ratio from OTEL_TRACES_SAMPLER/_ARG) decides once per run, never
 //    splitting a run's spans;
-//  - an export that fails or throws is one log line (cut by the runner's redactor, which holds each OTLP header value
-//    of 8 characters or more, then of each header value at any length: saidOf), and its spans are dropped: never the run's failure. A run's end never waits on an export: the batch processor sends
+//  - tracing on says so once, as it is made (at the runner's start), with the origin of the endpoint its spans go to,
+//    never its user, password, path, query or fragment (shownEndpoint);
+//  - an export that fails or throws is a log line with the endpoint's origin and the time, then at most one a minute counting
+//    the failures it did not say (safeExporter), each cut by the runner's redactor, which holds each OTLP header value
+//    of 8 characters or more, then of each header value at any length (saidOf), and its spans are dropped: never the run's failure. A run's end never waits on an export: the batch processor sends
 //    in the background, a run's process never flushes, and only the runner's close flushes once (flushTraces), for at
 //    most FLUSH_MS.
 import { createHash, randomBytes } from "node:crypto";
@@ -24,7 +27,10 @@ import { keyBase } from "@parcha/agentrun-computer";
 import type { Ended, ModelUsage } from "@parcha/agentrun-kernel";
 import { runnerSecrets, secretRedactor } from "../runner/redact.js";
 import { keyValues, otlpHeaderCut } from "../secrets.js";
-import { agentAttributes, chatAttributes, spanName, toolAttributes, written, type RouteTrace, type TraceEvent, type TracedRun } from "./genai.js";
+import { agentAttributes, chatAttributes, spanName, toolAttributes, tracedAgent, written, type AgentOfRun, type RouteTrace, type TraceEvent, type TracedRun } from "./genai.js";
+
+/** The most often a collector that keeps failing is said in the log: the failures between are counted in the next line. */
+export const FAILURE_LINE_MS = 60_000;
 
 /** The most the runner's closing flush waits for its spans' export. */
 export const FLUSH_MS = 3_000;
@@ -49,6 +55,19 @@ export function exporterConfig(env: NodeJS.ProcessEnv): { url: string; headers: 
   const url = traces || `${checked}/v1/traces`;
   const timeout = Number(env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT ?? env.OTEL_EXPORTER_OTLP_TIMEOUT);
   return { url, headers: { ...keyValues(env.OTEL_EXPORTER_OTLP_HEADERS), ...keyValues(env.OTEL_EXPORTER_OTLP_TRACES_HEADERS) }, ...(Number.isFinite(timeout) && timeout > 0 ? { timeoutMillis: timeout } : {}) };
+}
+
+/** The endpoint `url` as a log line shows it: its origin alone (scheme://host[:port]). That says where spans go, and
+ *  holds none of the parts a credential can be written in: the user and password, the path, the query, the fragment.
+ *  One that is not a URL, or names no host, is shown as that alone, never as written. */
+export function shownEndpoint(url: string): string {
+  try {
+    const { protocol, host } = new URL(url);
+    if (host) return `${protocol}//${host}`;
+  } catch {
+    // Not a URL: said as that alone, below.
+  }
+  return "an endpoint that is not a URL";
 }
 
 const TRUE = new Set(["1", "true", "yes", "on"]);
@@ -166,9 +185,12 @@ function usageOf(value: unknown): ModelUsage {
  *  - a turn's status is one of TurnStatus's, else `failed`; the claim's failure is a code's shape, else `run-error`;
  *  - at most OPEN_MAX requests, and OPEN_MAX calls, are open at once: one started past that, or again under an id still
  *    open, has no span.
+ *  - the run's agent is the one its runner read (`agent`: its id and name, cut as tracedAgent cuts them), never one a
+ *    post names;
  *  `end`: the claim's end, for a process that is gone without ending its trace (after its own end, nothing is left). */
-export function tracePosts(tracing: GenAiTracing, runId: string, redact?: (text: string) => string): { post(method: string, args: readonly unknown[]): void; end(failed: string): Promise<void> } {
+export function tracePosts(tracing: GenAiTracing, runId: string, redact?: (text: string) => string, agent?: AgentOfRun): { post(method: string, args: readonly unknown[]): void; end(failed: string): Promise<void> } {
   let trace: RunTrace | undefined;
+  const ofRun = agent ? { agent: tracedAgent(agent, redact) } : {};
   const requests = new Map<number, (usage: ModelUsage, ended?: Ended) => void>();
   const name = (value: unknown): string | undefined => (typeof value === "string" ? written(value, redact) : undefined);
   const shaped = (value: unknown, shape: RegExp): string | undefined => {
@@ -187,7 +209,7 @@ export function tracePosts(tracing: GenAiTracing, runId: string, redact?: (text:
       if (method === "known") {
         const run = fields(args[0]);
         const routes = run.routes instanceof Map ? new Map([...run.routes].slice(0, OPEN_MAX).flatMap(([key, route]) => (typeof key === "string" ? [[keptId(key), via(route)] as const] : []))) : undefined;
-        trace.known({ runId, harness: name(run.harness) ?? "unknown", ...(run.plan === true ? { plan: true } : {}), ...via(run), ...(routes ? { routes } : {}) });
+        trace.known({ runId, ...ofRun, harness: name(run.harness) ?? "unknown", ...(run.plan === true ? { plan: true } : {}), ...via(run), ...(routes ? { routes } : {}) });
       } else if (method === "request" && typeof args[0] === "number") {
         const route = text(args[2]);
         if (!requests.has(args[0]) && requests.size < OPEN_MAX) requests.set(args[0], trace.request(name(args[1]), route === undefined ? undefined : keptId(route)));
@@ -212,11 +234,12 @@ export function tracePosts(tracing: GenAiTracing, runId: string, redact?: (text:
   };
 }
 
-/** For tests: the exporter in place of OTLP's (the SDK's InMemorySpanExporter), spans exported as each ends, and the
- *  log lines said. */
+/** For tests: the exporter in place of OTLP's (the SDK's InMemorySpanExporter), spans exported as each ends, the log
+ *  lines said, and the clock the failure lines read (Date.now by default). */
 export interface TracingTest {
   readonly exporter: SpanExporter;
   readonly log?: (line: string) => void;
+  readonly now?: () => number;
 }
 
 let shared: Promise<GenAiTracing | undefined> | undefined;
@@ -259,7 +282,9 @@ function saidOf(env: NodeJS.ProcessEnv, given?: (line: string) => void): (line: 
 async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTracing> {
   const [api, sdk, resources] = await Promise.all([import("@opentelemetry/api"), import("@opentelemetry/sdk-trace"), import("@opentelemetry/resources")]);
   const log = saidOf(env, test?.log);
-  const exporter = safeExporter(test?.exporter ?? new (await import("@opentelemetry/exporter-trace-otlp-http")).OTLPTraceExporter(exporterConfig(env)), log);
+  const config = exporterConfig(env);
+  const where = shownEndpoint(config.url);
+  const exporter = safeExporter(test?.exporter ?? new (await import("@opentelemetry/exporter-trace-otlp-http")).OTLPTraceExporter(config), log, where, test?.now ?? Date.now);
   // The next root span's trace id (the run's), taken by the one startSpan that asks for it: startSpan is synchronous.
   const ids = { next: undefined as string | undefined };
   const idGenerator = {
@@ -294,6 +319,8 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
   };
   // A process that ends by running out of work (no close, no exit call) flushes once first.
   if (!test) process.once("beforeExit", () => void flush());
+  // Said once, as the tracing is made: that it is on, and where its spans go (the endpoint's origin; no header).
+  log(`[otel] tracing is on: spans export to ${where}`);
   return {
     flush,
     open: ({ startedAt = Date.now() } = {}) => {
@@ -437,23 +464,43 @@ function rootSampler(env: NodeJS.ProcessEnv, sdk: typeof import("@opentelemetry/
   return new sdk.AlwaysOnSampler();
 }
 
-/** `exporter` made safe for a run: a throw or a failed export is said once, in one line, and the spans are dropped; the
- *  next line is said only after an export has succeeded again, so a collector that is down is one line, not one a batch. */
-function safeExporter(exporter: SpanExporter, log: (line: string) => void): SpanExporter {
-  let failing = false;
+/** `exporter` made safe for a run: a throw or a failed export drops its spans and is said in the log, with the endpoint
+ *  (`where`, its origin: shownEndpoint) and the time (`now`): the first at once; after it, at most one line each FAILURE_LINE_MS,
+ *  said by the next failure once that long has passed since the last line, counting every failure since that line, the
+ *  current one among them. So a collector that is down is a line a minute at most, never one a batch or a span; a
+ *  failure that no later one follows is counted in no line. */
+function safeExporter(exporter: SpanExporter, log: (line: string) => void, where: string, now: () => number): SpanExporter {
+  let saidAt: number | undefined;
+  let unsaid = 0;
+  const iso = (at: number) => new Date(at).toISOString();
+  const failedAt = (why: unknown) => {
+    const at = now();
+    const words = (why as Error)?.message ?? why;
+    if (saidAt === undefined) {
+      log(`[otel] a trace export to ${where} failed at ${iso(at)}; its spans were dropped: ${words}`);
+      saidAt = at;
+      return;
+    }
+    unsaid += 1;
+    if (at - saidAt < FAILURE_LINE_MS) return;
+    log(`[otel] ${unsaid} more trace export${unsaid === 1 ? "" : "s"} to ${where} failed since ${iso(saidAt)}, the last at ${iso(at)}; ${unsaid === 1 ? "its" : "their"} spans were dropped: ${words}`);
+    saidAt = at;
+    unsaid = 0;
+  };
   return {
     export: (spans, done) => {
       const failedWith = (why: unknown) => {
-        if (!failing) log(`[otel] a trace export failed; its spans were dropped: ${(why as Error)?.message ?? why}`);
-        failing = true;
+        try {
+          failedAt(why);
+        } catch {
+          // A log that throws loses its line, never the export's answer.
+        }
         done({ code: 1 });
       };
       try {
         exporter.export(spans, (result) => {
-          if (result.code === 0) {
-            failing = false;
-            done(result);
-          } else failedWith(result.error ?? "the exporter said it failed");
+          if (result.code === 0) done(result);
+          else failedWith(result.error ?? "the exporter said it failed");
         });
       } catch (error) {
         failedWith(error);

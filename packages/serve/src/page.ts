@@ -17,6 +17,10 @@ import { hostPort, hostRefusedPage, movedPage } from "./host-check.js";
 // icon from it (apps/console/src/components/ProviderIcon.tsx), sent with no referrer. Everything else is this origin's.
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://www.google.com https://t0.gstatic.com https://t1.gstatic.com https://t2.gstatic.com https://t3.gstatic.com; base-uri 'none'; form-action https://github.com; frame-ancestors 'none'";
 const SECURITY = { "content-security-policy": CSP, "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", "cache-control": "no-store" };
+/** The share page's CSP (share.html at /share/<run>): this origin's scripts, styles, data and images, and nothing from
+ *  anywhere else. It is the page a share host serves, under the same policy; no favicon host, so a URL in a run's answer
+ *  can never make a third party fetch anything. */
+export const SHARE_PAGE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const HTML = "text/html; charset=utf-8";
 /** Strict-Transport-Security for a server whose public address (AGENTRUN_PUBLIC_URL) is https: a browser that saw it
  *  once opens the address over https only, for a year. None over http or with no public address (a browser would pin
@@ -37,6 +41,16 @@ const CONSOLE_SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 /** Addresses the console had before it took "/", and the old page's setup and sign-in, which the printed setup link
  *  still names: each sends the browser to "/", which keeps the link's #code. */
 const MOVED = new Set(["/console", "/console/", "/setup", "/sign-in"]);
+/** The share preview's addresses (the console's second entry, share.html): the page at /share/<run>, and the console's
+ *  assets under /share/assets/, where the page's relative URLs land. */
+const SHARE = "/share/";
+/** A run's id as the share page's address names it: one segment, never a dot segment, a trailing slash allowed. */
+const SHARE_RUN = /^[A-Za-z0-9_-][A-Za-z0-9._-]*\/?$/;
+/** The share page's answer to a browser without this server's session: a fixed page under the CSP, never share.html. */
+const SIGN_IN_FIRST = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /><meta name="robots" content="noindex" /><title>Sign in first · AgentRun</title></head>
+<body><main><h1>Sign in to this server first</h1><p>A share preview shows what a run's share would publish, and only this server's owner may read it. Sign in at <a href="/">the console</a>, or open the link this server printed when it started, then open this page again.</p></main></body></html>
+`;
 
 const digest = (text: string) => createHash("sha256").update(text).digest();
 const same = (given: string, expected: string) => timingSafeEqual(digest(given), digest(expected));
@@ -74,8 +88,14 @@ export class ConsoleSessions {
  *  (7340, published at 7350), and so does another beside it. A Host with no port keeps the socket's. */
 const browserPort = (req: IncomingMessage) => hostPort(req.headers.host) ?? req.socket.localPort;
 const cookieName = (req: IncomingMessage) => `agentrun-${browserPort(req)}`;
-export const cookiesOf = (req: IncomingMessage, name: string) =>
-  String(req.headers.cookie ?? "").split(";").map((part) => part.trim()).filter((part) => part.startsWith(`${name}=`)).map((part) => part.slice(name.length + 1));
+/** The request's cookies, each name and value trimmed, in the order sent; a part with no name is left out. */
+const cookiePairs = (req: IncomingMessage): Array<{ name: string; value: string }> =>
+  String(req.headers.cookie ?? "").split(";").flatMap((part) => {
+    const at = part.indexOf("=");
+    return at > 0 && part.slice(0, at).trim() ? [{ name: part.slice(0, at).trim(), value: part.slice(at + 1).trim() }] : [];
+  });
+/** The values of the request's cookies named `name`, in the order sent. */
+export const cookiesOf = (req: IncomingMessage, name: string) => cookiePairs(req).filter((pair) => pair.name === name).map((pair) => pair.value);
 /** Whether the browser reached this server over TLS, as the proxy in front says (X-Forwarded-Proto): `https`, or `wss`,
  *  which some proxies (Traefik) send on a WebSocket upgrade. Both are the page's https origin and its `__Host-` cookie. */
 export const overHttps = (req: IncomingMessage) => ["https", "wss"].includes(String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]!.trim().toLowerCase());
@@ -93,11 +113,7 @@ export const ownerCookie = (req: IncomingMessage, value: string, maxAgeS: number
  *  again through a tunnel at 8080 sends both to either. Which are this server's is the owner's to say (Owner.valid). */
 export const sessionsAtEveryPort = (req: IncomingMessage): Array<{ name: string; value: string }> => {
   const own = ownerCookieName(req);
-  return String(req.headers.cookie ?? "").split(";").flatMap((part) => {
-    const at = part.indexOf("=");
-    const name = part.slice(0, at).trim();
-    return at > 0 && (name === own || /^agentrun-\d{1,5}-session$/.test(name)) ? [{ name, value: part.slice(at + 1).trim() }] : [];
-  });
+  return cookiePairs(req).filter(({ name }) => name === own || /^agentrun-\d{1,5}-session$/.test(name));
 };
 /** The owner's session cookies the request holds, valid or not. */
 export const heldSessions = (req: IncomingMessage) => cookiesOf(req, ownerCookieName(req));
@@ -131,7 +147,7 @@ const redirect = (res: ServerResponse, location: string, headers: Record<string,
 
 /** A file of the console: a known type inside `dir`, read through no link that leaves it. Vite's hashed assets are cached
  *  for a year; index.html is no-store. */
-async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir: string, rel: string, status = 200): Promise<void> {
+async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir: string, rel: string, status = 200, headers: Record<string, string> = {}): Promise<void> {
   const missing = () => refuse(req, res, new ApiError("not_found", `no file ${raw} in the console`));
   const type = CONSOLE_TYPES[extname(rel).toLowerCase()];
   if (!type || !rel.split("/").every((segment) => CONSOLE_SEGMENT.test(segment))) return missing();
@@ -141,26 +157,58 @@ async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir:
     return rel === "index.html" ? send(req, res, status === 200 ? 404 : status, "text/plain; charset=utf-8", "This server was built without its console: run npm ci && npm run build at the repository's root, which builds the console first, then start the server again.\n") : missing();
   }
   if (!real.startsWith(root + sep) || !(await stat(real)).isFile()) return missing();
-  send(req, res, status, type, await readFile(real), { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store" });
+  send(req, res, status, type, await readFile(real), { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store", ...headers });
 }
 
-async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer): Promise<void> {
+async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, held: boolean): Promise<void> {
   if (req.method !== "GET" && req.method !== "HEAD") return refuse(req, res, new ApiError("method_not_allowed", `the console answers GET and HEAD; ${req.method} is not one`, {}, { allow: "GET, HEAD" }));
   const dir = server.console ?? CONSOLE_DIR;
+  if (raw.startsWith(SHARE)) return share(req, res, raw, dir, server, held);
   if (MOVED.has(raw)) return redirect(res, `/${(req.url ?? "").slice(raw.length)}`);
   if (raw !== "/") return file(req, res, raw, dir, raw.slice(1));
-  // Without accounts, the printed link's launch code gives this browser a console session (ConsoleSessions). The token
-  // is for scripts and the CLI: a token in the address signs nothing in, here or with an owner, and leaves it (the same
-  // address without it, no cookie). With an owner the console is the owner's session alone.
+  const given = launch(req, res, raw, server, raw);
+  if (given === "answered") return;
+  return file(req, res, raw, dir, "index.html", given === "wrong" ? 401 : 200);
+}
+
+/** The printed link's code in a page's address (`raw`: `/`, or `/share/<run>` the CLI opens). Without accounts, a right
+ *  code gives this browser a console session (ConsoleSessions) and a redirect to the same page without it; "answered".
+ *  The token is for scripts and the CLI: a token in the address signs nothing in, here or with an owner, and leaves it
+ *  (the same address without it, no cookie). With an owner the console is the owner's session alone, so a code leaves
+ *  the same way. A wrong code is "wrong" and sets nothing (the page answers 401); none is "none". `where` names the page
+ *  in the failure log. */
+function launch(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, where: string): "answered" | "wrong" | "none" {
   const url = new URL(req.url ?? "/", "http://serve");
-  const without = () => (url.searchParams.delete("token"), url.searchParams.delete("launch"), `/${url.searchParams.size ? `?${url.searchParams}` : ""}`);
+  const without = () => (url.searchParams.delete("token"), url.searchParams.delete("launch"), `${raw}${url.searchParams.size ? `?${url.searchParams}` : ""}`);
   const given = url.searchParams.get("launch");
-  if (url.searchParams.has("token") || (server.owner && given !== null)) return redirect(res, without());
+  if (url.searchParams.has("token") || (server.owner && given !== null)) return redirect(res, without()), "answered";
+  if (given === null) return "none";
   // A code holds no "+", but a space in the link is one that was not encoded all the same.
-  const id = given === null ? undefined : server.sessions?.open(given) ?? server.sessions?.open(given.replaceAll(" ", "+"));
-  if (id !== undefined) return redirect(res, without(), { "set-cookie": `${cookieName(req)}=${id}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}` });
-  if (given !== null) server.authFailed?.(raw, "wrong_launch_code");
-  return file(req, res, raw, dir, "index.html", given === null ? 200 : 401);
+  const id = server.sessions?.open(given) ?? server.sessions?.open(given.replaceAll(" ", "+"));
+  if (id !== undefined) return redirect(res, without(), { "set-cookie": `${cookieName(req)}=${id}; HttpOnly; SameSite=Strict; Path=/${overHttps(req) ? "; Secure" : ""}` }), "answered";
+  server.authFailed?.(where, "wrong_launch_code");
+  return "wrong";
+}
+
+/** The share preview (share.html) at /share/<run>, the owner's alone: a browser without this server's session (`held`:
+ *  the owner's signed-in session with accounts, the printed link's without) gets SIGN_IN_FIRST, a 401, and so does a
+ *  wrong launch code; a right one opens the session here as on `/` (launch). The page reads the run's export with that
+ *  session (GET /v2/runs/<run>/export) and nothing else. Its assets are the console's, public. */
+async function share(req: IncomingMessage, res: ServerResponse, raw: string, dir: string, server: PageServer, held: boolean): Promise<void> {
+  const rest = raw.slice(SHARE.length);
+  if (rest.startsWith("assets/")) return file(req, res, raw, dir, rest);
+  if (!SHARE_RUN.test(rest)) return refuse(req, res, new ApiError("not_found", `no page ${raw}: a share preview is /share/<run id>`));
+  // share.html's assets are relative (./assets/): under /share/<run>/ they resolve to /share/<run>/assets/, which is no
+  // file. So the slash goes, with the query kept, before anything else is asked.
+  if (rest.endsWith("/")) return redirect(res, `${raw.slice(0, -1)}${new URL(req.url ?? "/", "http://serve").search}`);
+  // The CLI opens /share/<run>?launch=<code> when it knows the code: the same session as `/?launch=`, landing here.
+  const given = launch(req, res, raw, server, "/share");
+  if (given === "answered") return;
+  if (given === "wrong" || !held) {
+    if (given === "none") server.authFailed?.("/share", "no_session");
+    return send(req, res, 401, HTML, SIGN_IN_FIRST);
+  }
+  return file(req, res, raw, dir, "share.html", 200, { "content-security-policy": SHARE_PAGE_CSP });
 }
 
 /** The requests the owner's password session sends from the page (a write only from this server's own origin, with a
@@ -177,7 +225,8 @@ const consoleSessions = new WeakSet<IncomingMessage>();
 export const byConsoleSession = (req: IncomingMessage): boolean => consoleSessions.has(req);
 
 /**
- * Answers the console's paths ("/" and its /assets/*, and the addresses that moved to "/"), and returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
+ * Answers the console's paths ("/" and its /assets/*, the addresses that moved to "/", and the share preview under
+ * /share/), and returns true; returns false for every other path. On a /v2 path with no Authorization header, the browser's cookie
  * becomes the Bearer header for a GET or HEAD, and for any other method only when the request's Origin is this server's
  * own origin and its body is application/json, or the request is a PUT or POST to a route that takes bytes, with any
  * content type.
@@ -196,10 +245,10 @@ export function answerPage(req: IncomingMessage, res: ServerResponse, raw: strin
     }
     return false;
   }
-  if (raw !== "/" && !raw.startsWith("/assets/") && !MOVED.has(raw)) return false;
+  if (raw !== "/" && !raw.startsWith("/assets/") && !MOVED.has(raw) && !raw.startsWith(SHARE)) return false;
   // Every page answer (the console, its assets, its redirects) at an https public address: HSTS.
   for (const [name, value] of Object.entries(hstsHeaders(server.publicUrl))) res.setHeader(name, value);
-  answer(req, res, raw, server).catch(() => {
+  answer(req, res, raw, server, held).catch(() => {
     if (!res.headersSent) refuse(req, res, new ApiError("internal", "the console could not be read"));
     else res.destroy();
   });

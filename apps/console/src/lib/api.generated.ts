@@ -167,7 +167,7 @@ export interface components {
     places: {
       modes: ("runner" | "sandbox")[];
       boxes: {
-        id: "docker" | "modal" | "daytona";
+        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
         available: boolean;
         state: "ready" | "unavailable";
         reason?: string;
@@ -179,7 +179,7 @@ export interface components {
         mode: "runner";
       } | {
         mode: "sandbox";
-        box: "docker" | "modal" | "daytona";
+        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
       };
       default_reason?: string;
       allow: string[];
@@ -237,6 +237,13 @@ export interface components {
         codex: string;
         opencode: string;
       };
+      held?: {
+        provider: string;
+        tool: "search" | "fetch" | "key";
+        kind: "quota" | "rate";
+        until: string;
+        words: string;
+      }[];
       permission: "allow" | "ask" | "deny";
       default_permission: "allow" | "ask" | "deny";
       permissions: ("allow" | "ask" | "deny")[];
@@ -385,7 +392,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "modal" | "daytona";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
     };
     computer?: {
       kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -969,7 +976,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "modal" | "daytona";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
     };
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -1057,6 +1064,14 @@ export interface components {
       digest: string | null;
       repick: "found" | "missed" | null;
     } | null;
+    workflow_calls?: {
+      workflow: string;
+      digest: string;
+      caller: "platform" | "agent";
+      outcome: "answered" | "handed_back" | "failed" | "refused";
+      usd: number | null;
+    }[] | null;
+    first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1308,6 +1323,14 @@ export interface components {
       digest: string | null;
       repick: "found" | "missed" | null;
     } | null;
+    workflow_calls?: {
+      workflow: string;
+      digest: string;
+      caller: "platform" | "agent";
+      outcome: "answered" | "handed_back" | "failed" | "refused";
+      usd: number | null;
+    }[] | null;
+    first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
   };
   SecretMeta: {
     name: string;
@@ -2787,7 +2810,7 @@ export interface operations {
   getClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -2941,6 +2964,7 @@ export interface operations {
         workflow: string;
         digest: string;
         state: "serving" | "needs_revision";
+        reason: "over_line" | "no_by_hand_cost" | null;
         served: {
           runs: number;
           mean_usd: number;
@@ -3350,9 +3374,14 @@ export interface operations {
         paused: boolean;
         startedAt: string;
         endedAt: string | null;
+        withheld?: true;
       };
       workflow: Record<string, unknown>;
-      graph: Record<string, unknown>;
+      graph: {
+        nodes: Record<string, unknown>[];
+        edges: Record<string, unknown>[];
+        withheld?: true;
+      };
       nodes: Record<string, {
         status: "pending" | "working" | "done" | "failed" | "stopped" | "escalated" | "not_run" | "needs_review";
         startedAt?: string;
@@ -7070,7 +7099,7 @@ export interface operations {
   startClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -7327,7 +7356,7 @@ export interface operations {
   turnOffClaudeLogin: {
     body: never;
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
@@ -7361,7 +7390,7 @@ export interface operations {
       only_me: true;
     };
     answer: {
-      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;

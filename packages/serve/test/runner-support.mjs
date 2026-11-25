@@ -21,13 +21,22 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  *  the property's. A takeover or fence test keeps its short lease and forces the loss itself. */
 export const STEADY_LEASE = Object.freeze({ leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000 });
 
-/** A clock the test moves, for a runner's claim deadline (RunnerOptions.clock): its timers fire only when `advance` moves
- *  the clock past them, so a deadline case is driven by the test, never by a box's load. Nothing else in the runner (its
- *  polls, renews, the store's clock) reads it. */
+/** A clock the test moves, for a runner's claim deadline (RunnerOptions.clock) or a loop's end bound (endPatchTimer): its
+ *  timers fire only when `advance` moves the clock past them, so a deadline case is driven by the test, never by a box's
+ *  load. Nothing else in the runner (its polls, renews, the store's clock) reads it. */
 export function fakeClock(start = Date.now()) {
   let now = start;
   let next = 0;
   const timers = new Map();
+  /** Moves the clock `ms` on, firing every timer due by then, earliest first. */
+  const advance = (ms) => {
+    now += ms;
+    for (const [id, timer] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
+      if (timer.at > now || !timers.has(id)) continue;
+      timers.delete(id);
+      timer.fn();
+    }
+  };
   return {
     now: () => now,
     setTimeout: (fn, ms) => {
@@ -36,14 +45,10 @@ export function fakeClock(start = Date.now()) {
       return id;
     },
     clearTimeout: (id) => void timers.delete(id),
-    /** Moves the clock `ms` on, firing every timer due by then, earliest first. */
-    advance(ms) {
-      now += ms;
-      for (const [id, timer] of [...timers].sort((a, b) => a[1].at - b[1].at)) {
-        if (timer.at > now || !timers.has(id)) continue;
-        timers.delete(id);
-        timer.fn();
-      }
+    advance,
+    /** Moves the clock to its earliest timer, firing every timer due by then; none: nothing moves. */
+    toNext: () => {
+      if (timers.size > 0) advance(Math.min(...[...timers.values()].map((timer) => timer.at)) - now);
     },
   };
 }
