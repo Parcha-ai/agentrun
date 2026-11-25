@@ -40,7 +40,7 @@ import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { fakeFetch, fakeSaveOptions, fakeSearch, type WebFake } from "./web-fake.js";
 import { LENGTH_TYPES, SAVE_MAX_BYTES, type SaveSlots, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
-import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { browserNeeds, DEFAULT_BROWSER_VENDOR, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
@@ -453,7 +453,7 @@ const browserTool: ToolEntry = {
     // The agent's computer, where it is a browser, wins over the plane's pick: the run's sessions are that provider's,
     // opened through the claim, with no saved sign-in or plane check of their own.
     const computer = host.browserComputer;
-    const planeVendor: string = planeOf(host.env).browser ?? "browserbase";
+    const planeVendor: string = planeOf(host.env).browser ?? DEFAULT_BROWSER_VENDOR;
     const vendor = computer?.provider ?? planeVendor;
     const planeRefused = !computer && isUnavailable(planeVendor as Resolution) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(planeVendor)}.`)) : undefined;
     // The run's saved sign-in: on the runner (one process, many claims) read from the store under this run's own claim
@@ -488,7 +488,7 @@ const browserTool: ToolEntry = {
         })();
     const refused = "refused" in made ? made.refused : undefined;
     const parts = {
-      provider: "browser" in made ? claimBrowserProvider(made.browser, { headless: true, ...(host.env.BROWSERBASE_CONNECT_BASE_URL ? { connectBaseUrl: host.env.BROWSERBASE_CONNECT_BASE_URL } : {}), ...(kept ? { signIn: { name: SIGN_IN_KEY, pointer: kept.ref } } : {}) }) : undefined,
+      provider: "browser" in made ? claimBrowserProvider(made.browser, { headless: true, ...(kept ? { signIn: { name: SIGN_IN_KEY, pointer: kept.ref } } : {}) }) : undefined,
       driver: stand ? stand.driver : cdpDriver(),
     };
     // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.
