@@ -12,8 +12,12 @@ import { captureManagedProject, sourceWorkspace, openRunPlacement } from "../dis
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 
 const env = { PATH: "/usr/bin:/bin", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+// No auto maintenance in the fixture's repository: from Git 2.47 a commit starts a detached `git maintenance run --auto`,
+// which holds .git/objects/maintenance.lock after the commit returns and drops it later, so a capture's .git inventory
+// could list a file gone by its read ("maintenance.lock" is not there) or differ from its final check. Capture's own Git
+// is told the same (src/source-sync/capture-git.ts).
 async function git(work, ...args) {
-  const answer = await work.exec(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", ...args], { env, timeoutMs: 3000 });
+  const answer = await work.exec(["git", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], { env, timeoutMs: 3000 });
   assert.equal(answer.code, 0, Buffer.from(answer.stderr).toString()); return Buffer.from(answer.stdout).toString().trim();
 }
 async function fixture(t, backend) {
