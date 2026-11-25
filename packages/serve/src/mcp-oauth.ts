@@ -350,7 +350,7 @@ function registrationUnavailable(url: URL, callback: string): ApiError {
   return new ApiError("input_invalid", message, { fields: [{ field: "client_id", reason: "registration_unavailable", message }], details: { oauth: { registration: false, callback } } });
 }
 /** A URL's hostname on loopback as written (localhost, 127.0.0.0/8, [::1]): env-switch.ts LOOPBACK_HOST, the one rule. */
-export const LOOPBACK = LOOPBACK_HOST; // key-gate: loopback-rule CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
+export const LOOPBACK = LOOPBACK_HOST; // CIMD is never offered from loopback, and only a loopback MCP server may name loopback endpoints
 
 export class McpSignIns {
   /** `pendingStore`: where sign-ins in flight are kept (over store.mcpOauth). `allowed`: the private-network hosts the

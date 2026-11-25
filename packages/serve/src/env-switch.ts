@@ -28,7 +28,7 @@ export const API_ONLY_MCP_ORIGINS_ENV = "AGENTRUN_API_ONLY_MCP_ORIGINS";
 
 /** A URL hostname on this machine: localhost, ::1 (bracketed, as URL writes it) or 127.0.0.0/8. Defined here, since this
  *  module imports nothing; mcp-oauth.ts LOOPBACK is this one. */
-export const LOOPBACK_HOST = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/;
+export const LOOPBACK_HOST = /^(?:localhost|\[::1\]|127(?:[.]\d{1,3}){3})$/; // key-gate: loopback-rule the one loopback rule, for the API-only MCP origins and MCP sign-in
 
 /** The origins `value` (API_ONLY_MCP_ORIGINS_ENV) names, each once, in its order: none when unset or blank. An entry
  *  that is not an http or https origin alone (a path, query, fragment, user or password, or no URL at all) is refused
