@@ -5,6 +5,7 @@
 // as the real one does), an Archil computer's root steps by verb, and a pid1 machine's entrypoint. Nothing reaches the
 // network, and no vendor SDK is loaded.
 import { createHash } from "node:crypto";
+import { posix } from "node:path";
 import { DEADLINE_LABEL } from "../dist/drift.js";
 import { HostError } from "../dist/host.js";
 import { EGRESS_POLICY as POLICY, EGRESS_RELAY as RELAY } from "../dist/hosted/network.js";
@@ -58,6 +59,23 @@ export function deferred() {
 	});
 	return { promise, resolve, reject };
 }
+
+/**
+ * The file the kernel opens for path in m: a component at a time, a symlinked directory in m.links followed as it is
+ * met, so a ".." after one leaves its target, not the directory that holds the link.
+ */
+function opened(m, path) {
+	let at = "";
+	for (const part of path.split("/")) {
+		if (part === "" || part === ".") continue;
+		at = part === ".." ? at.slice(0, Math.max(0, at.lastIndexOf("/"))) : `${at}/${part}`;
+		at = m.links?.get(at) ?? at;
+	}
+	return at || "/";
+}
+
+/** The file computerd's files.read opens for path in m: the path cleaned (filepath.Clean), then opened. */
+const daemonOpens = (m, path) => (path.startsWith("/") ? opened(m, posix.normalize(path)) : path);
 
 /** A stream an exec'd process writes, read as an async iterable until it ends. */
 function feed() {
@@ -113,7 +131,9 @@ const START = Date.now();
  *    for a host with no upload;
  *  - download: true for a host with download (src/host.ts), which reads a machine's files as root; stage: how the
  *    read-stage script copies a file as the daemon's user, "ok", "fail" (it reads none) or "short" (its copy one byte
- *    short, as a file that changed since the daemon read it);
+ *    short, as a file that changed since the daemon read it); a test may give a machine links (m.links, a Map of a
+ *    symlinked directory's path to its target), which a file's open follows (opened): the daemon's, after it cleans the
+ *    path as computerd does, and read-stage's cat, which opens the path as given;
  *  - timer: "ok" (extend moves the end and the deadline label: the vendor's timer, or with lifetime janitor the label
  *    alone, rounded up to a whole second), "limit" (extend throws a HostError limit, nothing moves), or "none" (a host
  *    with no extend);
@@ -263,9 +283,9 @@ export function fakeHost({
 			const text = netDevText(m.box.interfaces);
 			return result({ data: Buffer.from(text).toString("base64"), size: text.length, eof: true });
 		}
-		if (method === "files.read" && m.files.has(params.path)) {
+		if (method === "files.read" && m.files.has(daemonOpens(m, params.path))) {
 			// A regular file, as computerd reads one: at most one chunk from the offset, eof once the read reaches its size.
-			const bytes = m.files.get(params.path);
+			const bytes = m.files.get(daemonOpens(m, params.path));
 			const offset = params.offset ?? 0;
 			const length = params.length ?? MAX_CHUNK_BYTES;
 			const data = bytes.subarray(offset, offset + length);
@@ -517,7 +537,7 @@ export function fakeHost({
 			const [uid, gid, path, copy] = script.args;
 			queueMicrotask(() => {
 				fake.stages.push({ machine: m.id, uid, gid, path, copy });
-				const bytes = m.files.get(path);
+				const bytes = m.files.get(opened(m, path));
 				if (stage === "fail" || bytes === undefined) return proc.exit(1, `cat: ${path}: Permission denied\n`);
 				m.files.set(copy, Buffer.from(stage === "short" ? bytes.subarray(0, -1) : bytes));
 				proc.exit(0);

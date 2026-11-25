@@ -5,12 +5,14 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { getEventListeners } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { checkLifetime, computerNameFor as nameOf, readFile } from "../dist/index.js";
 import { HostError } from "../dist/host.js";
+import { MAX_READ_BYTES } from "../dist/surface/index.js";
 import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NETWORK_DESCRIPTOR, NotFound, VERSION } from "./fake-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
@@ -1107,6 +1109,74 @@ test("a read past one chunk stays the daemon's, chunk by chunk, where the host h
 		assert.deepEqual(await copiesLeft(m), [], `${what}: no copy left`);
 		await connection.close();
 	}
+});
+
+test('a read past one chunk through a symlinked directory and ".." copies the file the daemon read: the path cleaned as computerd cleans it', async () => {
+	const { provider, fake } = setup({}, { download: true });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	// /work/link/../big.bin is /work/big.bin to computerd, which cleans the path before it opens it, and /other/big.bin
+	// to an open of the path as given, where /work/link leads to /other/sub. The two files are the same size.
+	m.files.set("/work/big.bin", BIG);
+	m.files.set("/other/big.bin", Buffer.from(BIG).reverse());
+	m.links = new Map([["/work/link", "/other/sub"]]);
+	const connection = made(await provider.connect(ref));
+	const read = made(await readFile(connection.client, "/work/link/../big.bin"));
+	assert.equal(Buffer.compare(Buffer.from(read), BIG), 0, "every byte is the file the daemon read");
+	assert.deepEqual(fake.stages.map(({ path }) => path), ["/work/big.bin"], "the copy is of the cleaned path");
+	await connection.close();
+});
+
+test("a file past the surface's read limit never takes the download: its first chunk starts no copy and every chunk is the daemon's; one at the limit does", async () => {
+	const { provider, fake } = setup({}, { download: true });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	m.files.set("/work/at.bin", Buffer.alloc(MAX_READ_BYTES, 1));
+	m.files.set("/work/past.bin", Buffer.alloc(MAX_READ_BYTES + 1, 2));
+	const connection = made(await provider.connect(ref));
+	const before = fake.requests.length;
+	const first = made(await connection.client.call("files.read", { path: "/work/past.bin", offset: 0, length: CHUNK }));
+	assert.equal(first.size, MAX_READ_BYTES + 1);
+	const second = made(await connection.client.call("files.read", { path: "/work/past.bin", offset: CHUNK, length: CHUNK }));
+	assert.equal(Buffer.from(second.data, "base64").length, CHUNK);
+	assert.deepEqual(daemonReads(fake, "/work/past.bin", before), [0, CHUNK], "both chunks through the bridge");
+	assert.deepEqual(fake.stages, [], "no copy of a file past the limit");
+	assert.deepEqual(fake.downloads, []);
+	const at = made(await readFile(connection.client, "/work/at.bin"));
+	assert.equal(Buffer.compare(Buffer.from(at), m.files.get("/work/at.bin")), 0);
+	assert.deepEqual(fake.stages.map(({ path }) => path), ["/work/at.bin"], "a file at the limit is copied");
+	await connection.close();
+});
+
+test("a connection closed, or its client closed, after a copy was downloaded refuses the reads after it: the copy goes with it", async () => {
+	for (const how of ["connection", "client"]) {
+		const { provider, fake } = setup({}, { download: true });
+		const ref = made(await create(provider));
+		only(fake).files.set("/work/big.bin", BIG);
+		const connection = made(await provider.connect(ref));
+		made(await connection.client.call("files.read", { path: "/work/big.bin", offset: 0, length: CHUNK }));
+		made(await connection.client.call("files.read", { path: "/work/big.bin", offset: CHUNK, length: CHUNK }));
+		assert.equal(fake.downloads.length, 1, `${how}: the copy was downloaded`);
+		if (how === "connection") await connection.close();
+		else connection.client.close();
+		const after = await connection.client.call("files.read", { path: "/work/big.bin", offset: 2 * CHUNK, length: CHUNK });
+		assert.equal(after.ok, false, `${how}: a read after close is refused, not answered from the copy`);
+		assert.equal(after.error.code, "gone", `${how}: ${after.error.message}`);
+		await connection.close();
+	}
+});
+
+test("reads answered from a copy leave no abort listener on the signal they were given", async () => {
+	const { provider, fake } = setup({}, { download: true });
+	const ref = made(await create(provider));
+	only(fake).files.set("/work/big.bin", BIG);
+	const connection = made(await provider.connect(ref));
+	const { signal } = new AbortController();
+	const read = made(await readFile(connection.client, "/work/big.bin", { signal }));
+	assert.equal(Buffer.compare(Buffer.from(read), BIG), 0);
+	assert.equal(fake.downloads.length, 1, "three chunks came from the copy");
+	assert.equal(getEventListeners(signal, "abort").length, 0);
+	await connection.close();
 });
 
 test("connect to a machine the vendor reads as gone (past its deadline or released, still being deleted) answers gone, not refused; releasing it again stays ok", async () => {
