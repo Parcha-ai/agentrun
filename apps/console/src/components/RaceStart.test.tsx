@@ -6,6 +6,7 @@ import { toolOffers } from "@/lib/agentForm";
 import { createClient } from "@/lib/client";
 import type { Places } from "@/lib/place";
 import { laneStart } from "@/lib/race";
+import { pick, picker } from "@/test/picker";
 
 // #/races/new: the task, and 2 to 4 lanes (a harness and a model each, from the harnesses this server runs). Start sends
 // one inline run per lane (POST /v2/runs), each under its own Idempotency-Key, then opens the race. A lane the server
@@ -33,26 +34,51 @@ const BOXED: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "local", ava
 const LABEL = "20261123-1004-1f2e";
 const TASK = "Fix the failing test in the parser";
 
-type Sent = { lane: string; body: Record<string, unknown>; key: string };
-/** A fake server: every POST /v2/runs recorded, answered by `answer` (202 with a run, or a refusal). `places`: the
- *  server's (capabilities `places`), none by default. */
-function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null) {
+type Sent = { lane: string; agentId: string; body: Record<string, unknown>; key: string };
+type Made = Record<string, unknown> & { id: string };
+/** A fake server: every POST /v2/agents recorded in `made` (an id it has already is 409 agent_exists, as the server
+ *  answers), and every POST /v2/agents/{id}/runs in `sent`, answered by `answer` (202 with a run, or a refusal).
+ *  `places`: the server's (capabilities `places`), none by default. `agent`: a POST /v2/agents answer of the test's
+ *  own (a refusal or a lost answer), else the server's. */
+function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null, agent?: (made: Made) => Response | Promise<Response> | undefined) {
   const sent: Sent[] = [];
+  const made: Made[] = [];
+  const archived: string[] = [];
   const went: string[] = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
-    if (path !== "/v2/runs" || init?.method !== "POST") return json(404, { error: { code: "not_found", message: path, retryable: false } });
-    const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-    const one = { lane: (body.labels as Record<string, string>).lane, body, key: (init.headers as Record<string, string>)["idempotency-key"] };
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+    if (path === "/v2/agents" && init?.method === "POST") {
+      const definition = body.definition as Made;
+      const theirs = agent?.(definition);
+      if (theirs) return theirs;
+      if (made.some((m) => m.id === definition.id)) return json(409, { error: { code: "agent_exists", message: `an agent ${definition.id} exists here`, retryable: false } });
+      made.push(definition);
+      return json(201, { agent_id: definition.id, revision: `rev-${definition.id}`, kind: "agentic", definition });
+    }
+    // Every agent here was edited once in the Agents list since it was made: version 2 is current, newest first.
+    const revisionsOf = /^\/v2\/agents\/([^/]+)\/revisions$/.exec(path);
+    if (revisionsOf) {
+      const id = decodeURIComponent(revisionsOf[1]);
+      return json(200, { revisions: [{ revision: `rev-${id}-edited`, version: 2, current: true }, { revision: `rev-${id}`, version: 1, current: false }], next_cursor: null });
+    }
+    const archiveOf = /^\/v2\/agents\/([^/]+)\/archive$/.exec(path);
+    if (archiveOf && init?.method === "POST") {
+      archived.push(decodeURIComponent(archiveOf[1]));
+      return json(200, { agent_id: decodeURIComponent(archiveOf[1]), archived_at: "2026-11-24T23:00:00Z" });
+    }
+    const runOf = /^\/v2\/agents\/([^/]+)\/runs$/.exec(path);
+    if (!runOf || init?.method !== "POST") return json(404, { error: { code: "not_found", message: path, retryable: false } });
+    const one = { lane: (body.labels as Record<string, string>).lane, agentId: decodeURIComponent(runOf[1]), body, key: (init.headers as Record<string, string>)["idempotency-key"] };
     sent.push(one);
     return answer(one);
   }) as typeof globalThis.fetch;
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(RaceStart, { v2: createClient({ fetch }), harnesses: HARNESSES, tools: TOOLS, places, go: (to: string) => void went.push(to), label: LABEL })));
-  return { host, sent, went };
+  return { host, sent, made, archived, went };
 }
-const started = (sent: Sent) => json(202, { run_id: `run-${sent.lane}`, agent_id: `agent-${sent.lane}`, status: "queued", state: "working", labels: sent.body.labels });
+const started = (sent: Sent) => json(202, { run_id: `run-${sent.lane}`, agent_id: sent.agentId, status: "queued", state: "working", labels: sent.body.labels });
 const button = (host: Element, label: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === label);
 async function type(host: Element, task: string) {
   const area = host.querySelector<HTMLTextAreaElement>("textarea")!;
@@ -63,8 +89,8 @@ async function type(host: Element, task: string) {
 }
 
 describe("RaceStart", () => {
-  it("offers the harnesses this server runs, and starts one inline run per lane, each under its own key, then opens the race", async () => {
-    const { host, sent, went } = mount(started);
+  it("offers the harnesses this server runs, and makes each lane an agent of the console's own and starts a run of it, each under its own key, then opens the race", async () => {
+    const { host, sent, made, went } = mount(started);
     const lanes = [...host.querySelectorAll("[data-race-lane]")];
     expect(lanes).toHaveLength(2);
     expect(lanes.map((l) => [l.querySelector('[data-lane-harness]')?.getAttribute("data-value"), l.querySelector('[data-lane-model]')?.getAttribute("data-value")])).toEqual([["pi", "anthropic/claude-sonnet-5-5"], ["codex", "openai/gpt-6.1-sol"]]);
@@ -73,20 +99,23 @@ describe("RaceStart", () => {
     await act(async () => { button(host, "Start the race")!.click(); });
     await settle();
     // Each lane with the tools its harness runs here (no box on this server: no shell), so a lane can do the task.
-    expect(sent.map((s) => s.body)).toEqual([
-      laneStart(LABEL, 1, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, TASK, 1, { tools: ["read", "write", "web_search"] }),
-      laneStart(LABEL, 2, { harness: "codex", model: "openai/gpt-6.1-sol" }, TASK, 1, { tools: ["read", "write"] }),
-    ]);
+    const one = laneStart(LABEL, 1, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, TASK, 1, { tools: ["read", "write", "web_search"] }, 1);
+    const two = laneStart(LABEL, 2, { harness: "codex", model: "openai/gpt-6.1-sol" }, TASK, 1, { tools: ["read", "write"] }, 2);
+    expect(made).toEqual([one.agent, two.agent]);
+    // No external reference: the console's own agents, which it archives, edits and deletes as any other.
+    for (const m of made) expect(m).not.toHaveProperty("external");
+    // Each run pinned to its agent's first revision, the one the create answered.
+    expect(sent.map((s) => [s.agentId, s.body])).toEqual([[one.agent.id, { ...one.run, revision: `rev-${one.agent.id}` }], [two.agent.id, { ...two.run, revision: `rev-${two.agent.id}` }]]);
     expect(new Set(sent.map((s) => s.key)).size).toBe(2);
     expect(went).toEqual([`#/races/${LABEL}`]);
   });
 
   it("on a server with a box by default, pi's lane gets the shell a new pi agent gets there, and no lane names a place: the server puts each where it puts that agent", async () => {
-    const { host, sent } = mount(started, BOXED);
+    const { host, made } = mount(started, BOXED);
     await type(host, TASK);
     await act(async () => { button(host, "Start the race")!.click(); });
     await settle();
-    const definitions = sent.map((s) => s.body.definition as Record<string, unknown>);
+    const definitions = made as Record<string, unknown>[];
     expect(definitions.map((d) => [d.harness, d.tools])).toEqual([["pi", ["read", "write", "bash", "web_search"]], ["codex", ["read", "write"]]]);
     // With a computer named, codex's lane would be put in the box, where a new codex agent never runs (no shell), and a
     // Claude Code login (the runner's alone) could not run a claude-agent lane.
@@ -143,6 +172,82 @@ describe("RaceStart", () => {
       root = undefined;
       document.body.innerHTML = "";
     }
+  });
+
+  it("a lane whose agent was made but whose answer was lost is the same agent when Start sends it again: one agent, one run", async () => {
+    let lose = true;
+    const kept: Made[] = [];
+    // The server makes lane 2's agent, then the answer is lost on its way back.
+    const { host, sent, made, went } = mount(started, null, (definition) => {
+      if (!(lose && definition.id.startsWith(`race-${LABEL}-2-`))) return undefined;
+      lose = false;
+      kept.push(definition);
+      return new Response("<html>Bad gateway</html>", { status: 502, headers: { "content-type": "text/html" } });
+    });
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    expect(host.querySelector('[data-race-lane="2"]')!.textContent).toContain("Not sure this lane started; Start again checks.");
+    expect(sent.map((s) => s.lane)).toEqual(["1"]);
+    made.push(...kept);
+    await act(async () => { button(host, "Start the lanes left")!.click(); });
+    await settle();
+    expect(made.filter((m) => m.id.startsWith(`race-${LABEL}-2-`)), "lane 2's agent, made once").toHaveLength(1);
+    expect(sent.map((s) => [s.lane, s.agentId])).toEqual([["1", made[0].id], ["2", kept[0].id]]);
+    // The agent was edited in the Agents list since it was made: the lane still runs its first revision, the model the
+    // race shows.
+    expect(sent[1].body.revision).toBe(`rev-${kept[0].id}`);
+    expect(went).toEqual([`#/races/${LABEL}`]);
+  });
+
+  it("a refused lane picked again lets its agent go (archived, so the Agents list keeps none of it) and makes a new one", async () => {
+    let refuse = true;
+    const { host, sent, made, archived } = mount((one) => one.lane === "2" && refuse
+      ? json(409, { error: { code: "agent_not_runnable", message: "That model doesn't run on this server: no key for it.", retryable: false } })
+      : started(one));
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    const refusedAgent = sent.find((s) => s.lane === "2")!.agentId;
+    expect(archived).toEqual([]);
+    await pick(picker(host.querySelector('[data-race-lane="2"]')!, "Lane 2 harness")!, "pi");
+    await settle();
+    expect(archived, "the refused pick's agent").toEqual([refusedAgent]);
+    refuse = false;
+    await act(async () => { button(host, "Start the lanes left")!.click(); });
+    await settle();
+    const again = sent.filter((s) => s.lane === "2").at(-1)!;
+    expect(again.agentId).not.toBe(refusedAgent);
+    expect(made.find((m) => m.id === again.agentId)?.harness).toBe("pi");
+  });
+
+  it("a refused last lane can be removed, since its refusal started nothing; with every lane left started, the race opens", async () => {
+    const { host, sent, archived, went } = mount((one) => one.lane === "3"
+      ? json(409, { error: { code: "agent_not_runnable", message: "That model doesn't run on this server: no key for it.", retryable: false } })
+      : started(one));
+    await act(async () => { button(host, "Add a lane")!.click(); });
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    expect(host.querySelector('[data-race-lane="3"]')!.textContent).toContain("no key for it");
+    expect(went).toEqual([]);
+    await act(async () => { button(host, "Remove lane 3")!.click(); });
+    await settle();
+    expect(host.querySelectorAll("[data-race-lane]")).toHaveLength(2);
+    expect(sent.map((s) => s.lane)).toEqual(["1", "2", "3"]);
+    expect(archived, "the removed lane's agent, which never ran").toEqual([sent[2].agentId]);
+    expect(went).toEqual([`#/races/${LABEL}`]);
+  });
+
+  it("a started or unsure last lane keeps its place: no Remove for it", async () => {
+    const { host } = mount((one) => one.lane === "3" ? Promise.reject(new TypeError("Failed to fetch")) : started(one));
+    await act(async () => { button(host, "Add a lane")!.click(); });
+    await act(async () => { button(host, "Add a lane")!.click(); });
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    // Lane 4 started, and lane 3 may have: neither is offered for removal.
+    expect(button(host, "Remove lane 4")).toBeUndefined();
   });
 
   it("lanes are seeded when the capabilities first name a harness that runs, after none did", async () => {

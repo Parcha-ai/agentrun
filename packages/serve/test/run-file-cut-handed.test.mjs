@@ -3,7 +3,7 @@
 // holds them, a cut read cuts them from its files by value. Its end erases them, and writes in their place its census:
 // where in each file they sat, never the values (run-census.ts). After the end a cut read cuts a file by its census entry
 // while the file's bytes are the ones counted, and withholds it (403) otherwise: edited or written after the end, or a
-// run whose end erased them with no census (a runner from before the census: its launch still "pending"). A run never
+// run whose end erased them with no census (the marker, or a "pending" an earlier build left). A run never
 // handed a secret reads as before. A launch whose sealed part doesn't open here withholds the run, as an unreadable sign-in
 // does. Read raw, a file of a run that is shown is the bytes as written. The model gateway is a loopback stand-in (fixtures/faux-gateway.mjs) behind a front that holds
 // the run's first model call, so the test acts while the run is live.
@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import * as handedValues from "../dist/handed-values.js";
 import { WITHHELD_TITLE } from "../dist/run-view.js";
 import { raw } from "./store-target.mjs";
 import { agent, follow, runDir, serve, withEnv } from "./support.mjs";
@@ -185,14 +186,14 @@ test("an ended run's export carries none of its files once its end erased what i
   assert.ok(doc.omitted.some((one) => one.what === "files" && one.why === "uncounted"), `the files left out as uncounted: ${JSON.stringify(doc.omitted)}`);
 });
 
-test("an ended run whose end erased its secrets with no census (its launch left pending, or the marker) withholds its files", { timeout: 180_000 }, async (t) => {
+test("an ended run whose end erased its secrets with no census (the marker, or a pending an earlier build left) withholds its files", { timeout: 180_000 }, async (t) => {
   const handed = await liveRun(t, { start: { model_key: KEY } });
   await writeFile(join(handed.work, "notes.txt"), "plain words\n");
   await handed.ended();
   assert.deepEqual(await cutRead(handed, "notes.txt"), [200, "plain words\n"], "counted at its end");
-  // A runner from before the census erases the sealed key and writes nothing else.
+  // A "pending" 0027 or an earlier build left is no census this build reads.
   await setCensus(handed.data, handed.runId, JSON.stringify("pending"));
-  assert.deepEqual(await cutRead(handed, "notes.txt"), [403, "forbidden"], "pending with nothing sealed: withheld");
+  assert.deepEqual(await cutRead(handed, "notes.txt"), [403, "forbidden"], "a pending left over: withheld");
   await setCensus(handed.data, handed.runId, JSON.stringify("unscanned"));
   assert.deepEqual(await cutRead(handed, "notes.txt"), [403, "forbidden"], "the marker: withheld");
 });
@@ -320,14 +321,26 @@ test("a message that hands a new model_key mid-turn keeps the one it replaced cu
   assert.deepEqual(await cutRead(run, "both.txt"), [200, "first=[redacted]\nsecond=[redacted]\n"]);
 });
 
-test("a message sealed over a launch whose sealed part doesn't open here keeps the run withheld: what it held is not known", { timeout: 180_000 }, async (t) => {
+test("a message that hands a new key to a run whose launch's sealed part doesn't open here is refused, and the run stays withheld: what it held is not known", { timeout: 180_000 }, async (t) => {
   const run = await liveRun(t, { start: { model_key: KEY } });
   await writeFile(join(run.work, "notes.txt"), `first=${KEY}\n`);
   await damageSeal(run.data, run.runId);
   const sent = await run.api("POST", `/runs/${run.runId}/messages`, { content: "Go on.", model_key: KEY_TWO });
-  assert.equal(sent.status, 202, JSON.stringify(sent.body));
-  assert.deepEqual(await cutRead(run, "notes.txt"), [403, "forbidden"], "a fresh seal is no reason to read the run cut of the new key alone");
+  assert.deepEqual([sent.status, sent.body.error?.details?.reason], [409, "withheld"], JSON.stringify(sent.body));
+  assert.deepEqual(await cutRead(run, "notes.txt"), [403, "forbidden"], "no fresh seal makes the run read cut of the new key alone");
   run.release();
+});
+
+test("a message to a run whose launch's sealed part doesn't open here is refused (409 not_continuable, reason withheld), never written uncut: the key it says is in no command row, nor anywhere the run is served after its end", { timeout: 180_000 }, async (t) => {
+  const run = await liveRun(t, { start: { model_key: KEY } });
+  await damageSeal(run.data, run.runId);
+  const sent = await run.api("POST", `/runs/${run.runId}/messages`, { content: `Use ${KEY} again.` });
+  assert.deepEqual([sent.status, sent.body.error?.code, sent.body.error?.details?.reason], [409, "not_continuable", "withheld"], JSON.stringify(sent.body));
+  assert.equal(sent.body.error.message, handedValues.WITHHELD_MESSAGE);
+  const commands = JSON.stringify((await run.store.commands(run.runId, 0)).map((command) => command.body));
+  assert.equal(commands.includes(KEY), false, `in no command row: ${commands}`);
+  await run.ended();
+  assert.equal((await served(run)).text.includes(KEY), false, "after its end: not in its view, list row or timeline");
 });
 
 test("a file that starts with a byte order mark, or holds one later, is cut at the same bytes after the run's end as while it ran: no end of the key shows", { timeout: 180_000 }, async (t) => {
