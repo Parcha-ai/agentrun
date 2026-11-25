@@ -5,15 +5,17 @@
 // is "vendor" is named in the line, and no other is, so a provider added to the registry can't be missed. A provider
 // that can't be built here fails the test in words that name it.
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
 import { PROVIDERS, providerFor } from "@parcha/agentrun-computer";
 
 const { runEndComputers } = await import("../dist/workspace/run-end-computers.js");
 const { providerOptions } = await import("../dist/computer-keys.js");
 
-/** A dummy value for the key `name`, of the shape its provider's create() checks: a URL, an SSH private key's armour, or
- *  a word of lowercase letters and a hyphen (an API key, a token, an app's name). */
-const dummy = (name) => (/_URL$/.test(name) ? "https://example.invalid" : /SSH_KEY$/.test(name) ? "-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----\n" : "test-value");
+/** A dummy value for the key `name`, of the shape its provider's create() checks: a URL, an SSH private key (one made
+ *  here, registered nowhere), or a word of lowercase letters and a hyphen (an API key, a token, an app's name). */
+const dummy = (name) =>
+  /_URL$/.test(name) ? "https://example.invalid" : /SSH_KEY$/.test(name) ? generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "pem" }) : "test-value";
 
 /** Each registered provider's label and lifetime, built with a dummy value for each key it requires. Docker's create
  *  asks the docker CLI for the host's architecture unless it is handed a daemon path: it is handed one, so no Docker
