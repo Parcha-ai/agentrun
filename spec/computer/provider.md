@@ -92,7 +92,8 @@ the creates in flight and the requests ended. What the vendor holds under the na
 hosted adapter lists the name and reads each machine it finds by `get`, Docker's `docker run --name` finds the name
 taken and reads that container, and the phone harness reads its ledger by name and sends a key derived from the id as
 the `Idempotency-Key`. Orgo lists the workspace's computers before it makes one and takes the oldest whose name begins
-with the request's; Browserbase and Kernel list the running and starting browsers by the create label before they make
+with the request's, and lists them again after Orgo's answer and once its computer is up, deleting its own where an
+older one of the request is there and answering that one, as the hosted adapter converges; Browserbase and Kernel list the running and starting browsers by the create label before they make
 one; the local browser makes the request's directory under its root with `mkdir`, which one create alone wins, and
 reads the browser in a directory already there.
 

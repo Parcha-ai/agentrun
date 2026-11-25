@@ -194,7 +194,7 @@ test("Orgo create: the computer in the workspace, computerd uploaded and install
 	assert.equal(file.deadline, init.deadline);
 	assert.equal(record.name.slice(record.name.lastIndexOf("-d") + 2), Math.ceil(Date.parse(init.deadline) / 1000).toString(36), "the name's deadline is init's, in whole seconds rounded up");
 	assert.equal(file.maxDeadline, init.max);
-	assert.deepEqual(api.routes(), [`GET /workspaces/${WORKSPACE}`, "POST /computers"], "Orgo's REST is the lookup of the request's computer and the create; the rest is the channel");
+	assert.deepEqual(api.routes(), [`GET /workspaces/${WORKSPACE}`, "POST /computers", `GET /workspaces/${WORKSPACE}`, `GET /workspaces/${WORKSPACE}`], "Orgo's REST is the lookup of the request's computer, the create, and the workspace read again after Orgo's answer and once the computer is up; the rest is the channel");
 	for (const request of api.requests) keyless({ ...request, headers: { ...request.headers, authorization: undefined } }, `${request.method} ${request.path}`);
 	secretless(created, "create's result");
 });

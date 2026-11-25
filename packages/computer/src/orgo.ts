@@ -183,6 +183,9 @@ const DEFAULT_DAEMON_PATH = fileURLToPath(new URL("./computerd-linux-amd64", imp
 export const LABELS_FILE = "/opt/agentrun/labels.json";
 const STAGING = "/tmp/agentrun-computerd-";
 const LISTEN_RETRY_MS = 250;
+/** The order a request's computers are read in (#held, #converge): the oldest first, by created_at, then id. */
+const oldestFirst = (a: OrgoComputer, b: OrgoComputer): number => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")) || a.id.localeCompare(b.id);
+
 /** How often a delete that answers 409 (the computer waking) is tried again. */
 const DELETE_TRIES = 5;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "labels", "gpu"]);
@@ -458,6 +461,12 @@ export class OrgoProvider implements ComputerProvider {
 		};
 		const made = await this.#rest.request<OrgoComputer>("POST", "/computers", { body, timeoutMs: this.#timeouts.createMs, ...(signal ? { signal } : {}) });
 		if (!made.ok) {
+			// A name Orgo holds already (409) is another process's create of this request in the same second: that computer
+			// is answered as a retry's would be.
+			if ((made as { status?: number }).status === 409) {
+				const theirs = await this.#held(spec, request, labels, signal);
+				return !theirs.ok || theirs.value !== undefined ? (theirs as Result<CreatedComputer>) : made;
+			}
 			// A create Orgo refused (a 4xx) made nothing. One whose answer never came may have: it goes by its name.
 			if (["invalid", "denied", "limit", "not_found", "refused"].includes(made.error.code)) return made;
 			this.#requests.end(request);
@@ -470,6 +479,9 @@ export class OrgoProvider implements ComputerProvider {
 		}
 		this.#requests.made(request);
 		const ref = { id, name };
+		// Another process's create of this request may have made one too (#converge): the older is kept.
+		const first = await this.#converge(spec, request, labels, made.value, signal);
+		if (first !== undefined) return first;
 		// An agent's computer's labels go in the ledger at once, so list finds it as the agent's whatever happens next.
 		if (owner !== undefined) {
 			const kept = await this.#keep({ id, labels });
@@ -478,8 +490,38 @@ export class OrgoProvider implements ComputerProvider {
 		const file: LabelsFile = { name, labels, deadline: owner === undefined ? deadline : NO_DEADLINE, maxDeadline: owner === undefined ? maxDeadline : NO_DEADLINE, image: spec.image, cpus: cpu, memoryMb: ram * 1024 };
 		const prepared = await this.#prepare(ref, made.value.status, file, daemon, signal, init);
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" });
-		if (prepared.ok) return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
-		return this.#abandon(ref, prepared.error);
+		if (!prepared.ok) return this.#abandon(ref, prepared.error);
+		// The last read of the workspace, once this computer is up: an older one listed only now is answered here.
+		const last = await this.#converge(spec, request, labels, made.value, signal);
+		if (last !== undefined) return last;
+		return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
+	}
+
+	/**
+	 * The one computer a request keeps. Two creates of one request in two processes can both find no computer for it
+	 * (#held) and both make one: CreateRequests holds within one provider alone, and the names differ once the
+	 * deadline in them does. So after Orgo's answer the workspace is read again: where an older computer of this request
+	 * is there (the oldest by created_at, then id, the order #held reads), this one is deleted and the older answered
+	 * through #held, as a retry's create answers it. Every process picks the same one from the same listing, so the
+	 * newer creates delete their own and the oldest keeps its. Undefined when this computer is the request's oldest (or
+	 * the listing fails: the create goes on with its own).
+	 */
+	async #converge(spec: ComputerSpec, request: string, labels: Record<string, string>, mine: OrgoComputer, signal?: AbortSignal): Promise<Result<CreatedComputer> | undefined> {
+		const listed = await this.#desktops(signal);
+		if (!listed.ok) return undefined;
+		const hex = request.slice("computer-".length);
+		const holders = listed.value.filter((one) => nameParts(one.name)?.hex === hex && this.#ours(one) && RUNNING.has(one.status));
+		// Not listed yet, it was made just now: no older than now.
+		if (!holders.some((one) => one.id === mine.id)) holders.push({ ...mine, created_at: mine.created_at ?? new Date().toISOString() });
+		const [kept] = holders.sort(oldestFirst);
+		if (kept === undefined || kept.id === mine.id) return undefined;
+		const ref = { id: mine.id, name: mine.name };
+		const deleted = await this.#delete(ref);
+		if (!deleted.ok) return fail(deleted.error.code, `${kept.name}, the older computer of this request, is kept, and ${ref.name} could not be deleted (${deleted.error.message}); Orgo ends it at its end`);
+		const theirs = await this.#held(spec, request, labels, signal);
+		if (!theirs.ok || theirs.value !== undefined) return theirs as Result<CreatedComputer>;
+		this.#requests.end(request);
+		return fail("exists", `${ref.name} was deleted for ${kept.name}, the older computer of this request, which is gone now: create with a new request id`);
 	}
 
 	/**
@@ -499,7 +541,7 @@ export class OrgoProvider implements ComputerProvider {
 		for (;;) {
 			const listed = await this.#desktops(signal);
 			if (!listed.ok) return listed;
-			const found = listed.value.filter((one) => nameParts(one.name)?.hex === hex && this.#ours(one)).sort((a, b) => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")) || a.id.localeCompare(b.id));
+			const found = listed.value.filter((one) => nameParts(one.name)?.hex === hex && this.#ours(one)).sort(oldestFirst);
 			const record = found[0];
 			if (record === undefined) return ok(undefined);
 			const ref = { id: record.id, name: record.name };

@@ -150,6 +150,62 @@ test("orgo: the conformance suite's provider.create-retried and provider.create-
 	assert.deepEqual(report.cleanup.left, []);
 });
 
+/** Holds Orgo's POST /computers until `count` creates have asked, then lets them land in the order they asked. */
+const postsTogether = (count) => {
+	const waiting = [];
+	return ({ method, path }) => {
+		if (method !== "POST" || path !== "/computers" || waiting.length >= count) return undefined;
+		return new Promise((resolve) => {
+			waiting.push(resolve);
+			if (waiting.length === count) for (const go of waiting) go();
+		});
+	};
+};
+
+/** The computers Orgo still holds for a request, and the ones deleted. */
+const orgoHeld = (api, requestId) => {
+	const mine = [...api.computers.values()].filter((record) => record.name.startsWith(`${computerNameFor(requestId)}-`));
+	return { live: mine.filter((record) => !record.deleted), deleted: mine.filter((record) => record.deleted) };
+};
+
+test("orgo: two provider instances whose creates of one request both find nothing and both make a computer answer one, the older, and delete the newer", async () => {
+	const api = fakeOrgoApi({ hold: postsTogether(2) });
+	const channel = fakeOrgoChannel();
+	const [one, two] = [await VENDORS.orgo.make({ api, channel }), await VENDORS.orgo.make({ api, channel })];
+	const requestId = requestOf("orgo-both");
+	const spec = VENDORS.orgo.spec();
+	const first = one.create(spec, { requestId });
+	// The second starts in a later second, so its name, whose deadline is in whole seconds, is not the first's: Orgo
+	// takes both creates, and neither finds the other's computer before it makes its own.
+	await new Promise((resolve) => setTimeout(resolve, 1_100));
+	const second = two.create(spec, { requestId });
+	const [a, b] = await Promise.all([first, second]);
+	const kept = okOf(a, "the first create");
+	assert.deepEqual(refOf(okOf(b, "the second create")), refOf(kept), "both answer one computer");
+	assert.equal(VENDORS.orgo.made({ api }), 2, "both made one");
+	const { live, deleted } = orgoHeld(api, requestId);
+	assert.deepEqual(live.map((record) => record.id), [kept.id], "Orgo holds the older alone");
+	const [older, newer] = [...api.computers.values()].filter((record) => record.name.startsWith(`${computerNameFor(requestId)}-`));
+	assert.equal(kept.id, older.id, "the computer answered is the older, the first one Orgo made");
+	assert.deepEqual(deleted.map((record) => record.id), [newer.id], "the newer is deleted");
+	assert.deepEqual(channel.calls.filter((call) => call.computer === newer.id), [], "the newer is deleted before anything is uploaded or run in it");
+	okOf(await one.release(kept, "delete"), "release");
+});
+
+test("orgo: two provider instances whose creates of one request start together answer one computer", async () => {
+	const api = fakeOrgoApi({ hold: postsTogether(2) });
+	const channel = fakeOrgoChannel();
+	const [one, two] = [await VENDORS.orgo.make({ api, channel }), await VENDORS.orgo.make({ api, channel })];
+	const requestId = requestOf("orgo-together");
+	const spec = VENDORS.orgo.spec();
+	// Most often both names are one (Orgo refuses the second's: name in use); across a second's edge they differ.
+	const [a, b] = await Promise.all([one.create(spec, { requestId }), two.create(spec, { requestId })]);
+	const kept = okOf(a, "the first create");
+	assert.deepEqual(refOf(okOf(b, "the second create")), refOf(kept), "both answer one computer");
+	assert.deepEqual(orgoHeld(api, requestId).live.map((record) => record.id), [kept.id], "Orgo holds one computer for the request");
+	okOf(await one.release(kept, "delete"), "release");
+});
+
 test("a create with no request id is refused invalid on each, before any vendor call", async () => {
 	for (const [id, vendor] of Object.entries(VENDORS)) {
 		const fake = vendor.vendor();

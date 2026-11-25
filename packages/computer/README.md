@@ -2429,8 +2429,12 @@ The Linux desktop makes one computer per request id. Its Orgo name begins with t
 `computer-<12 hex of sha256(requestId)>`, then the run's hash, the epoch and the deadline (`src/orgo-names.ts`). Before
 it makes a computer it lists the workspace's computers and takes the oldest whose name begins with the request's: one
 that runs with the same labels, image and sizes (its labels file) is answered, one of another spec or no longer
-running is refused `exists`, and one still being made is waited for. The parked desktops name each computer at random,
-so a create retried there makes a second computer.
+running is refused `exists`, and one still being made is waited for. Two processes whose creates of one request
+both find nothing make two computers, so after Orgo's answer, and again once its computer is up, a create reads the
+workspace once more: where an older computer of the request is there (by `created_at`, then id), it deletes its own
+and answers the older, and the oldest keeps its own. A name Orgo already holds (two creates in the same second) is
+answered the same way. The parked desktops name each computer at random, so a create retried there makes a second
+computer.
 
 - **What each offers.** The protocol groups, by Orgo's calls:
   - `screen`: Orgo's screenshot (`response_format=base64&format=png`). A region is cropped in process. The live view
