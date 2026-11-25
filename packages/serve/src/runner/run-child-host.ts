@@ -424,13 +424,17 @@ const always: Check = () => true;
  *  its Archil settings (no credential), its MCP hosts and server names, its Claude-login mode and its approvers. */
 const SHARED_SETTINGS: ReadonlySet<string> = new Set(["tool-settings", "archil", "mcp.private_oauth_hosts", "mcp.server_own", "claude_login", "approvers"]);
 
-/** The rows of the claim's own run that its process writes, and removes, itself: its browser's wait that ended
- *  (browser-wait-ended.ts) and its browser's take (browser-hold.ts), each the run's process's report of its own browser
- *  to the server's reads. No other row is its to write. */
-const ownWrittenSettings = (bound: Bound): ReadonlySet<string> => new Set([
-  waitEndedKey(bound.claim.runId),
-  browserHoldKey(bound.claim.runId),
+/** The rows of the claim's own run that its process writes, and removes, itself, each with its string fields (beside the
+ *  claim's epoch): its browser's wait that ended (browser-wait-ended.ts) and its browser's take (browser-hold.ts), each
+ *  the run's process's report of its own browser to the server's reads. No other row is its to write. */
+const ownWrittenSettings = (bound: Bound): ReadonlyMap<string, readonly string[]> => new Map([
+  [waitEndedKey(bound.claim.runId), ["at", "why"]],
+  [browserHoldKey(bound.claim.runId), ["session", "at"]],
 ]);
+
+/** The most one of those rows may take, as JSON bytes: a session's tag, a time and a timeline row's words fit many times
+ *  over, and the server parses the row on every read of the run and every Screen poll. */
+const OWN_ROW_MAX_BYTES = 4096;
 
 /** The settings of the claim's own run and agent a run's process may read: its run's Archil disk, SDK record, kept
  *  computer, browser wait and browser take, and its agent's Archil disk and promotions. Every other row (another run's
@@ -439,7 +443,7 @@ const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
   `archil.run.${bound.claim.runId}`,
   `sdk-run:${bound.claim.runId}`,
   keptKeyOf(bound.claim.runId),
-  ...ownWrittenSettings(bound),
+  ...ownWrittenSettings(bound).keys(),
   `archil.agent.${bound.agentId}`,
   `learning.promotions.${bound.agentId}`,
 ]);
@@ -447,8 +451,18 @@ const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
 /** Whether a run's process may read setting `key`. */
 export const settingReadable = (key: unknown, bound: Bound): boolean => typeof key === "string" && (SHARED_SETTINGS.has(key) || ownSettings(bound).has(key));
 const readableSetting: Check = (args, bound) => settingReadable(args[0], bound);
-/** Whether a run's process may write or remove setting `key`: only its own run's browser rows (ownWrittenSettings). */
-const writableSetting: Check = (args, bound) => typeof args[0] === "string" && ownWrittenSettings(bound).has(args[0]);
+/** Whether a run's process may remove setting `key`: only its own run's browser rows (ownWrittenSettings). */
+const removableSetting: Check = (args, bound) => typeof args[0] === "string" && ownWrittenSettings(bound).has(args[0]);
+/** Whether a run's process may write `value` to setting `key`: one of its own run's browser rows, with that row's fields
+ *  alone, each a string, the claim's own epoch, and at most OWN_ROW_MAX_BYTES. A row with a later epoch would be kept by
+ *  every clear of this claim (browser-hold.ts), so a later claim would read a take nobody holds. */
+const writableSetting: Check = ([key, value], bound) => {
+  const fields = typeof key === "string" ? ownWrittenSettings(bound).get(key) : undefined;
+  if (!fields || typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).length === fields.length + 1 && row.epoch === bound.claim.epoch && fields.every((field) => typeof row[field] === "string")
+    && Buffer.byteLength(JSON.stringify(row)) <= OWN_ROW_MAX_BYTES;
+};
 
 /** The store's methods a run's loop calls, each with what binds it to the claim. A method not here is refused, and the
  *  refusal is said on the runner's log. Reads of the claim's run, its launch, its commands and its agent's revisions;
@@ -473,7 +487,7 @@ const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["agents.revisions", ownAgent],
   ["settings.get", readableSetting],
   ["settings.put", writableSetting],
-  ["settings.remove", writableSetting],
+  ["settings.remove", removableSetting],
   // Its rows filtered to the readable ones (storeCall).
   ["settings.all", always],
   ["mcp.pin", ownRun],
@@ -692,8 +706,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
    *  handed none of the server's (claim-secrets.ts keyedAtClaim, held here for the runner's answers). */
   const runKeyed = async () => (await openRunModelKey(keys, claim.runId)) !== undefined;
   /** Whether the claim's run is held, its model kept from running at its create (hold.refused): it routes no model, so
-   *  whatever its process asks, the runner hands it no model key, answers it keyless and refuses it a learning step (its
-   *  learned workflows and its end-of-run step), as its spec asks for none of them (adapter-run-spec.ts, cli-run-spec.ts). */
+   *  whatever its process asks, the runner hands it no model key, answers it keyless, opens it no harness key and no MCP,
+   *  and refuses it a learning step (its learned workflows and its end-of-run step), as its spec asks for none of them
+   *  (adapter-run-spec.ts, cli-run-spec.ts). */
   const modelRefused = launch.hold?.refused !== undefined;
   const refusedSpend = (): ClaimRefused => new ClaimRefused("a held run its model kept from running asks its runner for no model spend: it routes no model and takes no learning step");
   const learningFolder = async () => {
@@ -792,7 +807,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       return runSignIn(store, sealKey, claim, String(resolution), { vendors: vendorsOver(() => claimed, vendorFetch), log });
     },
     verifySignIn: (kept, at) => verifyRunSignIn(store, sealKey, claim, kept, Number(at)),
+    // None for a held run its model kept from running: nothing can call it, so no credential of it is opened.
     mcp: (ask) => projectCall(async () => {
+      if (modelRefused) return undefined;
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
       // What the gateway files goes in the run's own files. In Mode 1 that is the run's folder on this machine. In Mode 2
@@ -876,9 +893,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // harness is a plan-billed recipe on this runner's table, and never another harness's. Opened for the recipe file
     // the process loaded (`digest`), never the one this runner's table read at its start: a file swapped for another
     // vendor's under the same id since then runs its own binary, and a key bound to the first file never opens for it.
+    // None for a held run its model kept from running: its agent never starts.
     harnessKeys: async (digest) => {
       const harness = launch.harness ?? (revision.body as { harness?: string }).harness;
-      const recipe = harness === undefined ? undefined : planRecipeOf(deps.env, harness);
+      const recipe = harness === undefined || modelRefused ? undefined : planRecipeOf(deps.env, harness);
       return recipe?.keys.length && typeof digest === "string" ? openHarnessKeys(store, sealKey, { ...recipe, digest }) : {};
     },
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
@@ -922,7 +940,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           hadComputer: async () => (await ask.hadComputer()) === true,
           ...(typeof ask.turnedOff === "string" ? { turnedOff: ask.turnedOff } : {}),
           ...(ask.signal instanceof AbortSignal ? { signal: ask.signal } : {}),
-          ...(made ? { revokeMount: () => made.revoke(), inheritMount: () => made.inherit() } : {}),
+          ...(made ? { revokeMount: () => made.revoke(), inheritMount: () => made.inherit(), mountDisk: () => made.disk.id } : {}),
           ...(typeof ask.onImageWait === "function" ? { onImageWait: ask.onImageWait } : {}),
           ...(typeof ask.onStarting === "function" ? { onStarting: ask.onStarting } : {}),
           ...(typeof ask.onConnected === "function" ? { onConnected: ask.onConnected } : {}),

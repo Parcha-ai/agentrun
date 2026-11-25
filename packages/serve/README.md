@@ -234,6 +234,11 @@ A request's path has no query. `auth_failed` names the route and why (`no_creden
 `wrong_launch_code`, `wrong_password`, `sign_in_table_full`), never the token given nor any part of it. `AGENTRUN_LOG=quiet` leaves out the request lines; the
 run and `auth_failed` lines stay. A run whose process failed at its start says why in its `error.message`, in words.
 One line at start, `event=boxes`, says which boxes this server has ([Sandbox](#sandbox)); quiet keeps it too.
+`AGENTRUN_LOG=debug` keeps every line and also writes into a run's log one line per call an ACP agent announces, when
+its recipe declares `announces`: `acp: the agent announced a call`, with the call's `toolCallId`, its `kind`, the tool
+name the recipe's field holds when it names an AgentRun tool (at most 200 characters; `native` for any other call,
+since a recipe's field may sit inside the call's input) and the AgentRun tool it named, never the call's input. A call
+announced with no name (Cursor's) gets the line again when a later update names it.
 `event=harness_offers why=start ms=<n>` says how long the server took to check what each harness offers (each CLI's
 package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
@@ -1673,12 +1678,24 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   for by an id the server makes once in its data folder (`machine-id`, 0600) and reads back on every later start,
   never by the hostname, which on a laptop changes with the network. Two data folders are two machines. A setting
   saved before the id reads as `other_machine` until it is turned on again.
+  The login's folders must be the server's user's own: at either place its home, and on `machine` each folder the
+  server's environment gives it (`CLAUDE_CONFIG_DIR`, `CLAUDE_SECURESTORAGE_CONFIG_DIR`, and `ANTHROPIC_CONFIG_DIR`
+  or else `XDG_CONFIG_HOME`'s `anthropic`). Each is a folder that user owns, or one still to make in a folder it owns,
+  reached through no other user's link or folder, and writable by its owner alone; a folder on the way may be open to
+  all where the sticky bit is set, as on `/tmp`. Else the turn-on and the sign-in answer `403` in words, no run goes
+  on the login, and a setting saved before is kept but not used, the start logging why. A folder its group may write
+  in is refused in words that name it, its mode and the `chmod g-w,o-w` that closes it. A umask of 002, which some
+  distributions (Ubuntu's user-private groups among them) give each user, makes new folders so. A folder of the login
+  still to make is made by AgentRun at the turn-on and before the CLI's sign-in, 0700 whatever the umask, so the login
+  the CLI signs in there is not refused after.
 - `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
-  organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
-  `other_machine`. `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
+  organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`,
+  `other_machine`, or `refused` (turned on and kept, but its folders or the home are refused, `refused` saying why;
+  `DELETE` turns it off, and an API key is made only after that). `folder` is the folder whose login the CLI is asked about, and `machine` is this machine's own
   login folder (`machine.source`: `CLAUDE_CONFIG_DIR` or `default`; `machine.credentials`: the server's
   `CLAUDE_SECURESTORAGE_CONFIG_DIR`, when it sets one). `command` is the line that signs the CLI in at
-  the login's place, for a terminal on the server's machine. Where the console is on that machine (a server on loopback
+  the login's place, for a terminal on the server's machine; it is empty where the login's folders are refused, and
+  `folder` is then the folder as the environment names it. Where the console is on that machine (a server on loopback
   with no public address), `can_start` is true and `POST /v2/settings/claude-login/login` starts the pinned CLI's own
   `auth login`, which opens a browser there. It runs with the same variables as `command`, so it signs in at `folder`,
   and the status is read there too, since `auth login` writes the account it signed in to its config dir. On
@@ -2542,8 +2559,9 @@ lists. Composio's server can leave out an action it was allowed (it did for `HAC
 A refresh of a saved Composio server also reads its account at Composio, and every read of the server then says it as
 `composio_account: {state, labels?, checked_at}`: `connected` with each account's label (its alias, else the name
 Composio shows, else its word id; never its id or a token), `pending` while its connect link is unfinished, `expired`,
-`none`, or `unknown` when Composio didn't answer. An account Composio answers as another user's is never the server's,
-and only one it names as the server's user's gives a label. A per-run server has none; an empty recorded user reads
+`none`, or `unknown` when Composio didn't answer. Only an account Composio names as the server's user's is the server's,
+for its state, its label, a save and a trigger alike: one answered as another user's, or with no user at all, never is,
+and the user connects one again. A per-run server has none; an empty recorded user reads
 `unknown`. The API token sees `composio_account` too, in a server's full read: its label may be the account's email.
 
 A saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until

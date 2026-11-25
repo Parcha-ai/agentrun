@@ -489,7 +489,7 @@ test("a redirect is never followed, and a toolbox URL that is not https is refus
 	const { rec, provider } = setup({ [`GET /api/sandbox/${sb.id}`]: { body: sb } });
 	const connected = await provider.connect(REF);
 	assert.equal(connected.error?.code, "vendor");
-	assert.match(connected.error.message, /not https/);
+	assert.match(connected.error.message, /the toolbox URL Daytona gave for \S+ must be https, so the key never crosses in the clear: http:/);
 	assert.deepEqual([...new Set(rec.requests.map((r) => r.host))], ["api.daytona.test"], "nothing went to the toolbox");
 });
 

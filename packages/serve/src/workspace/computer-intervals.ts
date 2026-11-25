@@ -31,7 +31,7 @@ export interface IntervalWrites {
 }
 
 /** The default log: the runner's stderr, as its other lines. */
-const stderrLog = (line: string): void => void process.stderr.write(`agentrun-serve runner: ${line}\n`);
+export const stderrLog = (line: string): void => void process.stderr.write(`agentrun-serve runner: ${line}\n`);
 
 const count = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 

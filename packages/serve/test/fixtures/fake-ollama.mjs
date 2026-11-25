@@ -4,6 +4,7 @@
 // never counted. No imports but node's, so a walk with no built serve takes it too (packages/agentrun/test/walk-model.mjs).
 // Its models are synthetic: a name, its capabilities, its family and its context length, as /api/show reports them.
 import { createServer } from "node:http";
+import { freePort } from "./ports.mjs";
 
 /** The models a fake lists by default: one that does not take tools (tools as text) trained on a 40,960-token context,
  *  one that takes tools and thinks trained on 131,072, one that only embeds. A model with no `context_length` has none in
@@ -105,25 +106,32 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
 
 /** A fake Ollama on 127.0.0.1, closed at the test's end: `url` (http://127.0.0.1:<port>), `host` (127.0.0.1:<port>, the
  *  form OLLAMA_HOST usually takes), `got`, `remove(tag)` and `slowTags(ms)` (ollamaHandler's). `port`: one to listen on (an Ollama started late, on the
- *  address closedPort gave), else any. */
-export async function fakeOllama(t, { port: asked = 0, ...options } = {}) {
+ *  address freePort gave, fixtures/ports.mjs), else a new one from freePort, never port 0: serve keeps each address's
+ *  listing for OLLAMA_TTL_MS, so a fake handed the port of one closed earlier in its file would be answered for by
+ *  that fake's listing and never asked. A port another listener holds rejects with its error (EADDRINUSE), never an
+ *  uncaught one. `down`: its switch, off: every connection is reset as it comes, so it answers nothing, as an Ollama
+ *  that is not running, on a port the test still holds (no other listener can take it, as one can take a port freePort
+ *  gave and nothing holds); `setDown(false)` turns it on. */
+export async function fakeOllama(t, { port: given, down = false, ...options } = {}) {
+  const asked = given ?? (await freePort());
   const got = { tags: 0, show: [], chat: [] };
   const handle = ollamaHandler({ ...options, got });
   const server = createServer(handle);
-  await new Promise((resolve) => server.listen(asked, "127.0.0.1", resolve));
+  let off = down;
+  server.on("connection", (socket) => {
+    if (off) socket.destroy();
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(asked, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
   t.after(() => new Promise((resolve) => {
     server.closeAllConnections();
     server.close(() => resolve());
   }));
   const { port } = server.address();
-  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags };
-}
-
-/** A loopback port nothing listens on: one a server held, then closed. */
-export async function closedPort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags, setDown: (value) => void (off = value) };
 }

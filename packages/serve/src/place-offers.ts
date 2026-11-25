@@ -13,7 +13,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { PROVIDERS } from "@parcha/agentrun-computer";
+import { containerSigns, PROVIDERS } from "@parcha/agentrun-computer";
 import { withoutSecrets } from "./secrets.js";
 
 /** Every box a place may name, in the order capabilities lists them. */
@@ -113,10 +113,10 @@ export type ContainerFacts = { where: "host" | "image" | "other"; exists?: (path
 /** Set by AgentRun's image (packages/serve/docker/Dockerfile): the socket advice (DOCKER_NO_SOCKET, DOCKER_SOCKET_GROUP)
  *  is for it alone, and Kubernetes and other containerd runtimes, which write no mark of their own, run it too. */
 export const IMAGE_ENV = "AGENTRUN_IN_IMAGE";
-/** A container: AgentRun's image (IMAGE_ENV), or a runtime's mark (/.dockerenv, Podman's /run/.containerenv), which alone
- *  is some other container (a dev container). */
-export const containerOf = (env: NodeJS.ProcessEnv, exists: (path: string) => boolean = existsSync): ContainerFacts => ({
-  where: env[IMAGE_ENV] === "1" ? "image" : exists("/.dockerenv") || exists("/run/.containerenv") ? "other" : "host",
+/** A container: AgentRun's image (IMAGE_ENV), or any other that computer's containerSigns sees under `root` (the
+ *  filesystem's root; the tests' seam): a runtime's mark or a container's cgroup, such as a Kubernetes pod's. */
+export const containerOf = (env: NodeJS.ProcessEnv, root = "/"): ContainerFacts => ({
+  where: env[IMAGE_ENV] === "1" ? "image" : containerSigns(root) !== undefined ? "other" : "host",
 });
 /** A reason in a container that is not AgentRun's image: the host's words, said to be the container's (its own Docker, its
  *  own docker group), never compose.yaml's, which is not there to use. */
