@@ -195,3 +195,14 @@ test("an error event the provider's stream ends in, raced by its client hanging 
   assert.notEqual(spent, 0, 'never booked at $0');
   assert.equal(spent, HOLD);
 });
+
+test("a provider's refusal inside its stream (a rate limit before any content) that its client reads and then hangs up on is the provider's refusal: booked at $0, never as a stop", async (t) => {
+  // The other order: the provider's error event is the stream's first piece, read before the client had any of it; the
+  // client reads it and leaves while the provider still holds the stream open, so the proxy aborts after the error.
+  const refusal = 'data: {"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}\n\n';
+  const { ends, spent, store } = await hungUpOnRoute(t, refusal, '');
+  assert.equal(ends.length, 1, JSON.stringify(ends));
+  assert.deepEqual([ends[0].end, ends[0].label], ['nothing', 'refused'], JSON.stringify(ends[0]));
+  assert.equal(spent, 0, "the provider's refusal costs nothing");
+  assert.equal(await later(store), 0, 'read again at nothing');
+});
