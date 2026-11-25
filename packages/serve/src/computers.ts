@@ -171,10 +171,14 @@ export const COMPUTER_UNAVAILABLE = "computer_unavailable";
  *  computer that binds a local folder (Docker) reaches; Mode 2 keeps it on the owner's disk, which a computer holds as an
  *  Archil mount where its provider takes one and Archil's image is here, else as a synced folder the runner keeps on the
  *  disk (never a local Docker bind). A desktop, phone or browser holds no folder unless its provider takes one, so either
- *  mode takes it. `provider` is as this server has it (resolve-computer.ts entryHere). */
+ *  mode takes it. `provider` is as this server has it (resolve-computer.ts entryHere). In Mode 1, a provider that would
+ *  hold the folder in Mode 2 is told how to get there: Archil on, in Settings → Workspace. */
 export function modeRefusal(kind: ComputerKind, provider: ProviderEntry, mode: FolderMode): string | undefined {
   if (kind !== "sandbox") return undefined;
-  if (mode === "local" && !provider.mounts.includes("bind")) return `${provider.label} can't mount this server's run folders (they are on its own disk): set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
+  if (mode === "local" && !provider.mounts.includes("bind")) {
+    const archil = folderKindOf(provider, 2) === undefined ? "" : "keep run folders on an Archil disk instead (turn on Archil in Settings → Workspace), or ";
+    return `${provider.label} can't mount this server's run folders (they are on its own disk): ${archil}set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
+  }
   if (mode === "disk" && folderKindOf(provider, 2) === undefined) {
     const why = [provider.unmounted?.archil, provider.unmounted?.sync].filter((one) => one !== undefined).join("; ");
     return `${provider.label} can't mount the owner's disk this server keeps run folders on${why ? ` (${why})` : ""}: set this agent's computer to a sandbox that mounts it, or none (Settings → Computers)`;

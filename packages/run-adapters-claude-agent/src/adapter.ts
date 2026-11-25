@@ -20,7 +20,7 @@ import { anthropicPolicy, isoDay, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
 import { CLAUDE_AGENT_PACKAGE, ClaudeAgentNotInstalled, ClaudeAgentPinMismatch, ClaudeAgentThinkingOff } from "./errors.js";
 import { type ClaudeAgentSdk, claudeCodeHarness, claudeToolSearch, lostPrompts } from "./harness.js";
-import { JournalSessionStore } from "./store.js";
+import { JournalSessionStore, type BarrierTimers } from "./store.js";
 import { type ConfineChild, localMachine } from "./host/machine.js";
 import type { ClaudeAgentLogin, ClaudeLoginToken } from "./login.js";
 import { serialWriter } from "./serial.js";
@@ -140,6 +140,8 @@ export interface ClaudeAgentAdapterOptions {
   /** For tests only (AGENTRUN_CLAUDE_AGENT_STANDIN=1 under a test runner): a scripted SDK's stand-in CLI, which no
    *  pin is checked against. */
   standIn?: { command: string };
+  /** For tests: the timers a host tool's wait for its call to reach the log runs on (a fake clock). Default the system's. */
+  barrierTimers?: BarrierTimers;
   /** How hard the model thinks when a node names no level (its `thinking`, else its `effort`). Default medium; it is
    *  never off. */
   thinking?: ClaudeAgentThinking;
@@ -451,6 +453,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         ...(options.log ? { log: options.log } : {}),
         ...(options.now ? { now: options.now } : {}),
         ...(options.zone ? { zone: options.zone } : {}),
+        ...(options.barrierTimers ? { barrierTimers: options.barrierTimers } : {}),
         // The host's gate, asked about each host-tool call and each WebSearch before it is written or run.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       });

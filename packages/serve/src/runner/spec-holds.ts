@@ -14,6 +14,9 @@ type Held = {
   /** `park`: its release at the run's park, for its cause, true when it kept the computer (computer-for-claim.ts
    *  ClaimComputer.park). */
   readonly computer?: { release(): Promise<void>; park?(cause: ParkCause): Promise<boolean>; readonly keeps?: string };
+  /** Whether this claim's gate turned the run's computer off for the rest of the run (RunGate.computerOff): a park lets
+   *  it go instead of keeping it, since no later claim of the run attaches it. */
+  readonly computerOff?: () => boolean;
   readonly archil?: { revoke(): Promise<void> } | undefined;
   readonly ws?: { end(): Promise<void> };
   /** The claim's Archil keys, dropped from memory last, once nothing more reads the disk (the CLI spec's). */
@@ -50,7 +53,8 @@ export class SpecHolds {
    *  Workspace's end, the CLI's scratch, then the claim's keys where they are held. A second call waits for the first and
    *  does nothing more. At a park (`parked`, its cause), a computer that keeps (a desktop, a phone or a sandbox) is kept
    *  for the resume first: the tools' end is left out (the processes they started and their output live on it) and so is
-   *  the revoke (its mount writes on); a keep that fails lets it go as above. */
+   *  the revoke (its mount writes on); a keep that fails lets it go as above, as does a park of a computer this claim's
+   *  gate turned off (computerOff). */
   release(how?: { readonly parked?: ParkCause }): Promise<void> {
     return (this.#released ??= this.#releaseAll(how?.parked));
   }
@@ -78,7 +82,7 @@ export class SpecHolds {
   async #releaseAll(parked: ParkCause | undefined): Promise<void> {
     const { computer, archil, ws, scratch, keys } = this.#held;
     const log = this.#log;
-    const kept = parked !== undefined && computer?.keeps !== undefined && computer.park
+    const kept = parked !== undefined && computer?.keeps !== undefined && computer.park && this.#held.computerOff?.() !== true
       ? await computer.park(parked).catch((error: unknown) => {
           log(`the run's computer could not be kept: ${words(error)}`);
           return false;

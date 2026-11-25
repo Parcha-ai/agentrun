@@ -17,6 +17,22 @@ export type Locator = { file: string; id?: string };
 /** A locator as one string: the file, with `#id` after it when it names one. */
 export const locatorKey = ({ file, id }: Locator): string => (id === undefined ? file : `${file}#${id}`);
 
+/** What a locator's session takes: its bytes, and when it was last written (ms). A file's size and mtime for a file of
+ *  one session; for one session of many in a file (a database), that session's own. */
+export type LocatorSize = {
+  bytes: number;
+  mtimeMs: number;
+  /** The session it ran under, when the reader knows it without reading the session (a database row's parent): a caller
+   *  that leaves a subagent out (still written, too large) leaves the session it ran under out with it. */
+  parent?: string;
+  /** When the session began (ms), when the reader knows it without reading the session (a database row's): what its
+   *  order of reading may go by. */
+  created?: number;
+};
+
+/** What a reader's order of locators goes by. */
+export type OrderKey = { file: string; mtimeMs: number; id?: string; created?: number };
+
 /** One session a read found: where it is, what it is, and every request read (each counted once), whether turns are kept
  *  or not: what a total counts. A totals read (ReadOptions.totals) has them as `counts` alone, `requests` empty. */
 export type SessionRead<S extends string = string> = { locator: Locator; session: SessionOf<S>; requests: Answer[]; counts?: Counts };
@@ -47,6 +63,10 @@ export type ReadOptions = {
    *  `seen` like any other, as no later read takes it again. Default true: it is left out of `seen` until a read from
    *  the cursor takes it whole. */
   keepsCursor?: boolean;
+  /** The longest line, in bytes, the read takes: a longer one ends it with a LineTooLong error, before the line is
+   *  decoded. The read pool's workers set it to an eighth of their heap (pool.ts), so that no one line can end the
+   *  process; parseHome then reads the file on its own thread, with no such bound. Default: none. */
+  maxLine?: number;
 };
 
 export type Reader<S extends string = string, C = unknown> = {
@@ -60,8 +80,15 @@ export type Reader<S extends string = string, C = unknown> = {
   /** One locator read, from its start or from `cursor` (one this reader returned for the same locator). A cursor that no
    *  longer fits (the file replaced, truncated, rewritten) is read from the start, `resumed` false. */
   read: (locator: Locator, cursor?: C, options?: ReadOptions) => Promise<ReadResult<S, C>>;
-  /** The import's order of the listed locators, when not their path's (a record copied into two files is the first's). */
-  order?: (a: { file: string; mtimeMs: number }, b: { file: string; mtimeMs: number }) => number;
+  /** The import's order of the listed locators, when not their path's (a record copied into two files is the first's):
+   *  each with its file's mtime, its id in the file, and when its session began where the reader's stat says. */
+  order?: (a: OrderKey, b: OrderKey) => number;
+  /** The locator's own size and last write, when it is not its file's (a session in a database of many): what a caller's
+   *  size caps and liveness go by. null: the session is not there. Without it, the file's (locatorSize). */
+  stat?: (locator: Locator) => Promise<LocatorSize | null>;
+  /** The session the locator's ran under, from a bounded head of its file, never the rest (Codex's first line): what ties
+   *  a subagent a caller will not read (over its cap) to its run. None: no parent named there. */
+  parentOf?: (locator: Locator) => Promise<string | undefined>;
   /** Subagents' sessions that name no parent themselves, each with the session it ran under (`of`). */
   children?: (home: string, env?: Env) => Promise<{ locator: Locator; of: Locator }[]>;
 };

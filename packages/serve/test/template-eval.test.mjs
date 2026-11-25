@@ -960,6 +960,51 @@ test("a claim that lapses for one read, between reads that find the run held, do
   assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled at the stop");
 });
 
+test("a run a runner took before the queued bound, whose view later reads queued again, isn't cancelled at one claim read that finds none: rows that show started the bound over", { timeout: 180_000 }, async (t) => {
+  // As the held cases above, the run is claimed and holds in its turn. The proxy serves the first timeline page in that
+  // turn as working (its rows showing), then every later one as queued, as a run between steps or waiting on a steer
+  // reads. The first run read answers claim null, as a read in a claim's lapse would; later ones are
+  // the server's own. With a 1 s bound that first read lands past the bound since the run started: had the working page
+  // not started the bound over, it would cancel there. The eval is stopped once it reads the page after the second read.
+  const holding = join(await scratch(t), "holding");
+  process.env.AGENTRUN_TEST_EVAL_HOLD = holding;
+  t.after(() => delete process.env.AGENTRUN_TEST_EVAL_HOLD);
+  const { api, baseUrl, token } = await serve(t, { faux: FAUX, templates: FIXTURES });
+  const inTurn = untilFile(holding, new Promise((resolve) => t.after(resolve)));
+  const stop = new AbortController();
+  const timeline = (req) => /\/runs\/[^/]+\/timeline/.test(req.url);
+  const claims = [];
+  let pages = 0;
+  const arrived = (req) => {
+    if (claims.length >= 2 && timeline(req)) stop.abort();
+    return false;
+  };
+  const requeued = async (req, body) => {
+    if (req.method === "GET" && /^\/v2\/runs\/[^/?]+$/.test(req.url)) {
+      const run = JSON.parse(String(body));
+      if (claims.length === 0) {
+        claims.push(null);
+        return Buffer.from(JSON.stringify({ ...run, claim: null }));
+      }
+      claims.push(run.claim ?? null);
+      return body;
+    }
+    if (!timeline(req)) return body;
+    await inTurn;
+    const page = JSON.parse(String(body));
+    if (page.final) return body;
+    return Buffer.from(JSON.stringify({ ...page, status: pages++ === 0 ? "working" : "queued", state: "working" }));
+  };
+  const proxy = await refusing(t, baseUrl, arrived, requeued);
+  const stopped = evalTemplate({ dir: PKG, cases: ["held"], server: { baseUrl: proxy, token }, queueTimeoutMs: 1_000, signal: stop.signal });
+  // A wait that cancelled the run at the first unclaimed read ends the eval with a report, never this stop.
+  await assert.rejects(stopped, { name: "AbortError" });
+  assert.deepEqual(claims.slice(0, 2).map((claim) => claim !== null), [false, true], "the lapse, then held");
+  const runs = (await api("GET", "/runs?archived=true")).body.runs;
+  assert.equal(runs.length, 1);
+  assert.equal((await api("GET", `/runs/${runs[0].run_id}`)).body.status, "cancelled", "the run the eval started is cancelled at the stop");
+});
+
 test("a run once held whose claim then stays gone for the whole queued bound is cancelled as queued, and a read that finds it held again starts that bound over", { timeout: 180_000 }, async (t) => {
   // As the held cases above, the run is claimed and holds in its turn, and the proxy serves each timeline page as queued
   // once it is. The run reads the eval makes answer held, unclaimed, held, then unclaimed from there on, as a runner that
@@ -1107,7 +1152,7 @@ test("graders read the answer as written: the last fenced json block, a target f
   assert.match(gradeDeterministic(regex, record('```json\n{"draft": {}}\n```'), []).reason, /has no field draft\.text/);
   assert.match(gradeDeterministic({ ...regex, expect: "no_match" }, record("no json"), []).reason, /has no fenced json block/);
   const used = { file: "t.md", type: "tool_used", tools: ["mcp:crm/update_contact"], expect: "not_called", args: { method: "update" } };
-  const calls = { mcpCalls: [{ tool: "mcp:crm/update_contact", arguments: { method: "create", body: "x" } }], calls: [{ tool: "mcp:crm/update_contact" }] };
+  const calls = { fakeLog: [{ tool: "mcp:crm/update_contact", arguments: { method: "create", body: "x" } }], calls: [{ tool: "mcp:crm/update_contact" }] };
   assert.equal(gradeDeterministic(used, record("", calls), ["crm"]).pass, true, "the fake's log, with its arguments, for a faked server");
   assert.equal(gradeDeterministic({ ...used, args: { method: "create" } }, record("", calls), ["crm"]).pass, false);
   const fixture = { server: "crm", description: "", tools: { get: { description: "", input: { type: "object" }, answers: [{ when: { id: "7", tags: ["a"] }, result: { content: [{ type: "text", text: "seven" }] } }], default: { content: [{ type: "text", text: "none" }], isError: true } } } };

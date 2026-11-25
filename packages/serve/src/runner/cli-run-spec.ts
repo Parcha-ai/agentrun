@@ -266,6 +266,27 @@ async function rmEmptyParents(parents: readonly string[]): Promise<void> {
   }
 }
 
+/** The login a run starts on: Claude Code's login on this machine, where the owner turned it on for claude-agent here
+ *  (claude-login.ts), the run carrying only where it is, its CLI saying it is signed in before the run starts. A run that
+ *  brought its own key (`keyed`) runs on that key, and a run in a sandbox place on the model keys. A run's own process (no
+ *  seal key: a user of its own, which cannot open the login's folder) goes on its runner's reader of the login's access
+ *  token alone (held.ts claudeLogin), each token it hands held by `hold` (the redactors) and this process's own; its CLI
+ *  then never gets a refresh token. Such a process never reads the login's setting itself: whether its run is on the
+ *  login is its claim's one read (run-child-host.ts staysInRunner), which its runner hands down, so a turn-on after the
+ *  claim never moves it onto a login the claim did not check (a user of its own, a process runner on the same folder).
+ *  Nor could it: the setting names the machine by the id in the server's data folder (claude-login.ts machineId), which
+ *  the run's user can neither read nor make there. The runner's answer is the one decision (none: not on the login). A
+ *  claim on a login other than AgentRun's own folder never gets this far: the claim itself is refused (staysInRunner,
+ *  in LOGIN_MACHINE_NEEDS_SERVER_USER's words). The runner's claudeLogin refuses such a login again, in
+ *  LOGIN_NOT_HANDED's words, only when it is handed a claim read that check did not make. A run in the runner itself (a
+ *  seal key) reads the setting here. */
+export async function runLoginOf(deps: Pick<CliSpecDeps, "store" | "data" | "env" | "sealKey">, keyed: boolean, name: string | undefined, place: { readonly mode: string }, hold: (values: string[]) => void): Promise<RunLogin | undefined> {
+  if (keyed) return undefined;
+  if (deps.sealKey) return loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, place);
+  const handed = await runnerSeam()?.claudeLogin();
+  return handed && heldTokenLogin(handed, hold);
+}
+
 /**
  * One claimed CLI run's AdapterRunSpec, built from its launch record and its revision.
  *
@@ -496,16 +517,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     holdClaimed(redact, claimed);
     if (runKey) holdRunKey(redact, runKey);
   }
-  // Claude Code's login on this machine, where the owner turned it on for claude-agent here (claude-login.ts): the run
-  // carries only where it is, and its CLI says it is signed in before the run starts. A run that brought its own key
-  // runs on that key, and a run in a sandbox place on the model keys. A run's own process (a user of its own, which
-  // cannot open the login's folder) goes on its runner's reader of the login's access token alone (held.ts claudeLogin),
-  // each token it hands held by the redactors and this process's own; its CLI then never gets a refresh token. Whether
-  // such a claim goes on the login at all is its runner's answer alone (none: it does not): the setting names the
-  // machine by the id in the server's data folder (claude-login.ts machineId), which the run's user can neither read nor
-  // make there.
-  const handed = keyed || deps.sealKey ? undefined : await runnerSeam()?.claudeLogin();
-  const login: RunLogin | undefined = keyed ? undefined : handed ? heldTokenLogin(handed, hold) : deps.sealKey ? await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, launch.place) : undefined;
+  const login = await runLoginOf(deps, keyed, name, launch.place, hold);
   const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey, claim), login);
   // A plan-billed recipe's keys saved for its harness alone (harness-keys.ts), opened at each claim for this run's harness
   // and no other (a run's own process asks its runner, which opens its claim's own: held.ts harnessKeys), held by the
@@ -644,6 +656,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // native tools are named by its facts on the owner's table (factsOf: a module's harness's too).
   const ownerFacts = factsOf(deps.env, name);
   const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts: ownerFacts, turnedOff: offAlready !== undefined, onComputerOff: (kind) => recordComputerOff(run.harness, kind) });
+  // A park lets a computer the gate turned off go rather than keep it (SpecHolds Held.computerOff).
+  holds.hold({ computerOff: gate.computerOff });
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
   // (web_fetch, web_search, monid), bound by the binding the pi spec uses (webHostTools) on the ToolHost the pi spec builds
@@ -869,8 +883,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(heldComputer ? { held: heldComputer } : {}),
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (idempotent with
     // the computer's release). A run that minted none revokes nothing. At a park, a desktop or a phone is kept for the
-    // resume instead, its mount credential with it, as the pi spec's.
-    ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps) } : {}),
+    // resume instead, its mount credential with it, as the pi spec's; one the gate turned off is not, nor said to be.
+    keptWords: () => (computer.keeps === undefined || gate.computerOff() ? undefined : computerKeptWords(computer.keeps)),
     release: (how) => holds.release(how),
     ...(movedProject ? { projectCheckpoint: projectCheckpointForRun({ store: deps.store, agentId: runRow.agentId, claim, launch, tools, computer,
       workspace: { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },

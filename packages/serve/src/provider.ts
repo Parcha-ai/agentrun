@@ -10,8 +10,8 @@
 //     as model.ts chose it; OpenAI with its key, OpenAI's id; or OpenRouter's Responses API (openRouterOnly, or a model
 //     the run names on it, `openrouter/openai/<model-id>`), the model's whole id. Each key goes as a bearer token.
 //   any wire the runner's model route translates a model's provider onto (wires.ts routed: an Ollama model of this
-//     machine on Anthropic's Messages): the route's own origin and fetch (runner/model-route.ts routeOf), no key, at the
-//     model's catalog price; for every harness on that wire alike.
+//     machine on Anthropic's Messages or OpenAI's Responses): the route's own origin and fetch (runner/model-route.ts
+//     routeOf), no key, at the model's catalog price; for every harness on that wire alike.
 //   claude-agent on Claude Code's login on this machine (claude-login.ts), when the owner turned it on: an Anthropic
 //     model goes on the person's plan, from the CLI itself, with no key of ours and no proxy (`login`).
 import type { HarnessWire as Wire, Wire as ModelWire } from "@parcha/agentrun-kernel";
@@ -79,11 +79,14 @@ export function gatewayBase(setting: string, value: string): string {
 }
 
 /** The generic gateway must speak HTTP Responses (or Messages). Particle exposes Chat Completions
- * and a WebSocket-only Responses subset, so a direct API base is not a compatible gateway. */
-export function modelGatewayBase(value: string): string {
-  const base = gatewayBase("AGENT_MODEL_BASE_URL", value);
+ * and a WebSocket-only Responses subset, so a direct API base is not a compatible gateway. `setting`: the name the
+ * address rule's words give it (the model-gateway view's saved `base_url`). */
+export function modelGatewayBase(value: string, setting = "AGENT_MODEL_BASE_URL"): string {
+  const base = gatewayBase(setting, value);
   if (["api.particle.ai", "us.api.particle.ai"].includes(new URL(base).hostname)) {
-    throw new HarnessUnavailable("Particle uses Chat Completions here: remove AGENT_MODEL_BASE_URL, save PARTICLE_API_KEY and select particle/particle-1 with Pi. Particle does not support HTTP POST /v1/responses.");
+    // Set where AgentRun starts, it is that variable to remove; given as the console's base_url, it is just not a gateway.
+    const instead = setting === "AGENT_MODEL_BASE_URL" ? "remove AGENT_MODEL_BASE_URL, save" : "it is not a model gateway, so save";
+    throw new HarnessUnavailable(`Particle uses Chat Completions here: ${instead} PARTICLE_API_KEY and select particle/particle-1 with Pi. Particle does not support HTTP POST /v1/responses.`);
   }
   return base;
 }
