@@ -49,7 +49,8 @@ export type SpendRow = {
 
 /** What record() reads of an ended run: its row (its cost, the bound beside it, its metrics: the run-end classifier's
  *  path, workflow and digest, runner/workflow-first.ts pathMetrics), every round its learning kept (learning_proposals)
- *  and, for an audit's shadow run, the run its launch audits (`auditOf`: its end may name no audit, when it failed first). */
+ *  and, for an audit's shadow run, the run its launch audits (`auditOf`: its end may name no audit, when it failed first).
+ *  `learns`: whether its launch learns (learnsOfLaunch); false, an end that named no path is the agent's. */
 export type RunEnd = {
   readonly id: string;
   readonly agentId: string;
@@ -59,6 +60,7 @@ export type RunEnd = {
   readonly metrics: unknown;
   readonly rounds: readonly { readonly round: number; readonly proposal: unknown }[];
   readonly auditOf?: string | null;
+  readonly learns?: boolean;
 };
 
 const usdOrNull = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
@@ -69,6 +71,9 @@ const objectOf = (value: unknown): Record<string, unknown> => (value && typeof v
  *  (null when it names none) for an audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."), undefined for any other. */
 export const auditOfLaunch = (runId: string, body: unknown): string | null | undefined =>
   runId.startsWith("audit.") ? textOrNull(objectOf(objectOf(body).audit).of) : undefined;
+/** RunEnd.learns from a run's stored launch body (`body`, undefined with none): whether it holds a learning start, as
+ *  run-launch.ts learningStartOfStored reads one. No launch reads as a run that does not learn. */
+export const learnsOfLaunch = (body: unknown): boolean => objectOf(body).learning !== undefined;
 /** A sum of parts, null once one is unknown; 0 for none. */
 const sumOf = (parts: readonly (number | null)[]): number | null => (parts.some((one) => one === null) ? null : noiseOff(parts.reduce<number>((total, one) => total + one!, 0)));
 
@@ -147,7 +152,10 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   // look-back's cost unknown the two can't be told apart, and the job is what it had cost when it answered.
   const job = !looked || asAnswered === null || back === null ? asAnswered : rowUsd === null ? null : Math.max(asAnswered, rowUsd - back);
   const audited = metrics.path === "audit" || end.auditOf !== undefined;
-  const path = audited ? "audit" : RUN_PATHS.includes(metrics.path as RunPath) ? (metrics.path as RunPath) : null;
+  // The one by-hand rule (the window's read and Learning.byHandBefore read the row's path alone): a run whose end named
+  // no path is the agent's when its launch does not learn; one that learns and named none is unknown (null).
+  const named = RUN_PATHS.includes(metrics.path as RunPath) ? (metrics.path as RunPath) : null;
+  const path = audited ? "audit" : named ?? (end.learns === false ? "agent" : null);
   const audit = objectOf(metrics.audit);
   const workflow = textOrNull(audited ? audit.workflow : metrics.workflow);
   const digest = textOrNull(audited ? audit.digest : metrics.workflow_digest);
