@@ -38,8 +38,9 @@ import { runDiskOf } from "./workspace/run-disk.js";
 import { isWorkspaceError, type Workspace, WorkspaceError } from "./workspace/index.js";
 import {
   answerOf, copyFilesInto, type FileUploadAnswer, INPUTS_DIR, isUploadedFile, MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, mismatchOf, pathProblem, readyFilesOf, type Received, reservation, sentInOneCall, slots,
-  type UploadedFile, type UploadStore, uuidv7,
+  type UploadedFile, type UploadStore,
 } from "./uploads.js";
+import { uuidv7 } from "./ids.js";
 
 /** The folder of the uploads disk the files are kept under. */
 export const UPLOADS_KEY = "files";

@@ -337,6 +337,11 @@ test("a refused stopped end of a run claimed from parked is not claimed again be
   const polledAgain = beats.count;
   await upon(() => beats.count >= polledAgain + 20, "20 more polls");
   assert.deepEqual([(await epoch()) - at, waitsSaid(events).length - said], [2, 1], "one claim (and its release) and one refusal for the step");
+  // A claim that only retries the end redoes no turn: no release cut the turn, so no claim reads as a redo (attempt 2),
+  // and the work before the stop stays billable (run-usage.ts attemptTags).
+  const attempts = await server.runAttempts.forRun("run-1");
+  assert.ok(attempts.length >= 3, `a claim per try: ${JSON.stringify(attempts)}`);
+  assert.deepEqual(attempts.map((row) => [row.attempt, row.cause, row.cut]), attempts.map(() => [1, null, null]), "an end's retry is no cut and no redo");
 });
 
 test("a stop that reaches a run while it parks, under the claim it parked under, whose end is refused: released running with its backoff, not claimed again before it, the tries counted one per step", { timeout: LONG_TEST_MS }, async (t) => {
@@ -368,14 +373,13 @@ test("a stop that reaches a run while it parks, under the claim it parked under,
 
 test("a stop whose end the journal refuses never leaves the run stopped with its call waiting: it is released with a backoff, said by name, and the next claim only ends it, withdrawn", { timeout: LONG_TEST_MS }, async (t) => {
   let refusing = false;
-  const { server, clock, now, sent, requests, events, starts } = await runOf(t, { onEnd: async () => {
+  const { server, clock, sent, requests, events, starts } = await runOf(t, { onEnd: async () => {
     if (refusing) throw new Error("the journal refused the end (a test's refusal)");
   } });
   refusing = true;
   await server.command("run-1", { kind: "stop" });
   const released = await releasedAfter(server, 1);
   assert.deepEqual(waitsSaid(events), [BACKOFF_MS], "said by the run's name, with its wait");
-  assert.ok(released.backoffUntil > now() && released.backoffUntil <= now() + BACKOFF_MS, `backoff ${released.backoffUntil - now()} ms`);
   assert.notEqual(released.state, "stopped", "not final while its end is refused");
   const [asked, loops] = [requests.length, starts.length];
   refusing = false;

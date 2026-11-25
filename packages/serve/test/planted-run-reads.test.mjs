@@ -13,8 +13,9 @@ import { openapiDocument } from "../dist/openapi.js";
 import { saveSignIn } from "../dist/sign-ins-store.js";
 import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { findPlanted, plantedValue } from "./fixtures/planted-secrets.mjs";
-import { agent, flowAgent, follow, serve, withEnv } from "./support.mjs";
+import { agent, client, flowAgent, follow, serve, withEnv } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
+import { nativeFixture } from "./native-fixtures/setup.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 
@@ -35,8 +36,8 @@ const RUN_READS = {
   listRuns: (run) => [`/agents/${run.agentId}/runs`],
   getRun: (run) => [`/runs/${run.id}`],
   getTimeline: (run) => [`/runs/${run.id}/timeline`],
-  listRunFiles: (run) => [`/runs/${run.id}/files`],
-  readRunFile: (run) => [`/runs/${run.id}/files/${run.file}`],
+  listRunFiles: (run) => [`/runs/${run.id}/files`, `/runs/${run.id}/files?cut=run`],
+  readRunFile: (run) => [`/runs/${run.id}/files/${run.file}`, `/runs/${run.id}/files/${run.file}?cut=run`],
   getRunGraph: (run) => [`/runs/${run.id}/graph`],
   getRunTrace: (run) => [`/runs/${run.id}/trace`],
   getRunUsage: (run) => [`/runs/${run.id}/usage`],
@@ -44,6 +45,7 @@ const RUN_READS = {
   getRunComputer: (run) => [`/runs/${run.id}/computer`],
   getRunLearning: (run) => [`/runs/${run.id}/learning`],
   getRunLearningDiff: (run) => [`/runs/${run.id}/learning/diff`],
+  getCliLearningRun: (run) => [`/cli-learning/runs/${run.id}`],
 };
 
 /** What a case that can't pass on this line yet waits on, by operation, and by "<operation> (<run>)" where it is that run's
@@ -54,7 +56,9 @@ const WAITS = {};
 const waitOf = (operation, kind) => WAITS[`${operation} (${kind})`] ?? WAITS[operation] ?? false;
 
 /** The one run read the zero-hits rule exempts, and why: a run's file is served as it was written, uncut. Its case asserts
- *  the bytes are the ones written instead (the gate still requires the case); a withheld run's file is refused (403). */
+ *  the bytes are the ones written instead (the gate still requires the case); a withheld run's file is refused (403). Its
+ *  cut read (`?cut=run`) is not exempt: it holds no planted value, each cut in place (the sign-in ref it was handed, the
+ *  saved key, the secret store's value), and a withheld run's is refused too. */
 /** Runs whose input holds the plants, so their title does too: read here without their title, which the handed and
  *  withheld runs' own cases check (and skip, naming its fix), so every other field of theirs is checked now. */
 export const TITLE_READ_ELSEWHERE = new Set(["workflow", "workflowWithheld", "parked", "parkedWithheld", "asked"]);
@@ -166,6 +170,53 @@ async function handed(data, runId, agentId, pointer, sealKey) {
     db.close();
   }
 }
+
+test("a scoped CLI run read serves learning with planted secrets cut, and refuses an unreadable sign-in", { timeout: 120_000 }, async (t) => {
+  const fixture = await nativeFixture(t), seal = randomBytes(32);
+  withEnv(t, { ...Object.fromEntries(["PATH", "HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "NATIVE_TEST_LOG"].map((key) => [key, fixture.env[key]])), AGENTRUN_SEAL_KEY: seal.toString("base64") });
+  const server = await serve(t);
+  const monid = plantedValue("monid"), pointer = `bb-ctx-${randomBytes(12).toString("hex")}`;
+  assert.equal((await server.api("PUT", "/settings/tool-keys/monid", { values: { MONID_API_KEY: monid } })).status, 204);
+  const enrolled = await server.api("POST", "/cli-learning/connections", { runtime: "codex", project: fixture.project });
+  assert.equal(enrolled.status, 201, JSON.stringify(enrolled.body));
+  const connection = enrolled.body;
+  const hook = client(server.baseUrl, connection.token);
+  const started = await hook("POST", `/cli-learning/connections/${connection.connection_id}/runs`, {
+    session_id: "planted-source-session", turn_id: "planted-source-turn", input: "Review the report.",
+    instructions: "Keep private values out of reports.", policy_complete: true,
+  }, { "Idempotency-Key": "planted-source-turn" });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  const receipt = started.body, path = RUN_READS.getCliLearningRun({ id: receipt.run_id })[0];
+  const run = client(server.baseUrl, receipt.token);
+  assert.equal((await run("POST", `${path}/complete`, { status: "completed", answer: "Report ready.", evidence_complete: true })).status, 200);
+  await follow(server.api, receipt.run_id, ["completed"]);
+
+  // Retained historical learning can contain private values even when current capture is clean.
+  // Plant a real kept row so the successful route must apply its serving cut, not merely omit dialogue.
+  const values = [server.token, monid, pointer];
+  const db = new DatabaseSync(join(server.data, "store.sqlite"), { timeout: 15_000 });
+  try {
+    db.prepare("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, learning_run_id, created_at) VALUES (?, 99, ?, ?, ?, NULL, ?)")
+      .run(receipt.run_id, connection.agent_id, JSON.stringify({ asked: values.join(" ") }),
+        JSON.stringify({ state: "dropped", reason: "nothing", detail: `Visible learning detail: ${values.join(" ")}` }), Date.now());
+  } finally {
+    db.close();
+  }
+  await handed(server.data, receipt.run_id, connection.agent_id, pointer, seal);
+  const shown = await get(server.port, receipt.token, path);
+  assert.equal(shown.status, 200, shown.text);
+  const body = JSON.parse(shown.body.toString("utf8"));
+  assert.equal(body.run_id, receipt.run_id); assert.equal(body.state, "completed");
+  assert.match(body.learning.detail, /^Visible learning detail:/, "the planted learning row is actually served");
+  assert.deepEqual(findPlanted([{ where: path, text: shown.text }], values), []);
+  for (const token of [server.token, connection.token]) {
+    assert.equal((await get(server.port, token, path)).status, 401, "only this CLI window's token may read it");
+  }
+  await handed(server.data, receipt.run_id, connection.agent_id, pointer, randomBytes(32));
+  const withheld = await get(server.port, receipt.token, path);
+  assert.equal(withheld.status, 403, "valid CLI authentication does not bypass an unreadable sign-in's privacy boundary");
+  assert.deepEqual(findPlanted([{ where: path, text: withheld.text }], values), []);
+});
 
 test("no planted secret in a run's words shows on any run read route: a run handed a sign-in this server opens is cut of it, and one it can't open is withheld in the view's words", { timeout: 240_000 }, async (t) => {
   const seal = randomBytes(32);
@@ -303,11 +354,16 @@ test("no planted secret in a run's words shows on any run read route: a run hand
         const sources = [];
         for (const one of reads) {
           const res = await get(run.server.port, run.server.token, one);
+          if (operation === "getCliLearningRun") assert.equal(res.status, 401, `${one}: an owner token cannot read a scoped CLI window`);
           if (operation === "getRun" && kind === "parkedWithheld") assert.equal(JSON.parse(res.text.slice(res.text.indexOf("\n") + 1)).pending, null, `${one}: a withheld run's pending is none`);
           if (TITLE_READ_ELSEWHERE.has(kind)) res.text = withoutTitles(res.text);
           // A withheld run's file is refused, as its view withholds its words.
           if (operation === "readRunFile" && kind === "withheld") assert.equal(res.status, 403, `${one}: a withheld run's file is refused`);
-          if (EXEMPT[operation] && run.fileText !== undefined && kind !== "withheld") {
+          if (operation === "readRunFile" && one.endsWith("?cut=run") && run.fileText !== undefined && kind !== "withheld") {
+            // Its cut read: the text, every planted value it holds cut in place.
+            assert.equal(res.status, 200, one);
+            assert.equal(res.body.toString("utf8"), run.values.reduce((text, value) => text.replaceAll(value, "[redacted]"), run.fileText), `${one}: each value cut in place`);
+          } else if (EXEMPT[operation] && run.fileText !== undefined && kind !== "withheld") {
             // Exempt (EXEMPT): served as it was written, byte for byte, never a planted value it didn't hold.
             assert.equal(res.status, 200, one);
             assert.ok(res.body.equals(Buffer.from(run.fileText)), `${one}: the bytes written`);

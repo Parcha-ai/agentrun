@@ -14,7 +14,7 @@ import { HostError } from "../dist/host.js";
 import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescriptor, LINUX_GROUPS, NETWORK_DESCRIPTOR, NotFound, VERSION } from "./fake-host.mjs";
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
-const { hostedCommands, initFlags } = await import("../dist/hosted/scripts.js");
+const { AGENTRUN_DIAL, dialLaunch, hostedCommands, initFlags, quote } = await import("../dist/hosted/scripts.js");
 const VALUES = await import("../dist/hosted/values.js");
 
 const COMPUTER = "agentrun.computer";
@@ -297,6 +297,76 @@ test("the root-only script, run by sh: group and other write go from each path a
 	}
 });
 
+test("start, run by sh under umask 022: init's log is root's alone, 0600", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-start-"));
+	try {
+		// Not root here: start reaches root through sudo -n, which this stand-in runs as it is.
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] && shift\nexec "$@"\n', { mode: 0o755 });
+		const log = join(root, "init.log");
+		const [, , script, name] = hostedCommands().start;
+		const ran = spawnSync("sh", ["-c", 'umask 022; exec sh -c "$@"', "sh", script, name, log, "true"], { env: { PATH: `${bin}:${process.env.PATH}` }, encoding: "utf8" });
+		assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+		assert.equal(statSync(log).mode & 0o777, 0o600);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("dialLaunch, run by sh: under umask 077, the root-only step when rootOnly names paths, then the sockets step, then agentrun-dial, the URL its quoted assignment when given; a step that fails never reaches agentrun-dial", () => {
+	const root = mkdtempSync(join(tmpdir(), "computer-dial-launch-"));
+	try {
+		// Not root here: the steps reach root through sudo -n, which this stand-in runs as it is.
+		const bin = join(root, "bin");
+		mkdirSync(bin);
+		writeFileSync(join(bin, "sudo"), '#!/bin/sh\n[ "$1" = -n ] && shift\nexec "$@"\n', { mode: 0o755 });
+		const dial = join(root, "agentrun-dial");
+		writeFileSync(dial, '#!/bin/sh\necho "dialed ${AGENTRUN_ATTACH_URL-unset} $(umask)"\n', { mode: 0o755 });
+		const local = join(root, "local");
+		mkdirSync(local);
+		const bus = join(root, "dbus-Y8OW6E3FDx");
+		execFileSync("python3", ["-I", "-c", "import socket, sys\ns = socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])", bus]);
+		const linked = join(root, "linked");
+		symlinkSync(local, linked);
+		const ATTACH = "wss://agentrun.example/v2/computers/attach?a=1&b='2' $HOME";
+		// The line as dialLaunch gives it, with the box's agentrun-dial and /tmp's buses pointed here: nothing of this host's is touched.
+		const run = (options, { path = bin, env = {} } = {}) => {
+			const line = dialLaunch(options);
+			assert.ok(line.endsWith(` exec ${AGENTRUN_DIAL}`), line);
+			assert.equal(line.split(quote("/tmp/dbus-*")).length, 2, `one sockets step: ${line}`);
+			const here = `${line.replace(quote("/tmp/dbus-*"), quote(`${root}/dbus-*`)).slice(0, -AGENTRUN_DIAL.length)}${dial}`;
+			for (const open of [local, bus]) chmodSync(open, 0o777);
+			return spawnSync("sh", ["-c", `umask 022; ${here}`], { env: { PATH: `${path}:${process.env.PATH}`, ...env }, encoding: "utf8" });
+		};
+
+		const ran = run({ rootOnly: [local], attach: ATTACH });
+		assert.equal(ran.status, 0, ran.stdout + ran.stderr);
+		assert.equal(ran.stdout, `closed ${bus}\ndialed ${ATTACH} 0077\n`, "the buses closed, then agentrun-dial with the URL as given, under umask 077");
+
+		assert.equal(dialLaunch({ rootOnly: [] }), dialLaunch({}), "no paths: no root-only step");
+		assert.doesNotMatch(dialLaunch({}), /root-only|AGENTRUN_ATTACH_URL/);
+		const inherited = run({}, { env: { AGENTRUN_ATTACH_URL: "from-the-env" } });
+		assert.equal(inherited.status, 0, inherited.stdout + inherited.stderr);
+		assert.equal(inherited.stdout, `closed ${bus}\ndialed from-the-env 0077\n`, "no attach: agentrun-dial reads the URL from the env it inherits");
+
+		const refused = run({ rootOnly: [linked], attach: ATTACH });
+		assert.equal(refused.status, 6, refused.stdout + refused.stderr);
+		assert.match(refused.stdout, /is a symbolic link/);
+		assert.doesNotMatch(refused.stdout, /closed|dialed/, "a root-only step that fails runs neither the sockets step nor agentrun-dial");
+
+		// A chmod that fails: the sockets step fails, and agentrun-dial never starts.
+		const failing = join(root, "failing");
+		mkdirSync(failing);
+		writeFileSync(join(failing, "chmod"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+		const shut = run({ attach: ATTACH }, { path: `${failing}:${bin}` });
+		assert.equal(shut.status, 1, shut.stdout + shut.stderr);
+		assert.equal(shut.stdout, `failed ${bus}\n`, "a sockets step that fails never reaches agentrun-dial");
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("a host with no file API gets the daemon through exec's stdin", async () => {
 	const { provider, fake } = setup({}, { fileApi: false });
 	made(await create(provider));
@@ -383,6 +453,69 @@ test("create's listing wait backs off from 150 ms to the host's pollMs: a vendor
 	// Two reads around the vendor's create, then the wait's, 150, 300, 600, 1200 and 2000 ms apart: eight to the 10 s
 	// mark and two that show it, 13 in all. At 150 ms flat, 78.
 	assert.ok(lists <= 14,`the wait backed off to pollMs (${lists} listings in ${waited / 1000} s)`);
+});
+
+// A vendor's listing may trail its create past listedMs: Daytona's GET /sandbox is eventually consistent (an index the
+// API never writes itself), and on a hosted deployment it left new sandboxes unlisted for 15 s, each started,
+// dialed and checked from inside, and each deleted for it ("the computer was not listed within 15 s of its creation").
+test("a computer the listing never shows within listedMs, which a read by its id finds running with its labels, is kept and answered, with a note naming the labels, the machine and the wait", async () => {
+	const fake = fakeHost();
+	let lists = 0;
+	const host = { ...fake.host, list: async () => (++lists, []) };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 200 } });
+	const ref = made(await create(provider));
+	const m = only(fake);
+	assert.equal(m.deleted, false, "the machine create started and checked is not deleted for a listing that trails it");
+	assert.equal(ref.id, m.id);
+	assert.ok(!fake.calls.some(([name]) => name === "delete"), "no delete");
+	const note = ref.notes?.find((line) => line.startsWith("the listing by the labels"));
+	assert.ok(note, `a note says the listing trailed: ${JSON.stringify(ref.notes)}`);
+	assert.match(note, new RegExp(`^the listing by the labels ${COMPUTER}=1, ${NAME.replaceAll(".", "\\.")}=${ref.name} did not show ${ref.name} \\(machine ${ref.id}\\) on 2 polls in a row within 0\\.2 s \\(\\d+ polls in [\\d.]+ s, 0 of them showed it\\); a read by its id finds it running with its labels, so it is kept`));
+	assert.ok(lists >= 3, `the wait polled the listing (${lists})`);
+});
+
+test("a retry of the request whose computer create kept unlisted finds that computer by its id while the listing still leaves it out, and never asks the vendor for a second; once released, a retry answers that it ended", async () => {
+	const fake = fakeHost();
+	const host = { ...fake.host, list: async () => [] };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 100 } });
+	const first = made(await provider.create(SPEC, { requestId: "kept-unlisted" }));
+	const again = made(await provider.create(SPEC, { requestId: "kept-unlisted" }));
+	assert.deepEqual({ id: again.id, name: again.name }, { id: first.id, name: first.name }, "the retry answers the kept computer");
+	assert.equal(fake.calls.filter(([name]) => name === "create").length, 1, "one vendor create");
+	assert.equal(fake.machines.size, 1, "one machine");
+	made(await provider.release({ id: first.id, name: first.name }, "delete"));
+	const after = await provider.create(SPEC, { requestId: "kept-unlisted" });
+	assert.equal(after.ok, false, "a retry after the release never answers the deleted computer");
+	assert.equal(after.error.code, "exists");
+	assert.match(after.error.message, /was made for this request and has ended/);
+});
+
+test("a retry whose read of the computer create kept unlisted fails answers that failure, and never asks the vendor for a second; a later retry whose read answers finds it", async () => {
+	const fake = fakeHost();
+	let failing = false;
+	const host = { ...fake.host, list: async () => [], get: async (id, ctx) => { if (failing) throw new HostError("vendor", "503 from the vendor"); return fake.host.get(id, ctx); } };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 100 } });
+	const first = made(await provider.create(SPEC, { requestId: "kept-read-fails" }));
+	failing = true;
+	const failed = await provider.create(SPEC, { requestId: "kept-read-fails" });
+	assert.equal(failed.ok, false);
+	assert.match(failed.error.message, new RegExp(`${first.name} \\(machine ${first.id}\\), which create kept while the listing left it out, could not be read, so no second computer is made: .*503 from the vendor`));
+	assert.equal(fake.calls.filter(([name]) => name === "create").length, 1, "no second vendor create");
+	failing = false;
+	assert.equal(made(await provider.create(SPEC, { requestId: "kept-read-fails" })).id, first.id, "the entry stayed: a retry that reads it answers it");
+});
+
+test("a computer the listing never shows within listedMs, which a read by its id finds not running, fails create as a timeout naming the labels, the machine, the polls and the wait, and is deleted", async () => {
+	const fake = fakeHost();
+	let lists = 0;
+	// The name's listing and the convergence read come first; from the wait's own polls on, the vendor reads it stopped.
+	const host = { ...fake.host, list: async () => (++lists, []), get: async (id, ctx) => { const got = await fake.host.get(id, ctx); return lists > 2 && got ? { ...got, state: "stopped" } : got; } };
+	const provider = new HostedProvider(host, { daemonPath: DAEMON_PATH, timeouts: { ...TIMEOUTS, listedMs: 200 } });
+	const failed = await create(provider);
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "timeout");
+	assert.match(failed.error.message, new RegExp(`the listing by the labels ${COMPUTER}=1, ${NAME.replaceAll(".", "\\.")}=computer-[0-9a-f]{12} did not show computer-[0-9a-f]{12} \\(machine [^)]+\\) on 2 polls in a row within 0\\.2 s \\(\\d+ polls in [\\d.]+ s, 0 of them showed it\\); a read by its id finds it stopped`));
+	assert.equal(only(fake).deleted, true, "a computer that is not running is deleted, as before");
 });
 
 test("idempotent create: a retry of one request returns the computer the first made, and never makes a second", async () => {

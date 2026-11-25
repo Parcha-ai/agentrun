@@ -33,6 +33,8 @@ export type ToolSettings = Record<string, ToolSetting>;
 /** The private-network hosts an MCP server's authorization server may be on (none by default): GET and PUT
  *  /v2/settings/mcp-servers/oauth/private-hosts. Only the owner's password session writes it. */
 export type McpPrivateHosts = Answer<"getMcpPrivateHosts">;
+/** A year of the work under the machine the server runs on (GET /v2/wrapped): numbers and names only. */
+export type Wrapped = Answer<"getWrapped">;
 /** GET /v2/agents/{id}'s `tools`: each tool the agent grants, with its permission and provider in force. */
 export type AgentTool = NonNullable<components["Agent"]["tools"]>[number];
 /** The computer an agent's runs are given (definition.computer): its kind and the provider that serves it, absent for
@@ -53,10 +55,14 @@ export type InputIssue = components["InputIssue"];
 export type TemplateView = Answer<"listTemplates">["templates"][number];
 /** Applying a template (POST /v2/templates/{name}/apply): its parameters, and the gate names of the tools the owner grants. */
 export type TemplateApply = Body<"applyTemplate">;
-/** What an apply made: the agent, its triggers, and its warnings. */
-export type TemplateApplied = Answer<"applyTemplate">;
-/** A package read from GitHub (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
+/** What an apply made: the agent, its triggers, and its warnings. The console sends no dry_run, so never the plan answer. */
+export type TemplateApplied = Exclude<Answer<"applyTemplate">, { plan: unknown }>;
+/** A package read from GitHub or uploaded (POST /v2/templates/import): checked, and shown whole (its instructions, every skill file). */
 export type TemplateImported = Answer<"importTemplate">;
+/** The marketplace's list as the server read it (GET /v2/marketplace/templates, serve's marketplace/1): its state, and
+ *  each template with the package here that it is. */
+export type MarketplaceList = Answer<"listMarketplaceTemplates">;
+export type MarketplaceTemplate = MarketplaceList["templates"][number];
 
 /** `so_far_usd` and `unpriced` (serve's costsofar/1), present while `usd` is null, and beside `upper_bound` (its exact
  *  part and held count); `usd` is said first whenever it is known (format.ts chargeWords, soFar). */
@@ -172,6 +178,9 @@ type ServedToolKeys = Answer<"listToolKeys">;
 /** A key with its secrets (`secrets`, "tool:<KEY>"/"model:<KEY>"); `fields` as served, for the paste form. */
 export type ToolKey = ServedToolKeys["keys"][number];
 export type ToolKeys = ServedToolKeys;
+/** Settings → Harness keys: each plan-billed recipe's harness, its keys as SecretMeta ("harness:<id>:<KEY>"), never a value. */
+export type HarnessKeys = Answer<"listHarnessKeys">;
+export type HarnessKeysEntry = HarnessKeys["harnesses"][number];
 export type ToolKeyField = ToolKey["fields"][number];
 
 /** A saved key's check with its provider. Null, or absent from a server that does not check, says nothing. */
@@ -198,6 +207,12 @@ export type ChatGPTView = Answer<"getChatGPTSignIn">;
 export type ChatGPTStart = Answer<"startChatGPTSignIn">;
 /** DELETE /v2/settings/chatgpt's answer: whether OpenAI confirmed the revocation, and with `revoked` false, what to do. */
 export type ChatGPTSignOut = Answer<"signOutChatGPT">;
+
+/** The API keys made for this server's apps (GET /v2/settings/api-keys, a serve extension). Never a key. */
+export type ApiKeys = Answer<"listApiKeys">;
+export type ApiKey = ApiKeys["keys"][number];
+/** A create's answer (POST /v2/settings/api-keys): the key, with its value as `api_key`, shown this once. */
+export type ApiKeyMade = Answer<"createApiKey">;
 
 /** The webhook (GET /v2/settings/webhook, a serve extension). Never the secret. */
 export type Webhook = Answer<"getWebhook">;
@@ -237,6 +252,23 @@ export type GitHubConnectStart = Answer<"connectGitHub">;
 /** DELETE /v2/integrations/github's answer: how many GitHub triggers went off, and what to delete on GitHub. */
 export type GitHubDisconnected = Answer<"disconnectGitHub">;
 
+/** GET /v2/integrations/github/repositories: the repositories the App's installations cover. */
+export type GitHubRepositories = Answer<"listGitHubRepositories">;
+export type GitHubRepository = GitHubRepositories["repositories"][number];
+/** GET /v2/suggestions: GitHub's state, each scanned repository (its newest scan) and the suggested agents. */
+export type SuggestionsList = Answer<"listSuggestions">;
+export type ScannedRepository = SuggestionsList["repositories"][number];
+/** One suggested agent, as the list shows it (no instructions). */
+export type Suggestion = SuggestionsList["suggestions"][number];
+/** GET /v2/suggestions/{id}: the suggestion whole, the files a create adds, and whether GitHub lets it now. */
+export type SuggestionDetail = Answer<"getSuggestion">;
+/** Whether this server's GitHub App can open the pull request, and what to fix where it can't. */
+export type SuggestionReadiness = SuggestionDetail["github"];
+/** POST /v2/suggestions/{id}/create's answer: the suggestion with its agent, branch and pull request. */
+export type SuggestionCreated = Answer<"createSuggestedAgent">;
+/** POST /v2/suggestions/scans's answer: the scan's run. */
+export type ScanStarted = Answer<"scanForSuggestions">;
+
 /** PATCH /v2/runs/{id} {max_cost_usd}'s answer: the cap now. */
 export type RaiseAnswer = Answer<"raiseRunCap">;
 /** PUT /v2/runs/{id}/grade: right or wrong, the reviewer's words (`label`), and the fields a right answer holds
@@ -254,6 +286,10 @@ export type Recorded<T> = { request: { method: string; path: string }; status: n
 // Computers (Settings → Computers) and Archil (Settings → Workspace).
 /** GET /v2/computers: each kind, whether this server offers it, and its providers. */
 export type Computers = Answer<"listComputers">;
+/** GET /v2/computers/running: each run still going whose agent has a computer, as GET /v2/runs/{run_id} answers it, so
+ *  each carries its `computer`. */
+export type RunningRun = Run & { computer: RunMachine };
+export type RunningComputers = Answer<"listRunningComputers"> & { runs: RunningRun[] };
 export type ComputerKindView = Computers["kinds"][number];
 /** A person's own computer paired with this server: its name, what it paired as, its driver's build, whether it is
  *  attached now, and the run that holds it. */

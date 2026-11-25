@@ -2,8 +2,9 @@ import { agentHash } from "@/components/AgentPage";
 import { nativeReadinessOf } from "@/lib/native";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { ToolBlockers } from "@/components/ToolBlockers";
+import { type MovedToRunner, RunnerOffer } from "@/components/RunnerOffer";
 import { ArrowRight, Copy, Eye, EyeOff, Play } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { FieldInput, FieldIssues } from "@/components/FieldInput";
 import { FilePicker, type UploadLimits, useAttachments } from "@/components/FilePicker";
 import { Button } from "@/components/ui/button";
@@ -14,7 +15,7 @@ import { Input, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { ClientError, type FieldIssue } from "@/lib/client";
-import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, inputOf } from "@/lib/inputForm";
+import { agentInputOf, clearsContentIssue, contentIssueOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, inputOf } from "@/lib/inputForm";
 import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { SpendCapMinimum } from "@/lib/spendCap";
@@ -36,7 +37,14 @@ export type PlaygroundProps = {
   efforts: string[];
   origin: string;
   agentId?: string;
+  /** What goes first on the request row (the page's operation picker), so the agent sits beside it on one row. */
+  lead?: ReactNode;
+  /** A notice under that row (no model to run on yet). */
+  notice?: ReactNode;
   onAgent?: (id: string) => void;
+  /** The revision picked for the run ("" for the current one) and its definition, undefined when the page does not hold
+   *  it: told on every change, and on the first render. */
+  onRevision?: (revision: string, definition: Record<string, unknown> | undefined) => void;
   /** Sends the request; resolves with what the server answered. */
   onSend?: (agentId: string, body: StartBody, key: string) => Promise<StartResult>;
   onOpenRun?: (runId: string) => void;
@@ -48,16 +56,20 @@ export type PlaygroundProps = {
   limits?: UploadLimits;
   upload?: Upload;
   removeUpload?: (fileId: string) => Promise<unknown>;
+  /** Moves the agent to the runner (RunnerOffer), offered under a run refused in a box while Claude Code's login on this
+   *  machine, which runs agents on the runner only, is on; answers what it did. */
+  onMoveToRunner?: (agentId: string) => Promise<MovedToRunner>;
 };
 
 /** The hosted console's API playground for starting a run: the request on the left (a form, or its JSON), the same
  *  request as code on the right, and the server's answer, with a way into the run it started. */
-export function Playground({ agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onSend, onOpenRun, result: initialResult = null, live, limits, upload = sendUpload, removeUpload }: PlaygroundProps) {
+export function Playground({ lead, notice, agents, revisions = [], efforts, origin, agentId: initialAgent, onAgent, onRevision, onSend, onOpenRun, result: initialResult = null, live, limits, upload = sendUpload, removeUpload, onMoveToRunner }: PlaygroundProps) {
   const [agentId, setAgentId] = useState(initialAgent ?? agents[0]?.agent_id ?? "");
-  // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept.
+  // The selection follows the list and the page's choice: an agent that left the list (archived) is not kept. Another
+  // agent runs its current revision: a revision picked for the last one is not its.
   useEffect(() => {
-    if (initialAgent && initialAgent !== agentId && agents.some((a) => a.agent_id === initialAgent)) setAgentId(initialAgent);
-    else if (!agents.some((a) => a.agent_id === agentId)) setAgentId(agents[0]?.agent_id ?? "");
+    if (initialAgent && initialAgent !== agentId && agents.some((a) => a.agent_id === initialAgent)) { setAgentId(initialAgent); setRevision(""); }
+    else if (!agents.some((a) => a.agent_id === agentId)) { setAgentId(agents[0]?.agent_id ?? ""); setRevision(""); }
   }, [agents, initialAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const agent = agents.find((a) => a.agent_id === agentId);
   const native = nativeReadinessOf(agent);
@@ -70,6 +82,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   // against the revision it runs), else the current one's. The fields start again for another agent, or a changed
   // schema.
   const picked = revision ? revisions.find((r) => r.revision === revision)?.definition : undefined;
+  // The page says what the run will need (its "No model" bar) by the revision the run will use.
+  useEffect(() => { onRevision?.(revision, picked); }, [revision, picked]); // eslint-disable-line react-hooks/exhaustive-deps
   // The default cap an empty max_cost_usd box leaves in force (as the run bar says it): the picked revision's, since the
   // server runs with the cap of the revision it runs, else the current one's. A number is that cap and null is none;
   // undefined is a picked revision whose definition the page does not hold, so the box names no amount.
@@ -108,25 +122,42 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const [showCode, setShowCode] = useState(() => !(typeof window !== "undefined" && typeof window.matchMedia === "function") || window.matchMedia("(min-width: 1024px) and (min-height: 501px)").matches);
   const codePanel = useId();
   const [result, setResult] = useState<StartResult | null>(initialResult);
+  // The agent and revision of the request `result` answered (a result given at the start is the first agent's), and the
+  // answer's number, one per answer. Its refusal, and the move it offers, are that agent's: said only while that agent is
+  // picked, and the move made on it. Each answer gets an offer of its own, by its number.
+  const [asked, setAsked] = useState<{ agentId: string; revision: string; answer: number } | null>(initialResult ? { agentId, revision: "", answer: 0 } : null);
+  const answers = useRef(0);
+  const pickedNow = useRef(agentId);
+  pickedNow.current = agentId;
+  // The move to the runner, on the refused agent. A revision picked for it is the boxed one the request was refused on
+  // (or one older still): while that agent is picked, the pick becomes the revision the agent runs after the move, so
+  // the next request is not refused for the box again. None picked runs the current revision, which the move made.
+  const moveToRunner = onMoveToRunner && (async (moved: string) => {
+    const done = await onMoveToRunner(moved);
+    if (pickedNow.current === moved) setRevision((now) => (now ? done.revision : now));
+    return done;
+  });
   // A refusal's issue at one of the typed fields (input.<key>, or an item's input.<key>.<i>) is said at that field.
   const fieldKeys = new Set(form?.fields.map(([k]) => k) ?? []);
   const atField = (path: string) => { const k = fieldOfIssue(path); return k !== null && fieldKeys.has(k) ? k : null; };
   // A refused start, said plainly above its answer: the server's reason, and the box it names when it lacks one.
   const refusal = useMemo(() => {
+    if (!asked || asked.agentId !== agentId) return undefined;
     const error = (result && result.status >= 400 ? (result.body as { error?: { code?: unknown; message?: unknown; fields?: unknown; details?: { box?: unknown } & Record<string, unknown> } } | null)?.error : undefined);
     if (!error || typeof error.message !== "string") return undefined;
     const issues = Array.isArray(error.fields) ? error.fields.filter((f): f is FieldIssue => !!f && typeof f.field === "string" && typeof f.message === "string") : [];
     // A 422 names its fields: each one whose message says more than the refusal's is listed under it, as the Run bar does;
     // one at a typed field is said there instead.
     const more = issues.filter((f) => f.message !== error.message && atField(f.field) === null && !(form && f.field === "input.content"));
-    return { message: error.message, more, issues, box: typeof error.details?.box === "string" ? error.details.box : undefined, details: error.code === "agent_not_runnable" ? error.details : undefined };
-  }, [result, schemaKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    return { asked, message: error.message, more, issues, box: typeof error.details?.box === "string" ? error.details.box : undefined, details: error.code === "agent_not_runnable" ? error.details : undefined };
+  }, [result, asked, agentId, schemaKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // The fields edited to a value the server takes since the last answer: their issues go.
   const [fixed, setFixed] = useState<ReadonlySet<string>>(new Set());
   useEffect(() => { setFixed(new Set()); }, [result]);
   const setField = (key: string, f: FieldSpec, value: string) => {
     setValues((was) => ({ ...was, [key]: value }));
-    setFixed((was) => { const n = new Set(was); if (fieldValid(f, value)) n.add(key); else n.delete(key); if (value && !form?.contentRequired) n.add("input.content"); return n; });
+    // The message's issue goes where this value stands in for the message (clearsContentIssue), as the Run bar's does.
+    setFixed((was) => { const n = new Set(was); if (fieldValid(f, value)) n.add(key); else n.delete(key); if (form && clearsContentIssue(form, f, value)) n.add("input.content"); return n; });
   };
   const typeText = (value: string) => {
     setText(value);
@@ -135,7 +166,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const issuesAt = (key: string) => (fixed.has(key) ? [] : (refusal?.issues ?? []).filter((i) => atField(i.field) === key));
   // With typed fields the message may be optional: the server's issue at it (an input giving neither the message nor a
   // field) is said at the message, until the message or a field is filled.
-  const contentIssue = form && !fixed.has("input.content") ? refusal?.issues.find((i) => i.field === "input.content")?.message : undefined;
+  const contentIssue = fixed.has("input.content") ? undefined : contentIssueOf(form, refusal?.issues)?.message;
   const [sending, setSending] = useState(false);
   const keys = useMemo(() => keeper(), []);
   // Files picked here are sent at once; the request names each once the server has it, and waits for the rest.
@@ -151,23 +182,28 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   const send = async () => {
     if (sdk || nativeBlocked || !built.ok || !onSend || attachments.busy) return;
     setSending(true);
+    const request = { agentId, revision };
     const r = await submitStart(keys, agentId, built.body, onSend);
-    setSending(false); setResult(r); setPane("response"); setShowCode(true);
+    setSending(false); setResult(r); setAsked({ ...request, answer: ++answers.current }); setPane("response"); setShowCode(true);
     // The run has its own copies: the next request starts with none picked.
     if (r.status >= 200 && r.status < 300) attachments.clear();
   };
   const placeholder = !json ? `The run's ${form ? "message" : "first message"}, e.g. Summarize the standup: we ship Friday.` : kind === "workflow" ? '{ "subject": "...", "body": "..." }' : "The agent's input, as JSON";
-  if (!agents.length) return <section aria-label="Request" className="space-y-4 p-5 md:p-8"><h2 className="text-lg font-semibold">Start a run</h2><p className="text-body text-muted-foreground">Connect an existing native agent or create an agent before starting a run.</p><a href="#/agents/connect" className="block text-body underline underline-offset-2">Connect agent</a><a href="#/agents/new" className="block text-body underline underline-offset-2">Create an agent</a><a href="#/templates" className="block text-body underline underline-offset-2">Browse templates</a><dl className="space-y-2">{Object.entries(NOTES).map(([name, note]) => <div key={name}><dt className="font-mono text-body">{name}</dt><dd className="text-small text-muted-foreground">{note}</dd></div>)}</dl><code className="text-small">/v2/agents/{"{agent_id}"}/runs</code></section>;
+  if (!agents.length) return <>{lead && <div className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">{lead}</div>}{notice}<section aria-label="Request" className="space-y-4 p-5 md:p-8"><h2 className="text-lg font-semibold">Start a run</h2><p className="text-body text-muted-foreground">Connect an existing native agent or create an agent before starting a run.</p><a href="#/agents/connect" className="block text-body underline underline-offset-2">Connect agent</a><a href="#/agents/new" className="block text-body underline underline-offset-2">Create an agent</a><a href="#/templates" className="block text-body underline underline-offset-2">Browse templates</a><dl className="space-y-2">{Object.entries(NOTES).map(([name, note]) => <div key={name}><dt className="font-mono text-body">{name}</dt><dd className="text-small text-muted-foreground">{note}</dd></div>)}</dl><code className="text-small">/v2/agents/{"{agent_id}"}/runs</code></section></>;
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
       <div aria-label="Playground agent" className="flex shrink-0 flex-wrap items-center gap-3 border-b px-5 py-3 md:px-6">
+        {lead}
         <div className="flex min-w-0 items-center gap-2 text-small">
           <label htmlFor="playground-agent" className="caps text-muted-foreground">Agent</label>
-          <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
-            options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
+          {/* As wide as its longest agent's name (steady), so a name is shown whole where the row has the room; on a phone
+              it is held to part of the window and cuts the name with an ellipsis. */}
+          <Picker id="playground-agent" label="Agent" steady value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
+            options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="max-w-[60vw]" />
         </div>
-        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
+        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk)} · Your backend</span> : <span className="min-w-0 break-all font-mono text-small">{!lead && <><span className="text-primary-text">POST</span> </>}<span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
       </div>
+      {notice}
       {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width.
           With the code panel folded, one column at any size. Where the two stood side by side, the button that shows
           the panel again floats where the one that hid it was, at the top right, over the Request header's free end;
@@ -264,7 +300,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>
               </div>
               <pre tabIndex={0} aria-label="The request as code" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{code}</pre>
-              <footer className={cn(FOOT, "text-small text-muted-foreground")}>The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
+              <footer className={cn(FOOT, "text-small text-muted-foreground")}>The same request from your code: set AGENTRUN_API_KEY in your environment. Create a key under <a className="underline" href="#/settings/api-keys">Settings → AgentRun API keys</a>.</footer>
             </>
           ) : result && (
             <>
@@ -273,6 +309,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 <p className="border-b px-5 py-2.5 font-mono text-small text-destructive-text md:px-6" role="alert">
                   The run did not start: {refusal.message}{refusal.box ? <span className="text-muted-foreground"> (box: {refusal.box})</span> : null}
                   <ToolBlockers agentId={agentId} details={refusal.details} />
+                  {/* A fresh offer for each answer: one taken before is not shown as taken for the next. */}
+                  <RunnerOffer key={`${refusal.asked.agentId}:${refusal.asked.answer}`} details={refusal.details} onMove={moveToRunner && (() => moveToRunner(refusal.asked.agentId))} />
                   {refusal.more.length > 0 && <span className="mt-1 block">{refusal.more.map((f) => <span key={`${f.field}:${f.message}`} className="block">{f.field}: {f.message}</span>)}</span>}
                 </p>
               )}

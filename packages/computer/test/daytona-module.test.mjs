@@ -134,7 +134,8 @@ test("COMPUTER_DAYTONA_CONNECT is the provider's connect, and createProvider() p
 	const made = await provider.create({ image: "agentrun-archil-0123456789ab", lifetimeMs: 600_000, network: "none" }, { requestId: "r-module-dial" });
 	assert.equal(made.error?.code, "invalid", "the test's Daytona refuses the create: what was asked is in its body");
 	const post = fake.requests.find((r) => r.method === "POST" && r.path === "/api/sandbox");
-	assert.equal(post.body.env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach", "the dial given reached the provider");
+	assert.equal(post.body.env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64", "the dial given reached the provider");
+	assert.equal("AGENTRUN_ATTACH_URL" in post.body.env, false, "agentrun-dial's start gives the URL, never the sandbox's env");
 	assert.throws(() => createProvider({ env: { [DAYTONA_ENV.key]: KEY, [DAYTONA_ENV.connect]: "ssh" } }), /connect is how Daytona reaches its machines/);
 	assert.throws(
 		() => daytonaModule.dialKit(),

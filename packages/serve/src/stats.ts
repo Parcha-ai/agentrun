@@ -45,7 +45,7 @@ const DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d{1,3})?(
 /** The UTC time an RFC 3339 date-time names, to the millisecond, or undefined for anything else: an impossible date or
  *  time, which Date.parse would roll forward (02-30 to 03-02), and a finer fraction, which it would cut (a bound of
  *  .0005 would read .000), included. */
-function utcOf(text: string): string | undefined {
+export function utcOf(text: string): string | undefined {
   const m = DATE_TIME.exec(text.toUpperCase());
   if (!m) return undefined;
   const [year, month, day, hour, minute, second] = m.slice(1, 7).map(Number) as [number, number, number, number, number, number];
@@ -78,7 +78,7 @@ export function analyticsFilter(url: URL): AnalyticsFilter {
 }
 
 /** A group's counts: an escalated run is completed, and needs review; never failed. */
-const group = (g: AnalyticsGroup) => ({ runs: g.runs, completed: g.completed, needs_review: g.needsReview, failed: g.failed, runs_with_metrics: g.runsWithMetrics, tokens: g.tokens, cost_usd: round(g.costUsd), unknown_cost_runs: g.unknownCostRuns });
+const group = (g: AnalyticsGroup) => ({ runs: g.runs, completed: g.completed, needs_review: g.needsReview, failed: g.failed, runs_with_metrics: g.runsWithMetrics, runs_with_token_metrics: g.runsWithTokenMetrics, tokens: g.tokens, cost_usd: round(g.costUsd), unknown_cost_runs: g.unknownCostRuns });
 
 export function analyticsView(a: StoreAnalytics, filter: AnalyticsFilter) {
   const t = a.totals;

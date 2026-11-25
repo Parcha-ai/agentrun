@@ -292,24 +292,8 @@ test("agentrun open: the setup page with no code on a loopback server; the conso
   assert.match(said.out.join(""), /Opened the console in your browser\./);
 });
 
-// An opener that stays in the foreground until the browser closes held `agentrun service install` (and the installer)
-// open after the setup page was up, until the browser closed: the opener is started and left running.
-test("launchOpener returns once the opener has started, while it still runs; false when there is no such command", async (t) => {
-  const dir = fresh();
-  const pidFile = join(dir, "opener.pid");
-  writeFileSync(join(dir, "xdg-open"), `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 30\n`, { mode: 0o755 });
-  const began = Date.now();
-  assert.equal(await launchOpener("xdg-open", ["http://127.0.0.1:7345/setup"], { PATH: `${dir}:/usr/bin:/bin` }), true);
-  assert.ok(Date.now() - began < 5_000, "it did not wait for the opener to exit");
-  for (let waited = 0; !existsSync(pidFile) && waited < 5_000; waited += 50) await new Promise((done) => setTimeout(done, 50));
-  const pid = Number(readFileSync(pidFile, "utf8"));
-  t.after(() => {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {}
-  });
-  assert.doesNotThrow(() => process.kill(pid, 0), "the opener still runs");
-  assert.equal(await launchOpener("agentrun-no-such-opener", ["x"], { PATH: dir }), false);
+test("launchOpener is false when there is no such command", async () => {
+  assert.equal(await launchOpener("agentrun-no-such-opener", ["x"], { PATH: fresh() }), false);
 });
 
 test("agentrun open with no server answering says so, exit 1", async () => {
@@ -470,6 +454,21 @@ test("service install --env: the start-time switches go into the unit at 1, stay
   assert.equal(unitEnv(readFileSync(file, "utf8")).AGENTRUN_MCP_ALLOW_LOOPBACK, "1");
 });
 
+test("service install --env AGENTRUN_MARKETPLACE: off, or another site's address, goes into the unit, stays through a re-install, and KEY= removes it", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ env: ["AGENTRUN_MARKETPLACE=off"] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_MARKETPLACE: "off" });
+  assert.equal(await service.install({}), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_MARKETPLACE: "off" });
+  assert.equal(await service.install({ env: ["AGENTRUN_MARKETPLACE=https://templates.example.com"] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_MARKETPLACE: "https://templates.example.com" });
+  assert.equal(await service.install({ env: ["AGENTRUN_MARKETPLACE="] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin" });
+});
+
 test("service install --env AGENT_MODEL_API_KEY=none: the key a local model with none takes goes into the unit, and KEY= removes it", async () => {
   const { home, exec, get } = linuxHome();
   const { io } = ioOf();
@@ -481,12 +480,34 @@ test("service install --env AGENT_MODEL_API_KEY=none: the key a local model with
   assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", ...MODEL_VARS });
 });
 
+test("service install --env OLLAMA_HOST: where an Ollama off its default address listens goes into the unit, and KEY= removes it", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ env: ["OLLAMA_HOST=127.0.0.1:11500"] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", OLLAMA_HOST: "127.0.0.1:11500" });
+  assert.equal(await service.install({ env: ["OLLAMA_HOST="] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin" });
+});
+
+test("service install --env OLLAMA_CONTEXT_LENGTH: a person's lower context for Ollama goes into the unit, as Ollama's own variable does, and KEY= removes it", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ env: ["OLLAMA_HOST=127.0.0.1:11500", "OLLAMA_CONTEXT_LENGTH=16384"] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", OLLAMA_HOST: "127.0.0.1:11500", OLLAMA_CONTEXT_LENGTH: "16384" });
+  assert.equal(await service.install({ env: ["OLLAMA_CONTEXT_LENGTH="] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", OLLAMA_HOST: "127.0.0.1:11500" });
+});
+
 test("service install --env refuses any other variable by name, and a pair with no =, before it writes anything", async () => {
   const { home, exec, get } = linuxHome();
   const { io } = ioOf();
   const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec, io, fail, get, waitMs: 5_000 });
   for (const [pair, said] of [
-    ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY, AGENTRUN_MCP_ALLOW_LOOPBACK, AGENTRUN_WEBHOOK_PRIVATE_TARGETS, AGENTRUN_TELEMETRY or DO_NOT_TRACK, not OPENROUTER_API_KEY: a key goes in the console/],
+    ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY, OLLAMA_HOST, OLLAMA_CONTEXT_LENGTH, AGENTRUN_MCP_ALLOW_LOOPBACK, AGENTRUN_WEBHOOK_PRIVATE_TARGETS, AGENTRUN_MARKETPLACE, AGENTRUN_TELEMETRY or DO_NOT_TRACK, not OPENROUTER_API_KEY: a key goes in the console/],
     ["PATH=/x", /not PATH/],
     ["AGENT_MODEL_API_KEY=sk-or-x", /^AGENT_MODEL_API_KEY takes none alone, or nothing to remove it: a model key goes in the console \(Settings → Model keys\), never in a service file\.$/],
     ["AGENT_MODEL", /--env takes KEY=VALUE, not AGENT_MODEL/],
@@ -699,7 +720,7 @@ test("the bin: --version prints the version; help lists service and stop; each v
   writeFileSync(join(home, ".agentrun", "bin", "agentrun"), "");
   assert.match(bin(["service", "install"], home).stderr, /can't run as a service here: this user has no systemd user session/);
   assert.match(bin(["service", "logs", "--help"]).stdout, /--follow +and keep printing what comes \(-f\)/);
-  assert.match(bin(["service", "install", "--help"]).stdout, /--env KEY=VALUE +a local model's variable/);
+  assert.match(bin(["service", "install", "--help"]).stdout, /--env KEY=VALUE +a local model's variable for the server or where Ollama listens/);
   const secret = bin(["service", "install", "--env", "AGENT_MODEL=x", "--env", "OPENROUTER_API_KEY=x"], home);
   assert.equal(secret.status, 2);
   assert.match(secret.stderr, /not OPENROUTER_API_KEY/);

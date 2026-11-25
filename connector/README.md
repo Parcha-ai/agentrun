@@ -46,6 +46,40 @@ For existing local sessions, use `agentrun discover`, then ordinary `agentrun co
 projects or harness subscriptions you want. This polling mode runs the existing observer daemon. OTLP mode uses
 the externally supervised Collector instead; `daemon stop` does not stop that Collector.
 
+On a receiver advertising `token_usage.polling: true`, existing local Codex sessions also report token usage
+without changing or restarting Codex. The observer reads only native session identity, model and cumulative
+counter metadata from bounded local rollout tails; conversation content stays local. Existing totals establish
+a baseline, then new input, output, cache-read and cache-write increments retain their source UTC dates. Input
+already includes cache tokens. Polling does not backfill lifetime totals. Missing counters remain unknown;
+rotation, truncation or a tail gap establishes a fresh baseline, and dropped delivery events mean partial
+coverage. Native usage checkpoints and outgoing events commit together so retries do not double count.
+Selected failed sessions remain eligible for final counter reads, including counters flushed after the failure;
+repeated polls and daemon restarts retain the checkpoint and do not repeat reported usage.
+
+Receivers advertising `session_labels: true` also receive bounded native session titles and project basenames
+for the selected sessions. Delegated sessions can use their native task basename and nickname. Conversation
+previews, prompts and full paths are never used as labels; unsafe names fall back to a harness label and a stable
+ID suffix. An idle session's renamed title is refreshed without waiting for its activity to change. Older receivers
+continue receiving the original activity metadata, without these additional fields.
+
+Receivers advertising `cli_learning.session_association: true` can also show learning status beside an
+observed session. The source checks the exact project (or an enclosing project) and runtime against existing
+AgentRun hook receipts, configuration and a private connection for the same server. It signs the association
+with that connection's scoped credential; credentials, full paths and raw native session IDs are not sent.
+Configuration alone does not establish activation: the receiver must have a hook receipt from that same
+native session before reporting learning on. Missing setup, unreadable configuration and delegated sessions
+are reported separately. This status check never installs hooks, enrolls a project or reads conversation history.
+
+Upgrade the receiver before enabling new connector metadata. Before rolling the receiver back to a version
+without this capability, drain pending events through a compatible receiver. Pending events retain their exact
+payloads for safe retries; an older receiver cannot accept those fields, even though new observations omit them
+when the capability is absent.
+
+A Codex harness or project subscription follows loaded sessions, including delegated and exec agents, before
+bounded history discovery. An explicitly selected historical session remains selectable. A loaded idle session
+is not reported as running, and an unavailable native interface does not prove the agent finished. The local
+observer reads at most 32 MiB of counter data per poll, rotating among loaded sessions on busy machines.
+
 Open **Connected agents**, **Runs** or **Mission Control** to inspect observed sessions. Verify a real activity or
 usage receipt at the destination; local CLI status alone does not prove Collector delivery. Sessions remain
 read-only: idle does not prove a job completed, and a missing heartbeat is not a model failure. Stop the Collector
@@ -75,7 +109,7 @@ and refuses further ingestion with the old connector credential.
 
 The OSS receiver accepts Collector HTTP/JSON logs, including bounded gzip, and advertises its formats at
 `/api/v2/control/connectors/capabilities`. It retains deduplication receipts for seven days, shows session activity
-for 90 days and keeps usage buckets for 90 days after their received UTC day ends. A stale session's internal
+for 90 days and keeps usage buckets for 90 days after the bucket’s UTC day ends (source day for polling increments, received day for OTLP). A stale session's internal
 record remains only while its accepted usage still needs it; cleanup runs at startup and every minute, including
 for revoked connections. Older event timestamps cannot recreate expired receipts or count tokens twice. Each
 connector accepts up to 2,000 new events per minute, 100,000 receipts in the rolling window and 1,000 retained
@@ -98,11 +132,35 @@ agentrun remote connect --origin https://your-console.example \
   --state-dir /private/project-connector
 ```
 
-`remote connect` asks for the token without displaying it, then imports the selected setup and starts an outbound worker. For Codex use `--runtime codex`. Select a discovered named agent with `--selector-kind agent --selector-name NAME`, or a Codex profile with `--selector-kind profile --selector-name NAME`. Without those flags the exact project is selected. Discovery never scans or imports historical sessions.
+`remote connect` prints the setup-export scope, asks for the token without displaying it, then imports the selected setup and starts an outbound worker. New connections request setup sync by default; the owner enrollment must grant `config_sync`. Use `--no-sync` to omit that capability. For Codex use `--runtime codex`. Select a discovered named agent with `--selector-kind agent --selector-name NAME`, or a Codex profile with `--selector-kind profile --selector-name NAME`. Without those flags the exact project is selected. Discovery never scans or imports historical sessions.
 
 For automation, supply a private mode-0600 file owned by the source user containing two JSON fields: `origin` for the exact destination origin and `api_key` for the enrollment token using `--credential-file /private/enrollment.json --yes`. The enrollment credential is not retained. State contains only the connector-scoped credential and the locally approved target. Never put a token in a prompt, URL or command argument.
 
-The imported agent uses ordinary AgentRun revisions and learning controls. Turn on self-improvement in the destination, run a task, inspect its checked/graded learning in Learning Dojo, then start a fresh run. The worker delivers the pinned notes and skills additively; original instructions, MCP configuration and credentials remain on the source machine. Skills are materialized under a private per-run directory, never copied over project files. Reflection and grading use the same native signed-in runtime; they are additional model calls.
+The imported agent uses ordinary AgentRun revisions and learning controls. Turn on self-improvement in the destination and edit the owner's standing corrections in Learning. The worker supplies the pinned corrections to later runs; original source files and credentials remain on the source machine. With setup sync enabled, portable instructions, authored skill assets, project files and configuration requirements also form a separate destination snapshot; credential values are never copied. Native connections do not generate automatic notes or skills, compile learned workflows, or launch extra reflection sessions.
+
+## Keep a setup synced
+
+Setup sync currently requires Linux. Its exporter uses file-descriptor-relative reads; macOS and other platforms report `unsupported_platform` rather than using an unsafe fallback. It captures raw instruction layers, complete authored skill directories, project file bytes and modes, dirty/untracked nonignored files, and bounded Git HEAD history. Defaults bound a snapshot to 10,000 entries, 8 MiB per file and 64 MiB of content; the dedicated transport envelope is 128 MiB. Staged Git index changes, required links, submodules, filters, unsupported settings, hooks/plugins or literal secret-bearing content make a snapshot incomplete. Credentials referenced by name are destination requirements, not copied values. An incomplete or failed export blocks Move while retaining the last good snapshot.
+
+The source worker checks for setup changes every 30 seconds. It records each upload privately before sending it, retries the same generation/sequence and exact bytes after an uncertain reply, and skips unchanged snapshots. Only the locally approved target and roots can be exported; server commands cannot request an export or supply paths. Turning Keep source in sync off pauses this worker. Turning it back on resumes the same worker with a fresh snapshot and generation; any pending payload from the previous generation is retained privately for review and never replayed into the new one. Revoked connector authorization still stops uploads until explicit source authorization. Previous-credential journals remain private and never migrate to the new authorization. If an enrollment reply is lost and its code later expires, explicitly supplying a fresh owner code starts a new operation while retaining the old operation receipt for review.
+
+Readiness includes built-in tools, not just MCP servers. The current resolver verifies explicit Codex 0.171.0 configurations and Claude Code 2.1.322 named agents with supported tool allowlists. Account plugins, cloud skills, unknown native versions or model-specific tools remain named prerequisites until their destination equivalents are verified. Supported HTTP MCP connections preserve Codex tool allow/deny lists, Claude's qualified tool selectors and resource operations, with explicit destination account binding. Configured servers never silently become unrestricted grants. Stdio connections and unsupported authentication helpers remain prerequisites. Managed AgentRun supports resource-only servers; native Codex 0.171.0 has a resource-only discovery limitation.
+
+Source credentials and account identities are not exported. For supported Codex file-backed sign-in, the source reads bounded local account metadata and exports only fixed authentication-mode and policy labels, without refreshing credentials or contacting a provider. Managed system policy, refresh-due or unresolved account policy remain prerequisites. Codex project settings also need an explicit trusted source project, and AgentRun needs its own model access.
+
+Once the snapshot and destination requirements are ready, **Move to AgentRun** keeps the same agent identity and switches its execution to the server. Moved agents can learn checked workflows through server-side compilation, replay and eligible audit runs, using isolated project copies without adding source CLI prompts. See [source sync](../docs/source-sync.md) for project continuity, conflict handling and compatibility limits.
+
+
+Existing connections do not acquire setup-export permission on upgrade. In the destination, authorize setup sync for the **existing connector**, enabling its source separately if previously disabled, and obtain a fresh origin-bound enrollment file. Stop its source worker through its supervisor after native jobs finish, then run:
+
+```sh
+agentrun remote enable-sync --state-dir /private/project-connector \
+  --credential-file /private/sync-enrollment.json
+```
+
+This action prints the export scope, rotates only that connector's credential, and keeps its target and agent identity. It refuses rotation while a worker holds native work; no job is killed to enable sync. An ordinary worker request cannot undo an owner-disabled source.
+
+To sync an already captured Codex or Claude CLI agent without granting remote native execution, first enable CLI capture for the exact project and destination, then connect with `--sync-only`. The source proves the existing association with a destination-bound credential proof; the same agent ID and history are retained. Observation alone is not enough to adopt an agent. `--sync-only` does not authenticate the native runtime or poll native command queues.
 
 ## Choose live runs, history, or both
 
@@ -114,7 +172,7 @@ agentrun remote history-preview --project /work/project --runtime codex
 
 # History only: no native launch, worker, model calls, or automatic learning.
 agentrun remote connect --origin https://your-console.example \
-  --project /work/project --runtime codex --history-only \
+  --project /work/project --runtime codex --history-only --no-sync \
   --state-dir /private/project-history
 
 # Both: selected historical conversations plus live runs.
@@ -126,11 +184,11 @@ agentrun remote connect --origin https://your-console.example \
 agentrun remote import-history --state-dir /private/project-connector
 ```
 
-Without a history flag, connection enables live runs only. `--history` and `--history-only` require project selection: native logs cannot reliably attribute conversations to a named Claude agent or Codex profile. Select project history separately from a named setup’s live connection.
+Without a history flag, connection enables live runs and default setup sync, without importing past conversations. `--history` and `--history-only` require project selection: native logs cannot reliably attribute conversations to a named Claude agent or Codex profile. Select project history separately from a named setup’s live connection.
 
 Only ended, settled conversations from that project and runtime are exported. Recent active files, child sessions and oversized sessions are skipped; source previews and import receipts report skipped counts. The source scans for secrets before sending bounded pages. Repeating `remote import-history` preserves stable source session IDs, so the server deduplicates previous imports. Imported history stays historical; turn on self-improvement separately for future live runs.
 
-A history-only connector cannot launch a worker or upgrade itself to execute. Create a fresh live enrollment and a separate private state directory to enable execution later. If an upload stops partway through, run `remote import-history` again for the same state; already imported sessions are retained.
+A history-only connector cannot execute native runs. With `--no-sync` it needs no worker; otherwise its worker exports setup only. It cannot upgrade itself to execute. Create a fresh live enrollment and a separate private state directory to enable execution later. If an upload stops partway through, run `remote import-history` again for the same state; already imported sessions are retained.
 
 ## Worker lifecycle
 
@@ -140,7 +198,7 @@ agentrun remote worker --state-dir /private/project-connector --foreground
 agentrun remote disconnect --state-dir /private/project-connector
 ```
 
-`--no-start` on connect saves/imports the setup without starting the worker. A foreground worker is suitable for an existing service supervisor; no system service is installed automatically. `remote worker` without `--foreground` starts a detached worker. The lock, not a stale PID file, determines whether one is running. Revoking the connector from the console or disconnecting it stops execution at the next poll. Keep the source state directory private and persistent. A new destination or replacement connector uses a new state directory.
+`--no-start` on connect saves/imports the setup without starting the worker. A foreground worker is suitable for an existing service supervisor; no system service is installed automatically. `remote worker` without `--foreground` starts a detached worker. The lock, not a stale PID file, determines whether one is running. Revoking the connector from the console or disconnecting it stops execution at the next poll. Keep the source state directory private and persistent. A new destination or replacement connector uses a new state directory. Disconnect disables setup export locally before attempting server revocation, so an offline destination cannot leave export enabled; retry disconnect to finish remote revocation.
 
 Remote execution shares the task prompt, results, tool activity, token usage and bounded standing-instruction evidence needed for learning. It is not metadata-only observation. Only locally selected targets may execute; the destination cannot choose an arbitrary directory, binary or environment. Native permissions remain in force. Interactive approval cannot be answered by this bridge, so the run fails visibly and must be continued in the native CLI.
 

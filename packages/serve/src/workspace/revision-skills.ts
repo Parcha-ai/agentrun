@@ -32,13 +32,26 @@ export async function layOwnSkills(work: Workspace, skills: Readonly<Record<stri
   const brought = laysKind ? [`${kind.name}/SKILL.md`] : [];
   if (laysKind) files.push([brought[0]!, kind.text]);
   if (!files.length) return brought;
-  const there = await work.list(RUN_SKILLS_DIR).then((entries) => new Set(entries.map((entry) => entry.name)), (error: unknown) => {
-    if (error instanceof WorkspaceError && error.code === "NOT_FOUND") return new Set<string>();
-    throw error;
-  });
-  const missing = files.filter(([path]) => !there.has(relativeSegments(path)[0]!));
-  if (!missing.length) return brought;
-  await work.mkdir(RUN_SKILLS_DIR);
-  for (const [path, text] of missing) await work.write(`${RUN_SKILLS_DIR}/${path}`, text);
+  try {
+    // What is there is asked with stat, which answers a fresh folder's missing .agents/skills/ with undefined: no error
+    // is read as "not there", so no check of an error's class decides it (a run's own process gets its errors over its
+    // channel, where beta.50 lost WorkspaceError's class and failed every new run that had a skill).
+    const there = (await work.stat(RUN_SKILLS_DIR)) === undefined ? new Set<string>() : new Set((await work.list(RUN_SKILLS_DIR)).map((entry) => entry.name));
+    const missing = files.filter(([path]) => !there.has(relativeSegments(path)[0]!));
+    if (!missing.length) return brought;
+    await work.mkdir(RUN_SKILLS_DIR);
+    for (const [path, text] of missing) await work.write(`${RUN_SKILLS_DIR}/${path}`, text);
+  } catch (error) {
+    throw laidFailed(error);
+  }
   return brought;
+}
+
+/** A lay's failure, saying it was the lay of the run's skills: a WorkspaceError keeps its code, its path and its words
+ *  (the backend's, an Archil key and Archil's own included) after that. */
+function laidFailed(error: unknown): unknown {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (!(error instanceof Error) || error.name !== "WorkspaceError" || typeof code !== "string") return error;
+  const path = (error as { path?: unknown }).path;
+  return new WorkspaceError(code as WorkspaceError["code"], `laying the run's skills in ${RUN_SKILLS_DIR}/: ${error.message}`, { ...(typeof path === "string" ? { path } : {}), cause: error });
 }

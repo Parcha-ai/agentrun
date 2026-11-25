@@ -7,15 +7,17 @@ import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
 import { extensionOf, typeOf } from "./file-types.js";
-import { clip, URL_MAX } from "./web-fetch-direct.js";
+import { mediaSeconds } from "./media-duration.js";
+import { clip, URL_MAX } from "@parcha/agentrun-web";
 import { forModel } from "./result.js";
 import { isWorkspaceError, type Workspace, workspaceErrorWords } from "./workspace/index.js";
+import { type Slots as SaveSlots, slots as saveSlots } from "./slots.js";
 
 export const WEB_SAVE_TOOL = "web_save";
 /** The most bytes a saved file may have. */
 export const SAVE_MAX_BYTES = 200 * 1024 * 1024;
-/** One deadline for a whole download: a 200 MiB file at about 350 KB/s. A page's 30 s (web-fetch-direct.ts) would cut a
- *  large file on any link under about 7 MB/s. */
+/** One deadline for a whole download: a 200 MiB file at about 350 KB/s. A page's 30 s (@parcha/agentrun-web page.ts
+ *  TIMEOUT_MS) would cut a large file on any link under about 7 MB/s. */
 export const SAVE_TIMEOUT_MS = 600_000;
 /** The folder a bare name is saved in. */
 export const MEDIA_DIR = "media";
@@ -25,7 +27,11 @@ export const PATH_MAX_CHARS = 1_024;
 export const TYPE_MAX_CHARS = 255;
 export const WORDS_MAX_CHARS = 2_000;
 
-export type Saved = { ok: true; path: string; bytes: number; content_type: string; url: string };
+/** The saved types whose length their bytes give (media-duration.ts), in the words every description of web_save uses. */
+export const LENGTH_TYPES = "mp3, wav, mp4 or m4a";
+/** `duration_s`: an audio or video file's length in seconds (to the millisecond), when its bytes give it (LENGTH_TYPES);
+ *  absent for any other file, so an agent can time a cut or price a job billed by length. */
+export type Saved = { ok: true; path: string; bytes: number; content_type: string; duration_s?: number; url: string };
 export type Unsaved = { ok: false; url: string; path?: string; refused: string } | { ok: false; url: string; path?: string; error: string };
 /** The guard's resolver and fetch (a test's, or the fakes'), the caller's signal, a lower cap, and other slots than the
  *  server's (a test's). */
@@ -36,48 +42,9 @@ export type SaveOptions = Omit<PublicFetchOptions, "maxBytes"> & { maxBytes?: nu
  *  that at the peak when it does not (publicDownload). So a runner's downloads hold at most 800 MiB at 200 MiB a file,
  *  about 1.6 GiB when no host states a length; Mode 2's pieced writes (runner/big-writes.ts) can add 800 MiB more. */
 export const SAVE_CONCURRENCY = 4;
-/** Slots for downloads, handed out first come first served. `take` answers the slot's release (once), or rejects with
- *  the signal's reason if it aborts first, leaving the queue. */
-export type SaveSlots = { readonly size: number; readonly busy: number; readonly waiting: number; take(signal: AbortSignal): Promise<() => void> };
-export function saveSlots(size: number): SaveSlots {
-  let busy = 0;
-  const queue: Array<() => void> = [];
-  const releaser = () => {
-    let done = false;
-    return () => {
-      if (done) return;
-      done = true;
-      // The slot goes straight to the next waiter, so busy only drops when no one waits.
-      const next = queue.shift();
-      if (next) next();
-      else busy--;
-    };
-  };
-  return {
-    size,
-    get busy() { return busy; },
-    get waiting() { return queue.length; },
-    take(signal) {
-      if (signal.aborted) return Promise.reject(signal.reason);
-      if (busy < size) {
-        busy++;
-        return Promise.resolve(releaser());
-      }
-      return new Promise((resolve, reject) => {
-        const leave = () => {
-          queue.splice(queue.indexOf(grant), 1);
-          reject(signal.reason);
-        };
-        const grant = () => {
-          signal.removeEventListener("abort", leave);
-          resolve(releaser());
-        };
-        queue.push(grant);
-        signal.addEventListener("abort", leave, { once: true });
-      });
-    },
-  };
-}
+/** Slots for downloads (slots.ts): `take` answers the slot's release, or rejects with the signal's reason if it aborts
+ *  first. Re-exported here under web_save's names for its callers. */
+export { type Slots as SaveSlots, slots as saveSlots } from "./slots.js";
 /** The runner's one gate: at most SAVE_CONCURRENCY downloads at once per runner, across its runs. A run in the runner's
  *  own process takes it here; a run in a process of its own takes it over its channel (runner/save-slots.ts). */
 export const SERVER_SLOTS = saveSlots(SAVE_CONCURRENCY);
@@ -201,10 +168,19 @@ export async function webSave(args: unknown, work: Workspace, options: SaveOptio
     } catch (error) {
       return { ...failed(error), url: final };
     }
-    return { ok: true, path: at, bytes: file.bytes.length, content_type: typed.type, url: final };
+    const seconds = lengthOf(file.bytes, typed.type);
+    return { ok: true, path: at, bytes: file.bytes.length, content_type: typed.type, ...(seconds === undefined ? {} : { duration_s: seconds }), url: final };
   } finally {
     release();
   }
+}
+
+/** An audio or video file's length in seconds, rounded to the millisecond; undefined for any other type, or when its bytes
+ *  don't give it (mediaSeconds only reads its bytes, and never throws). */
+function lengthOf(bytes: Uint8Array, type: string): number | undefined {
+  if (!/^(audio|video)\//.test(type)) return undefined;
+  const seconds = mediaSeconds(bytes);
+  return seconds === undefined ? undefined : Math.round(seconds * 1000) / 1000;
 }
 
 /** The words the model reads: the answer's JSON. */
@@ -215,7 +191,7 @@ export const savedText = (answer: Saved | Unsaved): string => JSON.stringify(ans
 export function webSaveTool(work: () => Promise<Workspace> | Workspace, guard: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">> | Omit<PublicFetchOptions, "maxBytes" | "signal">, slots?: SaveSlots): ToolRegistration<TSchema, JsonValue> {
   return defineTool({
     name: WEB_SAVE_TOOL,
-    description: `Download one file from a public URL into this run's folder, where it stays (the run's Files show and play it): use it for a generated image, audio or video a service answered with a link that expires. path is where to save it, relative to the run's folder; a bare name (cat.png) goes under ${MEDIA_DIR}/. A path that already holds a file is refused, never overwritten. The file must be a type its bytes show: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm), and the path must have an extension of that type (cat.png, not cat or cat.bin); any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host declares. At most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB and ${SAVE_TIMEOUT_MS / 60_000} minutes. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, at every redirect too. Answers JSON: { ok: true, path, bytes, content_type, url } (url the final one, after redirects), or { ok: false, url, refused } when it was refused, { ok: false, url, error } when it failed; nothing is left at the path when it does not save.`,
+    description: `Download one file from a public URL into this run's folder, where it stays (the run's Files show and play it): use it for a generated image, audio or video a service answered with a link that expires. path is where to save it, relative to the run's folder; a bare name (cat.png) goes under ${MEDIA_DIR}/. A path that already holds a file is refused, never overwritten. The file must be a type its bytes show: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm), and the path must have an extension of that type (cat.png, not cat or cat.bin); any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host declares. At most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB and ${SAVE_TIMEOUT_MS / 60_000} minutes. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, at every redirect too. Answers JSON: { ok: true, path, bytes, content_type, duration_s?, url } (url the final one, after redirects; duration_s an audio or video file's length in seconds, when its bytes give it: ${LENGTH_TYPES}), or { ok: false, url, refused } when it was refused, { ok: false, url, error } when it failed; nothing is left at the path when it does not save.`,
     parameters: {
       type: "object",
       additionalProperties: false,

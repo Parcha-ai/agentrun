@@ -82,20 +82,23 @@ const allowedExtraFiles = {
   // And the locks the CLI harnesses' first use installs by (src/harness-install.ts): each the package.json it locks and
   // npm's lock, metadata naming the package at its pin and every package of its tree by sha512, never the CLI itself.
   // And the template packages it ships, which it reads at its start (src/templates.ts), with their format (templates/README.md).
-  // And the two subpaths a harness's author imports (HARNESS.md): the module's types and the conformance suite.
-  serve: ['package/launcher/agentrun-serve', 'package/dist/harness-module.js', 'package/dist/harness-module.d.ts', 'package/dist/conformance.js', 'package/dist/conformance.d.ts','package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
+  // And the two subpaths a harness's author imports (HARNESS.md): the module's types and the conformance suite; and the
+  // front-matter reader `agentrun deploy` imports to find what of a folder its package holds.
+  serve: ['package/launcher/agentrun-serve', 'package/dist/harness-module.js', 'package/dist/harness-module.d.ts', 'package/dist/conformance.js', 'package/dist/conformance.d.ts', 'package/dist/manifest.js', 'package/dist/manifest.d.ts','package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
-  // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's
+  // the list of its hand-written commands (local.mjs), its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's
   // installer (skill.mjs), its template package check (template.mjs), its user service (service.mjs), its --public-url check (public-url.mjs) and its tailnet
   // step (tailscale.mjs), and the installer that brings its own Node (install.sh), which `agentrun service upgrade` runs.
   // The computer package ships its image recipe for remote computers with an Archil mount: the root helper, whose sha256
   // the provider reads at run time to check an image (src/mount-archil.ts), its Dockerfile and install.sh (the build's
   // steps, which a vendor that builds in its own account runs), and the scripts that build it
   // as a Daytona snapshot, a Modal image or an E2B template, and the recipe's hash with its types (dist/box-image.js names
-  // the published image by it, which Agent37 registers as a template).
-  computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/install.sh', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
-  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs', 'package/lib/service.mjs', 'package/lib/tailscale.mjs', 'package/lib/harness.mjs', 'package/lib/public-url.mjs', 'package/lib/doctor.mjs', 'package/install.sh'],
+  // the published image by it, which Agent37 registers as a template). And the media image's recipe (media/Dockerfile),
+  // which an operator builds for a Docker box that renders video, and the documents image's (documents/Dockerfile and its
+  // layer documents.sh, which build-daytona.py --documents runs on the box image too), for one that writes Office files.
+  computer: ['package/media/Dockerfile', 'package/documents/Dockerfile', 'package/documents/documents.sh', 'package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/install.sh', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/local.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/device.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs', 'package/lib/export.mjs', 'package/lib/service.mjs', 'package/lib/tailscale.mjs', 'package/lib/harness.mjs', 'package/lib/public-url.mjs', 'package/lib/doctor.mjs', 'package/lib/deploy.mjs', 'package/lib/target.mjs', 'package/lib/own.mjs', 'package/install.sh'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
@@ -160,6 +163,8 @@ const allowedEndpoints = {
     ['README.md', 'http://127.0.0.1:7340'],
     // Native connect uses the same public default and refuses a host outside loopback (src/native/cli.ts).
     ['dist/native/cli.js', 'http://127.0.0.1:7340'],
+    // CLI capture uses the same public default and requires a credential-free loopback origin (src/cli-learning/install.ts).
+    ['dist/cli-learning/install.js', 'http://127.0.0.1:7340'],
     // Reflection replaces inherited HTTP MCP transports with this inert placeholder only after disabling them;
     // it confirms every server is still disabled before dispatch (src/native/runtime.ts), so no endpoint is called.
     ['dist/native/runtime.js', 'http://127.0.0.1:1'],
@@ -190,7 +195,11 @@ const usedEndpoints = new Set();
 const daemonMachines = { amd64: 0x3e, arm64: 0xb7 };
 const egressCode = ['egress-main.js', 'egress-proxy.js', 'egress-table.js'];
 const requiredFiles = {
-  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', 'package/box/recipe.mjs', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
+  // The session readers behind serve's import, and the CLI that prints a home's per-session totals.
+  import: ['package/LICENSE', 'package/NOTICE', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/cli.js'],
+  // serve's web_search and web_fetch machinery, and the link finder the console's timeline compiles from source.
+  web: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/text-urls.js', 'package/dist/text-urls.d.ts'],
+  computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/media/Dockerfile', 'package/documents/Dockerfile', 'package/documents/documents.sh', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', 'package/box/recipe.mjs', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
   // What serve loads of the ACP adapter at runtime: its entry, Goose's and Cursor's recipes (recipeFile), and the stdio MCP
   // bridge an agent's MCP client starts by path (STDIO_BRIDGE), which no import reaches, so the import smoke alone misses it.
   // And the fake ACP agent a harness module's author tests on, which ./testing starts by path.
@@ -207,7 +216,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'eve', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'];
+  const packageDirectories = ['dsl', 'jev', 'pi-browser', 'import', 'web', 'serve', 'decisions', 'computer', 'client', 'eve', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -442,6 +451,9 @@ import * as acpFacts from '@parcha/agentrun-harness-acp/facts';
 import * as acpTesting from '@parcha/agentrun-harness-acp/testing';
 import * as computer from '@parcha/agentrun-computer';
 import * as computerMount from '@parcha/agentrun-computer/mount';
+import * as sessions from '@parcha/agentrun-import';
+import * as web from '@parcha/agentrun-web';
+import * as webUrls from '@parcha/agentrun-web/text-urls';
 assert.equal(validateWorkflow(supportTriage).ok,true);
 const schema=JSON.parse(await readFile(new URL(import.meta.resolve('@parcha/agentrun-dsl/schema')),'utf8'));
 assert.equal(schema.$id,'https://agentrun.ai/schema/v2/workflow.schema.json');
@@ -469,9 +481,11 @@ assert.ok(loadAuthorReference('language').includes(authorContract()));
 { const drive=await adaptersKernel.openDrive({writer:await adaptersTesting.memorySessionStore().open('packed'),signal:new AbortController().signal}); assert.equal(await drive.effect('k',{name:'k',replay:'never'},async()=>'ok'),'ok'); await drive.submit({id:'p',kind:'prompt',text:'hi'}); await adaptersProcess.placeSubmissions(drive,drive.pending()); assert.deepEqual(drive.pending(),[]); assert.equal(typeof adaptersKernel.Restart,'function'); assert.equal(typeof adaptersProcess.NativeJournal,'function'); }
 { const fetch=async()=>new Response(JSON.stringify({mode:'fast',answers:{holds:{type:'noul',noul:0.9},pick:{type:'choice',choice:'a',probabilities:{a:0.75,b:0.25}}},citations:[{url:'https://example.org/a',excerpts:[]}],usage:{input_tokens:1,output_tokens:0},decision_id:'decisions_0'}),{status:200,headers:{'content-type':'application/json'}}); const result=await judgeFromProvider(decisions.parallelProvider({apiKey:'fake-test-key',fetch}))({label:'smoke',kind:'judge',state:{},questions:{holds:{type:'noul',instructions:'Q?'},pick:{type:'choice',instructions:'Which?',criteria:{a:null,b:null}}}}); assert.equal(result.answers.holds.noul,0.9); assert.equal(result.answers.pick.confidence,0.5); assert.deepEqual([result.cost_basis,result.evidence.length,result.confidence_source.pick],['estimate',1,'derived']); assert.equal(typeof registerDecisionProviderConformance,'function'); }
 { assert.deepEqual(Object.keys(computerMount).sort(),['MOUNT_KINDS','WORKSPACE','checkMount','epochProblem','readBackOf']); for (const name of Object.keys(computerMount)) assert.equal(computerMount[name],computer[name],name); assert.equal(computerMount.WORKSPACE,'/workspace'); assert.deepEqual(computerMount.checkMount({kind:'bind',path:'relative'},['bind']).map(r=>r.field),['mount']); assert.deepEqual(computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'},7),{kind:'archil',disk:'d',region:'r',folder:'f',exclusive:true,epoch:7}); assert.ok('other' in computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'}),'an Archil read-back with no epoch is refused'); assert.ok(computer.providerIds.length>0); for (const id of computer.providerIds) { const module=await computer.providerModule(id); const mounts=computer.descriptorOf(id)?.mounts; assert.ok(Array.isArray(mounts)&&mounts.every(kind=>computerMount.MOUNT_KINDS.includes(kind)),id+' mounts'); assert.equal(module.MOUNT,undefined,id+' exports no MOUNT: the descriptor holds its mounts'); assert.equal(typeof module.create,'function',id+' create'); assert.equal(module.fromEnv,undefined,id+' has no fromEnv'); } const pkg=join(process.cwd(),'node_modules','@parcha','agentrun-computer'); for (const arch of ['amd64','arm64']) assert.equal((await stat(join(pkg,'dist','computerd-linux-'+arch))).mode&0o7777,${installedDaemonMode},'the install has dist/computerd-linux-'+arch+', executable with npm and system umasks applied'); }
+{ assert.deepEqual(sessions.normalizeUsage('openai',{input_tokens:10,cached_input_tokens:4,output_tokens:3,reasoning_output_tokens:1}),{input:6,output:3,cacheRead:4,cacheWrite:0,reasoning:1},'input excludes the cache'); assert.deepEqual([...sessions.SOURCES].sort(),['claude-code','codex','pi']); assert.deepEqual(await sessions.parseHome(await mkdtemp(join(tmpdir(),'import-home-')),{env:{}}),[],'an empty home has no sessions'); }
+{ assert.equal(web.parallelExtractFee(1).usd,0.001); assert.ok(new web.PaidRefused('no price') instanceof Error); assert.equal(webUrls.linksOf,web.linksOf); assert.deepEqual([...web.linksOf('see https://example.org/a and more')],['https://example.org/a']); const page=await web.fetchPage('https://example.org/'); assert.equal(page.ok,false,'with no guard nothing is fetched'); assert.match(page.error,/no public-host guard/); }
 { const key='fake-test-key-0123456789'; const seen=[]; const fetch=async(url,init)=>{ seen.push([url,init.headers.authorization]); return new Response(JSON.stringify({error:{code:'bad_request',message:'echo '+key}}),{status:400,headers:{'content-type':'application/json'}}); }; const c=new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:key,fetch}); await assert.rejects(c.runs.get('..'),client.AgentRunUsage); assert.throws(()=>new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:'a\\nb'}),client.AgentRunAuthError); const refused=await c.agents.get('a b').catch((error)=>error); assert.ok(refused instanceof client.AgentRunRefused); assert.deepEqual([refused.status,refused.code,refused.error.message],[400,'bad_request','echo [hidden]']); assert.ok(!refused.message.includes(key)); assert.deepEqual(seen,[['https://agentrun.example.com/v2/agents/a%20b','Bearer '+key]]); }
 assert.equal(typeof agentrunEve,'function'); assert.ok(eveWorkflow);
-console.log(JSON.stringify({core:true,jev:true,browser:true,serve:true,decisions:true,adapters:true,computer:true,client:true,eve:true,network:'prohibited'}));
+console.log(JSON.stringify({core:true,jev:true,browser:true,serve:true,decisions:true,adapters:true,computer:true,import:true,web:true,client:true,eve:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);

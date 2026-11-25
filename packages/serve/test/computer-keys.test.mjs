@@ -49,6 +49,8 @@ test("computer keys: the saved keys become each provider's create() options; a n
   assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY }, { daytonaConnect: "dial" }), { ok: true, options: { apiKey: KEY, connect: "dial" } });
   // A self-hosted target's attach relay reaches Daytona's create() as attachEgress, beside its connect.
   assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_ATTACH_EGRESS: "192.0.2.40:18443" }, { daytonaConnect: "dial" }), { ok: true, options: { apiKey: KEY, attachEgress: "192.0.2.40:18443", connect: "dial" } });
+  // Create's wait for Daytona's eventually consistent label listing, in ms: no secret, so never on the launcher's list.
+  assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_LISTED_MS: "45000" }), { ok: true, options: { apiKey: KEY, listedMs: "45000" } });
   assert.deepEqual(providerOptions("e2b", { E2B_API_KEY: KEY }, { e2bConnect: "dial" }), { ok: true, options: { apiKey: KEY, connect: "dial" } });
   assert.deepEqual(providerOptions("modal", { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET }, { modalConnect: "dial" }), { ok: true, options: { tokenId: KEY, tokenSecret: SECRET, app: "agentrun", connect: "dial" } });
   assert.deepEqual(providerOptions("daytona", { DAYTONA_API_KEY: KEY, DAYTONA_TARGET: "" }), { ok: true, options: { apiKey: KEY } }, "an empty optional key is left out");
@@ -127,6 +129,11 @@ test("computer keys: a provider that cannot be made, or that throws, is a failed
   const made = await testConnection("modal", { keys: { MODAL_TOKEN_ID: KEY, MODAL_TOKEN_SECRET: SECRET } }, throwing);
   assert.deepEqual([made.ok, made.error.code], [false, "invalid"]);
   assert.match(made.error.message, /^Modal's settings are not valid\. \(the vendor said: the Modal provider refuses \[the key\]\)$/);
+  // A provider whose vendor SDK is not installed (npm install --omit=optional) says the install step alone: no setting
+  // is wrong, and no vendor said anything.
+  const unsdked = { e2b: async () => { throw Object.assign(new Error("E2B needs the e2b package: npm install e2b@2.63.0"), { code: "sdk_missing" }); } };
+  const missing = await testConnection("e2b", { keys: { E2B_API_KEY: KEY } }, unsdked);
+  assert.deepEqual([missing.ok, missing.error.code, missing.error.message], [false, "sdk_missing", "E2B needs the e2b package: npm install e2b@2.63.0"]);
   const exploding = fakeModule(() => { throw new Error(`socket closed near ${KEY}`); });
   const thrown = await testConnection("orgo", { keys: { ORGO_API_KEY: KEY, ORGO_WORKSPACE_ID: "ws-1" } }, { orgo: exploding.create });
   assert.deepEqual([thrown.ok, thrown.error.code], [false, "unreachable"]);

@@ -8,8 +8,10 @@ import { join } from "node:path";
 import { after, test } from "node:test";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
-const { triggerTargets, previousCarriedWords, previousResultTooLarge } = await import("../dist/trigger-targets.js");
+const { triggerTargets, previousCarriedWords, previousResultTooLarge, RECIPE_MESSAGE_PERSON_ONLY } = await import("../dist/trigger-targets.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
+const { ApiError } = await import("../dist/errors.js");
+const handedValues = await import("../dist/handed-values.js");
 const { runnersRefused } = await import("../dist/runner/presence.js");
 const { carriesPrevious } = await import("../dist/trigger-adapter.js");
 const { TRIGGER_ADAPTERS } = await import("../dist/trigger-adapters.js");
@@ -62,6 +64,7 @@ const deps = (over = {}) => {
     momentOf: async () => moment(),
     // The server's delete turn: here the write alone.
     runWrite: (_agentId, _runId, work) => work(),
+    cutHeld: async (_runId, text) => text,
     runStatus: async () => "working",
     ...rest,
   };
@@ -103,6 +106,20 @@ test("a message_run target to a workflow run is not_allowed", async () => {
   const t = triggerTargets(store, deps({ momentOf: async () => moment({ kind: "workflow" }) }));
   const issues = await t.targetIssues({ kind: "message_run", run_id: "run-1", input: { content: "hi" } });
   assert.match(issues[0].message, /A workflow run takes no messages here\./);
+});
+
+test("a message_run target to a run on a plan-billed harness recipe is not_allowed: its turn would run on its owner's own sign-in; a run on any other harness is allowed", async () => {
+  const store = await freshStore();
+  const planRecipe = (harness) => harness === "model-agent";
+  const refused = triggerTargets(store, deps({ momentOf: async () => moment({ harness: "model-agent" }), planRecipe }));
+  const issues = await refused.targetIssues({ kind: "message_run", run_id: "run-1", input: { content: "hi" } });
+  assert.deepEqual(issues, [{ field: "target.run_id", reason: "not_allowed", message: RECIPE_MESSAGE_PERSON_ONLY }]);
+  assert.match(RECIPE_MESSAGE_PERSON_ONLY, /owner's own sign-in only for what a person starts.*not every one is saved\. Save them in Settings → Harness keys/);
+  // Before the cap words: an uncapped run on one is refused for the sign-in, the rule a cap does not change.
+  const uncapped = triggerTargets(store, deps({ momentOf: async () => moment({ harness: "model-agent", maxCostUsd: undefined }), planRecipe }));
+  assert.equal((await uncapped.targetIssues({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }))[0].message, RECIPE_MESSAGE_PERSON_ONLY);
+  const allowed = triggerTargets(store, deps({ momentOf: async () => moment({ harness: "pi" }), planRecipe }));
+  assert.deepEqual(await allowed.targetIssues({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }), []);
 });
 
 test("a start_run target for an unknown agent is not_found", async () => {
@@ -270,6 +287,17 @@ test("message to a working run writes a steer that answers no person, its firing
   assert.equal((await store.triggers.firing("t1", "f2")).status, "skipped");
 });
 
+test("a firing's message to a run on a plan-billed harness recipe is skipped in words at each firing, nothing written and its firing not sent: a server started with the recipe since the trigger was made never runs its turn on the sign-in", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  await dueFirings(store, ["f1"]);
+  const t = triggerTargets(store, deps({ momentOf: async () => moment({ harness: "model-agent" }), planRecipe: (harness) => harness === "model-agent" }));
+  const target = { kind: "message_run", run_id: "run-1", input: { content: "from the schedule" } };
+  assert.deepEqual(await t.message(target, { content: "from the schedule" }, "f1", from, BOUND), { skipped: RECIPE_MESSAGE_PERSON_ONLY });
+  assert.equal((await store.commands("run-1", 0)).length, 0, "no turn queued");
+  assert.notEqual((await store.triggers.firing("t1", "f1")).status, "sent");
+});
+
 test("a firing's message is sent in its run's agent's delete turn (runWrite): refused there, as a purge of the run refuses it, it writes nothing and its firing stays due", async () => {
   const store = await freshStore();
   await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
@@ -284,6 +312,19 @@ test("a firing's message is sent in its run's agent's delete turn (runWrite): re
   }));
   await assert.rejects(() => t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from, BOUND), (error) => error === purged);
   assert.deepEqual(turns, [["a1", "run-1"]], "in the turn of its run's agent");
+  assert.equal((await store.commands("run-1", 0)).length, 0, "nothing written");
+  assert.notEqual((await store.triggers.firing("t1", "f1")).status, "sent", "its firing is not marked sent");
+});
+
+test("a firing's message to a run whose launch's sealed part doesn't open here is skipped in words, nothing written and its firing not sent: its text can't be cut of what the run was handed", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  await dueFirings(store, ["f1"]);
+  const withheld = new ApiError("not_continuable", handedValues.WITHHELD_MESSAGE, { details: { reason: "withheld" } });
+  const t = triggerTargets(store, deps({ cutHeld: async () => { throw withheld; } }));
+  const answer = await t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from, BOUND);
+  assert.deepEqual(answer, { skipped: handedValues.WITHHELD_MESSAGE });
+  assert.equal(typeof handedValues.WITHHELD_MESSAGE, "string");
   assert.equal((await store.commands("run-1", 0)).length, 0, "nothing written");
   assert.notEqual((await store.triggers.firing("t1", "f1")).status, "sent", "its firing is not marked sent");
 });

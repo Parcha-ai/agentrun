@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { parse } from "yaml";
 import { FIRST_RUN, firstRunOf, firstVisit, onStop, report, rows, setUp, until } from "../railway/publish-and-walk.mjs";
+import { imagePublished } from "../../scripts/ghcr-published.mjs";
 import { isMain } from "../../scripts/is-main.mjs";
 
 export const PREFIX = "agentrun-render-walk-";
@@ -97,6 +98,12 @@ async function main() {
       await gone(s.id);
       step.pass("earlier walk's service deleted", `${s.name} (${s.id})`);
     }
+
+    // A release moves render.yaml's pin before its image is published, and a service made from a tag that isn't there
+    // bills while its deploy fails at the pull.
+    const published = await imagePublished(svc.image.url);
+    if (published === false) throw new Error(`render.yaml's image ${svc.image.url} is not on GHCR yet: nothing made (the Deploy to Render button fails the same way until it is)`);
+    if (published) step.pass("image published", `${svc.image.url}: GHCR has it for an anonymous pull, as Render pulls it`);
 
     const name = `${PREFIX}${new Date().toISOString().replace(/[-:]/g, "").slice(0, 15).toLowerCase()}`;
     const token = randomBytes(32).toString("hex");

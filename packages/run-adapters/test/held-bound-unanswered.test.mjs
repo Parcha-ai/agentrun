@@ -34,8 +34,10 @@ test("a request's hold is written on its record before it leaves, and nothing be
   const store = memorySessionStore();
   const booking = await port(store);
   await booking.models.beforeRequest({ model: "m" });
+  // Beside the hold, only when it left (`at`, GRE-4835): no other figure.
   const written = (await records(store)).filter((r) => r.kind === RUNNER_RECORDS.request).map((r) => r.data);
-  assert.deepEqual(written, [{ turn: 1, model: "m", heldUsd: HOLD }]);
+  for (const w of written) assert.match(w.at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/, "its record says when it left");
+  assert.deepEqual(written.map(({ at: _at, ...rest }) => rest), [{ turn: 1, model: "m", heldUsd: HOLD }]);
 });
 
 test("the booking holds each request in flight at its hold until it is answered", async () => {

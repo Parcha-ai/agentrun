@@ -11,6 +11,8 @@
 //   beforeResult point), on the host-tool path every adapter's calls take;
 // - the paid model requests: the runner's booking (modelPortFor), the one ledger, every request through it;
 // - the held state (pi.live) reported through deps.live; the commands (steer, approve, deny).
+import { ProjectDrain } from "./project-drain.js";
+import type { ProjectCheckpoint } from "../source-sync/checkpoints.js";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -21,9 +23,11 @@ import { type AdapterFacts, type AdapterSession, type AgentAdapter, type BeforeR
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, type BudgetData, type CallEndData, type CallStartData, type CallStatus, capNowOf, endedAnswer, type EndData, type JobEndData, KINDS, MESSAGE_SENT_AGAIN, type MessageData, type RaiseData, type ToolCalls, toolCalls, withdrawnAnswers } from "./journal-kinds.js";
 import { turnEndedOnAsk } from "../store-reads/journal.js";
-import { CAP_WRAPUP, COMPUTER_NOTE, endsTurn, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
+import { CAP_REFUSED, CAP_WRAPUP, COMPUTER_NOTE, endsTurn, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
+import { genAiTracing, type GenAiTracing, type RunTrace } from "../otel/tracer.js";
+import type { RouteTrace } from "../otel/genai.js";
 
 /** The root entries a claim writes before its turn, whatever the run's turns are (its session's key, a phase row, a
  *  takeover's note, its computer's hold, the learning seed it laid, the computer it made): read past when a claim asks
@@ -50,7 +54,8 @@ const outputRetried = (entries: readonly { readonly kind?: string; readonly data
   return at >= 0 && entries.slice(at + 1).some((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
 };
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
-import { ASKED_BECAUSE, deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
+import type { HeldRedact } from "./redact.js";
+import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_PREFIX, reflectRequestId } from "./end-of-run.js";
 import { agentEntriesOf, approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
@@ -67,7 +72,7 @@ import type { ParkCause } from "../workspace/computer-kept.js";
 import type { ScriptComputer } from "../workspace/run-tools.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, FIT_TOLERANCE, freeModel, freeRequestsIn, freeWrapUpDue, freeWrapUpWords, noteFor, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, freeLimitNearest, freeRequestsIn, freeWrapUpDue, freeWrapUpWords, localRequestsIn, noteFor, overCapEnd, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap's config, as its spec gives it: the kernel runCap's options but its sessions (the loop's own), and
@@ -75,7 +80,7 @@ import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../por
  *  run), which every gate of the run reads with its sessions' spend (runBooking's sessions.beside, overCap, the
  *  wrap-ups). None: nothing is. */
 export type RunCapConfig = Omit<RunCapOptions, "sessions"> & { beside?(): Promise<number | null> };
-import { bookedIn, type PaidBooking } from "../paid-calls.js";
+import { bookedIn, type PaidBooking, stopRunWith } from "../paid-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { CODEMODE, defersCatalog, isCatalogWire, TOOLS_CALL, TOOLS_SEARCH } from "@parcha/agentrun-kernel";
@@ -106,16 +111,19 @@ export type RaiseCheck =
   | { refused: string; raised?: undefined; retry?: undefined };
 
 /** The gate's answer for a call: run it, ask a person (`ask` with fields its card shows before the call's input: a
- *  learned workflow's MCP actions), or refuse it (with the words the model reads, or generic ones). */
-export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string } | { readonly ask: Readonly<Record<string, unknown>> };
+ *  learned workflow's MCP actions; `because`, why a call its setting allows asks anyway, its ask's own field and never
+ *  one of the call's arguments), or refuse it (with the words the model reads, or generic ones). */
+export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string } | { readonly ask: Readonly<Record<string, unknown>>; readonly because?: string };
+
+/** A call put to a person: its card's input, and the gate's reason when a call its setting allows asks anyway. */
+type AskedCall = PreIntentCall & { readonly because?: string };
 
 /** An asked call's card: the gate's own fields (`shown`) first, so a card cut at its preview's bound (ARGS_PREVIEW_BYTES)
  *  still names them whatever the input's size, then the call's input, which the model wrote, without any field of
- *  theirs; a learned_workflow call's card fields (LEARNED_CARD_FIELDS) are only ever the gate's, and so is the reason a
- *  call its setting allows asks anyway (ASKED_BECAUSE). */
+ *  theirs; a learned_workflow call's card fields (LEARNED_CARD_FIELDS) are only ever the gate's. */
 function cardOf<A extends Record<string, unknown> | undefined>(tool: string, shown: Readonly<Record<string, unknown>> | undefined, args: A): A | Record<string, unknown> {
-  if (!shown && tool !== LEARNED_WORKFLOW_TOOL && !(args && Object.hasOwn(args, ASKED_BECAUSE))) return args;
-  return { ...shown, ...Object.fromEntries(Object.entries(args ?? {}).filter(([key]) => !(shown && Object.hasOwn(shown, key)) && key !== ASKED_BECAUSE && !(tool === LEARNED_WORKFLOW_TOOL && LEARNED_CARD_FIELDS.has(key)))) };
+  if (!shown && tool !== LEARNED_WORKFLOW_TOOL) return args;
+  return { ...shown, ...Object.fromEntries(Object.entries(args ?? {}).filter(([key]) => !(shown && Object.hasOwn(shown, key)) && !(tool === LEARNED_WORKFLOW_TOOL && LEARNED_CARD_FIELDS.has(key)))) };
 }
 /** The gate before a call's intent; `askedAs`, when it has one, names a call as a person is asked about it (its settings
  *  key, as main's pending approval names it), else the call is asked about by its own name. `replayed`: asked again for a
@@ -212,6 +220,8 @@ export interface AdapterRunSpec {
   readonly endCost?: () => Promise<EndCost>;
   /** The most the end's patch may take before the end is written without it. Default END_PATCH_MS. */
   readonly endPatchMs?: number;
+  /** Optional moved-project capture, only after actual dispatch has drained. Failure remains an explicit terminal receipt. */
+  readonly projectCheckpoint?: { capture(signal: AbortSignal): Promise<ProjectCheckpoint>; uncertain(): ProjectCheckpoint; readonly timeoutMs?: number };
   /** The most a booking whose write has begun is waited for before an answer's cost, a park or the end goes on without
    *  it. Default BOOKING_WRITE_MS. */
   readonly bookingWriteMs?: number;
@@ -252,6 +262,9 @@ export interface AdapterRunSpec {
    *  raise of its cap, a person's answer) it ends failed at once in these words, saying what it would wait on, every call
    *  still waiting withdrawn in the end's commit (parkClaim). Absent: it parks. */
   readonly neverWaits?: string;
+  /** The session runs on its owner's own sign-in, a plan-billed recipe's claim having laid not every key saved for it
+   *  (cli-run-spec.ts): a trigger's message is refused in these words, never sent into it (steer). Absent: taken. */
+  readonly personOnly?: string;
   /** What the spec's tool host bindings registered (tools.ts ToolHost's onConversation, beforeResume, beforeRelease),
    *  run where main's per-run process runs them (app.ts): each agent conversation's creating commit, once the claim's
    *  Harness is open and before anything in it resumes, and when the claim lets the run go (its end, a park, a
@@ -269,6 +282,10 @@ export interface AdapterRunSpec {
    *  that misses it is asked again once, in the same session under the same cap (the output contract's retry); absent:
    *  the run's answer is never checked here. */
   readonly outputSchema?: unknown;
+  /** The model route its requests take, as the run's GenAI trace names it (otel/genai.ts TracedRun): the provider id its
+   *  model is named by, the host its requests go to, its model. Each where the spec knows it; absent, its spans name none.
+   *  `routes`: the session's other routes (a subagent's tier), by the name its requests carry (ModelRequest.route). */
+  readonly trace?: RouteTrace & { readonly routes?: ReadonlyMap<string, RouteTrace> };
 }
 
 /** A tool host's lifecycle, as its bindings registered it: run by the adapter loop (AdapterRunSpec.lifecycle). */
@@ -397,9 +414,9 @@ export type AdapterRun = PiRun & {
    *  learned workflow's model nodes). Read from the spec's runCap once the spec is known. */
   readonly ledger: RunLedger;
   /** The runner's one redactor (LoopDeps.redact; runner.ts), the same instance: the spec gives it to every place a secret
-   *  could reach text (the session's model proxy, the model route's translation, its log lines). Absent where no runner
-   *  gave one (a spec built alone). */
-  readonly redact?: (text: string) => string;
+   *  could reach text (the session's model proxy, the model route's translation, its log lines), and its claim carries the
+   *  run's own tool keys into (claim-secrets.ts). */
+  readonly redact: HeldRedact;
   /** The claim's signal (LoopDeps.signal): aborted on a lost claim or the runner's shutdown, never on a person's stop. A
    *  spec's per-claim resources let go of what they hold at once on it (the run's Archil mount credential). Absent where
    *  no loop gave one (a spec built alone). */
@@ -408,6 +425,9 @@ export type AdapterRun = PiRun & {
    *  while it is built (a CLI harness's first-use install), so a stop ends that wait at once and never the work it waits
    *  for. Absent where no loop gave one. */
   readonly stopped?: AbortSignal;
+  /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins
+   *  to its runner (computer-for-claim.ts ClaimLaunch.holder). Absent where no loop gave one. */
+  readonly incarnation?: string;
   /** Stages the run row's `summary` on the next commit of this pass that writes a root entry of `kind` whose data `test`
    *  takes, in that commit (a tool host's wait on the person, its claim held: the server tells run.needs_input by the
    *  summary). Absent where no loop gave one. */
@@ -464,6 +484,9 @@ export interface AdapterLoopOptions {
   /** For tests: awaited once a turn ended on its question to the person, before the wait in the claim (or the park, with
    *  nothing to hold open) takes their messages. */
   readonly beforePersonWait?: () => Promise<void>;
+  /** The runs' GenAI tracing (otel/tracer.ts). Default the process's, from its OTEL_* env: none unless an OTLP endpoint is
+   *  set. A test gives its own, over an in-memory exporter. */
+  readonly tracing?: Promise<GenAiTracing | undefined>;
 }
 
 /** The most of a harness's own turn error a failed run's summary keeps. */
@@ -766,6 +789,13 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
         else answer += event.delta;
       } else if (event.type === "tool_start" || event.type === "text_end") void flushText().catch(() => undefined);
       else if (event.type === "turn_end") void flushText(event).catch(() => undefined);
+      else if (event.type === "notice") {
+        // The adapter's own words (the ACP mirror past its budget): a phase row after what the model said before it.
+        void flushText().catch(() => undefined);
+        void inTurn(async () => {
+          await harness.commit((tx) => tx.appendEntry(root.id, { kind: HOST_PHASE, data: { summary: event.text, at: now() } as unknown as JsonValue }), context);
+        }).catch(() => undefined);
+      }
     },
     flushText,
     flushSaid: () => (answer === undefined && text.trim() !== "" ? flushText(undefined, true) : Promise.resolve()),
@@ -933,6 +963,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   const retry = options.retry ?? MODEL_RETRY;
   const stream = options.stream ?? MODEL_STREAM;
   const now = options.now ?? Date.now;
+  /** The runs' GenAI tracing (none unless the env turns it on), and this claim's trace of its run, open once its spec is
+   *  known: its chat spans from the session's model port (counted), its tool spans from the session's events (io.onEvent),
+   *  ended with the claim (traced). */
+  let tracing: { readonly now: GenAiTracing | undefined } | undefined;
+  const tracingMade = (options.tracing ?? genAiTracing()).then(
+    (now) => (tracing = { now }),
+    () => (tracing = { now: undefined }),
+  );
+  let trace: RunTrace | undefined;
   /** The gate's clock as main's card says a time: ISO. */
   const isoNow = () => new Date(now()).toISOString();
   const inbox: Command[] = [];
@@ -1013,6 +1052,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   };
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: AdapterRunSpec["release"];
+  const projectWork = new ProjectDrain();
+  const projectCall = <T>(call: () => Promise<T>, strict = !!specNow?.projectCheckpoint): Promise<T> => strict ? projectWork.run(call) : call();
   /** The current pass ended in a park that keeps its computer (keepAtPark), for this cause, until its release reads it. */
   let parkedNow: ParkCause | undefined;
   /** From the end-of-run step's start (or a claim that found its turn open: lookingBackOpen, from its session's open)
@@ -1311,7 +1352,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   const channelCommand = async (command: Command): Promise<CommandOutcome> => {
     await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
     const [theGate, pass, theHeld] = [gate, channelNow, heldNow];
-    if (!theGate || theGate.sealed) return { refused: "The run's computer is not up now: the run is starting, parking or ending." };
+    if (!theGate || theGate.sealed || projectWork.closed) return { refused: "The run's computer is not up now: the run is starting, parking or ending." };
     if (!pass) return { refused: specNow?.computer ? "The run's computer is not up now: the run is starting, parking or ending." : "This run has no computer that takes protocol calls: none, or a browser." };
     const refusal = theHeld?.refusesCall();
     if (refusal) return { refused: refusal };
@@ -1322,7 +1363,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       theHeld?.callStarted();
       let done: Awaited<ReturnType<typeof runChannelCall>>;
       try {
-        done = await runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(CALL_MS)]), now);
+        done = await projectCall(() => runChannelCall(pass.computer, call, AbortSignal.any([deps.signal, AbortSignal.timeout(CALL_MS)]), now));
       } finally {
         theHeld?.callEnded(now());
       }
@@ -1382,6 +1423,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The session never opened, or the run is parking or stopping (its journal sealed, its session closed): left
     // untaken for the next claim, which hands it on again; never refused for good.
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // A trigger's message into a session on its owner's sign-in (personOnly): refused for good, before it is queued or
+    // placed, so no turn of it reaches the vendor on that sign-in. Known by its origin's kind as written (an origin whose
+    // source originOf does not know is still a trigger's), or by answering nothing (answers: false, a trigger's message).
+    const sent = command.body as { origin?: { kind?: unknown } | null; answers?: unknown } | null;
+    if (specNow?.personOnly && (sent?.origin?.kind === "trigger" || sent?.answers === false)) return { refused: specNow.personOnly };
     // The session is still new and this is no reopen's message (the claim has yet to send the run's input), or the run's
     // learned workflow runs first, or a message before it still waits for either: it waits for the input, off the runner's
     // delivery, as a computer channel's call does (channelCommand). The runner hands the run's rows on one at a time, each
@@ -1518,12 +1564,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     }
     // Who wrote it, when the person did not (a trigger's message): carried on its input, as the Timeline shows it.
     const origin = originOf((command.body as { origin?: unknown } | null)?.origin);
-    // A harness that takes no message mid-turn, or a CLI's message that is no steer of the turn in flight (a trigger's that
-    // answers nothing, or the person's answer to the question its last turn ended on, whose session is idle): the API
-    // answered it `follow_up` (it waits for the turn's end), so it is the run's next turn, after any taken before it
-    // (afterTurn). Taken now as the dispatch takes a row it buffers: the store's take is the commit of its submission, once
-    // sent.
-    if (!session.steer || (cliRecord && (followUp || askedLast))) {
+    // A harness that takes no message mid-turn, a trigger's message (it answers nothing) while a turn is open, or a CLI's
+    // message that is no steer of the turn in flight (a trigger's, or the person's answer to the question its last turn
+    // ended on, whose session is idle): the API answered it `follow_up` (it waits for the turn's end), so it is the run's
+    // next turn, after any taken before it (afterTurn). Taken now as the dispatch takes a row it buffers: the store's take
+    // is the commit of its submission, once sent. A trigger's message is never pi's own follow-up: pi runs one as soon as
+    // its turn would end, before this loop reads that end, so one that met a turn ending on ask_person ran in place of the
+    // person's answer and the run ended with its question unasked. Held here, that turn's end parks on the question first,
+    // and the row, untaken, runs as a turn of its own after the answer.
+    if (!session.steer || (followUp && session.state === "open_turn") || (cliRecord && (followUp || askedLast))) {
       if (turnsOver) return { later: "the run has answered and is ending: the message waits for the run's end" };
       afterTurn.push({ commandId: command.id, text, requestId, ...(origin ? { origin } : {}) });
       return { taken: true };
@@ -1637,7 +1686,24 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     return session!.turnEnd();
   };
 
+  /** run(claim), its trace ended with it: every span still open ends, with the claim's failure where it failed, handed to
+   *  the exporter, which sends it in the background (tracer.ts: the claim's end never waits on a collector, and never
+   *  throws). */
+  async function traced(claim: Claim): Promise<LoopEnd> {
+    try {
+      const end = await run(claim);
+      await trace?.end(end.state === "failed" ? end.error.code : undefined);
+      return end;
+    } catch (error) {
+      await trace?.end("run-error");
+      throw error;
+    } finally {
+      trace = undefined;
+    }
+  }
+
   async function run(claim: Claim): Promise<LoopEnd> {
+    const claimedAt = Date.now();
     context = withAbortSignal(deps.signal, BACKGROUND_CONTEXT);
     // Every row the runner read for this claim is with the loop once delivered resolves (at once without a runner's).
     void (deps.delivered ?? Promise.resolve()).then(() => {
@@ -1701,6 +1767,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
          *  between a request's admission and its leaving: that wait let a cancel close the session before the request was
          *  booked, its cost left unknown. */
         let freeMade = 0;
+        /** Its requests on local models (free.ts localRequestsIn), kept the same way: the agent's own limit adds them. */
+        let localMade = 0;
         const theCap = (): RunCap => {
           if (!specNow?.runCap) throw new Error("the run's spec gives no cap (AdapterRunSpec.runCap)");
           // The cap each admission reads is the run's now (capNow): a raise taken on this claim or an earlier one.
@@ -1710,6 +1778,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const judged: RunCapOptions["judged"] = (request, answer) => {
             config.judged?.(request, answer);
             if (request.freeRequestsMade !== undefined) freeMade = request.freeRequestsMade + (answer && !("refuse" in answer) && answer.freeRequest === true ? 1 : 0);
+            if (request.localRequestsMade !== undefined) localMade = request.localRequestsMade + (answer && !("refuse" in answer) && answer.localRequest === true ? 1 : 0);
           };
           // A step waiting for room leaves once the run has a pause (pendingPause, below): nothing more is sent until a
           // raise, and it is refused in the pause's words (beforeRequest). It leaves at the run's stop too, unsent.
@@ -1784,7 +1853,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (passGate.sealed) return;
           passGate.expect(writesEntry(kind, test), { run: { summary } }).catch(() => undefined);
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, ...(deps.redact ? { redact: deps.redact } : {}), signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, redact: deps.redact, signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn, ...(deps.incarnation ? { incarnation: deps.incarnation } : {}) };
         // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
         // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written. A claim the spec
         // refuses (ClaimRefused: a handed sign-in that won't read back) ends the run in its words too.
@@ -1810,6 +1879,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
           throw error;
         }
+        // The run's trace, from its claim's start, once its spec says what runs (a restart's spec changes nothing of it).
+        // The tracing is made long before (as the loop is): waited for only on the rare claim whose spec beat it.
+        trace ??= (tracing ?? (await tracingMade)).now?.open({ startedAt: claimedAt, mcp: (name) => mcp?.catalogOf(specNow?.facts?.hostName?.(name) ?? name) !== undefined });
+        trace?.known({ runId: claim.runId, harness: spec.adapter.id, ...(spec.facts?.wire === "plan" ? { plan: true } : {}), ...spec.trace });
         mcp = spec.mcp;
         specNow = spec;
         specKnown = true;
@@ -1846,7 +1919,30 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A host tool call's paid requests name the session the call runs in (RunTools.admit `under`): a request of it still
         // in flight may be the one that asked for the call (Claude Code books its cost after its calls; Codex starts a call
         // with its response open), so the call is judged beside it and never waits on it. pi's request has answered by then.
-        const paidUnder: PaidBooking = { admit: (request) => paid.admit({ ...request, under: spec.session.key }), settle: (id, usd, options) => paid.settle(id, usd, options) };
+        // A call settled above its hold (a fal job whose output states more than its input asked, a monid call charged above
+        // its maxCost) can take the run's charges past its cap: from then on, a settle that leaves them over it stops the run
+        // in the cap's words (overCap, settled charges only; paid-calls.ts stopRun). A call still in flight counts only
+        // toward admissions. Its hold, kept from its admission until it settles, tells an overrun (a host tool call's paid
+        // steps, bookedIn below). An admit its ref had booked already opens no step and is never settled, so it keeps
+        // nothing.
+        const holds = new Map<string, number>();
+        let overran = false;
+        const paidUnder: PaidBooking = {
+          admit: async (request) => {
+            const admitted = await paid.admit({ ...request, under: spec.session.key });
+            if ((admitted as { booked?: unknown } | undefined)?.booked !== true) holds.set(request.id, request.holdUsd);
+            return admitted;
+          },
+          settle: async (id, usd, options) => {
+            const held = holds.get(id);
+            holds.delete(id);
+            const settled = await paid.settle(id, usd, options);
+            if (typeof usd === "number" && held !== undefined && Math.round(usd * 1e6) > Math.round(held * 1e6)) overran = true;
+            const over = overran ? await overCap({ settled: true }) : undefined;
+            if (over) await stopRunWith(ledger.pause)(over);
+            return settled;
+          },
+        };
         let refused: Refusal | undefined;
         /** The pause a refusal for room journaled before pi heard of it (pauseAtCap), the run parked with it. */
         let pausedAtRefusal = false;
@@ -1855,8 +1951,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** How the run ends once its booked spend passed its cap (the kernel's overCapEnd, main's run end): every session's
          *  booked spend summed, as the cap reads it; the bound, its model session's requests' since the cost last fit, so a
          *  cache miss within that bound pauses the run at its next request instead. Undefined while it fits, with no cap, or
-         *  with a spend unknown. */
-        const overCap = async (): Promise<string | undefined> => {
+         *  with a spend unknown. `settled`: what its sessions were charged only, never a request still in flight at its hold. */
+        const overCap = async ({ settled = false } = {}): Promise<string | undefined> => {
           // A run whose spec gives no cap (no runCap, or no cap's rule) has none to pass.
           if (!spec.cap || !spec.runCap) return undefined;
           const cap = capNow();
@@ -1867,9 +1963,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           let others = beside;
           for (const key of await sessions.keys()) {
             if (key === spec.session.key) continue;
-            const spent = sessionSpendOf(await sessions.read(key)).spentUsd;
+            const read = sessionSpendOf(await sessions.read(key));
+            const spent = settled ? read.chargedUsd : read.spentUsd;
             if (spent === null) return undefined;
             others += spent;
+          }
+          if (settled) {
+            const own = sessionSpendOf(await sessions.read(spec.session.key)).chargedUsd;
+            return own === null ? undefined : overCapEnd(others + own, cap);
           }
           // Its model session read as the cap reads it (the kernel's overCapOf: a request cut by a crash at its hold plus its
           // bound, and that bound kept, so a possible cache miss pauses the run, never fails it).
@@ -1920,8 +2021,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A paid call's refusal is the call's result first: its pause is journaled at the model's next request (beforeRequest,
         // pendingPause), once the harness has stored that result, so the run never reads waiting on a raise before its
         // Timeline says why. The refusal is kept on the root at once (KINDS.pausePending, no run patch, nothing a person
-        // reads), so a claim lost in between restores it (pendingPauseOf) and the next claim's request parks the run.
+        // reads), so a claim lost in between restores it (pendingPauseOf) and the next claim's request parks the run. A stop
+        // for good (paid-calls.ts stopRun) stays: a refusal after it (a call admitted after the stop, refused for room) never
+        // replaces it, so no tool runs after the stop.
         pauseFor = async (refusal) => {
+          if (pendingPause?.forGood) return;
           pendingPause = refusal;
           await keepPending(refusal);
         };
@@ -2014,8 +2118,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
         // The free requests the run made before this claim, in every session (freeMade: each admission's from here on).
         let madeBefore = 0;
-        for (const key of await sessions.keys()) madeBefore += freeRequestsIn(await sessions.read(key));
+        let localBefore = 0;
+        for (const key of await sessions.keys()) {
+          const records = await sessions.read(key);
+          madeBefore += freeRequestsIn(records);
+          localBefore += localRequestsIn(records);
+        }
         freeMade = madeBefore;
+        localMade = localBefore;
         const capNote: { costs: number[]; restUsd: number | null; live?: true; lastFigures?: RequestFigures; lastModel?: string; lastEffort?: string } = {
           costs: claimRecords.flatMap((record) => {
             if (record.kind !== RUNNER_RECORDS.turn) return [];
@@ -2117,11 +2227,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // The free-model limit's wrap-up (free.ts): the same note and offer, one per run and limit, on a request of a free
           // model. The dollar cap's note, when it is due on this request, goes first: one note per request, and it is told
           // once, so the free one waits for the next request (or never comes, the run having answered).
+          // It counts down to the nearer limit (freeLimitNearest): the agent's own over its free and local requests together,
+          // the run's free limit over its free ones alone (none on a local model, CapModel.local).
           const freeNote = (): ServerNote | undefined => {
-            const limit = config.freeRequests;
-            if (limit === undefined || toldFreeLimits.has(limit) || !freeModel(capModel)) return undefined;
-            const due = freeWrapUpDue(limit, freeMade);
-            return due ? { words: freeWrapUpWords(due.left), freeLimit: limit } : undefined;
+            const near = freeLimitNearest(capModel, { ...(config.maxRequests !== undefined ? { own: config.maxRequests } : {}), ...(config.freeRequests !== undefined ? { server: config.freeRequests } : {}) }, { free: freeMade, local: localMade });
+            if (near === undefined || toldFreeLimits.has(near.limit)) return undefined;
+            const due = freeWrapUpDue(near.limit, near.made);
+            return due ? { words: freeWrapUpWords(due.left), freeLimit: near.limit } : undefined;
           };
           if (capUsd === undefined || toldAt(capUsd) || sessionSpent == null || decided === null || paidSpent === null || rest === null || inFlight == null) return freeNote();
           const spentUsd = sessionSpent + decided + paidSpent + rest;
@@ -2211,8 +2323,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // spend and each request or paid step still out at its hold and bound, read from the run's records at each call. A
         // hold-only step still open (a browser session's reserve) is no spend in its records, but the cap holds it in
         // flight: it counts at its hold too. One a lost claim left open was given back at this claim's open (bookCut).
-        // Its answer is the words a call reads once the run wraps up (wrap-up.ts wrapUpText), undefined while it does not.
-        const wrapUp = async (): Promise<string | undefined> => {
+        // Its answer is the words a call reads once the run wraps up (wrap-up.ts wrapUpText), with the cap it was judged
+        // under (read once, before the spend reads it awaits: a raise landing meanwhile is the next call's), undefined while
+        // it does not.
+        const wrapUpAt = async (): Promise<{ words: string; capUsd: number } | undefined> => {
           // A run whose spec gives no cap (no runCap) has none to wrap up at, as overCap reads it.
           if (!spec.runCap) return undefined;
           const capUsd = capNow();
@@ -2228,9 +2342,29 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // is priced at least as high): none yet, no wrap-up, as no tool call comes before a request.
           if (!wrappingUp(capUsd, taken, reserveOf(capNote.lastFigures))) return undefined;
           // A cap below what the model needs for one more step and an answer is named in the words, by the same rule.
-          return wrapUpText(capUsd, capNote.lastModel, stepAndAnswerFor(capNote.lastFigures, (step0Usd) => typicalCost(capNote.costs, step0Usd)), capNote.lastEffort);
+          return { words: wrapUpText(capUsd, capNote.lastModel, stepAndAnswerFor(capNote.lastFigures, (step0Usd) => typicalCost(capNote.costs, step0Usd)), capNote.lastEffort), capUsd };
         };
-        const gateOf = preIntentGate(spec, hooks, wrapUp);
+        /** The wrap-up's words alone (wrapUpAt). */
+        const wrapUp = async (): Promise<string | undefined> => (await wrapUpAt())?.words;
+        // The wrap-up's refusal of a call (the gate's, wrapUp's words): kept on the run's root as a CAP_REFUSED entry, its
+        // call and the cap it was refused under, so the run's view says it wound down for its cap (store-view.ts
+        // windDownOf: `stopped_for`, `budget_refused_calls`). A call refused again (a replay) is the same call: the reader
+        // counts each call once. Not written once the journal is sealed; a write that fails is warned and the call is
+        // refused all the same. The cap kept is the one the refusal was judged under (wrapUpAt's), never one read after it.
+        const wrapUpRefusal = async (callId: string): Promise<string | undefined> => {
+          const refusal = await wrapUpAt();
+          if (refusal === undefined) return undefined;
+          const { words, capUsd } = refusal;
+          if (gate?.sealed) return words;
+          try {
+            await wrapUpHarness.commit((tx) => tx.appendEntry(wrapUpRoot.id, { kind: CAP_REFUSED, data: { callId, capUsd } as unknown as JsonValue }), context);
+            await deps.flush();
+          } catch (error) {
+            console.warn(`[runner] the wrap-up's refusal of a call was not kept (the call is refused): ${said(error)}`);
+          }
+          return words;
+        };
+        const gateOf = preIntentGate(spec, hooks, wrapUpRefusal);
         // A CLI's run: the loop keeps its visible record (record: "loop"), every call a crash or a fault left open ended.
         const record = spec.record === "loop" ? await openCliRecord(harness, gate.journal, context, now, spec.cwd) : undefined;
         cliRecord = record;
@@ -2274,6 +2408,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               if (typeof given === "object" && "deny" in given) return { text: given.deny, isError: true };
               // An ask with its card's own fields is an ask, its card as the gate shows it.
               const shown = typeof given === "object" ? given.ask : undefined;
+              const because = typeof given === "object" ? given.because : undefined;
               const now = shown ? "ask" : (given as "allow" | "ask");
               // Set to ask since (or asked, and answered before the crash): asked as any call is, as main's gate parked a
               // replayed call as a request of its own. Its answer stands; else the run parks on it, the call held unrun until
@@ -2281,7 +2416,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               // the setting at allow now: the setting answers the ask (allowedBySetting).
               const bySetting = now === "allow" && (await askStands(toolContext.callId));
               if (now === "ask" || bySetting) {
-                const call = { callId: toolContext.callId, tool: name, args: cardOf(name, shown, (args ?? {}) as Record<string, unknown>) };
+                const call = { callId: toolContext.callId, tool: name, args: cardOf(name, shown, (args ?? {}) as Record<string, unknown>), ...(because !== undefined ? { because } : {}) };
                 const price = mcp?.priceOf(name) ?? null;
                 const answer = bySetting ? await allowedBySetting(call, price, asked) : await answerOf(call, price, asked);
                 if (answer === "park") return await heldUntilAborted(toolContext.signal);
@@ -2303,7 +2438,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
                 // The computer protocol calls it makes, kept beside it on the run's root (COMPUTER_CALLS) for its result
                 // row's computer_calls, before its result is written.
                 route: () => bookedIn({ call: toolContext.callId, paid: paidUnder, pause: ledger.pause }, () => recordingCalls(
-                  () => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal }),
+                  () => projectCall(() => tool.call(args, { ...toolContext, signal: toolContext.signal ? AbortSignal.any([toolContext.signal, stopAbort.signal]) : stopAbort.signal }), !!spec.projectCheckpoint),
                   (calls, dropped) => keepCalls(toolContext.callId, calls, dropped),
                 )),
                 beforeResult: async (answer) => {
@@ -2381,6 +2516,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         bookingsWriting = 0;
         // The conversation each request of this claim was asked in, by its turn, where its client named one.
         const askedIn = new Map<number, string>();
+        // Each admitted model request's chat span, by its turn, until its afterRequest ends it (a paid tool's step is none).
+        const chats = new Map<number, ReturnType<RunTrace["request"]>>();
         const counted: typeof port = {
           beforeRequest: async (request) => {
             // The CLI's next request of its main model after its question to the person: never admitted, it asks for the
@@ -2407,6 +2544,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               else carried = undefined;
             }
             unbooked += 1;
+            if (ticket && trace && request.paid === undefined) chats.set(ticket.turn, trace.request(request.model, request.route));
             // The conversation that asked, as its client named it (pi's, one of several asking at once): whose answer reads
             // this request's booking (bookedCost).
             const conversation = (request as { conversation?: string }).conversation;
@@ -2433,6 +2571,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // waits: the proxy calls this as its client has the end, so a client's retry finds the note told or on offer.
             const held = carried?.turn !== undefined && carried.turn === ticket?.turn ? carried : undefined;
             if (held) carried = undefined;
+            const chat = ticket ? chats.get(ticket.turn) : undefined;
+            if (chat) {
+              chats.delete(ticket!.turn);
+              chat(usage, ended);
+            }
             // An answer the model gave, not the provider's error inside one (a stream ended in an error event, a translated
             // route's failure in words included: the client drops it and asks again).
             const row = held && ended?.end === "answered" && ended.label !== "error" ? tell(held) : undefined;
@@ -2491,7 +2634,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const unlessSealed = (error: unknown) => {
           if (!gate?.sealed) throw error;
         };
-        const nestedAsking = preIntentGate(spec, hooks, wrapUp, async (call) => (await nestedRecord()).park(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool)).catch(unlessSealed));
+        const nestedAsking = preIntentGate(spec, hooks, wrapUpRefusal, async (call) => (await nestedRecord()).park(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool)).catch(unlessSealed));
         const nestedGate: typeof gateOf = async (call, hookContext) => {
           if (call.nested !== true) return gateOf(call, hookContext);
           const answer = await nestedAsking(call, hookContext);
@@ -2502,7 +2645,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         const nestedEnded: PiSessionIO["nestedEnded"] = async (callId, status, output) => (await nestedRecord()).end(callId, status, output).catch(unlessSealed);
         const askingGate = record
-          ? preIntentGate(spec, hooks, wrapUp, (call) =>
+          ? preIntentGate(spec, hooks, wrapUpRefusal, (call) =>
               record.park(call.callId, call.tool, call.args ?? {}, replaySafe(call.tool)).catch((error: unknown) => {
                 if (!gate?.sealed) throw error;
               }),
@@ -2552,7 +2695,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               ended: (callId, output, failed) => ownWrite(record.end(callId, failed ? "failed" : "done", output).catch(unlessSealed)),
             }
           : undefined;
-        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: record ? onEvent(record) : () => {}, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, ...(ownCalls ? { ownCalls } : {}), bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
+        // Every harness's events reach its trace first (its tool calls, a plan harness's turns), with a record or without.
+        const recorded = record ? onEvent(record) : undefined;
+        const traceAnd = (event: Parameters<PiSessionIO["onEvent"]>[0]) => {
+          trace?.event(event);
+          recorded?.(event);
+        };
+        const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: traceAnd, gate: bridgeGate, ...(permission ? { permission } : {}), hostTool: hosted, ...(ownCalls ? { ownCalls } : {}), bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
         // The end-of-run turn an earlier claim asked and never saw end (its runner lost mid look-back or mid compile): the
         // root's newest input still in flight is that turn's (end-of-run.ts REFLECT_PREFIX), which pi picks up again as its
         // session opens. The job's turn ended before it, answered: this pass runs no job turn (no recovery as the job's, no
@@ -2570,7 +2719,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         reflecting = lookingBackOpen || jobKept;
         // The MCP tools are host tools like any other (mcp.tools, wrapped above): every harness gets them on its own channel
         // for host tools, each call through the gate before its intent.
-        session = await spec.adapter.open({ ...spec.session, tools, deferCatalog: deferred }, io);
+        // A harness's own search defers only where the host offers none (its facts' ownToolSearch).
+        session = await spec.adapter.open({ ...spec.session, tools, deferCatalog: deferred && !offered }, io);
         root = await harness.root(context);
         // The root as the claim found it, before this pass writes anything of its own there (the computer's show-up, a
         // takeover's note): what the reopen check below reads, so a fresh reopen is told by the run's own last entry.
@@ -2845,7 +2995,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           let answer: { text: string; isError: boolean };
           if (ended) answer = recorded(ended);
           else {
-            const verdict = await preIntentGate(spec, hooks, wrapUp, (asked) => rec.park(asked.callId, asked.tool, asked.args ?? {}, false))(call, context);
+            const verdict = await preIntentGate(spec, hooks, wrapUpRefusal, (asked) => rec.park(asked.callId, asked.tool, asked.args ?? {}, false))(call, context);
             if (verdict !== "allow" && "park" in verdict) return "park";
             if (verdict !== "allow") {
               // Refused at its gate once the job was on the record (its ask declined, the cap's wrap-up): handed back in
@@ -3211,24 +3361,28 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** The gate before a call's intent: the kernel's beforeIntent point, then allow, deny, or ask (answered, or park).
-   *  `wrapUp`: once the run has taken its share of the cap, the words every call the model makes is refused in (wrapUpText).
+   *  `wrapUp`: once the run has taken its share of the cap, the words every call the model makes is refused in (wrapUpText),
+   *  each refusal kept on the run (wrapUpRefusal).
    *  `beforeAsk`: what goes on the record of a call the gate asks about, before its ask is written or read (a CLI's call
    *  through its tool bridge: its start, marked parked, so its row shows while it waits and reads before its approval). */
-  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks, wrapUp: () => Promise<string | undefined>, beforeAsk?: (call: PreIntentCall) => Promise<void>) {
+  function preIntentGate(spec: AdapterRunSpec, hooks: KernelHooks, wrapUp: (callId: string) => Promise<string | undefined>, beforeAsk?: (call: PreIntentCall) => Promise<void>) {
     return async (call: PreIntentCall, _hookContext: Context): Promise<PreIntentAnswer> => {
+      if (projectWork.closed) return { deny: "The project is finishing its checkpoint; no new call can start." };
       // An MCP tool is asked about by its catalog name (`mcp:<server>/<tool>`), as its settings and its card name it.
       const tool = mcp?.catalogOf(call.tool) ?? call.tool;
       const kernelCall: ToolCall = { callId: call.callId, tool: tool as never, args: call.args };
       await hooks.beforeIntent(kernelCall);
       // The cap's wrap-up, the same way: once the run has taken its share of the cap, every call the model makes is refused
       // in its fixed words, and the model answers from what it has. A call a running tool makes is that tool's, let through.
-      const wrapUpDeny = call.nested !== true ? await wrapUp() : undefined;
+      const wrapUpDeny = call.nested !== true ? await wrapUp(call.callId) : undefined;
       if (wrapUpDeny !== undefined) return { deny: wrapUpDeny };
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;
       const given = (await spec.gate?.(kernelCall, { ...(replayed ? { replayed } : {}), ran: ranOf })) ?? "allow";
-      // An ask with its card's own fields (a learned workflow's MCP actions set to ask, each with its arguments' shape).
+      // An ask with its card's own fields (a learned workflow's MCP actions set to ask, each with its arguments' shape), or
+      // with the reason a call its setting allows asks anyway (`because`).
       const shown = typeof given === "object" && "ask" in given ? given.ask : undefined;
+      const because = typeof given === "object" && "ask" in given ? given.because : undefined;
       let decision = shown ? ("ask" as const) : (given as Exclude<GateAnswer, { readonly ask: unknown }>);
       // A call nested in a learned_workflow call a person approved, of an MCP tool that call's card named: its ask is
       // answered by that approval, as the card they saw named it (never one built again now). Any other asks for itself.
@@ -3267,7 +3421,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // Marked destructive when the tool is, or when any MCP tool the one allow lets run is (the card's `mcp_calls`, a
       // learned workflow's MCP actions set to ask): that allow takes the second confirm too.
       const destructive = [asked, ...learnedApprovedTools(shown)].some((name) => mcp?.effectOf(name) === "destructive");
-      const answer = bySetting ? await allowedBySetting({ ...call, tool, args }, price, asked) : await answerOf({ ...call, tool, args }, price, asked, destructive);
+      const card = { ...call, tool, args, ...(because !== undefined ? { because } : {}) };
+      const answer = bySetting ? await allowedBySetting(card, price, asked) : await answerOf(card, price, asked, destructive);
       if (answer === "park") return { park: true };
       if (answer.approved) return "allow";
       return { deny: replayed ? refusedText(asked, answer.note?.trim() ? answer.note : undefined, "unknown") : deniedText(asked, answer.note) };
@@ -3292,7 +3447,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** An ask's answer: one in the journal stands; else the approve or deny the runner hands over on a resume; else ask and
    *  park (the ask entry with the run parked, in one commit). The ask is main's approval card: the call's input, when it
    *  was asked and its `price`; asked again on a resume, it is the same request. */
-  async function answerOf(call: PreIntentCall, price: ApprovalPrice | null, asked: string = call.tool, destructive = mcp?.effectOf(asked) === "destructive"): Promise<AnswerData | "park"> {
+  async function answerOf(call: AskedCall, price: ApprovalPrice | null, asked: string = call.tool, destructive = mcp?.effectOf(asked) === "destructive"): Promise<AnswerData | "park"> {
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
     const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
@@ -3303,7 +3458,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // run's pending approval, its approval row, an "always" answer pinned by it) has the one name main gives it.
     // An MCP tool its run's pin marks destructive (ClaimMcp.effectOf), or a call whose allow covers one (`destructive`):
     // its card asks a second confirm of an allow.
-    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price, ...(destructive ? { destructive: true as const } : {}) };
+    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, ...(call.because !== undefined ? { because: call.because } : {}), requestedAt: isoNow(), price, ...(destructive ? { destructive: true as const } : {}) };
     const entryLands = (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]) => landEntry(conversation, kind, data, staged);
     if (first === undefined) {
       // Asked and parked; or held as the parked call is, when another call of the round parked the run first.
@@ -3357,7 +3512,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  answers it. The ask closes with an allow row of its own (by "setting": "Allowed by the tool's setting"), the call
    *  runs, and the person is never asked again. A person's answer already in the inbox for the call stands over it when it
    *  is a deny; an allow of theirs is taken with the setting's answer, so no row is left untaken. */
-  async function allowedBySetting(call: PreIntentCall, price: ApprovalPrice | null, asked: string): Promise<AnswerData | "park"> {
+  async function allowedBySetting(call: AskedCall, price: ApprovalPrice | null, asked: string): Promise<AnswerData | "park"> {
     // Decided only once the claim's stored commands are with the loop (deps.delivered): pi's recovery starts tool tasks while
     // the session opens, before command() can put a person's stored deny into the inbox, and the setting must not win over it.
     await (deps.delivered ?? Promise.resolve());
@@ -4068,6 +4223,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // their own commits, the end's patch reading the cost they book), and its requests' bookings come first.
     await releaseHost(on);
     await bookingsSettled();
+    let projectCheckpoint: ProjectCheckpoint | undefined;
+    if (specNow?.projectCheckpoint) {
+      const project = specNow.projectCheckpoint;
+      const signal = AbortSignal.any([deps.signal, AbortSignal.timeout(project.timeoutMs ?? 60_000)]);
+      try {
+        await projectWork.close(signal);
+        // Abort asks the bounded backend operations to stop; it is not evidence that they stopped. Keep the actual
+        // capture promise through its cleanup before teardown/end. A capability that ignores cancellation leaves
+        // this claim unresolved, never a published candidate or a falsely completed release.
+        projectCheckpoint = await project.capture(signal);
+        signal.throwIfAborted();
+      } catch { projectCheckpoint = project.uncertain(); }
+    }
     // The pull request's checkout goes before the end is committed: a run that reads final never still holds its code.
     await specNow?.endCheckout?.();
     const patch = await endPatchOf(base);
@@ -4079,7 +4247,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const lateStop = late?.kind === "command" && !take.includes(late.commandId) ? late : undefined;
     if (lateStop) take = [...take, lateStop.commandId];
     // An end that keeps the job's takes it too, and stays the job's.
-    const data: EndData = { ...base, ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd, ...(patch.costUpperBound ? { costUpperBound: true } : {}) } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}), ...(lateStop && keptAt === undefined ? stopEnd(lateStop.cancel) : {}) };
+    const data: EndData = { ...base, ...(projectCheckpoint ? { projectCheckpoint } : {}), ...(patch.outcome !== undefined ? { outcome: patch.outcome } : {}), ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd, ...(patch.costUpperBound ? { costUpperBound: true } : {}) } : {}), ...(patch.metrics !== undefined ? { metrics: patch.metrics } : {}), ...(lateStop && keptAt === undefined ? stopEnd(lateStop.cancel) : {}) };
     const run = {
       state: data.state,
       ...(keptAt !== undefined ? { endedAt: keptAt, keepsEnd: true } : {}),
@@ -4137,7 +4305,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   return {
     start(claim) {
-      finished = run(claim);
+      finished = traced(claim);
       return finished;
     },
     async command(command) {

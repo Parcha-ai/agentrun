@@ -1,6 +1,6 @@
 // The E2B host: sandboxes from an E2B template, a desktop (kind desktop) or a plain Linux (kind linux), both from our box
-// template by default (prepareImage, box-image.ts boxE2bTemplate), every call through the host's own E2B JS SDK (the `e2b` package), whose types it imports as types only (erased at build: nothing loads at
-// import). E2B's envd starts every process the adapter runs, so computerd is a child: its
+// template by default (prepareImage, box-image.ts boxE2bTemplate), every call through E2B's JS SDK (the `e2b` package, this package's
+// optional dependency), whose types it imports as types only (erased at build: nothing loads at import). E2B's envd starts every process the adapter runs, so computerd is a child: its
 // upload goes through envd's file API and every command (install, init's start, the stdio bridge) is a background
 // command as root. With connect "dial", create starts the box template's agentrun-dial once instead, and the machine
 // dials the server: no upload, no bridge. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every SDK fact
@@ -12,12 +12,13 @@ import { DEADLINE_LABEL, show } from "./drift.js";
 import { installedProxy, type ProxyEnv, proxyForDomain } from "./env-proxy.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { deadlineOf, HostedProvider, type HostedOptions, type HostedTimeouts, isoOf, MAX_LABEL, timeoutsOf } from "./hosted/provider.js";
-import { AGENTRUN_DIAL, hostedCommands, shellLine } from "./hosted/scripts.js";
+import { dialLaunch } from "./hosted/scripts.js";
 import { connectOf } from "./descriptor.js";
 import { dateOf, DOMAIN, isWhole, sizeRefusals } from "./hosted/values.js";
 import { PassThrough } from "node:stream";
 import type { ComputerSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
+import { vendorSdk } from "./vendor-sdk.js";
 
 /**
  * What every SDK call is given: the key, the domain and the API URL explicitly, and debug false (index.mjs:1126-1152);
@@ -25,7 +26,7 @@ import { type ComputerErrorCode, ok, type Result } from "./result.js";
  * process-wide proxy doesn't reach, and it sends every call, the API's and each sandbox's envd's, through the one `proxy`
  * it is given. So it is given that one unless its NO_PROXY exempts the whole domain (proxyForDomain).
  * The SDK's types below are `import type`: erased at build, so nothing loads the SDK from here and the published types
- * name none of it (the package declares no dependency on e2b).
+ * name none of it (e2b is only an optional dependency).
  */
 export interface E2BConnectionOptions {
 	apiKey: string;
@@ -86,12 +87,10 @@ export interface E2BProviderOptions extends Omit<HostedOptions, "maxLifetimeMs">
  * Not SandboxOpts, which is the SDK's own Sandbox.create options.
  */
 export interface E2BOptions extends Omit<E2BProviderOptions, "Sandbox"> {
-	/** The SDK's Sandbox class; imported from the host's e2b package by default. */
+	/** The SDK's Sandbox class; the e2b package's by default. */
 	Sandbox?: E2BSandboxClass;
 }
 
-/** Not a literal, so no type checker or bundler resolves the SDK from this package. */
-const E2B_PACKAGE: string = "e2b";
 const DEFAULT_DOMAIN = "e2b.app";
 
 /** The connection options every SDK call is given. Exported for the test that hands them to the real SDK. */
@@ -121,7 +120,7 @@ function ambientProblem(): string | undefined {
  */
 export async function create(options: E2BOptions): Promise<E2BProvider> {
 	const { Sandbox: given, ...rest } = options ?? ({} as E2BOptions);
-	const Sandbox = given ?? ((await import(E2B_PACKAGE)) as { Sandbox: E2BSandboxClass }).Sandbox;
+	const Sandbox = given ?? (await vendorSdk<{ Sandbox: E2BSandboxClass }>(E2B.label, "e2b")).Sandbox;
 	return new E2BProvider({ ...rest, Sandbox });
 }
 
@@ -162,16 +161,9 @@ const DIAL_LOG = "/run/agentrun-dial.log";
 /**
  * A dial machine's launch, root's command with boot env: E2B runs a template's start command once, at the template's
  * build, and snapshots it running, so it never sees a create's env (docs.e2b.dev/template/start-ready-command). So
- * create starts agentrun-dial itself, after the steps the exec path runs before init: ROOT_ONLY made root's alone, the
- * session buses in /tmp closed. A step that fails starts nothing, and the machine never dials.
+ * create starts agentrun-dial itself (dialLaunch), the URL in the boot env.
  */
-const DIAL_LAUNCH = [
-	"-c",
-	[
-		`umask 077; exec >>${DIAL_LOG} 2>&1 </dev/null`,
-		`${shellLine(hostedCommands({ rootOnly: ROOT_ONLY }).rootOnly)} && ${shellLine(hostedCommands().sockets)} && exec ${AGENTRUN_DIAL}`,
-	].join("\n"),
-];
+const DIAL_LAUNCH = ["-c", [`umask 077; exec >>${DIAL_LOG} 2>&1 </dev/null`, dialLaunch({ rootOnly: ROOT_ONLY })].join("\n")];
 
 
 /** The SDK names its errors (index.mjs:86-360); Connect's carry a code. */

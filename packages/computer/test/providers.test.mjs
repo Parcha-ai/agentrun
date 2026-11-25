@@ -6,7 +6,7 @@
 // serve passes its own settings in. Only src/conformance/ (the CLI, its modules and the sweeps) reads COMPUTER_* names,
 // and scripts/check-env.mjs pins that, read by TypeScript's parser.
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -199,8 +199,8 @@ test("every provider's descriptor declares network beside mounts: the network fo
 	}
 	// Which provider takes this server's allowlist, read from the descriptors alone: Docker and Local Chrome, each through
 	// its egress proxy, and the hosted computers whose init starts one (Daytona, Modal, E2B, Agent37, Morph, Cloudflare,
-	// Fly Machines, smol cloud); Orgo's adapter starts none, so Orgo declares none alone.
-	assert.deepEqual(lists, ["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "local-chrome", "smolcloud"]);
+	// Fly Machines, smol cloud, Groundbox); Orgo's adapter starts none, so Orgo declares none alone.
+	assert.deepEqual(lists, ["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "local-chrome", "smolcloud", "groundbox"]);
 	assert.deepEqual(index.descriptorOf("orgo").network, ["none"]);
 });
 
@@ -348,6 +348,26 @@ test("Docker's create() without options.daemonPath picks this package's daemon f
 		return true;
 	});
 	await assert.rejects(docker.create({ docker: join(dir, "no-such-docker") }), /cannot ask Docker its architecture/);
+});
+
+test("dockerDaemonOf names the daemon create() binds for Docker's architecture and, when it is not built, create()'s own words, so a server's start check and create() can't disagree", async () => {
+	const docker = await import("../dist/docker.js");
+	const built = mkdtempSync(join(dir, "built-"));
+	const none = mkdtempSync(join(dir, "none-"));
+	writeFileSync(join(built, "computerd-linux-amd64"), "a stand-in for computerd\n", { mode: 0o755 });
+	assert.deepEqual(docker.dockerDaemonOf("amd64", built), { path: join(built, "computerd-linux-amd64") });
+	assert.deepEqual(docker.dockerDaemonOf("amd64", none), {
+		path: join(none, "computerd-linux-amd64"),
+		missing: `no daemon for Docker's amd64 at ${join(none, "computerd-linux-amd64")}: run npm run build:daemon -w @parcha/agentrun-computer`,
+	});
+	// A directory by that name is no daemon.
+	mkdirSync(join(none, "computerd-linux-arm64"));
+	assert.match(docker.dockerDaemonOf("arm64", none).missing ?? "", /^no daemon for Docker's arm64 at /);
+	// Its default is this package's own build, the file create() takes with no daemonPath, and create()'s refusal is its words.
+	assert.equal(docker.dockerDaemonOf("riscv64").path, fileURLToPath(new URL("../dist/computerd-linux-riscv64", import.meta.url)));
+	const cli = join(built, "docker");
+	writeFileSync(cli, "#!/bin/sh\necho riscv64\n", { mode: 0o755 });
+	await assert.rejects(docker.create({ docker: cli }), { message: docker.dockerDaemonOf("riscv64").missing });
 });
 
 test("the conformance CLI's usage names every registry id, and an unknown id is a usage error that lists them", async () => {

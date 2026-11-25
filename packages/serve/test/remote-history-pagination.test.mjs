@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import fsSync, { appendFileSync, copyFileSync, mkdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, mkdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { syncBuiltinESMExports } from 'node:module';
+import { READERS } from '@parcha/agentrun-import';
 import { basename, dirname, join } from 'node:path';
 import { scratch } from './support.mjs';
 import { claudeSession, codexSession, sessionId } from './fixtures/import-sessions.mjs';
@@ -33,18 +35,24 @@ for(const runtime of ['claude-code','codex']) {
   for(let n=1;n<=45;n++)files.push(f.make(f.home,f.project,n));
   const unrelated=join(f.home,'unrelated');mkdirSync(unrelated,{recursive:true});
   const outside=f.make(f.home,unrelated,99,{prompt:'Unapproved unrelated conversation.'});
-  const reads=new Map();let metadataBytes=0;
-  const stream=fsSync.createReadStream,open=fs.open;
-  const streamMock=t.mock.method(fsSync,'createReadStream',(...args)=>{
-   reads.set(args[0],(reads.get(args[0])??0)+1);return stream(...args);
+  // A transcript body is read through its source's reader (readSession -> READERS[source].read), however the importer
+  // reads the bytes: counted there, not at an fs call the importer may stop making. Opens made inside a body read are
+  // the body's; every other open is serve's metadata probe.
+  const reads=new Map(),body=new AsyncLocalStorage();let metadataBytes=0;
+  const reader=READERS[runtime],readBody=reader.read;
+  const readMock=t.mock.method(reader,'read',function(at,...rest){
+   reads.set(at.file,(reads.get(at.file)??0)+1);return body.run(true,()=>readBody.call(this,at,...rest));
   });
+  const open=fs.open;
   const openMock=t.mock.method(fs,'open',async (...args)=>{
-   const handle=await open(...args),read=handle.read.bind(handle);
+   const handle=await open(...args);
+   if(body.getStore())return handle;
+   const read=handle.read.bind(handle);
    t.mock.method(handle,'read',async (...args)=>{const result=await read(...args);metadataBytes+=result.bytesRead;return result;});
    return handle;
   });
-  syncBuiltinESMExports();t.after(()=>{streamMock.mock.restore();openMock.mock.restore();syncBuiltinESMExports();});
-  const count=()=>[...reads.values()].reduce((sum,n)=>sum+n,0),counts=[],ids=[];
+  syncBuiltinESMExports();t.after(()=>{readMock.mock.restore();openMock.mock.restore();syncBuiltinESMExports();});
+  const count=()=>files.reduce((sum,file)=>sum+(reads.get(file)??0),0),counts=[],ids=[];
   const preview=await exportRemoteHistory(f.target,{...f.options,preview:true});counts.push(count());
   assert.equal(preview.total,45);assert.deepEqual(preview.sessions,[]);
   let cursor=0;
@@ -54,6 +62,7 @@ for(const runtime of ['claude-code','codex']) {
    ids.push(...page.sessions.map(s=>s.id));counts.push(count());cursor=page.next_cursor;
   } while(cursor!==null);
   assert.deepEqual(ids,Array.from({length:45},(_,n)=>sessionId(n+1)));
+  assert.ok(count()>0,'the body-read counter sees the importer read the selected transcripts');
   assert.deepEqual(counts,[0,20,40,45],'preview and later pages must not stream all selected transcripts again');
   assert.equal(reads.get(outside)??0,0,'unrelated transcript bodies are never parsed');
   assert.ok(files.every(file=>reads.get(file)===1),'each selected body is read once across all pages');
@@ -68,14 +77,16 @@ for(const runtime of ['claude-code','codex']) {
   const replacement=join(f.root,'replacement.jsonl');writeFileSync(replacement,readFileSync(file,'utf8').replaceAll('Approved prompt.','Unwanted secret.'));
   utimesSync(replacement,before.atime,before.mtime);renameSync(replacement,file);
   assert.equal(statSync(file).size,before.size);assert.equal(statSync(file).mtimeMs,before.mtimeMs);assert.notEqual(statSync(file).ino,before.ino);
-  let reads=0;const stream=fsSync.createReadStream;
-  const mocked=t.mock.method(fsSync,'createReadStream',(...args)=>{reads++;return stream(...args);});
-  syncBuiltinESMExports();t.after(()=>{mocked.mock.restore();syncBuiltinESMExports();});
+  // Bodies counted where the importer reads them (READERS[source].read), not at an fs call it may stop making.
+  let reads=0;const reader=READERS[runtime],readBody=reader.read;
+  const mocked=t.mock.method(reader,'read',function(...args){reads++;return readBody.apply(this,args);});
+  t.after(()=>mocked.mock.restore());
   await assert.rejects(exportRemoteHistory(f.target,{...f.options,cursor:20,inventory:preview.inventory}),/inventory changed/);
   assert.equal(reads,0,'unapproved later-page bodies are not parsed before the inventory comparison');
   const fresh=await exportRemoteHistory(f.target,{...f.options,preview:true});assert.notEqual(fresh.inventory,preview.inventory);
   const page=await exportRemoteHistory(f.target,{...f.options,cursor:20,inventory:fresh.inventory});
   assert.equal(page.sessions.length,1);assert.equal(page.sessions[0].firstPrompt,'Unwanted secret.');
+  assert.equal(reads,1,'the body-read counter sees the approved later page read its one body');
  });
 
  test(`${runtime}: a child marker after opening metadata cannot export a standalone session`,async t=>{
@@ -87,7 +98,7 @@ for(const runtime of ['claude-code','codex']) {
   assert.deepEqual(page.sessions,[]);assert.ok(page.skipped.some(s=>/Subagent history/.test(s.reason)));
  });
 
- test(`${runtime}: split metadata, resumed copies and the EOF filename fallback retain session identity`,async t=>{
+ test(`${runtime}: split metadata, resumed copies and the EOF filename fallback keep each session's identity`,async t=>{
   const f=await fixture(t,runtime),file=f.make(f.home,f.project,1,{prompt:'Known selected prompt.'}),before=statSync(file);
   const rows=readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line));
   if(runtime==='claude-code')delete rows[0].sessionId;
@@ -103,9 +114,13 @@ for(const runtime of ['claude-code','codex']) {
    const row=JSON.parse(line);if(runtime==='claude-code')delete row.sessionId;else if(row.type==='session_meta')delete row.payload.id;return row;
   });
   writeFileSync(fallback,noIds.map(row=>JSON.stringify(row)).join('\n')+'\n');utimesSync(fallback,fallbackStat.atime,fallbackStat.mtime);
-  const preview=await exportRemoteHistory(f.target,{...f.options,preview:true});assert.equal(preview.total,2);
+  // A Codex rollout resumed in a new file keeps its thread's id: one session. Claude Code names each session's file for
+  // its id, and a resumed session's new file restamps the records it copies with its own: the file's name is the id, so a
+  // file under another name is another session, whatever ids its records carry.
+  const ids=[sessionId(1),basename(fallback,'.jsonl'),...(runtime==='claude-code'?[basename(copy,'.jsonl')]:[])].sort();
+  const preview=await exportRemoteHistory(f.target,{...f.options,preview:true});assert.equal(preview.total,ids.length);
   const page=await exportRemoteHistory(f.target,{...f.options,inventory:preview.inventory});
-  assert.deepEqual(page.skipped,[]);assert.deepEqual(page.sessions.map(s=>s.id).sort(),[sessionId(1),basename(fallback,'.jsonl')].sort());
+  assert.deepEqual(page.skipped,[]);assert.deepEqual(page.sessions.map(s=>s.id).sort(),ids);
   assert.equal(page.sessions.find(s=>s.id===sessionId(1)).firstPrompt,'Known selected prompt.');
  });
 }

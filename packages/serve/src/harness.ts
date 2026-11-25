@@ -16,11 +16,11 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
 export const HARNESS_ID_PATTERN = "^[a-z][a-z0-9-]{0,39}$";
 /** The names serve's own runs carry where a harness id goes, so a harness module may not take one (its start is refused):
  *  `learning`, the launch harness the stores' learning queries match; `sdk`, an SDK run's launch harness
- *  (sdk/runs.ts); and the names analytics files a run's harness under: `workflow`, a workflow revision's, and each SDK
+ *  (sdk/runs.ts); `cli`, a connected CLI capture; and the names analytics files a run's harness under: `workflow`, a workflow revision's, and each SDK
  *  runtime's (sdk/schema.ts SDK_BINDING). Also every name a plain object already has that the id pattern admits
  *  (`constructor`): serve looks harnesses up by id in plain objects, where such an id would read Object's own member. */
 export const RESERVED_HARNESS_IDS: readonly string[] = Object.freeze([
-  "learning", "sdk", "workflow", ...SDK_RUNTIMES,
+  "learning", "sdk", "cli", "codex-cli", "claude-code-cli", "workflow", ...SDK_RUNTIMES,
   ...Object.getOwnPropertyNames(Object.prototype).filter((name) => new RegExp(HARNESS_ID_PATTERN).test(name)),
 ]);
 /** The harnesses that run on a person's ChatGPT plan (chatgpt-plan.ts): those whose requests go to OpenAI's Responses
@@ -42,7 +42,10 @@ export const PLAN_HARNESSES: readonly string[] = Object.freeze(["pi", "codex"] s
 export type HarnessOffer = { id: string; label: string; promises: HarnessPromises; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use"; card?: string };
 /** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out, and
  *  the memory a run of it reserves (`run_memory_mib`). */
-export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; free_models: { id: string; context_window: number }[]; run_memory_mib: number; needs?: HarnessNeed[] };
+export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; ready_models: string[]; free_models: { id: string; context_window: number }[]; run_memory_mib: number; needs?: HarnessNeed[]; noModelRuns?: true };
+/** `noModelRuns` (never served): a harness this server runs, its default model lacking a key (`needs`), and no model it
+ *  offers runs here now either, so capabilities serve it `available: false` (server.ts capabilitiesWith). Absent where
+ *  any model it offers runs, though its default does not: a revision that names that model runs. */
 /** What would give a harness that runs nothing here a model, any one of them: a model key (`key`), or the ChatGPT sign-in
  *  (`chatgpt`: codex and pi, on a server that signs in, not signed in or signed in no longer, AGENT_MODEL naming no key's
  *  model the harness runs: planWouldRun). */
@@ -68,7 +71,8 @@ async function withoutModelKeys(env: NodeJS.ProcessEnv): Promise<NodeJS.ProcessE
 export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability[]> {
   let offers = offered.get(env);
   if (!offers) {
-    offers = (async () => {
+    // A reading no run waits on (ollamaReading): each Ollama model is the kept listing's, at any age, never an /api/show.
+    offers = import("./ollama-provider.js").then(({ ollamaReading }) => ollamaReading(async () => {
       const { hostMemory, neverFits } = await import("./host.js");
       const memory = hostMemory();
       const { harnessInstalled } = await import("./adapters.js");
@@ -108,6 +112,12 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
         // so the picker never offers one a save would refuse. None for a harness that does not run here.
         const entry = harnessOf(env, offer.id)!;
         const models: string[] = [];
+        // Those of them a run takes now: its provider connected here (its key, or the ChatGPT sign-in where that is how
+        // it runs), not one that lacks only a key. The console's Model picker lists these first (GRE: filter by provider).
+        const ready: string[] = [];
+        // Whether any model it offers runs here now, not only lacks a key: its default lacking one leaves it available
+        // where another runs (noModelRuns).
+        let runsOne = false;
         // Its free models (model-form.ts freeCandidates) are offered after the others, by the same checks.
         const free = offer.available ? await freeCandidates(env, offer.id) : [];
         if (offer.available) {
@@ -120,18 +130,31 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
           const { FAUX_ENV } = await import("./model.js");
           const { factsOf } = await import("./harness-table.js");
           const facts = factsOf(env, offer.id);
+          const { OLLAMA_PROVIDER, ollamaToolsModels } = await import("./ollama-provider.js");
+          const { serverKeyMissing } = await import("./run-model-key.js");
+          const toolsModels = ollamaToolsModels(env);
           for (const id of new Set([...pickerCandidates(env, offer.id), ...free.map((m) => m.id)])) {
             if (!MODEL_REF.test(id)) continue;
             const chosen = await entry.model(env, id, true);
             if (!chosen || !("model" in chosen || chosen.needs === "key")) continue;
+            let lacksKey = !("model" in chosen);
             if (facts && "model" in chosen && !env[FAUX_ENV]) {
               try {
                 providerFor(facts.wire, env, chosen.model, offer.id);
               } catch (error) {
                 if (!(error instanceof HarnessUnavailable && error.keys?.length)) continue;
+                lacksKey = true;
               }
             }
+            // A model whose route goes to the gateway runs only on a gateway key: the server's, or each run's own
+            // (model_key). Without the server's, a run that brings none is 422 model_key_required, so it is not ready.
+            if (!lacksKey && "model" in chosen && serverKeyMissing(env, { kind: "agentic", model: chosen.model })) lacksKey = true;
             models.push(id);
+            if (!lacksKey) ready.push(id);
+            // A model of the Ollama here that takes no tools stays pickable, and a run on it gets its tools as text, but
+            // text tools are unreliable on small models: it is no model a run of this harness has now, as the host's
+            // default never is one (model.ts localDefault).
+            if (!lacksKey && (!id.startsWith(`${OLLAMA_PROVIDER}/`) || toolsModels.includes(id))) runsOne = true;
           }
         }
         // One that runs nothing here for want of a key (unavailable with `keys`, or available with no default model for
@@ -140,9 +163,9 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
         const wantsKey = offer.available ? resolved !== undefined && "why" in resolved && resolved.needs === "key" : Boolean(offer.keys?.length);
         const sayWhy = !wantsKey ? {} : offer.available ? { reason: (resolved as { why: string }).why } : offer.reason ? { reason: withPlanWords(env, offer.id, offer.reason) } : {};
         const needs: HarnessNeed[] = wantsKey ? ["key", ...(planWouldRun(env, offer.id) ? (["chatgpt"] as const) : [])] : [];
-        return { ...offer, ...sayWhy, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, free_models: free.filter((m) => models.includes(m.id)), run_memory_mib: entry.runMib, ...(needs.length ? { needs } : {}) };
+        return { ...offer, ...sayWhy, default_model: resolved && "model" in resolved ? `${resolved.model.provider}/${resolved.model.modelId}` : null, models, ready_models: ready, free_models: free.filter((m) => models.includes(m.id)), run_memory_mib: entry.runMib, ...(needs.length ? { needs } : {}), ...(offer.available && needs.length && !runsOne ? { noModelRuns: true as const } : {}) };
       }));
-    })();
+    }));
     offered.set(env, offers);
   }
   return offers;

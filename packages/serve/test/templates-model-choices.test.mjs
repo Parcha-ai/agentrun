@@ -196,6 +196,31 @@ test("a package whose model.prefer this server can't run is 409 naming the model
   assert.equal(own.status, 201, JSON.stringify(own.body));
 });
 
+test("a dry run lists the keys missing here even where the model needs one of them (its prefer, or a choice), and the apply itself is still refused", async (t) => {
+  withEnv(t, { OPENAI_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openai/gpt-6-luna" }, ["OPENROUTER_API_KEY", "PARALLEL_API_KEY", "ANTHROPIC_API_KEY", "AGENT_MODEL", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY"]);
+  const keyed = preferring("openrouter/particle-ai/particle-1").replace("model:", "secrets: [OPENROUTER_API_KEY]\nmodel:");
+  const { api } = await serve(t, { faux: undefined, harnesses: false, runner: false, templates: await packageDir(t, keyed) });
+  const before = (await api("GET", "/agents")).body.agents.length;
+  const plan = await api("POST", "/templates/inbox/apply", { dry_run: true });
+  assert.equal(plan.status, 200, JSON.stringify(plan.body));
+  assert.deepEqual(plan.body.plan.missing_secrets, ["OPENROUTER_API_KEY"]);
+  const applied = await api("POST", "/templates/inbox/apply", {});
+  assert.equal(applied.status, 409, JSON.stringify(applied.body));
+  assert.equal(applied.body.error.code, "agent_not_runnable");
+  assert.equal((await api("GET", "/agents")).body.agents.length, before, "nothing was made");
+});
+
+test("a dry run with a model choice whose key is missing lists the key, where the apply refuses", async (t) => {
+  withEnv(t, { OPENAI_API_KEY: "fake-test-key" }, ["OPENROUTER_API_KEY", "PARALLEL_API_KEY", "ANTHROPIC_API_KEY", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY"]);
+  const { api } = await serve(t, { faux: undefined, harnesses: false, runner: false, templates: await packageDir(t, manifest(CHOICES)) });
+  const plan = await api("POST", "/templates/inbox/apply", { dry_run: true, overrides: { choice: "free" } });
+  assert.equal(plan.status, 200, JSON.stringify(plan.body));
+  assert.deepEqual(plan.body.plan.missing_secrets, ["OPENROUTER_API_KEY"]);
+  const applied = await api("POST", "/templates/inbox/apply", { overrides: { choice: "free" } });
+  assert.equal(applied.status, 409, JSON.stringify(applied.body));
+  assert.equal(applied.body.error.code, "agent_not_runnable");
+});
+
 test("a model.prefer no catalog here lists is 409 naming it, and the fix is another model, not a key", async (t) => {
   withEnv(t, { OPENROUTER_API_KEY: "fake-test-key", AGENT_MODEL_FAST: "openrouter/openai/gpt-6-luna" }, ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AGENT_MODEL", "AGENT_MODEL_STRONG", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY"]);
   const { api } = await serve(t, { faux: undefined, harnesses: false, runner: false, templates: await packageDir(t, preferring(UNLISTED)) });

@@ -1,5 +1,5 @@
 import { agentHash } from "@/components/AgentPage";
-import { ArrowLeft, Check, ExternalLink, LayoutTemplate } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, Check, LayoutTemplate } from "lucide-react";
 import { FieldInput, FieldIssues as Issues } from "@/components/FieldInput";
 import { Picker } from "@/components/ui/picker";
 import { type ReactNode, useEffect, useRef, useState } from "react";
@@ -11,18 +11,35 @@ import { Chip } from "@/components/ui/chip";
 import { formColumnsClass, Input } from "@/components/ui/field";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
+import { ListFilter } from "@/components/ListFilter";
+import { matchesFilter } from "@/lib/filter";
+import { marketplaceLine, marketplaceMatches, marketplaceNote, notHere, useMarketplace } from "@/lib/marketplace";
+import { HarnessIcons, TemplateHarnessIcon } from "@/components/HarnessIcon";
+import { ToolkitIcons } from "@/components/ToolkitIcon";
 import { runTemplatePrompt } from "@/lib/codingAgentPrompts";
 import { allPages, type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { cn } from "@/lib/utils";
-import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine } from "@/lib/schedules";
+import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine, TRIGGER_KINDS } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
 import { type FieldSpec, fieldIssueWords, fieldKind, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues, schemaFields } from "@/lib/inputForm";
-import { APPLY_REQUIREMENTS, grantsOf, isPlain, issuesAt, MARKETPLACE_URL, matchesOf, needsOf, paramHelp, type ParameterText, readTemplateDraft, setUpHref, templateHash, templatePlaygroundHref, titleOf } from "@/lib/templatePackages";
-import { type Approvals, NEVER_ASK_LINE, type TemplateApplied, type TemplateImported, type TemplateView } from "@/lib/v2";
+import { APPLY_REQUIREMENTS, grantsOf, isPlain, issuesAt, matchesOf, needsOf, paramHelp, type ParameterText, readTemplateDraft, setUpHref, templateHash, templatePlaygroundHref, titleOf, cardTitleOf, inCatalog } from "@/lib/templatePackages";
+import { type Approvals, type MarketplaceTemplate, NEVER_ASK_LINE, type TemplateApplied, type TemplateImported, type TemplateView } from "@/lib/v2";
 
 type Props = { v2: Client; go: (hash: string) => void; playground?: boolean; draft?: string };
+
+/** A template's lines with its harnesses drawn as their icons, each named on hover and for a screen reader. */
+function withHarnessIcons(lines: [string, string][], t: TemplateView): [string, ReactNode][] {
+  return lines.map(([what, words]) => [what, what === "Harness" && t.harness?.length ? <HarnessIcons ids={t.harness} /> : words]);
+}
+/** A card's lines: its keys, then the apps its MCP servers reach as icons ("Apps"), then the rest of needsOf. */
+function cardNeeds(t: TemplateView): [string, ReactNode][] {
+  const lines = withHarnessIcons(needsOf(t), t);
+  const at = lines[0]?.[0] === "Keys" ? 1 : 0;
+  if (t.mcp.length) lines.splice(at, 0, ["Apps", <ToolkitIcons needs={t.mcp} />]);
+  return lines;
+}
 const catalogHash = (playground: boolean) => playground ? "#/playground?operation=apply-template" : "#/templates";
 
 /** The server's templates: review and install a GitHub package, run with a coding agent, or apply through the API playground. */
@@ -38,10 +55,14 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
     return () => { live = false; };
   }, [v2, tries, install]);
   const shown = name === undefined ? undefined : templates?.find((t) => t.id === name);
+  const retry = () => setTries((n) => n + 1);
   const body = install !== undefined ? <InstallTemplate v2={v2} source={install} go={go} />
-    : error && !templates ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
+    // The list's own page keeps the marketplace's section when this server's list fails: it reads apart, and its cards
+    // need nothing from this server's list. The error stands where this server's templates go.
+    : error && !templates && name === undefined && !playground ? <TemplateList v2={v2} templates={[]} failed={error} onRetry={retry} go={go} playground={playground} onRemoved={retry} />
+    : error && !templates ? <ProblemCard problem={error} onRetry={retry} className="" />
     : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
-    : name === undefined ? <TemplateList v2={v2} templates={templates} go={go} playground={playground} onRemoved={() => setTries((n) => n + 1)} />
+    : name === undefined ? <TemplateList v2={v2} templates={templates} go={go} playground={playground} onRemoved={retry} />
     : shown ? <ApplyTemplate key={`${shown.id}:${draft ?? ""}`} v2={v2} template={shown} go={go} playground={playground} draft={draft} />
     : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href={catalogHash(playground)} className="underline">See its templates</a>.</p>;
   // In the API playground the page sits under the playground's own bar, with its own way back.
@@ -54,30 +75,46 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
         {listing
           ? <h1 className={pageTitleClass}><LayoutTemplate className="size-4" aria-hidden />Templates</h1>
           : <nav aria-label="Breadcrumb"><a href="#/templates" className={cn(pageTitleClass, "text-muted-foreground hover:text-foreground")}><ArrowLeft className="size-4" aria-hidden />Templates</a></nav>}
-        {/* Where to find more packages for Add from URL: the public marketplace, in a new tab. */}
-        {listing && <a href={MARKETPLACE_URL} target="_blank" rel="noopener" className={cn(buttonVariants({ size: "sm" }), "ml-auto")}>Marketplace<ExternalLink aria-hidden /><span className="sr-only"> (opens in a new tab)</span></a>}
       </header>
       <div className="p-5 md:p-6">{body}</div>
     </section>
   );
 }
 
-/** An imported package's provenance in one line: its source, the commit it was read at, its publisher. */
+/** An imported package's provenance in one line: its source, the commit it was read at, its publisher; an uploaded one
+ *  (`agentrun deploy`, no publisher) its id and the start of its sha256. */
 export function TemplateProvenance({ t }: { t: Pick<TemplateView, "source" | "sha" | "publisher"> }) {
   if (!t.source) return null;
-  return <p className="mt-1 break-all font-mono text-small text-muted-foreground" data-provenance>{t.source} at {t.sha?.slice(0, 12)}, published by {t.publisher}</p>;
+  return <p className="mt-1 break-all font-mono text-small text-muted-foreground" data-provenance>{t.source} at {t.sha?.slice(0, 12)}{t.publisher ? `, published by ${t.publisher}` : ", uploaded"}</p>;
 }
 
-/** The list, with the "Add from URL" box: a package on GitHub is read and shown whole (the install page) before it is stored. */
-function TemplateList({ v2, templates, go, playground, onRemoved }: { v2: Client; templates: TemplateView[]; go: (hash: string) => void; playground: boolean; onRemoved: () => void }) {
+/** Whether a search keeps one of this server's templates, by the words its card shows. */
+/** Whether a search keeps a template: by its words, and by `line`, the one line its card shows (the marketplace's summary
+ *  where the marketplace lists it), so a word the card shows always finds it. */
+const templateMatches = (query: string, t: TemplateView, line?: string) => matchesFilter(query, titleOf(t), t.name, t.id, t.description, line, t.publisher, t.category, t.tags.join(" "));
+
+/** The list, with the "Add from URL" box: a package on GitHub is read and shown whole (the install page) before it is
+ *  stored. Its own page lists this server's templates, then the marketplace's others (GRE-4834), under one search; the
+ *  API playground's lists this server's alone, the ones an apply takes. */
+function TemplateList({ v2, templates, failed, onRetry, go, playground, onRemoved }: { v2: Client; templates: TemplateView[]; failed?: Problem; onRetry?: () => void; go: (hash: string) => void; playground: boolean; onRemoved: () => void }) {
   const Heading = playground ? "h2" : "h1";
-  const CardHeading = playground ? "h3" : "h2";
+  const CardHeading = "h3";
+  const market = useMarketplace(v2, !playground);
+  const [search, setSearch] = useState("");
+  const listed = playground ? templates : templates.filter(inCatalog);
+  // A card the marketplace lists reads its one line there, as the marketplace's card does; else its description.
+  const lineOf = (t: TemplateView) => market.list?.templates.find((m) => m.here === t.id)?.summary ?? t.description;
+  const here = listed.filter((t) => templateMatches(search, t, lineOf(t)));
+  const elsewhere = notHere(market.list);
+  const others = elsewhere.filter((t) => marketplaceMatches(search, t));
   const [source, setSource] = useState("");
   const [removing, setRemoving] = useState<string | null>(null);
   const [said, setSaid] = useState<string | null>(null);
   const remove = async (t: TemplateView) => {
     setRemoving(t.id); setSaid(null);
-    try { await v2.deleteTemplate(t.id); onRemoved(); } catch (e) { setSaid(e instanceof Error ? e.message : String(e)); } finally { setRemoving(null); }
+    // The marketplace's list is read again too: its `here` marks are as of its last read, and the template removed
+    // goes back to the marketplace's section, where it can be installed again.
+    try { await v2.deleteTemplate(t.id); onRemoved(); market.retry(); } catch (e) { setSaid(e instanceof Error ? e.message : String(e)); } finally { setRemoving(null); }
   };
   return (
     <>
@@ -91,30 +128,35 @@ function TemplateList({ v2, templates, go, playground, onRemoved }: { v2: Client
         <Button size="sm" variant="solid" type="submit" disabled={!source.trim()}>Read it</Button>
       </form>
       {said && <p className="mb-3 text-body text-destructive-text" role="alert">{said}</p>}
-      {!templates.length ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">This server offers no templates yet.</p> : (
+      {!playground && <ListFilter className="mb-5" value={search} onChange={setSearch} label="Search templates" placeholder="Search templates…" shown={here.length + others.length} total={listed.length + elsewhere.length} />}
+      {!playground && <h2 className="mb-3 text-lead font-semibold">On this server</h2>}
+      {failed ? <ProblemCard problem={failed} onRetry={onRetry} className="" />
+        : !listed.length ? <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground">This server offers no templates yet.</p>
+        : !here.length ? <p role="status" className="border px-4 py-6 text-center text-body text-muted-foreground">None of this server's templates match “{search}”.</p> : (
         <ul className="grid gap-3 md:grid-cols-2">
-          {templates.map((t) => (
+          {here.map((t) => (
             <li key={t.id}>
-              <article aria-label={titleOf(t)} className="flex h-full flex-col border bg-card px-5 py-4">
+              <article aria-label={cardTitleOf(t)} className="flex h-full flex-col border bg-card px-5 py-4">
                 <div className="flex flex-wrap items-baseline gap-2">
-                  <LayoutTemplate className="size-4 shrink-0 self-center text-muted-foreground" aria-hidden />
-                  <CardHeading className="min-w-0 break-words text-prose font-semibold">{titleOf(t)}</CardHeading>
+                  <span data-template-icon className="flex shrink-0 self-center"><TemplateHarnessIcon harness={t.harness ?? []} /></span>
+                  <CardHeading className="min-w-0 break-words text-prose font-semibold">{cardTitleOf(t)}</CardHeading>
                   <span className="font-mono text-small text-muted-foreground">{t.version}</span>
                   {t.category && <Chip tone="muted">{t.category}</Chip>}
                   {!t.bundled && <Chip tone="muted">Imported</Chip>}
                 </div>
                 <TemplateProvenance t={t} />
-                <p className="mt-2 text-lead leading-[1.6]">{t.description}</p>
+                <p className="mt-2 text-lead leading-[1.6]">{lineOf(t)}</p>
                 {t.tags.length > 0 && <p aria-label="Tags" className="mt-1.5 break-words font-mono text-small text-muted-foreground">{t.tags.join(" · ")}</p>}
                 <dl className="mt-3 space-y-1 font-mono text-small text-muted-foreground">
-                  {needsOf(t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0">{what}</dt><dd className="min-w-0 break-words text-foreground/80">{words}</dd></div>)}
+                  {cardNeeds(t).map(([what, words]) => <div key={what} className="flex items-center gap-2"><dt className="shrink-0">{what}</dt><dd className="min-w-0 break-words text-foreground/80">{words}</dd></div>)}
                 </dl>
                 <div className="mt-auto flex flex-wrap items-center justify-end gap-2 pt-4">
                   {!t.bundled && <Button size="sm" onClick={() => void remove(t)} disabled={removing === t.id}>{removing === t.id ? "Removing…" : "Remove"}</Button>}
-                  {/* A plain template is applied from its screen (Configure leads there); any other is run with a coding agent. */}
+                  {/* Every card's buttons look the same, whatever its template needs: Configure opens its screen, where a plain
+                      template's Apply is the main action, and Run hands it to a coding agent. */}
                   {playground ? <Button size="sm" variant="primary" onClick={() => go(templatePlaygroundHref(t))}>Configure</Button> : <>
-                    <Button size="sm" variant={isPlain(t) ? "primary" : "outline"} onClick={() => go(templateHash(t.id))}>Configure</Button>
-                    <CodingAgentAction variant={isPlain(t) ? "outline" : "primary"} label="Run" prompt={runTemplatePrompt(location.origin, t)} playgroundHref={templatePlaygroundHref(t)} />
+                    <Button size="sm" onClick={() => go(templateHash(t.id))}>Configure</Button>
+                    <CodingAgentAction variant="primary" label="Run" prompt={runTemplatePrompt(location.origin, t)} playgroundHref={templatePlaygroundHref(t)} />
                   </>}
                 </div>
               </article>
@@ -122,7 +164,57 @@ function TemplateList({ v2, templates, go, playground, onRemoved }: { v2: Client
           ))}
         </ul>
       )}
+      {!playground && <Marketplace market={market} templates={others} total={elsewhere.length} search={search} go={go} />}
     </>
+  );
+}
+
+/** The marketplace's templates that are not on this server, after this server's own: each installs through the install
+ *  page (read whole, its publisher trusted once) when the list names its source, else from its marketplace page. Nothing
+ *  when the server reads no marketplace (off). */
+function Marketplace({ market, templates, total, search, go }: { market: ReturnType<typeof useMarketplace>; templates: MarketplaceTemplate[]; total: number; search: string; go: (hash: string) => void }) {
+  const { list, error, retry } = market;
+  if (list?.state === "off") return null;
+  const note = marketplaceNote(list);
+  return (
+    <section aria-labelledby="marketplace-heading" className="mt-10" data-marketplace>
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h2 id="marketplace-heading" className="text-lead font-semibold">From the marketplace{templates.length > 0 ? <span className="ml-2 font-mono text-small font-normal text-muted-foreground">{templates.length}</span> : null}</h2>
+        {list?.url && <a href={list.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-small text-primary-text hover:underline hover:underline-offset-4">Open the marketplace<ArrowUpRight className="size-3.5" aria-hidden /></a>}
+      </div>
+      {error ? <ProblemCard problem={error} onRetry={retry} className="" />
+        : !list ? <ListSkeleton label="Loading the marketplace's templates" rows={2} />
+        : <>
+          {note && <p className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-small text-muted-foreground" role="status">{note}<Button size="sm" onClick={retry}>Try again</Button></p>}
+          {total > 0 && !templates.length && <p role="status" className="border px-4 py-6 text-center text-body text-muted-foreground">None of the marketplace's templates match “{search}”.</p>}
+          {templates.length > 0 && (
+            <ul className="grid gap-3 md:grid-cols-2">
+              {templates.map((t) => (
+                <li key={t.name}>
+                  <article aria-label={t.title} className="flex h-full flex-col border bg-card px-5 py-4" data-marketplace-template={t.name}>
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <span data-template-icon className="flex shrink-0 self-center"><TemplateHarnessIcon harness={t.harness} /></span>
+                      <h3 className="min-w-0 break-words text-prose font-semibold">{t.title}</h3>
+                      {t.category && <Chip tone="muted">{t.category}</Chip>}
+                    </div>
+                    <p className="mt-2 line-clamp-3 text-lead leading-[1.6]">{marketplaceLine(t)}</p>
+                    {t.needs.length > 0 && <ul aria-label="Needs" className="mt-3 space-y-1 font-mono text-small text-muted-foreground">{t.needs.map((n) => <li key={n}>{n}</li>)}</ul>}
+                    {/* Its harnesses as this server's cards draw them, when the list says. */}
+                    {!!t.harness?.length && <dl className="mt-1 font-mono text-small text-muted-foreground"><div className="flex items-center gap-2"><dt className="shrink-0">Harness</dt><dd className="min-w-0"><HarnessIcons ids={t.harness} /></dd></div></dl>}
+                    <div className="mt-auto flex flex-wrap items-center justify-end gap-2 pt-4">
+                      {/* With its source, Install reads the package here first (the install page); with none, its page installs it. */}
+                      {t.source ? <>
+                        <a href={t.page_url} target="_blank" rel="noreferrer" className={buttonVariants({ size: "sm" })}>Details<ArrowUpRight className="size-3.5" aria-hidden /></a>
+                        <Button size="sm" variant="primary" onClick={() => go(installHash(t.source!))}>Install</Button>
+                      </> : <a href={t.page_url} target="_blank" rel="noreferrer" className={buttonVariants({ size: "sm", variant: "primary" })}>Install from the marketplace<ArrowUpRight className="size-3.5" aria-hidden /></a>}
+                    </div>
+                  </article>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>}
+    </section>
   );
 }
 
@@ -167,7 +259,7 @@ function InstallTemplate({ v2, source, go }: { v2: Client; source: string; go: (
       <p className="mt-3 text-lead leading-[1.6]">{t.description}</p>
       <Section title="What it makes">
         <dl className="space-y-1 px-4 py-3 font-mono text-small">
-          {needsOf(t, { mcp: false }).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0 text-muted-foreground">{what}</dt><dd className="min-w-0 break-words">{words}</dd></div>)}
+          {withHarnessIcons(needsOf(t), t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0 text-muted-foreground">{what}</dt><dd className="min-w-0 break-words">{words}</dd></div>)}
         </dl>
       </Section>
       {t.mcp.length > 0 && (
@@ -223,7 +315,7 @@ function refusalText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-const installHash = (source: string) => `#/templates/install?src=${encodeURIComponent(source)}`;
+export const installHash = (source: string) => `#/templates/install?src=${encodeURIComponent(source)}`;
 
 
 /** One template's Apply screen: its parameters, the owner's consent (one tick per MCP tool, none ticked until the owner
@@ -238,15 +330,6 @@ const CHANGE_WORDS: Record<TemplateApplied["agent_change"], { title: string; sai
   made: { title: "applied", said: () => "The agent is made" },
   updated: { title: "updated", said: (rev) => `Updated: rev ${rev}` },
   unchanged: { title: "unchanged", said: (rev) => `Nothing to update: rev ${rev} is current` },
-};
-/** What starts a run of each kind of trigger, in plain words: an apply's result says it of each trigger it made. */
-const TRIGGER_WORDS: Record<TemplateApplied["triggers"][number]["kind"], string> = {
-  schedule: "A schedule: it starts a run at its times.",
-  email: "Email: it starts a run on each new mail.",
-  webhook: "A webhook: it starts a run on each signed request to its URL.",
-  github: "GitHub: it starts a run on each GitHub event it takes.",
-  composio: "An app's events: it starts a run on each event the app sends.",
-  feed: "A feed: it starts a run on each new item in its feeds.",
 };
 /** `promise`'s answer, or undefined once `ms` have passed without one. */
 function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
@@ -404,28 +487,17 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
         {made.warnings.length > 0 && <>
           <p className="mb-3 text-lead">{change.said(made.revision_version)}. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
-            {made.warnings.map((w, i) => {
-              // A webhook trigger's (triggers.<i>.secret): the trigger the apply made (trigger_ids, in the template's order)
-              // opens from here, where its secret is shown with Rotate. One webhook_secrets speaks for gets its link there.
-              const hook = /^triggers\.(\d+)\.secret$/.exec(w.field);
-              const id = hook ? made.trigger_ids[Number(hook[1])] : undefined;
-              const named = hook ? t.triggers[Number(hook[1])]?.name : undefined;
-              if (id && made.webhook_secrets?.some((x) => x.trigger_id === id)) return <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}</li>;
-              return (
-                <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}
-                  {id && <a href={`#/triggers/${encodeURIComponent(id)}`} className="mt-1 block font-mono text-small text-primary-text underline-offset-2 hover:underline">Open {typeof named === "string" && named ? named : id} to get its signing secret (Rotate)</a>}
-                </li>
-              );
-            })}
+            {made.warnings.map((w, i) => (
+              <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}</li>
+            ))}
           </ul>
         </>}
         {/* Each webhook trigger the apply made: its signing secret this once, in the first answer to this session (held in
             this screen's state alone, never stored or logged), beside its URL; else the server's note and the trigger to
             rotate it from. */}
         {made.webhook_secrets?.map((x) => {
-          const index = made.trigger_ids.indexOf(x.trigger_id);
-          const named = index >= 0 ? t.triggers[index]?.name : undefined;
-          const name = typeof named === "string" && named ? named : x.trigger_id;
+          const named = made.triggers.find((one) => one.trigger_id === x.trigger_id)?.name;
+          const name = named || x.trigger_id;
           return x.signing_secret
             ? <SecretOnce key={x.trigger_id} label={`The webhook's URL and secret (${name})`} url={hookUrlOf({ id: x.trigger_id })} secret={x.signing_secret} />
             : (
@@ -436,18 +508,22 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
             );
         })}
         {/* Every trigger the apply made or kept, of any kind, by the package's name for it: what starts it in words and
-            whether it is on. A schedule read back says its line and next run (scheduleLine), as the Triggers page does. */}
+            whether it is on. A schedule read back says its line and next run (scheduleLine), as the Triggers page does. A
+            webhook with no webhook_secrets item (one the apply kept) says its page is where its secret is. */}
         {made.triggers.length > 0 && (
           <ul className="mt-4 divide-y border" aria-label="Triggers">
             {made.triggers.map((x) => {
               const s = schedules.find((one) => one.id === x.trigger_id);
+              const kept = x.kind === "webhook" && !made.webhook_secrets?.some((one) => one.trigger_id === x.trigger_id);
               return (
                 <li key={x.trigger_id} data-trigger={x.trigger_id} className="px-4 py-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <a href={`#/triggers/${encodeURIComponent(x.trigger_id)}`} className="break-words text-prose font-semibold hover:underline">{x.name}</a>
+                    {kept && <span className="text-small text-muted-foreground">Open it to get its signing secret (Rotate)</span>}
                     <Chip tone={x.enabled ? "success" : "plain"}>{x.enabled ? "on" : "off"}</Chip>
                   </div>
-                  <p className="mt-1 break-words text-body">{TRIGGER_WORDS[x.kind]}{x.enabled ? "" : " It is off: it starts nothing until it is turned on."}</p>
+                  {/* Its kind and what starts a run of it, as the Triggers page says each kind. */}
+                  <p className="mt-1 break-words text-body">{TRIGGER_KINDS[x.kind].label} · {TRIGGER_KINDS[x.kind].what}{x.enabled ? "" : " It is off: it starts nothing until it is turned on."}</p>
                   {s && <p className="mt-1 break-words font-mono text-small text-muted-foreground">{scheduleLine(s.source, s.next_at)}</p>}
                 </li>
               );
@@ -567,10 +643,10 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
         </fieldset>
       ) : null}
 
-      <fieldset aria-label="Approvals" className="mt-6">
-        <legend className="caps text-small font-semibold">Approvals</legend>
+      <fieldset aria-label="Tool approvals" className="mt-6">
+        <legend className="caps text-small font-semibold">Tool approvals</legend>
         <div className="mt-2 divide-y border">
-          {([["ask", "Ask me", "A call that asks waits for your answer: a ticked tool's write unless you allowed it in Settings, and its read unless you turned on Allow reads for its server."], ["never", "Never ask (run unattended)", "Runs without asking you, even for writes. Pick this if a trigger starts the agent while you're away."]] as const).map(([value, label, note]) => (
+          {([["ask", "Ask me", "A tool set to ask waits for your OK before it runs: a ticked tool's write unless you allowed it in Settings, and its read unless you turned on Allow reads for its server."], ["never", "Never ask (run unattended)", "Runs without asking you, even for writes. Pick this if a trigger starts the agent while you're away."]] as const).map(([value, label, note]) => (
             <label key={value} className="flex items-start gap-3 px-4 py-3">
               <input type="radio" name="approvals" value={value} className="mt-1 accent-primary" checked={approvals === value} onChange={() => setApprovals(value)} />
               <span><span className="font-mono text-body">{label}</span><span className="block text-small text-muted-foreground">{note}</span></span>
@@ -585,7 +661,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
 
       <Section title="What it makes">
         <dl className="space-y-1 px-4 py-3 font-mono text-small">
-          {needsOf(t, { secrets: false, mcp: false }).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0 text-muted-foreground">{what}</dt><dd className="min-w-0 break-words">{words}</dd></div>)}
+          {withHarnessIcons(needsOf(t, { secrets: false }), t).map(([what, words]) => <div key={what} className="flex gap-2"><dt className="shrink-0 text-muted-foreground">{what}</dt><dd className="min-w-0 break-words">{words}</dd></div>)}
         </dl>
       </Section>
 

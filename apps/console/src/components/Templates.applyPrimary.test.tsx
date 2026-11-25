@@ -7,8 +7,9 @@ import { ClientError } from "@/lib/client";
 import type { EmailAccount, TemplateView } from "@/lib/v2";
 
 // A template whose setup is only parameters (no MCP tool to tick, no server to pick, no key to save) is applied here: Apply
-// is the main action on its card and its screen, and the coding agent is the second way. A template with more to set up
-// keeps Run as its main action. A requirement the server checks at apply (a saved mailbox) is read first and said.
+// is the main action on its screen, and the coding agent is the second way. A template with more to set up keeps Run as its
+// screen's main action. On the list every card is alike: Configure in outline, Run the main action. A requirement the
+// server checks at apply (a saved mailbox) is read first and said.
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root | undefined;
@@ -16,7 +17,7 @@ const base: TemplateView = {
   id: "notes/daily", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "notes/daily", display_name: "Daily notes", version: "1.0.0", description: "Writes the day's notes.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,
-  computer: null, computer_here: null, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
+  computer: null, needs: null, computer_here: null, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [], evals: [],
   mcp: [],
   parameters: { type: "object", additionalProperties: false, properties: { topic: { type: "string", description: "Topic" } } },
 };
@@ -27,10 +28,10 @@ const inbox: TemplateView = { ...base, id: "inbox/assistant", name: "inbox/assis
 const NONE: EmailAccount = { configured: false, preset: null, address: null } as EmailAccount;
 const SAVED: EmailAccount = { configured: true, preset: "gmail", address: "me@example.com" } as EmailAccount;
 
-const applyTemplate = vi.fn(async () => ({ agent_id: "made-1", trigger_ids: [], triggers: [], warnings: [] }));
+const applyTemplate = vi.fn(async () => ({ agent_id: "made-1", triggers: [], warnings: [] }));
 const go = vi.fn();
 const client = (templates: TemplateView[], emailAccount: () => Promise<EmailAccount> = async () => NONE) =>
-  ({ listTemplates: async () => ({ templates }), listMcpServers: async () => ({ servers: [] }), applyTemplate, emailAccount: vi.fn(emailAccount) });
+  ({ listMarketplaceTemplates: async () => ({ url: null, state: "off", read_at: null, templates: [] }), listTemplates: async () => ({ templates }), listMcpServers: async () => ({ servers: [] }), applyTemplate, emailAccount: vi.fn(emailAccount) });
 async function mount(v2: ReturnType<typeof client>, name?: string) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -45,12 +46,13 @@ const agentGroup = (scope: ParentNode, label: string) => scope.querySelector(`[r
 const primary = (el: Element | null | undefined) => !!el?.className.includes("bg-primary/10");
 
 describe("a template whose setup is only parameters", () => {
-  it("has Configure as the card's main action and Run beside it in outline", async () => {
+  it("has a card like any other: Configure in outline, Run the main action, the same classes as a card with more to set up", async () => {
     const host = await mount(client([base, withMcp]));
-    const card = host.querySelector(`article[aria-label="Daily notes"]`)!;
-    expect(primary(button(card, "Configure"))).toBe(true);
-    expect(agentGroup(card, "Run")).not.toBeNull();
-    expect(primary(agentGroup(card, "Run"))).toBe(false);
+    const plain = host.querySelector(`article[aria-label="Daily notes"]`)!, more = host.querySelector(`article[aria-label="Review kit"]`)!;
+    expect(primary(button(plain, "Configure"))).toBe(false);
+    expect(primary(agentGroup(plain, "Run"))).toBe(true);
+    expect(button(plain, "Configure")!.className).toBe(button(more, "Configure")!.className);
+    expect(agentGroup(plain, "Run")!.className).toBe(agentGroup(more, "Run")!.className);
   });
 
   it("applies from its screen: Apply is primary, calls applyTemplate and opens the agent; the coding agent is the outline second way", async () => {

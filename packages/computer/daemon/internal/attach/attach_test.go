@@ -89,9 +89,22 @@ func (s *server) start() *httptest.Server {
 			}
 		})(w, req)
 	})
-	srv := httptest.NewServer(refuse)
+	srv := httptest.NewServer(ours(refuse))
 	s.t.Cleanup(srv.Close)
 	return srv
+}
+
+// ours answers a request for / with 404 and hands every other to h. No client under test asks for /, but a port watcher
+// on the machine running the tests may GET / on each new loopback listener, and a test server that counts or records
+// what it was sent must not take that for the client's.
+func ours(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/" {
+			http.NotFound(w, req)
+			return
+		}
+		h.ServeHTTP(w, req)
+	})
 }
 
 // refuse is a socket refused at the upgrade with status.

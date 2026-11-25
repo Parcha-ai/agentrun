@@ -3,11 +3,12 @@
 // runs.update and for the journal's commit (store/journal), which stages the patch and calls this inside its own
 // transaction: the run's end and its outbox rows commit with the journal's last entry, or none of them do. The fence is
 // the first statement: `WHERE id = ? AND epoch = ?` changing no row throws Fenced, and the caller's transaction rolls back.
-import { endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunLabels, type RunPatch, type RunRow, type RunState } from "../store.js";
+import { CENSUS_UNSCANNED, endedReason, FINAL_STATES, Fenced, type AlsoRow, type Claim, type ImportedFrom, type RunOutcome, type RunLabels, type RunPatch, type RunRow, type RunState } from "../store.js";
 import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
-import { writeLaunch } from "./run-launch.js";
+import { readableJson, writeLaunch } from "./run-launch.js";
+import { record } from "../../learn/ledger.js";
 
 /** A WHERE condition on `runs`: the run is no built-in learning run (one a kept learning names, queued with it), which no
  *  list of runs names. */
@@ -21,11 +22,11 @@ export const SIGN_IN_HANDED_LOCK = "sign_in_handed";
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
   wake_at: number | null; backoff_until: number | null; cost_usd: number | null; cost_upper_bound: number; metrics: string | null; summary: string | null;
-  outcome: string | null; archived_at: number | null; imported_from: string | null; sign_in_handed: string | null; labels: string | null; started_at: number; ended_at: number | null;
+  outcome: string | null; archived_at: number | null; imported_from: string | null; sign_in_handed: string | null; labels: string | null; disk: string | null; started_at: number; ended_at: number | null;
   purged_at: number | null;
 };
 
-export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, cost_upper_bound, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, labels, started_at, ended_at, purged_at";
+export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, cost_upper_bound, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, labels, disk, started_at, ended_at, purged_at";
 
 /** A run's exact cost in SQL, for a query that reads runs.cost_usd itself (`alias`: its runs table's): NULL when the
  *  stored figure is only the most the run can have cost, as runOf reads it. Every raw read of the column goes through it. */
@@ -42,7 +43,7 @@ export const runOf = (r: RunRecord): RunRow => ({
   wakeAt: r.wake_at, backoffUntil: r.backoff_until, ...costOf(r.cost_usd, r.cost_upper_bound), metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary,
   outcome: (r.outcome as RunOutcome | null) ?? null, archivedAt: r.archived_at, importedFrom: r.imported_from === null ? null : (JSON.parse(r.imported_from) as ImportedFrom),
   signInHanded: r.sign_in_handed === null ? null : (JSON.parse(r.sign_in_handed) as string[]), labels: r.labels === null ? {} : (JSON.parse(r.labels) as RunLabels),
-  startedAt: r.started_at, endedAt: r.ended_at, purgedAt: r.purged_at ?? null,
+  disk: r.disk, startedAt: r.started_at, endedAt: r.ended_at, purgedAt: r.purged_at ?? null,
 });
 
 /** Applies `patch` to the claim's run, then writes `also`, through `tx` (an open transaction's handle). Fenced, with nothing
@@ -50,7 +51,7 @@ export const runOf = (r: RunRecord): RunRow => ({
  *  `now` (the store's clock, read in the transaction). A final state with no `endedAt` is stamped `now`, and releases the
  *  run in the same statement. `dialect`: the connection's (store/dialect.ts), SQLite's by default. `clock`: the deadlines'
  *  clock (fence.ts storeNow) the fence and left_running_at read; `now` bound by default. */
-export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number, dialect: Dialect = SQLITE, clock: StoreNow = storeNow(dialect, () => now)): Promise<RunRow> {
+export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get" | "all">, claim: Pick<Claim, "runId" | "epoch">, patch: RunPatch, also: readonly AlsoRow[], now: number, dialect: Dialect = SQLITE, clock: StoreNow = storeNow(dialect, () => now)): Promise<RunRow> {
   const sets: string[] = [];
   const params: SqliteValue[] = [];
   const set = (column: string, value: SqliteValue) => (sets.push(`${column} = ?`), params.push(value));
@@ -111,7 +112,40 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
         break;
     }
   }
-  return runOf(row);
+  const run = runOf(row);
+  // A run this patch leaves ended has its ledger row and spend rows (learn/ledger.ts record) in this same commit, over
+  // every round its learning kept, this patch's included: an end, a later end after a follow-up and a patch of an ended
+  // run's metrics each write them whole again.
+  if (FINAL_STATES.includes(run.state)) await recordLedger(tx, run, now);
+  return run;
+}
+
+/** Writes run `run`'s ledger row and spend rows (learn/ledger.ts record) through `tx`, from its row and every round its
+ *  learning kept, in place of any it had: the one writer of learning_ledger and learning_spend (a run's end, and a heal
+ *  of its cost). Each row says the end it was written for (`epoch`: the run's epoch after that end), which a reader
+ *  checks against the run's (store-reads/learning.ts ledgerRowStands). Every end moves the epoch (applyRunPatch's
+ *  `ending`, Runs.failUnclaimed), on every build, and so does every claim before one; an end that keeps its job's end
+ *  (`keepsEnd`: a grade's round) leaves ended_at where it was, so ended_at never says which end a row is for. A runner
+ *  or server of the build before the ledger, ending the run again, writes none, and its row reads as stale until a later
+ *  end writes it again. A cancel that wins an end (refuseLeftovers, after this) moves ended_at, never the epoch: the row
+ *  still stands. */
+export async function recordLedger(tx: Pick<SqliteExecutor, "run" | "all">, run: RunRow, now: number): Promise<void> {
+  const rounds = (await tx.all<{ round: number; proposal: string }>("SELECT round, proposal FROM learning_proposals WHERE run_id = ? ORDER BY round", run.id))
+    .map((one) => ({ round: Number(one.round), proposal: JSON.parse(one.proposal) as unknown }));
+  const { row, spend } = record({ id: run.id, agentId: run.agentId, startedAt: run.startedAt, costUsd: run.costUsd, costAtMostUsd: run.costAtMostUsd, metrics: run.metrics, rounds });
+  await tx.run(
+    `INSERT INTO learning_ledger (run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (run_id) DO UPDATE SET agent_id = excluded.agent_id, started_at = excluded.started_at, path = excluded.path, workflow = excluded.workflow, digest = excluded.digest,
+        not_served = excluded.not_served, job_usd = excluded.job_usd, look_back_usd = excluded.look_back_usd, cost = excluded.cost, epoch = excluded.epoch`,
+    row.runId, row.agentId, row.startedAt, row.path, row.workflow, row.digest, row.notServed, row.jobUsd, row.lookBackUsd, row.cost, run.epoch,
+  );
+  await tx.run("DELETE FROM learning_spend WHERE run_id = ?", run.id);
+  for (const one of spend) {
+    await tx.run(
+      "INSERT INTO learning_spend (run_id, kind, round, agent_id, of_run, workflow, digest, usd, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      one.runId, one.kind, one.round, one.agentId, one.ofRun, one.workflow, one.digest, one.usd, now,
+    );
+  }
 }
 
 /** The one reopen a run that ended may take (runs.reopen, and a run's end with a person's message waiting): back to running
@@ -122,7 +156,7 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
 export const REOPEN_SET = "state = 'running', runner = NULL, claimed_until = NULL, wake_at = NULL, backoff_until = NULL, ended_at = NULL, summary = NULL, outcome = NULL";
 export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (state = 'stopped' AND outcome = 'stopped')) AND imported_from IS NULL AND purged_at IS NULL
   AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')
-  AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText("run_launch.body", ["harness"])} = 'learning')`;
+  AND NOT EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${d.jsonText(readableJson(d, "run_launch.body"), ["harness"])} = 'learning')`;
 
 /** After a write that made the run final has taken its own rows: every command row of the run still untaken is refused
  *  with the end's reason, in that same transaction. The store takes no new row on a final run (RunFinal), so a row the
@@ -140,7 +174,7 @@ export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (sta
  *  while the run looked back: a cancel at it cut the look-back alone and is refused with the rest. Only with a person's
  *  message waiting (the run read as going on from it, as a completed run a message opens again) is a cancel, waiting or
  *  taken in this commit, that message's run's: it ends cancelled, at this commit's time. */
-export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE, keepsEnd = false): Promise<void> {
+export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE, keepsEnd = false, census?: RunPatch["census"]): Promise<void> {
   if (state !== "ended" && state !== "stopped" && state !== "failed") return;
   // A cancel the API accepted (202, not refused) promised a cancelled run, and the view reads cancelled from that 202 on.
   // A normal end that commits with it still waiting is the cancel's: the run is stopped with outcome 'cancelled' (stopEnd's
@@ -160,7 +194,7 @@ export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, r
     if (won) {
       await tx.run("UPDATE commands SET taken_at = ? WHERE run_id = ? AND taken_at IS NULL AND refused IS NULL AND kind = 'cancel'", now, runId);
       await tx.run("UPDATE commands SET taken_at = ?, refused = ? WHERE run_id = ? AND taken_at IS NULL", now, endedReason("stopped"), runId);
-      await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);
+      await eraseLaunchSecrets(tx, runId, census);
       return;
     }
   }
@@ -178,5 +212,14 @@ export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, r
   await tx.run(`UPDATE commands SET taken_at = ?, refused = ?, ${settledBody(dialect)} WHERE run_id = ? AND taken_at IS NULL`, now, endedReason(state), runId);
   // The run is over: the secrets its launch held for its life go with this same commit. A message that opens it again
   // hands its own (runs.reopen).
-  await tx.run("UPDATE run_launch SET sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", runId);
+  await eraseLaunchSecrets(tx, runId, census);
+}
+
+/** A final run's launch secrets erased, in its end's commit, and what that end knew of where they sat written in their
+ *  place: `census` when it was made under the sealed bytes erased here, else CENSUS_UNSCANNED (an end with none, or one
+ *  whose launch a message sealed anew after the census read it). A launch with no sealed bytes is left as it is: its
+ *  census, if any, is the end's that erased them. */
+async function eraseLaunchSecrets(tx: Pick<SqliteExecutor, "run">, runId: string, census: RunPatch["census"] | undefined): Promise<void> {
+  if (census) await tx.run("UPDATE run_launch SET census = ?, sealed = NULL WHERE run_id = ? AND sealed = ?", census.json, runId, census.sealed);
+  await tx.run("UPDATE run_launch SET census = ?, sealed = NULL WHERE run_id = ? AND sealed IS NOT NULL", CENSUS_UNSCANNED, runId);
 }

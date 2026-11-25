@@ -1,11 +1,13 @@
-import { Download, Globe, Maximize2, Minimize2, Monitor, Smartphone, Terminal } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Download, Maximize2, Minimize2 } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { RunLiveSteps, RunVideoSteps, SCREEN_WITH_STEPS } from "@/components/ScreenSteps";
 import { Chip } from "@/components/ui/chip";
 import { Segmented } from "@/components/ui/segmented";
 import { ClientError } from "@/lib/client";
-import { METERED } from "@/lib/computers";
+import { DRIVES, KIND_ICONS, METERED, wordsOf } from "@/lib/computers";
 import { bytes } from "@/lib/format";
+import { videoSteps } from "@/lib/runVideo";
 import { httpHref } from "@/lib/safeUrl";
 import { cn } from "@/lib/utils";
 import type { ComputerHold, Run, RunComputer, RunMachine, TimelineRow } from "@/lib/v2";
@@ -131,10 +133,10 @@ const same = (prev: ScreenView | null, next: Exclude<RunComputer, { state: "off"
 const closed = (from: ScreenView | RunComputer): ScreenView | null =>
   from.state === "off" ? null : from.state === "signed_out" ? from : { state: "none", kind: from.kind, hold: "agent", session: from.state === "none" && from.session === "unopened" ? "unopened" : "closed" };
 
+/** No timeline given: the one empty list, so a render without one changes nothing a hook depends on. */
+const NO_ROWS: readonly TimelineRow[] = [];
+
 type Kind = RunMachine["kind"];
-const ICONS = { browser: Globe, desktop: Monitor, phone: Smartphone, sandbox: Terminal } as const;
-const NAMES: Record<Kind, string> = { browser: "Browser", desktop: "Desktop", phone: "Phone", sandbox: "Sandbox" };
-const DRIVES: Record<ComputerHold, string> = { agent: "The agent drives", pending: "Yours after the agent's step", person: "You drive" };
 
 /** The Screen tab, one panel for every kind of computer: the run's screen watched through the server's own viewer (a
  *  browser's page, a desktop's or a phone's screen), that it waits for one, or that its computer has none (a sandbox).
@@ -143,8 +145,15 @@ const DRIVES: Record<ComputerHold, string> = { agent: "The agent drives", pendin
  *  iframe's src and nothing else: never the address bar, the history, storage, a log or an error. A new session is a new
  *  viewer: the iframe is made again for it. A browser is taken over and handed back in its own viewer; a desktop or a
  *  phone here, with Take over and Hand back (`onTake`, `onHand`: each resolves with the refusal to say, or null). A
- *  metered provider's line shows for every kind but the browser. */
-export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, waitsFor, keptUntil, onTake, onHand, recordings = [], fileUrl }: {
+ *  metered provider's line shows for every kind but the browser. The panel sets its own width on the run page: the
+ *  reading column's while its screen is alone, wider by about the list's width with the run's steps beside the screen. */
+export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, waitsFor, keptUntil, onTake, onHand, recordings = [], fileUrl, rows = NO_ROWS, working = false, onOpenCall, seek }: {
+  /** Opens a tool call in the Dev tools tab, by its call row's id on the timeline: offered under a recording's steps where
+   *  the run's trace can be read. */
+  onOpenCall?: (rowId: string) => void;
+  /** A place on a recording to show, asked for from the Dev tools tab: the file and the seconds into it. `n` tells one
+   *  ask from the next, so the same place asked for twice is shown twice. */
+  seek?: { path: string; at: number; n: number };
   /** The run whose screen this is: only a viewer under its own path is framed. */
   runId: string;
   screen: ScreenView | null;
@@ -168,6 +177,12 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
    *  can no longer open its computer plays a finished one where its live screen was (the same URL, inline). */
   recordings?: readonly RunRecording[];
   fileUrl?: (path: string) => string;
+  /** The run's timeline: the live screen has the run's steps so far beside it (RunLiveSteps), and the recording a
+   *  finished run plays has its own, each a jump to its time on the video (RunVideoSteps), where the timeline says when
+   *  the recording began. */
+  rows?: readonly TimelineRow[];
+  /** Whether the run is working now: said under the newest step beside the live screen. */
+  working?: boolean;
 }) {
   // Each viewer gets an iframe of its own (a new session is a new page); the key is a count, never the viewer itself.
   const session = useRef({ viewer: "", n: 0 });
@@ -177,7 +192,7 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   // fragment beside its token), and its own bar shows neither, nor who drives. A browser's are its viewer's own.
   const framed = screen?.state === "live" ? framedViewer(screen.viewer, runId) : undefined;
   const src = framed && kind !== "browser" ? `${framed}${framed.includes("#") ? "&" : "#"}hands=page` : framed;
-  const Icon = ICONS[kind];
+  const Icon = KIND_ICONS[kind];
   const live = screen?.state === "live" ? screen : null;
   // Take over and Hand back, here for a desktop or a phone up now (a browser's are its viewer's own): one in flight at a
   // time, and a refusal said under the header.
@@ -206,6 +221,23 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   const [picked, setPicked] = useState(0);
   const reel = !opens && !live && screen?.state !== "signed_out" && fileUrl ? done[Math.min(picked, done.length - 1)] : undefined;
   const player = useRef<HTMLVideoElement | null>(null);
+  // The player's element as state too: its steps listen to it, from the render it is drawn in.
+  const [video, setVideo] = useState<HTMLVideoElement | null>(null);
+  const playerRef = useCallback((el: HTMLVideoElement | null) => { player.current = el; setVideo(el); }, []);
+  const told = useMemo(() => (reel ? videoSteps(rows, reel) : []), [rows, reel?.path, reel?.seconds]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A place asked for: its file is the one played, and once the player knows the video's length it moves there. (Before
+  // that a player takes no time; where `preload` reads nothing, it moves when the video is first played.)
+  useEffect(() => {
+    const i = seek ? done.findIndex((r) => r.path === seek.path) : -1;
+    if (i >= 0) setPicked(i);
+  }, [seek?.n]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!seek || !video || reel?.path !== seek.path) return;
+    const go = () => { video.currentTime = seek.at; };
+    if (video.readyState >= 1) { go(); return; }
+    video.addEventListener("loadedmetadata", go, { once: true });
+    return () => video.removeEventListener("loadedmetadata", go);
+  }, [seek?.n, video, reel?.path]); // eslint-disable-line react-hooks/exhaustive-deps
   // A phone is tall: its frame takes the height the run page shows below it (phoneHeight), so the whole phone is on
   // screen at once, its bottom (the keyboard, the nav bar) never under the composer. Its recording's player is sized so too.
   const [phoneH, setPhoneH] = useState<number | undefined>(undefined);
@@ -260,6 +292,11 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
       try { inner?.removeEventListener("keydown", onInnerKey, true); } catch { /* the viewer's page went away */ }
     };
   }, [full, session.current.n]);
+  // The steps beside the screen: the run's so far while its screen is live, a recording's own once it plays. With them the
+  // panel is wider by about the list's width, so the screen keeps the size it had alone (and grows no further: a frame
+  // taller than the page shows would need scrolling to watch); alone, the panel is the reading column's width.
+  const watched = showing && rows.length > 0;
+  const beside = watched || told.length > 0;
   // The live view's box, and its recording's: a desktop's shape, or a phone's frame at the height below it.
   const screenBox = kind === "phone" ? cn("mx-auto block aspect-[9/19] max-w-full bg-background", phoneH === undefined && "h-[70vh]") : "block aspect-[16/10] w-full bg-background";
   const screenHeight = kind === "phone" && phoneH !== undefined ? { height: `${phoneH}px` } : undefined;
@@ -273,10 +310,11 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
     </Button>
   );
   return (
+    <div className={cn("mx-auto w-full px-5 md:px-8", beside ? "max-w-7xl" : "max-w-4xl")}>
     <section aria-label="Screen" className="border">
       <header className="flex flex-wrap items-center gap-3 border-b px-4 py-2.5">
         <Icon className="size-4 text-muted-foreground" aria-hidden />
-        <span className="caps text-small font-semibold">{live ? "Live" : NAMES[kind]}</span>
+        <span className="caps text-small font-semibold">{live ? "Live" : wordsOf(kind).label}</span>
         {/* Who drives, for a desktop or a phone: GET /computer's hold is theirs. A browser is taken over in its own viewer,
             which says who has it; the served hold doesn't follow that take, so it isn't said here. */}
         <span className="flex-1 font-mono text-small text-muted-foreground">{who}</span>
@@ -299,7 +337,9 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
         // The viewer's page needs its own scripts, and its own origin: its WebSocket goes to this server, which checks the
         // session cookie and the Origin, and it clears the fragment from its own history. A browser's address bar is a form
         // (its own script reads it). Nothing else: no popups, no navigating the console.
-        ? <div ref={box} data-testid="screen-frame" className={full ? "fixed inset-0 z-dialog flex flex-col bg-background" : undefined} role={full ? "dialog" : undefined} aria-modal={full ? true : undefined} aria-label={full ? "The run's screen, filling the window" : undefined}>
+        // One box whether or not there are steps yet: the frame stays the same element when its steps come.
+        ? <div className={watched ? SCREEN_WITH_STEPS : undefined}>
+          <div ref={box} data-testid="screen-frame" className={full ? "fixed inset-0 z-dialog flex flex-col bg-background" : undefined} role={full ? "dialog" : undefined} aria-modal={full ? true : undefined} aria-label={full ? "The run's screen, filling the window" : undefined}>
             {full && (
               <div className="flex items-center gap-3 border-b bg-background px-4 py-2 text-foreground">
                 <span className="flex-1 font-mono text-small">{who}</span>
@@ -311,10 +351,18 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
             {full && said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
             <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : screenBox} style={full ? undefined : screenHeight} />
           </div>
+          {watched && <RunLiveSteps rows={rows} working={working} />}
+          </div>
         : reel && fileUrl
-          ? <video ref={player} src={fileUrl(reel.path)} controls muted playsInline preload="metadata" aria-label={`The run's recording, ${reel.path}`} className={screenBox} style={screenHeight} />
+          // One box whether or not the steps are known yet: the timeline's pages arrive after the player is drawn, and the
+          // player stays the same element (its place in the video kept) when its steps come.
+          ? <div className={told.length ? SCREEN_WITH_STEPS : undefined}>
+              <video ref={playerRef} src={fileUrl(reel.path)} controls muted playsInline preload="metadata" aria-label={`The run's recording, ${reel.path}`} className={screenBox} style={screenHeight} />
+              {told.length > 0 && <RunVideoSteps key={reel.path} video={video} steps={told} onOpenCall={onOpenCall} />}
+            </div>
           : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp, waitsFor, keptUntil)}</p>}
     </section>
+    </div>
   );
 }
 

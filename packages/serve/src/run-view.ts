@@ -6,7 +6,7 @@
 // The pieces here so far: the cost reads (a run's cost, its paid tools' charges, the cost a view shows, what it has cost so
 // far when the total is unknown) and the served row transforms a view applies to the timeline (the over-cap row, the
 // paused run's waiting row). All read the same rows the timeline renders.
-import { type TimelineEvent, chargedTool, isMessageRow, NOTE_SUFFIX, registerLabel, registerTurnEnding, scrubUrls } from "./timeline/index.js";
+import { type TimelineEvent, CAP_REFUSED, CAP_WRAPUP, chargedTool, isMessageRow, NOTE_SUFFIX, registerLabel, registerTurnEnding, scrubUrls } from "./timeline/index.js";
 import type { RevisionKind } from "./agent-rows.js";
 import { CAP_TOLERANCE, FIT_TOLERANCE, money, type RefusalFigures, roomRefusal } from "./cap.js";
 import type { Turns } from "./turns.js";
@@ -25,8 +25,28 @@ import type { CostParts } from "@parcha/agentrun-kernel";
  *  pointer) and `forgotten` (its tombstoned ones), over the store (sign-ins-store.ts signInReads). */
 export type SignInReader = ReturnType<typeof signInReads>;
 import { KINDS } from "./runner/journal-kinds.js";
-import { ASKED_BECAUSE, ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
-import { isObject } from "./validate.js";
+import { ENDED_WHILE_WAITING, STOPPED_WHILE_WAITING } from "./refusal-words.js";
+import { micro } from "./micro.js";
+
+/** How a run wound down for its spend cap (`max_cost_usd`), from its journal's root entries: the tool calls the cap's
+ *  wrap-up refused (CAP_REFUSED, each call once however often it was refused: a replay is the same call), and whether it
+ *  wound down under the cap it has now (`capUsd`, its newest raise's, else its start's): its model was told to wrap up
+ *  under that cap (a CAP_WRAPUP naming it; the free-request limit's note names none, and is no dollar cap's), or a call
+ *  was refused under it. A cap raised past a wrap-up is a new cap the run has not wound down under. `skip`: entries not
+ *  the job's (its end-of-run turn's), which count for neither. The view's `stopped_for` and `budget_refused_calls`. */
+export function windDownOf(entries: readonly { readonly kind?: string; readonly id?: unknown; readonly data?: unknown }[], capUsd: number | undefined, skip?: (id: number) => boolean): { readonly refusedCalls: number; readonly woundDown: boolean } {
+  const underCap = (cap: unknown): boolean => capUsd !== undefined && typeof cap === "number" && Math.abs(cap - capUsd) <= CAP_TOLERANCE;
+  const calls = new Set<string>();
+  let woundDown = false;
+  for (const entry of entries) {
+    if (entry.kind !== CAP_REFUSED && entry.kind !== CAP_WRAPUP) continue;
+    if (skip?.(Number(entry.id))) continue;
+    const data = (entry.data ?? {}) as { callId?: unknown; capUsd?: unknown };
+    if (entry.kind === CAP_REFUSED && typeof data.callId === "string") calls.add(data.callId);
+    if (underCap(data.capUsd)) woundDown = true;
+  }
+  return { refusedCalls: calls.size, woundDown };
+}
 
 /** The run's newest usage row, which carries its cost. */
 const usageOf = (rows: readonly TimelineEvent[]) => rows.findLast((r) => r.kind === "usage");
@@ -142,7 +162,7 @@ export type State = "working" | "waiting" | "idle";
 
 /** A tool call that waited for a person's approval, as the run's store has it (tool-gate.ts): `resolved` once the run's
  *  process acted on the answer. */
-/** `asks_because`: why the gate asked a call its setting allows (its card's ASKED_BECAUSE), kept out of `args_json`. */
+/** `asks_because`: why the gate asked a call its setting allows (its ask's own `because`, never one of the call's arguments). */
 export type Approval = { id: string; tool: string; call_id: string; args_json: string; asks_because?: string; requested_at: string; price?: ApprovalPrice; destructive?: true; resolved?: true };
 /** `args_shown`: the call's arguments as the server shows them (shownArgs), which the gate's resume message names. */
 /** `by`: "message", a deny a person's message gave while the call waited (Runs.message); "setting", the allow or deny the tool's setting gave an ask that waited (the tool set to allow or deny since it asked). */
@@ -160,7 +180,7 @@ export const withdrawn = (answer: ApprovalAnswer | undefined) => answer?.decisio
 // command names the call), so the card's id is the call's id. ---
 
 /** An `agentrun.ask` entry's data: the tool call the gate parked for a person, as the runner wrote it. */
-type AskEntry = { callId: string; tool: string; args: unknown; requestedAt: string; price?: ApprovalPrice | null; destructive?: true };
+type AskEntry = { callId: string; tool: string; args: unknown; because?: string; requestedAt: string; price?: ApprovalPrice | null; destructive?: true };
 /** An ask's price as its card shows it (tool-gate.ts ApprovalPrice); undefined for none, or one of no known shape. */
 const priceOfAsk = (price: unknown): ApprovalPrice | undefined => (typeof price === "number" || price === "not metered" || price === "priced by usage" ? price : undefined);
 /** An `agentrun.answer` entry's data: the person's answer the runner wrote, or a withdrawal when the run was stopped or
@@ -183,15 +203,12 @@ export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> 
     const d = dataOf<AskEntry>(entry);
     if (typeof d?.callId !== "string" || map.has(d.callId)) continue;
     const price = priceOfAsk(d.price);
-    // The card's reason for asking a call its setting allows is the gate's, never one of the call's arguments.
-    const raw: unknown = d.args ?? {};
-    const { [ASKED_BECAUSE]: because, ...args } = isObject(raw) ? raw : {};
     map.set(d.callId, {
       id: d.callId,
       tool: d.tool,
       call_id: d.callId,
-      args_json: JSON.stringify(isObject(raw) ? args : raw) ?? "{}",
-      ...(typeof because === "string" ? { asks_because: because } : {}),
+      args_json: JSON.stringify(d.args ?? {}) ?? "{}",
+      ...(typeof d.because === "string" ? { asks_because: d.because } : {}),
       requested_at: d.requestedAt,
       ...(price !== undefined ? { price } : {}),
       ...(d.destructive === true ? { destructive: true as const } : {}),
@@ -435,7 +452,7 @@ export const actingOn = (run: Pick<RunView, "approvals" | "meta">) => [...(run.a
 export const shownArgs = (approval: Pick<Approval, "args_json">, redact: (text: string) => string): string => previewOf(redact(approval.args_json));
 
 /** A dollar figure to a millionth, as the timeline's cost.usd is. */
-export const micro = (usd: number): number => Math.round(usd * 1e6) / 1e6;
+export { micro } from "./micro.js";
 /** How many of the refused request's least a run paused at its cap is offered on top of what was taken (suggestedCap). */
 export const SUGGESTED_RAISE_FACTOR = 10;
 /** The raise a run paused at its cap is offered: what the cap counted as taken plus SUGGESTED_RAISE_FACTOR times the
@@ -582,6 +599,9 @@ export interface RunMoment {
   readonly id: string;
   readonly agentId: string;
   readonly kind: "agentic" | "workflow";
+  /** The harness its revision names (run.harness): a trigger's message to a run on a plan-billed recipe is refused
+   *  (trigger-targets.ts). Absent only where a caller builds a moment by hand. */
+  readonly harness?: string;
   /** Where an imported run came from (run.imported?.source); absent for a run started here. An imported run takes no act. */
   readonly importedSource?: string;
   /** A cancel is in flight (run.cancel), whether or not its end is written yet. */
@@ -642,6 +662,7 @@ export function momentOf(run: RunView, facts: RunFacts, live: boolean): RunMomen
     id: run.id,
     agentId: run.agentId,
     kind: run.kind,
+    harness: run.harness,
     ...(run.imported ? { importedSource: run.imported.source } : {}),
     cancelled: run.cancel,
     terminal,

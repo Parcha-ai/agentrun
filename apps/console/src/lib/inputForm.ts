@@ -139,6 +139,15 @@ export const inputOf = (form: InputForm, content: string, text: ParameterText): 
  *  null for one at no field. */
 export const fieldOfIssue = (path: string, root = "input"): string | null => path.startsWith(`${root}.`) ? path.slice(root.length + 1).split(".")[0]! : null;
 
+/** The server's issue at the run's message (input.content: an input giving neither the message nor a field), when the
+ *  form shows typed fields: said at the message box, never listed under the refusal. */
+export const contentIssueOf = <I extends { field: string }>(form: InputForm | null, issues: readonly I[] | undefined): I | undefined =>
+  (form ? issues?.find((i) => i.field === "input.content") : undefined);
+
+/** Whether a typed field's new value clears the server's issue at the run's message: only where the message is optional
+ *  (a field can stand in for it there), and only for a value the server takes. */
+export const clearsContentIssue = (form: InputForm, spec: FieldSpec, value: string): boolean => !form.contentRequired && value !== "" && fieldValid(spec, value);
+
 const kindWords = (f: FieldSpec) => (f.type === "integer" ? "a whole number" : f.type === "number" ? "a number" : f.type === "boolean" ? "true or false" : "text");
 const LIST_OF: Record<FieldSpec["type"], string> = { string: "text", integer: "whole numbers", number: "numbers", boolean: "true or false" };
 /** What a field takes, in the words its refusals use: "text", "a whole number", a list's "a list of whole numbers". */

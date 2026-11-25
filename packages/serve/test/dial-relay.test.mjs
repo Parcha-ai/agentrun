@@ -223,16 +223,16 @@ async function mintedFor(store, runner, incarnation, name = `m-${randomBytes(4).
 }
 
 /** A stand-in runner listener on loopback, recorded where `runner` answers: `onSocket` is given each socket it takes. */
-async function standIn(t, store, runner, incarnation, onSocket) {
+async function standIn(t, store, runner, incarnation, onSocket, host = "127.0.0.1") {
   const wss = new WebSocketServer({ noServer: true, handleProtocols: () => ATTACH_SUBPROTOCOL });
   const http = createServer((_req, res) => void res.writeHead(404).end());
   http.on("upgrade", (req, socket, head) => wss.handleUpgrade(req, socket, head, (ws) => onSocket(ws, req)));
-  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => http.listen(0, host, resolve));
   t.after(() => {
     for (const ws of wss.clients) ws.terminate();
     return new Promise((resolve) => (http.closeAllConnections(), http.close(() => resolve())));
   });
-  await store.runners.put({ runner, incarnation, refused: null, host: "127.0.0.1", port: http.address().port });
+  await store.runners.put({ runner, incarnation, refused: null, host, port: http.address().port });
 }
 
 test("a close on either side of a relayed socket closes the other: the machine's close takes it off the runner's hub, and the runner's revoke closes the machine's socket with 4401", { timeout: 60_000 }, async (t) => {
@@ -270,11 +270,14 @@ test("a dial whose runner is gone (its relay closed), whose listener does not an
   await until(async () => lines.find((line) => line.includes("machine_relay_refused") && line.includes("m-gone")), Boolean, "the server's refusal line");
   assert.match(lines.find((line) => line.includes("machine_relay_refused") && line.includes("m-gone")), /"a dial for run run-gone \(machine m-gone\): runner runner-gone, which made it, is not running now/, "the server's line says the run too");
 
-  // Not answering: its row names a port nothing listens on (a runner killed with no close).
+  // Not answering: its row names a port where every connection is dropped as it comes (a runner killed with no close).
+  // The port stays bound until the test ends: a port freed here could be taken by the next server this process starts,
+  // whose answer (a 401) would read as a runner that did not take the dial.
   const dead = createServer();
+  dead.on("connection", (socket) => socket.destroy());
   await new Promise((resolve) => dead.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => dead.close(resolve)));
   const port = dead.address().port;
-  await new Promise((resolve) => dead.close(resolve));
   await side.store.runners.put({ runner: "runner-dead", incarnation: "inc-dead", refused: null, host: "127.0.0.1", port });
   const { token: deadToken } = await mintedFor(side.store, "runner-dead", "inc-dead", "m-dead", "run-dead");
   const refusedDead = await Promise.race([machine(address, deadToken).opened, sleep(15_000).then(() => "hung")]);
@@ -365,6 +368,36 @@ test("a relay's liveness is read on the store's clock: over a store whose clock 
   dial.ws.close();
   // And the server's read of which runners relay (server.ts relayed, Settings → Computers): the same row, on the same clock.
   assert.deepEqual((await liveRelays(store.runners)).map((one) => [one.runner, one.host]), [["runner-behind", "127.0.0.1"]]);
+});
+
+test("a runner that answers at an address in one of the server's runners' blocks (AGENTRUN_RUNNER_HOSTS as an IPv4 block) has its machine's dial relayed there; one outside every block is refused 503 in words", { timeout: 60_000, skip: process.platform === "linux" ? false : "127.0.0.2 answers as loopback on Linux alone" }, async (t) => {
+  const store = await openSqliteStore({ file: join(await scratch(t), "store.sqlite") });
+  t.after(() => store.close());
+  let took = 0;
+  // A runner on "another host": 127.0.0.2, which Linux answers on loopback, so the server's dial of the row's host is the
+  // one under test, with no network.
+  await standIn(t, store, "runner-pod", "inc-pod", () => void (took += 1), "127.0.0.2");
+  const serverOn = async (hosts) => {
+    const routes = createAttachRoutes({ store, hub: new AttachHub(), relay: { runners: store.runners, reach: liveReachOf({ AGENTRUN_RUNNER_HOSTS: hosts }, randomBytes(32)) } });
+    const http = createServer((_req, res) => void res.writeHead(404).end());
+    http.on("upgrade", (req, socket, head) => routes.upgrade(req, socket, head, (status, words = "") => socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\ncontent-length: ${Buffer.byteLength(words)}\r\n\r\n${words}`)));
+    await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+    t.after(async () => {
+      await routes.close();
+      http.closeAllConnections();
+      await new Promise((resolve) => http.close(() => resolve()));
+    });
+    return `http://127.0.0.1:${http.address().port}`;
+  };
+  const inside = machine(await serverOn("127.0.0.0/8"), (await mintedFor(store, "runner-pod", "inc-pod", "m-pod-1", "run-pod")).token);
+  assert.equal(await inside.opened, true, "an address in the block is dialled");
+  await until(async () => took, (n) => n === 1, "the runner's listener took the socket");
+  inside.ws.close();
+  const outside = machine(await serverOn("198.18.0.0/15"), (await mintedFor(store, "runner-pod", "inc-pod", "m-pod-2", "run-pod")).token);
+  const refused = await outside.opened;
+  assert.equal(refused.status, 503);
+  assert.match(refused.body, /runner runner-pod, which made it, answers at 127\.0\.0\.2, which is not one of this server's runners' hosts/);
+  assert.equal(took, 1, "nothing outside the block is dialled");
 });
 
 test("a real dial provider's create on a runner apart ends at once in the server's words when the server will not relay its machine's dial (the runner answers at a host this server does not dial), not at createMs", { timeout: 60_000 }, async (t) => {

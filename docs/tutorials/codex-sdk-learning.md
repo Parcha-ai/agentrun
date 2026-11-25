@@ -65,4 +65,4 @@ The native Linux shell sandbox requires namespace support. For a restricted cont
 
 Native SDK reference: [OpenAI's Codex TypeScript SDK](https://github.com/openai/codex/blob/main/sdk/typescript/README.md).
 
-SDK run evidence must finish within one hour of registration. A backend task that exceeds that deadline is not replayed; AgentRun records an unknown execution outcome and does not infer new learning.
+SDK run evidence must keep arriving. A run stays open for an hour after it is registered, and each events batch keeps it open for another hour, up to 24 hours after registration (`capabilities.features.sdk_runs.max_open_s`); an empty `events: []` batch works as a heartbeat. A backend task that misses that deadline is not replayed; AgentRun records an unknown execution outcome and does not infer new learning. A backend that calls `POST /v2/agents/{agent_id}/sdk-runs` itself can also send `started_at` (when the task really began, up to 7 days ago), a `title`, and `labels` under the same rules as an ordinary run's, so `GET /v2/runs?label=<key>:<value>` finds the run.

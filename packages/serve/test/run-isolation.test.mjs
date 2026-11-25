@@ -15,7 +15,8 @@ import { test } from "node:test";
 import { serialize } from "node:v8";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { shadowRunId } from "../dist/learn/audit.js";
-import { Channel, ChannelClosed, MAX_FRAME } from "../dist/runner/run-channel.js";
+import { Channel, ChannelClosed, FrameTooLarge, MAX_FRAME } from "../dist/runner/run-channel.js";
+import { registerRunErrors } from "../dist/runner/run-errors.js";
 import { FIRST_RUN_ID, reapSlot, RUN_SLOTS, RunIsolationRefused, runIsolationOf, SlotHold, slotId, Slots, storeCall } from "../dist/runner/run-child-host.js";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
@@ -216,7 +217,7 @@ test("a host that won't let the runner start its helper (spawn EPERM, thrown at 
 // ---------------------------------------------------------------------------------------------------------------------
 // The store, as a run's process reaches it: bound to its claim.
 
-test("the store a run's process reaches is bound to its claim: another run's journal, run or claim, another agent's revision, and a call off the list are refused unread", async () => {
+test("the store a run's process reaches is bound to its claim: another run's journal, run or claim, another agent's revision, a row not its own run's browser rows, and a call off the list are refused unread; its own browser rows are written", async () => {
   const called = [];
   const store = {
     readJournal: (runId) => void called.push(`readJournal ${runId}`),
@@ -225,7 +226,12 @@ test("the store a run's process reaches is bound to its claim: another run's jou
       update: async (claim) => void called.push(`runs.update ${claim.runId}`),
     },
     agents: { revision: async (id) => (called.push(`agents.revision ${id}`), { id, agentId: id === "rev-own" ? "agent-own" : "agent-other" }) },
-    settings: { set: async () => void called.push("settings.set") },
+    settings: {
+      set: async () => void called.push("settings.set"),
+      put: async (key) => void called.push(`settings.put ${key}`),
+      remove: async (key) => void called.push(`settings.remove ${key}`),
+      get: async (key) => (called.push(`settings.get ${key}`), undefined),
+    },
   };
   const bound = { claim: { runId: "run-own", epoch: 3 }, agentId: "agent-own", revisionId: "rev-own" };
   const lines = [];
@@ -234,10 +240,22 @@ test("the store a run's process reaches is bound to its claim: another run's jou
   await assert.rejects(call("runs.get", ["run-other"]), /of another run or agent/);
   await assert.rejects(call("runs.update", [{ runId: "run-own", epoch: 2 }, {}]), /of another run or agent/);
   await assert.rejects(call("settings.set", ["k", "v"]), /may not call the store's settings\.set/);
+  // The only rows it writes: its own run's browser wait and browser take; another run's, or any other row, never.
+  await assert.rejects(call("settings.put", ["browser_hold:run-other", {}]), /of another run or agent/);
+  await assert.rejects(call("settings.remove", ["browser_wait_ended:run-other"]), /of another run or agent/);
+  await assert.rejects(call("settings.put", ["tool-settings", {}]), /of another run or agent/);
+  await assert.rejects(call("settings.get", ["browser_hold:run-other"]), /of another run or agent/);
   assert.deepEqual(called, [], "a refused call reached the store");
   await assert.rejects(call("agents.revision", ["rev-other"]), /only its own agent's revisions/);
   assert.deepEqual(await call("runs.get", ["run-own"]), { id: "run-own" });
   assert.deepEqual(await call("agents.revision", ["rev-own"]), { id: "rev-own", agentId: "agent-own" });
+  // Its own browser's rows, which the server reads for the run's Screen tab and computer state: written, read, removed.
+  for (const key of ["browser_hold:run-own", "browser_wait_ended:run-own"]) {
+    await call("settings.put", [key, { at: "x" }]);
+    await call("settings.get", [key]);
+    await call("settings.remove", [key]);
+  }
+  assert.deepEqual(called.slice(-6), ["settings.put browser_hold:run-own", "settings.get browser_hold:run-own", "settings.remove browser_hold:run-own", "settings.put browser_wait_ended:run-own", "settings.get browser_wait_ended:run-own", "settings.remove browser_wait_ended:run-own"]);
   assert.ok(lines.some((line) => /asked the store for readJournal, which a run's process may not/.test(line)), lines.join("\n"));
   assert.ok(lines.some((line) => /asked for another agent's revision/.test(line)), lines.join("\n"));
 });
@@ -309,17 +327,34 @@ test("a call past the channel's cap fails alone, and the channel goes on", async
   child.close();
 });
 
+test("a call or an answer past the channel's cap fails as FrameTooLarge on the caller's side, naming its bytes and the cap", async () => {
+  registerRunErrors();
+  const [a, b] = duplexPair();
+  const runner = new Channel(a, { maxFrame: 4096 });
+  const child = new Channel(b, { maxFrame: 4096 });
+  child.expose("big", () => "y".repeat(8192));
+  child.expose("echo", (_method, args) => args[0]);
+  const named = (error) => error instanceof FrameTooLarge && error.limit === 4096 && error.bytes > 8192 && error.message.includes(String(error.bytes)) && error.message.includes("4096");
+  // The answer is refused on the child's side and crosses back as an error: still a FrameTooLarge here.
+  await assert.rejects(runner.call("big", "it", []), named, "an answer");
+  await assert.rejects(runner.call("echo", "it", ["x".repeat(8192)]), named, "a call");
+  assert.equal(runner.closed, false);
+  runner.close();
+  child.close();
+});
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The whole server: a run whose process breaks its channel fails, and the store's files are the server's alone.
 
 /** The launcher's server on a data directory of its own, its runs each a process of their own (no helper: process
  *  isolation). `faux`: its --faux module (false: none, the model the environment names). `keys`: false hands it no provider key,
- *  only its token and seal key. `extra`: more of its environment. */
+ *  only its token and seal key. `extra`: more of its environment. No launch hook: its triggers start their runs here (the
+ *  hook's secret's custody is secret-custody.test.mjs's and run-custody.test.mjs's). */
 async function launched(t, { faux = BREAKER, keys = true, extra = {} } = {}) {
   const dir = scratchDir(t, "run-isolation-");
   const canary = `nak-${process.pid}-${Date.now().toString(36)}`;
   const own = (name) => name === "AGENTRUN_TOKEN" || name === "AGENTRUN_SEAL_KEY";
-  const secrets = Object.fromEntries(SECRET_NAMES.map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-token-0123456789abcdef` : name === "AGENTRUN_TOKENS" ? `custody:${canary}-tokens-0123456789abcdef0123456789` : name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_STORE_URL" || (!keys && !own(name)) ? undefined : `${canary}-${i}`]));
+  const secrets = Object.fromEntries(SECRET_NAMES.map((name, i) => [name, name === "AGENTRUN_TOKEN" ? `${canary}-token-0123456789abcdef` : name === "AGENTRUN_TOKENS" ? `custody:${canary}-tokens-0123456789abcdef0123456789` : name === "AGENTRUN_SEAL_KEY" ? randomBytes(32).toString("base64") : name === "AGENTRUN_STORE_URL" || name === "AGENTRUN_LAUNCH_HOOK_SECRET" || (!keys && !own(name)) ? undefined : `${canary}-${i}`]));
   const env = { ...process.env, ...secrets, ...extra, XDG_CONFIG_HOME: join(dir, "config"), TMPDIR: dir };
   for (const [name, value] of Object.entries(env)) if (value === undefined) delete env[name];
   delete env.AGENTRUN_RUN_USER;

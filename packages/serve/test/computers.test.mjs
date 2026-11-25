@@ -6,7 +6,7 @@
 // (workspace-resolve-computer.test.mjs).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
@@ -127,6 +127,18 @@ test("Mode 2: a provider that takes the Archil mount and prepares no image holds
   for (const kind of ["sandbox", "desktop"]) assert.equal(modeRefusal(kind, e2b, "disk"), undefined, `e2b's ${kind}: it prepares its image`);
 });
 
+test("Mode 1: a sandbox provider that could hold the run's folder on an Archil disk (Mode 2) says to turn Archil on, beside Docker or none; one that couldn't keeps to Docker or none", () => {
+  const entry = (id) => PROVIDERS.find((one) => one.id === id);
+  // No route in the words (a view's why ends at the setting): the console's own place for it, Settings → Workspace.
+  const archil = (label) => `${label} can't mount this server's run folders (they are on its own disk): keep run folders on an Archil disk instead (turn on Archil in Settings → Workspace), or set this agent's computer to sandbox on Docker, or none (Settings → Computers)`;
+  // E2B, Modal and Agent37 mount the Archil disk; Daytona and boxd hold a synced folder on it.
+  for (const id of ["e2b", "modal", "agent37", "daytona", "boxd"]) assert.equal(modeRefusal("sandbox", entry(id), "local"), archil(entry(id).label), id);
+  // smol cloud takes neither (its own disk sits at /workspace): Archil on would not seat its sandbox either.
+  assert.equal(modeRefusal("sandbox", entry("smolcloud"), "local"), "smol cloud can't mount this server's run folders (they are on its own disk): set this agent's computer to sandbox on Docker, or none (Settings → Computers)");
+  assert.equal(modeRefusal("sandbox", entry("docker"), "local"), undefined, "Docker binds the folder");
+  assert.equal(modeRefusal("desktop", entry("e2b"), "local"), undefined, "a desktop holds no folder");
+});
+
 test("Mode 2: Docker's sandbox can't mount the owner's disk; Daytona's holds a synced folder, so it needs only its key; Modal's sandbox and E2B's and Agent37's sandbox and desktop are ready with their keys (their prepareImage answers the box image); a desktop, phone or browser is offered", async (t) => {
   const env = { MODAL_TOKEN_ID: "good-id", MODAL_TOKEN_SECRET: "good-secret", E2B_API_KEY: "fake-test-key", AGENT37_API_KEY: "not-a-secret", AGENT37_SSH_KEY: "not-a-secret-either" };
   const { routes } = await setup(t, { mode: "disk", env });
@@ -161,6 +173,20 @@ test("a kind no provider can serve here is not offered, and says why: in Mode 2 
   const view = await createComputerRoutes({ store, sealKey: randomBytes(32), kinds, factories: fakeFactories().factories, tools, mode: "disk" }).view();
   assert.deepEqual([kindOf(view, "sandbox").offered, kindOf(view, "sandbox").why], [false, "no provider of a sandbox computer can reach this server's run folders"]);
   assert.deepEqual([kindOf(view, "phone").offered, kindOf(view, "phone").why, kindOf(view, "phone").providers], [false, "no provider serves a phone computer", []]);
+});
+
+test("each kind says whether its runs can record their screen here: a desktop, phone or browser with ffmpeg on the PATH can; without it, each says ffmpeg is missing; a sandbox and none never can, in words", async (t) => {
+  const { store } = await storeOn(t);
+  const viewOn = (path) => createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", env: { PATH: path } }).view();
+  const records = (view) => Object.fromEntries(view.kinds.map((one) => [one.kind, one.record]));
+  const bin = await mkdtemp(join(tmpdir(), "record-path-"));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const noFfmpeg = "ffmpeg isn't installed on this server (no ffmpeg command on PATH)";
+  const never = { none: { available: false, why: "with no computer, there is no screen to record" }, sandbox: { available: false, why: "a sandbox has no screen to record (a desktop, a phone or a browser does)" } };
+  assert.deepEqual(records(await viewOn(bin)), { ...never, desktop: { available: false, why: noFfmpeg }, phone: { available: false, why: noFfmpeg }, browser: { available: false, why: noFfmpeg } });
+  await writeFile(join(bin, "ffmpeg"), "#!/bin/sh\n");
+  await chmod(join(bin, "ffmpeg"), 0o755);
+  assert.deepEqual(records(await viewOn(`/nowhere${delimiter}${bin}`)), { ...never, desktop: { available: true }, phone: { available: true }, browser: { available: true } });
 });
 
 test("a key save takes only the provider's declared names, seals each in the store, answers names and saved flags only, and null removes", async (t) => {
@@ -349,7 +375,7 @@ test("each provider's folder is the one a run's claim holds for its computer, pe
 /** The words a person reads when no Docker daemon answers here, over the fixture registry: a Mode 1 sandbox (its vendors
  *  need Archil first) and a desktop in either mode. */
 const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
-const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo or boxd for a desktop.";
+const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo, boxd or Groundbox for a desktop.";
 
 test("no Docker daemon here: Docker is not ready, in words that name the vendors of each kind", async (t) => {
   const asked = [];

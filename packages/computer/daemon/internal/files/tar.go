@@ -16,9 +16,9 @@
 // writeViaTemp, writeExtractError). Changed for the open platform: the target directory is held open as a directory
 // descriptor, and every write goes through descriptors opened from it one name at a time, never following a symlink,
 // instead of a path checked (SanitizePath) and then used by name; an entry that is absolute or has a ".." part is
-// refused before it is cleaned; no gzip and no entry or byte cap (the disk is the limit); no fsync per file; the count
-// of entries written is returned; directory modes are applied once the archive ends; errors are the protocol's kinds,
-// naming the entry.
+// refused before it is cleaned; a file gets its header's mtime, as tar gives it; no gzip and no entry or byte cap (the
+// disk is the limit); no fsync per file; the count of entries written is returned; directory modes are applied once the
+// archive ends; errors are the protocol's kinds, naming the entry.
 
 package files
 
@@ -35,6 +35,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
@@ -145,7 +146,7 @@ func extractEntry(body io.Reader, hdr *tar.Header, root int, dirs map[string]os.
 			dirs[name] = perm
 		}
 	case tar.TypeReg:
-		err = writeFileAt(parent, leaf, body, perm)
+		err = writeFileAt(parent, leaf, body, perm, hdr.ModTime)
 	default:
 		err = symlinkAt(parent, leaf, hdr.Linkname)
 	}
@@ -169,7 +170,9 @@ func entryError(name string, err error) error {
 }
 
 // walk opens the directory that parts name below root, one name at a time from root's descriptor, never following a
-// symlink; with create, a missing directory is made (0755 less the umask). The caller closes what it returns.
+// symlink; with create, a missing directory is made 0755 whatever the umask (init on the exec path runs under 077), as
+// an archive's own directory gets its header's mode, so a synced folder never records a mode no one gave. The caller
+// closes what it returns.
 func walk(root int, parts []string, create bool) (int, error) {
 	dir, err := openDir(root, ".")
 	if err != nil {
@@ -178,7 +181,10 @@ func walk(root int, parts []string, create bool) (int, error) {
 	for i, part := range parts {
 		next, err := openDir(dir, part)
 		if create && errors.Is(err, syscall.ENOENT) {
-			if err = syscall.Mkdirat(dir, part, 0o755); err == nil || errors.Is(err, syscall.EEXIST) {
+			if err = syscall.Mkdirat(dir, part, 0o755); err == nil {
+				err = chmodDir(dir, part, 0o755)
+			}
+			if err == nil || errors.Is(err, syscall.EEXIST) {
 				if betweenCheckAndUse != nil {
 					betweenCheckAndUse(strings.Join(parts[:i+1], "/"))
 				}
@@ -255,10 +261,10 @@ func openat(dirfd int, name string, flags int, mode uint32) (int, error) {
 
 func tempName() string { return tmpPrefix + strconv.FormatUint(rand.Uint64(), 36) }
 
-// writeFileAt writes src to a new temporary file in dirfd, then renames it over name, which replaces a file or a
-// symlink there (the link itself, never what it points to). On any failure, the connection's end included, the
-// temporary file is removed.
-func writeFileAt(dirfd int, name string, src io.Reader, perm os.FileMode) (err error) {
+// writeFileAt writes src to a new temporary file in dirfd, gives it mtime (the archive's, as tar does), then renames it
+// over name, which replaces a file or a symlink there (the link itself, never what it points to). On any failure, the
+// connection's end included, the temporary file is removed.
+func writeFileAt(dirfd int, name string, src io.Reader, perm os.FileMode, mtime time.Time) (err error) {
 	tmp := tempName()
 	fd, err := openat(dirfd, tmp, syscall.O_CREAT|syscall.O_EXCL|syscall.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0o600)
 	if err != nil {
@@ -281,6 +287,9 @@ func writeFileAt(dirfd int, name string, src io.Reader, perm os.FileMode) (err e
 		}
 		return rpc.Errorf(rpc.KindInvalid, "the archive cannot be read in %s: %v", name, err)
 	}
+	if err = setMtime(fd, mtime); err != nil {
+		return err
+	}
 	if err = f.Close(); err != nil {
 		return err
 	}
@@ -298,6 +307,23 @@ func symlinkAt(dirfd int, name, target string) error {
 		return err
 	}
 	return nil
+}
+
+// utimeOmit is UTIME_OMIT, which the syscall package does not export: a time utimensat(2) leaves as it is.
+const utimeOmit = (1 << 30) - 2
+
+// setMtime sets the mtime of the open file fd, its atime left as it is: utimensat(2) with no path, which is futimens(3).
+func setMtime(fd int, mtime time.Time) error {
+	times := [2]syscall.Timespec{{Nsec: utimeOmit}, {Sec: mtime.Unix(), Nsec: int64(mtime.Nanosecond())}}
+	for {
+		_, _, errno := syscall.Syscall6(syscall.SYS_UTIMENSAT, uintptr(fd), 0, uintptr(unsafe.Pointer(&times[0])), 0, 0, 0)
+		if errno != syscall.EINTR {
+			if errno != 0 {
+				return errno
+			}
+			return nil
+		}
+	}
 }
 
 // symlinkat is symlinkat(2), which the syscall package does not export.

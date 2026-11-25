@@ -202,6 +202,22 @@ test("R2: by default an MCP call asks: the run parks on it with nothing sent, it
   assert.equal(toolCalls(run.fake, "add").length, 1, "run exactly once");
 });
 
+test("R2b: a fal job's card says priced by usage: fal prices it only when it runs, after the allow", async (t) => {
+  const SUBMIT = { name: "submit_job", description: "Submit a fal job.", inputSchema: object({ endpoint_id: { type: "string" }, input: { type: "object" } }) };
+  // The save pins "fake" as fal's (its owner's toolkit), as mcpPinOf does: its jobs are priced only when they run.
+  const falPin = (args) => {
+    const pinned = savePin(args);
+    return pinned && { fake: { ...pinned.fake, meter: "fal" } };
+  };
+  const script = [{ call: "mcp__fake__submit_job", args: { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a card", num_images: 1 } } }, { sayLastResult: true }];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/submit_job"], tools: [SUBMIT], pin: falPin });
+  assert.equal(run.row.state, "parked", JSON.stringify(run.row));
+  assert.equal(toolCalls(run.fake).length, 0, "nothing sent while it waits");
+  const [ask] = await asks(run.server);
+  assert.equal(ask.tool, "mcp:fake/submit_job");
+  assert.equal(ask.price, "priced by usage");
+});
+
 test("R3: a denied MCP call is told in words, and nothing is sent", async (t) => {
   const script = [{ call: "mcp__fake__add", args: { a: 1, b: 1 } }, { sayLastResult: true }];
   const run = await mcpRun(t, { script, grants: ["mcp:fake/add"] });
@@ -263,6 +279,15 @@ test("R7: a pinned tool that is a meta tool now refuses the claim in words: the 
   assert.equal(row.summary, `mcp:fake/COMPOSIO_MULTI_EXECUTE_TOOL can't be granted: ${META_REASON}`);
   assert.equal(sent.length, 0, "no model request");
   assert.equal(fake.log.length, 0, "nothing sent to the MCP server");
+});
+
+test("a forged saved resource marker refuses the claim before any model or MCP request", async t => {
+  const forged = { ...ADD, resource: "read" };
+  const { row, sent, fake } = await mcpRun(t, { script: [{ say: "must not run" }], grants: ["mcp:fake/add"], tools: [forged] });
+  assert.equal(row.state, "failed");
+  assert.match(row.summary, /invalid resource operation marker/);
+  assert.equal(sent.length, 0);
+  assert.equal(fake.log.length, 0);
 });
 
 test("R8: a server whose URL changed since the run was pinned refuses each call unsent, in words", async (t) => {

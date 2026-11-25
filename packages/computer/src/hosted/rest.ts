@@ -97,6 +97,23 @@ export interface Rest {
 
 const NO_BODY: AsyncIterable<Uint8Array> = { async *[Symbol.asyncIterator]() {} };
 
+/**
+ * An API's https base URL, with no trailing slash, so a key never crosses in the clear; throws in words on another,
+ * loopback http included. Every provider that takes a URL from its caller and sends a key to it takes the URL through
+ * it: Agent37, boxd, Browserbase, the Cloudflare relay, Daytona, Groundbox, Kernel, Modal, Morph, Orgo, the phone
+ * harness and smol cloud. E2B takes a host name and Fly nothing, and each builds its https URL itself.
+ */
+export function httpsBase(url: string, what: string): string {
+	let parsed: URL;
+	try {
+		parsed = new URL(url);
+	} catch {
+		throw new Error(`${what} is not a URL: ${JSON.stringify(url)}`);
+	}
+	if (parsed.protocol !== "https:") throw new Error(`${what} must be https, so the key never crosses in the clear: ${parsed.protocol}`);
+	return url.replace(/\/+$/, "");
+}
+
 export function rest(options: RestOptions): Rest {
 	const base = options.base.replace(/\/+$/, "");
 	const fetcher = options.fetch ?? fetch;

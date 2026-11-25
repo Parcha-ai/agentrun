@@ -3,10 +3,11 @@
 // for it at its start and copied into its workspace at its claim. Each file is `<data>/files/<file_id>/`: its bytes
 // (`bytes`) and its record (`file.json`, the contract's File), both 0600, the record written whole. A ready file's bytes
 // never change, and a run gets a copy of them through its Workspace, never a link: nothing a run does reaches the upload.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { copyFile, type FileHandle, link, lstat, mkdir, open, readdir, readFile, rename, rm, unlink } from "node:fs/promises";
 import { DISK_DIR } from "./server-fs.js";
 import { dirname, join } from "node:path";
+import { uuidv7 } from "./ids.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { typeOf } from "./file-types.js";
 import { readJson, serialBy, tempOf, writeDurable } from "./files.js";
@@ -81,17 +82,6 @@ export type UploadedFile = {
   created_at: string;
   expires_at: null;
 };
-
-/** A UUIDv7, the form of the agent store's agent and run ids: 48 bits of Unix milliseconds, then random bits, so ids
- *  sort by creation time. The store mints its own inside it and exports no minter. */
-export function uuidv7(now = Date.now()): string {
-  const bytes = randomBytes(16);
-  bytes.writeUIntBE(now, 0, 6);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = bytes.toString("hex");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
 
 /** Why `path` is not the contract's FilePathString (relative, `/` between segments, no empty segment and none that starts
  *  with `.`, no backslash or NUL, at most 1024 characters), or a segment is longer than a name on disk; undefined when it

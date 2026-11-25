@@ -57,3 +57,63 @@ test("a run's process lays its revision's skills on a fresh Mode 2 folder throug
   assert.equal(text(".agents/skills/cite/SKILL.md"), "# Cite\n");
   assert.equal(text(".agents/skills/cite/reference/sources.md"), "Primary first.\n");
 });
+
+test("a run with no skill of its own but a desktop computer (a general-expert on prod) lays its kind's skill on a disk an earlier run used", async (t) => {
+  const disk = new FakeArchilDisk();
+  // An earlier run of the same agent left its own folder, skills and all: the new run's folder is still fresh.
+  disk.files.set(`${runKey(AGENT, "01a1d0b9-0000-7000-8000-000000000001")}/.agents/skills/old/SKILL.md`, new TextEncoder().encode("# Old\n"));
+  const held = runOver(t, disk);
+  const { workspace } = await held.archil();
+  assert.deepEqual(await layOwnSkills(workspace, {}, { computer: "desktop" }), ["desktop-computer/SKILL.md"]);
+  assert.ok(disk.files.has(`${ROOT}/.agents/skills/desktop-computer/SKILL.md`), "the kind's skill is in the new run's folder");
+});
+
+test("a second claim of the run lays nothing again, and keeps what the first laid", async (t) => {
+  const disk = new FakeArchilDisk();
+  const held = runOver(t, disk);
+  const { workspace } = await held.archil();
+  await layOwnSkills(workspace, { "cite/SKILL.md": "# Cite\n" });
+  disk.files.set(`${ROOT}/.agents/skills/cite/SKILL.md`, new TextEncoder().encode("# Cite, edited by the run\n"));
+  const puts = disk.calls.filter((call) => call.op === "putObject").length;
+  await layOwnSkills(workspace, { "cite/SKILL.md": "# Cite\n" });
+  assert.equal(disk.calls.filter((call) => call.op === "putObject").length, puts, "nothing was put");
+  assert.equal(new TextDecoder().decode(disk.files.get(`${ROOT}/.agents/skills/cite/SKILL.md`)), "# Cite, edited by the run\n");
+});
+
+test("the lay reads no error's class: a Workspace whose errors lost it on the way (beta.50's channel) still lays a fresh folder's skills", async () => {
+  const disk = new FakeArchilDisk();
+  const { workspace: real } = await openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claimOf(disk), log: () => {} });
+  // As beta.50's channel gave them: a plain Error named WorkspaceError, its code an own field.
+  const classless = (error) => Object.assign(new Error(error.message), { name: error.name, code: error.code, path: error.path });
+  const workspace = new Proxy(real, {
+    get(target, key) {
+      const member = Reflect.get(target, key, target);
+      return typeof member === "function" ? (...args) => member.apply(target, args).catch((error) => Promise.reject(classless(error))) : member;
+    },
+  });
+  await layOwnSkills(workspace, { "cite/SKILL.md": "# Cite\n" });
+  assert.equal(new TextDecoder().decode(disk.files.get(`${ROOT}/.agents/skills/cite/SKILL.md`)), "# Cite\n");
+});
+
+test("a lay that fails says it was the lay of the run's skills, with the path, the disk's key and Archil's words", async (t) => {
+  const disk = new FakeArchilDisk();
+  const held = runOver(t, disk);
+  const { workspace } = await held.archil();
+  // The listing of .agents/skills/ names its disk key and the disk when nothing is there.
+  await assert.rejects(workspace.list(".agents/skills"), (error) => {
+    assert.equal(error.code, "NOT_FOUND");
+    assert.equal(error.message, `".agents/skills" is not there (list; Archil: nothing under ${ROOT}/.agents/skills/ on disk ${disk.id})`);
+    return true;
+  });
+  const putObject = disk.putObject.bind(disk);
+  disk.putObject = async (key, body) => {
+    if (key.startsWith(`${ROOT}/.agents/skills/`)) throw Object.assign(new Error("503 SlowDown: try again"), { status: 503 });
+    return putObject(key, body);
+  };
+  await assert.rejects(layOwnSkills(workspace, { "cite/SKILL.md": "# Cite\n" }), (error) => {
+    assert.ok(error instanceof WorkspaceError, `a ${error?.constructor?.name}: ${error?.message}`);
+    assert.equal(error.code, "UNAVAILABLE");
+    assert.match(error.message, /^laying the run's skills in \.agents\/skills\/: mkdir "\.agents\/skills": 503 SlowDown: try again$/);
+    return true;
+  });
+});

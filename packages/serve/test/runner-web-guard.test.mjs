@@ -3,13 +3,15 @@
 // the real resolver and network, no faux web. An agent that asks web_fetch for loopback, a private range,
 // carrier-grade NAT, the cloud metadata address (as IPv4, IPv4-mapped IPv6 and AWS's IPv6), a unique-local address and
 // GCP's metadata name is refused each time, in the guard's words, and nothing listening on this machine's loopback is
-// reached. web_save dials through the same hops (publicDownload; web-save.test.mjs). On Postgres the runner has a data directory of its own, as a runner on a machine apart from its server does
-// (the shared-nothing shape the runner split ships); on SQLite it shares the server's, the store being a file there.
+// reached. web_save dials through the same hops (publicDownload; web-save.test.mjs). The runner shares the server's data
+// directory on either store: these runs are Mode 1 (their folders on the server's disk), which a runner on a data directory
+// of its own can't reach, so it claims nothing (runner/disk-free.ts; runner-disk-free.test.mjs runs one apart on Archil).
 //
 // Also: the operator's bound on owner-allowed private hosts (AGENTRUN_PRIVATE_HOSTS) is read and said by that runner at
 // its start, and inherited by its runs' processes (runner/main.ts runEnv), where MCP and calendar calls dial.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { createInterface } from "node:readline";
 import { dirname, join } from "node:path";
@@ -46,16 +48,21 @@ function cli(t, args, env) {
   return child;
 }
 
-/** A server on loopback that counts every request it is sent: none may come. */
+/** A server on loopback that counts every request for its own unguessable path: none may come. It listens on a port the
+ *  system picks, which anything else on the machine may also dial (a local port scan or health probe, a client retrying a
+ *  port it once used): such a request names some other path and is answered but not counted, so only a fetch of the URL
+ *  the agent was given counts as reached. */
 async function loopbackTrap(t) {
   let hits = 0;
+  const path = `/trap-${randomUUID()}`;
   const server = createServer((req, res) => {
-    hits += 1;
+    if (req.url?.startsWith(path)) hits += 1;
     res.end("reached");
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  return { url: `http://127.0.0.1:${server.address().port}/`, hits: () => hits };
+  // A prober's held connection would keep close waiting.
+  t.after(() => new Promise((resolve) => (server.closeAllConnections(), server.close(resolve))));
+  return { url: `http://127.0.0.1:${server.address().port}${path}`, hits: () => hits };
 }
 
 async function guardOnRunnerApart(t, { postgres }) {
@@ -84,9 +91,9 @@ async function guardOnRunnerApart(t, { postgres }) {
   const fetchRun = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify(urls)}` } });
   assert.equal(fetchRun.status, 202, JSON.stringify(fetchRun.body));
 
-  // The runner apart: on Postgres a data directory of its own; the operator's bound set in its environment alone.
-  const runnerData = schema ? join(root, "runner-data") : data;
-  const runner = cli(t, ["runner", "--data", runnerData, "--faux", FAUX], { ...env, AGENTRUN_RUNNER_NAME: "runner-apart", AGENTRUN_PRIVATE_HOSTS: "none" });
+  // The runner apart: its own process, on the server's data directory (a Mode 1 run's folder is there); the operator's
+  // bound set in its environment alone.
+  const runner = cli(t, ["runner", "--data", data, "--faux", FAUX], { ...env, AGENTRUN_RUNNER_NAME: "runner-apart", AGENTRUN_PRIVATE_HOSTS: "none" });
   const err = [];
   createInterface({ input: runner.stderr }).on("line", (line) => err.push(line));
   await new Promise((resolve, reject) => {
@@ -119,4 +126,4 @@ async function guardOnRunnerApart(t, { postgres }) {
 
 test("on a runner apart from its server (SQLite, one data directory), web_fetch refuses every private, loopback, link-local, carrier-grade NAT and metadata address, and the runner says the operator's private-host bound", { timeout: 180_000 }, (t) => guardOnRunnerApart(t, { postgres: false }));
 
-test("on a runner apart from its server with a data directory of its own (Postgres), web_fetch refuses every private, loopback, link-local, carrier-grade NAT and metadata address", { ...postgresOnly("a runner apart on the shared store"), timeout: 180_000 }, (t) => guardOnRunnerApart(t, { postgres: true }));
+test("on a runner apart from its server on the shared Postgres store, web_fetch refuses every private, loopback, link-local, carrier-grade NAT and metadata address", { ...postgresOnly("a runner apart on the shared store"), timeout: 180_000 }, (t) => guardOnRunnerApart(t, { postgres: true }));

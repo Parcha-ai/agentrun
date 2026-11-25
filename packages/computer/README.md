@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`, `/groundbox`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -374,7 +374,8 @@ Tar archives move whole trees without holding an archive in memory, and no line 
   open when it ends are ended with it.
 - `tar.push.begin {path}` makes the directory if missing and returns `{id}`; `tar.push.write {id, data}` hands it the
   next bytes (send each after the last one's reply), and extraction runs as they come; `tar.push.end {id}` returns
-  `{entries}`. Files, directories and symlinks are extracted with their modes and never chowned; a directory keeps
+  `{entries}`. Files, directories and symlinks are extracted with their modes and never chowned; a file gets its
+  header's mtime, as tar gives it (`FolderSync.push` into a synced folder sets 2000-01-01); a directory keeps
   owner access until the archive ends, then gets its mode, deepest first, whether the push made it or found it. An
   entry that is absolute, has a `..` part, or has a symlink or a file on its way is `denied`, and ends the push;
   entries before it stay. A symlink at an entry's own name is replaced, never followed. A file is written beside its
@@ -452,7 +453,7 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS`, `DAYTONA_LISTED_MS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
@@ -627,7 +628,9 @@ by its rectangle), so a longer one ends the connection before anything is alloca
   answers once none of its windows shows and none of its launches runs, a launch that never showed a window included.
 - `screen.shot` is a PNG of the root window or a region inside it (one outside is `invalid`), with `scale` 1 and
   `cursor` from `QueryPointer`. A connection holds one shot, until it is read to its end or the next shot; a
-  `screen.read` of another id is `not_found`.
+  `screen.read` of another id is `not_found`. A cancelled shot stops waiting for the server's replies at once and
+  gives the display back. Known limit: a shot cancelled while its request is still being written, to an X server that
+  has stopped reading its socket, waits out that write's 30 s bound first.
 - `input.actions` checks the whole batch first, as `checkActions` does, and on X11 also refuses: a touch action
   (`unsupported`: X11 has no touch), a pixel scroll (`unsupported`: the wheel turns in clicks), a point or click count
   that is not whole (`invalid`), an unknown field, and text with a character no key types (a control character other
@@ -671,6 +674,7 @@ live under:
   | `KERNEL_API_KEY` | Kernel's `apiKey`: the name pi-browser reads today |
   | `BOXD_API_KEY`, `BOXD_ORG`, `BOXD_REGION` | boxd's `apiKey`, `org` and `region` (unset: the key's own org, the API's home region) |
   | `SMOLCLOUD_API_KEY` | smol cloud's `apiKey` |
+  | `GROUNDBOX_API_KEY` | Groundbox's `apiKey` |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -835,14 +839,21 @@ key.
   makes its Unix socket there (0600); the computer mounts it read-only at `/opt/agentrun/egress` (`EGRESS_MOUNT`).
 - **The proxy container** `computer-<hex>-egress`: `node` in `EGRESS_IMAGE` (node:22.23.5-trixie-slim, pinned by
   digest; `new DockerProvider({ daemonPath, egress: { image } })` replaces it) runs `dist/docker/egress-main.js`, this
-  package's own build, bound read-only with its `package.json`. It is on Docker's default bridge alone, publishes no
-  port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
+  package's own build, bound read-only with its `package.json`. It is on the provider's egress bridge alone (below),
+  publishes no port, and runs as the computer's uid:gid with a read-only root, `--cap-drop ALL`, `no-new-privileges`, 256 MiB, 64
   pids, half a CPU (a fixed quota, not the computer's own cpus), 1024 open files and a bounded log. Its argv holds the list (or `--open public`), the computer's deadline (it ends itself then), this machine's own
   public addresses (refused as `this-host`), and `egress.hint`, the words a refusal adds (printable ASCII).
   `EGRESS_IMAGE` is the one place its digest is written. `create` pulls it at the first allow computer when the host
   lacks it (see Lifetime), so a host with no registry access pulls it ahead, reading the name from this package:
   `docker pull "$(node --input-type=module -e 'import { EGRESS_IMAGE } from "@parcha/agentrun-computer"; console.log(EGRESS_IMAGE)')"`
   (in this repository, from `packages/computer` after a build: `node -e 'import("./dist/index.js").then((m) => console.log(m.EGRESS_IMAGE))'`).
+- **The egress bridge** `agentrun-egress`: one user-defined bridge every proxy on the Docker host shares, with
+  inter-container traffic off (`com.docker.network.bridge.enable_icc=false`) and the label
+  `agentrun.computer.egress-network=1`. The first allow or open `create` makes it, and nothing removes it. No other
+  workload's container is on it, so none can reach a proxy or ARP-spoof the gateway the proxies go out through, as one
+  with `NET_RAW` could on Docker's default bridge. A `create` that finds a network of that name made otherwise (inter-container
+  traffic on, internal, not a local bridge, or without the label) refuses in words and makes nothing; remove that
+  network (`docker network rm agentrun-egress`) and create again. A proxy on any other network reads back as other.
 - **The computer**: init gets `--egress /opt/agentrun/egress/egress.sock`, listens on port 3128 of its own loopback,
   carries each connection to the socket, and gives every program it starts `HTTP_PROXY` and `HTTPS_PROXY` (and their
   lowercase forms) naming that port, with `NO_PROXY` naming the loopback itself. A program that ignores them reaches
@@ -1227,7 +1238,7 @@ vendor's types: the shared adapter's release, a create that deletes its machine,
 ## Modal
 
 ```ts
-import { ModalClient } from "modal"; // the host's own client: this package imports nothing from the SDK
+import { ModalClient } from "modal"; // this package's optional dependency; it imports nothing from the SDK at load
 import { ModalProvider } from "@parcha/agentrun-computer/modal";
 
 const modal = new ModalProvider({
@@ -1366,8 +1377,8 @@ unless they start with `modal_proto/`. Docs: modal.com, read 2026-11-05.
 `create(options)` in `dist/modal.js` builds a real client from `options.tokenId` and `options.tokenSecret`, and the
 provider in `options.app` (required: without it, it refuses in words naming the option, before any client). It reads no
 setting from the environment (see [Settings](#settings)) and passes the token to `ModalClient` explicitly, so a
-`MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET` on the host is never used. The key goes only to `options.serverUrl`, else the
-SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
+`MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET` on the host is never used. The key goes only to `options.serverUrl` (https
+alone), else the SDK's default `https://api.modal.com:443`: since the client cannot take a server, it refuses while `MODAL_SERVER_URL`
 is set, and sets it to its choice only while it constructs the client, one construction at a time and put back after
 each, so neither `MODAL_PROFILE` nor a profile in `MODAL_CONFIG_PATH` or `~/.modal.toml` can redirect the key. The
 daemon is uploaded from `options.daemonPath`, else `dist/computerd-linux-amd64`, so a run publishes nothing.
@@ -1567,7 +1578,7 @@ the TTL.
 | `vendorAgentPorts` | `[2280]` | the toolbox's port, on every interface; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
 | `isolation` | `container`, or `vm` with `sandboxClass: "linux-vm"` | the class comes from the snapshot |
 | `os` | `linux` | Linux classes only; Windows and macOS are not offered here |
-| `daemon` | `child` | Daytona's toolbox daemon is the sandbox's first process, and init is started detached through a session command of it (above); on dial init is `agentrun-dial`'s child, and `agentrun-dial` the toolbox's entrypoint command ([Daytona on dial](#daytona-on-dial)) |
+| `daemon` | `child` | Daytona's toolbox daemon is the sandbox's first process, and init is started detached through a session command of it (above); on dial init is `agentrun-dial`'s child, and `agentrun-dial` a session command create starts ([Daytona on dial](#daytona-on-dial)) |
 | `networkReadBack` | `false` | the network is probed from inside, the same for every hosted vendor |
 | `groups` | `exec`, `files`, `processes` | the daemon's own, checked against its hello's `groups`, as is its `kind` |
 | `maxLifetimeMs` | 30 days | the cap `check` gives, through the shared `checkLifetime`; Daytona's TTL is whole minutes and documents no cap of its own |
@@ -1598,8 +1609,13 @@ the TTL.
   name lists, as a retry does (or answers `exists` when none lists). A create that fails without a 4xx
   answer, or is aborted, may still have made the sandbox, so the adapter deletes the name it chose. Then it waits for
   `started` (polling `GET /sandbox/{id}`), pushes in and starts the daemon, checks the daemon and probes its network
-  none from inside, and waits until the label listing shows the new computer twice running (Daytona's listing trails
-  a create). A sandbox that reads `error` or `build_failed` is gone, and create fails `vendor` with Daytona's
+  none from inside, and waits until the label listing shows the new computer twice running. Daytona's `GET /sandbox`
+  is eventually consistent (`daytonaio/daytona@b5a5d9e7:apps/api/src/sandbox/controllers/sandbox.controller.ts:130-146`:
+  an OpenSearch index the API never writes itself), and on a hosted deployment it left new sandboxes unlisted past
+  15 s. So a sandbox still unlisted after `listedMs` (15 s unset; `listedMs` or `DAYTONA_LISTED_MS`, in ms) is read by
+  its id: one that reads `started` with its labels is kept, with a note naming the labels, the sandbox and the wait,
+  and `list()` leaves it out until the listing shows it; a retry of its request on the same provider finds it by its
+  id. Any other answer fails create `timeout` in those words. A sandbox that reads `error` or `build_failed` is gone, and create fails `vendor` with Daytona's
   `errorReason`. Any failure or abort after the sandbox exists deletes it, and create never returns ok once its signal
   has aborted.
 - `attach({ id })` takes a sandbox id (or a computer's name, which Daytona answers to as well); `attach({ labels })`
@@ -1683,9 +1699,21 @@ Daytona also sweeps its own label through the host at its end (the report's `cle
 
 With `connect: "dial"` (a server's `daytonaConnect` setting, `COMPUTER_DAYTONA_CONNECT` for conformance; `exec` by
 default) a Daytona sandbox dials the server instead ([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)). The host has
-no exec and no upload, and nothing goes through the toolbox: create sends the boot env as `CreateSandbox.env` and
-`networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside), and the snapshot's
-entrypoint runs `agentrun-dial`. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
+no exec and no upload: create sends the boot env as `CreateSandbox.env`, `AGENTRUN_ATTACH_URL` left out, and
+`networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside). Once the sandbox reads
+`started` (within the create's time; `error` or `build_failed`, or a sandbox being destroyed, fails create in Daytona's
+words), create starts `agentrun-dial` itself in a toolbox session of its own, `agentrun-dial`: one async session
+command, as root, that sets `umask 077` (so init's start log is root's alone whatever the toolbox's umask, and the
+computer's programs inherit 077),
+then `&&` takes others' access off each socket `/tmp/dbus-*` names (the sockets step the exec path runs before init),
+then `&& AGENTRUN_ATTACH_URL='<url>' exec /usr/local/bin/agentrun-dial`, so a step that fails starts nothing. It is the
+launch line E2B's dial runs (`dialLaunch`), with no rootOnly paths here. The URL is no secret; the token stays in the sandbox's
+env, which the command inherits, and is on no command line. A session Daytona refuses fails create in its words, and
+the sandbox is deleted. So the snapshot's entrypoint is not relied on: a box snapshot registered without one (name,
+image and resources alone) dials too, and one whose entrypoint is the box CMD sleeps, with no `AGENTRUN_ATTACH_URL` in
+its env, so `agentrun-dial` never runs twice. A machine that does not dial within `createMs` fails with that command's
+log, read once by the id its start returned, its last 10 lines within 800 characters (`dialLog`; the adapter replaces
+every machine token in it by `<token>`), or "agentrun-dial never started" when create started none. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
 no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
 (`kind: "desktop"`): the box snapshot's X server, started over the socket it dialed, and xfwm4, which computerd starts
 (init's `--window-manager`), at the snapshot's 2 CPUs and 4 GiB, with no GPU. On exec a Daytona computer is kind
@@ -1697,13 +1725,26 @@ What each part of a dial sandbox rests on:
   whose tag is not `latest`, `lts` or `stable` ([docs: create snapshots](https://www.daytona.io/docs/en/snapshots.md#create-snapshots)).
   The one that holds `agentrun-dial` is the box image's, `agentrun-box-<recipe hash>`: `box/build-daytona.py`
   builds it from `box/Dockerfile`, or `POST /snapshots` makes it from the published
-  `ghcr.io/parcha-ai/agentrun-box:<recipe hash>` with the same `entrypoint`. The conformance module's run image on
+  `ghcr.io/parcha-ai/agentrun-box:<recipe hash>`, with or without the same `entrypoint`. The conformance module's run image on
   dial is that name. A snapshot carries its own resources: a create that names one sends none (400 "Cannot specify
   Sandbox resources when using a snapshot", live 11-11).
 - **The boot env reaches `agentrun-dial`.** The runner puts `env` in the container's env
   ([runner container_configs.go:87](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L87)),
   and the toolbox's session shell takes the toolbox's env (`cmd.Env = os.Environ()`,
   [daemon session/create.go:23-24](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/create.go#L23-L24)).
+  Live (11-22): a value set in create's `env` was echoed by a session command, which runs as root, and `runAsync` works.
+  `AGENTRUN_ATTACH_URL` comes from the command's own line.
+- **The dial's log is plain text, framed.** The provider names no SDK version (no `X-Daytona-SDK-Version`), so the
+  toolbox skips its own demux and answers a command's logs as text
+  ([daemon toolbox/process/session/log.go:55-65](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/toolbox/process/session/log.go#L55-L65),
+  `SkipServerDemux` true for no version,
+  [session/common.go:21-24](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/common.go#L21-L24));
+  with `X-Daytona-Split-Output: true` the output is not combined
+  ([common.go:17-19](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/common.go#L17-L19)),
+  so the text is the log file as written, each write behind its stream's prefix, `\x01\x01\x01` or `\x02\x02\x02`
+  ([session/log.go:121-137](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/pkg/session/log.go#L121-L137)).
+  `dialLog` drops the prefixes, as the daemon does for combined output. Live (11-22): the toolbox's
+  `/process/session/entrypoint/logs` answered plain text, not JSON.
 - **The image's CMD never runs; the snapshot's entrypoint does.** The container's entrypoint is the toolbox daemon, and
   its arguments are the snapshot's entrypoint, else the image's ENTRYPOINT, never its CMD
   ([runner container_configs.go:143-173](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L143-L173));
@@ -1711,9 +1752,11 @@ What each part of a dial sandbox rests on:
   ([daemon main.go:129-164](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/daemon/cmd/daemon/main.go#L129-L164)).
   A snapshot built from a Dockerfile with no ENTRYPOINT gets `sleep infinity`
   ([api snapshot.service.ts:883-901](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/api/src/sandbox/services/snapshot.service.ts#L883-L901)),
-  so `box/build-daytona.py` names the Dockerfile's CMD as the snapshot's `entrypoint`. The box snapshots it built
-  before, `agentrun-archil-<recipe hash>`, have none and never dial, so the snapshot it builds now has a name of its
-  own, `agentrun-box-<recipe hash>`, which no snapshot without the entrypoint holds.
+  so `box/build-daytona.py` names the Dockerfile's CMD as the snapshot's `entrypoint`. The provider no longer needs
+  it: a snapshot registered another way (an operator's tooling that sends name, image and resources alone) has no
+  entrypoint, its pid 1 is the bare toolbox daemon and the toolbox has no entrypoint session (404 "session not found",
+  live 11-22), and before create started `agentrun-dial` itself such a sandbox never dialed and failed at
+  `createMs` with no word of why.
 - **Outbound https, by tier.** Tier 1 and 2 organizations reach "essential services" alone, and those leave out shared
   hosting domains; Tier 3 and 4 have full access
   ([docs: tier-based network restrictions](https://www.daytona.io/docs/en/network-limits.md#tier-based-network-restrictions)).
@@ -1740,9 +1783,9 @@ What each part of a dial sandbox rests on:
   ([api sandbox.dto.ts:84](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/api/src/sandbox/dto/sandbox.dto.ts#L84)),
   so whoever holds the API key reads the machine's token; that key already runs root in the sandbox through the
   toolbox. The token is the machine's alone, and revoked at its delete.
-- **Unverified**: whether a box-image sandbox has a D-Bus session bus in `/tmp` (on exec, create closes `/tmp/dbus-*`
-  to the computer's user through the toolbox; on dial there is no exec, so nothing does), and the `linux-vm` class on
-  dial.
+- **Unverified**: whether a box-image sandbox has a D-Bus session bus in `/tmp` (create closes `/tmp/dbus-*` to the
+  computer's user either way: on exec through the toolbox before init, on dial in `agentrun-dial`'s launch line), and
+  the `linux-vm` class on dial.
 
 ### Not yet known
 
@@ -1762,7 +1805,8 @@ default snapshot whose `/opt` another user can write would now be refused at cre
   which snapshot Daytona names for a sandbox made with none, and how soon after `autoDestroyAt` Daytona destroys;
 - how long `GET /sandbox/{id}` takes to answer 404 after a delete, and the listing to hide the sandbox (release waits
   for both, up to `goneMs`); how long a stop takes to read `stopped`;
-- how soon the label listing shows a new sandbox;
+- how soon the label listing shows a new sandbox: 0.7 to 1.6 s in pi-transport's runs, past 15 s on a hosted
+  deployment (create keeps a sandbox the listing trails, above);
 - the ports a CIDR list opens on the production runner, and whether a domain list blocks every port but 80 and 443;
 - `network: none` against the live bypass cases (ruling 9), on each class;
 - the linux-vm class end to end.
@@ -1827,7 +1871,7 @@ repository's main; the docs were read on 2026-11-05.
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's E2B_API_KEY), and the e2b package is the host's own (npm e2b 2.63.0).
+// The key is the caller's to pass (serve's E2B_API_KEY); the e2b package (2.63.0) is an optional dependency.
 const e2b = await providerFor("e2b", { apiKey });
 const made = await e2b.create({ image: "desktop", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -1848,8 +1892,10 @@ and its X11 shim drives it. With `kind: "linux"` it is kind `linux` on any templ
 provider, minus the X server, so it costs nothing to offer. A caller that names a template (`create({ image })`) gets
 that one: E2B Desktop's own, `desktop`, still works for kind `desktop`, since computerd needs only Xvfb and xfwm4 from
 it. Every call goes through the host's E2B JS SDK, the `e2b` package's `Sandbox` class, whose types `src/e2b.ts` imports
-as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import; the package is the host's to install, as
-Modal's is. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
+as types only (held as `typeof Sandbox` inside, `object` in the published types), so nothing loads from it at import. The
+package is one of this package's `optionalDependencies`, pinned exactly, as Modal's, boxd's, ssh2 and Archil's `disk`
+are: a plain `npm install` brings it, and after `npm install --omit=optional` `create` refuses with `E2B needs the e2b
+package: npm install e2b@2.63.0`. `@e2b/desktop` is not used: it starts Xvfb and Xfce with `commands.run`, outside computerd's process table
 and with no bound or abort (`@e2b/desktop@2.5.0` `dist/index.mjs:387-415`), and the provider needs none of its other
 calls.
 
@@ -2022,7 +2068,8 @@ words, whatever its value, and every sandbox is made with public traffic off.
 - `create` waits for the sandbox to run; E2B's create options are not read back. Then the daemon: hello (version,
   `linux`, `amd64`, kind and groups), `/proc/self/status` (uid and gid 1000, no groups, `NoNewPrivs` 1, every
   capability set zero), `/proc/self/cwd` (`/work`), `/proc/self/exe`; and for none, the probe. It waits until the label
-  listing shows the new computer. A failure, mismatch or abort at any step kills the sandbox and waits for it to go;
+  listing shows the new computer, or, still unlisted after `listedMs`, keeps it when a read by its id finds it running
+  with its labels (the shared adapter's rule, as on Daytona). A failure, mismatch or abort at any step kills the sandbox and waits for it to go;
   create never returns ok once its signal has aborted.
 - `attach({ id })` or `attach({ labels })` reads the computer from E2B and, for a running computer, the daemon, as at
   create. `image` is the template create was asked for, from its label.
@@ -2113,7 +2160,7 @@ A live run must show:
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// Both keys are the caller's to pass (serve's AGENT37_API_KEY and AGENT37_SSH_KEY), and ssh2 is the host's own (npm ssh2 1.17.0).
+// Both keys are the caller's to pass (serve's AGENT37_API_KEY and AGENT37_SSH_KEY); ssh2 (1.17.0) is an optional dependency.
 const agent37 = await providerFor("agent37", { apiKey, sshKey });
 const made = await agent37.create({ image: "agent37-base", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -2267,7 +2314,7 @@ the live runs above.
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's MORPH_API_KEY), and ssh2 is the host's own.
+// The key is the caller's to pass (serve's MORPH_API_KEY); ssh2 is an optional dependency.
 const morph = await providerFor("morph", { apiKey });
 const box = await morph.prepareImage(); // the box image as a snapshot in the key's account
 const made = await morph.create({ image: box.value, lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
@@ -2713,7 +2760,7 @@ through `ui.observe` (`src/conformance/cases/settings.ts`):
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// The key is the caller's to pass (serve's BOXD_API_KEY), and the @boxd-sh/sdk package is the host's own (npm 0.3.1).
+// The key is the caller's to pass (serve's BOXD_API_KEY); the @boxd-sh/sdk package (0.3.1) is an optional dependency.
 const boxd = await providerFor("boxd", { apiKey, org: "my-org", region: "fra" });
 const made = await boxd.create({ image: "default", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
@@ -2726,7 +2773,7 @@ to a machine, and `src/hosted/provider.ts` does everything that is not boxd's ow
 create, the upload, the install, init's start, the stdio bridge, the probe, the janitor's extend, delete-then-wait-gone,
 the sweep of a create that lands late). Every call goes through the host's boxd TypeScript SDK, the `@boxd-sh/sdk`
 package's `Boxd` class, of which `src/boxd.ts` names only the slice it calls and imports nothing at load. The package is
-the host's to install, as E2B's and Modal's are; this repository pins it as a root devDependency for the live tests.
+an optional dependency, pinned exactly, as E2B's and Modal's are.
 
 ### The desktop snapshot
 
@@ -2771,7 +2818,7 @@ explicitly, so the SDK takes none of them from the environment.
 | `apiKey` | the boxd API key | required |
 | `org` | the org machines are made in and listed from, by name or id | the key's own |
 | `region` | the region machines are made in (`fra`, `nyc`) | the API's home region |
-| `baseUrl` | the API's address | `https://boxd.sh:9443` |
+| `baseUrl` | the API's address, https alone | `https://boxd.sh:9443` |
 | `vcpu`, `memory` | a boxd size: 1 and `4G`, 2 and `8G`, 4 and `16G`, or 8 and `32G`; both or neither; a sandbox's alone | the org's default |
 | `kind` | `linux` or `desktop` (from the desktop snapshot) | `linux` |
 | `maxLifetimeMs` | the longest lifetime `check` takes, at most 30 days | 24 h |
@@ -2895,7 +2942,7 @@ node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /
 ```
 
 The conformance module, `dist/conformance/smolcloud.js`, checks `AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1` first, then reads
-`COMPUTER_SMOLCLOUD_API_KEY` (`apiKey`, required), `COMPUTER_SMOLCLOUD_API_URL` (`apiUrl`) and
+`COMPUTER_SMOLCLOUD_API_KEY` (`apiKey`, required), `COMPUTER_SMOLCLOUD_API_URL` (`apiUrl`, https alone) and
 `COMPUTER_SMOLCLOUD_IMAGE` (the run's image, default the box image), never `SMOLCLOUD_API_KEY`. Every computer of a run
 lives at most 30 minutes. The live sweep is the shared one; its scope is the key's account.
 
@@ -2912,6 +2959,116 @@ On 2026-11-18, from the box image: the exec pre-check passed every check (8 MiB 
 18 minutes. An earlier run that day, before the descriptor said `unmounted.sync`, had every `mount.sync` case refused
 at create: the read back found an ext4 mount of `/dev/vda` at `/workspace`. The sweep after the last run read
 `{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}`.
+
+## Groundbox
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's GROUNDBOX_API_KEY).
+const groundbox = await providerFor("groundbox", { apiKey });
+const made = await groundbox.create({ lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+// A desktop: the box image's X server and window manager, started through computerd.
+const desktop = await providerFor("groundbox", { apiKey, kind: "desktop" });
+```
+
+A Groundbox computer is a [Groundbox](https://groundbox.dev) sandbox: a Firecracker microVM with its own kernel and
+disk. It is kind `linux` by default, and kind `desktop` with `kind: "desktop"`: computerd starts the box image's Xvfb
+on `:0` and xfwm4 itself, as on E2B and boxd, and its X11 shim drives it. Groundbox's own desktop (`desktop: true` on
+create, its own X server, Chrome and live view) is not used. With no image named, it starts from the box image, the public registry tag `prepareImage()` answers
+(`boxImageRef()`), which Groundbox turns into a disk at the first create from it and keeps for later ones. A spec's
+`image` may instead be `"default"` (the team's default template, else Groundbox's own Ubuntu 24.04 image), a template
+of the key's team (`tpl_...`, its name, or `name:version`), or any other public image reference. Groundbox runs on the
+shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)): `src/groundbox.ts` is its `MachineHost`, over Groundbox's
+REST API (`https://api.groundbox.dev/v1`, `Authorization: Bearer <key>`) with `fetch`, the shared REST client and
+Node's `WebSocket` (no SDK).
+
+| MachineHost | Groundbox |
+| --- | --- |
+| `create` | `POST /v1/sandboxes` with `image` (a public image), `template` (a template) or neither (`"default"`), the labels as `metadata`, `cpus` and `memory_gb` only when the spec names a size, the provider's `diskGb` when given, `timeout_minutes` at the request's backstop, and an `Idempotency-Key` of the one request, so it is sent again on no answer and Groundbox still starts one sandbox |
+| `get` | `GET /v1/sandboxes/{id}`: `running` is running, `queued`, `starting` and `resuming` starting, `pausing`, `paused`, `shutting_down` and `shut_down` stopped, `stopping` gone, `stopped` and `failed` none |
+| `list` | `GET /v1/sandboxes?live=true` with one `metadata[name]=value` per label, every page |
+| `delete` | `DELETE /v1/sandboxes/{id}` |
+| `exec` | one resumable command of the command stream (`GET /v1/sandboxes/{id}/exec/stream`, a WebSocket of JSON messages), with `args` (no shell), through `framedExec`; a socket that closes is followed by another that sends `attach` with the command's id and the last output position read; each stdin write is one `POST .../exec` that writes the command's fifo, never sent twice |
+| `upload` | `PUT /v1/sandboxes/{id}/files?path=`, the bytes as they are |
+| `extend` | `PATCH /v1/sandboxes/{id}` with the metadata read back and the deadline label changed |
+
+What Groundbox refuses or this host works around:
+
+- Every connection to the command stream ends within the hour on Groundbox's side, and any may drop sooner. The command
+  runs on; the host attaches again from the last position read, so no output is lost or read twice. A socket silent
+  past three of Groundbox's 20 s heartbeats is taken as dead and replaced at once, without waiting for a close that a
+  gone peer never sends; anything it says later is ignored. Output Groundbox no longer keeps (`skipped`) fails the
+  stream rather than leave a hole.
+- Output the reader has not taken is held to 8 MiB: past that the host lets the socket go, and attaches again from the
+  last position queued once the reader is down to 2 MiB. Groundbox keeps the output meanwhile; a reader so slow that
+  Groundbox drops some fails the stream (`skipped`), never silently.
+- Stdin does not ride the socket: Groundbox delivers a stream's stdin at most once across a dropped connection, with
+  nothing saying what arrived. So each write is a call of up to 256 KiB that writes the command's fifo and answers once
+  it has. The fifo and the record of the command's pid (for its kill) live in a directory of the command's own under
+  `/tmp`, made with mode 0700 under a random name, a path already there refused, and removed when the command ends. A
+  write or a kill first checks the directory is that one (no link, the command user's, 0700) and the fifo or record in
+  it the command user's, and refuses otherwise, so nothing another user leaves in `/tmp` receives stdin (which may hold
+  a disk's token) or picks the pid a kill ends.
+- A start that is not answered `started` within its call's bound closes its socket with 1000, which ends the command
+  should Groundbox start it after all; every other dropped socket closes with 4000, which leaves it running. A new
+  socket counts as reading on only once Groundbox says something on it, so a peer that takes each attach and stays
+  silent fails the stream after 5 minutes instead of holding `wait()` forever.
+- The API URL is https alone, loopback included, since the key rides every call and the stream's upgrade.
+- On the box image and any other public image Groundbox runs a command as root. On Groundbox's own image and its
+  templates it runs as the image's user, `runner` (uid 1001), with passwordless sudo, which the adapter's scripts use;
+  `daemonUser` may not be 1001 there.
+- A desktop needs Xvfb and xfwm4 in its image. Groundbox's own image has Xvfb but not xfwm4, so `check()` refuses
+  `"default"` for kind desktop; the box image has both, and Xfce's terminal and text editor, Firefox ESR and xdotool as
+  its apps.
+- Groundbox's own image keeps toolchains under `/opt` (corepack's pnpm under
+  `/opt/corepack/v1/pnpm/<version>/dist/node_modules/...`, and `/opt/hostedtoolcache`), deeper than the isolation probe's
+  8 levels, so `isolation.vendor-agent` can't prove the socket fence on it. That is why the box image is the default.
+- A refused WebSocket upgrade hides its status from the client, so when a stream does not open the host reads the
+  sandbox to say why (`not_found` for one that is gone).
+- Sizes are whole CPUs (1 to 16) and whole GB of memory (at most 4 a CPU); `check()` refuses any other. A team's plan
+  may hold it to fewer, which Groundbox refuses in its words. Label names are 1 to 64 characters, values at most 512.
+- `PATCH` replaces the whole metadata map, so `extend` reads it and sends it back with the deadline label changed.
+- A computer may live up to 30 days less 6 minutes (Groundbox's longest timer, less the backstop margin), a day unless
+  `maxLifetimeMs` says otherwise.
+- Sandboxes are amd64. No Archil mount yet (`/dev/fuse` opens in the guest; untried). Groundbox's own
+  egress allowlist is not used: network none, open and a list are init's. Pause, fork and save points are not used.
+
+### Conformance on Groundbox
+
+```sh
+AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... \
+  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --long
+AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... COMPUTER_GROUNDBOX_KIND=desktop \
+  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --kind desktop --long --fixture <computerd-fixture for linux/amd64>
+node packages/computer/dist/conformance/sweep.js --provider groundbox --before /tmp/groundbox-before.json   # then --after
+```
+
+The conformance module, `dist/conformance/groundbox.js`, checks `AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1` first, then reads
+`COMPUTER_GROUNDBOX_API_KEY` (`apiKey`, required), `COMPUTER_GROUNDBOX_API_URL` (`apiUrl`), `COMPUTER_GROUNDBOX_IMAGE`
+(the run's image, default the box image), `COMPUTER_GROUNDBOX_DAEMON` (`daemonPath`), `COMPUTER_GROUNDBOX_USER`
+(`daemonUser`) and `COMPUTER_GROUNDBOX_KIND` (`kind`: `linux` by default, or `desktop`), never `GROUNDBOX_API_KEY`. Every computer of a run lives at most 30 minutes. The live sweep is the
+shared one; its scope is the key's team. `test/groundbox/conformance.groundbox.test.mjs` (`npm run test:groundbox`) runs
+the suite one test per case (building the fixture with Go), and skips unless the switch and the key are both set.
+
+### Live runs
+
+On 2026-11-19, from the box image at Groundbox's default size (2 CPUs, 4 GB), with a key of a team shared with other
+work: the exec pre-check passed all ten checks (8 MiB through `cat` in 16 s, `no-timeout` 75 s silent), and the
+`--long` run passed Core 67/67 and Full 14/41 (the rest not declared) in 17 minutes, with at most 5 computers alive at
+once. The sweep after it read `{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}`.
+
+Later that day, with kind desktop and the bounds on the command stream above, from the box image: `--kind desktop
+--long` with `computerd-fixture` passed the kind, every one of its 74 Core cases (screen, input and
+`apps.launch-terminate` among them) and Full 14/40, in 19 minutes; `--kind sandbox --long` passed the kind, its 67 Core
+cases and Full 14/27, in 17 minutes; the exec pre-check passed all ten checks again. The sweep after both read
+`{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}`.
+
+On 2026-11-18, on Groundbox's own image, two `--long` runs passed Core 66/67: `isolation.vendor-agent` failed both
+times on folders under `/opt` deeper than the probe's 8 levels (above). On the same image, a command was held for 65
+minutes, past the hour any one connection may last: Groundbox closed its socket four times meanwhile (code 1013), the
+host attached again each time, the command's 1950 lines came back once each and in order, and a write made after the
+hour reached it. A command read across sockets dropped mid-output (close code 4000) also came back whole.
 
 ## Conformance
 
@@ -3253,6 +3410,7 @@ AGENTRUN_COMPUTER_LIVE_DAYTONA=1 COMPUTER_DAYTONA_API_KEY=... [COMPUTER_DAYTONA_
 AGENTRUN_COMPUTER_LIVE_MODAL=1 npm run test:modal -w @parcha/agentrun-computer   # also needs COMPUTER_MODAL_TOKEN_ID/SECRET, for an account you can bill
 AGENTRUN_COMPUTER_LIVE_E2B=1 npm run test:e2b -w @parcha/agentrun-computer       # also needs COMPUTER_E2B_API_KEY, for an account you can bill, and the e2b package
 AGENTRUN_COMPUTER_LIVE_BOXD=1 npm run test:boxd -w @parcha/agentrun-computer     # also needs COMPUTER_BOXD_API_KEY, for an account you can bill, and the @boxd-sh/sdk package
+AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 npm run test:groundbox -w @parcha/agentrun-computer   # also needs COMPUTER_GROUNDBOX_API_KEY, for a team you can bill
 ```
 
 `npm test` also runs `test/local-chrome-live.test.mjs` on a real Chrome where one is on PATH (or `CHROME_PATH` names

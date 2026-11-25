@@ -11,6 +11,7 @@
 // (agentrun-serve check-harness, named as install-harness is, so this command's own word stays the CLI's): a JSON
 // report, and the three facts printed. It spends, on the model's key.
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -52,6 +53,54 @@ export const HARNESS_INSTALL = {
     const keyless = Object.fromEntries(Object.entries(env).filter(([key]) => !KEY_NAMED.test(key)));
     const which = values.recipe === undefined ? [name] : ["--recipe", resolve(values.recipe)];
     return spawnSync(launcher, ["install-harness", ...which, "--data", dataOf(values, env)], { stdio: "inherit", env: keyless }).status ?? 1;
+  },
+};
+
+export const HARNESS_SIGN_IN = {
+  command: ["harness", "sign-in"],
+  pathParams: [],
+  summary: "Sign a recipe's agent in to your own account with the agent's own sign-in, in this terminal (Antigravity's agy acp --login); a server you start with --harness-sign-in on your own machine then runs your own runs on it",
+  help: [
+    ["--recipe FILE", "the recipe file, whose signIn names the agent's own sign-in flags; its agent installed first with agentrun harness install --recipe FILE"],
+    ["--data DIR", "the data directory the recipe's agent was installed into (default ~/.agentrun)"],
+  ],
+  options: { recipe: { type: "string" } },
+  async run({ values, env, cli }) {
+    if (values.recipe === undefined) throw cli.fail(2, "agentrun harness sign-in needs --recipe FILE.");
+    const launcher = await launcherOf(cli, "signs a harness in");
+    // The agent prints where to sign in on this terminal itself, and keeps its sign-in in its own folder: no key is
+    // needed, so none reaches it.
+    const keyless = Object.fromEntries(Object.entries(env).filter(([key]) => !KEY_NAMED.test(key)));
+    return spawnSync(launcher, ["sign-in-harness", "--recipe", resolve(values.recipe), "--data", dataOf(values, env)], { stdio: "inherit", env: keyless }).status ?? 1;
+  },
+};
+
+/** The console's page for a plan-billed recipe's keys (serve's harness-keys.ts HARNESS_KEYS_PAGE). */
+const HARNESS_KEYS_PAGE = "/#/settings/harness-keys";
+
+export const HARNESS_KEYS = {
+  command: ["harness", "keys"],
+  pathParams: [],
+  summary: "Print the link to Settings → Harness keys, where the owner saves the keys a plan-billed recipe runs on, for that harness alone (exit 1 when no AgentRun has started on DATA)",
+  help: [["--data DIR", "the data directory of the AgentRun the keys are for (default ~/.agentrun)"]],
+  options: {},
+  // Never a key on this terminal: a key is a secret write, the owner's signed-in session's alone, so it is pasted in the
+  // console, which keeps it sealed for that harness alone.
+  run({ values, env, io }) {
+    const data = dataOf(values, env);
+    let origin;
+    try {
+      const record = JSON.parse(readFileSync(join(data, ".server.json"), "utf8"));
+      origin = typeof record?.base_url === "string" && URL.canParse(record.base_url) ? new URL(record.base_url).origin : undefined;
+    } catch {
+      origin = undefined;
+    }
+    if (origin === undefined) {
+      io.stderr.write(`No AgentRun has started on ${data}: start it (agentrun), then save the keys in Settings → Harness keys (${HARNESS_KEYS_PAGE}).\n`);
+      return 1;
+    }
+    io.stdout.write(`${origin}${HARNESS_KEYS_PAGE}\n`);
+    return 0;
   },
 };
 

@@ -377,10 +377,11 @@ test("the release publishes the box image beside agentrun-server, amd64, by the 
   const at = (pattern) => job.steps.findIndex((step) => pattern.test(step.run ?? step.uses ?? ""));
   const key = at(/\[ -n "\$E2B_API_KEY" \] \|\| \{ echo "::error::needs secret E2B_API_KEY in the npm-release environment/);
   assert.ok(key > at(/^docker\/build-push-action@/) && key > at(/imagetools create --tag/), "a missing key stops the template, in words, after the box image is published");
-  assert.ok(key < at(/manifests/) && at(/manifests/) < at(/build-e2b\.mjs/), "then the image is checked public before E2B is asked to pull it");
+  assert.ok(key < at(/ghcr-published\.mjs/) && at(/ghcr-published\.mjs/) < at(/build-e2b\.mjs/), "then the image is checked public before E2B is asked to pull it");
   const template = job.steps[at(/build-e2b\.mjs/)];
   assert.equal(template.run, 'node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public');
-  for (const step of [job.steps[at(/manifests/)], template]) assert.equal(step.env.BOX_IMAGE, "${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}", "the image this job published, by its recipe's tag");
+  for (const step of [job.steps[at(/ghcr-published\.mjs/)], template]) assert.equal(step.env.BOX_IMAGE, "${{ env.IMAGE }}:${{ steps.recipe.outputs.hash }}", "the image this job published, by its recipe's tag");
+  assert.match(job.steps[at(/ghcr-published\.mjs/)].run, /^node scripts\/ghcr-published\.mjs "\$BOX_IMAGE" \|\| \{ echo "::error::[^\n]*; exit 1; \}$/m, "anything but an anonymous pull's 200 stops the job");
   assert.equal(template.env.E2B_API_KEY, "${{ secrets.E2B_API_KEY }}");
 });
 
@@ -406,4 +407,10 @@ test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, ea
   assert.ok(apps.some((app) => DESKTOP_APPS.includes(app)), "the build checks a desktop file the conformance apps case opens");
   // E2B's builder adds sudo before the recipe's steps: a sudo check here would refuse its build before the guard takes it away.
   assert.doesNotMatch(desktop, /command -v sudo/, "the desktop's no-sudo check is the guard's, after it");
+});
+
+test("the default box recipe's hash stays ed5aee54d3ea: staging's desktops start from the snapshot of that name through beta.53", async () => {
+  // Another image (media/, documents/) is a recipe of its own; nothing it adds moves this one.
+  const { recipeHash } = await import("../box/recipe.mjs");
+  assert.equal(recipeHash(), "ed5aee54d3ea");
 });

@@ -244,6 +244,57 @@ test("held by its check: the revise ask says the check's numbers and offers no '
   assert.match(plain, /Your learned workflow `answer` does not run first: it was held \(the check could not run\)\. It stays held until a new revision of it\./);
 });
 
+// A miss against a grade or a label: the revise ask shows the known answer the draft missed and where it came from, as
+// data, and asks for the known answer there (never the agent's, which the grade corrected). An input the owner graded
+// wrong without giving the right answer is shown too, saying so, with no answer made up for it.
+test("held by its check on a known answer: each disagreement shows the known answer it missed and its source, or that the owner marked the agent's answer wrong without the right one; the ask is for the known answer", () => {
+  const one = { run: "r1", input: "Question 1", agent: JSON.stringify({ answer: 42 }), draft: JSON.stringify({ answer: 7 }), fields: ["answer"], expected: [{ field: "answer", known: "grade", value: "{\"answer\":41}" }] };
+  const unknown = { run: "r2", input: "Question 2", agent: JSON.stringify({ answer: 43 }), draft: JSON.stringify({ answer: 9 }), fields: ["answer"], expected: [{ field: "answer", known: "unknown" }] };
+  const field = { n: 4, workflow_right: 0, agent_right: 0, unjudged: 1, known: "grade", pass: false, reason: "answer: 0 of 4", by: { grade: { n: 4, workflow_right: 0, agent_right: 0, pass: false } } };
+  const check = { n: 5, compile_after: 5, alone: 5, agreed: 0, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: ["r1", "r2"], disagreements: [one, unknown], fields: { answer: field } };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check } }));
+  assert.match(prompt, /Input 1: Question 1\nYour answer: \{"answer":42\}\nThe draft's answer: \{"answer":7\}\nThe fields it had wrong: answer\nThe known answer of answer \(from a grade\): \{"answer":41\}/);
+  assert.match(prompt, /Input 2: Question 2\nYour answer: \{"answer":43\}\nThe draft's answer: \{"answer":9\}\nThe fields it had wrong: answer\nOn answer, the owner marked your answer wrong without giving the right one\./);
+  assert.doesNotMatch(prompt, /known answer of answer \(from a unknown\)/);
+  assert.match(prompt, /says the known answer/);
+  assert.doesNotMatch(prompt, /answers these inputs alone and says what you said/);
+});
+
+// The joint floor with one field: inputs with no known answer are not right on it, so a field that passes alone can
+// still fall short together; the hold names that, never nothing.
+test("held on the joint floor with one field that passes: the revise ask says right on every field at once and that it fell short there", () => {
+  const check = { n: 20, compile_after: 20, alone: 20, agreed: 13, alone_min: 0.7, agree_min: 0.8, attempt: 1, of: [], fields: { answer: { n: 16, workflow_right: 13, agent_right: 0, unjudged: 4, known: "agent", pass: true, reason: "answer: 13 of 16", by: { agent: { n: 16, workflow_right: 13, agent_right: 16, pass: true } } } } };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held: { workflow: "answer", digest: "0123456789abcdef", reason: "held", check } }));
+  assert.match(prompt, /field by field: answer: 13 of 16; right on every field at once: 13 of 20 \(65\.0%, at least 80\.0% needed\)\. It fell short on its fields together\./);
+});
+
+// Batch 28 item 1: a connected agent's hold on give-backs checked no input (n 0). Its revise ask says why it was held and
+// that there are no disagreements to show, and never that nothing compiles again: such a hold spends no recompile and
+// revises at a first compile's cadence; two failed revise drafts stop it.
+test("held on give-backs: the revise ask says nothing was checked, shows no disagreements, and never says nothing compiles again", () => {
+  const check = { n: 0, compile_after: 20, alone: 0, agreed: 0, alone_min: 0.8, agree_min: 0.9, of: [], released: 5 };
+  const held = { workflow: "answer", digest: "0123456789abcdef", reason: "the connected agent gave back 5 reserved native turns in a row with no answer to check it against (the last: no shadow report)", check };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
+  assert.match(prompt, /does not run first: it was held \(the connected agent gave back 5 reserved native turns in a row/);
+  assert.doesNotMatch(prompt, /checked on 0 inputs/);
+  assert.match(prompt, /no disagreements to show/);
+  assert.doesNotMatch(prompt, /nothing compiles again/);
+  assert.doesNotMatch(prompt, /answers these inputs alone/);
+});
+
+// A give-back hold written after landed turns keeps their disagreements: the revise shows them, and says how many inputs
+// were checked before it was held, never that none were.
+test("held on give-backs after landed turns: the revise ask shows their disagreements and says how many inputs were checked", () => {
+  const one = { run: "r1", input: "release 7", agent: "ready", draft: "not ready" };
+  const check = { n: 0, compile_after: 20, alone: 0, agreed: 0, alone_min: 0.8, agree_min: 0.9, of: [], released: 5, disagreements: [one], turns: { n: 3, agreed: 2, alone: 3, of: ["a", "b", "c"], outcomes: { answered: 3, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [one] } };
+  const held = { workflow: "answer", digest: "0123456789abcdef", reason: "the connected agent gave back 5 reserved native turns in a row", check };
+  const prompt = compile.compilePrompt(ASK({ mode: "revise", workflow: "answer", current: "{\"v\":2}", held }));
+  assert.match(prompt, /Input 1: release 7\nYour answer: ready\nThe draft's answer: not ready/);
+  assert.match(prompt, /3 of your inputs were checked before it was held/);
+  assert.doesNotMatch(prompt, /checked on no input|no disagreements to show/);
+  assert.doesNotMatch(prompt, /nothing compiles again/);
+});
+
 // CompiledRecord.promoted is the promotion step's (learn/promote.ts): the kept draft's digest, read against the agent's
 // promotion records when the run's learning is read.
 test("a held revision asks its compile turn for a revision while its champion serves, however often the champion is checked after; a champion's own hold asks too", () => {

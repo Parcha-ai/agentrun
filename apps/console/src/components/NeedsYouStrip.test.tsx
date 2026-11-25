@@ -88,6 +88,20 @@ describe("NeedsYouStrip, the failures", () => {
     expect(h).toContain("the run hit its $0.50 spend cap");
     expect(h).toContain(">Run again<");
   });
+  it("keeps a failed group's square, time and button on its first line, so opening its runs moves none of them", () => {
+    const host = mount();
+    const group = [...host.querySelectorAll<HTMLElement>("[data-failed-group]")].find((li) => li.textContent?.includes("2 runs failed"))!;
+    // Top-aligned, never centred on the row: the list of runs grows it downwards only.
+    expect(group.className).toContain("items-start");
+    expect(group.className).not.toContain("items-center");
+    // The square is centred in a line box of the first line's own text size.
+    const mark = group.querySelector("[data-failed-mark]")!;
+    expect(mark.className).toContain("text-lead");
+    expect(mark.querySelector(".bg-destructive")).not.toBeNull();
+    const actions = group.querySelector("[data-failed-actions]")!;
+    expect(actions.textContent).toContain("Run all again");
+    expect(group.querySelector("details")!.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
   it("runs every run of a group again on one click, and drops the group once they started", async () => {
     const again: string[][] = [];
     const host = mount({ onRunAgain: async (runs) => { again.push(runs.map((r) => r.run_id)); return { started: runs.map((r) => r.run_id), problem: null }; } });
@@ -226,4 +240,13 @@ describe("NeedsYouStrip, backend SDK execution ownership", () => {
     expect(host.textContent).toContain("your backend");
     expect([...host.querySelectorAll("button")].some((b) => b.textContent?.includes("Run again"))).toBe(false);
   });
+});
+
+it.each(["codex-cli", "claude-code-cli"] as const)("keeps live and failed %s prompt windows out of managed controls", (runtime) => {
+  const cli_learning = { runtime, session_id: "source-session", turn_id: "turn", model: null, learning_revision: null, seed_observed: false, policy_complete: true, evidence_complete: true, usage: null };
+  const host = mount({ asking: [], live: [{ ...run("cli/live", "coding", { status: "working", state: "working" }), cli_learning } as Run],
+    failed: [{ ...run("cli/failed", "coding", { status: "failed", error: overloaded }), cli_learning } as Run] });
+  expect(host.textContent).toContain("your CLI");
+  expect(host.textContent).not.toMatch(/Steer|Run again|Run all again|Open to cancel/);
+  expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).not.toContain("Stop");
 });

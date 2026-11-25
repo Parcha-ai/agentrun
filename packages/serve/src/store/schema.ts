@@ -20,7 +20,9 @@
 // (IMPORTED_TEMPLATES), as it does the one-answer index. A hosted machine's minted token (minted_tokens, MINTED_TOKENS) is
 // added the same way, and so is each runner's word that it is there and whether it refused to claim (runners, RUNNERS),
 // and each computer a run made, from its create to its proven delete (computer_intervals, COMPUTER_INTERVALS). Each runner's
-// version and slots (runners.version, .slots: RUNNERS_ADDED) and each hand-back (hand_backs, HAND_BACKS) are added the same way.
+// version and slots (runners.version, .slots: RUNNERS_ADDED), each hand-back (hand_backs, HAND_BACKS) and each claim of a
+// run with the turn it works and its attempt at it (run_attempts, RUN_ATTEMPTS) are added the same way, and so is the
+// learning ledger (learning_ledger, learning_spend: LEARNING_LEDGER, LEARNING_SPEND).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -37,9 +39,10 @@
 // .incarnation), the run the machine works for (.run), why the server refused to relay its dial (.refused), and where each
 // such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). Version 14 keeps when a run or
 // an agent was purged (runs.purged_at, agents.purged_at; DELETE /runs/{id} and /agents/{id}, agent-delete.ts): its row is
-// then a tombstone, its content gone and its cost kept. The server upgrades these in place at its open (listingUpgrade from
-// 11, relayUpgrade from 12, then purgeUpgrade from 13); a runner waits for it.
-export const SCHEMA_VERSION = 14;
+// then a tombstone, its content gone and its cost kept. Version 15 keeps the disk a run's launch named as its own
+// (runs.disk; a run on one learns nothing, learn/learning-of.ts). The server upgrades these in place at its open
+// (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13, then diskUpgrade from 14); a runner waits for it.
+export const SCHEMA_VERSION = 15;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -69,10 +72,38 @@ export const RUNS_COST_UPPER_BOUND = `ALTER TABLE runs ADD COLUMN ${COST_UPPER_B
 /** A run's labels (JSON, null for none): in STORE_DDL, and added at a server open to a store an earlier build of this version
  *  made, as RUNS_COST_UPPER_BOUND is (a run started before reads as given none). */
 export const RUNS_LABELS = `ALTER TABLE runs ADD COLUMN ${json("labels", true)}`;
+/** Version 14 → 15 on SQLite (the server's open, sqlite/store.ts), given the runs' columns now: each run's disk
+ *  (RunRow.disk), written for every run already there from its launch body, as a new run's is at its create, and the
+ *  version, in one durable write. A run whose launch named no disk of its own reads as the default disk's, and so does a
+ *  run purged before (its launch body gone): nothing of it is left to learn from. */
+export function diskUpgrade(runColumns: ReadonlySet<string>): readonly string[] {
+  return [
+    ...(runColumns.has("disk") ? [] : ["ALTER TABLE runs ADD COLUMN disk TEXT"]),
+    "UPDATE runs SET disk = (SELECT json_extract(body, '$.archil_disk.disk_id') FROM run_launch WHERE run_launch.run_id = runs.id AND json_extract(body, '$.archil_disk.kind') = 'launch')",
+    "UPDATE store_meta SET schema_version = 15 WHERE singleton = 1",
+  ];
+}
 /** A trigger's package mark (TriggerRow.templateId): the id of the template package whose apply made or last kept it, null
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
  *  RUNS_LABELS is (a trigger made before reads as no package's). */
 export const TRIGGERS_TEMPLATE_ID = "ALTER TABLE triggers ADD COLUMN template_id TEXT";
+/** A run's census (RunLaunchRow.census, run-census.ts): in STORE_DDL, and added at a server open to a store an earlier
+ *  build of this version made, as RUNS_LABELS is (a run ended before reads as never handed a secret). */
+export const RUN_LAUNCH_CENSUS = `ALTER TABLE run_launch ADD COLUMN ${json("census", true)}`;
+/** The census "pending" of 0.1.0-beta.57, which marked a launch holding sealed bytes until an end counted them. This build
+ *  keeps no such state: the server open that makes RUN_LAUNCH_CENSUS_ERASED settles each one left as this build reads it,
+ *  as Postgres migration 0029 does. A launch still holding its sealed bytes gets null (its end counts them), and one an
+ *  end erased gets "unscanned" (nothing counted them, so its files are withheld). */
+export const RUN_LAUNCH_CENSUS_SETTLE = `UPDATE run_launch SET census = CASE WHEN sealed IS NULL THEN '"unscanned"' ELSE NULL END WHERE census = '"pending"'`;
+/** An update that erases a launch's sealed bytes and leaves its census null writes "unscanned", as Postgres migration 0029's
+ *  trigger does. This build's end always names a census when it erases them, so only an end by a runner of
+ *  0.1.0-beta.56 or earlier, still live beside this server, does that: its run's files are withheld, never read cut of
+ *  the server's values alone. */
+export const RUN_LAUNCH_CENSUS_ERASED = `CREATE TRIGGER IF NOT EXISTS run_launch_census_erased AFTER UPDATE OF sealed ON run_launch
+  WHEN OLD.sealed IS NOT NULL AND NEW.sealed IS NULL AND OLD.census IS NULL AND NEW.census IS NULL
+  BEGIN UPDATE run_launch SET census = '"unscanned"' WHERE run_id = NEW.run_id; END`;
+/** Whether the store holds RUN_LAUNCH_CENSUS_ERASED: a store no server of this build opened yet holds none. */
+export const RUN_LAUNCH_CENSUS_ERASED_MADE = `SELECT 1 AS found FROM sqlite_master WHERE type = 'trigger' AND name = 'run_launch_census_erased'`;
 
 /** A template package imported from GitHub (POST /v2/templates/import), by its id (`github:<owner>/<repo>[/<path>]`): its
  *  source as given (ref and all), the full commit SHA read, the GitHub account that publishes it, and its files as read
@@ -192,6 +223,69 @@ export const HAND_BACKS_AT = "CREATE INDEX IF NOT EXISTS hand_backs_at ON hand_b
 export const HAND_BACKS_RUN = "CREATE INDEX IF NOT EXISTS hand_backs_run ON hand_backs (run_id)";
 /** How long a hand-back's row is kept: the longest window the capacity read takes. */
 export const HAND_BACKS_KEPT_MS = 24 * 60 * 60_000;
+
+/** Each claim of a run (store.runAttempts, RunAttemptRow): the turn it works and its attempt at it, why the attempt before
+ *  was cut (`cause`: drain, crash, lease_lapse, retry; null on a turn's first), why this one let the run go unfinished
+ *  (`cut`), its runner, the run's state it took the run from, the first journal entry id it could write
+ *  (`journal_from`) and when it claimed. Written in the claim's own transaction, its cut in its release's. Data only:
+ *  the usage read (run-usage.ts) splits a run's cost by it; source-project recovery uses the actual claim and journal
+ *  boundary to report a terminal attempt with no checkpoint, never to replay work or invent a capture. In STORE_DDL, and
+ *  added at a server open to a store an earlier build of this version made, as COMPUTER_INTERVALS is: a claim made before
+ *  it has no row. */
+export const RUN_ATTEMPTS = `CREATE TABLE IF NOT EXISTS run_attempts (
+    run_id TEXT NOT NULL,
+    epoch INTEGER NOT NULL,
+    turn INTEGER NOT NULL CHECK (turn >= 1),
+    attempt INTEGER NOT NULL CHECK (attempt >= 1),
+    cause TEXT CHECK (cause IS NULL OR cause IN ('drain', 'crash', 'lease_lapse', 'retry')),
+    cut TEXT CHECK (cut IS NULL OR cut IN ('drain', 'lease_lapse', 'retry')),
+    runner TEXT NOT NULL,
+    from_state TEXT NOT NULL,
+    journal_from INTEGER NOT NULL,
+    claimed_at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, epoch)
+  ) STRICT`;
+
+/** The learning ledger (learn/ledger.ts): one row a run, written by each patch that leaves the run ended (applyRunPatch,
+ *  in that patch's transaction) and by a healed cost: who answered it (`path`, null when its end named none), the
+ *  revision that ran it, why it was not served alone, the job's own $ and its rounds' look-back, and whether its cost is
+ *  known (`cost`), and the end it was written for (`epoch`: the run's epoch after that end, which every end moves).
+ *  Gone with the run's purge or delete (its cost stays on the run's tombstone). Figures only, no run text. In STORE_DDL,
+ *  and made at a server open on a store an earlier build of this version made: a run that ended before it has no row,
+ *  and one a runner of that build ended again has a row for an earlier end; its reader records it from its run row
+ *  either way (store-reads/learning.ts). */
+export const LEARNING_LEDGER = `CREATE TABLE IF NOT EXISTS learning_ledger (
+    run_id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    path TEXT CHECK (path IS NULL OR path IN ('agent', 'handed_back', 'workflow', 'replay', 'audit')),
+    workflow TEXT,
+    digest TEXT,
+    not_served TEXT CHECK (not_served IS NULL OR not_served IN ('cost_stop', 'cut')),
+    job_usd REAL,
+    look_back_usd REAL,
+    cost TEXT NOT NULL CHECK (cost IN ('known', 'unknown', 'at_most')),
+    epoch INTEGER NOT NULL
+  ) STRICT`;
+export const LEARNING_LEDGER_AGENT = "CREATE INDEX IF NOT EXISTS learning_ledger_agent ON learning_ledger (agent_id)";
+/** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked
+ *  it), a check's replay run or an audit's shadow run (round 0, `of_run` the run it audits), with its $ (null: unknown).
+ *  Written with its run's ledger row, replaced whole each time; gone with its run's purge or delete, and with the purge
+ *  or delete of the run it audits. */
+export const LEARNING_SPEND = `CREATE TABLE IF NOT EXISTS learning_spend (
+    run_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('compile', 'check', 'audit')),
+    round INTEGER NOT NULL CHECK (round >= 0),
+    agent_id TEXT NOT NULL,
+    of_run TEXT,
+    workflow TEXT,
+    digest TEXT,
+    usd REAL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (run_id, kind, round)
+  ) STRICT`;
+export const LEARNING_SPEND_AGENT = "CREATE INDEX IF NOT EXISTS learning_spend_agent ON learning_spend (agent_id)";
+export const LEARNING_SPEND_OF_RUN = "CREATE INDEX IF NOT EXISTS learning_spend_of_run ON learning_spend (of_run) WHERE of_run IS NOT NULL";
 
 /** Version 13 → 14 on SQLite (the server's open, sqlite/store.ts), given the runs' and the agents' columns now: when each
  *  run and each agent was purged (null: none was), and the version, in one durable write. */
@@ -398,6 +492,10 @@ export const STORE_DDL: readonly string[] = [
     -- server and only filtered on (runs.list). Null when it was given none. Added at a server open to a store an earlier
     -- build of this version made (RUNS_LABELS), its runs reading as given none.
     ${json("labels", true)},
+    -- The disk the run's launch named as its own (RunRow.disk: a customer's Archil disk, by its id), set once with the queued
+    -- run from its launch body; null for the default disk's. Learning reads an agent's runs on one disk alone. Version 15
+    -- (diskUpgrade): added then and written from each run's launch. A purge keeps it on the run's tombstone.
+    disk TEXT,
     started_at INTEGER NOT NULL,
     ended_at INTEGER,
     -- The run's listing (RUN_LISTING_COLUMNS): what a runs list shows of it, kept on its row so a list reads rows alone.
@@ -471,8 +569,11 @@ export const STORE_DDL: readonly string[] = [
   // Triggers (module E's), their scopes (rows only while enabled), firings, conversations and adapter settings. A trigger's
   // firings are one table: its history (shown 1, the newest HISTORY_KEPT), the due queue, and the keys kept only for their
   // day (shown 0: a run now's or a delivery's, an ignored delivery's included). A due firing keeps its next try in
-  // retry_at under the engine's one backoff table, or waits for its trigger's room (waits_on: the run it waits behind).
-  // max_active_runs: the most of the trigger's started runs not yet ended (a JOIN on runs), none past it.
+  // retry_at under the engine's one backoff table, or waits for its trigger's room (waits_on: what it waits behind, a run's
+  // id, or a firing's key while the trigger has no run yet and a firing its launch hook's host took, or one mid-hand,
+  // holds the room). retry_at also keeps a sent firing's start_by: the time until which that host may start its run.
+  // max_active_runs: the most of the trigger's runs in progress (started and not yet ended, a JOIN on runs, or a sent
+  // firing with no run inside its start_by), none past it.
   `CREATE TABLE IF NOT EXISTS triggers (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents (id),
@@ -659,6 +760,12 @@ export const STORE_DDL: readonly string[] = [
   HAND_BACKS_RUN,
   COMPUTER_INTERVALS,
   COMPUTER_INTERVALS_RUN,
+  RUN_ATTEMPTS,
+  LEARNING_LEDGER,
+  LEARNING_LEDGER_AGENT,
+  LEARNING_SPEND,
+  LEARNING_SPEND_AGENT,
+  LEARNING_SPEND_OF_RUN,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD
@@ -735,11 +842,15 @@ export const STORE_DDL: readonly string[] = [
   // its claim to build the run's spec. It replaces the per-run serve.json the old per-run process read: one row per run,
   // written in the same transaction as the queued run, never after. `body` is the launch JSON (run-launch.ts: the first
   // input, title, place, effort, cap, and the trigger and origin that started it); `sealed` holds any secret sealed with
-  // the server's key outside the store (AAD run_launch|<run_id>|sealed), or null when the launch holds none.
+  // the server's key outside the store (AAD run_launch|<run_id>|sealed), or null when the launch holds none. `census` is
+  // null until an end erases what the launch holds; then where in the run's files they sat when that end erased them
+  // (run-census.ts), never the secrets, or "unscanned" when it erased them with no census made under them (store.ts
+  // CENSUS_UNSCANNED).
   `CREATE TABLE IF NOT EXISTS run_launch (
     run_id TEXT PRIMARY KEY REFERENCES runs (id),
     ${json("body")},
     sealed BLOB,
+    ${json("census", true)},
     created_at INTEGER NOT NULL
   ) STRICT`,
 

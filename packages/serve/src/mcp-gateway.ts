@@ -15,15 +15,22 @@
 //  - A tool its owner priced (the server's `prices`) is held at that price on the run's one ledger and booked as the
 //    run's tool cost (paid-calls.ts paidStep): refused unsent when the cap cannot take it, or when no ledger books it. A
 //    tool with no price runs, marked "not metered" on the run's root (TOOL_UNMETERED), outside the run's cost.
+//  - A server with a meter (McpMeter; fal's, fal-price.ts) prices each billed call itself before it leaves: held and
+//    booked the same way, at the meter's quote. A call it cannot price is refused unsent under a spend cap, and with
+//    none runs booked as an unknown charge. A meter's keys (McpMeter.keys; fal's submission keys on fal's own host) are
+//    scoped to the run on every call of its server as it leaves, and read back as the agent's own in what the model reads.
 import { randomUUID } from "node:crypto";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool } from "@parcha/agentrun-kernel";
 import { TOOL_UNMETERED } from "./timeline/index.js";
+import { until } from "./until.js";
+import { type FalMeterName, type MediaReader, meterFor, meterNamed } from "./fal-price.js";
 import { filedAnswer } from "./filed-answer.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
 import { capped, mcpClient, scrub } from "./mcp-wire.js";
+import { resourceResult, resourceToolOperation, resourceToolProblem } from "./mcp-resources.js";
 import { mcpNameOf, mcpToolName } from "./tool-names.js";
 import { type Workspace, workspaceAt, workspaceErrorWords } from "./workspace/index.js";
 
@@ -34,14 +41,33 @@ export const MCP_CLIP = 60_000;
 export const CALL_MS = 120_000;
 export const CONNECT_MS = 30_000;
 
-/** Each pinned server: its URL then, the granted tools as it listed them, and the prices its owner declared for them. */
-export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Record<string, number> }>;
+/** Each pinned server: its URL then, the granted tools as it listed them, the prices its owner declared for them, and
+ *  the meter that prices its other calls (`fal`: fal-price.ts). */
+export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Record<string, number>; meter?: FalMeterName }>;
 /** Each granted server's URL now, and its credential's headers when that URL is the pinned one (the claim step's). */
 export type McpCredentials = Record<string, { url: string; headers?: Record<string, string>; /** What every request to it adds to its address's query for this run alone: a per-run Composio server's Composio user and connected account (the run's mcp_auth binding), never stored, held for the scrub as headers are. */ query?: Record<string, string>; /** Why its saved credential did not open: its calls are refused unsent. */ unopened?: string; /** When its credential ends (ms): a token minted for the run's launch (a github_app server's), whose calls past it are refused unsent, in words. */ expires_at?: number }>;
 
-/** The servers a save pins from: each one's URL, its tools as it lists them now, and its owner's prices. */
+/** The servers a save pins from: each one's URL, its tools as it lists them now, its owner's prices, and either its
+ *  owner's toolkit for it or, for a pin carried over, the meter it was pinned with. */
 export interface McpServerSource {
-  server(name: string): { url: string; tools: readonly McpTool[]; prices?: Readonly<Record<string, number>> } | undefined;
+  server(name: string): { url: string; tools: readonly McpTool[]; prices?: Readonly<Record<string, number>>; toolkit?: string | null; meter?: string } | undefined;
+}
+
+/** A meter's price for one call: what to hold before it leaves and why (`basis`), why it can't be priced
+ *  (`unpriceable`, in words; the hold then covers only what could be), and what it charged, by the server's reply
+ *  (none: no reply came back). Null: unknown. */
+export type McpQuote = { holdUsd: number; basis: string; unpriceable?: string; chargeOf(reply: Record<string, unknown> | undefined): number | null };
+/** A server's keys scoped to the run (fal's submission keys, fal-price.ts falKeys): `refused`, why a call's keys can't
+ *  be scoped (it is then refused unsent); `out`, a call's arguments as they leave; `back`, the text of its answer or error
+ *  as the model reads it, each scoped key read as the agent's own. */
+export type McpKeys = { refused?(tool: string, args: Record<string, unknown>): string | undefined; out(tool: string, args: Record<string, unknown>): Record<string, unknown>; back(text: string): string };
+/** A server that prices its own calls. `ask` calls one of the server's tools with the run's credential, unbooked and
+ *  unrecorded, and answers its raw result (none: it failed). `keys`: the keys it scopes to the run, on every call of
+ *  the server, billed or not. */
+export interface McpMeter {
+  keys?: McpKeys;
+  bills(tool: string): boolean;
+  quote(tool: string, args: Record<string, unknown>, ask: (tool: string, args: Record<string, unknown>) => Promise<Record<string, unknown> | undefined>, signal: AbortSignal): Promise<McpQuote>;
 }
 
 /** The most schema nodes, and the deepest nesting, a tool's declarations are checked through: past either the tool is
@@ -113,12 +139,15 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
     // Gone since the save's check (deleted, or the server stopped listing the tool): the save is refused.
     if (!saved) throw new Error(`The MCP tool ${name} cannot be pinned: no MCP server ${parsed.server} is saved.`);
     if (!tool) throw new Error(`The MCP tool ${name} cannot be pinned: the MCP server ${parsed.server} does not list ${parsed.tool}.`);
+    const resourceProblem = resourceToolProblem(tool);
+    if (resourceProblem) throw new Error(`The MCP tool ${name} cannot be pinned: ${resourceProblem}.`);
     // A meta tool granted before the rule (mcp-meta.ts): refused here, never run.
     const meta = metaToolOf(saved.url, tool.name);
     if (meta) throw new Error(`${name} can't be granted: ${meta.reason}`);
     const declared = mcpHeaderProblem(tool.inputSchema);
     if (declared) throw new Error(`The MCP tool ${name} declares a header it cannot send: ${declared}.`);
-    if (!Object.hasOwn(pin, parsed.server)) pin[parsed.server] = { url: saved.url, tools: [] };
+    const meter = meterNamed(saved.url, saved.meter ?? saved.toolkit);
+    if (!Object.hasOwn(pin, parsed.server)) pin[parsed.server] = { url: saved.url, tools: [], ...(meter ? { meter } : {}) };
     const pinned = pin[parsed.server]!;
     pinned.tools.push(tool);
     const price = saved.prices && Object.hasOwn(saved.prices, tool.name) ? saved.prices[tool.name] : undefined;
@@ -166,15 +195,6 @@ function unreachable(error: unknown): string {
 
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
 
-/** `work` until `signal` aborts: a connection shared by calls is never held by one that stopped. */
-const until = <T>(work: Promise<T>, signal: AbortSignal): Promise<T> =>
-  new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(signal.reason);
-    const stop = () => reject(signal.reason);
-    signal.addEventListener("abort", stop, { once: true });
-    work.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
-  });
-
 export interface McpGatewayOptions {
   pin: McpPin;
   credentials: McpCredentials;
@@ -197,6 +217,14 @@ export interface McpGatewayOptions {
    *  throws (a store read failed, the call was stopped) refuses the call unsent too, in words, and the run goes on. Only
    *  the runner's MCP claim step passes it: a github_app token whose App was disconnected or replaced. */
   beforeCall?: (server: string, signal: AbortSignal) => Promise<void>;
+  /** Whether the run has a spend cap: under one, a metered call that cannot be priced is refused unsent. None: it has. */
+  capped?: boolean;
+  /** Reads a metered job's input media, for one priced by its length. None: such a job cannot be priced. */
+  media?: MediaReader;
+  /** For tests: the clock a meter's prices are kept by. */
+  now?: () => number;
+  /** The run's id: what a meter scopes a server's keys to (McpMeter.keys). None: no key is scoped. */
+  run?: string;
 }
 
 /** A run's journal commit. */
@@ -213,11 +241,12 @@ export type McpGateway = {
 };
 
 export function mcpGateway(options: McpGatewayOptions): McpGateway {
-  type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown> };
+  type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown>; request(params: unknown, options: unknown): Promise<unknown> };
   /** Each server's client, with the account query it was connected with (`query`, JSON): a message that binds the run to
    *  another account connects again, so no session made as one account carries another's calls. */
   const clients = new Map<string, { query: string; upstream: Promise<Upstream> }>();
   const pins = new Map(Object.entries(options.pin));
+  const meters = new Map([...pins].map(([server, pinned]) => [server, meterFor(pinned, { media: options.media, now: options.now, run: options.run })] as const));
   const credentials: Pick<Map<string, McpCredentials[string]>, "get"> = { get: (server) => (Object.hasOwn(options.credentials, server) ? options.credentials[server] : undefined) };
   /** Each server's last HTTP status, which tells a refused credential from another failure. (An address refusal is never
    *  kept here: it is read from each call's own error, since calls to one server run at once.) */
@@ -334,15 +363,20 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   /** The call itself, to a server whose address is the pinned one. A gate's decision or a paid call's hold goes around
    *  it, in `call` below: the one place every harness's call passes before anything is sent. */
   /** `sending`, when given, runs once the server is connected and right before the call leaves: its refusal (a text)
-   *  keeps the call from leaving. A call that never got that far (a failed connect, a stop) never ran it. */
-  const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>, outcome: { unsent?: true } = {}): Promise<McpCallResult> => {
+   *  keeps the call from leaving. A call that never got that far (a failed connect, a stop) never ran it. `outcome`
+   *  takes the server's raw result, when one came back. */
+  const forward = async (server: string, url: string, headers: Record<string, string>, tool: McpTool, args: Record<string, unknown>, signal: AbortSignal, sending?: () => Promise<string | undefined>, outcome: { unsent?: true; raw?: Record<string, unknown>; quiet?: true } = {}, back?: McpKeys["back"]): Promise<McpCallResult> => {
     let connected = false;
+    const operation = resourceToolOperation(tool);
+    const boundedSignal = operation ? AbortSignal.any([signal, AbortSignal.timeout(options.bounds?.callMs ?? CALL_MS)]) : signal;
     // Read at each use: a token refreshed while the call is out, and sent, is scrubbed with the one it took.
     const held = callSet(server);
-    const clean = scrubberOf(server, hold(server, headers), held.values);
+    const scrubbed = scrubberOf(server, hold(server, headers), held.values);
+    // Every text the model reads of the call (its answer, a filed one, an error), its keys read as the agent's own.
+    const clean = back ? (text: string) => back(scrubbed(text)) : scrubbed;
     hold(server, queryOf(server));
     try {
-      const upstream = await until(connect(server, url, headers), signal);
+      const upstream = await until(connect(server, url, headers), boundedSignal);
       connected = true;
       if (sending && !signal.aborted) {
         const refused = await sending();
@@ -350,10 +384,15 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       }
       // The pinned definition, so the SDK mirrors its x-mcp-header parameters into Mcp-Param-* headers on a 2026-07-28
       // server, as its own listing would have it do.
-      const result = (await upstream.callTool({ name: tool.name, arguments: args }, { signal, timeout: options.bounds?.callMs ?? CALL_MS, toolDefinition: { name: tool.name, inputSchema: tool.inputSchema } })) as Record<string, unknown>;
-      return said(await textOf(server, tool.name, result, clean), result.isError === true);
+      const result = operation
+        ? await resourceResult(upstream, operation, args, boundedSignal, options.bounds?.callMs ?? CALL_MS, scrubbed)
+        : (await upstream.callTool({ name: tool.name, arguments: args }, { signal, timeout: options.bounds?.callMs ?? CALL_MS, toolDefinition: { name: tool.name, inputSchema: tool.inputSchema } })) as Record<string, unknown>;
+      outcome.raw = result;
+      // A meter's own read (`quiet`): its raw result is all that is wanted, nothing filed for a model to read.
+      return said(outcome.quiet ? "" : await textOf(server, tool.name, result, clean), result.isError === true);
     } catch (error) {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
+      if (boundedSignal.aborted) return said(`The resource operation on the MCP server ${server} exceeded its deadline.`, true);
       // The next call connects again (a server that dropped its session, say); this one is never sent again.
       clients.delete(server);
       // Its address refused before the request left (reach): nothing reached it. Read from this call's own error, never
@@ -384,6 +423,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const unsendable = (server: string, tool: string): string | undefined => {
     const pinned = pins.get(server);
     if (!pinned?.tools.some((t) => t.name === tool)) return `${tool} is not a tool of the MCP server ${server} in this run.`;
+    const resourceProblem = resourceToolProblem(pinned.tools.find(t => t.name === tool));
+    if (resourceProblem) return `The MCP operation ${tool} is invalid: ${resourceProblem}. Nothing was sent.`;
     const meta = metaToolOf(pinned.url, tool);
     if (meta) return `mcp:${server}/${tool} can't be granted: ${meta.reason} Nothing was sent.`;
     const now = credentials.get(server);
@@ -410,26 +451,35 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     }
     const why = unsendable(server, tool);
     if (why) return said(why, true);
+    // A key the server could not take once scoped to the run, refused before anything is priced or held.
+    const keys = meters.get(server)?.keys;
+    const keyless = keys?.refused?.(tool, args);
+    if (keyless) return said(`${mcpToolName(server, tool)} was not sent: ${keyless}. Nothing was sent.`, true);
     const { url, prices, tools: pinnedTools } = pins.get(server)!;
     const listed = pinnedTools.find((t) => t.name === tool)!;
     // Whether the call left for the server: only then is it booked, at its price or as not metered.
     let went = false;
+    let raw: Record<string, unknown> | undefined;
+    // The server's keys scoped to the run as the call leaves (fal's submission keys): its price is read from the call as
+    // the agent made it.
     const call = async (mark: () => Promise<string | undefined> = async () => undefined) => {
-      const outcome: { unsent?: true } = {};
-      const result = await forward(server, url, credentials.get(server)?.headers ?? {}, listed, args, signal, async () => {
+      const outcome: { unsent?: true; raw?: Record<string, unknown> } = {};
+      const result = await forward(server, url, credentials.get(server)?.headers ?? {}, listed, keys ? keys.out(tool, args) : args, signal, async () => {
         const refused = await mark();
         went = refused === undefined;
         return refused;
-      }, outcome);
+      }, outcome, keys?.back);
       // The request's own address check refused it after the mark: it never left, so nothing is booked.
       if (outcome.unsent) went = false;
+      raw = outcome.raw;
       return result;
     };
     const name = mcpToolName(server, tool);
     const label = { tool: name, charged_by: server, call: callId };
     const commit = options.commit?.();
     const price = prices && Object.hasOwn(prices, tool) ? prices[tool] : undefined;
-    if (price === undefined) {
+    const meter = price === undefined && meters.get(server)?.bills(tool) ? meters.get(server) : undefined;
+    if (price === undefined && !meter) {
       const result = await call();
       if (commit && went) await record(commit, TOOL_UNMETERED, label).catch(() => undefined);
       return result;
@@ -437,11 +487,22 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // On the runner's one ledger (paid-calls.ts Ledger.paid): held there at its price before it leaves and settled at its
     // price once it left (nothing when it never left), in place of this process's spend and the root's marks.
     const onLedger = paidLedger();
-    if (onLedger) {
+    if (!onLedger) return said(`${name} was not sent: this call has no run to book its price under.`, true);
+    if (price !== undefined) {
       const stepped = await paidStep(onLedger, callId ?? name, { name, holdUsd: price, basis: `the price its owner set for ${name}`, by: label.charged_by }, () => call(), () => (went ? price : 0));
       return "refused" in stepped ? said(stepped.refused, true) : stepped.result;
     }
-    return said(`${name} was not sent: this call has no run to book its price under.`, true);
+    // The meter reads its prices from the server itself: the run's credential, no record, no booking.
+    const ask = async (asked: string, input: Record<string, unknown>) => {
+      const outcome: { raw?: Record<string, unknown>; quiet: true } = { quiet: true };
+      await forward(server, url, credentials.get(server)?.headers ?? {}, { name: asked, inputSchema: { type: "object" } }, input, signal, undefined, outcome);
+      return outcome.raw;
+    };
+    const quote = await meter!.quote(tool, args, ask, signal);
+    if (quote.unpriceable && (options.capped ?? true)) return said(`${name} was not sent: ${quote.unpriceable}, so a run with a spend cap can't send it. Nothing was sent.`, true);
+    // Settled by the server's reply; one that left and brought none back, at the meter's word for it (fal: its hold).
+    const stepped = await paidStep(onLedger, callId ?? name, { name, holdUsd: quote.holdUsd, basis: quote.basis, by: label.charged_by }, () => call(), () => (went ? quote.chargeOf(raw) : 0));
+    return "refused" in stepped ? said(stepped.refused, true) : stepped.result;
   };
 
   const gateway: McpGateway = {

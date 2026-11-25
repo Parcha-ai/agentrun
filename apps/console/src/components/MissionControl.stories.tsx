@@ -6,6 +6,7 @@ import { Shell } from "@/components/Shell";
 import { editorCaps, recorded } from "@/fixtures";
 import type { Run } from "@/lib/v2";
 import { type Analytics, type MissionView, rangeFrom } from "@/lib/mission";
+import type { ObservationRead, ObservedSession } from "@/lib/observations";
 
 // Mission Control, the console's first page, on the recorded runs (src/fixtures).
 const meta: Meta = { title: "Mission Control" };
@@ -41,6 +42,13 @@ export const Typical: Story = { render: () => <Shell active="mission"><MissionCo
 export const CostUnknown: Story = { render: () => <Shell active="mission"><MissionControl view={view({ usd: null, basis: null, unknownRuns: 32 })} /></Shell> };
 export const EmptyStore: Story = { render: () => <Shell active="mission"><MissionControl view={{ agents: 0, runs: { total: 0, active: 0, needsInput: 0, failed: 0, statusUnknown: 0, needsReview: 0 }, perAgent: [], cost: { usd: null, basis: null, unknownRuns: 0 }, recent: [], analytics: quiet }} /></Shell> };
 export const Phone: Story = { render: () => <Shell active="mission"><MissionControl view={view({ usd: 1.25, basis: "estimate", unknownRuns: 0 })} /></Shell>, globals: { viewport: { value: "mobile1" } } };
+
+// A server observing two existing agents: no registered definitions or hosted jobs are needed for the inventory.
+const unknownUsage = { input_tokens: null, output_tokens: null, cache_read_tokens: null, cache_write_tokens: null, total_tokens: null, cache_hit_rate: null };
+const observedSession = (id: string, activity: string): ObservedSession => ({ id, connector_id: "local", source_id: "project", external_session_id: id, harness: "codex", activity, reported_activity: activity, connection_state: "online", selection_active: true, occurred_at: new Date(today).toISOString(), received_at: new Date(today).toISOString(), created_at: new Date(today).toISOString(), updated_at: new Date(today).toISOString(), sequence: 1, display_name: id, models: [], usage: unknownUsage, observation_only: true });
+const observed: ObservationRead = { data: { sessions: [observedSession("Frontend agent", "working"), observedSession("Review agent", "idle")], connectors: [], usage: { ...unknownUsage, models: [], daily: [], status: "unavailable" } }, loading: false, error: null, refresh: () => {} };
+export const ConnectedAgents: Story = { render: () => <Shell active="mission"><MissionControl view={{ agents: 0, runs: { total: 0, active: 0, needsInput: 0, failed: 0, statusUnknown: 0, needsReview: 0 }, perAgent: [], cost: { usd: null, basis: null, unknownRuns: 0 }, recent: [], analytics: quiet }} observed={observed} /></Shell> };
+export const MixedAgents: Story = { render: () => <Shell active="mission"><MissionControl view={view({ usd: null, basis: null, unknownRuns: 32 })} observed={observed} /></Shell> };
 
 const scope = { range: "30d" as const, onRange: () => {}, agent: null, onAgent: () => {} };
 export const WithAnalytics: Story = { render: () => <Shell active="mission"><MissionControl view={{ ...view({ usd: 1.6381, basis: "estimate", unknownRuns: 7 }), analytics }} scope={scope} /></Shell> };

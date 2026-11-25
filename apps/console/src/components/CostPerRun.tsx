@@ -6,7 +6,7 @@ import type { Client } from "@/lib/client";
 import { type Block, blockSizeOf, blocksOf, gutterFor, jobsOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, spread, timesOf, usd, windowOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { counted, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine, WITHHELD_NEXT, withheldWords } from "@/lib/learningLoop";
+import { counted, cutWords, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine, WITHHELD_NEXT, withheldWords } from "@/lib/learningLoop";
 import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
 // An agent's cost per run, run after run (GET /v2/agents/{id}/learning/cost): every run's all-in $ (its own cost and what
@@ -22,8 +22,10 @@ import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 const LIMIT = 1000;
 /** What a person does to get the chart: the short and the empty states say it. */
 export const HOW = "Turn learning on and run the same job about 20 times: each run's cost shows here, and where a learned workflow takes the job over, the line falls.";
-type LearningExecution = "hosted" | "native" | "sdk";
-const howFor = (execution: LearningExecution) => execution === "native"
+type LearningExecution = "hosted" | "native" | "sdk" | "cli";
+const howFor = (execution: LearningExecution) => execution === "cli"
+  ? "Costs include reported CLI usage and AgentRun learning. Compare similar tasks; owner corrections do not enable workflow takeover."
+  : execution === "native"
   ? "Native run costs include reported model usage and AgentRun learning. Compare repeated jobs; corrections do not enable workflow takeover."
   : execution === "sdk"
     ? "SDK run costs include reported backend usage and AgentRun learning. Your backend keeps launching jobs and binds the tools an accepted workflow can use."
@@ -164,7 +166,7 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   const cheaper = s.times_cheaper !== null ? `${timesOf(s.times_cheaper)} cheaper` : null;
   // The headline: the server's own figure, which never flatters learning (before: the agent's own $ a run, learning left
   // out; after the takeover: all-in, learning kept in), and how often the workflow handed the run back since.
-  const backWords = back ? `${pct(back.back, back.ran)} handed back since` : null;
+  const backWords = back ? `${pct(back.back, back.ran)} handed back since${cutWords(back.cut)}` : null;
   // The after side is the runs a learned workflow served (never its replays), said with its count; with none priced yet,
   // the headline says so in words, never a figure.
   const afterWords = s.after ? `${level(s.after.mean_usd)} all-in over ${servedWord(s.after.runs)} after` : s.takeover && s.after_state === "cost_unknown" ? "no served run's cost known yet" : null;
@@ -341,6 +343,8 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
 }
 
 const MIX_H = 64;
+/** The runs the strip's share line counts. */
+const LAST_RUNS = 20;
 const MIX_M = { top: 4, bottom: 6 };
 /** Bottom to top: the learned workflow on the baseline, so its share grows from it. */
 const STACK = [...PATHS].reverse();
@@ -353,24 +357,29 @@ const runsOf = (b: Block) => (b.from === b.to ? `Run ${b.from}` : `Runs ${b.from
 function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[]; width: number; x: (n: number) => number; step: number; plot: [number, number]; takeover: number | null }) {
   const height = MIX_H;
   // Blocks of the runs that do a job: a replay does none, so it is in no block (blocksOf).
-  const size = blockSizeOf(jobsOf(runs).length);
+  const [left, right] = plot;
+  const jobs = useMemo(() => jobsOf(runs), [runs]);
+  const size = blockSizeOf(jobs.length, right - left);
   const blocks = useMemo(() => blocksOf(runs, size), [runs, size]);
+  // What a screen reader is read: the runs in blocks whatever the width, never a line for each of hundreds of runs.
+  const saidSize = blockSizeOf(jobs.length);
+  const said = useMemo(() => blocksOf(runs, saidSize), [runs, saidSize]);
   const [hover, setHover] = useState<number | null>(null);
   if (!blocks.length) return null;
-  const [left, right] = plot;
   const clamp = (v: number) => Math.min(right, Math.max(left, v));
   /** A block's whole slots on the axis: from half a run before its first to half a run after its last, inside the plot. */
   const span = (b: Block) => ({ from: clamp(x(b.from) - step / 2), to: clamp(x(b.to) + step / 2) });
   const y = (share: number) => MIX_M.top + height * (1 - share);
-  const last = blocks.at(-1)!;
+  // What the last words count: the last 20 runs (all of them, with fewer), whatever the columns' grouping at this width.
+  const last = blocksOf(jobs.slice(-LAST_RUNS), LAST_RUNS)[0]!;
   const edges = (b: Block) => {
     const { from, to } = span(b);
-    // A 2px card gap between columns, when a column is wide enough to give it.
-    const gap = to - from > 4 ? 1 : 0;
+    // A 2px card gap between columns, when a column is wide enough to give it; a hairline between a strip's runs.
+    const gap = to - from <= 4 ? 0 : size === 1 && to - from < 12 ? 0.5 : 1;
     return { x0: from + gap, w: Math.max(1, to - from - 2 * gap) };
   };
   const words = (b: Block) => `${runsOf(b)}: ${PATHS.filter((p) => b.counts[p.path]).map((p) => `${p.label.toLowerCase()} ${b.counts[p.path]}`).join(", ")}`;
-  // The last block's share by the learned workflow; before any workflow has finished a run, who did finish it.
+  // The last runs' share by the learned workflow; before any workflow has finished a run, who did finish them.
   const lastShare = blocks.some((b) => b.counts.workflow)
     ? `${pct(last.counts.workflow, last.runs)} by the learned workflow`
     : PATHS.filter((p) => last.counts[p.path]).map((p) => `${pct(last.counts[p.path], last.runs)} ${p.label.toLowerCase()}`).join(", ");
@@ -418,10 +427,11 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
         <div className={cn("pointer-events-none absolute z-raised whitespace-nowrap border bg-card px-2 py-1 font-mono text-label shadow-float", tipLeft && "-translate-x-full")}
           style={{ left: tipLeft ? edges(shown).x0 - 6 : edges(shown).x0 + edges(shown).w + 6, top: 40 }}>
           <span className="block font-semibold">{runsOf(shown)}</span>
-          {PATHS.filter((p) => shown.counts[p.path]).map((p) => <span key={p.path} className="block text-muted-foreground">{p.label} {shown.counts[p.path]} ({pct(shown.counts[p.path], shown.runs)})</span>)}
+          {/* One run: the path it took. A block: how many took each. */}
+          {PATHS.filter((p) => shown.counts[p.path]).map((p) => <span key={p.path} className="block text-muted-foreground">{shown.runs === 1 ? p.label : `${p.label} ${shown.counts[p.path]} (${pct(shown.counts[p.path], shown.runs)})`}</span>)}
         </div>
       )}
-      <p className="sr-only">{`Execution mix in blocks of ${size} runs. ${blocks.map(words).join(". ")}. ${lastWords}.`}</p>
+      <p className="sr-only">{`Execution mix in blocks of ${saidSize} runs. ${said.map(words).join(". ")}. ${lastWords}.`}</p>
     </div>
   );
 }

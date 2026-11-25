@@ -10,6 +10,7 @@ type ObservationProtocol = {
 export const NATIVE_RUNTIME_FACTS = Object.freeze({
   "claude-code": Object.freeze({
     binary: "claude", label: "Claude Code CLI", minimumVersion: "2.1.322", namedSelector: "agent",
+    captureRuntime: "claude-code-cli",
     protocol: "claude-json", authStatus: Object.freeze(["auth", "status", "--json"]),
     authStatusJson: true, loginCommand: "claude auth login",
     observation: Object.freeze({
@@ -24,6 +25,7 @@ export const NATIVE_RUNTIME_FACTS = Object.freeze({
   } as const),
   codex: Object.freeze({
     binary: "codex", label: "Codex CLI", minimumVersion: "0.167.2", namedSelector: "profile",
+    captureRuntime: "codex-cli",
     protocol: "codex-json", authStatus: Object.freeze(["login", "status"]),
     authStatusJson: false, loginCommand: "codex login",
     observation: Object.freeze({

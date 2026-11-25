@@ -137,11 +137,9 @@ approval/queue/landing result and any next owner action.
 
 ## Source and validation
 
-Adapted from the maintained Parcha ship lifecycle, adoption, comments and approval policy,
-and gh-stack framework at
-[Parcha-ai/parcha, 37fc1a0a24d374abda3c136a36b6d5998c9ff1ea](https://github.com/Parcha-ai/parcha/tree/37fc1a0a24d374abda3c136a36b6d5998c9ff1ea/.agents/skills),
-resolved from live `main` on 2026-11-14. AgentRun's ship-pr retains its stronger proof gates;
-Parcha's service previews, staging, Linear and Slack routing are not AgentRun requirements.
+Adapted from a maintained ship lifecycle, adoption, comments and approval policy,
+and gh-stack framework, as of 2026-11-14. AgentRun's ship-pr retains its stronger proof gates;
+that source's service previews, staging, issue-tracker and chat routing are not AgentRun requirements.
 
 Run skill-creator's `quick_validate.py` on both skills after edits and
 `node --test scripts/ship-gate.test.mjs`. Give independent evaluators raw scenarios and

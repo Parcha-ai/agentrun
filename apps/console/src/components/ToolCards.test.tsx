@@ -156,7 +156,7 @@ describe("the tool cards' hover titles", () => {
     root = createRoot(host);
     const LONG = "Save comment: Create or update a comment on a Linear issue, project, initiative, document or milestone. If id is provided, updates the existing comment; otherwise creates a new one.";
     const server = { name: "linear", url: "https://mcp.linear.example/mcp", auth: { type: "none" }, credential: null, tools: [{ name: "get_team", description: "Get a team by id." }, { name: "save_comment", description: LONG }] } as McpServer;
-    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", onChange: () => {} })));
+    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", filter: "", onChange: () => {} })));
     const line = (tool: string) => host.querySelector(`[data-tool-card="mcp:linear/${tool}"] [data-line]`)!;
     expect(line("get_team").hasAttribute("title")).toBe(false);
     expect(line("save_comment").getAttribute("title")).toBe(LONG);
@@ -182,7 +182,7 @@ describe("the tool cards' measured lines", () => {
       tools: [{ name: "find", description: "Find a contact.", input_schema: { anyOf: [{ type: "object" }] }, grant_problems: { "claude-agent": REFUSED } }] } as McpServer;
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "claude-agent", harnesses: ["pi", "claude-agent"], onChange: () => {} })));
+    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "claude-agent", filter: "", harnesses: ["pi", "claude-agent"], onChange: () => {} })));
     await settle();
     const card = host.querySelector<HTMLElement>('[data-tool-card="mcp:crm/find"]')!;
     const alert = card.querySelector('[role="alert"]')!;
@@ -209,7 +209,7 @@ describe("an MCP server's tool cards", () => {
   function picker() {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", onChange: () => {} })));
+    act(() => root!.render(createElement(McpToolPicker, { servers: [server], tools: [], harness: "pi", filter: "", onChange: () => {} })));
     const card = (tool: string) => host.querySelector<HTMLElement>(`[data-tool-card="mcp:linear/${tool}"]`)!;
     const line = (tool: string) => card(tool).querySelector<HTMLElement>("[data-line]");
     return { host, card, line };
@@ -247,5 +247,18 @@ describe("an MCP server's tool cards", () => {
     expect(line("upload_blob")!.classList.contains("[overflow-wrap:anywhere]")).toBe(true);
     await act(async () => { button(card("upload_blob"), "More")!.click(); });
     expect([...card("upload_blob").querySelectorAll("[data-more] span")].find((s) => s.textContent?.includes(UNBROKEN))!.classList.contains("[overflow-wrap:anywhere]")).toBe(true);
+  });
+});
+
+// With no MCP server saved, the tools step says where one is added, as a link there, not as plain text.
+describe("the MCP tools step with no server saved", () => {
+  it("links Settings → MCP servers", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(McpToolPicker, { servers: [], tools: [], harness: "pi", filter: "", onChange: () => {} })));
+    expect(host.textContent).toContain("No MCP server is saved: add one in Settings → MCP servers to grant its tools.");
+    const link = host.querySelector("a");
+    expect(link?.getAttribute("href")).toBe("#/settings/mcp");
+    expect(link?.textContent).toBe("Settings → MCP servers");
   });
 });

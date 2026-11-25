@@ -4,11 +4,14 @@
 // an entry are refused in words.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { TarReader, tarOf, tarStream, untar, untarStream } from "../dist/index.js";
+
+/** The latest mtime a ustar header holds: 11 octal digits of seconds. */
+const MAX_TAR_MTIME = 8 ** 11 - 1;
 
 const dir = mkdtempSync(join(tmpdir(), "computer-tar-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -36,6 +39,19 @@ test("the host's tar reads what tarOf writes, long names and link targets too", 
 	assert.deepEqual(readFileSync(join(into, "a/big.bin")), BIG);
 	assert.equal(execFileSync("readlink", [join(into, "a/link")], { encoding: "utf8" }).trim(), TARGET);
 	assert.equal(readFileSync(join(into, "a/empty")).length, 0);
+});
+
+test("an entry's mtime is its header's, which the host's tar keeps; one a ustar header can't hold is refused before anything is written", () => {
+	const archive = join(dir, "mtime.tar");
+	writeFileSync(archive, tarOf([{ name: "old.txt", type: "file", mode: 0o644, body: Buffer.from("o"), mtime: 946_684_800 }]));
+	const into = join(dir, "mtime");
+	mkdirSync(into);
+	execFileSync("tar", ["-xf", archive, "-C", into]);
+	assert.equal(statSync(join(into, "old.txt")).mtimeMs, 946_684_800_000);
+	assert.equal(tarOf([{ name: "f", type: "file", mode: 0o644, mtime: MAX_TAR_MTIME }]).length, 3 * 512, "the latest a header holds");
+	for (const mtime of [-1, 1.5, MAX_TAR_MTIME + 1, Number.NaN]) {
+		assert.throws(() => tarOf([{ name: "f", type: "file", mode: 0o644, body: Buffer.from("f"), mtime }]), (error) => error instanceof RangeError && error.message.includes(`f: mtime ${mtime} is no whole number of seconds`), String(mtime));
+	}
 });
 
 test("untar reads back what tarOf and tarStream write, entry for entry", async () => {

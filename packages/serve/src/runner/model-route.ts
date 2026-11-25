@@ -19,8 +19,9 @@ import type { ThinkingLevelMap } from "../port-models.js";
 import type { Wire } from "@parcha/agentrun-kernel";
 import { onOpenRouter, openRouterAttribution, ROUTE_ORIGIN, streamErrorOf } from "@parcha/agentrun-kernel/host";
 import type { ToolsAs } from "../local-models.js";
-import { chooseModel, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
-import { providerFor } from "../provider.js";
+import { chooseModel, FAUX_PROVIDER, MODEL_PROVIDER, type PinnedModel, runModels, type Tier } from "../model.js";
+import { OLLAMA_PROVIDER } from "../ollama-provider.js";
+import { gatewayHeadersAt, providerFor } from "../provider.js";
 import { keepText, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
 import { callsOfText, type PiContext, toolsAsText } from "./text-tools.js";
 
@@ -60,6 +61,11 @@ export interface ModelRoute {
   readonly price?: (model: string, usage: RouteUsage) => number | null;
   /** The upstream fetch: the route's own, for a model that does not speak Messages. Absent: the network. */
   readonly fetch?: typeof fetch;
+  /** Where the route's own translation (`fetch`) sends the model's requests: the origin pi-ai's catalog entry gives it
+   *  (OpenRouter's, Particle's, this machine's Ollama). A run's GenAI trace names its host, never `provider.origin`
+   *  (ROUTE_ORIGIN, a name no request leaves for). Absent on a route with no translation, and under the faux model,
+   *  whose requests go nowhere. */
+  readonly upstreamOrigin?: string;
   /** The catalog's cost of the model, tiers included: what the cap prices a request at before it leaves. */
   readonly cost?: RouteCost;
   /** True when serve has no price for the model (runModels' `unpriced`): `cost` is then a placeholder of zeros, which the
@@ -67,6 +73,9 @@ export interface ModelRoute {
   readonly unpriced?: boolean;
   /** The model's most output tokens (its catalog ceiling): the cap's output bound, null when the catalog names none. */
   readonly outputCeiling?: number | null;
+  /** A model on this machine's own Ollama (ollama-provider.ts): $0, and its requests never count toward the run's
+   *  free-model limit (the cap's CapModel.local), which guards a provider's shared quota this model has none of. */
+  readonly local?: boolean;
 }
 
 
@@ -103,14 +112,17 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   const settings = { ...sees, ...(target.reasoning !== undefined ? { reasoning: target.reasoning } : {}), ...(target.contextWindow ? { contextWindow: target.contextWindow } : {}), ...(target.maxTokens ? { maxTokens: target.maxTokens } : {}), ...(target.thinkingLevelMap ? { thinkingLevelMap: target.thinkingLevelMap } : {}) };
   const route = { model: chosen.model.modelId, named: `${chosen.model.provider}/${chosen.model.modelId}`, price, cost: target.cost, ...(unpriced.has(chosen.model.modelId) ? { unpriced: true } : {}), outputCeiling: target.maxTokens ?? null, like: sees };
   // An Anthropic model speaks Messages itself: the network, at its catalog origin, its key read by name per request.
+  // Its requests name the claim's run, turn and attempt only where that origin is serve's own gateway (gatewayHeadersAt).
   if (chosen.model.provider === "anthropic") {
-    return { ...route, provider: { api: "anthropic-messages", origin: target.baseUrl ?? "https://api.anthropic.com", credential: () => env.ANTHROPIC_API_KEY ?? env.ANTHROPIC_AUTH_TOKEN ?? "" } };
+    const origin = target.baseUrl ?? "https://api.anthropic.com";
+    const headers = gatewayHeadersAt(env, origin);
+    return { ...route, provider: { api: "anthropic-messages", origin, credential: () => env.ANTHROPIC_API_KEY ?? env.ANTHROPIC_AUTH_TOKEN ?? "", ...(headers ? { headers } : {}) } };
   }
   // A Claude model of serve's gateway (model.ts gatewayWire), for a caller that speaks Messages: the gateway itself, on
   // Messages, so the prompt cache marks pi-ai puts on the request reach it (provider.ts).
   if (target.api === "anthropic-messages" && chosen.model.provider === MODEL_PROVIDER && wires.includes("anthropic-messages")) {
     const to = providerFor("anthropic-messages", env, chosen.model, "pi");
-    return { ...route, model: to.modelId, provider: { api: "anthropic-messages", origin: to.origin, credential: to.credential, auth: to.auth }, like: settings };
+    return { ...route, model: to.modelId, provider: { api: "anthropic-messages", origin: to.origin, credential: to.credential, auth: to.auth, ...(to.headers ? { headers: to.headers } : {}) }, like: settings };
   }
   // A model pi-ai speaks Responses to, for a caller that speaks it: that wire itself, where main sends it (provider.ts).
   if (target.api === "openai-responses" && wires.includes("openai-responses")) {
@@ -121,7 +133,7 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
     const plan = onPlan ? { price: () => null, unpriced: true as const } : {};
     return {
       ...route, model: to.modelId, ...plan,
-      provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth, ...(onPlan ? { plan: true } : {}), ...(to.refused ? { refused: to.refused } : {}) },
+      provider: { api: "openai-responses", origin: to.origin, credential: to.credential, auth: to.auth, ...(to.headers ? { headers: to.headers } : {}), ...(onPlan ? { plan: true } : {}), ...(to.refused ? { refused: to.refused } : {}) },
       like: onPlan ? { ...settings, developerRole: true } : settings,
     };
   }
@@ -130,8 +142,13 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // thinking level by name (LEVELS_BY_NAME), which the translation hands to pi-ai (levelOf): the run's effort reaches the
   // model, mapped and clamped by its own catalog entry. Direct Particle states no cost (its usage is priced from the
   // catalog), and its session also takes the model's window and ceiling and replays unsigned reasoning.
-  const like = target.provider === "particle" ? { ...settings, ...LEVELS_BY_NAME, translatedChatCompletions: true } : target.reasoning ? { ...sees, ...LEVELS_BY_NAME } : undefined;
-  return { ...route, ...(like ? { like } : {}), provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
+  // An Ollama model's session also takes its window, the context every request asks Ollama for (num_ctx), so pi compacts
+  // before Ollama would cut the prompt.
+  const local = target.provider === OLLAMA_PROVIDER;
+  const like = target.provider === "particle" ? { ...settings, ...LEVELS_BY_NAME, translatedChatCompletions: true } : local ? { ...settings, ...(target.reasoning ? LEVELS_BY_NAME : {}) } : target.reasoning ? { ...sees, ...LEVELS_BY_NAME } : undefined;
+  // Where pi-ai sends the translated requests (its model's baseUrl), for the run's trace: none under the faux model.
+  const upstreamOrigin = target.provider !== FAUX_PROVIDER && target.baseUrl ? { upstreamOrigin: target.baseUrl } : {};
+  return { ...route, ...(like ? { like } : {}), ...(local ? { local: true } : {}), ...upstreamOrigin, provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
 }
 
 /** Whether pi-ai sends `target`'s requests to OpenRouter (pi-ai's own test, utils/openrouter-cost.js isOpenRouterModel). */
@@ -423,6 +440,111 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     });
     return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
   }) as unknown as typeof fetch;
+}
+
+/** The bytes of a request a token count answers per token (forMessagesClients' count_tokens). */
+const COUNT_BYTES_PER_TOKEN = 4;
+/** Whether a request asks Messages' token count (its path's last segment, any query after it). */
+const countsTokens = (url: unknown): boolean => /\/count_tokens(?:\?|$)/.test(String(url));
+
+/** Why a Messages `tool_choice` that forces a call is refused (its 400's words), else undefined: the model behind the
+ *  route (Ollama's chat) takes no tool choice, so a call forced by "any" or by a tool's name cannot be kept. "auto",
+ *  "none" and none at all are taken; any other type is refused too. */
+function forcedChoice(choice: unknown): string | undefined {
+  if (choice === undefined || choice === null) return undefined;
+  const plain = typeof choice === "object" && !Array.isArray(choice) ? (choice as { type?: unknown; name?: unknown }) : undefined;
+  const type = plain ? plain.type : choice;
+  if (type === "auto" || type === "none") return undefined;
+  const unkept = 'is not taken on this model\'s route: the model here cannot be made to call a tool, so send "auto"';
+  if (type === "any") return `tool_choice "any" ${unkept}`;
+  if (type === "tool") return `tool_choice naming the tool ${String(plain?.name ?? "(none)")} ${unkept}`;
+  return `tool_choice ${JSON.stringify(type ?? "(no type)")} is not taken on this model's route: "auto" and "none" only`;
+}
+
+/** `route` (a translated route's fetch, which streams every answer, as pi-ai asks) for any Messages client on the wire it
+ *  translates onto, which asks two things pi-ai never does. Its token count (POST /v1/messages/count_tokens, free, asked
+ *  beside its turns) is answered here and never run on the model, which has no count of its own: the body's bytes over
+ *  four (COUNT_BYTES_PER_TOKEN), a bound for its context, not a price. A request with no `stream: true` (a side request)
+ *  gets its answer whole, one JSON message as Messages writes it, joined from the stream (wholeOf). A tool_choice that
+ *  forces a call is refused with a 400 before the model is asked (forcedChoice). */
+export function forMessagesClients(route: typeof fetch): typeof fetch {
+  return (async (url: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1] = {}) => {
+    const body = String(init.body ?? "");
+    if (countsTokens(url)) return Response.json({ input_tokens: Math.ceil(new TextEncoder().encode(body).length / COUNT_BYTES_PER_TOKEN) });
+    const read = (() => {
+      try {
+        return JSON.parse(body || "{}") as { stream?: unknown; tool_choice?: unknown };
+      } catch {
+        return undefined;
+      }
+    })();
+    const refused = forcedChoice(read?.tool_choice);
+    if (refused) return messagesError(refused, 400, "invalid_request_error");
+    const streamed = read === undefined || read.stream === true;
+    const answer = await route(url, init);
+    return streamed || answer.status !== 200 ? answer : wholeOf(await answer.text());
+  }) as typeof fetch;
+}
+
+/** The route's translation onto each wire it translates a model onto (wires.ts TRANSLATED), by wire: what a harness's
+ *  proxy on that wire forwards with for `model` (`provider/model-id`), made on `env`. Anthropic's Messages: the route's
+ *  own Messages fetch (messagesFetch), as a Messages client asks it (forMessagesClients). provider.ts routedProvider reads
+ *  it; a wire with no entry has no translation, whatever TRANSLATED says. */
+export const TRANSLATORS: Readonly<Partial<Record<Wire, (model: string, env: NodeJS.ProcessEnv) => Promise<typeof fetch>>>> = Object.freeze({
+  "anthropic-messages": async (model: string, env: NodeJS.ProcessEnv) => forMessagesClients((await routeOf(model, env)).fetch!),
+});
+
+type StreamBlock = { type: string; text?: string; thinking?: string; signature?: string; input?: unknown; [key: string]: unknown };
+
+/** One Messages answer whole, from the events of its stream (`sse`): the message_start's message, each block joined from
+ *  its deltas (a tool call's input parsed from its pieces), the last message_delta's stop and usage over the start's. An
+ *  error event answers as Messages writes an error, at 500, with its words; so does a stream a part of which is not JSON. */
+function wholeOf(sse: string): Response {
+  try {
+    return wholeRead(sse);
+  } catch {
+    // A part that does not read (a data line not JSON, a tool call's input cut short) is said as an error event is.
+    return messagesError("The model's answer could not be read whole: a part of it is not JSON.");
+  }
+}
+
+/** A Messages error answer: `words` its message, 500 api_error unless said otherwise. */
+const messagesError = (words: string, status = 500, type = "api_error"): Response => Response.json({ type: "error", error: { type, message: words } }, { status });
+
+/** wholeOf's reading, which throws on a part that is not JSON. */
+function wholeRead(sse: string): Response {
+  let message: Record<string, unknown> = {};
+  const blocks: StreamBlock[] = [];
+  const pieces = new Map<number, string>();
+  for (const frame of sse.split(/\n\n/)) {
+    const lines = frame.split("\n");
+    const kind = lines.find((line) => line.startsWith("event: "))?.slice("event: ".length);
+    const data = lines.filter((line) => line.startsWith("data: ")).map((line) => line.slice("data: ".length)).join("\n");
+    if (!kind || !data) continue;
+    if (kind === "error") {
+      let words = data;
+      try {
+        const said = JSON.parse(data) as { error?: { message?: unknown }; message?: unknown };
+        words = String(said.error?.message ?? said.message ?? data);
+      } catch {
+        // Its words alone (sendWords), not JSON.
+      }
+      return messagesError(words);
+    }
+    const event = JSON.parse(data) as { index?: number; message?: Record<string, unknown>; content_block?: StreamBlock; delta?: Record<string, unknown>; usage?: Record<string, unknown> };
+    const at = event.index ?? -1;
+    if (kind === "message_start") message = { ...event.message };
+    else if (kind === "content_block_start" && event.content_block) blocks[at] = { ...event.content_block };
+    else if (kind === "content_block_delta" && blocks[at] && event.delta) {
+      const { type, text, thinking, signature, partial_json: piece } = event.delta as { type?: string; text?: string; thinking?: string; signature?: string; partial_json?: string };
+      if (type === "text_delta") blocks[at].text = (blocks[at].text ?? "") + (text ?? "");
+      else if (type === "thinking_delta") blocks[at].thinking = (blocks[at].thinking ?? "") + (thinking ?? "");
+      else if (type === "signature_delta") blocks[at].signature = signature ?? "";
+      else if (type === "input_json_delta") pieces.set(at, (pieces.get(at) ?? "") + (piece ?? ""));
+    } else if (kind === "message_delta") message = { ...message, ...(event.delta ?? {}), usage: { ...((message.usage as object | undefined) ?? {}), ...(event.usage ?? {}) } };
+  }
+  for (const [at, piece] of pieces) if (blocks[at] && piece) blocks[at].input = JSON.parse(piece) as unknown;
+  return Response.json({ ...message, content: blocks.filter(Boolean) });
 }
 
 /** pi-ai's stop reason as Messages says it. */

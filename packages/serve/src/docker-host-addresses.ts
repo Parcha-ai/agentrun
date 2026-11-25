@@ -6,14 +6,18 @@
 //     network (`--network host`) from the egress proxy's image (@parcha/agentrun-computer's EGRESS_IMAGE, pinned by
 //     digest, which every Docker computer with an allow-list needs on the host anyway), as nobody (65534:65534), with no
 //     capability, no new privileges, a read-only root, 64 MiB and 32 processes, removed when it exits, bound to
-//     READ_MS, after which it is removed by its name (killing the client would leave it running). It prints the host's interface addresses (Node's os.networkInterfaces: IPv4 and IPv6 alike) and what
+//     READ_MS. A read that runs out of time or fails is removed by its name (a killed or failed client can leave its
+//     container running, or made and never started), and a name Docker doesn't confirm gone is removed again at the
+//     next read. It prints the host's interface addresses (Node's os.networkInterfaces: IPv4 and IPv6 alike) and what
 //     host.docker.internal resolves to (host-gateway: on Docker Desktop or OrbStack the listing is the VM's, and the
-//     gateway is the way back to the Mac). A read that fails gives none, in words.
+//     gateway is the way back to the Mac). A read that fails gives none, in words, and the server reads again in the
+//     background until one answers (retryHostAddresses).
 //   - the operator's AGENTRUN_DOCKER_HOST_ADDRESSES (workspace/computer-deps.ts), for what no interface shows: a NAT'd
 //     or elastic public address.
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import { EGRESS_IMAGE } from "@parcha/agentrun-computer";
 import { withoutSecrets } from "./secrets.js";
 
@@ -40,8 +44,10 @@ export const readArgsOf = (name: string): readonly string[] => [
 /** A fresh name for one read's container. */
 export const helperName = (): string => `agentrun-host-read-${randomBytes(6).toString("hex")}`;
 
-/** How long removing a read's container that ran out of time, and checking it is gone, may each take. */
-const REMOVE_MS = 15_000;
+/** How long removing a read's container, and checking it is gone, may each take: together within a server's stop
+ *  deadline (stop-signals.ts DEADLINE_MARGIN_MS, compose's 15 s grace), as a read cut by the close removes its container
+ *  inside that stop. A name not confirmed gone in time is kept and removed again later. */
+export const REMOVE_MS = 5_000;
 
 /** Loopback and link-local: no address another machine reaches the host by. */
 const local = (address: string): boolean => /^127\./.test(address) || address === "::1" || /^169\.254\./.test(address) || /^fe[89ab][0-9a-f]:/i.test(address);
@@ -58,39 +64,92 @@ export function addressesOf(answer: string): string[] {
 /** What the read found: the host's addresses, or why there are none. */
 export type HostRead = { readonly addresses: readonly string[] } | { readonly why: string };
 
-/** `docker` with `args`, bound to `ms`: its exit code (or the spawn's error code) and output. */
-export type DockerRun = (args: readonly string[], ms: number) => Promise<{ code: number | string; stdout: string; stderr: string }>;
+/** `docker` with `args`, bound to `ms` and ended at once when `signal` aborts: its exit code ("timeout" at the bound,
+ *  "aborted" at the signal, the signal's name when another signal ended it, the spawn's error code when it never ran)
+ *  and output. */
+export type DockerRun = (args: readonly string[], ms: number, signal?: AbortSignal) => Promise<{ code: number | string; stdout: string; stderr: string }>;
 
-const dockerRun = (env: NodeJS.ProcessEnv): DockerRun => (args, ms) =>
+/** The spawn's error codes: a docker that never ran, so it made no container. */
+const NEVER_RAN = new Set(["ENOENT", "EACCES"]);
+
+const dockerRun = (env: NodeJS.ProcessEnv): DockerRun => (args, ms, signal) =>
   new Promise((resolve) => {
-    const child = execFile("docker", args, { env: withoutSecrets(env), timeout: ms, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
-      const failed = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
-      resolve({ code: !failed ? 0 : failed.killed ? "timeout" : typeof failed.code === "number" ? failed.code : (failed.code ?? failed.name), stdout: String(stdout), stderr: String(stderr) });
+    const child = execFile("docker", args, { env: withoutSecrets(env), timeout: ms, killSignal: "SIGKILL", maxBuffer: 64 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
+      const failed = error as (NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals | null }) | null;
+      resolve({ code: !failed ? 0 : failed.name === "AbortError" ? "aborted" : failed.killed ? "timeout" : typeof failed.code === "number" ? failed.code : (failed.code ?? failed.signal ?? failed.name), stdout: String(stdout), stderr: String(stderr) });
     });
     child.stdin?.end();
   });
 
-/** Removes the read's container `name` after its client ran out of time (killing the client leaves the container
- *  running), and checks it is gone: the words for the read's why. */
-async function removeHelper(docker: DockerRun, name: string): Promise<string> {
+/** What removing a read's container by its name found: gone, still there, or unknown (Docker didn't answer the check),
+ *  with the words for the read's why. */
+type Removal = { readonly left: "gone" } | { readonly left: "there" | "unknown"; readonly words: string };
+
+/** Removes the read's container `name` (`docker rm -f`) and checks it is gone. A container whose `docker run` client was
+ *  killed or failed can outlive it: running, or made and never started, so `--rm` never fires. A name Docker doesn't
+ *  confirm gone is kept in `kept`, and the next read removes it first; one it confirms gone is dropped. */
+async function removeHelper(docker: DockerRun, name: string, kept: Set<string>): Promise<Removal> {
   await docker(["rm", "-f", name], REMOVE_MS);
   const left = await docker(["inspect", "--type", "container", "--format", "{{.State.Running}}", name], REMOVE_MS);
-  if (left.code === 0) return `its container ${name} is still there: remove it with docker rm -f ${name}`;
   // Gone only when Docker says it has no such container; a daemon that didn't answer says nothing of it.
-  if (NO_SUCH_CONTAINER.test(left.stderr)) return `its container was removed`;
-  return `its container ${name} may still be running (docker inspect failed: ${left.stderr.trim().slice(0, 160) || `exit ${left.code}`}): remove it with docker rm -f ${name}`;
+  if (left.code !== 0 && NO_SUCH_CONTAINER.test(left.stderr)) {
+    kept.delete(name);
+    return { left: "gone" };
+  }
+  kept.add(name);
+  if (left.code === 0) return { left: "there", words: `its container ${name} is still there: remove it with docker rm -f ${name}` };
+  return { left: "unknown", words: `its container ${name} may still be running (docker inspect failed: ${left.stderr.trim().slice(0, 160) || `exit ${left.code}`}): remove it with docker rm -f ${name}` };
 }
 
 /** Docker's words for a container it doesn't have, as `docker inspect` gives them. */
 const NO_SUCH_CONTAINER = /no such (object|container)/i;
 
-/** The Docker host's addresses, read through `env`'s docker as above. Never throws: a read that fails, or whose answer
- *  can't be read, says why; one that runs out of time has its container removed. `docker`, `ms` and `name` are the
- *  tests'. */
-export async function readHostAddresses(env: NodeJS.ProcessEnv, docker: DockerRun = dockerRun(env), ms = READ_MS, name = helperName()): Promise<HostRead> {
-  const ran = await docker(readArgsOf(name), ms);
-  if (ran.code === "timeout") return { why: `the read through Docker's socket took over ${ms / 1000} s (${await removeHelper(docker, name)})` };
-  if (ran.code !== 0) return { why: `the read through Docker's socket failed (exit ${ran.code}: ${ran.stderr.trim().slice(0, 200)})` };
+/** An environment's docker: the binary PATH finds and the daemon it reaches. */
+const envKey = (env: NodeJS.ProcessEnv): string => [env.PATH, env.DOCKER_HOST, env.DOCKER_CONTEXT, env.DOCKER_CONFIG].map((one) => one ?? "").join("\0");
+
+/** For each environment's docker (envKey), the names of this process's reads' containers not yet confirmed gone. Only
+ *  names this process made: another server on the same host may have a read in flight, so nothing is swept by label. */
+const leftovers = new Map<string, Set<string>>();
+const keptOf = (env: NodeJS.ProcessEnv): Set<string> => {
+  const key = envKey(env);
+  let kept = leftovers.get(key);
+  if (!kept) leftovers.set(key, (kept = new Set()));
+  return kept;
+};
+
+/** Removes the containers earlier reads through `env`'s docker left (keptOf), one by one, until `signal` aborts or one's
+ *  check gets no answer: a daemon that doesn't answer one wouldn't answer the next, so a sweep costs at most one
+ *  removal's bound (2 × REMOVE_MS) more than its quick ones, and the names it didn't reach wait for the next. */
+async function removeLeft(env: NodeJS.ProcessEnv, docker: DockerRun, signal?: AbortSignal): Promise<void> {
+  const kept = keptOf(env);
+  for (const left of [...kept]) {
+    if (signal?.aborted || (await removeHelper(docker, left, kept)).left === "unknown") return;
+  }
+}
+
+/** The Docker host's addresses, read through `env`'s docker as above, after removing the containers earlier reads left
+ *  (removeLeft). Never throws: a read that fails, or whose answer can't be read, says why; one that ends any way but
+ *  answering or never running (a spawn error) has its container removed by name. `signal` (the server's close) cuts
+ *  the read at once, its client killed, and its container is removed then, within two REMOVE_MS. `docker`, `ms` and
+ *  `name` are the tests'. */
+export async function readHostAddresses(env: NodeJS.ProcessEnv, docker: DockerRun = dockerRun(env), ms = READ_MS, name = helperName(), signal?: AbortSignal): Promise<HostRead> {
+  const kept = keptOf(env);
+  await removeLeft(env, docker, signal);
+  if (signal?.aborted) return { why: "the read through Docker's socket was stopped with the server" };
+  const ran = await docker(readArgsOf(name), ms, signal);
+  if (ran.code === "timeout" || ran.code === "aborted") {
+    const removal = await removeHelper(docker, name, kept);
+    const what = ran.code === "timeout" ? `took over ${ms / 1000} s` : "was stopped with the server";
+    return { why: `the read through Docker's socket ${what} (${removal.left === "gone" ? "its container was removed" : removal.words})` };
+  }
+  if (ran.code !== 0) {
+    const failed = `the read through Docker's socket failed (exit ${ran.code}: ${ran.stderr.trim().slice(0, 200)})`;
+    // A docker that never ran (its spawn failed) made no container. One ended any other way, a signal from outside
+    // included (the OOM killer's), may have made it, running or never started.
+    if (typeof ran.code === "string" && NEVER_RAN.has(ran.code)) return { why: failed };
+    const removal = await removeHelper(docker, name, kept);
+    return { why: removal.left === "there" ? `${failed} (${removal.words})` : failed };
+  }
   try {
     return { addresses: addressesOf(ran.stdout) };
   } catch {
@@ -105,18 +164,53 @@ export function unionOf(read: HostRead, named: readonly string[] | undefined): {
 }
 
 /** One read per process, for each environment's docker (the binary PATH finds and the daemon it reaches), kept once it
- *  succeeds: a server and the runner beside it share it, and a failed read is tried again at the next ask. */
+ *  succeeds: a server and the runner beside it share it, and a failed read is tried again at the next ask. A read this
+ *  call starts ends at `signal` (readHostAddresses). */
 const reads = new Map<string, Promise<HostRead>>();
-export function hostAddressesOnce(env: NodeJS.ProcessEnv): Promise<HostRead> {
-  const key = [env.PATH, env.DOCKER_HOST, env.DOCKER_CONTEXT, env.DOCKER_CONFIG].map((one) => one ?? "").join("\0");
+export function hostAddressesOnce(env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<HostRead> {
+  const key = envKey(env);
   const known = reads.get(key);
   if (known) return known;
-  const read = readHostAddresses(env).then((result) => {
+  const read = readHostAddresses(env, undefined, undefined, undefined, signal).then((result) => {
     if ("why" in result) reads.delete(key);
     return result;
   });
   reads.set(key, read);
   return read;
+}
+
+/** The waits before each read again after a read failed at the start, the last one repeated: soon at first, as a busy
+ *  host's Docker (an image pull, a loaded daemon) often answers within minutes, then every 4 minutes, so a daemon that
+ *  stays down costs one short-lived container each time and no more. */
+export const RETRY_MS: readonly number[] = [15_000, 30_000, 60_000, 120_000, 240_000];
+
+/** Waits `ms`, ending at once when `signal` aborts. The tests give one that ends when they say. */
+export type Wait = (ms: number, signal: AbortSignal) => Promise<void>;
+const wait: Wait = (ms, signal) => delay(ms, undefined, { signal }).catch(() => undefined);
+
+/** Reads again through `env`'s docker after a read failed (`read`: hostAddressesOnce, so the runner beside the server
+ *  shares what it finds), waiting RETRY_MS before each, until one answers (`found` gets it). An answer is kept from then
+ *  on, so no later read removes what the failed ones left: on the same waits, the retry goes on removing those
+ *  containers (removeLeft) until none is left. With no `read` (the operator's addresses are known, so no answer would
+ *  change what is offered), it only removes them. All of it ends when `signal` aborts (the server's close, or a start
+ *  that failed): a pending wait ends at once and nothing more is read or removed; a read in flight ends as `read` lets
+ *  it (the server's is cut by the same signal) and its answer is not taken, and a removal in flight runs to its bound,
+ *  so a close that awaits this promise has removed its containers or kept their names. `wait` and `docker` are the
+ *  tests'. */
+export async function retryHostAddresses({ env, read, found, signal, wait: waitFor = wait, docker = dockerRun(env) }: { env: NodeJS.ProcessEnv; read?: () => Promise<HostRead>; found?: (read: HostRead) => void; signal: AbortSignal; wait?: Wait; docker?: DockerRun }): Promise<void> {
+  let answered = read === undefined;
+  for (let tried = 0; !signal.aborted && !(answered && keptOf(env).size === 0); tried++) {
+    await waitFor(RETRY_MS[Math.min(tried, RETRY_MS.length - 1)]!, signal);
+    if (signal.aborted) return;
+    if (answered || !read) await removeLeft(env, docker, signal);
+    else {
+      const result = await read();
+      if (signal.aborted) return;
+      if ("why" in result) continue;
+      answered = true;
+      found?.(result);
+    }
+  }
 }
 
 /** Why a Docker computer can't keep this server's allow-list from a container: no address of the Docker host is known,

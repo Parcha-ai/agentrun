@@ -408,8 +408,9 @@ test("reset-password clears the password and ends every session; the next visit 
 
 test("every route, called with no credential, enforces its public, owner, API or dedicated scoped credential boundary", async (t) => {
   const server = await owned(t);
-  // Source enrollment, connector commands and SDK receipts accept only their dedicated scoped credential.
-  const scoped = new Set(["registerRemoteConnector", "importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand", "getSdkRun", "sdkRunEvents", "completeSdkRun"]);
+  // Source enrollment, connector commands and snapshot publication, CLI learning and SDK receipts accept only their
+  // dedicated scoped credential. A browser session or general API token cannot replace source publication authority.
+  const scoped = new Set(["registerRemoteConnector", "importRemoteTarget", "importRemoteHistory", "pollRemoteConnector", "remoteCommandEvents", "completeRemoteCommand", "grantSourceSync", "publishSourceSync", "sourceSyncFailure", "startCliLearningRun", "getCliLearningRun", "cliLearningEvents", "completeCliLearningRun", "getSdkRun", "sdkRunEvents", "completeSdkRun"]);
   for (const name of scoped) assert.ok(ROUTES.some(route => route.name === name), `${name} remains covered`);
   for (const route of ROUTES) {
     const path = `/v2${route.pattern.source.replace(/^\^\\\//, "/").replace(/\$$/, "").replace(/\(\[\^\/\]\+\)/g, "x").replace(/\\\//g, "/").replace(/\\\./g, ".")}`;
@@ -667,4 +668,48 @@ test("a sign-in from a new address when the limit's table is full goes through, 
   const full = await signIn(server, PASSWORD);
   assert.equal(full.status, 200, full.text);
   assert.ok(lines.some((line) => / event=auth_failed route=\/v2\/auth\/sign-in reason=sign_in_table_full$/.test(line)), lines.join("\n"));
+});
+
+// Two servers on one machine, the second in Docker with its 7340 published at 7350: cookies are kept per host, not per
+// port, and inside its container that server's socket is on 7340 too. The session cookie is named for the port the
+// browser opened (the Host header's), so a sign-in at one never signs the person out of the other.
+test("the session cookie is named for the port the browser opened, not the server's socket: a published 7350 is not 7340", async (t) => {
+  const server = await owned(t);
+  const at = (port) => ({ ...json, host: `127.0.0.1:${port}`, origin: `http://127.0.0.1:${port}` });
+  const published = await signIn(server, PASSWORD, at(7350));
+  assert.equal(published.status, 200, published.text);
+  assert.match(published.headers["set-cookie"][0], /^agentrun-7350-session=/);
+  const cookie = cookieOf(published);
+  const read = (port, held) => call(server.port, { path: "/v2/agents", headers: { host: `127.0.0.1:${port}`, cookie: held } });
+  assert.equal((await read(7350, cookie)).status, 200, "the cookie it set signs it in at that port");
+  assert.equal((await read(7340, cookie.replace("agentrun-7350-session=", "agentrun-7340-session="))).status, 200, "a session is the server's own, whatever its name");
+  assert.equal((await read(7340, cookie)).status, 401, "another port's cookie is not this one's");
+  const direct = await signIn(server, PASSWORD);
+  assert.match(direct.headers["set-cookie"][0], new RegExp(`^agentrun-${server.port}-session=`), "opened at the server's own port: that port");
+  const bare = await signIn(server, PASSWORD, { ...json, host: "localhost", origin: "http://localhost" });
+  assert.equal(bare.status, 200, bare.text);
+  assert.match(bare.headers["set-cookie"][0], new RegExp(`^agentrun-${server.port}-session=`), "a Host with no port keeps the socket's");
+});
+
+// A browser sends a host's cookies to every port of it: at localhost:8080 (ssh -L 8080:localhost:7340) it holds the
+// session it signed in with at 7340 too. Signing out there ends this server's sessions under every port's name and
+// clears each; another server's cookie on the same host (Docker at 7350) is none of this server's, and is left alone.
+test("sign-out through one port ends this browser's session at every port of this server, and leaves another server's cookie", async (t) => {
+  const server = await owned(t);
+  const at = (port) => ({ ...json, host: `localhost:${port}`, origin: `http://localhost:${port}` });
+  const direct = cookieOf(await signIn(server, PASSWORD, at(7340)));
+  const tunnel = cookieOf(await signIn(server, PASSWORD, at(8080)));
+  assert.match(direct, /^agentrun-7340-session=/);
+  assert.match(tunnel, /^agentrun-8080-session=/);
+  const read = (port, cookie) => call(server.port, { path: "/v2/agents", headers: { host: `localhost:${port}`, cookie } });
+  assert.equal((await read(7340, direct)).status, 200);
+  const elsewhere = "agentrun-7350-session=another-servers-session";
+  const held = `${direct}; ${tunnel}; ${elsewhere}`;
+  const out = await call(server.port, { method: "POST", path: "/v2/auth/sign-out", headers: { ...at(8080), cookie: held }, body: {} });
+  assert.equal(out.status, 200, out.text);
+  assert.equal((await read(7340, direct)).status, 401, "the session signed in at 7340 is ended too");
+  assert.equal((await read(8080, tunnel)).status, 401);
+  const cleared = out.headers["set-cookie"].map((line) => line.split("=")[0]).sort();
+  assert.deepEqual(cleared, ["agentrun-7340-session", "agentrun-8080-session"], "each of this server's names cleared, the other server's not");
+  for (const line of out.headers["set-cookie"]) assert.match(line, /=; HttpOnly; SameSite=Strict; Path=\/; Max-Age=0$/);
 });

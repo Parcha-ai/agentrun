@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
+import { request as httpRequest } from "node:http";
 import { isDeepStrictEqual } from "node:util";
 import { decisionRows } from "../dist/decision-rows.js";
 import { agentFolderOf } from "../dist/files.js";
@@ -51,11 +52,32 @@ test("approving a note is the owner's password session alone, from the console w
   assert.deepEqual(op.security, [{ ownerSession: [] }], "never the document's bearer: the route answers 403 to every token");
   const scheme = doc.components.securitySchemes.ownerSession;
   assert.deepEqual([scheme.type, scheme.in], ["apiKey", "cookie"]);
-  assert.equal(scheme.name, `agentrun-${new URL(baseUrl).port}`, "the cookie the console sets on this server: agentrun-<its port>");
+  assert.equal(scheme.name, `agentrun-${new URL(baseUrl).port}-session`, "the cookie the owner's sign-in sets on this server (page.ts ownerCookieName)");
   assert.match(scheme.description, /password/);
   assert.equal(op.requestBody?.required, true);
   assert.deepEqual(op.requestBody.content["application/json"].schema, { type: "object", additionalProperties: false, maxProperties: 0 });
   assert.deepEqual(doc.components.securitySchemes.bearer, VENDORED.components.securitySchemes.bearer, "the contract's scheme is as vendored");
+});
+
+/** GET /v2/openapi.json from the server at `baseUrl` with these headers (a Host fetch would not send): the document. */
+const openapiWith = (baseUrl, headers) =>
+  new Promise((resolve, reject) => {
+    const req = httpRequest(`${baseUrl}/openapi.json`, { headers }, (res) => {
+      let body = "";
+      res.setEncoding("utf8").on("data", (chunk) => (body += chunk)).on("end", () => (res.statusCode === 200 ? resolve(JSON.parse(body)) : reject(new Error(`${res.statusCode} ${body}`))));
+    });
+    req.on("error", reject).end();
+  });
+
+// The console names the owner's cookie for the port the browser opened, not the socket's (a container listening on 7340,
+// published at 7350), and `__Host-agentrun-session` over https: the document names the one this request's console sets, so
+// a client generated from it sends the cookie the browser holds.
+test("the served document names the owner's cookie as the console sets it for this request: the Host's port, or __Host- over https", async (t) => {
+  const { baseUrl } = await serve(t);
+  const nameOf = (doc) => doc.components.securitySchemes.ownerSession.name;
+  assert.equal(nameOf(await openapiWith(baseUrl, { host: "127.0.0.1:7350" })), "agentrun-7350-session", "published at 7350");
+  assert.equal(nameOf(await openapiWith(baseUrl, { host: "localhost" })), `agentrun-${new URL(baseUrl).port}-session`, "a Host with no port keeps the socket's");
+  assert.equal(nameOf(await openapiWith(baseUrl, { "x-forwarded-proto": "https" })), "__Host-agentrun-session", "behind an https proxy");
 });
 
 test("every route the server serves is in the document, and every operation in it is a route here: served, or marked unsupported with why; the contract's operations this server does not serve are left out", async (t) => {
@@ -185,14 +207,32 @@ test("the contract's operations are as vendored; this server's own are added and
     if (op.operationId === "listRunFiles" || op.operationId === "readRunFile") {
       // A hidden run's files (signins/1): the contract's description, then why 403 is answered here, and 403 added where
       // the contract has none; a file's read also serves the run's recordings (runvideo/1), video/mp4 first in its 200
-      // and 206; the rest as vendored.
+      // and 206; and its `cut=run` read (filecut/1) adds the cut parameter after the contract's, and 413 and 415 (its
+      // text/plain answer is the 200's */*); the listing's `cut=run` (filecut/2) adds the cut parameter after the
+      // contract's, which names each file under the run's cut (RunFile.name); the rest as vendored.
       assert.ok(op.description.startsWith(original.description.trimEnd()) && /403 forbidden/.test(op.description), "the contract's description first, then the 403");
       assert.equal(op.responses["403"].$ref, "#/components/responses/Forbidden");
-      const video = op.operationId === "readRunFile" ? ["200", "206"] : [];
-      assert.deepEqual(Object.keys(changes).sort(), original.responses["403"] && !video.length ? ["description"] : ["description", "responses"]);
-      if (video.length) assert.equal(changes.responses, "runvideo/1");
-      const { description: _a, responses: _b, ...same } = rest;
-      const { description: _c, responses: _d, ...vendoredSame } = original;
+      const read = op.operationId === "readRunFile";
+      const video = read ? ["200", "206"] : [];
+      assert.deepEqual(Object.keys(changes).sort(), read ? ["description", "parameters", "responses"] : original.responses["403"] ? ["description", "parameters"] : ["description", "parameters", "responses"]);
+      assert.deepEqual(op.parameters.slice(0, -1), original.parameters ?? []);
+      const cut = op.parameters.at(-1);
+      assert.deepEqual([cut.name, cut.in, cut.required, cut.schema], ["cut", "query", false, { type: "string", enum: ["run"] }]);
+      if (!read) {
+        assert.equal(changes.parameters, "filecut/2");
+        assert.equal(doc.components.schemas.RunFile.properties.name["x-agentrun-serve"], "filecut/2");
+        assert.equal(doc.components.schemas.RunFile.properties.name.type, "string");
+        assert.ok(!(doc.components.schemas.RunFile.required ?? []).includes("name"), "a listing without the cut names no file");
+      }
+      if (read) {
+        assert.equal(changes.responses, "runvideo/1");
+        assert.equal(changes.parameters, "filecut/1");
+        assert.equal(op.responses["413"].$ref, "#/components/responses/PayloadTooLarge");
+        assert.equal(op.responses["415"].$ref, "#/components/responses/UnsupportedMediaType");
+        assert.deepEqual(Object.keys(op.responses).filter((code) => !Object.hasOwn(original.responses, code)).sort(), [...(original.responses["403"] ? [] : ["403"]), "413", "415"]);
+      }
+      const { description: _a, responses: _b, parameters: _e, ...same } = rest;
+      const { description: _c, responses: _d, parameters: _f, ...vendoredSame } = original;
       assert.ok(isDeepStrictEqual(same, vendoredSame), `${op.operationId} is the contract's but for the 403`);
       for (const code of Object.keys(original.responses)) {
         if (!video.includes(code)) {
@@ -509,7 +549,7 @@ test("a timeline row's usage says where it shows here: a browser call's row carr
 });
 
 /** The closed list of a run's learning reasons, as the console's read shape names them. */
-const REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use"];
+const REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"];
 
 test("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, a run's learning whole on its read and short in lists, its timeline row, the usage meter and the stats block, each enum whole, and the answers meet the document", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl, data } = await serve(t);

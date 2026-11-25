@@ -4,13 +4,17 @@
 // instructions (learning.ts laidLearned, from the launch's learning start).
 import { chooseWorkflows, type LearnedWorkflow, type Seed, seedAt, type Shown } from "../learning.js";
 import type { LearningFolder } from "../learn/folder.js";
+import type { Store } from "../store/index.js";
 
 /** What a claim reads its seed with: the commit, the agent's learning folder where the run's place keeps it (opened for
- *  the read and ended after it), the server's secrets as cuts (`shown`), its log, and `workflows: false` for a run that
- *  takes none (an SDK run with no workflow binding). */
+ *  the read and ended after it), the store whose runs say which are purged (a purged run's workflow is no seed's:
+ *  learning.ts seedAt; null in a run's own process, which reads no other run: its lay only tells its runner whether it
+ *  laid any, and the runner reads the seed again with its store, workflowsAt), the server's secrets as cuts (`shown`),
+ *  its log, and `workflows: false` for a run that takes none (an SDK run with no workflow binding). */
 export interface LearningSeedLay {
   readonly seed: string | null;
   readonly folder: () => LearningFolder;
+  readonly store: Pick<Store, "runs"> | null;
   readonly shown: () => Promise<Shown>;
   readonly log: (line: string) => void;
   readonly workflows?: false;
@@ -32,7 +36,7 @@ export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | 
   let seed: Seed;
   const folder = lay.folder();
   try {
-    seed = await seedAt(folder.workspace, lay.seed);
+    seed = await seedAt(folder.workspace, lay.seed, lay.store);
   } catch (error) {
     lay.log(`the run starts with no learned workflow: ${message(error)}`);
     return undefined;
@@ -54,11 +58,11 @@ export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | 
  *  (chooseWorkflows): what a champion serves from while a newer revision of it is on main (runner/promotion.ts), and
  *  what a run's process is laid at its claim's seed (run-child-host.ts). Throws when the folder cannot answer or the
  *  commit is gone. */
-export async function workflowsAt(read: Pick<LearningSeedLay, "folder" | "shown">, commit: string | null): Promise<LearnedWorkflow[]> {
+export async function workflowsAt(read: Pick<LearningSeedLay, "folder" | "shown"> & { readonly store: Pick<Store, "runs"> }, commit: string | null): Promise<LearnedWorkflow[]> {
   const folder = read.folder();
   let seed: Seed;
   try {
-    seed = await seedAt(folder.workspace, commit);
+    seed = await seedAt(folder.workspace, commit, read.store);
   } finally {
     await folder.end().catch(() => undefined);
   }

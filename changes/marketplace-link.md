@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-serve
-kind: feature
+packages: repo
+kind: docs
 ---
-The console's Templates page has a **Marketplace** link in its top bar to the public template marketplace, https://marketplace.agentrun.ai, which opens in a new tab. A package found there installs through **Add from URL** as before. The repository README links the marketplace under Get started.
+The repository README links the public template marketplace, https://marketplace.agentrun.ai, under Get started. The console already lists the marketplace's templates on its Templates page.

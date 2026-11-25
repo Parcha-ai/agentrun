@@ -26,4 +26,30 @@ describe("an agent card's title row", () => {
     for (const c of ["min-h-6", "items-center"]) expect(row.className.split(" ")).toContain(c);
     expect(row.textContent).toContain("agentic");
   });
+
+  it("draws its harness as the icon alone, named on hover and for a screen reader, with no chip in words beside it", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentsList, { agents: [agent] })));
+    const icon = host.querySelector<HTMLElement>('[data-agent-card-icon] [role="img"]')!;
+    expect([icon.getAttribute("aria-label"), icon.getAttribute("title")]).toEqual(["Pi", "Pi"]);
+    expect(icon.querySelector("svg.lucide-pi")).not.toBeNull();
+    const row = [...host.querySelectorAll<HTMLElement>("span")].find((s) => s.firstElementChild?.textContent === "Hello, AgentRun" && s.children.length > 1)!;
+    expect([...row.children].slice(1).map((c) => c.textContent)).toEqual(["agentic"]);
+  });
+});
+
+describe("the agents page's search", () => {
+  it("finds an agent by each word typed, in any order, as the console's other filters do", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentsList, { agents: [{ ...agent, agent_id: "a1" }, { ...agent, agent_id: "other", definition: { ...agent.definition, name: "Other", description: "Reads mail." } }] })));
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="Search agents"]')!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "agentrun hello");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(host.textContent).toContain("Hello, AgentRun");
+    expect(host.textContent).not.toContain("Reads mail.");
+  });
 });

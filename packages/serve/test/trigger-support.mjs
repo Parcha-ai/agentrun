@@ -1,6 +1,8 @@
-// The triggers' tests' own: a fake clock for the engine, a schedule's body, and a trigger's settled firings.
+// The triggers' tests' own: a fake clock for the engine, a schedule's body, a trigger's settled firings, and a host's
+// launch hook that the install hands firings to.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { agent } from "./support.mjs";
 
@@ -49,13 +51,16 @@ export async function made(api, id, extra) {
   assert.equal((await api("POST", "/agents", agent(id, extra))).status, 201);
 }
 
-/** `check`'s answer once it is truthy, read every 10 ms for up to `ms`; its last answer when the time runs out. For what the
- *  server does after the change a test can await (a sender told of a pause that follows it), so the assert after it reads
- *  the outcome, not the timing. */
-export async function until(check, ms = 5_000) {
+/** `check`'s answer once it is truthy, read every 10 ms for up to `ms`; its last answer when the time runs out, or, given
+ *  `what`, a failed assert in those words. For what the server does after the change a test can await (a sender told of a
+ *  pause that follows it), so the assert after it reads the outcome, not the timing. */
+export async function until(check, ms = 5_000, what = undefined) {
   for (const end = Date.now() + ms; ; await sleep(10)) {
     const answer = await check();
-    if (answer || Date.now() >= end) return answer;
+    if (answer || Date.now() >= end) {
+      if (!answer && what !== undefined) assert.fail(what);
+      return answer;
+    }
   }
 }
 
@@ -76,3 +81,40 @@ export async function firings(api, id, n) {
   }
 }
 
+/** The path a launch-hook fake takes firings at. */
+const HOOK_PATH = "/agentrun/firings";
+
+/** A host's launch hook on 127.0.0.1. Only a POST to its path (any query) is kept in `got` and answered by
+ *  `answer(res, sent, n)` (default 202 `{}`); any other request gets 404 unread, so `got` counts the firings handed. A
+ *  POST cut short or not JSON gets 400. */
+export async function hookServer(t, answer = (res) => res.writeHead(202, { "content-type": "application/json" }).end("{}")) {
+  const got = [];
+  const server = createServer(async (req, res) => {
+    if (req.method !== "POST" || new URL(req.url, "http://h").pathname !== HOOK_PATH) {
+      req.resume();
+      res.writeHead(404).end();
+      return;
+    }
+    let sent;
+    try {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const kept = { method: req.method, headers: req.headers, body: Buffer.concat(chunks) };
+      got.push(kept);
+      sent = kept.sent = JSON.parse(kept.body.toString("utf8"));
+    } catch {
+      if (!res.headersSent && !res.destroyed) res.writeHead(400).end();
+      return;
+    }
+    // An answer that throws (its server stopped under it) fails its test by what it leaves undone, not here.
+    await Promise.resolve().then(() => answer(res, sent, got.length)).catch(() => {
+      if (!res.headersSent && !res.destroyed) res.writeHead(500).end();
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(() => resolve());
+  }));
+  return { url: `http://127.0.0.1:${server.address().port}${HOOK_PATH}`, got };
+}

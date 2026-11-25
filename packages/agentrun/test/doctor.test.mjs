@@ -3,7 +3,7 @@
 // it runs a fake exec: nothing is installed, started or asked of this machine.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -443,6 +443,10 @@ test("Docker: no box warns with the reason and the fix", async () => {
   assert.match(missing.check("docker").summary, /Docker is not installed/);
 });
 
+/** Whether a request to the CLI test's server is the CLI's, an API request under /v2/. Another process on the machine
+ *  may send `GET /` to any new loopback listener: the server neither records nor reads it. */
+const ours = (req) => req.url.startsWith("/v2/");
+
 /** `agentrun doctor` through the CLI, as the bin runs it, against a small server on loopback. */
 async function cli(argv, env) {
   const out = [];
@@ -452,9 +456,35 @@ async function cli(argv, env) {
   return { code, out: out.join(""), err: err.join("") };
 }
 
+test("through the CLI: a server started with its token in AGENTRUN_TOKEN, with neither variable set, is not checked, in the words every CLI command refuses it with", async (t) => {
+  const seen = [];
+  const server = createServer((req, res) => {
+    if (!ours(req)) return void res.writeHead(404).end();
+    seen.push(req.url);
+    const send = (status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    if (req.url === "/v2/health") return send(200, { status: "ok", checks: { store: "ok", disk: "ok" } });
+    if (req.url === "/v2/auth/session") return send(200, { accounts: true, password_set: true, signed_in: false });
+    send(404, {});
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  t.after(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(resolve);
+  }));
+  const data = fresh();
+  // No token_file: the server was started with its token in AGENTRUN_TOKEN.
+  writeFileSync(join(data, ".server.json"), `${JSON.stringify({ base_url: `http://127.0.0.1:${server.address().port}/v2`, pid: process.pid })}\n`, { mode: 0o600 });
+  const env = { PATH: fresh(), DISPLAY: ":0" };
+  const report = JSON.parse((await cli(["doctor", "--data", data, "--json"], env)).out);
+  const words = `The server recorded in ${join(data, ".server.json")} was started with its token in AGENTRUN_TOKEN; set AGENTRUN_API_KEY (or AGENTRUN_TOKEN) to it`;
+  assert.equal(report.checks.find((c) => c.id === "models").summary, `Not checked: ${words}.`);
+  assert.ok(!seen.includes("/v2/capabilities"), "no capabilities read without a token");
+});
+
 test("through the CLI: --json's shape and exit codes, the token sent only to capabilities and never printed, --base-url refused", async (t) => {
   const seen = [];
   const server = createServer((req, res) => {
+    if (!ours(req)) return void res.writeHead(404).end();
     seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization });
     const send = (status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
     if (req.url === "/v2/health") return send(200, { status: "ok", checks: { store: "ok", disk: "ok" } });
@@ -463,7 +493,10 @@ test("through the CLI: --json's shape and exit codes, the token sent only to cap
     send(404, {});
   });
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
-  t.after(() => server.close());
+  t.after(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(resolve);
+  }));
   const data = fresh();
   writeFileSync(join(data, ".server.json"), `${JSON.stringify({ base_url: `http://127.0.0.1:${server.address().port}/v2`, pid: process.pid, token_file: join(data, ".token") })}\n`, { mode: 0o600 });
   writeFileSync(join(data, ".token"), `${CANARY}\n`, { mode: 0o600 });
@@ -497,8 +530,10 @@ test("through the CLI: --json's shape and exit codes, the token sent only to cap
   }
 
   // A record another user could have written (group- and world-readable here) is refused: nothing goes to its address.
+  // Its mode is set after the write, which a umask such as 077 would otherwise take the read bits from.
   const loose = fresh();
-  writeFileSync(join(loose, ".server.json"), `${JSON.stringify({ base_url: `http://127.0.0.1:${server.address().port}/v2`, pid: process.pid, token_file: join(loose, ".token") })}\n`, { mode: 0o644 });
+  writeFileSync(join(loose, ".server.json"), `${JSON.stringify({ base_url: `http://127.0.0.1:${server.address().port}/v2`, pid: process.pid, token_file: join(loose, ".token") })}\n`);
+  chmodSync(join(loose, ".server.json"), 0o644);
   writeFileSync(join(loose, ".token"), `${CANARY}\n`, { mode: 0o600 });
   const asked = seen.length;
   const refused = await cli(["doctor", "--data", loose], env);

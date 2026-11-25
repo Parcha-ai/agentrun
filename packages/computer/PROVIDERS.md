@@ -309,7 +309,10 @@ Some vendors have states beyond these four:
 in the same shape as `get`. The listing finds; `get` answers: AgentRun takes only the ids from your listing and reads
 each one by `get` for its state, labels and end, and drops one `get` reads as not found. So your listing may be stale,
 as E2B's is (it can still show a deleted machine, or an end from before a timer moved). You may return machines that
-don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does.
+don't carry every label (your API filters by some, or none): AgentRun keeps the ones whose `get` does. Your listing
+may also trail a create: create waits up to `timeouts.listedMs` (15 s) for it to show the new machine, then reads the
+machine by `get`, and keeps one that reads running with its labels (with a note), as Daytona's eventually consistent
+listing needs. Any other answer fails create `timeout`.
 
 ```ts
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
@@ -466,13 +469,14 @@ A provider that can do both takes one option, `connect: "exec" | "dial"`, read o
 its host's facts: on `dial` the host declares `connect: "dial"` and has no `exec` or `upload`, and create boots the
 machine with `req.boot.env`. Its descriptor declares the option as a setting with no default (`e2bConnect`,
 `modalConnect`, `daytonaConnect`), so exec holds unless the server's settings say dial. E2B, Modal and Daytona do this.
-Modal's create gives the sandbox `agentrun-dial` as its command and the env as `env`. Daytona's create sends the env as
-`env`, and the box snapshot's entrypoint runs `agentrun-dial`: Daytona runs a snapshot's entrypoint, never the image's
-CMD, so `box/build-daytona.py` names the CMD as the entrypoint ([README](README.md#daytona-on-dial)). E2B can't do
-either: a template's start command runs once at
-the template's build and never sees a create's env, so E2B's create starts `agentrun-dial` itself through envd, once,
-with the env as that one process's ([README](README.md#e2b-on-dial)). Their conformance modules' `dialKit()` refuse, since
-a machine dials the server that minted its token: the Core run happens inside the public server's process.
+Modal's create gives the sandbox `agentrun-dial` as its command and the env as `env`. The other two start
+`agentrun-dial` themselves, once. A template's start command runs once at the template's build and never sees a
+create's env, so E2B's create starts it through envd, with the env as that one process's
+([README](README.md#e2b-on-dial)). Daytona's create starts it in a toolbox session once the sandbox reads `started`,
+the URL on its line ([README](README.md#daytona-on-dial)). A host that starts it can give `dialLog(id)`, and a machine
+that never dials then fails with its last lines. Their conformance
+modules' `dialKit()` refuse, since a machine dials the server that minted its token: the Core run happens inside the
+public server's process.
 
 #### Worked example: Fly Machines
 
@@ -519,8 +523,10 @@ export class E2BProvider extends HostedProvider {
 ```
 
 The same file exports `create(options)` and `conformance`, as `e2b.ts` does. Load your SDK
-lazily through a constant like `E2B_PACKAGE` and pin it exactly as a root devDependency. `test/vendor-sdks.test.mjs`
-finds that constant in your file and checks the pin.
+lazily with `vendorSdk(label, "<package>")` (`src/vendor-sdk.ts`), never an `import()` of your own, and pin it exactly in
+this package's `optionalDependencies`: a plain `npm install` then brings it, and without it `create` says
+`E2B needs the e2b package: npm install e2b@2.63.0`. `test/vendor-sdks.test.mjs` finds the call in your file and checks
+the pin against the lockfile.
 
 The descriptor is data. AgentRun's Settings page shows it, and the registry loads your file through `load`.
 
