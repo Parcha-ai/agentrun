@@ -30,6 +30,7 @@ import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { Result, ScreenFrame, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
 import type { LiveViewHost } from "@parcha/pi-browser/live-view";
+import { helperEnv } from "./helper-env.js";
 import { commandOnPath } from "./host-command.js";
 
 /** The program that encodes the video. */
@@ -235,7 +236,8 @@ export function startRecording(input: RecordInput): Recording {
       return undefined;
     }
     const [width, height] = fitted(frame.frameWidth, frame.frameHeight, limits.edge);
-    const child = spawn(input.ffmpeg ?? FFMPEG, argsOf(frame.format, width, height, path), { stdio: ["pipe", "ignore", "pipe"] });
+    // A helper program's environment (PATH, the locale, TMPDIR), never the server's own, which holds its secrets.
+    const child = spawn(input.ffmpeg ?? FFMPEG, argsOf(frame.format, width, height, path), { stdio: ["pipe", "ignore", "pipe"], env: helperEnv() });
     let exited!: () => void;
     const opened: Part = { child, format: frame.format, name, path, exited: new Promise((resolve) => (exited = resolve)), dead: false, ending: false, stderr: "" };
     /** Set when ffmpeg did not start (its 'error' comes before any 'close'). */

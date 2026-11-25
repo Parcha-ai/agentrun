@@ -112,7 +112,10 @@ AGENTRUN_PUBLIC_URL, when set, is the address people open (a container's
 published port, or a proxy's URL), and the link printed uses it; with none, Render's RENDER_EXTERNAL_URL is.
 AGENTRUN_FREE_MODEL_REQUESTS (default 60) is the most requests on free models ($0 in the catalog) a run makes, capped
 or not (ChatGPT-plan requests don't count): the next is not sent and the run fails, spend_cap_reached. stdout gets one line per request, per run start and
-end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
+end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines. AGENTRUN_LOG=debug keeps them and
+also writes into a run's log one line per call an ACP agent announces, on a recipe that declares announces: its
+toolCallId, kind and the tool name the recipe's field holds when it names an AgentRun tool ("native" for
+any other call), never its input.
 
 AGENTRUN_TELEMETRY=0 (or DO_NOT_TRACK=1) turns off the anonymous usage counts (docs/telemetry.md): a random id, the
 version, the platform and how many runs as a range, never prompts, files or keys. Off in CI, under a test runner and under --faux too;

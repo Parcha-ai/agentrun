@@ -8,8 +8,9 @@
 //     provider sees only the turns' Messages requests; anything it reaches for beyond loopback goes to the check's own
 //     proxy, which refuses and lists it).
 //   Stage 3, live: the agent is killed (SIGKILL) after a turn and the next turn resumes it (its own session/load, or a
-//     fresh session told the conversation), a denied call never runs, one of our tools runs over MCP, and another runner
-//     with its own directory picks the session up from the records.
+//     fresh session told the conversation), a denied call never runs, one of our tools runs over MCP without the agent
+//     asking permission for it (unless its recipe declares the title tie), and another runner with its own directory
+//     picks the session up from the records.
 // It prints the three facts a harness row carries: resume (load | restart), tool_gate (permission | config: whether the
 // agent asks before a tool call) and billing (proxy | plan).
 // The check spends: four short turns on the run's model, under a cap (default $0.25).
@@ -51,7 +52,8 @@ export interface HarnessCheckOptions {
   /** The most the check may spend, USD. */
   capUsd?: number;
   platform?: string;
-  /** For tests: the fetch the model proxy forwards with. */
+  /** For tests: the network the model proxy forwards to, under the check's recorder. A model the route translates goes
+   *  through the route's own fetch instead, as on a server. */
   fetch?: typeof fetch;
   /** Each step as it happens, a line of words. */
   say?: (line: string) => void;
@@ -225,25 +227,42 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     needs = { model: ref, models: await providerModels(env) };
   }
 
-  // The session: the check's tools, its gate, its egress proxy, the recording fetch.
+  // The session: the check's tools, its gate, its egress proxy, its recorder.
   const nonce = randomBytes(6).toString("hex");
   const echoed: unknown[] = [];
   const deniedRan: unknown[] = [];
   const tools: HostTool[] = [
-    { name: "check_echo", description: "Echo the text back, prefixed with ECHO.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, replay: "never", call: async (args) => (echoed.push(args), { text: `ECHO:${(args as { text?: unknown })?.text ?? ""}` }) },
+    // A path beside the text: Goose 1.59.2 titles a call whose arguments hold one with a summary of it (` · proof.txt`), so
+    // each release's title form for such a call runs here, and the adapter ties nothing to it.
+    { name: "check_echo", description: "Echo the text back, prefixed with ECHO.", inputSchema: { type: "object", properties: { text: { type: "string" }, path: { type: "string", description: "A file name to echo beside it." } }, required: ["text"] }, replay: "never", call: async (args) => (echoed.push(args), { text: `ECHO:${(args as { text?: unknown })?.text ?? ""}` }) },
     { name: "check_denied", description: "A tool this run refuses: calling it shows the refusal.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, replay: "never", call: async (args) => (deniedRan.push(args), { text: "this call should never have run" }) },
   ];
   // The gate allows check_echo alone. Everything else is denied, the agent's own calls (`acp_<kind>`) included, as a
-  // server's gate answers them: a call of ours whose title the adapter can't tie is one of those, so it fails mcp_tool.
+  // server's gate answers them: a permission request for a call of ours, on a recipe with no title tie or one whose title
+  // the adapter can't tie, is one of those: refused, so mcp_tool fails (on calls 0, or on ourAsks where the agent runs it
+  // anyway), and the row counts it in ourAsks either way.
   const gateAsked: { tool: string; answer: string }[] = [];
-  const gate = async (call: { tool: string }) => {
+  // The ids of check_echo's MCP calls, as the gate got them: the agent's announced toolCallId where the adapter matched
+  // the call to one. A permission request under one of these ids was for our tool.
+  const echoIds = new Set<string>();
+  // The agent's toolCallIds (the gate call's args carry each) of the permission requests (`acp_<kind>`) whose input's
+  // `text` is the nonce, as check_echo's text argument is: requests for our tool by its arguments, as the adapter
+  // matches a call to its MCP call (CallIds), never by a title. The nonce is new for each check. Its `text` field and not
+  // anywhere in the input: an agent may write the nonce into proof.txt with an editor of its own (Goose's
+  // developer__text_editor, `file_text`), and Goose asks with kind "other" for every call, so the kind can't tell the
+  // two apart. This catches a request the gate refused and the agent never ran, which no check_echo id ever names.
+  const nonceToolCallIds = new Set<string>();
+  const gate = async (call: { tool: string; callId: string; args?: Record<string, unknown> }) => {
     const answer = call.tool === "check_echo" ? "allow" : "deny";
+    if (call.tool === "check_echo") echoIds.add(call.callId);
+    else if (call.tool.startsWith("acp_") && (call.args?.input as { text?: unknown } | null | undefined)?.text === nonce && typeof call.args?.toolCallId === "string") nonceToolCallIds.add(call.args.toolCallId);
     gateAsked.push({ tool: call.tool, answer });
     return answer === "allow" ? ("allow" as const) : { deny: "harness-check refuses this call on purpose" };
   };
   const forwarded: { method: string; path: string; tools: string[]; text: string }[] = [];
-  const forward = options.fetch ?? fetch;
-  const recording: typeof fetch = async (input, init) => {
+  // The recorder wraps the hop the proxy forwards with: the route's own fetch for a model it translates (an Ollama
+  // model), else the network (options.fetch in tests). So a check on such a model runs the route a server's run takes.
+  const record = (next: typeof fetch | undefined): typeof fetch => async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const text = bodyText(init?.body);
     let toolNames: string[] = [];
@@ -254,7 +273,7 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
       // Not JSON: no tools.
     }
     forwarded.push({ method: init?.method ?? "GET", path: url.pathname, tools: toolNames, text });
-    return forward(input, init);
+    return (next ?? options.fetch ?? fetch)(input, init);
   };
   const logs: { message: string; [field: string]: unknown }[] = [];
   const log = (message: string, fields?: Record<string, unknown>) => void logs.push({ message, ...(fields ?? {}) });
@@ -283,8 +302,8 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     starts += 1;
   };
   // The recipe's entry as a server builds it (harness-recipe-entry.ts), on this check's route, log, variables (its egress
-  // proxy) and recording fetch.
-  const entry = recipeEntryOf({ recipe, binary, release, route: () => route, beforeStart, vars: () => childVars, fetch: recording, log });
+  // proxy) and recorder.
+  const entry = recipeEntryOf({ recipe, binary, release, route: () => route, beforeStart, vars: () => childVars, record, log });
   const planNeeds: AdapterNeeds = { model: { provider: recipe.id, modelId: planModel ?? "default" }, models: { getModel: () => undefined } };
   const adapterFor = async (): Promise<AgentAdapter> => entry.adapter!(hostEnv, needs ?? planNeeds);
   // The first runner's adapter is made before any turn, so a model this server can't run is refused before the agent
@@ -346,12 +365,25 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     // Turn 1: one of our tools over MCP.
     say(`${recipe.label}: turn 1, a call of our check_echo tool over MCP`);
     const first = await sessionOn(join(work, "runner-a"));
-    const t1 = await first.turn(`Use the check_echo tool once, with the text argument set to ${nonce}. Then reply with exactly what it returned and nothing else.`);
+    const t1 = await first.turn(`Use the check_echo tool once, with the text argument set to ${nonce} and the path argument set to proof.txt. Then reply with exactly what it returned and nothing else.`);
+    // The permissions the agent asked for in turn 1 (permissionAsks), and of those the ones for our tool (ourAsks), each
+    // counted once: a request whose toolCallId is the id a check_echo MCP call reached the gate under, or one whose gate
+    // question's input carried check_echo's nonce as its text (nonceToolCallIds, by the toolCallId its args carry).
+    // Matched by id and arguments, never by title. The adapter answers a request for our tool only where
+    // the recipe declares the title tie (quirks.permissionTie, Cursor's); any other agent must ask nothing for our tools
+    // (an allowFile, Goose's), since the server's gate asks at the MCP call. Any other request is the agent's own call:
+    // the gate denied it and lists it (gate.permissionsAsked), and it fails no stage.
+    const turnAsks = asked();
+    const permissionAsks = turnAsks.length;
+    const ourIds = new Set([...echoIds, ...nonceToolCallIds]);
+    const ourAsks = turnAsks.filter((l) => typeof l.toolCallId === "string" && ourIds.has(l.toolCallId)).length;
+    const tied = recipe.quirks.permissionTie === "title";
+    const askedProblem = ourAsks > 0 && !tied ? `the agent asked permission for our tool ${ourAsks} time(s) (a request under the id of a check_echo call, or with check_echo's arguments): its recipe needs an allowFile in the form the agent reads, so it runs our tools unasked, or the title tie (quirks.permissionTie) when the agent asks for every MCP call whatever its config says` : undefined;
     const firstOpen = opened()[0];
     // The environment while the agent runs.
     const environ = firstOpen?.pid ? environOf(firstOpen.pid) : undefined;
     const echoReached = messages().some((r) => r.text.includes(`ECHO:${nonce}`));
-    stage3.mcp_tool = { ok: t1.status === "completed" && echoed.length >= 1 && (recipe.model.billing !== "proxy" || echoReached), turn: t1.status, ...(t1.error ? { error: t1.error } : {}), calls: echoed.length, resultReachedModel: recipe.model.billing === "proxy" ? echoReached : null };
+    stage3.mcp_tool = { ok: t1.status === "completed" && echoed.length >= 1 && (recipe.model.billing !== "proxy" || echoReached) && !askedProblem, turn: t1.status, ...(t1.error ? { error: t1.error } : {}), calls: echoed.length, resultReachedModel: recipe.model.billing === "proxy" ? echoReached : null, permissionAsks, ourAsks, ...(askedProblem ? { problem: askedProblem } : {}) };
 
     // Stage 2: the tools the agent offered its model on its first request. The proxy refuses a request that offers a tool
     // its policy does not allow, so one that reached the provider at all passed that rule: the stage is whether one did.

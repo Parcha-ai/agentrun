@@ -18,9 +18,9 @@ import { logLine } from "./print.js";
 import { runCutValues } from "./run-cut.js";
 import { runGraphView } from "./run-reads-over-store.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
-import type { TimelineEvent } from "./timeline/index.js";
 import type { SignInReader } from "./run-view.js";
 import { scrub } from "./secret-cut.js";
+import { type CallContext, callContexts, effectContext, rowOutput } from "./share-context.js";
 import { hostSecrets, handedSecret, type StoredKeys, withSecrets } from "./secrets.js";
 import { bootSealKey, SealKeyRefused, withSealKey } from "./seal-key.js";
 import { signInReads } from "./sign-ins-store.js";
@@ -65,47 +65,53 @@ export function stringsOf(value: unknown): string[] {
   return out;
 }
 
-/** A tool's output with its call's context (ruling LVI): the file the call read whole (`path`) or the shell command it
- *  ran (`command`), so the scrubber reads a credential file's or a dump command's output as the dump it is, though the
- *  output stands alone in its result's field. A share's export reads the same (secret-cut.ts ScrubOptions). */
-export interface ShareText {
+/** A tool's output with its call's context (ruling LVI, share-context.ts CallContext): the file the call read whole
+ *  (`path`) or the shell command it ran (`command`). A share's export reads the same (run-export.ts). */
+export interface ShareText extends CallContext {
   readonly text: string;
-  readonly path?: string;
-  readonly command?: string;
 }
 
-/** A call that prints one file whole, by its tool's name: its output is that file's content (a write's or an edit's is
- *  not). Claude Code's and pi's `Read`, Gemini's `read_file`, ACP's `fs/read_text_file`. Its file is its input's
- *  `file_path` (Claude Code; Gemini CLI's current `read_file`), `absolute_path` (Gemini CLI's `read_file` in v0.1.18),
- *  `target_file` (Cursor, as ruled: in no published schema found) or `path` (pi; ACP; Cursor CLI's published
- *  `readToolCall.args.path`), ruling LXIV. */
-const FILE_READ_TOOL = /^(?:read|read_?file|(?:fs\/)?read_text_file)$/i;
-/** A shell `-c` launch (`["bash", "-lc", "cat ~/.pgpass"]`): its script is the command. */
-const SHELL_LAUNCH = /^(?:(?:\/usr)?\/bin\/)?(?:ba|z|da)?sh$/;
-const SHELL_SCRIPT_FLAG = /^-l?c$/;
-
-/** The command a call's input runs, when it runs one: `command` or `cmd`, a string or an argv. */
-function commandOf(input: Record<string, unknown>): string | undefined {
-  const command = input.command ?? input.cmd;
-  if (typeof command === "string") return command;
-  if (!Array.isArray(command) || command.length === 0 || !command.every((part) => typeof part === "string")) return undefined;
-  const argv = command as string[];
-  return argv.length === 3 && SHELL_LAUNCH.test(argv[0]!) && SHELL_SCRIPT_FLAG.test(argv[1]!) ? argv[2] : argv.join(" ");
+/** A served Timeline row's strings, those that hold a call's output (share-context.ts rowOutput: a result's preview and
+ *  summary, an approval outcome's text) with that call's context. */
+function rowTexts(row: unknown, contexts: ReadonlyMap<string, CallContext>): (string | ShareText)[] {
+  const output = rowOutput(row, contexts);
+  if (output === undefined) return stringsOf(row);
+  const fields = row as Record<string, unknown>;
+  const rest = { ...fields };
+  for (const field of output.fields) rest[field] = null;
+  return [...stringsOf(rest), ...output.fields.map((field) => ({ text: fields[field] as string, ...output.context }))];
 }
 
-/** Each call's context by its tool_use_id, from a Timeline read with its calls' arguments (calls=whole: `tool_input`). */
-function callContexts(rows: readonly TimelineEvent[]): Map<string, { path?: string; command?: string }> {
-  const out = new Map<string, { path?: string; command?: string }>();
-  for (const row of rows) {
-    const input = (row as Record<string, unknown>).tool_input;
-    if (row.kind !== "tool_use" || row.tool_use_id === null || input === null || typeof input !== "object" || Array.isArray(input)) continue;
-    const args = input as Record<string, unknown>;
-    const file = args.file_path ?? args.absolute_path ?? args.target_file ?? args.path;
-    const path = row.tool_name !== null && FILE_READ_TOOL.test(row.tool_name) && typeof file === "string" ? file : undefined;
-    const command = commandOf(args);
-    if (path !== undefined || command !== undefined) out.set(row.tool_use_id, { ...(path !== undefined ? { path } : {}), ...(command !== undefined ? { command } : {}) });
+/** A workflow graph's strings, each call's output (`effects[i].output`, every string in it) with that call's own context
+ *  (share-context.ts effectContext). */
+function graphTexts(graph: unknown): (string | ShareText)[] {
+  if (graph === null || typeof graph !== "object" || !Array.isArray((graph as { effects?: unknown }).effects)) return stringsOf(graph);
+  const texts: (string | ShareText)[] = stringsOf({ ...graph, effects: null });
+  for (const effect of (graph as { effects: unknown[] }).effects) {
+    const context = effectContext(effect);
+    if (context === undefined) {
+      texts.push(...stringsOf(effect));
+      continue;
+    }
+    const { output, ...rest } = effect as Record<string, unknown>;
+    texts.push(...stringsOf({ ...rest, output: null }), ...stringsOf(output).map((text) => ({ text, ...context })));
   }
-  return out;
+  return texts;
+}
+
+/** What a share of a run carries as the count reads it, from what shareTexts read: the run view's allowlisted fields, the
+ *  agent's name, the served rows (each call's output with its context, from the rows read with their calls' arguments,
+ *  `calls`, which are read for that alone) and a workflow's graph (null for none). */
+export function shareTextsOf(read: { view: Readonly<Record<string, unknown>>; agentName: unknown; rows: readonly unknown[]; calls: readonly unknown[]; graph: unknown }): (string | ShareText)[] {
+  const texts: (string | ShareText)[] = [];
+  const add = (value: unknown): void => void texts.push(...stringsOf(value));
+  for (const field of SHARE_RUN_FIELDS) add(read.view[field]);
+  add((read.view.imported_from as { source?: unknown } | undefined)?.source);
+  add(read.agentName);
+  const contexts = callContexts(read.calls);
+  for (const row of read.rows) texts.push(...rowTexts(row, contexts));
+  if (read.graph !== null) texts.push(...graphTexts(read.graph));
+  return texts;
 }
 
 /** What a share of run `runId` would carry, as strings (object keys included: stringsOf), a tool's output with its
@@ -120,41 +126,29 @@ export async function shareTexts(store: Store, runId: string, deps: ShareTextDep
   const viewDeps: ViewDeps = { origin: "http://scrub.invalid", serverSecrets: deps.serverSecrets, keyEnv: deps.keyEnv, sealKey: deps.sealKey, ...(deps.signIns ? { signIns: deps.signIns } : {}) };
   const view = await viewOverStore(store, runId, viewDeps);
   if (!view) return "unknown";
-  const texts: (string | ShareText)[] = [];
-  const add = (value: unknown): void => void texts.push(...stringsOf(value));
-  for (const field of SHARE_RUN_FIELDS) add(view[field]);
-  add((view.imported_from as { source?: unknown } | undefined)?.source);
-  add((await store.agents.get(row.agentId))?.name);
-  // A result's output is scrubbed with its call's context (ruling LVI): its row's other strings as they are.
-  const calls = callContexts(await servedTimelineRows(deps, store, runId, ctx, true));
-  for (const row of await servedTimelineRows(deps, store, runId, ctx, false)) {
-    const call = row.kind === "tool_result" && row.tool_use_id !== null ? calls.get(row.tool_use_id) : undefined;
-    if (call === undefined || row.tool_result_preview === null) {
-      add(row);
-      continue;
-    }
-    add({ ...row, tool_result_preview: null });
-    texts.push({ text: row.tool_result_preview, ...call });
-  }
+  const agentName = (await store.agents.get(row.agentId))?.name;
+  // A result's output is scrubbed with its call's context (ruling LVI): the rows read with their calls' arguments name it.
+  const calls = await servedTimelineRows(deps, store, runId, ctx, true);
+  const rows = await servedTimelineRows(deps, store, runId, ctx, false);
+  let graph: Record<string, unknown> | null = null;
   if (view.kind === "workflow") {
     try {
-      add(
-        await runGraphView(store, runId, {
-          runWorkspace: async () => null,
-          recordings: async () => null,
-          env: deps.keyEnv(),
-          sealKey: deps.sealKey,
-          runFacts: (_store, id) => factsOverStore(store, id, viewDeps),
-          withheld: async () => false,
-          cutValues: (_store, id) => runCutValues(deps, store, id),
-          context: ctx,
-        }),
-      );
+      graph = await runGraphView(store, runId, {
+        runWorkspace: async () => null,
+        recordings: async () => null,
+        env: deps.keyEnv(),
+        sealKey: deps.sealKey,
+        runFacts: (_store, id) => factsOverStore(store, id, viewDeps),
+        withheld: async () => false,
+        cutValues: (_store, id) => runCutValues(deps, store, id),
+        context: ctx,
+      });
     } catch (error) {
       if (error instanceof ApiError && error.code === "forbidden") return "withheld";
       throw error;
     }
   }
+  const texts = shareTextsOf({ view, agentName, rows, calls, graph });
   const cut = await runCutValues(deps, store, runId);
   if (cut === "unreadable") return "withheld";
   return { kind: String(view.kind), texts, held: cut.values };
