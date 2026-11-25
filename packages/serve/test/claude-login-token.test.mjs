@@ -1767,6 +1767,32 @@ test("a read of the lock that fails for a reason other than the lock being gone,
   assert.ok(!existsSync(current), "its lock is released");
 });
 
+test("a log that throws at the line after a rotating post never loses the new pair: the answer is written back before that line, so the file holds it and the ask is handed its token", { timeout: 20_000 }, async (t) => {
+  assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
+  const { login, write } = loginFolder(t);
+  const now = 1_900_000_000_000;
+  const old = { access: fake("access-old"), refresh: fake("refresh-old") };
+  const next = { access: fake("access-new"), refresh: fake("refresh-new") };
+  write(oauthOf(old.access, now + 60_000, old.refresh));
+  const endpoint = await rotatingEndpoint(t, new Map([[old.refresh, next]]));
+  // The check after the post fails to read the lock once (EIO, read 3), so the after_post line is said; the log throws
+  // there, as a writer that fails at once would.
+  const { lockFs } = lockReads(login, (n) => n === 3);
+  const thrown = [];
+  const log = (fields) => {
+    if (fields.at === "after_post") {
+      thrown.push(fields);
+      throw new Error("the log's writer failed");
+    }
+  };
+  const renew = tokens.renewLogin({ fetch: endpoint.fetch, now: () => now, log, lockFs, lockUpdateMs: 60_000, lockWaitMs: 1_000 });
+  const asked = await new tokens.LoginTokens({ login, now: () => now, renew }).token().catch((error) => error.message);
+  assert.equal(thrown.length, 1, "the after_post line was said, and the log threw there");
+  assert.equal(JSON.parse(readFileSync(join(login.dir, ".credentials.json"), "utf8")).claudeAiOauth.refreshToken, next.refresh, "a log that throws after the post never loses the new pair: the answer is written back to the file first");
+  assert.equal(asked, next.access, "the ask is handed the new token from the file");
+  assert.equal(endpoint.posts.length, 1, "posted once");
+});
+
 test("a holder's release whose two reads of its lock both fail (not the lock gone) never removes it: a lock it cannot read may be another holder's, so it is left for the 60 s stale time", { timeout: 20_000 }, async (t) => {
   assert.equal(typeof tokens.renewLogin, "function", "the runner's renewal (renewLogin)");
   const { login, write } = loginFolder(t);
