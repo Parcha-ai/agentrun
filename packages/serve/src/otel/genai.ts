@@ -108,9 +108,9 @@ export function tracedEvent(event: AdapterEvent, naming: EventNaming): TraceEven
   return { type: "other" };
 }
 
-/** The model a request's span names: the one asked when the run knows it (`known`: its price table has it); else the
- *  model of the route it came by (`routed`); failing that, the asked name through the runner's redactor (written). A
- *  model a request body names is the client's (the model's) words. */
+/** The model a request's span names: the one asked when the run knows it (`known`: a route's model, or in its price
+ *  table); else the model of the route it came by (`routed`); failing that, the asked name through the runner's redactor
+ *  (written). A model a request body names is the client's (the model's) words. */
 export function tracedModel(asked: string | undefined, rule: { readonly known: (model: string) => boolean; readonly routed?: string; readonly redact?: (text: string) => string }): string | undefined {
   if (asked === undefined || rule.known(asked)) return asked;
   return rule.routed ?? written(asked, rule.redact);

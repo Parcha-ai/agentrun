@@ -416,7 +416,10 @@ test("under the runner subcommand (each run a process of its own), a run's relea
   });
   withEnv(t, { OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${collector.address().port}` });
   const hanging = hangingExporter();
-  const server = await serve(t, { childRuns: { tracing: genAiTracing(ON, { exporter: hanging, log: () => {} }) } });
+  // The runner's tracing, its flush a spy that never answers: a release that waited on it would never come.
+  let flushed = 0;
+  const tracing = genAiTracing(ON, { exporter: hanging, log: () => {} }).then((made) => ({ open: made.open, flush: () => ((flushed += 1), new Promise(() => {})) }));
+  const server = await serve(t, { childRuns: { tracing } });
   const made = await whenFree(() => server.api("POST", "/agents", agent("traced")));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const run = await whenFree(() => server.api("POST", "/agents/traced/runs", { input: { content: "Hello." } }));
@@ -426,7 +429,8 @@ test("under the runner subcommand (each run a process of its own), a run's relea
   await until(async () => (await server.store.runs.get(run.body.run_id)).runner === null, "the run's claim was released", 20_000);
   assert.deepEqual(posts, [], "the run's process sent no span to the collector itself");
   assert.ok(hanging.exported.some((span) => span.name.startsWith("invoke_agent ")), `the runner's exporter took the run's spans: ${hanging.exported.map((span) => span.name)}`);
-  assert.equal(hanging.flushes, 0, "no flush before the run's release");
+  assert.equal(flushed, 0, "no flush of the runner's tracing before the run's release");
+  assert.equal(hanging.flushes, 0, "no flush of the exporter before the run's release");
 });
 
 test("a run whose root span failed to start leaves its trace id to no later span", async () => {
