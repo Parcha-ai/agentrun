@@ -161,16 +161,16 @@ test("with a Parallel key saved on Tool keys, auto is Parallel where there is no
   assert.equal((await api("PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: PARALLEL_CANARY } })).status, 204);
   const checked = (await seen()).parallel.length; // the save checks the key against Parallel first (#1508): the run's requests are the ones after
   assert.deepEqual((await resolves(api)).web_search, each("parallel"), "the saved key, with no restart: Parallel before keyless Exa, on claude-agent too");
-  assert.deepEqual((await resolves(api)).web_fetch, each("kernel"), "web_fetch stays the kernel's fetch");
+  assert.deepEqual((await resolves(api)).web_fetch, each("parallel"), "web_fetch on auto: Parallel too, on the saved key");
   const run = await research(api, "auto-parallel", {});
   assert.match(run.results.web_search, /^\{"provider":"parallel","objective":"widgets","queries":\["widgets"\],"results":\[\{"url":"https:\/\/registry\.example\/widgets"/);
   assert.deepEqual(run.rows.filter((row) => row.kind === "phase" && row.tool_name === "web_search").map((row) => row.summary), ["Tool cost: parallel charged $0.0010 for web_search"], "its fee booked");
   let calls = await seen();
-  assert.deepEqual([calls.parallel.slice(checked).map((call) => [call.path, call.authorized]), calls.exa], [[["/v1/search", true]], []], "Parallel on the saved key; Exa never asked");
+  assert.deepEqual([calls.parallel.slice(checked).map((call) => [call.path, call.authorized]), calls.exa], [[["/v1/search", true], ["/v1/extract", true]], []], "Parallel on the saved key, its search and its fetch's extract; Exa never asked");
   const keyless = await research(api, "picked-exa", { tool_settings: { web_search: { provider: "exa-keyless" } } });
   assert.match(keyless.results.web_search, /^\{"provider":"exa-keyless"/, "a pick of exa-keyless is keyless, the key held or not");
   calls = await seen();
-  assert.deepEqual([calls.parallel.length - checked, calls.exa.filter((call) => call.method === "tools/call").length], [1, 1]);
+  assert.deepEqual([calls.parallel.slice(checked + 2).map((call) => call.path), calls.exa.filter((call) => call.method === "tools/call").length], [["/v1/extract"], 1], "its search on keyless Exa; its fetch on auto, Parallel's extract");
 });
 
 test("a capped pi run whose auto search is Parallel, under a cap just short of one search's price, is refused in the cap's words before anything is sent: no request reaches Parallel, and none goes to keyless Exa in its place", { timeout: 90_000 }, async (t) => {
@@ -200,7 +200,7 @@ test("a capped claude-agent run on auto never sends Claude's own search: it reso
     assert.equal((await store.runs.launch(run.runId))?.body?.plane?.web_search, keyed ? "parallel" : "firecrawl-keyless");
     // Keyless Firecrawl's fake is not named here, so under --faux it is never asked: keyless Exa behind it answers.
     assert.match(run.results.web_search, keyed ? /^\{"provider":"parallel"/ : /^\{"provider":"exa-keyless"/);
-    assert.deepEqual([calls.parallel.map((call) => call.path), calls.exa.filter((call) => call.method === "tools/call").length, calls.upstream], keyed ? [["/v1/search"], 0, []] : [[], 1, []], `${id}: one search, on its provider; no model provider's search`);
+    assert.deepEqual([calls.parallel.map((call) => call.path), calls.exa.filter((call) => call.method === "tools/call").length, calls.upstream], keyed ? [["/v1/search", "/v1/extract"], 0, []] : [[], 1, []], `${id}: one search, on its provider, and keyed, the fetch's extract on Parallel; no model provider's search`);
   }
 });
 

@@ -363,8 +363,9 @@ test("a run keeps the tools its first launch resolved: a PUT between its launche
   const via = (rows) => rows.filter((row) => row.kind === "tool_result").map((row) => /"via":"(\w+)"/.exec(row.tool_result_preview)?.[1]);
   const first = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify(["http://public.example/"])}` } });
   assert.equal(first.status, 202, JSON.stringify(first.body));
-  assert.deepEqual(via((await follow(api, first.body.run_id, ["completed"])).rows), ["direct"]);
-  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { provider: "parallel" } })).status, 200);
+  const asked = async () => (await readFile(files.parallel, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(via((await follow(api, first.body.run_id, ["completed"])).rows), ["parallel"], "auto on the server's Parallel key: Parallel's extract");
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { provider: "kernel" } })).status, 200);
   // The run opens again for a follow-up: its process launches anew, on the plane it kept.
   assert.equal((await api("POST", `/runs/${first.body.run_id}/messages`, { content: "Fetch again." })).status, 202);
   let rows = [];
@@ -373,11 +374,12 @@ test("a run keeps the tools its first launch resolved: a PUT between its launche
     await new Promise((resolve) => setTimeout(resolve, 100));
     rows = (await api("GET", `/runs/${first.body.run_id}/timeline`)).body.rows;
   }
-  assert.deepEqual(via(rows), ["direct", "direct"], "its own web_fetch is still the kernel's");
+  assert.deepEqual(via(rows), ["parallel", "parallel"], "its own web_fetch is still Parallel's, as its first launch resolved it");
+  const sent = await asked();
+  assert.ok(sent.length > 0 && sent.every((call) => call.path === "/v1/extract" && call.authorized), JSON.stringify(sent));
   const next = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify(["http://public.example/"])}` } });
-  assert.deepEqual(via((await follow(api, next.body.run_id, ["completed"])).rows), ["parallel"], "the next run takes the new setting");
-  const sent = (await readFile(files.parallel, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  assert.deepEqual(sent.map((call) => [call.path, call.authorized]), [["/v1/extract", true]], "only the next run asked Parallel");
+  assert.deepEqual(via((await follow(api, next.body.run_id, ["completed"])).rows), ["direct"], "the next run takes the new setting");
+  assert.equal((await asked()).length, sent.length, "only the first run asked Parallel");
 });
 
 test("the run check resolves search as the run does: a workflow picking native search is refused before it starts, and so is a capped codex or claude-agent run picking it", async () => {
