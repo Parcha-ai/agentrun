@@ -15,7 +15,7 @@ import { agent, follow, journalOf, scratch, serve, withEnv } from "./support.mjs
 const { chooseModel, hostModel, providerModels, runModels } = await import("../dist/model.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { factsOf, HARNESS_MODULES_ENV } = await import("../dist/harness-table.js");
-const { listOllama, ollamaAsking, ollamaBase, ollamaClock, ollamaModels, ollamaShown, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
+const { listOllama, ollamaAsking, ollamaBase, ollamaClock, ollamaKept, ollamaModels, ollamaShown, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
 
 // The suites turn every Ollama off (support.mjs, OLLAMA_OFF_ENV); this file asks its own fakes alone.
 delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
@@ -159,12 +159,18 @@ function testOllama(t) {
     if (path === "/api/tags") ollama.tags += 1;
     if (path === "/api/show") ollama.show += 1;
     if (ollama.mode === "throws") throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
-    if (path === "/api/tags") return Response.json(ollama.mode === "wrong" ? { error: "loading" } : { models: SYNTH_MODELS.map(({ name }) => ({ name })) });
-    const model = SYNTH_MODELS.find((m) => m.name === JSON.parse(init.body).model);
-    return Response.json({ capabilities: model.capabilities, model_info: { [`${model.family}.context_length`]: model.context_length } });
+    if (ollama.mode === "wrong" && path === "/api/tags") return Response.json({ error: "loading" });
+    return synthAnswer(url, init);
   };
   t.after(() => void (globalThis.fetch = real));
   return ollama;
+}
+
+/** SYNTH_MODELS as a test fetch answers them: /api/tags, and /api/show for the model a request names. */
+async function synthAnswer(url, init) {
+  if (new URL(url).pathname === "/api/tags") return Response.json({ models: SYNTH_MODELS.map(({ name }) => ({ name })) });
+  const model = SYNTH_MODELS.find((m) => m.name === JSON.parse(init.body).model);
+  return Response.json({ capabilities: model.capabilities, model_info: { [`${model.family}.context_length`]: model.context_length } });
 }
 
 const NAMES = SYNTH_MODELS.map((model) => model.name);
@@ -208,6 +214,21 @@ test("a good listing, then a failed ask: callers keep the good models, and each 
   const shown = ollama.show;
   assert.equal((await ollamaShown(env, TOOLS))?.name, TOOLS);
   assert.equal(ollama.show, shown + 1, "its own /api/show");
+});
+
+test("a refused ask after a good listing keeps no models: a stopped Ollama's models leave the offers, and it is asked again at the next call", async (t) => {
+  let clock = 1_000_000;
+  ollamaClock(() => clock);
+  t.after(() => ollamaClock());
+  // An address nothing listens on, listed once by a test fetch, then asked with the real fetch: refused, as a stopped
+  // Ollama's address is.
+  const env = { OLLAMA_HOST: `127.0.0.1:${await closedPort()}` };
+  assert.deepEqual(names(await listOllama(env, { fetch: synthAnswer })), NAMES, "listed while it ran");
+  assert.deepEqual(await listOllama(env), [], "refused: none, nothing thrown");
+  assert.deepEqual(ollamaKept(env), [], "the earlier models are not kept for a refused address");
+  assert.deepEqual(await ollamaModels(env), [], "the kept answer, none");
+  assert.ok(ollamaAsking(env), "and it is not fresh: asked again behind the caller");
+  await ollamaAsking(env);
 });
 
 test("a listing whose deadline passes during /api/show is not fresh: the models it missed come with the next ask", async (t) => {
