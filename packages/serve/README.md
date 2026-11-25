@@ -3606,26 +3606,20 @@ serves these routes alone:
 
   The names route above is the listing: there is no list or read of a server's address, auth or tools here. The
   generic save (`PUT /settings/mcp-servers/{name}`) is a `404` unless the operator names the MCP origins it may save at,
-  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in, Composio tool listing and every other MCP settings route stay refused. On the full
-  server the token's `api_key_env` is `403`, as `api_key` is: the owner's session saves a Composio server there either
-  way;
-- a per_run MCP server's save at an origin the operator names, for a backend whose runs each bring their own
-  credential for a gateway it runs (such as a loopback forwarder): `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
-  origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}` saves
-  `"auth": {"type": "per_run"}` at one of those origins, a new name or over a server the token saved that seals no
-  credential, and each run hands its own credential in `mcp_auth`. A body that sends a credential (a bearer token, or
-  headers with any other auth type) is `403`, as is a save over a server saved any other way or one that seals a
-  credential. A per_run body at any other origin, any other auth type, and a Composio server's name (its own route
-  saves it) are this profile's `404`. Each refusal comes before anything is sent to the address.
-  `AGENTRUN_MCP_ALLOW_LOOPBACK=1` is still needed for a loopback origin. Unset or blank, the save is a `404` as before;
-  an entry that is not an http or https origin alone, or a wildcard, stops the start, in words. The list holds past
-  the save: drop an origin and restart, and a per_run server the token saved there is refused at a run's start, at
-  an agent's save and at the next call of a run already going, and nothing is sent to it. Unset, the list is empty, so
-  a per_run server the token saved with API-only off is refused until its origin is listed: list it before upgrading,
-  or re-save it from the owner's signed-in session with API-only off, which makes it the owner's and leaves the save
-  closed. The start logs one line (`api_only_mcp_off_list`) with the count and names of the servers off the list,
-  never their addresses, and nothing when there are none. A server saved from the owner's signed-in session (which an
-  API-only server doesn't serve) is the owner's, whenever it was saved, and the list does not govern it;
+  so by default the token saves no server at an address or with headers of its own. The preview, refresh, sign-in,
+  Composio tool listing and every other MCP settings route stay refused. On the full server the token's `api_key_env`
+  is `403`, as `api_key` is: the owner's session saves a Composio server there either way;
+- a per_run MCP server's save at an origin the operator names: `AGENTRUN_API_ONLY_MCP_ORIGINS`, comma-separated
+  http(s) origins (`https://mcp.example.com`), a plain setting. With it, the token's `PUT /settings/mcp-servers/{name}`
+  saves `"auth": {"type": "per_run"}` at a listed origin, and each run hands its own credential in `mcp_auth`. A body
+  that carries a credential, or a save over a server the token did not save or one that seals a credential, is `403`;
+  any other origin or auth type, or a Composio server's name, is `404`. A wildcard or an entry that is not an http(s)
+  origin alone stops the start, and a loopback origin also needs `AGENTRUN_MCP_ALLOW_LOOPBACK=1`. The list holds past
+  the save: a per_run server the token saved at an origin not listed is refused, and nothing is sent to it. Unset, the
+  list is empty, so on an upgrade list each such server's origin first, or re-save it from the owner's signed-in
+  session with API-only off; the start names the servers off the list in one log line (`api_only_mcp_off_list`), never
+  their addresses. A server the owner's session saved is not governed by the list, and its runs' `mcp_auth` still
+  goes there;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
