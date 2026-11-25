@@ -57,11 +57,12 @@ export async function sharesServerDisk(store: { settings: Pick<Settings, "get"> 
 
 /** Whether the server is in Mode 2, by what the server holds, never by this runner's environment: the Archil settings
  *  saved in the store, or set in the server's own environment, whose names (never values) it says at each start
- *  (runner-check.ts RUN_ENV_KEY). */
+ *  (runner-check.ts RUN_ENV_KEY). The region is the one name a server in Mode 2 by its environment always has: its S3
+ *  URL is the region's when it sets none, and a server whose settings there are not whole does not start. */
 export async function serverInArchilMode(store: { settings: Pick<Settings, "get"> }): Promise<boolean> {
   if ((await loadArchilSettings(store)) !== undefined) return true;
   const names = await serverRunEnv(store);
-  return names !== undefined && [ARCHIL_SETTINGS_ENV.region, ARCHIL_SETTINGS_ENV.s3Url].every((name) => names.includes(name));
+  return names !== undefined && names.includes(ARCHIL_SETTINGS_ENV.region);
 }
 
 /** Why a runner on `dataDir` can't serve the runs its store holds now, or undefined while it can. On Postgres, a runner
@@ -83,7 +84,7 @@ export const DISK_FREE_MODE_1 =
 
 /** A disk-free runner's words while the server is in Mode 2 by its own environment and this runner holds no Archil settings. */
 export const DISK_FREE_NO_ARCHIL =
-  `this runner's data directory is not the server's, and the server keeps each run's folder on Archil (Mode 2) by the Archil settings in its environment, which this runner does not hold. Hand this runner the server's ${ARCHIL_SETTINGS_ENV.region} and ${ARCHIL_SETTINGS_ENV.s3Url} (and ${ARCHIL_SETTINGS_ENV.image} when the server has it), or save the Archil settings in the store.`;
+  `this runner's data directory is not the server's, and the server keeps each run's folder on Archil (Mode 2) by the Archil settings in its environment, which this runner does not hold. Hand this runner the server's ${ARCHIL_SETTINGS_ENV.region} (and ${ARCHIL_SETTINGS_ENV.s3Url} and ${ARCHIL_SETTINGS_ENV.image} when the server has them), or save the Archil settings in the store.`;
 
 /** How long a gate's answer is kept between polls (diskFreeGate): a change of mode reaches a runner within this. */
 export const DISK_FREE_GATE_MS = 5_000;

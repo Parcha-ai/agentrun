@@ -361,7 +361,7 @@ younger than 20 s, and exits 0 only when both hold: that is a runner's health ch
 ### A runner on a disk of its own
 
 A runner needs no share of the server's disk when the store is Postgres and runs' folders are on Archil (Mode 2: the
-Archil settings saved, or `AGENTRUN_ARCHIL_REGION` and `AGENTRUN_ARCHIL_S3_URL` set on both). Start it with
+Archil settings saved, or `AGENTRUN_ARCHIL_REGION`, and `AGENTRUN_ARCHIL_S3_URL` when the server has it, set on both). Start it with
 `AGENTRUN_STORE_URL`, `AGENTRUN_SEAL_KEY` and a `--data` of its own, a local directory: it holds only the runner's
 heartbeat, its runs' uid slots, their scratch and the harnesses it installs at a claim. It never reads the server's.
 
@@ -399,7 +399,7 @@ opens the store with one connection and closes it.
 | Every run-facing name the server holds | The server says the names (never the values) of its run-facing environment in the store at each start: model, tool and box keys, the Composio account key (`COMPOSIO_API_KEY`, which a claim sends as a granted Composio server's MCP header), each box provider's settings (`DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, ...), the Archil settings, the tiers' models (`AGENT_MODEL`, `AGENT_MODEL_FAST`, `AGENT_MODEL_STRONG`), `AGENTRUN_BOX_ALLOW`, a Docker computer's image and size (`AGENTRUN_DOCKER_IMAGE`, `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS`), the operator's bound on owners' private hosts (`AGENTRUN_PRIVATE_HOSTS`), how a gateway is sent a model id (`AGENT_MODEL_GATEWAY_IDS`), whether runs may reach an MCP server on loopback (`AGENTRUN_MCP_ALLOW_LOOPBACK`), the harness modules it loads (`AGENTRUN_SERVE_HARNESS_MODULES`, which a runner may hold as `--harness-module`, given to its check too; a server given them as `--harness-module` says nothing of them), and every upstream address (`*_BASE_URL`, `*_API_URL`). The runner must hold each one: a run's claim reads it from the runner's environment. A server older than this release says none, and this part is `skipped`. |
 | Each `*_BASE_URL` / `*_API_URL` on loopback | Something answers a TCP connect there within 2 s: the forwarder beside the runner that the upstream names. |
 | `AGENTRUN_TOKEN`, `AGENTRUN_TOKENS`, `AGENTRUN_API_KEY` | `warn` when set: the server's own secrets, which a runner never needs. Fails nothing. |
-| `start` | What the runner's start refuses before it claims, checked the same way: its run slots (`AGENTRUN_MAX_RUNS`), drain (`AGENTRUN_DRAIN_TIMEOUT`), free-model requests, its Archil settings (the region and an https S3 URL set together), and its runs' isolation (`AGENTRUN_RUN_USER`, and whether the image's helper can switch users here). |
+| `start` | What the runner's start refuses before it claims, checked the same way: its run slots (`AGENTRUN_MAX_RUNS`), drain (`AGENTRUN_DRAIN_TIMEOUT`), free-model requests, its Archil settings (a region, and an https S3 URL for a region serve doesn't know), and its runs' isolation (`AGENTRUN_RUN_USER`, and whether the image's helper can switch users here). |
 
 ```
 ok      AGENTRUN_STORE_URL  the store opens: postgres, schema v23

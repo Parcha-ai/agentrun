@@ -3237,6 +3237,7 @@ export type DeleteModelGatewayResponse = {
 /** Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil). */
 export type DeleteWorkspaceArchilResponse = {
   on: boolean;
+  regions: Record<string, string>;
   secret: {
     name: string;
     set: boolean;
@@ -3246,6 +3247,7 @@ export type DeleteWorkspaceArchilResponse = {
   source?: "env" | "console";
   region?: string;
   s3Url?: string;
+  s3UrlFrom?: "region" | "given";
   image?: string;
 };
 
@@ -3517,6 +3519,7 @@ export type GetSuggestionResponse = {
 /** Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil). */
 export type GetWorkspaceArchilResponse = {
   on: boolean;
+  regions: Record<string, string>;
   secret: {
     name: string;
     set: boolean;
@@ -3526,6 +3529,7 @@ export type GetWorkspaceArchilResponse = {
   source?: "env" | "console";
   region?: string;
   s3Url?: string;
+  s3UrlFrom?: "region" | "given";
   image?: string;
 };
 
@@ -3859,7 +3863,7 @@ export type ListSuggestionsResponse = {
 /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
 export type PutWorkspaceArchilBody = {
   region: string;
-  s3Url: string;
+  s3Url?: string;
   image?: string;
   keys?: {
     ARCHIL_API_KEY?: string | null;
@@ -3867,6 +3871,7 @@ export type PutWorkspaceArchilBody = {
 };
 export type PutWorkspaceArchilResponse = {
   on: boolean;
+  regions: Record<string, string>;
   secret: {
     name: string;
     set: boolean;
@@ -3876,6 +3881,7 @@ export type PutWorkspaceArchilResponse = {
   source?: "env" | "console";
   region?: string;
   s3Url?: string;
+  s3UrlFrom?: "region" | "given";
   image?: string;
 };
 
