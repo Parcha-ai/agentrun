@@ -120,7 +120,7 @@ function callUsdOf(entries: readonly EntryLike[], callId: string, recordAt: numb
  *  crash keeps one each time: learnedCallEntries): its workflow, digest and caller, how it ended, and what it booked (callUsdOf). The
  *  platform's call ends as the run's WORKFLOW_FIRST entry says (its answer shaped, or taken back to the agent); one a
  *  crash cut before its record was kept is that entry's alone, its cost unknown. A call its record says was refused
- *  before any node ran (`refused`) is `refused`, whoever called it. A record that names no digest or caller is left out. */
+ *  before any node ran (`refused`) is `refused`, whoever called it, and booked $0. A record that names no digest or caller is left out. */
 export function workflowCallsOf(entries: readonly EntryLike[]): WorkflowCall[] {
   // The record that counts for each call (learned-nodes.ts learnedCallEntries): a rerun refused before any node ran leaves
   // the attempt that ran standing, as the call's timeline row does.
@@ -133,7 +133,8 @@ export function workflowCallsOf(entries: readonly EntryLike[]): WorkflowCall[] {
     const data = dataOf(entries[at]!);
     // Refused before any node ran (its record's `refused`): it ran nothing, whatever the run did after.
     const outcome = data.refused === true ? "refused" : call === WORKFLOW_FIRST_CALL && served ? served.outcome : outcomeOf(data.ended);
-    return { workflow: data.workflow as string, digest: data.digest as string, caller: data.caller as WorkflowCaller, outcome, usd: callUsdOf(entries, call, at) };
+    // A refused call ran nothing: its $ is 0, never a shared window's unknown (two denied calls in one pi answer).
+    return { workflow: data.workflow as string, digest: data.digest as string, caller: data.caller as WorkflowCaller, outcome, usd: outcome === "refused" ? 0 : callUsdOf(entries, call, at) };
   });
   if (served && !newest.has(WORKFLOW_FIRST_CALL) && typeof served.workflow === "string" && typeof served.digest === "string") {
     calls.unshift({ workflow: served.workflow, digest: served.digest, caller: "platform", outcome: served.outcome, usd: null });
