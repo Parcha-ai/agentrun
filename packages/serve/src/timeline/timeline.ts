@@ -79,8 +79,10 @@ export type TimelineEvent = {
    *  counts the calls past the record's bound. This projector writes none (store-reads/journal.ts withComputerCalls). */
   computer_calls?: readonly ComputerCallRow[];
   computer_calls_dropped?: number;
-  /** On a `tool_use` row of a timeline read with `calls` (TimelineOptions): the call's arguments, each string as `redact`
-   *  makes it where the call is first seen, cut at CAPS.text. */
+  /** On a `tool_use` row of a timeline read with `calls` (TimelineOptions): the call's arguments, each string as
+   *  `calls.input` makes it of the arguments as the call came (else as the rows show them), its names and values
+   *  together cut at `calls.result` characters (inputShown), the bound its output has (a grader reads a long write whole: an issue body, a note, a
+   *  posted digest). */
   tool_input?: Obj;
   /** On a `tool_result` row of a timeline read with `calls`: the call's output whole to `calls.result` characters (its
    *  head past that), as `calls.redact` makes it, its URLs' query values elided as the preview's are; a web call's every
@@ -110,7 +112,8 @@ export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
  *  and page text cut to fit (web-calls.ts), past this only when its urls alone pass it. */
 export const CALL_RESULT_CHARS = 120_000;
 
-/** The most rows a `calls=whole` timeline page holds, and its default: each row's result may be CALL_RESULT_CHARS long. */
+/** The most rows a `calls=whole` timeline page holds, and its default: each row's result, or the names, values and
+ *  brackets of its call's arguments together (tool_input, inputShown), may be CALL_RESULT_CHARS long. */
 export const CALLS_PAGE_ROWS = 100;
 
 /** A host's marks of a model request: as it leaves (written before it does), and as its stream ends aborted. A request
@@ -311,9 +314,12 @@ export type TimelineOptions = {
    *  (`tool_input`), and each `tool_result` row the head of its output to `result` characters (`tool_result_text`; a
    *  web call's every url, each of its strings redacted on its own), made safe by `redact`, a redactor that reads that
    *  far (the rows' own `redact` stops at the head a row shows).
-   *  Without `redact`, the rows' own. `held`: whether a number in the arguments shows a held value (a key that is all
-   *  digits); such a number is shown as "[redacted]". */
-  calls?: { result: number; redact?: (text: string) => string; held?: (value: number | bigint) => boolean };
+   *  Without `redact`, the rows' own. `input`: each string of a call's arguments as `tool_input` shows it, read from the
+   *  arguments as the call came, its head of `shown` characters made safe (the caller cuts it there). The rows' own
+   *  `redact` stops at the head a row shows, so without `input`, `tool_input` reads the arguments as the rows show them,
+   *  each string no longer than that head. `held`: whether a number in the arguments shows a held value (a key that is
+   *  all digits); such a number is shown as "[redacted]". */
+  calls?: { result: number; redact?: (text: string) => string; input?: (text: string, shown: number) => string; held?: (value: number | bigint) => boolean };
   /** Whether a text holds a held value no cut in place takes (key-refusal.ts withheldWhole). A web call's output is read
    *  through it joined, its JSON's strings as they came (web-calls.ts webHeld), before any of its rows shows any of it: a
    *  value split across two of its strings, which `redact` and `calls.redact` never read side by side, withholds the
@@ -452,8 +458,9 @@ function createMeter() {
     const message = entry.model?.[0];
     const data = obj(entry.data);
     const summaryAnswered = compactionAnswers(entry, sideSummaries);
-    if (entry.kind === "pi.assistant" && entry.recordedCall && message) {
+    if (entry.kind === "pi.assistant" && (entry.recordedCall || data?.mirrors !== undefined) && message) {
       // A call the loop's record kept (a CLI's, or one a tool of pi's nested): shown as an answer's call, never a request.
+      // So is an imported answer whose request another run counts (`mirrors`: an OpenCode request Claude Code also wrote).
       return "call";
     } else if (entry.kind === REQUEST_REFUSED) {
       refused += 1;
@@ -646,17 +653,64 @@ const textOf = (message: Obj | undefined, type = "text", field = "text") =>
   blocksOf(message).filter((block) => block.type === type).map((block) => str(block[field]) ?? "").join("\n").trim();
 /** Every string a row shows goes through here: a URL keeps its origin, path and query keys, then the text is cut. */
 const clean = (text: string, max: number) => cut(scrubUrls(text), max);
-/** A call's arguments as `tool_input` carries them, their values already redacted (argsOf): each string cut at `max`, and
- *  each property name through `redact` too, as only this field shows them, and each number `held` names as
- *  "[redacted]". An object two of whose names come out the same is withheld whole, as "[redacted]", never one value
- *  merged over the other. */
-const inputShown = (value: unknown, max: number, redact: (text: string) => string = (text) => text, held: (value: number | bigint) => boolean = () => false): unknown => {
-  if (typeof value === "string") return cut(value, max);
-  if (typeof value === "number" || typeof value === "bigint") return held(value) ? "[redacted]" : value;
-  if (Array.isArray(value)) return value.map((item) => inputShown(item, max, redact, held));
-  if (!value || typeof value !== "object") return value;
-  const entries = Object.entries(value).map(([key, item]) => [redact(key), inputShown(item, max, redact, held)] as const);
-  return new Set(entries.map(([key]) => key)).size === entries.length ? Object.fromEntries(entries) : "[redacted]";
+/** A call's arguments as `tool_input` carries them, at most `budget` characters a row, taken in order: each property
+ *  name as `redact` makes it, as only this field shows them, each string as `read` makes it of the head it is given,
+ *  each number, boolean or null as its text (a number `held` names as "[redacted]"), and each array or object its two
+ *  brackets. Every name and value costs at least one character. The name or string that reaches the budget is cut
+ *  there, and a number, boolean or null that would pass it shows as "..."; an array or object then ends with one "..."
+ *  (an item, or a "..." name), and a value reached past it shows as "...", unread, however much it holds. So a row's
+ *  names, values and brackets come to at most `budget` characters, past which only a "..." for the value it stopped in
+ *  and one for each array or object still open, whatever its call holds. An object two of whose names come out the
+ *  same is withheld whole, as "[redacted]", never one value merged over the other. */
+const inputShown = (args: unknown, budget: number, read: (text: string, shown: number) => string, redact: (text: string) => string = (text) => text, held: (value: number | bigint) => boolean = () => false): unknown => {
+  let left = budget;
+  const spend = (size: number) => (left -= Math.max(1, size));
+  // A number, boolean or null shows whole or as "...": a cut one would read as another value.
+  const scalar = (out: unknown): unknown => {
+    const text = String(out);
+    if (text.length > left) {
+      left = 0;
+      return "...";
+    }
+    spend(text.length);
+    return out;
+  };
+  const shown = (value: unknown): unknown => {
+    if (left <= 3) return "...";
+    if (typeof value === "string") {
+      const text = cut(read(value, left), left);
+      spend(text.length);
+      return text;
+    }
+    if (typeof value === "number" || typeof value === "bigint") return scalar(held(value) ? "[redacted]" : value);
+    if (Array.isArray(value)) {
+      spend(2);
+      const out: unknown[] = [];
+      for (const item of value) {
+        if (left <= 3) return [...out, "..."];
+        out.push(shown(item));
+      }
+      return out;
+    }
+    if (!value || typeof value !== "object") return scalar(value);
+    spend(2);
+    const entries: (readonly [string, unknown])[] = [];
+    let ended = false;
+    for (const [key, item] of Object.entries(value)) {
+      if (left <= 3) {
+        ended = true;
+        break;
+      }
+      const name = cut(redact(key), left);
+      spend(name.length);
+      entries.push([name, shown(item)]);
+    }
+    if (new Set(entries.map(([key]) => key)).size !== entries.length) return "[redacted]";
+    const out = Object.fromEntries(entries);
+    if (ended && !Object.hasOwn(out, "...")) out["..."] = "...";
+    return out;
+  };
+  return shown(args);
 };
 /** The rows that show words as a person or the agent wrote them: cut, never scrubbed. */
 const WHOLE: ReadonlySet<TimelineKind> = new Set(["user_message", "text_block", "final_answer"]);
@@ -824,12 +878,17 @@ function createProjector(options: TimelineOptions) {
   const endedWithRun = (view: { isError: boolean; details?: unknown }) => view.isError && obj(view.details)?.[CALL_ENDED_WITH_RUN] === true;
   /** A call's name on its rows: a refused one's in plain words (refusedLabel), else its label. */
   const nameFor = (tool: string, args: Obj, view: ToolResultView, result: ToolResultView) => (refused(view) ? refusedLabel(labelled(tool), shown(args)) : label(tool, args, result));
-  /** The `tool_use` row of a call; `fields` is what differs between a stored call and a nested one. */
-  const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, fields: Partial<TimelineEvent>) =>
-    make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...inputOf(args), ...fields });
-  /** A `calls` read's `tool_input` (inputShown); none when the arguments themselves are withheld. */
-  const inputOf = (args: Obj): { tool_input?: Obj } => {
-    const shown = options.calls ? obj(inputShown(args, caps.text, options.redact, options.calls.held)) : undefined;
+  /** The `tool_use` row of a call: its summary and preview from `args`, as its rows show them (argsOf), and a `calls`
+   *  read's `tool_input` from `raw`, the arguments as the call came; `fields` is what differs between a stored call and
+   *  a nested one. */
+  const useRow = (conv: number, rowId: string, callId: string, name: string, args: Obj, raw: Obj, fields: Partial<TimelineEvent>) =>
+    make("tool_use", conv, rowId, { summary: label(name, args), tool_name: name, tool_use_id: callId, tool_input_preview: inputPreview(args, caps.preview), ...inputOf(args, raw), ...fields });
+  /** A `calls` read's `tool_input` (inputShown), at most `calls.result` characters of names and values a row: the raw arguments
+   *  through `calls.input`, else the arguments as the rows show them; none when the arguments themselves are withheld. */
+  const inputOf = (args: Obj, raw: Obj): { tool_input?: Obj } => {
+    if (!options.calls) return {};
+    const { result, input, held } = options.calls;
+    const shown = obj(input ? inputShown(raw, result, input, options.redact, held) : inputShown(args, result, (text) => text, options.redact, held));
     return shown ? { tool_input: shown } : {};
   };
   /** A call's output as a `calls` read shows it (tool_result_text): redacted by its redactor, else the rows' own, then its
@@ -1010,7 +1069,8 @@ function createProjector(options: TimelineOptions) {
         blocks.forEach((block, index) => {
           const [id, name] = [str(block.id), str(block.name)];
           if (block.type !== "toolCall" || !id || !name) return;
-          const args = argsOf(obj(block.arguments) ?? {});
+          const raw = obj(block.arguments) ?? {};
+          const args = argsOf(raw);
           if (BROWSER_OPENERS.has(name) && !browsers.has(conv)) {
             browsers.add(conv);
             add(make("phase", conv, `${base}:${index}:session`, { summary: "A live browser session started" }));
@@ -1019,7 +1079,7 @@ function createProjector(options: TimelineOptions) {
           // made inside a call of the harness's own (Codex's `exec`) under that call, which its record names. SDK calls keep
           // their validated explicit parent.
           const nesting = (entry.recordedCall ? (entry.parentCall ?? nestingCallOf(id)) : undefined) ?? str(obj(entry.data)?.parentCallId);
-          const use = useRow(conv, `${base}:${index}`, id, name, args, { round, ...(nesting ? { parent_tool_use_id: nesting } : {}) });
+          const use = useRow(conv, `${base}:${index}`, id, name, args, raw, { round, ...(nesting ? { parent_tool_use_id: nesting } : {}) });
           const before = early.get(`${conv}:${id}`);
           const opened: OpenCall = { conv, name, args, round, use, done: before !== undefined };
           calls.set(`${conv}:${id}`, opened);
@@ -1152,7 +1212,7 @@ function createProjector(options: TimelineOptions) {
   function nested(conv: number, id: string, parent: string, name: string, raw: Obj): TimelineEvent {
     const args = argsOf(raw);
     const round = calls.get(`${conv}:${parent}`)?.round;
-    const use = useRow(conv, `${conv}:n:${id}`, id, name, args, { round, parent_tool_use_id: parent });
+    const use = useRow(conv, `${conv}:n:${id}`, id, name, args, raw, { round, parent_tool_use_id: parent });
     calls.set(`${conv}:${id}`, { conv, name, args, round, use, done: false });
     rows.push(use);
     return use;
