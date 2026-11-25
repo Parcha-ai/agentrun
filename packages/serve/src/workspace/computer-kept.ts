@@ -236,13 +236,15 @@ const KEEP_TRIES = 3;
  * row as read (replaceIf). Its row as written, or undefined when the park keeps nothing.
  *
  * A row not yet ended that is pinned to another runner still there (`holders`, heldElsewhere: store KEPT_PREFIX's one
- * meaning of there), or that a claim is taking back (Kept.taking: it may be reaching the machine, or could not write what
- * came of that), is never written over. Its end at its time (endKept) compares the row with the one its park wrote, so a
- * row written over would leave its machine running with nothing to end it. The park keeps nothing then. Its row is marked
- * ending where it is not yet: this claim went on without that machine, so no claim may take it back as the run's (a claim
- * still reaching it then never uses it), and its end still finishes a row so marked. Any other row is replaced, as
- * before: no runner, this claim's own runner, a runner gone, or one ended. A write that lost reads again, up to
- * KEEP_TRIES times; past them the park keeps nothing. Throws where the store throws.
+ * meaning of there), that a claim is taking back (Kept.taking: it may be reaching the machine, or could not write what
+ * came of that), or that reads ending (its end begun, a claim that gave it back, a stop: whoever kept it, there or not)
+ * is never written over. Its end at its time (endKept) compares the row with the one its park wrote, and a janitor ends
+ * an ending row of a runner gone, so a row written over would leave its machine running with nothing to end it. The park
+ * keeps nothing then. Its row is marked ending where it is not yet: this claim went on without that machine, so no claim
+ * may take it back as the run's (a claim still reaching it then never uses it), and its end still finishes a row so
+ * marked. Any other row is replaced, as before: no runner, this claim's own runner, a runner gone (its row as its park
+ * wrote it), or one ended. A write that lost reads again, up to KEEP_TRIES times; past them the park keeps nothing.
+ * Throws where the store throws.
  *
  * Every write is under `claim`, the parking claim (Settings.putIfAbsent's and replaceIf's claim: the fence checked in the
  * write's own transaction). A park runs before its claim's park commit, so a claim that lost the run by then (its lease
@@ -260,7 +262,7 @@ export async function keepKept(settings: Pick<KeptSettings, "get" | "putIfAbsent
       continue;
     }
     const other = keptOf(was);
-    if (other && !other.ended && (other.taking !== undefined || (await elsewhere(other)))) {
+    if (other && !other.ended && (other.ending === true || other.taking !== undefined || (await elsewhere(other)))) {
       if (!other.ending) await settings.replaceIf(key, was, rowOf(other, "ending"), claim);
       return undefined;
     }
