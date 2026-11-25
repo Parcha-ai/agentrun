@@ -92,6 +92,14 @@ function agentsOwn(computer: RunComputer | undefined): RunComputer | undefined {
   return { ...computer, hello: { ...computer.hello, groups: computer.hello.groups.filter((group) => !PROGRAM_GROUPS.has(group)) } };
 }
 
+/** The run's folder `workspace` attached to the computer `claimed`, as runHands attaches it, when that computer mounts the
+ *  folder; undefined when none does. For what the runner itself writes in a Mode 2 run's folder while the computer's mount
+ *  holds the disk's write delegation (run-child-host.ts, the claim's MCP). */
+export async function attachedIn(workspace: Workspace, claimed: RunComputer | undefined): Promise<Workspace | undefined> {
+  const mounted = mountedIn(agentsOwn(claimed));
+  return mounted === undefined ? undefined : await workspace.attach(mounted.computer, mounted.check);
+}
+
 /** Whether a computer's tool is bound for a script's nested calls alone (deferred: never listed to the model) under
  *  `surface`: computer_op always (a script's `computer` reaches the computer's other ops through it); under "code",
  *  every one but the hand-over, which a script can't wait on. */

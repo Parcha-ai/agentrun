@@ -88,7 +88,7 @@ import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
 import { beginSourceIO, type SourceIOReceipt } from "../source-sync/io.js";
 import type { ProjectCheckpoint, ProjectUncertain } from "../source-sync/checkpoints.js";
 import type { ClaimComputer } from "../workspace/computer-for-claim.js";
-import { runTools, type RunTools } from "../workspace/run-tools.js";
+import { attachedIn, type RunComputer, runTools, type RunTools } from "../workspace/run-tools.js";
 import { ProjectHostGate } from "./project-host.js";
 import { runProjectCheckpoint } from "./project-checkpoint.js";
 
@@ -652,6 +652,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   };
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
   const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
+  /** The run's folder as the computer this claim made mounts it (Mode 2), where the claim's MCP files once it is made. */
+  let mountedFolder: Workspace | undefined;
   /** Mode 2's Archil claim, made once for the claim on the runner, its folder the run's. */
   let archil: Promise<Awaited<ReturnType<typeof archilClaim>> | undefined> | undefined;
   const archilOf = () =>
@@ -740,7 +742,15 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     mcp: (ask) => projectCall(async () => {
       const reach = await mcpReachOf(deps);
       const harness = { commit: (change: (tx: unknown) => Promise<unknown>) => change({ appendEntry: async (_conversation: number, entry: unknown) => void (await ask.appendRoot(dataOnly(entry))) }) };
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => runFolder(deps.data, run.agentId, claim.runId), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
+      // What the gateway files goes in the run's own files. In Mode 1 that is the run's folder on this machine. In Mode 2
+      // it is the run's disk: through the computer this claim made once it mounts the folder (mountedFolder, the computer
+      // answer's), since the mount holds the disk's write delegation; over the disk's file API (opened here, as the archil
+      // answer opens it, let go at the claim's release) when no computer mounts it. work() is read only when a call is
+      // answered (mcp-gateway.ts textOf, fileResults).
+      const disk = await archilOf();
+      const ws = disk === undefined ? undefined : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: disk, log });
+      if (ws) releases.push(() => ws.end());
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, work: () => (ws === undefined ? runFolder(deps.data, run.agentId, claim.runId) : mountedFolder ?? ws.workspace), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
       if (!made) return undefined;
       releases.push(() => made.release());
       const exposed = heldMcpOf(made, cut);
@@ -867,6 +877,13 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         } as never,
       );
       releases.push(() => ws.end());
+      // A Mode 2 computer that mounts the run's folder holds the disk's write delegation: what the claim's MCP files then
+      // goes through it, attached here as the run's process attaches it. A failed attach leaves the MCP on the disk's file
+      // API, which says in its answer that the file could not be saved.
+      if (mode === 2) mountedFolder = await attachedIn(ws.workspace, (got as { computer?: RunComputer } | undefined)?.computer).catch((error: unknown) => {
+        log(`the run's folder could not be attached for the MCP's files: ${(error as Error)?.message ?? String(error)}`);
+        return undefined;
+      });
       // The computer let go by this runner at the claim's release too, before its folder: a process that crashed or broke
       // its channel never calls its release. Idempotent with the process's own release and with its park (which keeps it).
       const claimed = got as { release?: (why?: "ended") => Promise<void> } | undefined;
