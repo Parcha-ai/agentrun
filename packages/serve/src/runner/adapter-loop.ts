@@ -90,7 +90,7 @@ import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
 import { type RequestFigures, reserveFor, stepAndAnswerFor, wrappingUp, wrapUpText } from "../wrap-up.js";
 import { LEARNED_CARD_FIELDS, LEARNED_CLIP, LEARNED_WORKFLOW_TOOL, learnedApprovedTools } from "../learned-workflow.js";
-import { LEARNED_NODES, refusedRecord } from "../learned-nodes.js";
+import { failedRecord, LEARNED_NODES, refusedRecord } from "../learned-nodes.js";
 import { warnHoldShort } from "../print.js";
 import { type FeedbackData, feedbackAsk, feedbackOf, jobEndOpen, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
@@ -2714,12 +2714,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // An agent's learned_workflow call the gate refuses (a deny set, a person's deny of its ask, the cap's wrap-up)
         // never reaches the tool, which keeps every other call's record: its record is kept here, as serveFirst keeps the
         // platform's (learned-nodes.ts refusedRecord), so the run's workflow_calls name it, refused, on pi and on every
-        // CLI alike. A name the run has no workflow of keeps none, as the tool keeps none for it.
+        // CLI alike. A name the run has no workflow of keeps none, as the tool keeps none for it. A call issued again after
+        // a crash cut it mid-call (`replayed`) may have run nodes and spent on its first attempt: its refusal is no proof it
+        // ran nothing, so it is kept `failed`, never `refused`, and priced from what its call id booked (failedRecord).
         const keepRefusedLearned = async (call: Parameters<typeof gateOf>[0]): Promise<void> => {
           const named = call.tool === LEARNED_WORKFLOW_TOOL ? spec.gate?.learnedOf?.(call.args) : undefined;
           const [journalOf, rootOf] = [harness, root];
           if (!named || !journalOf || !rootOf || gate?.sealed) return;
-          await journalOf.commit((tx) => tx.appendEntry(rootOf.id, { kind: LEARNED_NODES, data: refusedRecord(call.callId, named.workflow, named.digest, "agent") as unknown as JsonValue }), context).catch(unlessSealed);
+          const kept = (call.replayed === true ? failedRecord : refusedRecord)(call.callId, named.workflow, named.digest, "agent");
+          await journalOf.commit((tx) => tx.appendEntry(rootOf.id, { kind: LEARNED_NODES, data: kept as unknown as JsonValue }), context).catch(unlessSealed);
         };
         const sessionGate: typeof gateOf = async (call, hookContext) => {
           const answer = await bridgeGate(call, hookContext);

@@ -16,10 +16,14 @@ export const LEARNED_NODES = "agentrun.learned_nodes";
  *  however many nodes failed on the way and were recovered, a map's collected item say), or `failed` (it threw, or was
  *  refused before any node ran). */
 export type LearnedEnded = "complete" | "escalated" | "failed";
+/** The record of a learned_workflow call that ended `failed` with no node kept, where the tool kept none: an agent's call
+ *  a crash cut mid-call, refused when it was issued again (adapter-loop.ts keepRefusedLearned). Its earlier attempt may
+ *  have run nodes and spent, so it is no refusal: its $ is what its call id booked. */
+export const failedRecord = (call: string, workflow: string, digest: string, caller: "platform" | "agent") => ({ call, workflow, digest, caller, nodes: [], ended: "failed" as LearnedEnded });
 /** The record of a learned_workflow call refused before the tool saw it (`refused`: it ran nothing), which the loop keeps
  *  where the tool never ran: the platform's call its gate refused (runner/adapter-loop.ts serveFirst), and an agent's its
- *  gate refused (adapter-loop.ts keepRefusedLearned). */
-export const refusedRecord = (call: string, workflow: string, digest: string, caller: "platform" | "agent") => ({ call, workflow, digest, caller, nodes: [], ended: "failed" as LearnedEnded, refused: true as const });
+ *  gate refused on its first attempt (adapter-loop.ts keepRefusedLearned). */
+export const refusedRecord = (call: string, workflow: string, digest: string, caller: "platform" | "agent") => ({ ...failedRecord(call, workflow, digest, caller), refused: true as const });
 /** The most nodes a call keeps: a map over a long list runs its body once per item. */
 export const LEARNED_NODES_MAX = 64;
 /** One node of a learned workflow's run, as the DSL ended it (its `node.end` event): its label, its kind, how it ended
