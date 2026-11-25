@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { type Answer, childrenOf, copilotSessionId, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, locatorParent, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, withSubagentCosts } from "@parcha/agentrun-import";
+import { type Answer, childrenOf, HARNESS_OF, inOrder, type Locator, locatorKey, locatorOf, locatorParent, type LocatorSize, locatorSize, mirroredIn, mostEffortOf, ownRequests, priceRequests, READERS, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionKey, sessionLocators, type Turn, withSubagentCosts } from "@parcha/agentrun-import";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -120,8 +120,10 @@ const REMOTE_HISTORY_SOURCE_BYTES = 8_000_000;
  * Keep at most one bounded JSONL record and never read past the remote source limit, even if a file grows. */
 async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:string;cwd:string;child:boolean}|undefined> {
   const handle = await open(file, 'r');
-  // Claude Code's id is its file's name (<id>.jsonl), as readSession reads it; the others' come from a record.
-  let id:string|undefined=source==='claude-code'?basename(file,'.jsonl'):undefined,cwd:string|undefined,child=false;
+  // The id the reader gives a session no record names: Claude Code's always (its file's name), the others' when no
+  // record named one, which is known only at EOF.
+  const named=READERS[source].idOf({file});
+  let id:string|undefined=source==='claude-code'?named:undefined,cwd:string|undefined,child=false;
   const str=(value:unknown):string|undefined=>typeof value==='string' && value!==''?value:undefined;
   const metadataOf = (parts: Buffer[]): void => {
     try {
@@ -153,8 +155,7 @@ async function remoteHistoryMetadata(file: string, source: Source): Promise<{id:
       const { bytesRead } = await handle.read(bytes, 0, bytes.length, position);
       if (!bytesRead) {
         metadataOf(parts);
-        // readSession uses the file name only when no source record supplied an id. That is known only at EOF.
-        id??=source==='copilot'?copilotSessionId(file):basename(file,'.jsonl');
+        id??=named;
         return metadata();
       }
       position += bytesRead;

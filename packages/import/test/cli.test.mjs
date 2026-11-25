@@ -47,6 +47,15 @@ test("--known-answer prints one line per session, sorted by key, with the agreed
   for (const leak of [PROMPT, "Fixture answer", "/work/fixture", dir, SESSION, "thread-1", "pi-session-1"]) assert.ok(!result.stdout.includes(leak), `prints ${leak}`);
 });
 
+test("a source named twice in --sources is read once: each session prints one line", async (t) => {
+  const dir = await home(t);
+  const once = run(dir, "--sources", "codex", "--known-answer");
+  const twice = run(dir, "--sources", "codex,codex", "--known-answer");
+  assert.equal(twice.status, 0, twice.stderr);
+  assert.equal(twice.stdout.trim().split("\n").length, 1);
+  assert.equal(twice.stdout, once.stdout);
+});
+
 test("--sources picks the sources; an unknown one, or no --known-answer, is a usage error", async (t) => {
   const dir = await home(t);
   const only = run(dir, "--sources", "pi,codex", "--known-answer");

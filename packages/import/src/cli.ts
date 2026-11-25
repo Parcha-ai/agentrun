@@ -66,7 +66,8 @@ async function main(): Promise<void> {
   if (positionals.length !== 1) usage("one home directory, please");
   if (!values["known-answer"] === !values.cache) usage("one output, please: --known-answer or --cache");
   const known: readonly string[] = values.cache ? CACHE_SOURCES : SOURCES;
-  const sources = values.sources === undefined ? known : values.sources.split(",").map((name) => name.trim());
+  // A source named twice is read once: a repeat would print its every session twice.
+  const sources = values.sources === undefined ? known : [...new Set(values.sources.split(",").map((name) => name.trim()))];
   const unknown = sources.filter((name) => !known.includes(name));
   if (unknown.length || !sources.length) usage(`unknown source: ${unknown.join(", ") || "(none)"}`);
   const threads = values.threads === undefined ? undefined : wholeOf("--threads", values.threads, 1, false, MOST_THREADS);

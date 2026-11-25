@@ -2,7 +2,7 @@
 import { basename, join } from "node:path";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { entries } from "../reader.js";
-import { argsOf, effortOf, hashOf, isObject, str, textOf, timeOf } from "../text.js";
+import { argsOf, effortOf, FAILED, hashOf, isObject, str, textOf, timeOf } from "../text.js";
 import type { ChainRecord, ToolCall } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
@@ -72,7 +72,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add, 
       ...(session.model ? { model: session.model } : {}),
       ...(state.effort ? { effort: state.effort } : {}),
       ...(tokens ? { usage: tokens } : {}),
-      ...(message.stopReason === "error" ? { error: str(message.errorMessage) ?? "unknown error" } : {}),
+      ...(message.stopReason === "error" ? { error: keep ? (str(message.errorMessage) ?? "unknown error") : FAILED } : {}),
     });
     if (link) (link as ChainRecord).request = state.answers.length - 1;
   }
