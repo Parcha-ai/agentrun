@@ -3,10 +3,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deserialize, serialize } from "node:v8";
-import { parseHome, READERS } from "../dist/index.js";
+import { READERS } from "../dist/index.js";
 import { addAll, addDisjoint, addNew, addRecord, anyIn, dropOwner, locatorNumber, markOf, ownerOf, recordIndex, undoTo } from "../dist/record-index.js";
 import { packed, packInto } from "../dist/record-key.js";
-import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, tempHome, writeJsonl } from "./fixtures.mjs";
+import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, parseHome, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const hex = (n, width) => n.toString(16).padStart(width, "0");
 /** The i-th of a run of uuids that differ in their first eight digits, then in their last twelve. */

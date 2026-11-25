@@ -6,8 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import v8 from "node:v8";
 import vm from "node:vm";
-import { parseHome } from "../dist/index.js";
-import { anthropicUsage, claudeAnswer, claudeFile, codexContext, codexFile, codexMeta, codexTokens, openaiUsage, SESSION, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
+import { anthropicUsage, claudeAnswer, claudeFile, codexContext, codexFile, codexMeta, codexTokens, openaiUsage, parseHome, SESSION, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
 
 v8.setFlagsFromString("--expose-gc");
 const gc = vm.runInNewContext("gc");

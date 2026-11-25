@@ -7,8 +7,8 @@
 import assert from "node:assert/strict";
 import { appendFile } from "node:fs/promises";
 import { test } from "node:test";
-import { parseHome, READERS, readSession } from "../dist/index.js";
-import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, jsonl, tempHome, writeJsonl } from "./fixtures.mjs";
+import { READERS, readSession } from "../dist/index.js";
+import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, jsonl, parseHome, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const claude = READERS["claude-code"];
 const STRIDE = 7;
