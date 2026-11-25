@@ -264,6 +264,9 @@ test("--cache prints a line per session, keyed as --known-answer keys them, then
   assert.deepEqual(Object.keys(by).sort(), ["compaction@3", "edited@3,unknown@2/1", "none"]);
   assert.equal(by.none.source, "claude-code");
   assert.equal(by["compaction@3"].source, "codex");
+  // The hit rate is over the session's requests and its subagent's: 3300 read of 3325 sent (5 uncached each), where its own
+  // file alone would be 2200 of 2215.
+  assert.equal(by["edited@3,unknown@2/1"].hitRate, Math.round((3300 / 3325) * 1e4) / 1e4);
   assert.deepEqual(totals, { totals: { sessions: 3, breaks: { model: 0, idle: 0, compaction: 1, edited: 1, sidechain: 0, unknown: 1 }, extraCost: { model: 0, idle: 0, compaction: 0, edited: 0, sidechain: 0, unknown: 0 }, unpriced: 3 } });
   for (const leak of [PROMPT, "Fixture answer", "/work/fixture", home, SESSION, RESUMED, "thread-1", "u0", "a0"]) assert.ok(!result.stdout.includes(leak), `prints ${leak}`);
 });
