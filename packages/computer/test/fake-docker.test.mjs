@@ -33,13 +33,14 @@ test("a docker call that reads the fake's state while others rewrite it reads a 
 // A docker call appends its line to the fake's logs while the test reads them. Linux lets a reader see part of a write
 // in flight (page by page), so a read can end in part of a line: each case holds a real call of the fake's program with
 // part of its line written (as such a read sees it) and reads the log then. The read lists the lines that are whole.
+// Quoted in NODE_OPTIONS, which splits on spaces: a checkout path may hold one.
 const TORN = fileURLToPath(new URL("./torn-append.cjs", import.meta.url));
 /** Runs `program args` with its append to `file` cut after `at` bytes; resolves once that part is in, with go(), which
  *  lets the rest be written, and the call's end. `input` is written to its stdin. */
 const tornCall = async (program, args, { file, at = 8, input }) => {
 	const dir = mkdtempSync(join(tmpdir(), "computer-torn-"));
 	const go = join(dir, "go");
-	const child = spawn(program, args, { env: { ...process.env, NODE_OPTIONS: `--require ${TORN}`, TORN_APPEND: file, TORN_APPEND_AT: String(at), TORN_APPEND_GO: go }, stdio: ["pipe", "ignore", "pipe"] });
+	const child = spawn(program, args, { env: { ...process.env, NODE_OPTIONS: `--require ${JSON.stringify(TORN)}`, TORN_APPEND: file, TORN_APPEND_AT: String(at), TORN_APPEND_GO: go }, stdio: ["pipe", "ignore", "pipe"] });
 	const ended = once(child, "exit").finally(() => rmSync(dir, { recursive: true, force: true }));
 	let stderr = "";
 	const held = new Promise((resolve, reject) => {
