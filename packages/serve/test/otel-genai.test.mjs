@@ -809,6 +809,13 @@ const SEMI_ROWS = [
     [`401 from relay: key ${SEMI_WHOLE} refused`, "401 from relay: key [redacted] refused"],
   ],
   [
+    "a header value's credential pair with a ; in its value, before a %2C pair, in a value that can't be decoded",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_WHOLE}%2Cnote=100%` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    [],
+    [`401 from relay: key ${SEMI_WHOLE} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
     "a header value's credential pair with a ; in its value, after a %2C pair",
     { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=region=us-east-1%2Capi_key=${SEMI_WHOLE}` },
     [SEMI_WHOLE, SEMI_PREFIX],
