@@ -56,7 +56,7 @@ export interface CliIo {
 }
 
 const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --provider ${providerIds.join("|")}|<module.js> [--image <image>] [--only <group|case>,... | --kind <kind>] [--fixture <path>] [--gpu <type>[:<count>]] [--long] [--concurrency <n>] [--run <id>] [--json]
-       npm run conformance -w @parcha/agentrun-computer -- --provider <id>|<module.js> [--image <image>] --tti <n> [--burst <n>] [--json]
+       npm run conformance -w @parcha/agentrun-computer -- --provider <id>|<module.js> [--image <image>] --tti <n> [--burst <n>] [--run <id>] [--json]
   --provider  a computer in the registry (${providerIds.join(", ")}), or a module path: a provider file that exports
               create(options), or a conformance module that exports createProvider() (and, for the drift case,
               createDriftedProvider(); for the mount cases, mountFor(kind), a fresh run folder for that mount kind)
@@ -82,8 +82,8 @@ const USAGE = `usage: npm run conformance -w @parcha/agentrun-computer -- --prov
   --tti <n> [--burst <n>]
               time to interactive instead of the suite: n computers one at a time, then (--burst) n all at once,
               each timed from its create call to its first command's answer and deleted after; median, p95, p99,
-              success rate and ComputeSDK's score per shape. Either flag alone runs that shape alone; with --image
-              and --json only. Exits 0 when every computer came up and nothing was left, else 1
+              success rate and ComputeSDK's score per shape. Either flag alone runs that shape alone; with --image,
+              --run and --json only. Exits 0 when every computer came up and nothing was left, else 1
   --exec-stream --machine <id> [--quick]
               the exec pre-check, alone: the module's createHost() and host.exec, nothing else, on a machine you made
               by hand. Text of every kind both ways, 8 MiB by sha256, output and stdin while the process runs, stdin while
@@ -182,13 +182,15 @@ function parse(argv: string[], cases: Case[]): Args {
 	if (machine !== undefined || quick) throw new Usage(`${machine !== undefined ? "--machine" : "--quick"} goes with --exec-stream`);
 	if (args.tti !== undefined || args.burst !== undefined) {
 		// The suite's flags shape its cases; a TTI run has its own, and --burst is its own count of computers at once.
-		const others = (["only", "kind", "fixture", "gpu", "long", "concurrency", "run"] as const).filter((name) => args[name] !== undefined);
+		// --run stays: a TTI run's computers carry the live sweep's id like the suite's, so its --after finds them.
+		const others = (["only", "kind", "fixture", "gpu", "long", "concurrency"] as const).filter((name) => args[name] !== undefined);
 		if (others.length > 0) throw new Usage(`--tti and --burst measure time to the first command alone: drop ${others.map((name) => `--${name}`).join(", ")}`);
 		return {
 			provider: args.provider,
 			...(args.image === undefined ? {} : { image: args.image }),
 			...(args.tti === undefined ? {} : { tti: args.tti }),
 			...(args.burst === undefined ? {} : { burst: args.burst }),
+			...(args.run ? { run: args.run } : {}),
 			json: args.json,
 			help: false,
 		};
@@ -421,6 +423,7 @@ export async function main(argv: string[], io: CliIo = {}): Promise<number> {
 			image: args.image ?? target.image ?? DEFAULT_IMAGE,
 			iterations: args.tti ?? 0,
 			burst: args.burst ?? 0,
+			...(args.run ? { run: args.run } : {}),
 			...(target.notes && target.notes.length > 0 ? { notes: target.notes } : {}),
 			...(signal ? { signal } : {}),
 			...(io.clock ? { clock: io.clock } : {}),
