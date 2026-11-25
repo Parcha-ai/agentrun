@@ -15,8 +15,8 @@ export const blankCheck = (one: CheckDisagreement): CheckDisagreement => ({
   ...(one.expected ? { expected: one.expected.map(({ field, known, value }) => ({ field, known, ...(value !== undefined ? { value: "" } : {}) })) } : {}),
 });
 
-/** An audit's disagreement blanked the same way: its run ids and whether a grade wrote it kept. */
-export const blankAudit = (one: AuditDisagreement): AuditDisagreement => ({ run: one.run, served: one.served, input: "", agent: null, draft: null, ...(one.graded ? { graded: true as const } : {}) });
+/** An audit's disagreement blanked the same way: its run ids and whether a grade wrote it kept, its known answer empty. */
+export const blankAudit = (one: AuditDisagreement): AuditDisagreement => ({ run: one.run, served: one.served, input: "", agent: null, draft: null, ...(one.graded ? { graded: true as const } : {}), ...(one.expected !== undefined ? { expected: "" } : {}) });
 
 /** `record` with what it copied from run `runId` blanked: each disagreement naming it (a check's agent run, a connected
  *  agent's collected turn too; an audit's served run or shadow run), and the grader's words its reason quotes from one

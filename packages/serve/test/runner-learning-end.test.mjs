@@ -73,7 +73,7 @@ async function world(t, body, launchOf, setup = async () => {}) {
     stores.push(store);
     const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
     const endOfRun = endOfRunOf({ store, data: dir, env: {} });
-    const createLoop = (deps) => createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, ...(endOfRun ? { endOfRun } : {}) });
+    const createLoop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", ...(endOfRun ? { endOfRun } : {}) }));
     runners.push(startRunner({ store, createLoop, name: "runner-a", ...TIMING }));
   };
   const ended = () => until(async () => {

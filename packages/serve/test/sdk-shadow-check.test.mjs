@@ -373,7 +373,7 @@ test('a give-back hold written after a landed turn carries that turn\'s disagree
   const { compilePrompt } = await import('../dist/learn/compile.js');
   const prompt = compilePrompt({ mode: 'revise', workflow: flow.name, current: '{}', held: { workflow: flow.name, digest: held.digest, reason: held.reason, check: held.check }, reference: '', traces: [], tools: [], judges: false });
   assert.match(prompt, /Your answer: \{"ready":true\}\nThe draft's answer: \{"ready":false\}/);
-  assert.match(prompt, /1 of your inputs were checked before it was held/);
+  assert.match(prompt, /1 of your inputs was checked before it was held/);
   assert.doesNotMatch(prompt, /no disagreements to show/);
 });
 

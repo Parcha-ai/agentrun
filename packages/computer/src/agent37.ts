@@ -541,18 +541,17 @@ export class Agent37Provider extends HostedProvider {
 		if (typeof (ssh2 as { Client?: unknown } | null)?.Client !== "function") throw new Error("options.ssh2 must be the ssh2 package (its Client class): the host installs it, as it does e2b");
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
 		if (typeof WebSocket !== "function") throw new Error("options.WebSocket must be a WebSocket class that takes headers, as Node's global one does");
-		const api = new URL(httpsBase(apiUrl, "the Agent37 API URL"));
-		if (api.search !== "" || api.hash !== "") throw new Error(`the Agent37 API URL takes no query or fragment, as ${DEFAULT_API_URL} has none: ${api.protocol}//${api.host}`);
+		const api = httpsBase(apiUrl, "the Agent37 API URL");
 		if (typeof proxyDomain !== "string" || !DOMAIN.test(proxyDomain)) throw new Error(`proxyDomain must be a host name such as ${DEFAULT_PROXY_DOMAIN}, not ${JSON.stringify(proxyDomain)}`);
 		if (type !== "vm" && type !== "default") throw new Error(`type is vm or default, not ${JSON.stringify(type)}`);
 		if (region !== "us" && region !== "eu" && region !== "ap-south") throw new Error(`region is us, eu or ap-south, not ${JSON.stringify(region)}`);
 		if (region !== "us" && type !== "vm") throw new Error(`Agent37 runs type default in us alone: ${region} takes type vm`);
-		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api.href.replace(/\/+$/, ""), proxyDomain, type, region });
+		const host = new Agent37Host({ apiKey, sshKey: privateKey, ssh2, fetch: fetcher, WebSocket, apiUrl: api, proxyDomain, type, region });
 		super(host, { ...rest, timeouts: { createMs: DEFAULT_CREATE_MS, ...timeouts } });
 	}
 }
 
 /** The workspace a key reaches, in words, for the sweep's scope: the key's sha256 prefix, never the key. */
 export function workspaceOf(apiKey: string, apiUrl: string = DEFAULT_API_URL): string {
-	return `the Agent37 workspace of the key sha256:${createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12)} at ${apiUrl.replace(/\/+$/, "")}`;
+	return `the Agent37 workspace of the key sha256:${createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 12)} at ${httpsBase(apiUrl, "the Agent37 API URL")}`;
 }

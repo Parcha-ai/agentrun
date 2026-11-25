@@ -112,10 +112,11 @@ async function lostRun(t, { capUsd, runCap, held, losses, endOfRun }) {
       ...(await spec(claim, run)),
       cap: { capUsd, park: (refusal) => cap.parkOf(refusal, capUsd), checkRaise: cap.checkRaise, followUpOf: cap.followUpOf },
       runCap: { capUsd: () => capUsd, ...runCap },
+      ...(endOfRun ? { endOfRun } : {}),
     }));
     // Run-1 on the adapter loop; any other run it claims is held, never run here.
     const createLoop = (deps) => {
-      const loop = job({ ...deps, endOfRun, journal: (claim) => freezing(name, deps.journal(claim)) });
+      const loop = job({ ...deps, journal: (claim) => freezing(name, deps.journal(claim)) });
       let mine = false;
       let release;
       const parked = new Promise((resolve) => (release = resolve));

@@ -112,9 +112,8 @@ them). A first compile's earns the one recompile, as a check's hold does; a reco
 A new revision is checked once before it serves (`runner/promotion.ts` startCheck, settleCheck). The first run that
 lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each, at
 workflow cost, one check at a time), and the agent takes the runs meanwhile. The check judges the draft field by field
-(`learn/field-check.ts` check): each field of each input it answered alone against that field's best known answer, a
-label (none is fed yet), else the expected answer of the agent run's newest grade (`Grade.expected`), else the agent's
-own recorded answer to it; no teacher is read. Fields are split only where the definition names them (agree_on, the
+(`learn/field-check.ts` check): each field of each input it answered alone against that field's best known answer, the
+expected answer of the agent run's newest grade (`Grade.expected`), else the agent's own recorded answer to it; no teacher is read. Fields are split only where the definition names them (agree_on, the
 owner's own names): there each path is judged against the grade's value at that path. With no agree_on there is one
 field, the whole answer (`answer`), judged against the agent's answer with the grade's expected keys written over it
 when both are JSON objects, else against the grade's expected answer whole (`learn/promote.ts` knownAnswerText: equal,
@@ -135,24 +134,22 @@ input on it: a grade given after the replay ended counts from the next check, ne
 learning reset deletes the grades and keeps the replay runs: their records and journals keep the grade content they
 were judged with, as their grader prompts already did. An unjudged input is never right: not on every field at once, and a field judged on fewer than `alone_min` of
 the inputs that carried it fails. A field passes on all its known inputs pooled, wherever each one's known answer came
-from: at least `agree_min` of them right (an input known only from the agent counts at the agent's self-agreement on
-the field less the margin instead, where that was measured; none is yet). Its inputs with a known answer (labels and
-grades together) keep their own bar too: at least `agree_min` of them right, and within `margin` (0.02) of the agent's
-own accuracy there, one miss always allowed in each (misses at most max(1, floor((1 - agree_min) n)); a correction,
-where the agent was wrong, is no free pass). So agent-known inputs never carry graded ones the draft got wrong: 80
-agent-known right and 20 graded wrong hold, while one graded input missed among 19 the agent knows serves, and 2 of 3
-labels right where the agent had 3 serves among 97 agent-known. `check.fields.<f>.by` keeps each source's counts, with
-whether it would pass alone. It serves when at least `alone_min` of the inputs were answered alone, at least
-`agree_min` of those were right on every field at once (the joint floor: misses spread over several fields add up), and
-every field passes; a hold names the failing fields (`check.fields`, each with its counts and reason), or its fields
+from: at least `agree_min` of them right. Its graded inputs keep their own bar too: at least `agree_min` of them right,
+and within 0.02 of the agent's own accuracy there, one miss always allowed in each (misses at most
+max(1, floor((1 - agree_min) n)); a correction, where the agent was wrong, is no free pass). So agent-known inputs never
+carry graded ones the draft got wrong: 80 agent-known right and 20 graded wrong hold, while one graded input missed
+among 19 the agent knows serves. `check.fields.<f>.by` keeps each source's counts. It serves when at least `alone_min` of the inputs were answered alone, at least
+`agree_min` of those were right on every field at once (the joint floor: misses spread over several fields add up; its
+verdict kept as `check.joint`, which a hold's words and the cost summary's `cleared` read), and every field passes; a hold names the failing fields (`check.fields`, each with its counts and reason), or its fields
 together when only the joint floor fell short, and each disagreement the fields it had wrong, with the known answer of
-each a label or grade gave (`expected`, its value cut and redacted, and its source), which the recompile is asked to
-say. An unjudged input is listed too, its field marked `unknown` with no value: the recompile is told the owner marked
-the agent's answer wrong without giving the right one. A purge blanks each value and keeps the field and source. The recompile prompt is not reached: it quotes each disagreement's input, the agent's answer and the grade's expected value, and it is asked in the agent's next user run, whose journal keeps it; purging the graded run leaves that copy, as it leaves the traces of other runs a compile prompt quotes. Phase 4d moves the compile turn into a learning run of its own, made from the runs it quotes, so a purge of any of them deletes it. The record counts
+each a grade gave (`expected`, its value cut and redacted, and its source), which the recompile is asked to
+say. An unjudged input is listed too, its field marked with no value: `unknown`, the recompile told the owner marked
+the agent's answer wrong without giving the right one, or `contradicts`, told the owner's grade contradicts itself
+(marked it wrong, yet the right answer it gave is the agent's) and there is no known answer there. A purge blanks each value and keeps the field and source. The recompile prompt is not reached: it quotes each disagreement's input, the agent's answer and the grade's expected value, and it is asked in the agent's next user run, whose journal keeps it; purging the graded run leaves that copy, as it leaves the traces of other runs a compile prompt quotes. Phase 4d moves the compile turn into a learning run of its own, made from the runs it quotes, so a purge of any of them deletes it. The record counts
 the agent's side too (`check.agent_agreed`: of the inputs answered alone, those the agent's own answers had right on
-every field against the same known answers), which the cost summary's `agent_pct` and a replay's `agent_acc` read. A
-connected agent's turns kept before the per-field tally count each field from the same turns as `alone`. No new
-agree_on path may hold a `__proto__` segment (a saved definition keeps its setting on read). Against the agent, the answers are compared on the fields
+every field against the same known answers), which the cost summary's `agent_pct` and a replay's `agent_acc` read. No
+agree_on path may hold a `__proto__` segment, on a write or a read, nor a grade's expected answer a `__proto__` key.
+Against the agent, the answers are compared on the fields
 that say the decision, as the definition declares them in `learning.agree_on` (`learning-setting.ts` agreeOnOf): dotted
 paths into the answer's JSON object (`verdict.decision`, `["mcc", "riskTier"]`), each segment an object's own key; each
 path must resolve in both answers' values (bare JSON, a whole fence, or the last fenced json block) to equal values, and
@@ -169,7 +166,8 @@ asked no more; what it spent before is booked as any cut request is, and a stopp
 not the verdict, a request that failed twice, one cut by its deadline, and a cap refusal differ, never agree by default,
 in words ("the comparison could not be read: ...", "the cap held the comparison"). The verdict is a root journal entry
 (`agentrun.learning.compared`) that the run's metrics keep (`replay.compared`), naming the two answers it read (`pair`,
-a digest of both); the check reads it through compareAnswers, the one comparison the audit makes too. A verdict whose
+a digest of both); the check reads it through checkInputOf (compareAnswers on a whole answer), the one comparison the
+audit makes too (answerJudged). A verdict whose
 pair is not the two answers read at the check (the agent's run answered again after its replay was compared: a
 follow-up) is stale, and that input differs ("the comparison read an earlier answer: ..."), as one with no verdict
 does: no claim asks the grader again. The record keeps `check.grader` (the
@@ -233,13 +231,19 @@ served run's own spend). While the shadow is queued or running the served run's 
 (`learn/ledger.ts` shadowCostOf): its `cost.learning_usd`, `cost.all_in_usd` and learning cost read null until
 the shadow ends. Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
 each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
-digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by compareAnswers of the
-shadow's answer and the served run's answer row `turn`, compared as its check compares (its revision's
-`learning.agree_on`; else the grader's verdict, which the shadow asked at its own end on its own cap, so its request is
-the served run's learning cost, kept in its metrics as `audit.compared`; else whole), read from the run by that id (null when either answer is
-missing or a run is gone, never counted): a follow-up's answer since is never the one compared, for the verdict or a
-hold's disagreement. An owner's grade of a run the workflow answered alone is a row too (`source: "grade"`, `agreed` the
-grade, `turn` the answer graded). `promoted_at` names the promotion the line counts for: the `at` of the
+digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by judging the served
+run's answer row `turn` against the shadow's answer as its check judges a draft against the agent's
+(`runner/promotion.ts` answerJudged: its revision's `learning.agree_on`; else the grader's verdict, which the shadow
+asked at its own end on its own cap, so its request is the served run's learning cost, kept in its metrics as
+`audit.compared`; else whole), read from the run by that id (null when either answer is missing or a run is gone, never
+counted): a follow-up's answer since is never the one compared, for the verdict or a hold's disagreement. An owner's
+grade of a run the workflow answered alone is a row too (`source: "grade"`, `turn` the answer graded): `agreed` the
+grade's `correct`, the owner's verdict on the served answer itself, however an `expected` answer words it; but a
+grade that marks it wrong under the revision's `agree_on`, with an `expected` answer, is judged on those fields alone,
+each against the expected answer's value where it gives one, so a correction of what no `agree_on` field says is no
+disagreement. The check and the audit read one ground
+truth: a served run with a grade's row is counted by that row alone, never by its shadow's (the agent's answer again,
+which the grade may have corrected). `promoted_at` names the promotion the line counts for: the `at` of the
 promote record that began the digest's newest run of promote records (`learn/promote.ts` promotionStartOf) when the
 shadow started or the grade was given. The host alone appends to the ledger, one record a line, each
 claim's batch oldest served run first. GET .../learning/audits reads the rows. The hold is a function of
@@ -248,11 +252,12 @@ after its rows were committed is made at the next claim. The hold rule (`applyHo
 `learning.hold_window` (10) rows with a verdict of the serving revision's current promotion (so a revision its owner's
 replay promotes again after a hold starts on none): `learning.hold_disagree` (3) disagreements or more hold it (a hold
 record carrying `audit`, keeping the bar, the rows read and each disagreement's served run, shadow run, input, the
-agent's answer and the workflow's, each text cut of the host's secrets whole before it is shortened to 1,200 characters,
-`learn/secrets.ts` excerptShown, as a check's are). The agent takes the runs, and its next run it fits asks one recompile with those
-disagreements as data; S3a's check decides it on its usual inputs plus the disagreeing ones. A second audit hold within
-`learning.stop_window` (100) served runs of the first stops it instead (`audit.stopped`, reason "stopped: the workflow
-disagreed with the agent twice"): no compile is asked. The graded hold is gone: a grade is one more row. The money rule
+agent's answer and the workflow's, and a grade's right answer (`expected`) where it gave one, each text cut of the host's
+secrets whole before it is shortened to 1,200 characters, `learn/secrets.ts` excerptShown, as a check's are). The agent
+takes the runs, and its next run it fits asks one recompile with those disagreements as data, asking for the known
+answer (a grade's where one was given, else the agent's); S3a's check decides it on its usual inputs plus the
+disagreeing shadows' ones. A second audit hold within `learning.stop_window` (100) served runs of the first stops it
+instead (`audit.stopped`, reason "stopped: the workflow disagreed with the known answer twice"): no compile is asked. The graded hold is gone: a grade is one more row. The money rule
 still stops a workflow that costs more than the agent by hand.
 
 ## The caps

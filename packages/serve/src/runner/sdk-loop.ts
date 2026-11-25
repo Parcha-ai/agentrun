@@ -128,7 +128,7 @@ export function createSdkLoop(
           const patchOf = async (read: () => Promise<Pick<RunPatch, "costUsd" | "metrics">>) => {
             let timer: NodeJS.Timeout | undefined;
             const late = new Promise<typeof END_PATCH_UNKNOWN>((resolve) => {
-              timer = setTimeout(() => resolve(END_PATCH_UNKNOWN), END_PATCH_MS);
+              timer = setTimeout(() => resolve(END_PATCH_UNKNOWN), host.endPatchMs ?? END_PATCH_MS);
             });
             try {
               endPatch = await Promise.race([read(), late]);

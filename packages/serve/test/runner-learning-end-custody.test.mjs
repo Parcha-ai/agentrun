@@ -105,11 +105,11 @@ async function world(t, { handed, mark, pointer = POINTER, stored }) {
   const spec = async (claim, run) => {
     if (mark === undefined) await store.runs.update(claim, { signInHanded: [handed] });
     else await writeMark(join(dir, "store.sqlite"), claim.runId, mark);
-    return { ...(await script(claim, run)), agentId: "agent-1", input: launch.input.content };
+    return { ...(await script(claim, run)), agentId: "agent-1", input: launch.input.content, endOfRun };
   };
   const signIns = signInsOverStore(store, KEY, { remove: async () => {} });
   const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, signIns, ...(stored ? { stored } : {}) });
-  runners.push(startRunner({ store, createLoop: (deps) => createAdapterLoop(spec)({ ...deps, endOfRun }), name: "runner-a", ...TIMING }));
+  runners.push(startRunner({ store, createLoop: createAdapterLoop(spec), name: "runner-a", ...TIMING }));
 
   /** Run-1 ended: its kept learning. */
   const learned = async () => {

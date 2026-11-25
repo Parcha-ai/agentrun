@@ -10,6 +10,7 @@ import { nativeOf } from "./native/binding.js";
 // The input's origin keeps its fail-safe on read (#1856): a run started by a trigger keeps an origin only when it names
 // the run's own trigger with owner === (the source is a schedule, whose words its owner wrote when they set it up), else
 // that trigger's own with owner false, so a forged or lost origin never reads as the person's or the owner's.
+import { HOLD_MINUTES } from "./computer-held.js";
 import type { InputIssue } from "./errors.js";
 import { type MessageOrigin, originOf } from "./timeline/index.js";
 import type { Plane } from "./tool-plane.js";
@@ -291,13 +292,16 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
     ...(archilDisk ? { archilDisk } : {}),
-    ...(isObject(stored.hold) && typeof stored.hold.minutes === "number" ? { hold: { minutes: stored.hold.minutes, ...(refused ? { refused } : {}) } } : {}),
+    ...(isObject(stored.hold) ? { hold: { minutes: typeof stored.hold.minutes === "number" ? stored.hold.minutes : HOLD_MINUTES, ...(refused ? { refused } : {}) } } : {}),
   };
 }
 
-/** A held run's model refusal as its launch keeps it, else undefined. */
+/** A held run's model refusal as its launch keeps it, else undefined (none kept). One kept that can't be read (a corrupt
+ *  row, another version's) is a refusal still, in words that name the field and never what it holds: read as none, the
+ *  run would start and its claim open the keys its model was refused for. */
 function readRefusal(value: unknown): HeldRefusal | undefined {
-  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return undefined;
+  if (value === undefined) return undefined;
+  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return { message: "This run's model was kept from running at its create, and its launch's hold.refused can't be read: it holds its computer only. Start a new run to run its agent.", fields: [], details: {} };
   return { message: value.message, fields: value.fields as InputIssue[], details: value.details };
 }
 

@@ -28,7 +28,10 @@ test("a person grades an ended run; the agent's promotions read empty until a le
   const labelled = await api("PUT", `/runs/${run}/grade`, { correct: false, label: "Review: the reference MCC is 5812." });
   assert.deepEqual([labelled.status, labelled.body.feedback], [200, null], JSON.stringify(labelled.body));
   meets("/runs/{run_id}/grade", "put", labelled.body);
-  for (const [body, field] of [[{}, "correct"], [{ correct: "yes" }, "correct"], [{ correct: true, expected: "5812" }, "expected"], [{ correct: true, source: "vibes" }, "source"], [{ correct: true, score: 1 }, "score"], [{ correct: true, label: 5 }, "label"], [{ correct: true, label: "x".repeat(4001) }, "label"]]) {
+  // A key named `__proto__`, at any depth of the expected answer, is refused: the one name an object's prototype setter
+  // answers to, never a field a check or an audit reads (learning-setting.ts refuses it in agree_on too).
+  const reserved = [JSON.parse('{"correct":false,"expected":{"__proto__":{"mcc":"5812"}}}'), JSON.parse('{"correct":false,"expected":{"verdict":{"__proto__":"5812"}}}')];
+  for (const [body, field] of [[{}, "correct"], [{ correct: "yes" }, "correct"], [{ correct: true, expected: "5812" }, "expected"], ...reserved.map((one) => [one, "expected"]), [{ correct: true, source: "vibes" }, "source"], [{ correct: true, score: 1 }, "score"], [{ correct: true, label: 5 }, "label"], [{ correct: true, label: "x".repeat(4001) }, "label"]]) {
     const bad = await api("PUT", `/runs/${run}/grade`, body);
     assert.equal(bad.status, 422, JSON.stringify(body));
     assert.ok(bad.body.error.fields.some((one) => one.field === field), JSON.stringify(bad.body.error.fields));

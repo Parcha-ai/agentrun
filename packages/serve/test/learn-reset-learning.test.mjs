@@ -541,7 +541,10 @@ async function runnerFor(w, runId, launch, { script, feedback, wrap = (step) => 
   const spec = piAdapterSpec({ script, tools: {}, hooks: HOOKS }, { requests: [] });
   const step = learningEndOfRun(launch, { store, data: w.dir, env: {} });
   assert.ok(step, "the run learns at its end");
-  const createLoop = (deps) => createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, endOfRun: wrap(step) });
+  const createLoop = (deps) => {
+    const endOfRun = wrap(step);
+    return createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", endOfRun }))(deps);
+  };
   const runner = startRunner({ store, createLoop, name: `runner-${runId}`, ...TIMING });
   w.closing.push(() => store.close(), () => runner.close());
   /** This runner stopped, so a later run is claimed by a runner of its own launch. */

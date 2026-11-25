@@ -1,7 +1,7 @@
 // The grader (learn/promote.ts gradeAnswers, runner/compare-end.ts): with no learning.agree_on, a replay run and an audit's
 // shadow ask the agent's fast model once, at their end, whether their answer and the other one reach the same decision;
 // the check (runner/promotion.ts decideCheck) and the audit (runner/audit.ts settleAudits) read that verdict through the
-// one comparison (compareAnswers). An agree_on revision asks no model. A reply that is not the verdict, a failed request
+// one comparison (runner/promotion.ts checkInputOf: compareAnswers on a whole answer). An agree_on revision asks no model. A reply that is not the verdict, a failed request
 // and a refusal of the run's cap all differ, in words saying so; the grader's request is the run's own spend, booked under
 // its cap: a replay's is its check's cost, a shadow's the served run's learning cost.
 //   (1) a check with no agree_on on differently worded answers promotes through the grader (with no fast model: held, 0 agreed);
@@ -39,7 +39,7 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { promotionsOf, putGrade, GRADER_PROMPT, graderVerdictOf, gradeAnswers, compareAnswers, answersPair, COMPARE_UNREAD, COMPARE_CAP_HELD, COMPARE_STALE } = await import("../dist/learn/promote.js");
-const { decideCheck, differentDecisionWords, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
+const { answerJudged, decideCheck, differentDecisionWords, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
 const { graderAsk } = await import("../dist/runner/compare-end.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { learningOf } = await import("../dist/learn/rows.js");
@@ -324,7 +324,7 @@ test("(9) a graded source run: its replay asks the fast model about the draft an
   const same = { answer: 42, sure: true, why: "checked by hand" };
   const promoted = await graded("expected-same", same);
   assert.equal(promoted.record.decided, "promote", promoted.record.reason);
-  assert.deepEqual(promoted.record.check.fields.answer.by, { grade: { n: 3, workflow_right: 3, agent_right: 0, pass: true } });
+  assert.deepEqual(promoted.record.check.fields.answer.by, { grade: { n: 3, workflow_right: 3, agent_right: 0 } });
   assert.equal(promoted.users.length, 3, "one grader request per replay");
   assert.ok(promoted.users.every((one) => one.includes("checked by hand") && !one.includes("six times seven is forty-two")), "each compares the draft with the expected answer, never the agent's");
 
@@ -340,11 +340,11 @@ test("(10) a partial grade ({answer: 42} of the agent's {answer, sure, why}): ea
   for (let i = 0; i < 3; i++) await putGrade(w.server.learning, "agent-1", { run: `prior-${i}`, correct: true, expected: { answer: 42 }, source: "eval", at: new Date().toISOString(), path: "agent" });
   const { record } = await checked(w, undrawn("expected-partial"));
   assert.equal(record.decided, "promote", record.reason);
-  assert.deepEqual(record.check.fields.answer.by, { grade: { n: 3, workflow_right: 3, agent_right: 3, pass: true } });
+  assert.deepEqual(record.check.fields.answer.by, { grade: { n: 3, workflow_right: 3, agent_right: 3 } });
   const corrected = JSON.stringify({ answer: 42, sure: true, why: "six times seven is forty-two" });
   const users = w.graderRequests().map((request) => JSON.stringify(request.body));
   assert.equal(users.length, 3, "one grader request per replay");
-  assert.ok(users.every((one) => one.includes(JSON.stringify(`The agent's answer:\n<<<\n${corrected}\n>>>`).slice(1, -1))), `each asks against the corrected answer: ${users[0]}`);
+  assert.ok(users.every((one) => one.includes(JSON.stringify(`The known answer:\n<<<\n${corrected}\n>>>`).slice(1, -1))), `each asks against the corrected answer: ${users[0]}`);
 });
 
 test("(11) a grade given between the replays' end and the check's settle: each input is judged on what its fast model was asked (no grade then), so the verdict stands and the revision promotes; the grade counts from the next check", { timeout: 300_000 }, async (t) => {
@@ -359,7 +359,7 @@ test("(11) a grade given between the replays' end and the check's settle: each i
   const record = (await promotionsOf(w.server.learning, "agent-1")).findLast((one) => one.digest === DIGEST_2 && one.decided !== "replaying");
   assert.ok(record, "the revision's check decided");
   assert.equal(record.decided, "promote", record.reason);
-  assert.deepEqual(record.check.fields.answer.by, { agent: { n: 3, workflow_right: 3, agent_right: 3, pass: true } });
+  assert.deepEqual(record.check.fields.answer.by, { agent: { n: 3, workflow_right: 3, agent_right: 3 } });
   assert.ok(!record.reason.includes(COMPARE_STALE), record.reason);
 });
 
@@ -376,7 +376,7 @@ test("(12) a draft equal to the agent's answer, no grade when its replays ended,
   const record = (await promotionsOf(w.server.learning, "agent-1")).findLast((one) => one.digest === DIGEST_2 && one.decided !== "replaying");
   assert.ok(record, "the revision's check decided");
   assert.equal(record.decided, "promote", record.reason);
-  assert.deepEqual(record.check.fields.answer.by, { agent: { n: 3, workflow_right: 3, agent_right: 3, pass: true } });
+  assert.deepEqual(record.check.fields.answer.by, { agent: { n: 3, workflow_right: 3, agent_right: 3 } });
 });
 
 test("the grader's verdict: one JSON object, bare or the whole of one fence; anything else is none", () => {
@@ -401,7 +401,9 @@ test("gradeAnswers asks once more on a transport failure alone; a refusal, two f
   assert.deepEqual(await gradeAnswers("in", "a", "b", once.grader), { same: true, grader: "fast-1", pair });
   assert.equal(once.asked.length, 2);
   assert.equal(once.asked[0].system, GRADER_PROMPT);
-  assert.match(once.asked[0].user, /The job input:\n<<<\nin\n>>>\n\nThe agent's answer:\n<<<\na\n>>>\n\nThe workflow's answer:\n<<<\nb\n>>>/);
+  // The first answer is the known one: the agent's own, or a grade's correction of it (compare-end.ts).
+  assert.match(GRADER_PROMPT, /^You compare two answers to the same job input: the known answer and a learned workflow's answer\./);
+  assert.match(once.asked[0].user, /The job input:\n<<<\nin\n>>>\n\nThe known answer:\n<<<\na\n>>>\n\nThe workflow's answer:\n<<<\nb\n>>>/);
   const twice = graderOf([{ failed: "socket hang up" }, { failed: "socket hang up" }]);
   assert.deepEqual(await gradeAnswers("in", "a", "b", twice.grader), { same: false, grader: "fast-1", pair, differs_on: `${COMPARE_UNREAD}: its request failed twice` });
   const refused = graderOf([{ refused: "spend_cap_reached" }]);
@@ -418,17 +420,17 @@ test("gradeAnswers asks once more on a transport failure alone; a refusal, two f
   assert.equal((await gradeAnswers("in", "a", "b", unnamed.grader)).differs_on, "a decision it did not name");
 });
 
-test("compareAnswers: agree_on decides alone; equal answers agree with no verdict; else the grader's verdict on that same pair, else differ", () => {
+test("the one comparison: agree_on's fields decide alone; compareAnswers: equal answers agree with no verdict; else the grader's verdict on that same pair, else differ", () => {
   const verdict = { same: true, grader: "fast-1", pair: answersPair('{"a":2}', '{"a":1}') };
-  assert.deepEqual(compareAnswers('{"a":1,"b":2}', '{"a":1,"b":3}', ["a"], { same: false, grader: "fast-1", differs_on: "a" }), { same: true });
-  assert.deepEqual(compareAnswers('{"a":1}', '```json\n{"a":1}\n```', undefined), { same: true });
-  assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', undefined, verdict), verdict);
-  assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', undefined), { same: false });
-  assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', undefined, { same: true }), { same: false }, "a verdict no grader gave is none");
-  assert.deepEqual(compareAnswers(null, '{"a":1}', undefined, verdict), { same: false });
+  assert.equal(answerJudged({ agent: '{"a":1,"b":3}', answer: '{"a":1,"b":2}', compared: { same: false, grader: "fast-1", differs_on: "a" } }, ["a"]), true, "under agree_on the fields decide, never a verdict");
+  assert.deepEqual(compareAnswers('{"a":1}', '```json\n{"a":1}\n```'), { same: true });
+  assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', verdict), verdict);
+  assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}'), { same: false });
+  assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', { same: true }), { same: false }, "a verdict no grader gave is none");
+  assert.deepEqual(compareAnswers(null, '{"a":1}', verdict), { same: false });
   // A verdict on another pair (one of the answers changed since it was read), or naming none, is stale: they differ.
-  assert.deepEqual(compareAnswers('{"a":1}', '{"a":3}', undefined, verdict), { same: false, grader: "fast-1", differs_on: COMPARE_STALE });
-  assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', undefined, { same: true, grader: "fast-1" }), { same: false, grader: "fast-1", differs_on: COMPARE_STALE });
+  assert.deepEqual(compareAnswers('{"a":1}', '{"a":3}', verdict), { same: false, grader: "fast-1", differs_on: COMPARE_STALE });
+  assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', { same: true, grader: "fast-1" }), { same: false, grader: "fast-1", differs_on: COMPARE_STALE });
   assert.notEqual(answersPair("a", "b"), answersPair("ab", ""), "the pair's two answers never run together");
 });
 

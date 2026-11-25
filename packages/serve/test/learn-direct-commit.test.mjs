@@ -80,7 +80,7 @@ async function world(t, body) {
     const spec = piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch });
     const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, handed: [HANDED], log: (line) => logs.push(line) });
     const createLoop = (deps) => {
-      const job = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, ...(endOfRun ? { endOfRun } : {}) });
+      const job = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", ...(endOfRun ? { endOfRun } : {}) }))(deps);
       let mine = false;
       let release;
       const held = new Promise((resolve) => (release = resolve));

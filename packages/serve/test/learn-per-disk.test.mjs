@@ -208,7 +208,7 @@ async function world(t) {
     const requests = [];
     const spec = piAdapterSpec({ script: learns ? [{ say: "42" }, { say: DRAFT }] : [{ say: "42" }], tools: {}, hooks: quiet }, { requests });
     const createLoop = (deps) => {
-      const job = createAdapterLoop(async (claim, r) => ({ ...(await spec(claim, r)), agentId: "agent-1", input: content }))({ ...deps, endOfRun });
+      const job = createAdapterLoop(async (claim, r) => ({ ...(await spec(claim, r)), agentId: "agent-1", input: content, ...(endOfRun ? { endOfRun } : {}) }))(deps);
       let mine = false;
       let release;
       const parked = new Promise((resolve) => (release = resolve));

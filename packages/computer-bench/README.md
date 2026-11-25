@@ -198,7 +198,7 @@ arm, the route mix, the passes that ran a program, the failure loci, and what wa
 | [linux-desktop](suites/linux-desktop/README.md) | 10 (5 dev, 5 held out) | Mousepad, xfce4-terminal, Thunar, Firefox, and two tasks across two apps, on a Linux desktop, with or without a window manager; all ten verified live on E2B Desktop for seeds 1-3, and the eight without Thunar on Agent37 |
 | [macosworld](suites/macosworld/PORT.md) | 10 | ported from macOSWorld (CC BY-NC 4.0: by reference, none of its text) |
 | [mobileworld](suites/mobileworld/PORT.md) | 6 | ported from MobileWorld (Apache-2.0): 6 of the 8 of its 201 that port faithfully to an unrooted phone (two have no oracle the cloud phone can confirm) |
-| [osworld-pilot](suites/osworld-pilot/PORT.md) | 20 (all held out) | ported from OSWorld-Verified (Apache-2.0): 10 terminal tasks, a git push, 3 VS Code text tasks in Mousepad and 6 Chrome tasks in Firefox, on a Linux desktop; its `arms.json` is the Sonnet 5.5 against GPT-6.1 Terra pilot on E2B; verify live decides its oracles |
+| [osworld-pilot](suites/osworld-pilot/PORT.md) | 15 (all held out) | ported from OSWorld-Verified (Apache-2.0): 10 terminal tasks, a git push, 2 VS Code text tasks in Mousepad and 2 Chrome settings tasks in Firefox, on a Linux desktop (five more were dropped after a live verify, see PORT.md); its `arms.json` is the Sonnet 5.5 against GPT-6.1 Terra pilot on E2B; verify live decides its oracles |
 
 Each suite's README says which tasks are proven only on the fake and which wait on a live run.
 
@@ -239,9 +239,12 @@ missing.
    after the agent's end, the run ends as its agent did; released before the start, it ends cancelled.
 4. The agent's steps come from `GET /runs/{run_id}/timeline`: each `tool_use` and its `tool_result` row (the tool's
    name, its input preview, success or failure), and on the tool_result row the computer calls the tool call made
-   (`computer_calls`: method, ok, ms, the error's code, ui.act's steps with their routes and readbacks, its expect, and
-   where serve has them `at` and `words`; `computer_calls_dropped` past serve's bound). Each computer call is a step;
-   each tool call is a turn. No journal route.
+   (`computer_calls`: method, `started_at`, ok, ms, the error's code, ui.act's steps with their routes and readbacks,
+   its expect, and `words` where serve has it; `computer_calls_dropped` past serve's bound). A codemode script's own
+   rows carry none: each computer call it makes is a nested call, with its own rows under the script's call
+   (`parent_tool_use_id`, the same `conversation_id`), and those are the script's steps. A subagent's rows, in a
+   conversation of their own, are not the agent's. Each computer call is a step; each tool call of the model's is a
+   turn. No journal route.
 5. `GET /runs/{run_id}` answers `computer {state, provider, why, held {state, minutes, until, why}}`, `cost {usd,
    so_far_usd}`, `result {final_answer}` once the run completed, and `error {code}`; a platform failure's code is one of
    `computer_unavailable`, `provider_error`, `model_unavailable`, `upstream_error`, `internal`, `runner_lost`. The

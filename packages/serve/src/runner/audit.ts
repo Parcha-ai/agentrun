@@ -12,9 +12,9 @@
 //     shadow) of an agent every tool of which only reads (learn/audit.ts auditWriterOf, the replay's readOnlyHint rule): a
 //     shadow never writes again.
 //   settleAudits: each open started line (no result row yet) whose two runs, read by id, ended writes its row (agreed:
-//     the audited answer, its `turn`'s, and the shadow's say the same, learn/promote.ts compareAnswers, the check's one
-//     comparison: on the served run's revision's agree_on, learning-setting.ts agreeOnOf, else the grader's verdict the
-//     shadow kept at its end, runner/compare-end.ts; a follow-up's answer since is never
+//     the audited answer, its `turn`'s, judged against the shadow's as the check judges a draft against the agent's
+//     answer, runner/promotion.ts answerJudged: on the served run's revision's agree_on, learning-setting.ts agreeOnOf,
+//     else the grader's verdict the shadow kept at its end, runner/compare-end.ts; a follow-up's answer since is never
 //     read), oldest served run first; then, rows added or not, the hold rule reads the serving revisions'
 //     rows: a hold is a function of the ledger alone.
 //   applyHold: at least hold_disagree disagreements in the newest hold_window rows of the digest's current promotion
@@ -22,7 +22,10 @@
 //     it is shortened, learn/secrets.ts excerptShown): the agent's next run asks one recompile with them as data
 //     (runner/learning-end.ts compileAskOf), which S3a's check decides on its inputs plus the disagreeing ones. A second
 //     hold within stop_window served runs of the first stops it: no compile, the stop said on the record.
-//   gradeRow: an owner's grade on a run the workflow answered alone is a row too (source grade, agreed = the grade).
+//   gradeRow: an owner's grade on a run the workflow answered alone is a row too (source grade): agreed = the grade's
+//     verdict on the served answer, except a wrong one under agree_on with an expected answer, judged on those fields
+//     against it (answerJudged). A graded run is counted by its grade row alone (learn/audit.ts
+//     windowOf): the check and the audit read one ground truth, a grade's answer where a person gave one, else the agent's.
 // Every number is the agent definition's (learning-setting.ts auditLoopOf). Nothing here fails a claim: a failure is logged.
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { overCapMessage } from "@parcha/agentrun-kernel/kernel/cap";
@@ -37,12 +40,12 @@ import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isObject, type Json } from "../validate.js";
 import { addAuditLines, type AuditRow, type AuditStarted, auditableLaunch, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
 import { lastRunsOf, sinceReset } from "../learn/compile.js";
-import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
+import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedGrade, comparedOf, gradesOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
 import { excerptShown } from "../learn/secrets.js";
 import type { Shown } from "../learning.js";
 import { auditRoomOf } from "./learning-end.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
-import { answerOf, answerRowOf } from "./promotion.js";
+import { answerJudged, answerOf, answerRowOf } from "./promotion.js";
 import { servedOf, type WorkflowFirst } from "./workflow-first.js";
 import { held, heldEndOfRun } from "./held.js";
 
@@ -70,7 +73,7 @@ export type AuditDeps = {
 };
 
 /** The words a second hold within stop_window leaves on its record: what the owner reads. */
-export const STOPPED_TWICE = "stopped: the workflow disagreed with the agent twice";
+export const STOPPED_TWICE = "stopped: the workflow disagreed with the known answer twice";
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const ended = (row: RunRow | undefined) => row !== undefined && FINAL_STATES.includes(row.state) && row.runner === null;
@@ -283,10 +286,12 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
       if (shadow?.state !== "ended" || !served) return null;
       // The audited answer (the row's turn), never the run's newest: a follow-up since may have answered again.
       const [a, b] = [await auditedAnswer(deps, row), await answerOf(store, row.shadow_run!, deps.context)];
-      // The check's one comparison (compareAnswers): on the fields the served run's revision says carry the decision, else
-      // equal, else the grader's verdict its shadow kept at its end (runner/compare-end.ts), else the whole answer.
+      // Judged as the check judges a draft against the agent's answer (answerJudged): on the fields the served run's
+      // revision says carry the decision, else equal, else the grader's verdict its shadow kept at its end
+      // (runner/compare-end.ts), else the whole answer. A grade of the served run, where one was given, outranks this row
+      // (learn/audit.ts windowOf).
       const verdict = comparedOf(isObject(shadow.metrics as Json) ? (shadow.metrics as { audit?: { compared?: unknown } }).audit?.compared : undefined);
-      return a === null || b === null ? null : compareAnswers(a, b, await agreeOnOfRevision(store, served.revisionId), verdict).same;
+      return a === null || b === null ? null : answerJudged({ agent: b, answer: a, ...(verdict ? { compared: verdict } : {}) }, await agreeOnOfRevision(store, served.revisionId));
     }) : { all: lines, added: [] };
     const written = rowsOf(added);
     if (written.length) log(`workflow-first: ${written.length} audit row${written.length === 1 ? "" : "s"} written (${written.filter((row) => row.agreed === false).length} disagreeing)`);
@@ -296,13 +301,16 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
   }
 }
 
-/** The row an owner's grade of served run `run` writes (source grade, agreed = the grade, counted for the digest's
- *  promotion now), then the hold rule: only for a run the workflow answered alone (its answer is the workflow's).
- *  Nothing else: no round, no compile by itself. A run before the agent's learning reset (sinceReset) adds no row: its
+/** The row an owner's grade of served run `run` writes (source grade, counted for the digest's promotion now), then the
+ *  hold rule: only for a run the workflow answered alone (its answer is the workflow's). Its verdict is the owner's on
+ *  the served answer itself: graded right, it agrees, however an `expected` answer words it. Graded wrong, it disagrees,
+ *  except under the revision's agree_on with an `expected` answer (an empty one is none): then only those fields judge
+ *  it, each against the expected answer's value where it gives one (runner/promotion.ts answerJudged), so a grade
+ *  that corrects only what no agree_on field says is no disagreement. Nothing else: no round, no compile by itself. A run before the agent's learning reset (sinceReset) adds no row: its
  *  grade is kept, but a promotion of the same digest after the reset is never held by what came before it. A run on a
  *  named disk adds none either (learn/learning-of.ts): the hold rule would copy its answers into the promotion's
  *  disagreements, and the agent's compile reads those. */
-export async function gradeRow(deps: AuditDeps, run: RunRow, correct: boolean): Promise<void> {
+export async function gradeRow(deps: AuditDeps, run: RunRow, correct: boolean, expected?: Readonly<Record<string, unknown>>): Promise<void> {
   const m = metricsOf(run);
   if (m.path !== "workflow" || typeof m.workflow !== "string" || typeof m.workflow_digest !== "string") return;
   if ((run.disk ?? null) !== null || !(await sinceReset(deps.store, deps.agentId))(run)) return;
@@ -310,7 +318,14 @@ export async function gradeRow(deps: AuditDeps, run: RunRow, correct: boolean): 
   // The answer graded: the run's newest now, kept by its row's id (as a shadow's audit keeps its turn).
   const turn = turnOf((await answerRowOf(deps.store, run.id, deps.context))?.id);
   const row: AuditRow = { run: run.id, shadow_run: null, workflow: m.workflow, digest: m.workflow_digest, promoted_at: promoted?.at ?? null, source: "grade", agreed: correct, served_cost: run.costUsd, shadow_cost: null, ...turn, at: iso((deps.now ?? Date.now)()) };
-  const { all } = await addLines(deps, [row], async () => correct, true);
+  const known = expected && Object.keys(expected).length ? expected : undefined;
+  const { all } = await addLines(deps, [row], async (one) => {
+    if (correct) return true;
+    const on = known ? await agreeOnOfRevision(deps.store, run.revisionId) : undefined;
+    if (!on?.length) return false;
+    const said = await auditedAnswer(deps, one);
+    return said === null ? null : answerJudged({ agent: said, answer: said, expected: known }, on);
+  }, true);
   await holdByLedger(deps, rowsOf(all));
 }
 
@@ -362,14 +377,17 @@ async function applyHold(deps: AuditDeps, rows: readonly AuditRow[], loop: Audit
   const shown = await deps.shown();
   const cut = (text: string) => excerptShown(text, shown, CHECK_TEXT_MAX);
   const disagreements: AuditDisagreement[] = [];
+  // A grade's row shows the right answer its grade gave, the known answer the served one missed.
+  const grades = hold.disagreed.some((row) => row.source === "grade") ? await gradesOf(store.learning, agentId) : [];
   for (const row of hold.disagreed) {
     const input = await store.runs.launch(row.run).then((one) => inputText(readLaunchBody(one.body)?.input ?? null), () => "");
     // The answer the row compared (its turn's), as the verdict read it: never a follow-up's since.
     const draft = await auditedAnswer(deps, row);
     const agent = row.shadow_run ? await answerOf(store, row.shadow_run, deps.context) : null;
-    disagreements.push({ run: row.shadow_run ?? row.run, served: row.run, input: cut(input), agent: agent === null ? null : cut(agent), draft: draft === null ? null : cut(draft), ...(row.source === "grade" ? { graded: true as const } : {}) });
+    const expected = row.source === "grade" ? comparedGrade(grades.find((one) => one.run === row.run))?.expected : undefined;
+    disagreements.push({ run: row.shadow_run ?? row.run, served: row.run, input: cut(input), agent: agent === null ? null : cut(agent), draft: draft === null ? null : cut(draft), ...(row.source === "grade" ? { graded: true as const } : {}), ...(expected ? { expected: cut(JSON.stringify(expected)) } : {}) });
   }
-  const said = `it disagreed with the agent's own answer on ${hold.disagreed.length} of its last ${hold.rows.length} audited runs (the bar: ${loop.hold_disagree} of ${loop.hold_window})`;
+  const said = `it disagreed with the known answer on ${hold.disagreed.length} of its last ${hold.rows.length} audited runs (the bar: ${loop.hold_disagree} of ${loop.hold_window})`;
   const reason = stopped ? STOPPED_TWICE : `held: ${said}; the agent's next run recompiles it once with them`;
   const record: PromotionRecord = {
     workflow, digest, at: iso((deps.now ?? Date.now)()), decided: "hold", reason,

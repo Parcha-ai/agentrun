@@ -17,7 +17,7 @@ import { INSTRUCTION_EVIDENCE_BYTES } from "../native/instructions.js";
 import { CLI_POLICY_BYTES } from "../cli-learning/policy.js";
 import { refuseWhileNoRunner } from "../runner/presence.js";
 import { secretRedactor } from "../runner/redact.js";
-import { redactedOutput } from "../key-refusal.js";
+import { redactedOutput, withheldWhole } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 import { learningOf, type LearningRead, readAt } from "../learn/rows.js";
 import { purgedRun, purgedRows } from "../purged-workflow.js";
@@ -80,6 +80,10 @@ export type SdkInbox = {
   /** The runs whose text learning_workflows and learning_check's draft are: a receipt sent again after one of them is
    *  purged answers 410 purged (receipt). */
   learning_writers?: string[];
+  /** The learned workflow a learned_workflow start names, by its call's id as stored, where its input is stored withheld (a held
+   *  value split across its arguments, withheldParts): the parent check of a callback nested in it reads its name here
+   *  (checkToolParents). Only a name of learning_workflows, never what the caller wrote otherwise. */
+  workflow_calls?: Record<string, string>;
   /** A compiled draft reserved for a shadow check, never supplied to the native agent. */
   learning_check?: SdkWorkflowCheck;
   /** Server cleaning changed evidence: two different secret-bearing answers must never agree by their placeholder. */
@@ -199,8 +203,9 @@ const writableInbox = (row: SdkInbox) => {
 };
 
 /** Parents are evidence relationships within this inbox, never caller-chosen labels that hide top-level work. Check
- *  inside modify's compare-and-replace so a concurrent upload cannot change the history we validated. */
-function checkToolParents(row: SdkInbox, events: readonly SdkEvent[]): void {
+ *  inside modify's compare-and-replace so a concurrent upload cannot change the history we validated. A learned_workflow
+ *  start stored withheld names its workflow in `named` (the row's workflow_calls and this batch's). */
+function checkToolParents(row: SdkInbox, events: readonly SdkEvent[], named: Readonly<Record<string, string>> = {}): void {
   const calls = new Map<string, { name: string; parent?: string; workflow?: string; open: boolean }>();
   const openChildren = new Map<string, number>();
   const tools = new Map<string, ReadonlySet<string>>();
@@ -220,7 +225,7 @@ function checkToolParents(row: SdkInbox, events: readonly SdkEvent[]): void {
         openChildren.set(event.parent_tool_use_id, (openChildren.get(event.parent_tool_use_id) ?? 0) + 1);
       }
       calls.set(event.id, { name: event.name, parent: event.parent_tool_use_id, open: true,
-        ...(event.name === "learned_workflow" && isObject(event.input) && typeof event.input.name === "string" ? { workflow: event.input.name } : {}),
+        ...(event.name === "learned_workflow" && isObject(event.input) && typeof event.input.name === "string" ? { workflow: event.input.name } : event.name === "learned_workflow" && Object.hasOwn(named, event.id) ? { workflow: named[event.id] } : {}),
       });
     } else {
       if (openChildren.get(event.id)) refuse("SDK workflow callbacks must finish before their parent workflow.");
@@ -234,6 +239,44 @@ function checkToolParents(row: SdkInbox, events: readonly SdkEvent[]): void {
       }
     }
   }
+}
+
+/** Which of `parts` (what a run reported: a tool event's input and output, a completion's answer and error) are stored
+ *  withheld, as "[redacted]": each whose text (a string as it is, anything else as its JSON) holds a held value no cut in
+ *  place takes (key-refusal.ts withheldWhole, whose join view reads a JSON text's strings joined: one split across two
+ *  of its strings), then every one when a value is split across two of them. That second read takes the parts as they
+ *  came, one JSON text, each part withheld by itself a span cut in place (withheldWhole's `held`): a value read wholly
+ *  inside one is that part's, and one with any of its characters in another part withholds them all. Read with a
+ *  withheld part as "[redacted]" instead, the head of a second value at its edge would be gone, and the rest of it in
+ *  the next part stored as it came. Only these parts, never the event's or the completion's own facts; each part not
+ *  withheld is cut in place after (clean). A part JSON cannot write is withheld. */
+function withheldParts(parts: Record<string, unknown>, values: readonly string[]): Set<string> {
+  const given = Object.entries(parts).filter(([, part]) => part !== undefined);
+  const jsonOf = (part: unknown): string | undefined => {
+    try {
+      return JSON.stringify(part);
+    } catch {
+      return undefined;
+    }
+  };
+  const withheld = new Set<string>();
+  for (const [name, part] of given) {
+    const text = typeof part === "string" ? part : jsonOf(part);
+    if (text === undefined || withheldWhole(text, values)) withheld.add(name);
+  }
+  if (given.length < 2) return withheld;
+  // The parts as one JSON array, each withheld one's span of it held; one JSON cannot write is read as "[redacted]".
+  let joined = "[";
+  const held: [number, number][] = [];
+  for (const [i, [name, part]] of given.entries()) {
+    if (i) joined += ",";
+    const json = jsonOf(part) ?? JSON.stringify("[redacted]");
+    if (withheld.has(name)) held.push([joined.length, joined.length + json.length]);
+    joined += json;
+  }
+  joined += "]";
+  if (withheldWhole(joined, values, held)) for (const [name] of given) withheld.add(name);
+  return withheld;
 }
 
 /** The key a server signs its SDK runs' credentials with: derived from its seal key (seal-key.ts), which stays the
@@ -265,11 +308,14 @@ export class SdkRuns {
     if (!ok) throw new ApiError("unauthenticated", "This credential is scoped to a different SDK run.");
     await sdkInbox(this.store, runId);
   }
+  /** The values a body is cut of: the server's secrets and, for a run, its credentials. */
+  private held(runId?: string): readonly string[] {
+    return secretRedactor([...this.secrets(), ...(runId ? [this.secret, ...this.earlier].map((key) => sign(key, runId, this.lane)) : [])]).heldValues?.() ?? [];
+  }
   private clean<T>(body: T, runId?: string): T {
-    const redact = secretRedactor([...this.secrets(), ...(runId ? [this.secret, ...this.earlier].map((key) => sign(key, runId, this.lane)) : [])]);
     // Redact values structurally: a long string or encoded credential can be withheld whole,
     // so treating serialized JSON as prose could remove its delimiters and corrupt the envelope.
-    return redactedOutput(body, redact.heldValues?.() ?? []) as T;
+    return redactedOutput(body, this.held(runId)) as T;
   }
   async start(
     entry: AgentEntry,
@@ -613,7 +659,32 @@ export class SdkRuns {
       }
       return refuse("Unsupported SDK event type.");
     });
-    const batch = this.clean({ sequence: body.sequence as number, events }, runId);
+    // A tool event's input and output (a web tool's answer among them), and a workflow check's answer and reason, are
+    // read whole first, alone and together (withheldParts): a held value split across two of their strings stores the
+    // part that holds it as "[redacted]", the event's own facts as they came.
+    const values = this.held(runId);
+    const REDACTED = "[redacted]";
+    const shown = events.map((event): SdkEvent => {
+      if (event.type === "tool") {
+        const withheld = withheldParts({ input: event.input, output: event.output }, values);
+        return { ...event, ...(withheld.has("input") ? { input: REDACTED } : {}), ...(withheld.has("output") ? { output: REDACTED } : {}) };
+      }
+      if (event.type === "workflow_check") {
+        const withheld = withheldParts({ answer: event.answer, reason: event.reason }, values);
+        return { ...event, ...(withheld.has("answer") ? { answer: REDACTED } : {}), ...(withheld.has("reason") ? { reason: REDACTED } : {}) };
+      }
+      return event;
+    });
+    const batch = this.clean({ sequence: body.sequence as number, events: shown }, runId);
+    // The workflow a learned_workflow start names, where its input is stored withheld: kept apart from it, for the
+    // parent check of a callback nested in it (SdkInbox.workflow_calls), when the run was given that workflow. Keyed
+    // by the start's id as stored (cut like the rest of the batch), the id that check reads: never the id as sent.
+    const named: Record<string, string> = {};
+    for (const [i, event] of events.entries()) {
+      const stored = batch.events[i];
+      if (event.type === "tool" && stored?.type === "tool" && event.name === "learned_workflow" && event.status === "started" && stored.input === REDACTED && isObject(event.input) && typeof event.input.name === "string")
+        named[stored.id] = event.input.name;
+    }
     const checkRedacted = canonical(events) !== canonical(batch.events);
     const known = (await sdkInbox(this.store, runId)).batches.find((item) => item.sequence === batch.sequence);
     if (known) {
@@ -635,14 +706,17 @@ export class SdkRuns {
         if (row.completion) throw new ApiError("not_continuable", "SDK run completion is already recorded.");
         if (batch.sequence !== row.batches.length + 1)
           throw new ApiError("idempotency_mismatch", "SDK event sequences must be contiguous.");
-        checkToolParents(row, batch.events);
+        const given = new Set((row.learning_workflows ?? []).map((flow) => flow.name));
+        const kept = Object.fromEntries(Object.entries(named).filter(([, name]) => given.has(name)));
+        const calls = { ...row.workflow_calls, ...kept };
+        checkToolParents(row, batch.events, calls);
         const checks = [...row.batches.flatMap(item => item.events), ...batch.events].filter((event): event is SdkWorkflowCheckEvent => event.type === "workflow_check");
         if (checks.length > 1) refuse("Only one workflow check may be delivered per SDK run.");
         for (const check of checks) if (!row.learning_check || check.id !== row.learning_check.id || check.digest !== row.learning_check.digest)
           refuse("The workflow check must name this SDK run's reserved candidate.");
         // Every accepted batch, an empty one too, keeps the inbox open another hour, up to a day after its start.
         const expires = Math.max(row.expires_at, Math.min(Date.now() + SDK_OPEN_MS, row.created_at + SDK_MAX_OPEN_MS));
-        return { ...row, batches: [...row.batches, batch], expires_at: expires, ...(checkRedacted ? { check_redacted: true, ...(launch.cli_learning ? { evidence_incomplete: true as const } : {}) } : {}) };
+        return { ...row, batches: [...row.batches, batch], expires_at: expires, ...(Object.keys(kept).length ? { workflow_calls: calls } : {}), ...(checkRedacted ? { check_redacted: true, ...(launch.cli_learning ? { evidence_incomplete: true as const } : {}) } : {}) };
       },
       EVIDENCE_LIMIT,
     );
@@ -681,7 +755,10 @@ export class SdkRuns {
         ...(body.session_id !== undefined ? { session_id: text(body.session_id, "session_id", 256) } : {}),
         ...(body.usage !== undefined ? { usage: usageOf(body.usage) } : {}),
     };
-    const completion = this.clean(submitted, runId);
+    // Its answer and error read whole first, alone and together (withheldParts): a held value split across two strings
+    // of one, or across the two, stores what holds it as "[redacted]"; its status and the rest as they came.
+    const withheld = withheldParts({ answer: submitted.answer, error: submitted.error }, this.held(runId));
+    const completion = this.clean({ ...submitted, ...(withheld.has("answer") ? { answer: "[redacted]" } : {}), ...(withheld.has("error") ? { error: "[redacted]" } : {}) }, runId);
     // Source policy has its own completeness flag; redacted execution evidence cannot
     // be represented as complete even when the source explicitly claimed it was.
     const { source_policy: _submittedPolicy, ...submittedEvidence } = submitted;

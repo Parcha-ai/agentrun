@@ -6,7 +6,9 @@
 // reporter (each top-level test's time, credited to the file that declares a test of that name) or vitest's per-file
 // lines, and the suite's wall time (node --test's closing duration_ms, vitest's Duration); for a pi part, each
 // workspace's type-check. It writes the median over the logs of each file's seconds, each suite's file total over its wall time
-// (its parallelism), the wall of each suite scripts/ci-shards.json runs whole, and each type-check. A test whose name
+// (its parallelism: the 90th percentile over the logs, what the suite keeps up when its files fill node --test's slots, as
+// a shard whose wall is one long file reads low), the wall of each suite scripts/ci-shards.json runs whole, and each
+// type-check. A test whose name
 // matches no file, or several, is left out: its file keeps its suite's median weight, as a new file does.
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -78,6 +80,21 @@ const unescape = (text) => text.replace(/\\(['"`\\])/g, '$1').replace(/\\n/g, '\
 // match every name and leave every test of its suite uncredited.
 const DECLARED = /(?<![.\w$])(?:test|it|describe|suite)(?:\.(?:skip|only|todo))?\s*\(\s*(?:(['"])((?:\\.|(?!\1)[^\\\n])*)\1|`((?:\\.|[^`\\])*)`)/g;
 
+/** A template's literal text around its `${...}` substitutions, a substitution's braces counted (`${{ a: 1 }[k]}` is one). */
+export function literals(template) {
+  const parts = [];
+  let part = '';
+  for (let i = 0; i < template.length; i++) {
+    if (template[i] === '\\') { part += template.slice(i, i + 2); i++; continue; }
+    if (template[i] !== '$' || template[i + 1] !== '{') { part += template[i]; continue; }
+    let depth = 0;
+    for (i++; i < template.length; i++) { if (template[i] === '{') depth++; else if (template[i] === '}' && --depth === 0) break; }
+    parts.push(part);
+    part = '';
+  }
+  return [...parts, part];
+}
+
 /** The top-level test names each file of a suite declares, as exact names and as patterns for template strings. */
 export function declaredNames(root, suite) {
   return suite.files.map((file) => {
@@ -85,20 +102,23 @@ export function declaredNames(root, suite) {
     const names = [];
     for (const m of source.matchAll(DECLARED)) {
       if (m[3] === undefined) names.push({ exact: unescape(m[2]) });
-      else names.push({ pattern: new RegExp(`^${m[3].split(/\$\{[^}]*\}/).map((part) => unescape(part).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^]*')}$`) });
+      else names.push({ pattern: new RegExp(`^${literals(m[3]).map((part) => unescape(part).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^]*')}$`) });
     }
     return { file, names };
   });
 }
 
-/** The one file of `declared` that declares a test called `name` (TAP's escapes undone), or undefined. */
+/** The one file of `declared` that declares a test called `name` (TAP's escapes undone), or undefined. A name one file
+ *  declares exactly is that file's, whatever a template elsewhere (`${a}: ${b}`) would match. */
 export function fileOf(declared, name) {
   const plain = name.replace(/\\#/g, '#').replace(/\\\\/g, '\\');
-  const hits = declared.filter(({ names }) => names.some((n) => (n.exact !== undefined ? n.exact === plain : n.pattern.test(plain))));
+  const exact = declared.filter(({ names }) => names.some((n) => n.exact === plain));
+  const hits = exact.length ? exact : declared.filter(({ names }) => names.some((n) => n.pattern?.test(plain)));
   return hits.length === 1 ? hits[0].file : undefined;
 }
 
 const median = (values) => { const s = [...values].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const ninetieth = (values) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * 0.9) - 1];
 const tenths = (value) => Math.round(value * 10) / 10;
 
 /** The timings, from the logs' texts, for the suites under `root`. */
@@ -132,8 +152,8 @@ export function timingsOf(root, texts, { config } = readConfig(root)) {
       }
     }
   }
-  const out = (map) => Object.fromEntries([...map].sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, values]) => [key, tenths(median(values))]));
-  return { parallelism: out(parallelism), walls: out(walls), typecheck: out(typecheck), files: out(files) };
+  const out = (map, of = median) => Object.fromEntries([...map].sort(([a], [b]) => (a < b ? -1 : 1)).map(([key, values]) => [key, tenths(of(values))]));
+  return { parallelism: out(parallelism, ninetieth), walls: out(walls), typecheck: out(typecheck), files: out(files) };
 }
 
 /** `measured` file weights, plus each of `previous`'s that the logs did not measure and whose file still exists
@@ -153,7 +173,7 @@ if (isMain(import.meta)) {
   const previousPath = join(root, 'scripts', 'ci-timings.json');
   const previous = existsSync(previousPath) ? JSON.parse(readFileSync(previousPath, 'utf8')).files : undefined;
   timings.files = carriedOver(previous, timings.files, (path) => existsSync(join(root, path)));
-  const about = 'Seconds on a Blacksmith runner (the merge queue\'s), medians over CI job logs, written by scripts/ci-timings.mjs: files, each test file\'s own time; parallelism, a suite\'s file total over its wall time; walls, a suite run as a whole; typecheck, a workspace\'s type-check in a pi part.';
+  const about = 'Seconds on a Blacksmith runner (the merge queue\'s), medians over CI job logs, written by scripts/ci-timings.mjs: files, each test file\'s own time; parallelism, a suite\'s file total over its wall time (90th percentile); walls, a suite run as a whole; typecheck, a workspace\'s type-check in a pi part.';
   writeFileSync(join(root, 'scripts', 'ci-timings.json'), `${JSON.stringify({ about, ...timings }, null, 1)}\n`);
   console.log(`scripts/ci-timings.json: ${Object.keys(timings.files).length} files, ${Object.keys(timings.parallelism).length} suites, ${Object.keys(timings.typecheck).length} type-checks, from ${logs.length} logs`);
 }

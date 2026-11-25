@@ -232,7 +232,7 @@ test("(b) a draft that says what the agent said on its last runs, alone, is prom
   assert.deepEqual(records.map(({ decided }) => [decided]), [["replaying"], ["promote"]]);
   const { fields, ...check } = records[1].check;
   assert.deepEqual({ ...check, of: [...check.of].sort(), cost_usd: typeof check.cost_usd }, {
-    compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, agent_agreed: 5,
+    compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, agent_agreed: 5, joint: true,
     of: ["prior-0", "prior-1", "prior-2", "prior-3", "prior-4"], cost_usd: "number", outcomes: { answered: 5, handed_back: 0, failed: 0, skipped_write: 0 },
   });
   assert.deepEqual(Object.entries(fields).map(([name, one]) => [name, one.workflow_right, one.n, one.known, one.pass]), [["answer", 5, 5, "agent", true]]);
@@ -292,7 +292,7 @@ test("(f) graded inputs: the check judges the whole answer against each grade's 
   const decided = (await promotionsOf(w.server.learning, "agent-1")).at(-1);
   assert.deepEqual([decided.decided, decided.check.n, decided.check.agreed], ["promote", 5, 5], decided.reason);
   assert.deepEqual(Object.fromEntries(Object.entries(decided.check.fields).map(([name, one]) => [name, one.by])), {
-    answer: { grade: { n: 5, workflow_right: 5, agent_right: 0, pass: true } },
+    answer: { grade: { n: 5, workflow_right: 5, agent_right: 0 } },
   }, "one field, the whole answer: right on all 5 against the grades, where the agent was right on none");
 });
 
@@ -323,7 +323,7 @@ test("(f) graded inputs: a draft that says neither the expected 41 nor the agent
   const held = (await promotionsOf(w.server.learning, "agent-1")).find((one) => one.decided === "hold" && one.check?.n);
   assert.ok(held, "the check held it");
   assert.deepEqual(Object.keys(held.check.fields), ["answer"], "no field is made from a grade's keys");
-  assert.deepEqual(held.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0, pass: false } }, held.reason);
+  assert.deepEqual(held.check.fields.answer.by, { grade: { n: 5, workflow_right: 0, agent_right: 0 } }, held.reason);
   assert.deepEqual(held.check.disagreements.map((one) => one.expected), Array.from({ length: 5 }, () => [{ field: "answer", known: "grade", value: JSON.stringify({ answer: 41, sure: true }) }]), "each disagreement carries the known answer it missed, whole");
 });
 
