@@ -60,13 +60,16 @@ type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8
  *  apart, as it lays OpenRouter's for a decision node that runs on it. */
 export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: HeldRedact }, revision: Revision, launch: Pick<RunLaunch, "plane" | "model" | "hold">, runId?: string): Promise<NodeJS.ProcessEnv> {
   const base = withoutSecrets(deps.env ?? {});
-  const working = await workingEnv(deps);
   const needs = await needsOf(revision);
+  const modelRefused = launch.hold?.refused !== undefined;
+  // A held run its model kept from running lays no model key, so its claim opens none: a key it never lays is never
+  // decrypted. OpenRouter's is read still for a run whose decision nodes may run on it (decisionKeysFor), as a decision key.
+  const unread = modelRefused ? MODEL_KEY_NAMES.filter((name) => !(name === JEV_OPENROUTER_KEY_ENV && needs.decisionProviders.length > 0)) : [];
+  const working = await workingEnv(deps, unread);
   // An agentic run's model keys are its PINNED model's (the launch's, chosen at its start), the one its route sends, never
   // the host's default now: a key saved since the run started (another provider's, now first) would otherwise be opened
   // in its place, and the run would hold a key its model never sends and lack the one it does.
   const scoped = launch.model && !needs.tiers ? { ...needs, model: `${launch.model.provider}/${launch.model.modelId}` } : needs;
-  const modelRefused = launch.hold?.refused !== undefined;
   const env: NodeJS.ProcessEnv = { ...base };
   // The key of a gateway saved in the console (model-gateway.ts) stays on the run environment its model routes read, never
   // on the tools': it is read there by name alone (claimModelEnv), as a run's own model key is.
@@ -115,11 +118,13 @@ function reachesPlan(env: NodeJS.ProcessEnv, needs: RunNeeds, revision: Revision
 /** Every candidate secret in a working environment over the runner's base, read for one claim and scoped by its caller, so
  *  a key the run does not need is never put on the environment its tools run under. The server process's own environment
  *  value wins over the store's by the same name (the secrets rule 4: env always overrides a pasted value), so a key set
- *  where the server starts is not shadowed by a stale one saved in the store. */
-async function workingEnv(deps: ClaimSecretsDeps): Promise<NodeJS.ProcessEnv> {
+ *  where the server starts is not shadowed by a stale one saved in the store. `unread`: names the claim never lays, read
+ *  from neither. */
+async function workingEnv(deps: ClaimSecretsDeps, unread: readonly string[] = []): Promise<NodeJS.ProcessEnv> {
   const working: NodeJS.ProcessEnv = { ...withoutSecrets(deps.env ?? {}) };
   // A name present with no value (`-e NAME`, an empty optional secret) is not a key: the store's saved one stands.
   for (const name of CANDIDATES) {
+    if (unread.includes(name)) continue;
     const value = deps.env?.[name] || (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
     if (value !== undefined) working[name] = value;
   }
