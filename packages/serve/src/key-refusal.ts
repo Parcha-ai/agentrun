@@ -52,6 +52,10 @@ function detailOf(rest: string): string {
   return (text.split(/(?<=[.!?])\s/)[0] ?? "").slice(0, 200).replace(/[.\s]+$/, "");
 }
 
+/** How many texts redacted and withheldWhole have read in this process: a test reads it to see a read of a run's rows
+ *  cut only the texts an earlier read had not (store-reads/journal.ts rowCutsOnce). */
+export const cutPasses = { count: 0 };
+
 /** The most of a run's error or a tool's output serve ever shows: a Timeline row's text, cut at 2000 characters
  *  (`CAPS.text` in timeline/; a summary and a tool result's preview at 500), which the error box reads too. */
 const SHOWN = 2000;
@@ -66,6 +70,7 @@ const SHOWN = 2000;
  *  error costs no more to redact than a short one, whatever it holds. `shown`: a head of another length, for a reader
  *  that is shown more. */
 export function redacted(text: string, secrets: readonly string[], shown = SHOWN): string {
+  cutPasses.count++;
   const longest = secrets.reduce((most, value) => Math.max(most, value.length), 0);
   const window = shown + 6 * longest + 16;
   if (text.length <= window) return redactSecrets(text, secrets, Buffer.byteLength(text));
@@ -132,6 +137,7 @@ export function redactedCall(text: string, secrets: readonly string[], shown: nu
  *  own finds, so a value read wholly inside one of them is taken there (sdk/runs.ts withheldParts: a part withheld by
  *  itself). */
 export function withheldWhole(text: string, secrets: readonly string[], held: readonly (readonly [number, number])[] = []): boolean {
+  cutPasses.count++;
   return redactSecrets(text, secrets, Number.POSITIVE_INFINITY, held) === "[redacted]";
 }
 

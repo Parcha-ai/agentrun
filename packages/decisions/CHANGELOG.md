@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.59 (2026-11-25)
+
+- `anthropicProvider()`: a prompted Claude model (Haiku 5.5 by default, through `ANTHROPIC_BASE_URL`) as a `DecisionProvider`, answering noul and choice questions held to a JSON schema, at Anthropic's published price (`ANTHROPIC_PUBLISHED_PRICING`). It is the control arm for the web classifier step in `@parcha/agentrun-web`: `WebConfig.decider` (`deciderFrom(provider, { price })`) sifts each search's results and judges each fetched part in passages before the model reads them, each request held to the run's cap. Without a decider, every answer and receipt is byte-identical to a web with no step. <!-- changes/web-classifier-step.md -->
+- Requests that carry a provider's key never follow a redirect. That covers Exa, Firecrawl, Parallel's search and extract, and the Anthropic, Parallel and OpenRouter deciders: a redirect fails the request, so the key never reaches another address. <!-- changes/web-keyed-redirect.md -->
+
 ## 0.1.0-beta.41 (2026-11-16)
 
 - Model requests AgentRun sends to OpenRouter carry OpenRouter's app attribution headers: `HTTP-Referer: https://github.com/Parcha-ai/agentrun`, `X-OpenRouter-Title: AgentRun` and `X-OpenRouter-Categories: cloud-agent,personal-agent`. Usage then counts toward AgentRun's page on OpenRouter (openrouter.ai/apps?url=https://github.com/Parcha-ai/agentrun), including a self-hosted server's usage on its owner's own key. Set `AGENTRUN_OPENROUTER_ATTRIBUTION=off` where AgentRun starts to send none.
