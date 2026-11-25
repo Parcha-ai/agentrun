@@ -27,7 +27,7 @@ import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { settingOf } from "./computer-for-claim.js";
 import type { ComputerDeps } from "./computer-deps.js";
-import { endingKept, type KeptEnding } from "./computer-kept.js";
+import { endingKept } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { type ComputerSetting, providerKeys } from "./resolve-computer.js";
 import { endingDeletes, intervalWrites } from "./computer-intervals.js";
@@ -134,11 +134,17 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
       log(`run ${runId} is over, but its computers could not be let go: ${why}`);
     };
     // Its kept row, where its park kept one, marked ending before any delete: no claim takes that machine back now. A
-    // later claim's keep is left as it stands, its machine with it (endingKept).
-    const marked = await endingKept(store.settings, runId, epoch).catch((error: unknown): KeptEnding => ({ kind: "unmarked", why: error instanceof Error ? error.message : String(error) }));
-    if (marked.kind === "unmarked") log(`run ${runId} is over, but its kept computer's row could not be marked ending: ${marked.why}`);
-    /** The kept machine this end leaves, a later claim's. */
-    const spared = marked.kind === "left" ? marked.id : undefined;
+    // later claim's keep is left as it stands, its machine with it (endingKept). A mark the store fails is tried again;
+    // a machine whose row no try marked is not deleted, since a claim could still take the row and attach it mid-delete:
+    // it is left for its row's own time (its keeper's end, or a janitor's pass, which marks the row first). A row that
+    // could not even be read names no machine, so none of the run's is deleted here, and the janitor's sweep ends them.
+    const marked = await endingKept(store.settings, runId, epoch);
+    if (marked.kind === "unmarked") {
+      log(`run ${runId} is over, but its kept computer's row could not be marked ending (${marked.why}): ${marked.id === undefined ? "no computer of the run is let go here, and the computer janitor's next sweep ends them" : `${marked.id} is left for its row's time, which ends it`}`);
+      if (marked.id === undefined) return;
+    }
+    /** The kept machine this end leaves: a later claim's, or one whose row no try marked. */
+    const spared = marked.kind === "marked" ? undefined : marked.id;
     /** The last try's failure, for the line said at the bound. */
     let why = `its provider did not answer within ${bound / 1000} s`;
     const tries = async () => {

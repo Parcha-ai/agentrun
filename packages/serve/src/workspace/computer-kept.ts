@@ -283,20 +283,27 @@ export type KeptEnding =
 
 /** The compare-and-set every ending mark goes by: the row read, judged ("go": the delete may go on as it reads;
  *  "leave": its machine is not this delete's; "mark": marked ending, only while it still reads so), read again after a
- *  write that lost, up to KEEP_TRIES times. */
+ *  write that lost, up to KEEP_TRIES times. A read or write the store fails is tried again, up to GIVE_BACK_TRIES times
+ *  in all; past them it is `unmarked` in the store's words. Never throws. */
 async function markEnding(settings: Pick<KeptSettings, "get" | "replaceIf">, runId: string, judge: (kept: Kept | undefined) => "go" | "leave" | "mark"): Promise<KeptEnding> {
   const key = keptKeyOf(runId);
   let id: string | undefined;
-  for (let tries = 0; tries < KEEP_TRIES; tries += 1) {
-    const was = await settings.get(key);
-    const kept = keptOf(was);
-    id = kept?.id ?? id;
-    const verdict = judge(kept);
-    if (verdict === "go") return { kind: "marked" };
-    if (verdict === "leave") return { kind: "left", ...(kept ? { id: kept.id } : {}) };
-    if (await settings.replaceIf(key, was, rowOf(kept!, "ending"))) return { kind: "marked" };
+  try {
+    return await tried(async (): Promise<KeptEnding> => {
+      for (let tries = 0; tries < KEEP_TRIES; tries += 1) {
+        const was = await settings.get(key);
+        const kept = keptOf(was);
+        id = kept?.id ?? id;
+        const verdict = judge(kept);
+        if (verdict === "go") return { kind: "marked" };
+        if (verdict === "leave") return { kind: "left", ...(kept ? { id: kept.id } : {}) };
+        if (await settings.replaceIf(key, was, rowOf(kept!, "ending"))) return { kind: "marked" };
+      }
+      return { kind: "unmarked", ...(id === undefined ? {} : { id }), why: "the row kept changing" };
+    });
+  } catch (error) {
+    return { kind: "unmarked", ...(id === undefined ? {} : { id }), why: words(error) };
   }
-  return { kind: "unmarked", ...(id === undefined ? {} : { id }), why: "the row kept changing" };
 }
 
 /** Marks `runId`'s kept row ending at the run's end (run-end-computers.ts), for the claim at `epoch` that ended the run:
@@ -304,7 +311,8 @@ async function markEnding(settings: Pick<KeptSettings, "get" | "replaceIf">, run
  *  taking it back. No claim takes it back after, so the run's end deleting it and its keeper's end agree; the keeper's
  *  end at its time, or any janitor's pass, finishes the row. A row of a later claim (its machine made at a later epoch,
  *  or a later claim taking it back: a follow-up that queued the run again while this end waited on the store) is left
- *  as that claim wrote it, and so is its machine (`left`). */
+ *  as that claim wrote it, and so is its machine (`left`). A store that fails the mark is asked again (markEnding);
+ *  `unmarked` past every try, and the run's end then deletes no machine the row names. */
 export async function endingKept(settings: Pick<KeptSettings, "get" | "replaceIf">, runId: string, epoch: number): Promise<KeptEnding> {
   return markEnding(settings, runId, (kept) => {
     if (!kept || kept.ending || kept.ended) return "go";
