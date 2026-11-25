@@ -468,8 +468,10 @@ export function forgetServedAnswers(store: Store, runId: string): string[] {
 /** What each store's readers last cut of a run's texts, by run and the digest of its whole cut (run-cut.ts RunCut): every
  *  held value, in the order the reader was handed them (redacted takes them in that order, so a set read in another
  *  order is cut again, never served a cut made of another order), and its census mode (its censusDigest, "none", or
- *  "unreadable"), so a value saved or a census written since is a new set and every text is cut again. By each text's
- *  digest, what the row's redactor made of it (key-refusal.ts
+ *  "unreadable"), so a value saved or a census written since is a new set and every text is cut again (the values'
+ *  JSON escapes a lone surrogate as written, so values that differ only in one are two sets). By each text's digest, of
+ *  its UTF-16 units as written (as UTF-8 every lone surrogate is the one replacement character, and two texts that
+ *  differ only in one would share a slot), what the row's redactor made of it (key-refusal.ts
  *  redacted) or whether it is withheld whole (withheldWhole). A reader that follows a run (a console's live Timeline,
  *  its view polled) reads its rows once per change, each read renders every row from the journal again, and an entry's
  *  words never change: so each text is cut once per held value set, not once per read, and a run of n turns costs the
@@ -516,7 +518,7 @@ export function rowCutsOnce(store: Store, runId: string, cut: RowCut, since: num
   const mode = cut === "unreadable" ? "unreadable" : (cut.censusDigest ?? "none");
   const set = `${runId}\0${createHash("sha256").update(JSON.stringify([mode, values])).digest("hex")}`;
   const once = <T extends string | boolean>(how: string, text: string, cut: () => T): T => {
-    const slot = `${how}\0${createHash("sha256").update(text).digest("base64")}`;
+    const slot = `${how}\0${createHash("sha256").update(text, "utf16le").digest("base64")}`;
     const kept = cutsKept.get(origin)?.sets.get(set)?.texts.get(slot);
     if (kept !== undefined) return kept as T;
     const made = cut();
