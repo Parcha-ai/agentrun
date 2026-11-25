@@ -8,17 +8,17 @@
 // key, no network.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { OFFERED_ENV } from "./fixtures/faux-mcp-offered.mjs";
+import { HOLD, OFFERED_ENV, RELEASE_ENV } from "./fixtures/faux-mcp-offered.mjs";
 import { stranger } from "./fixtures/stranger.mjs";
 import { agent, follow, retried, scratch, serve as serveOf, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
-const { unconnectedWords } = await import("../dist/mcp-probe.js");
+const { connectedLaterWords, unconnectedWords } = await import("../dist/mcp-probe.js");
 
 const FAUX_OFFERED = new URL("./fixtures/faux-mcp-offered.mjs", import.meta.url).pathname;
 const LIST = `not-a-secret-${"left-out-list-token"}`;
@@ -78,6 +78,39 @@ test("pi: a run's first claim, handed no credential for a per_run server, is off
   assert.equal(given.answer, "The tool said: 5");
   assert.deepEqual(callsOf(fake), ["add"], "its call reached the server");
   assert.deepEqual(notesOf(given.rows), [unconnectedWords("gw")], "and no second note");
+});
+
+test("pi: a message that hands a per_run server's credential while the run's turn is still going is not lost to that turn: the run's next turn, on a claim that offers the server's tools, runs it, and its call reaches the server", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const offered = join(dir, "offered.jsonl");
+  const release = join(dir, "release");
+  withEnv(t, { [OFFERED_ENV]: offered, [RELEASE_ENV]: release, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api, store } = await serveOf(t, { faux: FAUX_OFFERED, harnesses: true });
+  const fake = await addGw(t, api);
+  const save = await retried(api)("POST", "/agents", agent("reader", { tools: ["mcp:gw/add"], tool_settings: ALLOW }));
+  assert.equal(save.status, 201, JSON.stringify(save.body));
+  const offeredNames = () => readFileSync(offered, "utf8").trim().split("\n").flatMap((line) => JSON.parse(line));
+
+  // The run's first turn is held open, on a claim that left gw out (its note is on the timeline).
+  const started = await retried(api)("POST", "/agents/reader/runs", { input: { content: HOLD } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 60_000, done: (rows) => notesOf(rows).length === 1 });
+  // While it is held, a message hands gw's credential. The turn is let go once the run has the message: steered into the
+  // turn (its row taken) or held for the run's next turn (a second note).
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: 'Call mcp__gw__add with {"a":2,"b":3}', mcp_auth: handed });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  const steeredIn = async () => (await store.commands(runId, 0)).some((row) => row.kind === "steer" && row.takenAt !== null);
+  const heldBack = async () => notesOf((await follow(api, runId, ["working"], { deadlineMs: 60_000 })).rows).length > 1;
+  for (const end = Date.now() + 60_000; !(await steeredIn()) && !(await heldBack()); ) assert.ok(Date.now() < end, "the run never took the message, nor said it waits");
+  writeFileSync(release, "");
+
+  const { rows } = await follow(api, runId, ["completed", "failed"], { after: 0, deadlineMs: 60_000, done: (all) => all.some((row) => JSON.stringify(row).includes("The tool said")) });
+  const answer = String((await api("GET", `/runs/${runId}`)).body.result?.final_answer ?? "");
+  assert.equal(answer, "The tool said: 5", `the message's call ran with its credential: ${JSON.stringify(rows.filter((row) => row.kind === "error" || row.kind === "phase" || row.kind.startsWith("tool")))}`);
+  assert.deepEqual(callsOf(fake), ["add"], "its call reached the server");
+  assert.ok(offeredNames().includes("mcp__gw__add"), "the server's tool was offered once the message handed its credential");
+  assert.deepEqual(notesOf(rows), [unconnectedWords("gw"), connectedLaterWords(["gw"])], "the claim that left gw out says why the message waits for the next turn");
 });
 
 /** serve's gateway on loopback: each Responses request answered with the text it carries. */

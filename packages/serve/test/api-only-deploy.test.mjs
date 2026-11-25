@@ -588,13 +588,56 @@ test("an API-only server without the launch hook turns no trigger on through PAT
   assert.equal((await server.store.triggers.get("trg_morning")).enabled, false, "still off: on, it would start runs on this server's keys");
 });
 
-test("an API-only PATCH of a trigger: `enabled` alone; off always; on only for a source the apply makes with the hook, every source kind checked", () => {
-  const reasons = (kind, hooked, body = { enabled: true }) => apiOnlyTriggerEdit(body, kind, hooked).map((one) => `${one.field}:${one.reason}`);
+test("an API-only PATCH of a trigger: `enabled` alone; off always; on only for a source the apply makes with the hook, aimed at an agent, every source and target kind checked", () => {
+  const reasons = (kind, hooked, body = { enabled: true }, target = "start_run") => apiOnlyTriggerEdit(body, kind, hooked, target).map((one) => `${one.field}:${one.reason}`);
   for (const kind of SOURCE_KINDS) {
     const makes = kind === "schedule" || kind === "feed";
     assert.deepEqual(reasons(kind, true), makes ? [] : ["enabled:not_an_option"], `${kind}, hooked`);
     assert.deepEqual(reasons(kind, false), [makes ? `enabled:${NOT_SET_UP}` : "enabled:not_an_option"], `${kind}, no hook`);
     assert.deepEqual([reasons(kind, false, { enabled: false }), reasons(kind, true, { enabled: false })], [[], []], `${kind} turned off`);
+    // A firing that messages a run never goes to the hook: on, it would open that run on this server's keys.
+    assert.deepEqual([reasons(kind, true, undefined, "message_run"), reasons(kind, false, undefined, "message_run")], [["enabled:not_an_option"], ["enabled:not_an_option"]], `${kind} messaging a run`);
+    assert.deepEqual(reasons(kind, true, { enabled: false }, "message_run"), [], `${kind} messaging a run, turned off`);
   }
   assert.deepEqual(reasons("schedule", true, { enabled: true, name: "x", catchup_window_s: 0 }), ["name:not_allowed", "catchup_window_s:not_allowed"]);
+});
+
+/** A schedule `agent` has from before the profile (made while the server was the whole server) whose firings message run
+ *  `runId`: the apply never makes one (a template names no run), and a firing of it never goes to the launch hook. */
+const messagingSchedule = (server, agent, runId, enabled) => server.store.triggers.create({ id: "trg_nudge", agentId: agent, name: "nudge", enabled, source: { kind: "schedule", cron: "*/10 * * * *", timezone: "UTC" }, target: { kind: "message_run", run_id: runId, input: { content: "Again." } }, nextAt: enabled ? Date.parse("2026-06-01T08:10:00Z") : null, catchupWindowS: 0 });
+
+test("an API-only server with the launch hook turns no trigger on whose firings message a run: PATCH {enabled: true} is refused, and it stays off", { timeout: 60_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T08:00:00Z");
+  const hook = await hookServer(t);
+  const server = await deployServer(t, { apiOnly: true, triggerClock: clock, launchHook: { url: hook.url, secret: mintSecret() } }, NO_MAIL);
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  await messagingSchedule(server, agent, "run_earlier", false);
+  await autoPaused(server, "trg_nudge", "2026-06-01T07:00:00Z");
+  const refused = await send(server, "PATCH", "/v2/triggers/trg_nudge", { body: { enabled: true } });
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  const [issue] = refused.body.error.fields;
+  assert.deepEqual([issue.field, issue.reason], ["enabled", "not_an_option"], JSON.stringify(issue));
+  assert.match(issue.message, /messages a run/);
+  assert.equal((await server.store.triggers.get("trg_nudge")).enabled, false, "still off: on, its firings would open the run on this server's keys");
+  const off = await send(server, "PATCH", "/v2/triggers/trg_nudge", { body: { enabled: false } });
+  assert.deepEqual([off.status, off.body.enabled], [200, false], JSON.stringify(off.body));
+  assert.deepEqual(hook.got, [], "nothing reached the backend");
+});
+
+test("an API-only server with the launch hook unarchives an agent: a schedule whose firings message a run stays off and is named", { timeout: 60_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T08:00:00Z");
+  const hook = await hookServer(t);
+  const server = await deployServer(t, { apiOnly: true, triggerClock: clock, launchHook: { url: hook.url, secret: mintSecret() } }, NO_MAIL);
+  const applied = await send(server, "POST", "/v2/templates/deployed/apply", { body: { parameters: { topic: "tides" } } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const agent = applied.body.agent_id;
+  await messagingSchedule(server, agent, "run_earlier", true);
+  assert.equal((await send(server, "POST", `/v2/agents/${agent}/archive`)).status, 200);
+  const back = await send(server, "POST", `/v2/agents/${agent}/unarchive`);
+  assert.equal(back.status, 200, JSON.stringify(back.body));
+  assert.deepEqual(back.body.triggers_off, [{ id: "trg_nudge", name: "nudge" }], JSON.stringify(back.body));
+  const rows = await server.store.triggers.list(agent);
+  assert.deepEqual(rows.map((row) => [row.name, row.enabled]).sort(), [["morning", true], ["nudge", false]], "the apply's schedule is on again; the one messaging a run is not");
 });
