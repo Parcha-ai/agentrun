@@ -1,7 +1,7 @@
 // A run's process is handed its pinned model's key (run-child-host.ts, claim-secrets.ts claimSecrets scoped by the
 // launch's model), never a key of the host's default now, which a key saved since its start moved: its route never sends
 // that one. A --faux start, pinned to the faux model, is handed no model key at all: the faux model sends none, so not its
-// revision's model's either. And a run pinned to a model whose key is saved in Settings alone runs on it end to end, in the runner and in a
+// revision's model's either, nor a gateway's. And a run pinned to a model whose key is saved in Settings alone runs on it end to end, in the runner and in a
 // process of its own, though the claim lays its model keys never enumerable.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -20,6 +20,7 @@ const { launchBody } = await import("../dist/run-launch.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
 const { FAUX_ENV } = await import("../dist/model.js");
+const { saveGateway } = await import("../dist/model-gateway.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -32,6 +33,7 @@ const SEAL_KEY = Buffer.alloc(32, 7);
 const OPENAI_SAVED = `not-a-secret-${"openai-saved"}`;
 const ANTHROPIC_SAVED = `not-a-secret-${"anthropic-saved"}`;
 const MONID_SAVED = `not-a-secret-${"monid-saved"}`;
+const GATEWAY_SAVED = `not-a-secret-${"gateway-saved"}`;
 
 /** A run's process that writes what its pipe of keys carries (fd 3, NAME=VALUE pairs each ended by a NUL) to the file its
  *  one argument names, then exits: the runner's claim then ends, failed, as for any process gone before its loop ended. */
@@ -40,10 +42,12 @@ const DUMP = `const fs = require("node:fs"); const net = require("node:net"); co
 /** The names a dump holds. */
 const namesIn = (bytes) => bytes.toString("utf8").split("\0").filter(Boolean).map((pair) => pair.slice(0, pair.indexOf("=")));
 
-/** The key names the process of a run of `revision` launched on `model` is handed by its runner, with `saved` sealed. */
-async function handed(t, { revision, model, saved, env = {} }) {
+/** The key names the process of a run of `revision` launched on `model` is handed by its runner, with `saved` sealed and
+ *  `gateway`, if given, saved in the console. */
+async function handed(t, { revision, model, saved, env = {}, gateway }) {
   const { store, dir: data } = await storeOn(t);
   for (const [name, value] of Object.entries(saved)) await putSealedKey(store, SEAL_KEY, name, value);
+  if (gateway) await saveGateway({ store, sealKey: SEAL_KEY, env: {}, changed: async () => {} }, gateway);
   await store.agents.create({ id: "agent", name: "Pinned" }, { id: "rev", kind: "agentic", body: { instructions: "Work.", ...revision } });
   await store.runs.create({ id: "run", agentId: "agent", revisionId: "rev" }, { body: launchBody({ input: { content: "Work." }, title: "Work", place: { mode: "runner" }, harness: "pi", model }) });
   const out = join(data, "handed.bin");
@@ -69,6 +73,18 @@ test("a run's process is handed its pinned model's key alone, never the key of t
   assert.ok(faux.includes("MONID_API_KEY"), `its tool's key is on its pipe: ${faux}`);
   assert.deepEqual(modelKeysOf(faux), [], "a --faux start's process holds a model key, which the faux model never sends");
   assert.deepEqual(faux, ["MONID_API_KEY"], "a --faux start's process holds its tool's key alone");
+});
+
+test("a --faux start's process is handed no gateway key, on a gateway set where the runner starts or saved in the console; a run pinned to a provider's model on the same gateway is", { timeout: 60_000 }, async (t) => {
+  const revision = { model: "anthropic/claude-sonnet-5-5", tools: [] };
+  const faux = { provider: "faux", modelId: "faux-1" };
+  const anthropic = { provider: "anthropic", modelId: "claude-sonnet-5-5" };
+  const onEnv = { saved: { AGENT_MODEL_API_KEY: GATEWAY_SAVED }, env: { [FAUX_ENV]: "1", AGENT_MODEL_BASE_URL: "https://gateway.example.com/v1" } };
+  const onSaved = { saved: {}, gateway: { base_url: "https://gateway.example.com/v1", api_key: GATEWAY_SAVED, models: { default: "m-1" } }, env: { [FAUX_ENV]: "1" } };
+  assert.deepEqual(await handed(t, { revision, model: anthropic, ...onEnv }), ["AGENT_MODEL_API_KEY"], "a provider's model on the runner's gateway: its key");
+  assert.deepEqual(await handed(t, { revision, model: faux, ...onEnv }), [], "a --faux start's process holds the runner's gateway key, which the faux model never sends");
+  assert.deepEqual(await handed(t, { revision, model: anthropic, ...onSaved }), ["AGENT_MODEL_API_KEY"], "a provider's model on the saved gateway: its key");
+  assert.deepEqual(await handed(t, { revision, model: faux, ...onSaved }), [], "a --faux start's process holds the saved gateway's key, which the faux model never sends");
 });
 
 const until = async (done, what, ms = 40_000) => {
