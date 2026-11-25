@@ -4099,7 +4099,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     refused: {
       const: true,
-      description: "On the `tool_result` row of a call refused before it ran: a tool set to deny, a pin, a person's deny, or a call held for an approval the run stopped or ended without. Its `summary` reads \"Refused: …\" and its `tool_status` stays `failed` (it did not do its work), but it never ran, so it never failed: a client shows it apart from a call that ran and failed (the console: a neutral Refused chip, never the red Error one). Absent on every other row.",
+      description: "On the `tool_result` row of a call refused before it ran: a tool set to deny, a pin, a person's deny, or a call held for an approval the run stopped or ended without. Also on a `codemode` script's or a `tools_call`'s row that stopped at such a call: the script's calls before it ran, and it and every call after it did not. Its `summary` reads \"Refused: …\" and its `tool_status` stays `failed` (it did not do its work), but it never ran, so it never failed: a client shows it apart from a call that ran and failed (the console: a neutral Refused chip, never the red Error one). Absent on every other row.",
       "x-agentrun-serve": "refused/1",
     },
     origin: {
