@@ -35,11 +35,11 @@ const entries = lock.packages;
 const OPENCODE_LICENSE = 'https://github.com/anomalyco/opencode/blob/810c0eba1a7348036f8bdf61e6632d0c36c6876c/LICENSE';
 // ssh2 (the computer package's optional dependency, for Agent37 and Morph) and its optional cpu-features and buildcheck
 // declare MIT only in the legacy `licenses` array, which the lockfile does not record; each ships the MIT text as LICENSE.
-const MSCDEX_LICENSE = 'the MIT LICENSE file each package publishes, and its manifest\'s legacy `licenses: [{ "type": "MIT" }]`';
+const SSH2_LICENSE ='the MIT LICENSE file each package publishes, and its manifest\'s legacy `licenses: [{ "type": "MIT" }]`';
 const LICENSE_FROM_SOURCE = new Map([
   ...['darwin-arm64', 'darwin-x64', 'darwin-x64-baseline', 'linux-arm64', 'linux-arm64-musl', 'linux-x64', 'linux-x64-baseline', 'linux-x64-baseline-musl', 'linux-x64-musl', 'windows-arm64', 'windows-x64', 'windows-x64-baseline']
     .map(platform => [`opencode-${platform}@1.19.5`, { license: 'MIT', source: OPENCODE_LICENSE }]),
-  ...['ssh2@1.17.0', 'cpu-features@0.0.10', 'buildcheck@0.0.7'].map(key => [key, { license: 'MIT', source: MSCDEX_LICENSE }]),
+  ...['ssh2@1.17.0', 'cpu-features@0.0.10', 'buildcheck@0.0.7'].map(key => [key, { license: 'MIT', source: SSH2_LICENSE }]),
 ]);
 const roots = ['dsl', 'jev', 'pi-browser', 'import', 'web', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'];
 if (entries['packages/eve']) roots.push('eve');
