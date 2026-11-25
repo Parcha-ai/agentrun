@@ -97,46 +97,84 @@ export function postedTracing(post: (method: string, args: unknown[]) => void): 
 }
 
 const text = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
-/** A route's names (RouteTrace) as data: each a string, or left out. */
-const viaOf = (value: unknown): RouteTrace => {
-  const given = (value ?? {}) as Record<string, unknown>;
-  return { ...(text(given.provider) ? { provider: text(given.provider) } : {}), ...(text(given.serverAddress) ? { serverAddress: text(given.serverAddress) } : {}), ...(text(given.model) ? { model: text(given.model) } : {}) };
-};
+const fields = (value: unknown): Record<string, unknown> => (value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {});
+const figure = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+
+/** A provider id's shape (`anthropic`, `openrouter`, `claude-login`), and a host's (a DNS name, or a bracketed IPv6
+ *  address as URL.hostname writes one). A name the redactor cut holds "[redacted]", which is neither. */
+const PROVIDER_ID = /^[a-z0-9][a-z0-9._-]*$/i;
+const HOST = /^(\[[0-9a-f:.]+\]|[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*)$/i;
+/** A run failure's code (`run-error`, `sdk_failed`, `ECONNREFUSED`). */
+const FAILURE_CODE = /^[a-z][a-z0-9_.-]*$/i;
+/** Every label a request's end that did not answer can have (Ended): the only ones its span's error.type takes. */
+const END_LABELS: Readonly<Record<Extract<Ended, { end: "nothing" | "lost" }>["label"], true>> = Object.freeze({ status: true, never_left: true, refused: true, error_before: true, error_after: true, gateway_timeout: true, retried: true, cut: true });
+const TURN_STATUSES: ReadonlySet<string> = new Set(["completed", "interrupted", "failed"]);
+
+/** A request's end as a post gives it, rebuilt of the fields its span reads alone: its kind, and a label only from the
+ *  kernel's own (END_LABELS; an answer's `filtered` or `error`). No reason, no other words. An end of any other shape is
+ *  read as none. */
+function endedOf(value: unknown): Ended | undefined {
+  const given = fields(value);
+  if (given.end === "answered") return (given.label === "filtered" || given.label === "error" ? { end: "answered", usd: figure(given.usd) ?? null, label: given.label } : { end: "answered", usd: figure(given.usd) ?? null }) as Ended;
+  if (given.end === "stopped") return { end: "stopped", streamedTokens: figure(given.streamedTokens) ?? 0 };
+  if ((given.end === "nothing" || given.end === "lost") && typeof given.label === "string" && Object.hasOwn(END_LABELS, given.label)) return { end: given.end, label: given.label } as Ended;
+  return undefined;
+}
+
+/** A request's usage as a post gives it, rebuilt of the fields its span reads alone: its counts as numbers (anything
+ *  else is no count, and its span then has none), a plan's billing, a cut. */
+function usageOf(value: unknown): ModelUsage {
+  const given = fields(value);
+  const count = (key: string) => (figure(given[key]) === undefined ? {} : { [key]: figure(given[key]) });
+  return { input: figure(given.input) ?? Number.NaN, output: figure(given.output) ?? Number.NaN, ...count("cacheRead"), ...count("cacheWrite"), usd: figure(given.usd) ?? null, ...(given.billing === "plan" ? { billing: "plan" as const } : {}), ...(given.cut === true ? { cut: true } : {}) };
+}
 
 /** The runner's side of a run's process's trace (postedTracing): the claim's one trace, opened from `tracing` for run
- *  `runId` whatever the process names, and each post read as data alone (the process runs the agent's code): every name
- *  it gives cut by the runner's redactor (`redact`) and at WRITTEN_MAX, as the process's own were. `end`: the claim's
- *  end, for a process that is gone without ending its trace (after its own end, nothing is left to end). */
+ *  `runId` whatever the process names, and each post read as data alone (the process runs the agent's code). No string a
+ *  post gives reaches a span as given:
+ *  - a name (harness, model) is cut by the runner's redactor (`redact`) and at WRITTEN_MAX (written);
+ *  - a provider id and a host are cut the same way, and dropped unless they still have their shape (PROVIDER_ID, HOST);
+ *  - a call's id is shown cut (TraceEvent.shownId); its raw id, and a parent's, only match a call's end and children;
+ *  - a route's name a request gives only finds its route; it is on no span;
+ *  - a request's end and usage are rebuilt (endedOf, usageOf): error.type comes from the kernel's labels alone;
+ *  - a turn's status is one of TurnStatus's, else `failed`; the claim's failure is a code's shape, else `run-error`.
+ *  `end`: the claim's end, for a process that is gone without ending its trace (after its own end, nothing is left). */
 export function tracePosts(tracing: GenAiTracing, runId: string, redact?: (text: string) => string): { post(method: string, args: readonly unknown[]): void; end(failed: string): Promise<void> } {
   let trace: RunTrace | undefined;
   const requests = new Map<number, (usage: ModelUsage, ended?: Ended) => void>();
   const name = (value: unknown): string | undefined => (typeof value === "string" ? written(value, redact) : undefined);
+  const shaped = (value: unknown, shape: RegExp): string | undefined => {
+    const cut = name(value);
+    return cut && shape.test(cut) ? cut : undefined;
+  };
   const via = (value: unknown): RouteTrace => {
-    const given = viaOf(value);
-    return { ...given, ...(given.model ? { model: name(given.model) } : {}) };
+    const given = fields(value);
+    const [provider, serverAddress, model] = [shaped(given.provider, PROVIDER_ID), shaped(given.serverAddress, HOST), name(given.model)];
+    return { ...(provider ? { provider } : {}), ...(serverAddress ? { serverAddress } : {}), ...(model ? { model } : {}) };
   };
   return {
     post(method, args) {
-      if (method === "open") trace ??= tracing.open(typeof args[0] === "number" ? { startedAt: args[0] } : {});
+      if (method === "open") trace ??= tracing.open(figure(args[0]) === undefined ? {} : { startedAt: figure(args[0])! });
       if (!trace) return;
       if (method === "known") {
-        const run = (args[0] ?? {}) as Record<string, unknown>;
+        const run = fields(args[0]);
         const routes = run.routes instanceof Map ? new Map([...run.routes].flatMap(([key, route]) => (typeof key === "string" ? [[key, via(route)] as const] : []))) : undefined;
         trace.known({ runId, harness: name(run.harness) ?? "unknown", ...(run.plan === true ? { plan: true } : {}), ...via(run), ...(routes ? { routes } : {}) });
       } else if (method === "request" && typeof args[0] === "number") requests.set(args[0], trace.request(name(args[1]), text(args[2])));
       else if (method === "ended" && typeof args[0] === "number") {
-        requests.get(args[0])?.(args[1] as ModelUsage, args[2] as Ended | undefined);
+        requests.get(args[0])?.(usageOf(args[1]), endedOf(args[2]));
         requests.delete(args[0]);
       } else if (method === "event") {
-        const event = (args[0] ?? {}) as Record<string, unknown>;
+        const event = fields(args[0]);
         const callId = text(event.callId) ?? "";
+        const shownId = written(callId, redact);
         const parent = text(event.parent) ? { parent: text(event.parent) } : {};
-        if (event.type === "tool_start" && event.refused === true) trace.event({ type: "tool_start", callId, refused: true, ...parent });
-        else if (event.type === "tool_start") trace.event({ type: "tool_start", callId, ...(name(event.name) ? { name: name(event.name) } : {}), ...(event.mcp === true ? { mcp: true } : {}), ...parent });
+        if (event.type === "tool_start" && event.refused === true) trace.event({ type: "tool_start", callId, shownId, refused: true, ...parent });
+        else if (event.type === "tool_start") trace.event({ type: "tool_start", callId, shownId, ...(name(event.name) ? { name: name(event.name) } : {}), ...(event.mcp === true ? { mcp: true } : {}), ...parent });
         else if (event.type === "tool_end") trace.event({ type: "tool_end", callId, isError: event.isError === true });
-        else if (event.type === "turn_end") trace.event({ type: "turn_end", status: name(event.status) ?? "failed" });
+        else if (event.type === "turn_end") trace.event({ type: "turn_end", status: typeof event.status === "string" && TURN_STATUSES.has(event.status) ? event.status : "failed" });
         else trace.event({ type: "other" });
-      } else if (method === "end") void trace.end(name(args[0]));
+      } else if (method === "end") void trace.end(args[0] === undefined || args[0] === null ? undefined : (shaped(args[0], FAILURE_CODE) ?? "run-error"));
     },
     end: async (failed) => trace?.end(failed),
   };
@@ -292,7 +330,7 @@ async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTr
             const parent = event.parent ? tools.get(event.parent)?.span : undefined;
             // A call its harness refused (a tool the session does not have) is never named: the name is the model's words.
             const name = event.refused ? undefined : event.name;
-            const span = child(spanName.tool(name), api.SpanKind.INTERNAL, toolAttributes(on, { ...(name ? { name } : {}), callId: event.callId, ...(event.mcp ? { mcp: true } : {}) }), parent ? api.trace.setSpan(api.ROOT_CONTEXT, parent) : undefined);
+            const span = child(spanName.tool(name), api.SpanKind.INTERNAL, toolAttributes(on, { ...(name ? { name } : {}), callId: event.shownId ?? event.callId, ...(event.mcp ? { mcp: true } : {}) }), parent ? api.trace.setSpan(api.ROOT_CONTEXT, parent) : undefined);
             if (event.refused) failed(span, "tool_refused");
             tools.set(event.callId, { span, turn: turns, refused: event.refused === true });
           } else if (event.type === "tool_end") {

@@ -71,9 +71,11 @@ export function routeTrace(route: { readonly named?: string; readonly origin?: s
 /** What a run's trace hears of its session's events: a tool call's start, by the name its span carries (none: unnamed),
  *  whether it is an MCP server's, and whether its harness refused it (a tool the session does not have: never named); a
  *  call's end; a turn's end; any other event, only as the fact that one came. No content: no text, no argument, no
- *  result, and no name the model wrote that the session does not have. */
+ *  result, and no name the model wrote that the session does not have. A call's `callId` matches its end and its
+ *  children (`parent`); `shownId`, where given, is the id its span carries in its place (a run's process's post: its
+ *  id cut, the raw one kept only to match). */
 export type TraceEvent =
-  | { readonly type: "tool_start"; readonly callId: string; readonly name?: string; readonly mcp?: boolean; readonly refused?: boolean; readonly parent?: string }
+  | { readonly type: "tool_start"; readonly callId: string; readonly shownId?: string; readonly name?: string; readonly mcp?: boolean; readonly refused?: boolean; readonly parent?: string }
   | { readonly type: "tool_end"; readonly callId: string; readonly isError: boolean }
   | { readonly type: "turn_end"; readonly status: string }
   | { readonly type: "other" };
@@ -108,12 +110,13 @@ export function tracedEvent(event: AdapterEvent, naming: EventNaming): TraceEven
   return { type: "other" };
 }
 
-/** The model a request's span names: the one asked when the run knows it (`known`: a route's model, or in its price
- *  table); else the model of the route it came by (`routed`); failing that, the asked name through the runner's redactor
- *  (written). A model a request body names is the client's (the model's) words. */
+/** The model a request's span names: the one asked when the run knows it (`known`: a route's model, or one its price
+ *  table names by that same id); else the model of the route it came by (`routed`); failing that, the one asked. Whichever
+ *  it is goes through the runner's redactor and the cut (written): a model a request body names is the client's (the
+ *  model's) words, and a run in the runner's own process has no other boundary that cleans it. */
 export function tracedModel(asked: string | undefined, rule: { readonly known: (model: string) => boolean; readonly routed?: string; readonly redact?: (text: string) => string }): string | undefined {
-  if (asked === undefined || rule.known(asked)) return asked;
-  return rule.routed ?? written(asked, rule.redact);
+  if (asked === undefined) return undefined;
+  return written(rule.known(asked) ? asked : (rule.routed ?? asked), rule.redact);
 }
 
 /** Span names: low-cardinality, never an id, a command or an argument. */

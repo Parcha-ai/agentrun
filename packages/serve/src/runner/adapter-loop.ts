@@ -2545,12 +2545,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               else carried = undefined;
             }
             unbooked += 1;
-            // Its chat span names the model asked only when the run knows it (a route's model, or its price table's: a body's
-            // model is the client's words), else its route's model (genai.ts tracedModel).
+            // Its chat span names the model asked only when the run knows it (a route's model, or one its price table names by
+            // that same id: a CLI's table prices every id as the session's model, so a priced id alone proves nothing, and a
+            // body's model is the client's words), else its route's model; whichever, cut (genai.ts tracedModel).
             if (ticket && trace && request.paid === undefined) {
               const traced = specNow?.trace;
               const routed = request.route === undefined ? traced?.model : traced?.routes?.get(request.route)?.model;
-              const known = (asked: string) => asked === traced?.model || [...(traced?.routes?.values() ?? [])].some((via) => via.model === asked) || specNow?.runCap.modelOf(asked) !== undefined;
+              const known = (asked: string) => asked === traced?.model || [...(traced?.routes?.values() ?? [])].some((via) => via.model === asked) || specNow?.runCap.modelOf(asked)?.id === asked;
               const model = tracedModel(request.model, { known, ...(routed ? { routed } : {}), ...(deps.redact ? { redact: deps.redact } : {}) });
               chats.set(ticket.turn, trace.request(model, request.route));
             }
