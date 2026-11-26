@@ -1,7 +1,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PHONE_NEW, SchedulesPage, type ScheduleView } from "./Schedules";
+import { NAME_LINE, NEW_ROWS, PHONE_NEW, SchedulesPage, type ScheduleView } from "./Schedules";
 import { buttonVariants } from "@/components/ui/button";
 import { createClient } from "@/lib/client";
 import type { Firing, Trigger } from "@/lib/v2";
@@ -205,7 +205,7 @@ describe("the schedules list", () => {
   });
   // The page is framed as every list page is (Agents, Runs): a header bar with the place's icon and its name in
   // caps, and the actions in that bar, the one main action last.
-  it("has the list pages' header bar: the navigation's icon, the name in caps, the actions at its right", async () => {
+  it("has the list pages' header bar: the navigation's icon, the name in caps, and the actions, under the name where the bar is narrow", async () => {
     const t = await open(server({ triggers: [NIGHTLY] }).v2, {});
     const header = t.host.querySelector("header")!;
     const h1 = header.querySelector("h1")!;
@@ -220,11 +220,21 @@ describe("the schedules list", () => {
     // Toolbar-sized, and one main action, the last.
     for (const b of actions) expect(b.className.split(" "), b.textContent ?? "").toContain("h-control-sm");
     expect(actions.map((b) => /\bbg-primary\/10\b/.test(b.className))).toEqual([false, false, false, false, false, true]);
-    // The columns are by the bar's own width. No breakpoint shows them: one that did (sm:) would be written after the
-    // bar's widths and undo the one row.
+    // The layout is by the bar's own width (the triggers-bar browser flow measures it). Narrow, the buttons are under
+    // the bar's name, as wide as the bar, so they start at its left edge: two columns, three, then one row of six.
+    // Only from 72rem do they share the name's line.
     expect(header.className.split(" ")).toContain("@container");
-    for (const c of ["grid", "grid-cols-2", "@[44rem]:grid-cols-3", "@[72rem]:flex"]) expect(row.className.split(" "), c).toContain(c);
+    for (const c of NEW_ROWS.split(" ")) expect(row.className.split(" "), c).toContain(c);
+    for (const c of ["grid", "w-full", "grid-cols-2", "@[38rem]:grid-cols-3", "@[65rem]:flex", "@[65rem]:[&>button]:grow", "@[72rem]:w-auto", "@[72rem]:[&>button]:grow-0"]) expect(row.className.split(" "), c).toContain(c);
+    // Nothing pushes them to the right, and no breakpoint shows them: one that did (sm:) would be written after the
+    // bar's widths and undo the one line.
+    expect(row.className).not.toMatch(/(^| )(ml-auto|justify-end)( |$)/);
     expect(row.className).not.toMatch(/(^| )sm:(grid|flex|block)( |$)/);
+    // The name's line: whole pixels; beside the sidebar as high as the sidebar's logo row leaves it, with the bar's
+    // rows 6px apart, so the name is level with the logo and the buttons start under the logo row's edge.
+    for (const c of NAME_LINE.split(" ")) expect(h1.className.split(" "), c).toContain(c);
+    for (const c of ["leading-5", "roomy:min-h-9", "@[72rem]:!min-h-5"]) expect(h1.className.split(" "), c).toContain(c);
+    for (const c of ["gap-3", "roomy:gap-y-1.5"]) expect(header.className.split(" "), c).toContain(c);
   });
 
   it("keeps the six on a phone, in the smallest button's measures, with no menu in their place", async () => {
@@ -237,7 +247,7 @@ describe("the schedules list", () => {
     const phone = row.className.split(" ");
     for (const c of PHONE_NEW.split(" ")) expect(phone, c).toContain(c);
     // Under the bar's name, as wide as the bar.
-    expect(phone).toContain("max-sm:w-full");
+    expect(phone).toContain("w-full");
     // What the xs button sets, a phone sets, so the two stay one size.
     const xs = buttonVariants({ size: "xs" }).split(" ");
     for (const c of ["gap-1.5", "px-2", "text-label"]) { expect(xs, c).toContain(c); expect(phone, c).toContain(`max-sm:[&>button]:${c}`); }
@@ -247,7 +257,7 @@ describe("the schedules list", () => {
     // Whole pixels, so a name and its icon share the button's middle: a 16px line for the name, and a 20px line for
     // the bar's own name above the buttons (the triggers-bar browser flow measures both).
     expect(phone).toContain("max-sm:[&>button]:leading-4");
-    expect(header.querySelector("h1")!.className.split(" ")).toContain("max-sm:min-h-5");
+    expect(header.querySelector("h1")!.className.split(" ")).toContain("leading-5");
     // A press opens the kind's form, as at any width.
     await t.click(/^New GitHub trigger$/);
     expect(t.went).toEqual(["#/triggers/new-github"]);
