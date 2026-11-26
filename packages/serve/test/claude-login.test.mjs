@@ -19,6 +19,7 @@ import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLogi
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
+import { LISTING_KEYED } from "../dist/store/schema.js";
 import { agent, FAUX, follow, secretWritePath, serve, withEnv } from "./support.mjs";
 
 secretWritePath(["GET", "PUT", "DELETE"], /^\/settings\/claude-login$/);
@@ -2118,8 +2119,10 @@ test("a login kept at the start while its folder is refused runs once the folder
 /** A server for test `t` with the held table, on a data folder whose login was turned on and signed in at a
  *  CLAUDE_CONFIG_DIR folder, with an agent `planned` on claude-agent and no key; the folder was opened to its group before
  *  the start, so the login is kept and refused. `start()`: a run of `planned`; `waits(n)`: resolves once the server has
- *  logged claude_login_wait `n` times; `whys`: each of those lines' `why`, in order; `fake`: the stand-in CLI.
- *  `options` are laid on the second server's, and `vars` on its environment. */
+ *  logged claude_login_wait `n` times; `whys`: each of those lines' `why`, in order; `offerLines`: the server's
+ *  harness_offers and harness_offers_wait lines, in order; `offersWaited`: resolves once it has logged a
+ *  harness_offers_wait line; `fake`: the stand-in CLI. `options` are laid on the second server's, and `vars` on its
+ *  environment. */
 async function mendedLater(t, options = {}, vars = {}) {
   const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
@@ -2136,7 +2139,12 @@ async function mendedLater(t, options = {}, vars = {}) {
   withEnv(t, vars);
   const whys = [];
   const waiting = [];
+  const offerLines = [];
+  let offerWaited;
+  const offersWaited = new Promise((resolve) => (offerWaited = resolve));
   const log = (line) => {
+    if (/ event=harness_offers(?:_wait)? /.test(line)) offerLines.push(line);
+    if (line.includes(" event=harness_offers_wait ")) offerWaited();
     if (!line.includes(" event=claude_login_wait ")) return;
     whys.push(/ why=(\S+)/.exec(line)?.[1]);
     for (const wait of waiting.filter((one) => one.times <= whys.length)) wait.resolve();
@@ -2149,7 +2157,7 @@ async function mendedLater(t, options = {}, vars = {}) {
   const refused = await start();
   assert.equal(refused.status, 409, `refused at the start: ${JSON.stringify(refused.body)}`);
   assert.match(refused.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
-  return { ...server, folder, start, waits, whys, fake: first.fake };
+  return { ...server, folder, start, waits, whys, offerLines, offersWaited, fake: first.fake };
 }
 
 const REFRESH_WHY = "a run asked while a refresh that found the folder mended was making the offers again checked the offers made before it";
@@ -2369,6 +2377,74 @@ test("a run whose refresh's making of the offers is overtaken by a key save's th
   assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
   const offer = await offerOf(api);
   assert.equal(offer.available, true, `claude-agent is offered once the run made the offers from the login held: ${JSON.stringify(offer)}`);
+});
+
+// The same race with the key save's probe still out, and not failing, when the refresh's is let go. The hand-over the
+// run waited for is still the latest and did not fail, and the offers held are the ones made before both; the probe out
+// has read the inputs the run now goes by, so the run waits for that probe's turn (one harness_offers_wait why=key
+// line), starts no probe of its own, and goes on by the offers the save's probe lands: claude-agent on the login, and pi
+// on the key.
+const STILL_OUT_WHY = "a run whose refresh's making of the offers was overtaken by a key save's still out did not go on by the offers that probe landed";
+test("a run whose refresh's making of the offers is overtaken by a key save's still out waits for that probe once, starts none of its own, and goes on by the offers it lands", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, offerLines, offersWaited } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  const refreshing = held.hold((env) => claudeLoginOf(env) !== undefined && env.OPENAI_API_KEY === undefined);
+  t.after(() => refreshing.release());
+  const running = start();
+  await refreshing.reached;
+  const saveProbe = held.hold((env) => env.OPENAI_API_KEY !== undefined);
+  t.after(() => saveProbe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await saveProbe.reached;
+  const before = offerLines.length;
+  refreshing.release();
+  const first = await Promise.race([offersWaited.then(() => "the run waited"), running.then(() => "the run answered")]);
+  saveProbe.release();
+  const [run, saved] = await Promise.all([running, saving]);
+  assert.ok(saved.status < 300, `the key save's probe landed, so the save is taken: ${JSON.stringify(saved.body)}`);
+  assert.equal(run.status, 202, `${STILL_OUT_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  assert.equal(first, "the run waited", "the run answered before the key save's probe was let go");
+  const waits = offerLines.filter((line) => line.includes(" event=harness_offers_wait "));
+  assert.deepEqual(waits.map((line) => / why=(\S+)/.exec(line)?.[1]), ["key"], `the run waited for the key save's probe once: ${waits.join("\n")}`);
+  const harnesses = (await api("GET", "/capabilities")).body.harnesses;
+  const landed = offerLines.slice(before).filter((line) => line.includes(" event=harness_offers "));
+  assert.equal(landed.length, 2, `only the refresh's probe and the save's landed after both were out, none of the run's or of capabilities': ${landed.join("\n")}`);
+  for (const id of ["claude-agent", "pi"]) assert.equal(harnesses.find((offer) => offer.id === id)?.available, true, `${STILL_OUT_WHY}: ${id} is not offered: ${JSON.stringify(harnesses)}`);
+});
+
+// A refresh that finds its offers dropped makes them again (loginNow), and no key changed then: the runs whose listings
+// read the keys (LISTING_KEYED, a failed run's error words) are not relisted. The key's save relisted them already, and
+// a relist is a write over every such run. Here the failed race above, with one such run in the store and the lister's
+// own passes off, so nothing builds its listing again and each relist moves its mark.
+const RELIST_WHY = "a run whose refresh made the offers again, with no key changed since the key save relisted the runs, relisted them again";
+test("a run whose refresh makes the offers again, with no key changed, relists no runs: only the key's save moved a keyed run's mark", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, store } = await mendedLater(t, { listerIdleMs: Infinity });
+  const planned = await store.agents.get("planned");
+  await store.runs.create({ id: "keyed", agentId: "planned", revisionId: planned.currentRevision });
+  const keyed = { item: { agent_id: "planned" }, cut: "", status: "failed", live: false, until: null, flags: LISTING_KEYED };
+  assert.equal(await store.runs.putListing("keyed", await store.runs.listMark("keyed"), keyed), true);
+  chmodSync(folder, 0o700);
+  const refreshing = held.hold((env) => claudeLoginOf(env) !== undefined && env.OPENAI_API_KEY === undefined);
+  t.after(() => refreshing.release());
+  const running = start();
+  await refreshing.reached;
+  const beforeSave = await store.runs.listMark("keyed");
+  const saveProbe = held.hold((env) => env.OPENAI_API_KEY !== undefined, new Error("the probe of the offers failed"));
+  t.after(() => saveProbe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await saveProbe.reached;
+  saveProbe.release();
+  const saved = await saving;
+  assert.equal(saved.status, 500, `the key save's probe failed, so the save fails: ${JSON.stringify(saved.body)}`);
+  const afterSave = await store.runs.listMark("keyed");
+  assert.ok(afterSave > beforeSave, "the key's save relisted the keyed run");
+  refreshing.release();
+  const run = await running;
+  assert.equal(run.status, 202, `${OVERTAKEN_BY_KEY_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  assert.equal(await store.runs.listMark("keyed"), afterSave, RELIST_WHY);
+  assert.equal((await offerOf(api)).available, true, "claude-agent is offered once the run made the offers from the login held");
 });
 
 // A template's plan and its apply pick the package's harness by the offers (the first of its list offered here, as a
