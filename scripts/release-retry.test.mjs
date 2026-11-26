@@ -94,7 +94,8 @@ const bash = (dir, script, env) => {
 };
 
 // The watchdog's steps in order, a step's `if` on an earlier step's output read as GitHub reads it, against the fake gh.
-// One read of the jobs (WATCH_SECONDS 1); QUEUED_LIMIT_SECONDS stays the job's own unless a test sets it.
+// One or two reads of the jobs (WATCH_SECONDS 2: the step counts whole seconds, so 1 can end before its first read);
+// QUEUED_LIMIT_SECONDS stays the job's own unless a test sets it.
 const dogSteps = () => release.jobs['pypi-watchdog'].steps;
 const watchStep = () => dogSteps().find(step => /gh api/.test(step.run ?? ''));
 const cancelStep = () => dogSteps().find(step => /gh run cancel/.test(step.run ?? ''));
@@ -110,7 +111,7 @@ const runDog = (jobs, { apiFails = false, limit } = {}) => withFakeGh(jobs, apiF
     }
     const output = join(dir, 'output');
     writeFileSync(output, '');
-    const out = bash(dir, step.run, { ...step.env, GH_REPO: 'Parcha-ai/agentrun', RUN_ID: '42', RUN_ATTEMPT: '1', POLL_SECONDS: '1', WATCH_SECONDS: '1',
+    const out = bash(dir, step.run, { ...step.env, GH_REPO: 'Parcha-ai/agentrun', RUN_ID: '42', RUN_ATTEMPT: '1', POLL_SECONDS: '1', WATCH_SECONDS: '2',
       GITHUB_OUTPUT: output, ...(limit === undefined ? {} : { QUEUED_LIMIT_SECONDS: String(limit) }) });
     stdout += out.stdout;
     code = out.status;
