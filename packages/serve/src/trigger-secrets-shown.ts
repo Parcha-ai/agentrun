@@ -13,11 +13,13 @@ import type { TriggerAdapter } from "./trigger-adapter.js";
 // secret writes. A trigger's create and the outbound webhook's first save mint one and write none the caller gave: the
 // token may make them, and is shown no value.
 registerSecretWrite("rotateTriggerSecret", () => true);
+// Giving a trigger the secret its sender made (Stream's, PUT /triggers/{id}/secret) writes one too.
+registerSecretWrite("setTriggerSecret", () => true);
 registerSecretWrite("rotateWebhookSecret", () => true);
 registerSecretWrite("deleteWebhook", () => true);
 // Where the owner finishes each in the console: the trigger's own page (Rotate), and Settings → Webhook (Rotate secret,
 // Remove). The webhook's URL is never in a link: it can be a credential itself (webhooks.ts shownUrl).
-registerSecretPage("rotateTriggerSecret", (_body, { params: [id] }) => (id && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? `/#/triggers/${id}` : "/#/triggers"));
+registerSecretPage(["rotateTriggerSecret", "setTriggerSecret"], (_body, { params: [id] }) => (id && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? `/#/triggers/${id}` : "/#/triggers"));
 registerSecretPage(["rotateWebhookSecret", "deleteWebhook"], "/#/settings/webhook");
 
 /** What the token's answer says of a webhook trigger's secret, made and kept but not shown to it. */

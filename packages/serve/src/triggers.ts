@@ -300,7 +300,7 @@ const MAX_GIVEN_SECRET_CHARS = 512;
  *  it is given. */
 function givenSecretIssues(adapter: TriggerAdapter, source: Source, secret: unknown): InputIssue[] {
   const given = adapter.givenSecret?.(source);
-  if (!given) return secret === undefined ? [] : [{ field: "secret", reason: "not_allowed", message: "This trigger's secret is made by this server: send no body, and a new one is made and shown once." }];
+  if (!given) return secret === undefined ? [] : [{ field: "secret", reason: "not_allowed", message: "This trigger's secret is made by this server, never given: POST /v2/triggers/{id}/secret, with no body, makes a new one and shows it once." }];
   const form = `the whole signing secret ${given.sender} shows, starting ${given.prefix}`;
   if (secret === undefined) return [{ field: "secret", reason: "missing", message: `This trigger's secret is the one ${given.sender} made: send it as secret, ${form}.` }];
   if (typeof secret !== "string") return [{ field: "secret", reason: "wrong_type", message: `secret is a string: ${form}` }];

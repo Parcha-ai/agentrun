@@ -27,7 +27,7 @@ the router's offline test and the setup script below.
 
 | File | What it is |
 | --- | --- |
-| `router.workflow.json` | The router: one Jev `route` over the note as delivered, and a specialist `agent` step per route. No code nodes, so a server runs it without `--allow-code-nodes`. |
+| `router.workflow.json` | The router: one Jev `route` over the note as delivered, and a specialist `agent` step per route. Each run's result is its whole state: the note, the `route`, and the specialist's `reply` (none for a note routed to none). No code nodes, so a server runs it without `--allow-code-nodes`. |
 | `setup.mjs` | Makes (or revises) the `stream-router` agent and the `Stream ring` trigger on a server, then prints the URL for Stream and the page where you set Stream's secret. |
 | `router.test.mjs` | The offline check: a faux server, Jev scripted by `faux-jev.mjs`, four notes sent at once, and the gaps below pinned as today's behaviour. |
 | `faux-jev.mjs` | The test's stand-in for Jev: it routes by the note's words. Live routing is Jev's judgment. |

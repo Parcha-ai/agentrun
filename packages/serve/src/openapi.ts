@@ -3731,15 +3731,24 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/triggers/{trigger_id}/secret": {
     post: {
-      operationId: "rotateTriggerSecret", tags: ["local"], summary: "A webhook trigger's new secret: made here and shown once, or, for a stream trigger, the one Stream made; the old one signs nothing from now on",
-      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 422 for a trigger that is not a webhook's. A trigger whose secret is made here (`standard`, `github`) takes no body: any body, `{}` too, is refused 422 before it rotates, and the new secret is made here and shown once. A trigger whose sender makes its secret (`stream`: Sandbar Stream's, shown under Sign requests) takes it as the body's `secret`, required, the whole string with its `swh_` prefix: it is sealed, answered never (its metadata alone), and checks every request from then on.",
+      operationId: "rotateTriggerSecret", tags: ["local"], summary: "A webhook trigger's new secret, shown once; the old one signs nothing from now on",
+      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words and the secret kept. 422 for a trigger that is not a webhook's, and for any body, `{}` too, refused before it rotates: the new secret is made here, never given. 422 too, under `source.signature`, for a trigger whose sender makes its secret (`stream`): PUT gives that one.",
       parameters: [TRIGGER_ID],
-      requestBody: { required: false, content: { "application/json": { schema: closedWith({}, { secret: GIVEN_TRIGGER_SECRET }) } } },
-      // The operation is marked whole, a secret write with or without a body.
+      // No body to mark a field in: the operation is marked whole, a secret write all the same.
       "x-agentrun-secret": true,
       // The owner's password session alone (secret-writes.ts), never the document's bearer.
       security: [{ ownerSession: [] }],
-      responses: { "200": json(closedWith({ secret: TRIGGER_SECRET_META }, { signing_secret: TRIGGER_SECRET }), "The new secret as `signing_secret`, this once, and its metadata; a stream trigger's given secret, its metadata alone."), ...errors(401, 403, 404, 409, 422, 429, 500) },
+      responses: { "200": json(closedWith({ secret: TRIGGER_SECRET_META }, { signing_secret: TRIGGER_SECRET }), "The new secret as `signing_secret`, this once, and its metadata."), ...errors(401, 403, 404, 409, 422, 429, 500) },
+      ...TRIGGER_MARK,
+    },
+    put: {
+      operationId: "setTriggerSecret", tags: ["local"], summary: "Give a stream trigger the secret Stream made; the old one signs nothing from now on",
+      description: "A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words. For a webhook trigger whose sender makes its secret (`signature: \"stream\"`): the body is `{\"secret\": \"swh_...\"}`, the whole signing secret Stream shows. It is sealed as a minted secret is, cut from what a run shows, and never answered: the answer is its metadata alone. 422 for a trigger whose secret is made here (POST makes a new one), a trigger that is not a webhook's, a body with any other field, or a secret that is not Stream's form.",
+      parameters: [TRIGGER_ID],
+      requestBody: { required: true, content: { "application/json": { schema: closed({ secret: GIVEN_TRIGGER_SECRET }) } } },
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(closed({ secret: TRIGGER_SECRET_META }), "The secret's metadata: set, and when; never the secret."), ...errors(401, 403, 404, 409, 422, 429, 500) },
       ...TRIGGER_MARK,
     },
   },

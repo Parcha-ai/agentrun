@@ -97,13 +97,13 @@ test("a webhook trigger takes no composio signature: its create and a change to 
   assert.match(signatureIssue(await api("POST", "/triggers", hooked("triage", { kind: "webhook", signature: "slack" }))), /standard, github, stream/);
 });
 
-test("the secret route takes no secret of the sender's for a trigger whose secret is made here: a standard or github trigger's body secret is refused, and the API document's body is a stream trigger's secret alone", { timeout: 60_000 }, async (t) => {
+test("a trigger whose secret is made here takes no secret of the sender's: PUT refuses a standard or github trigger's, POST makes one, and the API document's PUT body is a stream trigger's secret alone", { timeout: 60_000 }, async (t) => {
   withEnv(t, SEAL);
   const { api, baseUrl } = await serve(t);
   await made(api, "triage");
   for (const source of [{ kind: "webhook" }, { kind: "webhook", signature: "github" }]) {
     const trigger = (await api("POST", "/triggers", hooked("triage", source))).body;
-    const given = await api("POST", `/triggers/${trigger.id}/secret`, { secret: OTHER });
+    const given = await api("PUT", `/triggers/${trigger.id}/secret`, { secret: OTHER });
     assert.equal(given.status, 422, JSON.stringify(given.body));
     assert.ok(!JSON.stringify(given.body).includes(OTHER));
     const minted = await api("POST", `/triggers/${trigger.id}/secret`);
@@ -111,12 +111,14 @@ test("the secret route takes no secret of the sender's for a trigger whose secre
     assert.ok(minted.body.signing_secret, "one is made and shown this once");
   }
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
-  const route = doc.paths["/triggers/{trigger_id}/secret"].post;
-  // The one body the route takes is a stream trigger's: Stream's own secret, optional for the route, refused for the rest.
-  assert.equal(route.requestBody.required, false);
-  const given = route.requestBody.content["application/json"].schema;
+  const path = doc.paths["/triggers/{trigger_id}/secret"];
+  // POST takes no body, as before: an SDK's rotateSecret(id, options) keeps its shape.
+  assert.equal(path.post.requestBody, undefined);
+  // PUT's one body is a stream trigger's: Stream's own secret, required there.
+  assert.equal(path.put.requestBody.required, true);
+  const given = path.put.requestBody.content["application/json"].schema;
   assert.deepEqual([Object.keys(given.properties), given.properties.secret.pattern, given.properties.secret["x-agentrun-secret"]], [["secret"], "^swh_\\S+$", true]);
-  assert.doesNotMatch(JSON.stringify(route), /Composio/, "nor says a Composio secret is given there");
+  assert.doesNotMatch(JSON.stringify(path), /Composio/, "nor says a Composio secret is given there");
   assert.doesNotMatch(JSON.stringify(doc), /secret Composio gave/);
 });
 
