@@ -416,6 +416,51 @@ test("a workflow call's output is read knowing its call: a credential file's pla
   await screenShare(body, []);
 });
 
+test("a call's long command is read once per call, never once per string of its output: ≥1 MiB of command over 5,000 strings screens in bounded time", { timeout: 900_000 }, async () => {
+  // Each string of a call's output is read with the call's context (its command): a read key, or any per-string work,
+  // that copies or re-reads the command costs strings × command, minutes and gigabytes here, while every other upload
+  // on the host waits. One effect, a long command that prints no environment, and many short distinct strings.
+  const strings = Number(process.env.SHARE_LONG_COMMAND_STRINGS ?? 5_000);
+  const doc = JSON.parse(await bundleOf());
+  const script = Array.from({ length: Math.ceil((1 << 20) / 26) }, (_, i) => `printf '%s' row${String(i).padStart(8, "0")}x; `).join("");
+  const output = Array.from({ length: strings }, (_, i) => `row ${i} of the report`);
+  const effect = { node: "step", executionPath: "step", item: null, tool: "bash", status: "done", input: { command: script }, output, error: null, startedAt: "2026-01-02T03:04:05.000Z", endedAt: "2026-01-02T03:04:06.000Z" };
+  const body = resigned({ ...doc, graph: { ...GRAPH, effects: [effect], totals: { ...GRAPH.totals, effects: 1 } } });
+  assert.ok(script.length >= 1 << 20);
+  const started = performance.now();
+  await screenShare(body, []).catch((error) => assert.ok(error.status === 413 || error.code === "input_invalid", String(error)));
+  const ms = performance.now() - started;
+  // Under a second at the fix on an idle box (a pass per string, the command read once; about 6 s at a load of 160, as
+  // with a two-character command): 60 s is far over that, and far under strings × command (about 5 minutes before).
+  assert.ok(ms < 60_000, `${Math.round(ms)} ms`);
+});
+
+test("the string cap counts a text once per call context it is read under, and bounds the reads: past it is 413 before any scrub", async () => {
+  // Each string is read once per context it stands under (a file's path, a call's command), so the cap counts those
+  // reads: the same output under three commands is three reads each, under one command one.
+  const doc = JSON.parse(await bundleOf());
+  const effect = (command) => ({ node: "step", executionPath: "step", item: null, tool: "bash", status: "done", input: { command }, output: ["alpha", "beta", "gamma"], error: null, startedAt: "2026-01-02T03:04:05.000Z", endedAt: "2026-01-02T03:04:06.000Z" });
+  const bodyOf = (commands) => resigned({ ...doc, graph: { ...GRAPH, effects: commands.map(effect), totals: { ...GRAPH.totals, effects: commands.length } } });
+  let passes = 0;
+  const counting = async (text, opts) => {
+    passes++;
+    return scrub(text, opts);
+  };
+  const countOf = async (body) => {
+    const refused = await screenShare(body, [], counting, 1).then(() => assert.fail("a cap of 1 took the bundle"), (error) => error);
+    assert.ok(refused.status === 413 && refused.extra.details.reason === "share_strings", String(refused));
+    return refused.extra.details.strings;
+  };
+  const three = bodyOf(["ls a", "ls b", "ls c"]);
+  const counted = await countOf(three);
+  // Two more commands (two strings) and the three outputs read twice more (six reads).
+  assert.equal(counted - (await countOf(bodyOf(["ls a", "ls a", "ls a"]))), 8);
+  assert.equal(passes, 0, "a refusal past the cap reads nothing");
+  // At the cap, taken: the whole body once and each counted read once, no more.
+  await screenShare(three, [], counting, counted);
+  assert.equal(passes, 1 + counted);
+});
+
 test("each string is read alone too: a label the whole-body read misses still refuses", async (t) => {
   const planted = plantedRestorable();
   const doc = JSON.parse(await restoredBundleOf(planted.content));
