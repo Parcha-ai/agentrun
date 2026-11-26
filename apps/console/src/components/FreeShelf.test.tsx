@@ -1,4 +1,4 @@
-import { act, createElement } from "react";
+import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FreeShelf } from "./FreeShelf";
@@ -39,10 +39,10 @@ const go = vi.fn();
 const applyTemplate = vi.fn(async () => ({ agent_id: "made-1", triggers: [], warnings: [] }));
 const client = (templates: TemplateView[]) => ({ listTemplates: async () => ({ templates }), listMcpServers: async () => ({ servers: [] }), applyTemplate, emailAccount: async () => ({ configured: false }) });
 
-async function mountShelf(harnesses: HarnessInfo[], templates: TemplateView[] = [FIELD, PAID]) {
+async function mountShelf(harnesses: HarnessInfo[], templates: TemplateView[] = [FIELD, PAID], extra: { fit?: ReactNode; fitHeld?: boolean } = {}) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  await act(async () => root!.render(createElement(FreeShelf, { v2: client(templates) as never, harnesses, tools: TOOLS, freeRequests: 60, go })));
+  await act(async () => root!.render(createElement(FreeShelf, { v2: client(templates) as never, harnesses, tools: TOOLS, freeRequests: 60, go, ...extra })));
   return host;
 }
 const section = (host: HTMLElement, label: string) => host.querySelector(`section[aria-label="${label}"]`)!;
@@ -68,6 +68,16 @@ describe("the Free shelf's models", () => {
     const slot = host.querySelector('[data-testid="free-fit-slot"]');
     expect(slot).not.toBeNull();
     expect(section(host, "Free models").textContent).toContain("No local model yet");
+  });
+
+  it("with a local model, keeps the hardware-fit card held (a pull there under way or just ended) and says no 'no local model'", async () => {
+    const fit = createElement("section", { "aria-label": "Free local model" });
+    const held = await mountShelf([pi([LOCAL, CATALOG])], [FIELD, PAID], { fit, fitHeld: true });
+    expect(held.querySelector('[data-testid="free-fit-slot"] section[aria-label="Free local model"]')).not.toBeNull();
+    expect(section(held, "Free models").textContent).not.toContain("No local model yet");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const letGo = await mountShelf([pi([LOCAL, CATALOG])], [FIELD, PAID], { fit, fitHeld: false });
+    expect(letGo.querySelector('[data-testid="free-fit-slot"]')).toBeNull();
   });
 
   it("with no free model at all: says so, keeps the slot, and offers no Use free", async () => {

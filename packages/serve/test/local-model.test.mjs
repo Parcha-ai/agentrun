@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { fakeOllama } from "./fixtures/fake-ollama.mjs";
 import { serve, withEnv } from "./support.mjs";
 
-const { INKLING, INKLING_OLLAMA, LOCAL_MODEL_TAGS, OLLAMA_DOWNLOAD, QWEN3_DEFAULT, RAM_FLOOR_GIB, nvidiaOf, pullRefusal, recommendLocalModel, versionAtLeast } = await import("../dist/local-model.js");
+const { INKLING, INKLING_OLLAMA, LOCAL_MODEL_TAGS, OLLAMA_DOWNLOAD, QWEN3_DEFAULT, RAM_FLOOR_GIB, localModelView, nvidiaOf, ollamaElsewhere, pullRefusal, recommendLocalModel, versionAtLeast } = await import("../dist/local-model.js");
 const { ollamaClock } = await import("../dist/ollama-provider.js");
 
 // The suites turn every Ollama off (support.mjs, OLLAMA_OFF_ENV); this file asks its own fakes alone.
@@ -204,6 +204,32 @@ test("no Ollama here: the read surface says to install it, and recommends nothin
   assert.deepEqual(view.ollama, { asked: true, reachable: false, version: null });
   assert.equal(view.recommended.tag, null);
   assert.match(view.recommended.why, /ollama\.com\/download/);
+});
+
+test("an Ollama on another machine: no pull, and no recommendation from this machine's memory and GPU, in words that never name its address", async (t) => {
+  for (const host of ["https://ollama.example.test", "https://ollama.example.test:8443/base", "https://gpu-box.example.org"]) {
+    assert.equal(ollamaElsewhere({ OLLAMA_HOST: host }), true, host);
+    const refused = pullRefusal({ OLLAMA_HOST: host }, []);
+    assert.match(refused, /on another machine, and this server reads only its own memory and GPU/, host);
+    assert.ok(!refused.includes("example.test") && !refused.includes("gpu-box"), host);
+  }
+  // This machine's own addresses, as Ollama's CLI reads them: still pulled into, and recommended for.
+  for (const host of ["127.0.0.1:11434", "localhost:11434", "http://localhost", "[::1]:11434", "0.0.0.0", "::", "127.0.0.2:1", "https://localhost:8443"]) {
+    assert.equal(ollamaElsewhere({ OLLAMA_HOST: host }), false, host);
+    assert.equal(pullRefusal({ OLLAMA_HOST: host }, []), undefined, host);
+  }
+  // Unset, or an address the base rule refuses (plain http off this machine): not said to be elsewhere.
+  assert.equal(ollamaElsewhere({}), false);
+  assert.equal(ollamaElsewhere({ OLLAMA_HOST: "http://ollama.example.test" }), false);
+  // The read surface on a Mac whose OLLAMA_HOST is a Linux box's Ollama: no Inkling (Apple-only), nothing to pull. No network:
+  // the test switch keeps every Ollama unasked, as an unreachable one.
+  process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA = "1";
+  t.after(() => { delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA; });
+  const view = await localModelView({ env: { OLLAMA_HOST: "https://ollama.example.test" }, notOwn: [], machine: async () => APPLE(64), pulls: { view: () => null } });
+  assert.equal(view.recommended.tag, null);
+  assert.match(view.recommended.why, /on another machine/);
+  assert.equal(view.can_pull, false);
+  assert.match(view.refused, /on another machine/);
 });
 
 // Under the model gateway or the faux model this server never asks Ollama (model.ts asksOllama): the read surface says

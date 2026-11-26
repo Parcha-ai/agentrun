@@ -35,10 +35,12 @@ export function machineLine(view: LocalModel): string {
 /** The first screen's "Free local model" card, beside the model key card while this server has no model: what this
  *  machine can run (GET /settings/local-model), one click to pull it through the owner's own Ollama (POST
  *  /settings/local-model/pull) with its progress, then ready. `onReady(tag)`, once per tag a pull here ends: the caller
- *  reads the capabilities again and picks `ollama/<tag>`; `onDone`, the person is done with the card once it is ready.
+ *  reads the capabilities again and picks `ollama/<tag>`; `onDone`, the person is done with the card once it is ready;
+ *  `onPulling`, each time it sees a pull under way here: the caller keeps the card up from then until `onDone`, so a
+ *  capabilities read that finds the model before the card's own progress read does never takes it down unreadied.
  *  Under the faux model or a model gateway (`ollama.asked` false) its only words are the refusal. A server without the
  *  route (404) or a caller who is not the owner shows no card. `pollMs`: how often a pull's progress is read (a test's 0). */
-export function LocalModelCard({ v2, onReady, onDone, pollMs = PULL_POLL_MS }: { v2: Client; onReady?: (tag: string) => void; onDone?: () => void; pollMs?: number }) {
+export function LocalModelCard({ v2, onReady, onDone, onPulling, pollMs = PULL_POLL_MS }: { v2: Client; onReady?: (tag: string) => void; onDone?: () => void; onPulling?: () => void; pollMs?: number }) {
   const [view, setView] = useState<LocalModel | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [gone, setGone] = useState(false);
@@ -66,6 +68,7 @@ export function LocalModelCard({ v2, onReady, onDone, pollMs = PULL_POLL_MS }: {
     const timer = setTimeout(() => void read(), pollMs);
     return () => clearTimeout(timer);
   }, [view, reads, gone]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (state === "pulling") onPulling?.(); }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
   // Ready once per tag: the capabilities read again, so the picker and the default have it.
   useEffect(() => {
     const tag = view?.recommended.tag;

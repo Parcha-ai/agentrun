@@ -15,14 +15,14 @@ import { cn } from "@/lib/utils";
 import type { TemplateView } from "@/lib/v2";
 
 /** `fit`: the hardware-fit card (the Free local model card: what this machine can run, and a pull), shown where the server
- *  has no local model. `localModel`: the model a pull there just ended with (`ollama/<tag>`); Use free then opens Apply on
+ *  has no local model, and kept while `fitHeld` (a pull there under way or just ended, until its Done). `localModel`: the model a pull there just ended with (`ollama/<tag>`); Use free then opens Apply on
  *  it, as the first screen's templates run on it (templatePick), though the server's default is another free model. */
-type Props = { v2: Pick<Client, "listTemplates">; harnesses: readonly HarnessInfo[]; tools: unknown; freeRequests?: number; routePrefix?: string | null; go: (hash: string) => void; fit?: ReactNode; localModel?: string | null };
+type Props = { v2: Pick<Client, "listTemplates">; harnesses: readonly HarnessInfo[]; tools: unknown; freeRequests?: number; routePrefix?: string | null; go: (hash: string) => void; fit?: ReactNode; fitHeld?: boolean; localModel?: string | null };
 
 /** The Free shelf: what runs for $0 on this server. Its free models (this machine's Ollama first), what its web tools go
  *  through in the server's own words, and the templates that run free, each a click from its Apply screen on the free
  *  model. All of it from capabilities and GET /v2/templates. */
-export function FreeShelf({ v2, harnesses, tools, freeRequests, routePrefix, go, fit, localModel }: Props) {
+export function FreeShelf({ v2, harnesses, tools, freeRequests, routePrefix, go, fit, fitHeld = false, localModel }: Props) {
   const models = freeModels(harnesses, routePrefix);
   const harness = freeHarness(harnesses) ?? "pi";
   const web = webTools(tools, harness);
@@ -47,11 +47,11 @@ export function FreeShelf({ v2, harnesses, tools, freeRequests, routePrefix, go,
               ))}
             </ul>
           )}
-          {!models.some((m) => m.local) && (
+          {(!models.some((m) => m.local) || fitHeld) && (
             <div className={cn("px-4 py-3", models.length > 0 && "border-t")}>
-              <p className="text-body text-muted-foreground" role="status">
+              {!models.some((m) => m.local) && <p className="text-body text-muted-foreground" role="status">
                 {models.length ? "No local model yet. A model on this machine's Ollama runs with no key and no limit on its requests." : "No free model on this server yet. A model on this machine's Ollama runs for $0 with no key."}
-              </p>
+              </p>}
               <div data-testid="free-fit-slot" className="empty:hidden mt-3">{fit}</div>
             </div>
           )}

@@ -42,7 +42,7 @@ function server(reads: (LocalModel | Response)[], pulled?: LocalModel) {
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-async function open(v2: ReturnType<typeof createClient>, props: { onReady?: (tag: string) => void; onDone?: () => void } = {}) {
+async function open(v2: ReturnType<typeof createClient>, props: { onReady?: (tag: string) => void; onDone?: () => void; onPulling?: () => void } = {}) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   act(() => root!.render(createElement(LocalModelCard, { v2, pollMs: 0, ...props })));
@@ -95,6 +95,21 @@ describe("LocalModelCard", () => {
     expect(card.host.textContent).toContain("Ready: qwen3:8b runs here on this machine, at $0");
     expect(readied).toEqual(["qwen3:8b"]);
     expect(card.button(/^Pull/)).toBeUndefined();
+  });
+
+  it("pulling: says the pull is under way (onPulling) as soon as it sees one, a pull it started or one under way when it opens", async () => {
+    const started = server([base(), pulling(2 * GIB), done], pulling(0));
+    let told = 0;
+    const card = await open(started.v2, { onPulling: () => { told++; } });
+    expect(told).toBe(0);
+    await act(async () => { card.button(/^Pull qwen3:8b$/)!.click(); });
+    await card.settle();
+    expect(told).toBe(1);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const already = server([pulling(GIB), done], pulling(0));
+    let seen = 0;
+    await open(already.v2, { onPulling: () => { seen++; } });
+    expect(seen).toBe(1);
   });
 
   it("pulling: a progress read that fails is followed by another, so the card still reaches ready", async () => {

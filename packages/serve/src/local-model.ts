@@ -8,8 +8,9 @@
 import { execFile } from "node:child_process";
 import { arch, platform, totalmem } from "node:os";
 import { ApiError } from "./errors.js";
+import { isLoopbackName } from "./host-check.js";
 import { asksOllama, FAUX_ENV } from "./model.js";
-import { ollamaModels, ollamaPull, type OllamaPullLine, ollamaVersion } from "./ollama-provider.js";
+import { ollamaBase, ollamaModels, ollamaPull, type OllamaPullLine, ollamaVersion } from "./ollama-provider.js";
 import { logLine } from "./print.js";
 import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
 import { isObject, unknownFields } from "./validate.js";
@@ -178,6 +179,21 @@ export type LocalPulls = ReturnType<typeof localPulls>;
 
 // ---- the route --------------------------------------------------------------------------------------------------------
 
+/** Whether the Ollama `env` names is on another machine: OLLAMA_HOST names an address that is not this machine's own
+ *  (a loopback name). This server reads only its own memory and GPU, so it recommends and pulls nothing for that one. An
+ *  address the base rule refuses is no Ollama asked at all, and not said to be elsewhere. */
+export function ollamaElsewhere(env: NodeJS.ProcessEnv): boolean {
+  if (!env.OLLAMA_HOST?.trim()) return false;
+  try {
+    return !isLoopbackName(new URL(ollamaBase(env)).hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** The words for an Ollama on another machine (ollamaElsewhere), which never name its address. */
+export const OLLAMA_ELSEWHERE = "The Ollama OLLAMA_HOST names is on another machine, and this server reads only its own memory and GPU, so it recommends and pulls no model for that one. Pull one where that Ollama runs: ollama pull <tag>.";
+
 /** Why no pull is made through the Ollama `env` names, in words, or undefined where one may: the faux model or a model
  *  gateway takes every model here (asksOllama); a server that is not one owner's own on their own machine (`notOwn`,
  *  server.ts whyNotOwnMachine's reasons) pulls nothing into an Ollama that is not theirs. */
@@ -186,6 +202,7 @@ export function pullRefusal(env: NodeJS.ProcessEnv, notOwn: readonly string[]): 
   if (!asksOllama(env)) return "This server sends every model to its model gateway (AGENT_MODEL_BASE_URL), so a local model would not run here.";
   if (notOwn.length) return `A local model is pulled from here only on one owner's own server on their own machine, and this server ${notOwn.join("; ")}. Pull it where Ollama runs: ollama pull <tag>.`;
   if (!env.OLLAMA_HOST?.trim()) return "No Ollama is asked here.";
+  if (ollamaElsewhere(env)) return OLLAMA_ELSEWHERE;
   return undefined;
 }
 
@@ -198,7 +215,9 @@ export async function localModelView({ env, notOwn, machine, pulls }: LocalModel
   const asked = asksOllama(env);
   const [facts, version, listed] = await Promise.all([machine(), asked ? ollamaVersion(env) : undefined, asked ? ollamaModels(env) : []]);
   const ollama: OllamaFacts = !asked ? { asked: false, reachable: false, version: null } : version === undefined ? { asked: true, reachable: false, version: null } : { asked: true, reachable: true, version };
-  const recommended = recommendLocalModel({ machine: facts, ollama, pulled: listed.map((model) => model.name) });
+  // An Ollama on another machine is not this machine's: no recommendation from this machine's memory and GPU for it.
+  const recommended: Recommendation = asked && ollamaElsewhere(env) ? { tag: null, why: OLLAMA_ELSEWHERE, pulled: false }
+    : recommendLocalModel({ machine: facts, ollama, pulled: listed.map((model) => model.name) });
   // Not asked, the refusal is the only word on it: never that Ollama isn't running.
   return { machine: facts, ollama, recommended: asked || !refused ? recommended : { ...recommended, why: refused }, pull: pulls.view(), can_pull: refused === undefined, refused: refused ?? null };
 }
