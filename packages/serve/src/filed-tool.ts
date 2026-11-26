@@ -1,9 +1,9 @@
 // The per-tool file option: an MCP tool whose answers the agent's own tool setting files (`mcp:<server>/<tool>: {file:
 // {folder, show}}`, written by a package's `mcp[].file` at apply, or by the owner). The gateway writes each answer, an
-// error answer too, scrubbed and whole, at <folder>/<tool>-<time>-<id>.json in the run's files, and the tool's result is
+// error answer and a protocol error too, scrubbed and whole, at <folder>/<tool>-<time>-<id>.json in the run's files, and the tool's result is
 // only a summary: how many bytes, where it is filed (for the skill's code), the values of the paths `show` names, and
-// the answer's shape (keys that read as short names and types to depth 2, array lengths), never another value
-// (mcp-gateway.ts forward). The answer goes through neither the clip nor evidence/mcp/. So a template whose tool answers
+// the answer's shape (keys that read as plain names and types to depth 2, array lengths), never another value; for an
+// error, a last line of what its structure gives (errorLine) (mcp-gateway.ts forward). The answer goes through neither the clip nor evidence/mcp/. So a template whose tool answers
 // hold what the model must not read (a customer's descriptions, say) hands its code the whole answer and its model the
 // values it needs to go on (the next page's cursor). What it does not do: keep the model's own file tools (read, grep,
 // ls, bash on a computer) off the folder. A template that must keep the model off the answer grants none of them, or runs
@@ -90,11 +90,14 @@ export function shownAt(value: unknown, path: string): string | number | boolean
 /** The most keys of one object the shape names, and the longest shape. */
 const SHAPE_KEYS = 40;
 const SHAPE_CHARS = 2_000;
-/** A key the shape names: a short name. Any other key (an email, a person's name, an id) can be data, so it is counted,
- *  never named. */
-const SHAPE_KEY = /^[A-Za-z_][A-Za-z0-9_]{0,31}$/;
+/** A key the shape names: a plain name, lowercase words joined by _ (has_more) or camelCase (pageInfo), with any _
+ *  first (_id), at most SHAPE_KEY_CHARS. Any other key can be data (an email, an id with digits or capitals after a
+ *  prefix like cus_NffrFeUfNV2Hib, an all-capitals code), so it is counted, never named. A key that is a plain word and
+ *  data too (a username like marisol_q) still reads as a name: what a key looks like is all the shape can go by. */
+const SHAPE_KEY = /^_*[a-z]+(?:(?:_[a-z]+)*|(?:[A-Z][a-z]+)+)$/;
+const SHAPE_KEY_CHARS = 32;
 
-/** `value`'s shape: types, each array's length and what it holds, an object's keys that are short names while `depth`
+/** `value`'s shape: types, each array's length and what it holds, an object's keys that are plain names (SHAPE_KEY) while `depth`
  *  is under 2 (the rest counted); never a value. */
 export function shapeOf(value: unknown, depth = 0): string {
   if (value === null) return "null";
@@ -106,7 +109,7 @@ export function shapeOf(value: unknown, depth = 0): string {
   if (isPlain(value)) {
     if (depth >= 2) return "object";
     const keys = Object.keys(value);
-    const named = keys.filter((key) => SHAPE_KEY.test(key)).slice(0, SHAPE_KEYS).map((key) => `${JSON.stringify(key)}: ${shapeOf(value[key], depth + 1)}`);
+    const named = keys.filter((key) => key.length <= SHAPE_KEY_CHARS && SHAPE_KEY.test(key)).slice(0, SHAPE_KEYS).map((key) => `${JSON.stringify(key)}: ${shapeOf(value[key], depth + 1)}`);
     const rest = keys.length - named.length;
     const counted = rest ? `… ${rest} ${named.length ? "more " : ""}key${rest === 1 ? "" : "s"}` : "";
     return `{${[...named, ...(counted ? [counted] : [])].join(", ")}}`;
@@ -114,9 +117,52 @@ export function shapeOf(value: unknown, depth = 0): string {
   return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? typeof value : "unknown";
 }
 
+/** What an error's structure says, never its words: the HTTP status of the server's answer, a JSON-RPC error's code (a
+ *  protocol error), and a retry time from the Retry-After header, in seconds. */
+export type ErrorFacts = { readonly status?: number; readonly code?: number; readonly retryAfterS?: number };
+
+/** The longest wait a retry line names, in seconds: a day. */
+const MOST_RETRY_S = 86_400;
+/** A retry time's fields in a JSON error, in seconds or in milliseconds, read at the answer's top, under `error` and
+ *  under `data`. */
+const RETRY_S = ["retry_after", "retryAfter", "retry_after_seconds"];
+const RETRY_MS = ["retry_after_ms", "retryAfterMs"];
+
+const waitOf = (seconds: unknown): number | undefined => (typeof seconds === "number" && Number.isFinite(seconds) && seconds >= 0 && seconds <= MOST_RETRY_S ? Math.ceil(seconds) : undefined);
+
+/** A Retry-After header's wait, in whole seconds (its seconds, or its date from now), or undefined. */
+export function retryAfterHeader(value: string | null, now = Date.now()): number | undefined {
+  if (value === null) return undefined;
+  if (/^\d{1,9}$/.test(value.trim())) return waitOf(Number(value.trim()));
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? undefined : waitOf(Math.max(0, (at - now) / 1000));
+}
+
+/** The retry time a JSON error names in a known field (RETRY_S, RETRY_MS), in whole seconds. */
+function retryOf(value: unknown): number | undefined {
+  for (const at of [value, isPlain(value) ? value.error : undefined, isPlain(value) ? value.data : undefined]) {
+    if (!isPlain(at)) continue;
+    for (const key of RETRY_S) if (Object.hasOwn(at, key) && waitOf(at[key]) !== undefined) return waitOf(at[key]);
+    for (const key of RETRY_MS) if (Object.hasOwn(at, key) && typeof at[key] === "number") { const wait = waitOf((at[key] as number) / 1000); if (wait !== undefined) return wait; }
+  }
+  return undefined;
+}
+
+/** An error answer's last line: its HTTP status, a JSON-RPC code, and when to retry (a retry field, the Retry-After
+ *  header, or "later" for 429 and 503), all from its structure, never its words. */
+function errorLine(value: unknown, json: boolean, facts: ErrorFacts): string {
+  const parts: string[] = [];
+  if (facts.status !== undefined && facts.status >= 400) parts.push(`HTTP ${facts.status}`);
+  if (facts.code !== undefined) parts.push(`JSON-RPC error ${facts.code}`);
+  const retry = facts.retryAfterS ?? (json ? retryOf(value) : undefined);
+  if (retry !== undefined) parts.push(`retry after ${retry} s`);
+  else if (facts.status === 429 || facts.status === 503) parts.push("retry later");
+  return parts.length ? `Error: ${parts.join(", ")}.` : "Error: no status or retry time given.";
+}
+
 /** The tool's result for an answer filed at `path` (in the run's files): its bytes, where it is, the values `show`
- *  names, and its shape. */
-export function filedSummary(tool: string, text: string, path: string, show: readonly string[]): string {
+ *  names, and its shape; for an error (`error` given), a last line of what its structure says (errorLine). */
+export function filedSummary(tool: string, text: string, path: string, show: readonly string[], error?: ErrorFacts): string {
   let value: unknown;
   let json = true;
   try {
@@ -130,6 +176,7 @@ export function filedSummary(tool: string, text: string, path: string, show: rea
     `${tool} answered ${Buffer.byteLength(text, "utf8").toLocaleString("en-US")} bytes, filed whole at ${path} for the skill's code; its values are not shown here (the agent's setting files this tool's answers); only these are:`,
     shown,
     `Shape: ${shape.length > SHAPE_CHARS ? `${shape.slice(0, SHAPE_CHARS)}…` : shape}`,
+    ...(error ? [errorLine(value, json, error)] : []),
   ].join("\n");
 }
 

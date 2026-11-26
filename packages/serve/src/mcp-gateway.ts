@@ -26,7 +26,7 @@ import { TOOL_UNMETERED } from "./timeline/index.js";
 import { until } from "./until.js";
 import { type FalMeterName, type MediaReader, meterFor, meterNamed } from "./fal-price.js";
 import { filedAnswer } from "./filed-answer.js";
-import { type FileSetting, filedSummary, UNREADABLE, unfiledSummary } from "./filed-tool.js";
+import { type ErrorFacts, type FileSetting, filedSummary, retryAfterHeader, UNREADABLE, unfiledSummary } from "./filed-tool.js";
 import { saveOnce } from "./save-once.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -267,7 +267,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const credentials: Pick<Map<string, McpCredentials[string]>, "get"> = { get: (server) => (Object.hasOwn(options.credentials, server) ? options.credentials[server] : undefined) };
   /** Each server's last HTTP status, which tells a refused credential from another failure. (An address refusal is never
    *  kept here: it is read from each call's own error, since calls to one server run at once.) */
-  const statuses = new Map<string, { last?: number }>();
+  const statuses = new Map<string, { last?: number; retryAfter?: number }>();
   const send = options.fetch ?? fetch;
   /** The credential values each call in flight took or its server's requests sent while it was out, one set per call, by
    *  server: a refresh can swap a token between a call taking its headers and a request leaving, so
@@ -300,7 +300,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     scrub(text, [...Object.values(headers), ...values, ...Object.values(credentials.get(server)?.headers ?? {}), ...Object.values(queryOf(server))]);
 
   /** The fetch one server's client sends with: its credential added, no redirect followed, at most MAX_RESPONSE read. */
-  const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number }, query: Record<string, string> = {}) => async (input: string | URL | Request, init: RequestInit = {}) => {
+  const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number; retryAfter?: number }, query: Record<string, string> = {}) => async (input: string | URL | Request, init: RequestInit = {}) => {
     // The account its client was connected as, set over whatever the request's address says, and held for the scrub.
     if (Object.keys(query).length) {
       hold(server, query);
@@ -323,6 +323,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     for (const [name, value] of Object.entries(hold(server, typeof headers === "function" ? headers() : headers))) sent.set(name, value);
     const response = await through(input, { ...init, headers: sent, redirect: "manual" });
     status.last = response.status;
+    // Its wait, when it names one: a filed tool's error line says it (filed-tool.ts errorLine), never the body.
+    status.retryAfter = retryAfterHeader(response.headers.get("retry-after"));
     if (response.status >= 300 && response.status < 400) throw new Error(`it answered a redirect (HTTP ${response.status}), which is never followed`);
     return capped(response);
   };
@@ -332,7 +334,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const key = JSON.stringify(query);
     const held = clients.get(server);
     if (held && held.query === key) return held.upstream;
-    const status: { last?: number } = {};
+    const status: { last?: number; retryAfter?: number } = {};
     statuses.set(server, status);
     const upstream = (async () => {
       const { client, transport } = mcpClient(await import("@modelcontextprotocol/client"), { name: "agentrun", version: "1.0.0", url: new URL(url), fetch: guarded(server, () => credentials.get(server)?.headers ?? {}, status, query) as never });
@@ -388,9 +390,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
    *  error, so the model can still react through a shown field. An answer with blocks that are not text is filed as the
    *  whole result's JSON. A write that fails (or a Workspace that cannot open) answers an error in the Workspace's words,
    *  none of the answer shown. */
-  const filedOf = async (setting: FileSetting, tool: string, result: Record<string, unknown>, clean: (text: string) => string): Promise<McpCallResult> => {
-    const { text: answer, other } = answerOf(result, clean);
-    const text = other === 0 ? answer : clean(JSON.stringify(result));
+  const filedOf = async (setting: FileSetting, tool: string, text: string, error?: ErrorFacts): Promise<McpCallResult> => {
     const path = `${setting.folder}/${tool.replace(/[^A-Za-z0-9_.-]/g, "_")}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.json`;
     try {
       await workspaceAt(await options.work()).write(path, text);
@@ -398,7 +398,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       // The Workspace's code and the port's line for it, never the error's message, which names paths.
       return said(unfiledSummary(tool, text, setting.folder, workspaceErrorWords(error) ?? (typeof (error as { code?: unknown })?.code === "string" ? (error as { code: string }).code : "write failed")), true);
     }
-    return said(filedSummary(tool, text, path, setting.show), result.isError === true);
+    return said(filedSummary(tool, text, path, setting.show, error), error !== undefined);
   };
 
   /** The results `result` carries that `server`'s meter keeps (McpMeter.results), each filed at its `<dir>/<name>.json`
@@ -465,7 +465,11 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       const filing = options.filed?.(server, tool.name);
       // UNREADABLE never gets here (unsendable refuses it unsent); never answered unfiled either way.
       if (filing === UNREADABLE) return said(unreadableFile(server, tool.name), true);
-      if (filing) return await filedOf(filing, tool.name, result, clean);
+      if (filing) {
+        const { text: answer, other } = answerOf(result, clean);
+        // An error answer's status is the transport's (200), so only its own fields can name a retry time.
+        return await filedOf(filing, tool.name, other === 0 ? answer : clean(JSON.stringify(result)), result.isError === true ? {} : undefined);
+      }
       return said(await textOf(server, tool.name, result, clean), result.isError === true);
     } catch (error) {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
@@ -486,6 +490,17 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential (its sign-in expired or was revoked, or its key changed): ${SIGN_IN_AGAIN}, or update its credential there.`, true);
       // It never answered at all: its connection failed before any HTTP status, so nothing reached it.
       if (!connected && status === undefined) return said(`The MCP server ${server} could not be reached at ${URL.parse(url)?.origin ?? "its address"} (${clean(unreachable(error))}); nothing was sent.`, true);
+      // A filed tool's protocol error (a JSON-RPC error, an HTTP error answer) is the server's words as an answer is: filed
+      // whole and answered with its summary and what its structure says, none of its words shown.
+      const filing = outcome.quiet ? undefined : options.filed?.(server, tool.name);
+      if (filing && filing !== UNREADABLE) {
+        const { ProtocolError } = await import("@modelcontextprotocol/client");
+        const thrown = error as { code?: unknown; message?: unknown; data?: unknown };
+        const code = ProtocolError.isInstance(error) && Number.isInteger(thrown.code) ? (thrown.code as number) : undefined;
+        const body = { error: { ...(code !== undefined ? { code } : {}), message: String(thrown?.message ?? error), ...(thrown?.data !== undefined ? { data: thrown.data } : {}) } };
+        const retryAfterS = statuses.get(server)?.retryAfter;
+        return await filedOf(filing, tool.name, clean(JSON.stringify(body)), { ...(status !== undefined ? { status } : {}), ...(code !== undefined ? { code } : {}), ...(retryAfterS !== undefined ? { retryAfterS } : {}) });
+      }
       const why = clean(String((error as Error)?.message ?? error)).slice(0, 300);
       return said(`The MCP server ${server} failed${status && status >= 400 ? ` (HTTP ${status})` : ""}: ${why}`, true);
     } finally {

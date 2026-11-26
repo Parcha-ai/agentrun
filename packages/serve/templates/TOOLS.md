@@ -143,8 +143,9 @@ Each answer is written whole, as the server sent it (credentials scrubbed), at `
 before the model gets its turn back. The names sort by time. The answer goes through neither the clip nor
 `evidence/mcp/`. The tool's result is three lines: the size and path, the value at each `show` path, and the answer's
 shape (its keys and types to depth 2, each array's length, never a value). The shape names a key only when it reads as
-a short name (a letter or `_` first, at most 32 letters, digits or `_`) and counts the rest, so keys that are data, such
-as emails, aren't shown:
+a plain name, lowercase words joined by `_` (`has_more`) or camelCase (`pageInfo`), any `_` first, at most 32
+characters, and counts the rest. So keys that are data, such as emails and ids (`cus_NffrFeUfNV2Hib`, `txn_1Q0001`),
+aren't shown:
 
 ```text
 STRIPE_LIST_BALANCE_TRANSACTIONS answered 61,204 bytes, filed whole at stripe/STRIPE_LIST_BALANCE_TRANSACTIONS-2026-11-30T07-02-11-512Z-1a2b3c4d.json for the skill's code; its values are not shown here (the agent's setting files this tool's answers); only these are:
@@ -154,9 +155,15 @@ Shape: {"data": {"object": string, "data": [100 objects], "has_more": boolean, "
 
 A `show` path that reaches no scalar shows `null`, and a string is cut at 200 characters. Show only what the model
 needs to go on: the next page's cursor, a done flag, a status. A path that names a free-text field (a description, a
-name, a message body) shows that text to the model and defeats the option. An answer that is an error is filed the
-same way, and the tool's result is its summary marked as an error, so the model can react through a shown field such as
-`error.code`. If the file can't be written, the model gets an error and none of the answer, never the answer as a
+name, a message body) shows that text to the model and defeats the option. So does a map keyed by a plain word that is
+data, such as a username like `marisol_q`: the shape goes by what a key looks like, and that one looks like a name.
+
+An answer that is an error is filed the same way, and so is a server's protocol error (a JSON-RPC error, an HTTP error).
+The tool's result is the summary marked as an error, with one more line built from the error's structure, never its
+words: `Error: HTTP 429, retry after 2 s.` The line gives the HTTP status, a JSON-RPC code, and a retry time, taken from
+a `retry_after`, `retryAfter`, `retry_after_seconds`, `retry_after_ms` or `retryAfterMs` field of a JSON error or from
+the Retry-After header, or "retry later" for a 429 or 503. With none of these, as for a plain-text error, it says
+`Error: no status or retry time given.` The model can also react through a shown field such as `error.code`. If the file can't be written, the model gets an error and none of the answer, never the answer as a
 fallback. An answer that is not JSON is filed the same way, every path showing `null`.
 
 The setting keeps the answer out of the tool's result, not out of the model's reach. The model's own file tools
