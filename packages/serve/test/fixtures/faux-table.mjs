@@ -75,3 +75,56 @@ export function fauxTable(script) {
   renameSync(temp, out);
   return out;
 }
+
+/** The entries over `builtins` of fauxEntries(`script`), except Goose's and Cursor's: each runs on its real ACP adapter
+ *  (@parcha/agentrun-harness-acp acpAdapter) over the package's fake ACP agent, as its own entry would on its installed
+ *  binary. The recipe is the harness's own (its recipe file: what it announces, its permission tie or allow file, its MCP
+ *  over HTTP, its limits), with the fake agent as its command, played in its style: Cursor's MCP calls ask permission and
+ *  are tied by their title, Goose's are allowed by its permission file. The model is the steps `script(spec)` gives,
+ *  told to the fake when the session opens. Neither the fake nor the stub proxy calls a model. */
+export function acpFakeEntries(script) {
+  const file = pathOf(script);
+  const faux = fauxEntries(script);
+  return (builtins) => {
+    const entries = faux(builtins);
+    for (const id of ["goose", "cursor"]) {
+      if (!entries[id]) continue;
+      entries[id] = {
+        ...entries[id],
+        adapter: async (env) => {
+          const [acp, { FAKE_ACP_AGENT }, module] = await Promise.all([import("@parcha/agentrun-harness-acp"), import("@parcha/agentrun-harness-acp/testing"), import(pathToFileURL(file).href)]);
+          const own = id === "cursor" ? acp.cursorRecipe({ command: process.execPath }) : acp.gooseRecipe({ command: process.execPath, model: "claude-sonnet-5-5" });
+          // Goose is billed through the host's model proxy: the fake calls no model, so its proxy lends no variables.
+          const proxy = own.billing.kind === "proxy" ? { proxy: async () => ({ env: {}, close: async () => {} }) } : {};
+          // The fake reads its config at its start: written in the session's own directory when the session opens.
+          const made = (config) => acp.acpAdapter({ recipe: { ...own, args: [FAKE_ACP_AGENT, config] }, ...proxy, env });
+          const checked = made("fake-agent.json");
+          return {
+            id: checked.id,
+            check: checked.check.bind(checked),
+            open: (spec, io) => {
+              const config = join(io.dir, "fake-agent.json");
+              const steps = module.script(spec).map((step) => ("call" in step ? { call: step.call, args: step.args ?? {} } : { say: step.say ?? "" }));
+              writeFileSync(config, JSON.stringify({ script: steps, load: own.declares.load, http: own.declares.mcp === "http", style: id }));
+              return made(config).open(spec, io);
+            },
+          };
+        },
+      };
+    }
+    return entries;
+  };
+}
+
+/** The path of a table module whose entries are acpFakeEntries(`script`). */
+export function acpFakeTable(script) {
+  const file = pathOf(script);
+  const dir = join(tmpdir(), "agentrun-faux-tables");
+  mkdirSync(dir, { recursive: true });
+  const out = join(dir, `acp-${createHash("sha256").update(file).digest("hex").slice(0, 16)}.mjs`);
+  const body = `import { acpFakeEntries } from ${JSON.stringify(import.meta.url)};\nexport const entries = acpFakeEntries(${JSON.stringify(file)});\n`;
+  const temp = `${out}.${process.pid}.tmp`;
+  writeFileSync(temp, body);
+  renameSync(temp, out);
+  return out;
+}

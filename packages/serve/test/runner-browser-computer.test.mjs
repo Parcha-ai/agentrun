@@ -6,7 +6,8 @@
 // signed-looking URL of pi-browser's fake page (fixtures/fake-ax-page); the model is a scripted origin. Each CLI harness
 // (claude-agent, codex, opencode, goose and cursor, on run-adapters' faux harness) is handed the same browser's tools as
 // host tools, on the same claim: a run's snapshot and click, its resume with a browser call in flight, the agent's
-// hand-over to the person and the person's own take-over in the live view, each on every one of them.
+// hand-over to the person and the person's own take-over in the live view, each on every one of them. Goose and Cursor
+// also run the snapshot and click on their own ACP adapter, with the ACP package's fake agent as their binary.
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +19,7 @@ import { readBackOf } from "@parcha/agentrun-computer";
 import { fakeAxPage } from "../../pi-browser/test/fixtures/fake-ax-page.mjs";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { fauxTable } from "./fixtures/faux-table.mjs";
+import { acpFakeTable, fauxTable } from "./fixtures/faux-table.mjs";
 import { connect as wsConnect } from "./fixtures/ws-client.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
@@ -178,13 +179,13 @@ const CLI = Object.keys(CLI_HARNESSES);
  *  tools `tools`, on run-adapters' faux harness (fauxTable) whose model is a faux gateway: `start(name, timing)` starts a runner on
  *  it through the runner's dispatch, `rested()` waits for the run's row to rest and reads its timeline and the tool lists
  *  its harness was handed. */
-async function cliClaim(t, harness, cdpUrl, record, tools, instructions = "Snapshot the browser and click its Add button.") {
+async function cliClaim(t, harness, cdpUrl, record, tools, instructions = "Snapshot the browser and click its Add button.", table = fauxTable(FAUX_HARNESS)) {
   const gw = await startFauxGateway();
   t.after(() => gw.close());
   const { model, env: gatewayEnv } = CLI_HARNESSES[harness];
   const opened = await storeWith(t, { harness, instructions, tools, computer: BROWSER_COMPUTER }, { ...PI_LAUNCH, harness, model });
   const handed = join(opened.dir, "handed.jsonl");
-  const env = { ...gatewayEnv(gw.url), AGENTRUN_HARNESS_TABLE: fauxTable(FAUX_HARNESS), NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1", AGENTRUN_TEST_FAUX_HARNESS_OPENED: handed };
+  const env = { ...gatewayEnv(gw.url), AGENTRUN_HARNESS_TABLE: table, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1", AGENTRUN_TEST_FAUX_HARNESS_OPENED: handed };
   const prior = process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED;
   process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED = handed;
   t.after(() => (prior === undefined ? delete process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED : (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED = prior)));
@@ -213,8 +214,8 @@ async function cliClaim(t, harness, cdpUrl, record, tools, instructions = "Snaps
 }
 
 /** A run of `cliClaim` on one runner, to its rest. */
-async function cliRun(t, harness, page, record, tools) {
-  const claim = await cliClaim(t, harness, `${page.url}?${SIGNED}`, record, tools);
+async function cliRun(t, harness, page, record, tools, table) {
+  const claim = await cliClaim(t, harness, `${page.url}?${SIGNED}`, record, tools, undefined, table);
   claim.start("runner-a");
   return claim.rested(page);
 }
@@ -282,12 +283,16 @@ test("the adapter harnesses driven here are every one the table has: the browser
   }
 });
 
-for (const harness of CLI) for (const [how, tools] of [["granted the browser", ["read", "browser"]], ["with no grant of the browser", ["read"]]]) {
-  test(`${harness}: an agent whose computer is a Browserbase browser, ${how}, runs: the harness is handed the browser's tools, and its snapshot and click reach the browser the claim started`, { timeout: 120_000 }, async (t) => {
+// Goose and Cursor on their own ACP adapter (acpFakeTable): the harness's recipe, with the ACP package's fake agent as its
+// binary, so the browser's tools reach the agent as the real one gets them (the adapter's loopback MCP server, named in
+// session/new) and its calls of them pass the harness's own permission path (Cursor's title tie, Goose's permission file).
+const RUNS_ON = [...CLI.map((harness) => [harness, "", undefined]), ...["goose", "cursor"].map((harness) => [harness, " on its own ACP adapter (the fake ACP agent as its binary)", acpFakeTable(FAUX_HARNESS)])];
+for (const [harness, on, table] of RUNS_ON) for (const [how, tools] of [["granted the browser", ["read", "browser"]], ["with no grant of the browser", ["read"]]]) {
+  test(`${harness}${on}: an agent whose computer is a Browserbase browser, ${how}, runs: the harness is handed the browser's tools, and its snapshot and click reach the browser the claim started`, { timeout: 120_000 }, async (t) => {
     const page = await fakeAxPage();
     t.after(() => page.close());
     const record = { created: [], released: [], connects: 0 };
-    const { row, timeline, lists } = await cliRun(t, harness, page, record, tools);
+    const { row, timeline, lists } = await cliRun(t, harness, page, record, tools, table);
 
     assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
     for (const name of ["snapshot", "run"]) assert.ok(lists.length > 0 && lists.every((list) => list.filter((one) => one === name).length === 1), `the harness is handed ${name} once: ${JSON.stringify(lists)}`);
