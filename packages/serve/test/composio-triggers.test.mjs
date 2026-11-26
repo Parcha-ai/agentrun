@@ -211,13 +211,27 @@ for (const [blank, said] of [[" ", "a space"], ["", "empty"]]) {
     assert.equal(events.status, 200, JSON.stringify(events.body));
     const listed = await s.api("GET", "/settings/mcp-servers/gh/composio/triggers");
     assert.equal(listed.status, 200, JSON.stringify(listed.body));
-    // Its delete waits for the create's turn: it checks who uses the server only once the create is saved or undone.
-    let answered = false;
-    const removed = s.api("DELETE", "/settings/mcp-servers/gh").then((res) => ((answered = true), res));
-    await new Promise((r) => setTimeout(r, 1000));
-    assert.equal(answered, false, "the delete waits for the create holding the project's turn");
+    // Its delete waits for the create's turn: it checks who uses the server only once the create is saved or undone. Each
+    // step that takes a project's turn from here (composio-triggers.ts serial, the server's own instance of the class) is
+    // seen as it takes its place, and says as it begins whether the create's upsert was let go: a delete that takes its
+    // place is seen at once, and one that skips the turn answers instead, each with no clock.
+    assert.equal(typeof ComposioTriggers.prototype.serial, "function", "the project's turn is taken by ComposioTriggers' serial, the method seen below");
+    const { serial } = ComposioTriggers.prototype;
+    t.after(() => void (ComposioTriggers.prototype.serial = serial));
+    let released = false;
+    const began = [];
+    let placed;
+    const inTurn = new Promise((resolve) => (placed = resolve));
+    ComposioTriggers.prototype.serial = function (key, step) {
+      placed();
+      return serial.call(this, key, () => (began.push(released), step()));
+    };
+    const removed = s.api("DELETE", "/settings/mcp-servers/gh");
+    assert.equal(await Promise.race([inTurn.then(() => "in the project's turn"), removed.then(() => "answered")]), "in the project's turn", "the delete takes its place in the project's turn, behind the create holding it, never answered past it");
+    released = true;
     upsert.release();
     const [made, gone] = await Promise.all([create, removed]);
+    assert.ok(began.length > 0 && began.every(Boolean), `each step in the project's turn, the delete's among them, began only once the create's upsert was let go: ${JSON.stringify(began)}`);
     // The create finds the row's user blank on its re-check and undoes what it made; the delete then finds no trigger.
     assert.deepEqual([made.status, made.body.error?.fields?.map((f) => f.field)], [422, ["source.server"]], JSON.stringify(made.body));
     assert.ok(gone.status < 300, JSON.stringify(gone.body));
@@ -768,6 +782,30 @@ test("the capabilities say whether this server has a public address Composio can
   const caps = (await s.api("GET", "/capabilities")).body;
   assert.equal(caps.features.triggers.public_url, true);
   assert.ok(!JSON.stringify(caps).includes("agentrun.example.com"), "the address itself is not answered");
+});
+
+test("a saved Composio server's own routes send Composio no user: its events, its triggers, the subscription's rotate and delete, and the server's delete in the project's turn each ask by the key alone", async (t) => {
+  const s = await setup(t);
+  // What each route asked Composio, apart from the trigger's own create and delete, which send the server's user.
+  const routed = [];
+  const route = async (step, ...args) => {
+    const from = s.composio.calls.length;
+    const res = await s.api(...args);
+    routed.push(...s.composio.calls.slice(from).map((call) => ({ step, ...call })));
+    return res;
+  };
+  const one = (await s.api("POST", "/triggers", issueTrigger())).body;
+  assert.ok(one.id, JSON.stringify(one));
+  assert.equal((await route("events", "GET", "/settings/mcp-servers/gh/composio/events")).status, 200);
+  assert.equal((await route("triggers", "GET", "/settings/mcp-servers/gh/composio/triggers")).status, 200);
+  assert.equal((await route("rotate", "POST", "/settings/mcp-servers/gh/composio/rotate-secret")).status, 200);
+  assert.equal((await s.api("DELETE", `/triggers/${one.id}`)).status, 204);
+  assert.equal((await route("forget", "DELETE", "/settings/mcp-servers/gh/composio/subscription")).status, 200);
+  assert.ok((await route("delete", "DELETE", "/settings/mcp-servers/gh")).status < 300);
+  // Each route asked Composio something, so none of the checks below holds by asking nothing.
+  assert.deepEqual([...new Set(routed.map(({ step }) => step))], ["events", "triggers", "rotate", "forget", "delete"], `each route asked Composio: ${JSON.stringify(routed.map(({ step, method, path }) => `${step} ${method} ${path}`))}`);
+  const sentUser = routed.filter(({ query, body }) => Object.hasOwn(query ?? {}, "user_id") || Object.hasOwn(query ?? {}, "user_ids") || JSON.stringify(body ?? {}).includes('"user_id"'));
+  assert.deepEqual(sentUser.map(({ step, method, path }) => `${step} ${method} ${path}`), [], "no route sends Composio a user_id, in its query or its body");
 });
 
 test("rotate keeps the new secret: the old one signs nothing from then on; the subscription is deleted only once no trigger uses it", async (t) => {
