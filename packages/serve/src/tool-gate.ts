@@ -42,7 +42,7 @@ import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js
 import { formatToolName, isCatalogName, mcpNameOf, mcpToolName, monidNameOf } from "./tool-names.js";
 import { filedFolders } from "./filed-tool.js";
 import { foldName } from "./home-path.js";
-import { savePath, WEB_SAVE_TOOL } from "./web-save.js";
+import { savePath, WEB_SAVE_TOOL } from "./web-save-path.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
