@@ -208,12 +208,12 @@ const RECOVER_GAP_MS = 2_000;
  * that lists late and the reads below wait at most until half of `ms` has passed, each wait RECOVER_GAP_MS or what is
  * left of that half, so the release keeps the other half. Where `made` reads the request's browsers (ended ones
  * included), each found browser's request is read, again after a failed read, and one that cannot be read is kept: a
- * failed read says nothing of who holds it. One left to another create's converge (leftToConverge) is kept at once
- * when a newer one has ended (convergeSettled), as a converge that answers it ends its own first; otherwise it is read
- * again, every RECOVER_GAP_MS within that half (once at least), and kept once a newer one has ended or a read fails or
- * misses a browser the first read listed. One whose newer browsers all still run at the end was answered by no converge
- * (each kept its own) and is released. The words say what became of them, for the create's failure; they never carry a
- * URL.
+ * failed read says nothing of who holds it. One older than a browser of its request that has ended (convergeSettled) is
+ * kept at once, even when an older one runs, as a converge that answers it ends its own first and one whose list missed
+ * the older may have answered it. One left to another create's converge (leftToConverge) is otherwise read again,
+ * every RECOVER_GAP_MS within that half (once at least), and kept once a newer one has ended or a read fails or misses
+ * a browser the first read listed. One whose newer browsers all still run at the end was answered by no converge (each
+ * kept its own) and is released. The words say what became of them, for the create's failure; they never carry a URL.
  */
 export async function recoverCreate(
 	what: string,
@@ -238,15 +238,16 @@ export async function recoverCreate(
 	for (const id of found.value) {
 		let unanswered = false;
 		if (made !== undefined) {
-			const read = await firstRead(made, signal, sleep, settleBy, reads);
+			const read = await firstRead(made, signal, sleep, settleBy, Math.max(1, Math.ceil(ms / 2 / RECOVER_GAP_MS)));
 			if (read === undefined) {
 				words.push(`the ${what} it made (${id}) may be one another create of its request answered, and the request's browsers could not be read, so nothing says who holds it: it is left running, at most to its lifetime, and its labels let a sweep find it`);
 				continue;
 			}
-			if (leftToConverge(id, read)) {
-				const settled = convergeSettled(id, read) === "answered" ? "answered" : await settle(id, made, signal, sleep, settleBy, reads);
+			const answered = convergeSettled(id, read) === "answered";
+			if (answered || leftToConverge(id, read)) {
+				const settled = answered ? "answered" : await settle(id, made, signal, sleep, settleBy, reads);
 				if (settled === "answered") {
-					words.push(`the ${what} it made (${id}) is its request's oldest and a newer one has ended, as a create's converge ends its own when it answers the older: it is left running for that create, and if that create did not answer it (aborted, or failed once its own had ended, or its reply lost too) it runs to its lifetime, and its labels let a sweep find it`);
+					words.push(`the ${what} it made (${id}) is older than one of its request that has ended, as a create's converge ends its own when it answers an older one: it is left running for that create, and if that create did not answer it (aborted, or failed once its own had ended, or its reply lost too) it runs to its lifetime, and its labels let a sweep find it`);
 					continue;
 				}
 				if (settled === "unread") {
@@ -276,15 +277,19 @@ async function waitWithin(sleep: (ms: number) => Promise<void>, by: number, sign
 	return true;
 }
 
-/** The request's browsers, read until a read answers, `reads` times at most and waiting no later than `by`: undefined when none did. */
+/**
+ * The request's browsers, read at once and then again after each failed read, `retries` times at most, each after a
+ * wait that ends no later than `by` (waitWithin): so a window shorter than two gaps still tries again while time is left.
+ * Undefined when no read answered.
+ */
 async function firstRead(
 	made: (signal: AbortSignal) => Promise<Result<MadeBrowser[]>>,
 	signal: AbortSignal,
 	sleep: (ms: number) => Promise<void>,
 	by: number,
-	reads: number,
+	retries: number,
 ): Promise<MadeBrowser[] | undefined> {
-	for (let read = 0; read < reads; read++) {
+	for (let read = 0; read <= retries; read++) {
 		if (read > 0 && !(await waitWithin(sleep, by, signal))) break;
 		const got = await made(signal);
 		if (got.ok) return got.value;

@@ -2666,8 +2666,8 @@ that one, and its converge may answer the older. A converge that answers the old
 newer browser has ended, the lost create's is left running for that create, at once when the first read shows it.
 Otherwise the request's browsers are read again, every 2 s for up to half of `cleanupMs` (once at least, and sooner
 when that half is under 2 s). While every newer one still runs, no converge has answered it (each such create kept its
-own), and at the end it is released. A newer one that has ended counts before an older one that runs, since a converge
-whose list missed the older may have answered it. A read that fails, or a read again that misses the lost create's
+own), and at the end it is released. On the first read as on every later one, a newer one that has ended counts before
+an older one that runs, since a converge whose list missed the older may have answered it. A read that fails, or a read again that misses the lost create's
 browser or every newer one, says nothing of who holds it and leaves it running; a first read that fails is tried again
 within the same half before that. The search's own retries, for a vendor that lists a browser late, wait within that
 half too, so the release keeps the other half.
