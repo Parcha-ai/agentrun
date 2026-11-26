@@ -2672,6 +2672,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
   await probe("start");
+  // What a stop left in the ChatGPT sign-in's row (a sign-in saved, its models unlisted or the sign-in it replaced not
+  // yet revoked) is settled now, out of the start's way, once the first offers are made: models it lists make them
+  // again (keysChanged). The server's alone: a runner's reader never settles.
+  plan.settleLeft();
   // Under faux, a key the server starts with is checked only against a check's own fake (fauxBrowserbase,
   // fauxMonidCheck, fauxKernel): the fakes the runs use (monid, Parallel, Jev) see the runs' calls alone, and a key with no check fake
   // is not checked.
