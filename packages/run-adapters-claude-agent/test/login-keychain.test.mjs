@@ -319,21 +319,26 @@ test("on macOS the sign-in this host starts saves its Keychain item under the ac
 // The CLI's own sign-out (claudeLogout) names the user the sign-in named (loginUser), so it deletes the item under the
 // account the sign-in saved it under, whatever USER the server was started with: with the server's USER it would ask
 // for the account "unknown" (none set) or another user's, find nothing, and leave the login in the Keychain.
-test("on macOS the CLI's own sign-out deletes the Keychain item under the account the sign-in saved it under, whatever USER the server was started with: no item is left, and the status check reads signed out", { skip }, async () => {
+// An earlier sign-in with no USER left an item under "unknown" too, and the person then signed in with the shown line in
+// their terminal, which runs no drop of that item (the sign-in this host starts would, on a Mac, before the sign-out).
+// So no delete has run before the sign-out, on any host: at AgentRun's own folder the sign-out deletes the "unknown"
+// item after the CLI's own; at the person's own CLI's places it leaves it, as it may be theirs.
+test("on macOS the CLI's own sign-out deletes the Keychain item under the account the sign-in saved it under, whatever USER the server was started with, and at AgentRun's own folder the item a sign-in left under \"unknown\" after it: the status check reads signed out", { skip }, async () => {
   for (const [place, at] of Object.entries(PLACES)) {
     for (const [how, user] of Object.entries(SERVER_USER)) {
       const m = mac();
       const login = at(m);
       const where = `${place}, the server's USER ${how}`;
+      assert.equal(spawnSync(m.cli, ['auth', 'login'], { env: { PATH: m.path, HOME: m.home, ...claude.claudeSignInEnv(login) } }).status, 0, `${where}: a sign-in with no USER`);
+      const [[, service]] = keychain(m);
+      WAYS['the shown line, run in their terminal'](m, login);
+      const items = () => keychain(m).map((item) => JSON.stringify(item)).sort();
+      assert.deepEqual(items(), [JSON.stringify([KEYCHAIN_ACCOUNT, service]), JSON.stringify(['unknown', service])].sort(), `${where}: the person's item under the account ${KEYCHAIN_ACCOUNT} and the one under "unknown"`);
+      assert.deepEqual(m.deleted(), [], `${where}: no delete ran before the sign-out`);
       await withServerUser(user, () => asServerOf(m, async () => {
-        await WAYS['the sign-in this host starts'](m, login);
-        assert.deepEqual(m.asked().filter(([command]) => command === 'add-generic-password'), [['add-generic-password', KEYCHAIN_ACCOUNT]], `${where}: the sign-in saved its item under the account ${KEYCHAIN_ACCOUNT}`);
-        // On a Mac the sign-in's own drop of an "unknown" item may come first; only the sign-out's deletes count here. At
-        // AgentRun's own folder the sign-out drops the item a sign-in left under "unknown" too, after the CLI's own.
-        const before = m.deleted().length;
         assert.equal(await claude.claudeLogout(m.cli, login, { path: m.path, platform: 'darwin' }), true, `${where}: the CLI confirmed its sign-out`);
-        assert.deepEqual(m.deleted().slice(before), [['delete-generic-password', KEYCHAIN_ACCOUNT], ...(login.own ? [['delete-generic-password', 'unknown']] : [])], `${where}: the sign-out deleted under the account ${KEYCHAIN_ACCOUNT}${login.own ? ', then under "unknown"' : ''}`);
-        assert.equal(m.items(), 0, `${where}: no Keychain item is left after the sign-out`);
+        assert.deepEqual(m.deleted(), [['delete-generic-password', KEYCHAIN_ACCOUNT], ...(login.own ? [['delete-generic-password', 'unknown']] : [])], `${where}: the sign-out deleted under the account ${KEYCHAIN_ACCOUNT}${login.own ? ', then under "unknown"' : ''}`);
+        assert.deepEqual(items(), login.own ? [] : [JSON.stringify(['unknown', service])], `${where}: after the sign-out ${login.own ? 'no Keychain item is left' : 'the item under "unknown" alone is left'}`);
         assert.deepEqual(await status(m, login), { signedIn: false, method: 'none' }, `${where}: the status check after the sign-out`);
       }));
       assert.equal(plainStatus(m, claude.claudeSignInEnv(login)), false, `${where}: the person's own \`claude auth status\` in their terminal (USER ${ACCOUNT}) after the sign-out`);
