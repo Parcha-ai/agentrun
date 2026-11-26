@@ -21,7 +21,7 @@ const PAGE: TimelinePage = {
   unchanged: false, final: true, has_more: false, next_after: 0,
 };
 const LEARNING: NonNullable<RunLearningRead> = {
-  run: RUN.run_id, state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", at: "2026-11-11T10:00:09Z", seed: "a".repeat(40), merged: null,
+  run: RUN.run_id, state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", at: "2026-11-11T10:00:09Z", seed: "a".repeat(40), seed_failed: null, seed_waited: null, learned_chars: 0, merged: null,
   workflows: [], corrections: 0, dropped_lines: 0, problems: [], compiled: null, draft_errors: [],
   used: { workflows: [{ name: "check-refunds", calls: 3, failed: 1 }, { name: "find-policies", calls: 1, failed: 0 }] },
 };

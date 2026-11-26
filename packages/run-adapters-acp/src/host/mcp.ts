@@ -156,7 +156,7 @@ export async function startMcpServer(options: McpServerOptions): Promise<McpServ
 
   async function call(id: unknown, params: Record<string, unknown>, req: IncomingMessage, res: ServerResponse): Promise<void> {
     const name = typeof params.name === "string" ? params.name : "";
-    if (!known.has(name)) return json(res, 200, { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `unknown tool: ${name.slice(0, 80)}` }], isError: true } });
+    if (!known.has(name)) return json(res, 200, { jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `tool ${JSON.stringify(name.slice(0, 80))} isn't granted to this agent` }], isError: true } });
     const args = isPlain(params.arguments) ? params.arguments : {};
     const meta = isPlain(params._meta) ? params._meta : {};
     const token = typeof meta.progressToken === "string" || typeof meta.progressToken === "number" ? meta.progressToken : undefined;
