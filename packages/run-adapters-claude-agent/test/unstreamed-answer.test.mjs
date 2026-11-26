@@ -99,6 +99,18 @@ test('two whole messages with different ids in one turn: a text_end between them
   assert.deepEqual(live, [{ type: 'text', delta: 'First.' }, { type: 'text_end' }, { type: 'text', delta: 'Second.' }]);
 });
 
+test('a no-id retry of two blocks whose first is exactly what streamed before the stall: one message, no text_end before its second block', () => {
+  const noId = (block) => ({ type: 'assistant', parent_tool_use_id: null, message: { role: 'assistant', content: [block] } });
+  const { b, live, entries } = builder();
+  b.observe(event({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'The answer ' } }));
+  b.observe(noId({ type: 'text', text: 'The answer ' }));
+  b.observe(noId({ type: 'text', text: 'is done.' }));
+  b.endTurn(b.observe(result));
+  assert.deepEqual(live, [{ type: 'text', delta: 'The answer ' }, { type: 'text', delta: 'is done.' }]);
+  // The transcript keeps it as one message of its two blocks, as it keeps any message's.
+  assert.deepEqual(entries.filter((entry) => entry.type === 'message'), [{ type: 'message', role: 'assistant', text: 'The answer \n\nis done.' }]);
+});
+
 test('messages with no id: a whole one of two blocks is one message live; a streamed one says nothing more; a stalled partial answered whole goes on from it', () => {
   const noId = (block) => ({ type: 'assistant', parent_tool_use_id: null, message: { role: 'assistant', content: [block] } });
   const whole = builder();

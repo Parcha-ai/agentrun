@@ -212,7 +212,12 @@ export class TranscriptBuilder {
     this.partial = '';
     const streamed = id === undefined ? this.unclaimed && text === partial : this.streamed.has(id);
     this.unclaimed = false;
-    if (streamed) return;
+    // A block whose text streamed is said already, and is still this message's: a whole block after it, with no delta
+    // between, is more of it (a retry's first block that says exactly what its stalled stream did, then the rest).
+    if (streamed) {
+      this.whole = { id };
+      return;
+    }
     const more = this.whole !== undefined && this.whole.id === id;
     const goesOn = !more && !this.cutPending && partial !== '' && text.startsWith(partial);
     if (!goesOn && (this.cutPending || (this.saying && !more))) this.sink.live({ type: 'text_end' });
