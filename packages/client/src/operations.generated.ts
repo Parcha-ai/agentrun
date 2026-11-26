@@ -1337,6 +1337,7 @@ export type Features = {
     answer: boolean;
     follow_up: boolean;
     steer_workflow_runs: boolean;
+    said?: boolean;
   };
   timeline: {
     long_poll: boolean;

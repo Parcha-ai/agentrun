@@ -25,7 +25,7 @@ import { CALL_MS, PROTOCOL_METHODS } from "./computer-channel.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESS_ID_PATTERN, HARNESSES } from "./harness.js";
 import { HARNESS_KEY_REENTER } from "./server-keys.js";
-import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
+import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE, SAID_MAX } from "./learning.js";
 import { AUDIT_DEFAULTS, AUDIT_MAX, REPICK_MAX_CHARS_DEFAULT, REPICK_MAX_CHARS_MAX } from "./learning-setting.js";
 import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS, WORKFLOW_CALL_OUTCOMES, WORKFLOW_CALLERS } from "./learning-cost.js";
 import { FEEDBACK_ROUNDS, FEEDBACK_STATUSES } from "./runner/feedback-round.js";
@@ -4189,7 +4189,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   MessageCreate: {
     // messagesaid/1: the person's own words beside a host's text, for learning.
-    said: { type: "string", minLength: 1, pattern: "\\S", description: "The person's own words, when `content` is a host's text around them (a preamble, an earlier report, turn instructions): what the run's learning keeps of this message (a correction appended to the agent's corrections.md, and a follow-up in its compile turn's traces), in place of `content`. The model gets `content` only, never `said`. Absent, learning keeps `content`, as before. At most `limits.max_message_chars`, not only whitespace: else 422 `input_invalid` at `said` (reason `wrong_type` or `too_long`), nothing written. Cut of the run's held secrets as `content` is.", "x-agentrun-serve": "messagesaid/1" },
+    said: { type: "string", minLength: 1, maxLength: SAID_MAX, pattern: "\\S", description: `The person's own words, when \`content\` is a host's text around them (a preamble, an earlier report, turn instructions): what the run's learning keeps of this message (the one line it appends to the agent's corrections.md, and the follow-up in its compile turn's traces), in place of \`content\`. The model gets \`content\` only, never \`said\`; \`said\` need not appear inside it. Absent, learning keeps \`content\`, as before. 422 \`input_invalid\` at \`said\`, nothing written: reason \`wrong_type\` when it is not a string, \`empty\` when it is empty after trimming, \`too_long\` past ${SAID_MAX} characters. Text shaped like a secret is not refused here: the learning's checks refuse its line, as any correction's. Offered where \`features.messages.said\` is true.`, "x-agentrun-serve": "messagesaid/1" },
     model_key:{ ...RUN_MODEL_KEY, description: `${RUN_MODEL_KEY.description as string} On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 \`model_key_required\` and nothing is written.` },
     mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Replaces the run's handed credentials in the message's own write (a follow-up that opens an ended run again hands its turn's), so the turn the message starts calls with them. A run handed none calls a per_run server's tools refused, nothing sent.` },
     keys: { ...RUN_TOOL_KEYS, description: `${RUN_TOOL_KEYS.description as string} On a message they replace the run's keys in the message's own write, read from the run's next claim on (a turn still going keeps the keys it opened); a message without them keeps the keys the run holds, which are none once its last turn ended.` },
@@ -4862,7 +4862,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     list: { type: "boolean", description: "`GET /runs`.", "x-agentrun-serve": "serve/1" },
     kinds: { type: "array", items: { enum: ["agentic", "workflow"] }, description: "The kinds of run this server starts.", "x-agentrun-serve": "serve/1" },
   },
-  "Features/timeline": { live_workflow_rows: { type: "boolean", description: "Whether a workflow run's rows arrive while it runs.", "x-agentrun-serve": "serve/1" } },
+  "Features/messages": { said: { type: "boolean", description: "Whether `POST /runs/{run_id}/messages` takes `said`: the person's own words beside a host's `content`, which the run's learning keeps in place of `content`.", "x-agentrun-serve": "messagesaid/1" } },
+  "Features/timeline": { live_workflow_rows:{ type: "boolean", description: "Whether a workflow run's rows arrive while it runs.", "x-agentrun-serve": "serve/1" } },
 };
 
 /** What a run refused `409 agent_not_runnable` holds in `error.details` here: what keeps its revision from running

@@ -143,6 +143,8 @@ test("an API-only server serves a run's routes with the token", async (t) => {
   // Whether a per-run Composio server here takes each run's own account (composioperrun/1), read by the backend in
   // front from this answer: the API document stays refused here.
   assert.equal(capabilities.body.features.mcp_client.composio_per_run, true, "the per-run Composio binding is said");
+  // A message's said (messagesaid/1), which the backend in front reads here before it sends one.
+  assert.equal(capabilities.body.features.messages.said, true, "a message's said is offered");
   assert.equal((await send(server, "GET", "/v2/openapi.json")).status, 404, "the API document is not served here");
   const runs = await send(server, "GET", "/v2/runs");
   assert.equal(runs.status, 200, `the runs list: ${JSON.stringify(runs.body)}`);

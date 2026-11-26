@@ -131,6 +131,9 @@ export function shortOf<T extends { state: LearningState; reason: LearningReason
 }
 /** The label of the end-of-run turn's timeline rows, and the kind and label of a run's learning row. */
 export const LEARNING_LABEL = "learning";
+/** The most characters a message's `said` holds (POST /runs/{id}/messages): the person's own words beside a host's
+ *  `content`, which the run's learning keeps as one line of corrections.md. */
+export const SAID_MAX = 4_000;
 
 /** A message a trigger sent the run that its owner did not write (a webhook body, a Slack or GitHub event), by its
  *  source: never what the user said. */

@@ -8903,11 +8903,15 @@ class FeaturesRuns(_FeaturesRunsRequired, _FeaturesRunsOptional):
     pass
 
 
-class FeaturesMessages(TypedDict):
+class _FeaturesMessagesRequired(TypedDict):
     steer: bool
     answer: bool
     follow_up: bool
     steer_workflow_runs: bool
+
+
+class FeaturesMessages(_FeaturesMessagesRequired, total=False):
+    said: bool
 
 
 class _FeaturesTimelineRequired(TypedDict):

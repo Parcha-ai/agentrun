@@ -2,8 +2,9 @@
 // question, turn instructions, a language line), sent with `said`: the person's own words. The model gets `content`
 // exactly; learning keeps `said` as the correction (runner/learning-end.ts ownerWords), so corrections.md holds the
 // person's short lines, never the host's text, and the agent's next run is told each under # Learned. A message with no
-// `said` keeps its whole `content`, as before. A `said` that is not a non-empty string of at most max_message_chars is
-// refused, 422 input_invalid on the field `said`, and nothing is written.
+// `said` keeps its whole `content`, as before. A `said` that is not a string, is empty after trimming, or is past 4,000
+// characters is refused, 422 input_invalid on the field `said`, and nothing is written. GET /capabilities says the server
+// takes it: features.messages.said.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
@@ -80,19 +81,23 @@ test("a follow-up with no said: its whole content is the correction, as before",
   assert.equal((await learningAt(store, "walk")).text("corrections.md"), line(content), "the whole content, folded to one line");
 });
 
-test("a said that is not a non-empty string of at most max_message_chars is refused, 422 input_invalid on said, nothing written", { timeout: 120_000 }, async (t) => {
+test("the server says it takes said (features.messages.said); a said that is not a string, empty after trimming or past 4,000 characters is refused, 422 input_invalid on said, nothing written; one of 4,000 that content does not hold is taken", { timeout: 120_000 }, async (t) => {
   const { api, store } = await serve(t, { learning: "on", faux: LEARN });
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.deepEqual(caps.features.messages, { steer: true, answer: true, follow_up: true, steer_workflow_runs: false, said: true }, JSON.stringify(caps.features.messages));
   await made(api, learner("refused"));
   const runId = await started(api, "refused", "Classify Acme Diner.");
   await ended(api, runId);
-  const limit = (await api("GET", "/capabilities")).body.limits.max_message_chars;
   const steers = async () => (await store.commands(runId, 0)).filter((command) => command.kind === "steer").length;
   const before = await steers();
-  for (const [said, reason] of [["", "wrong_type"], ["  \n ", "wrong_type"], [42, "wrong_type"], [null, "wrong_type"], [["words"], "wrong_type"], ["x".repeat(limit + 1), "too_long"]]) {
+  for (const [said, reason] of [["", "empty"], ["  \n ", "empty"], [42, "wrong_type"], [null, "wrong_type"], [["words"], "wrong_type"], ["x".repeat(4_001), "too_long"]]) {
     const sent = await api("POST", `/runs/${runId}/messages`, { content: host(FIRST), said });
     assert.equal(sent.status, 422, `${JSON.stringify(said).slice(0, 40)}: ${JSON.stringify(sent.body).slice(0, 300)}`);
     assert.equal(sent.body.error?.code, "input_invalid", JSON.stringify(sent.body).slice(0, 300));
     assert.deepEqual(sent.body.error?.fields?.map((issue) => [issue.field, issue.reason]), [["said", reason]], JSON.stringify(sent.body).slice(0, 300));
   }
   assert.equal(await steers(), before, "no refused message was written");
+  const taken = await api("POST", `/runs/${runId}/messages`, { content: host(FIRST), said: "y".repeat(4_000) });
+  assert.equal(taken.status, 202, JSON.stringify(taken.body).slice(0, 300));
+  assert.equal(await steers(), before + 1, "the message was written");
 });
