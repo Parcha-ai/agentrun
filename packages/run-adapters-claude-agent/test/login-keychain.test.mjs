@@ -5,8 +5,9 @@
 // "not signed in" after every sign-in, and its runs were refused. CI has no macOS, so these stand-ins are what holds it:
 // - `security`: one keychain file, `$HOME/Library/Keychains/login.keychain-db`. In a home without one it finds and keeps
 //   nothing.
-// - `claude`: `auth login` keeps a token in the item the pinned CLI would name and writes the account file; `auth status`
-//   says whether it finds that item. It has no plaintext fallback: a sign-in that reaches no keychain fails.
+// - `claude`: `auth login` keeps a token in the item the pinned CLI would name (its suffix hashes the credentials dir in
+//   Unicode's composed form, NFC, as the CLI does) and writes the account file; `auth status` says whether it finds
+//   that item. It has no plaintext fallback: a sign-in that reaches no keychain fails.
 //   The item's account is the pinned CLI's too: `$USER`, else `os.userInfo().username`. That CLI is a Bun binary, and
 //   Bun's userInfo reads `$USER` as well, and says "unknown" without it (Node's reads the user database): so a CLI
 //   started with no USER saves and reads its tokens under the account "unknown", where a terminal's `claude`, which has
@@ -16,6 +17,7 @@
 // The stand-ins lead every PATH here and every home is a temporary one, so no real Keychain or login is touched.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
@@ -63,7 +65,8 @@ const env = process.env;
 const configDir = env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude');
 const secure = env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
 const bare = secure !== undefined ? !secure : !env.CLAUDE_CONFIG_DIR;
-const item = 'Claude Code-credentials' + (bare ? '' : '-' + createHash('sha256').update(secure !== undefined ? secure : configDir).digest('hex').slice(0, 8));
+// The CLI hashes the credentials dir in Unicode's composed form, as its source does: .normalize("NFC") of the variable.
+const item = 'Claude Code-credentials' + (bare ? '' : '-' + createHash('sha256').update(secure !== undefined ? secure.normalize('NFC') : configDir).digest('hex').slice(0, 8));
 const bunUsername = env.USER ?? 'unknown';
 const named = env.USER || bunUsername;
 const user = /^[a-zA-Z0-9._-]+$/.test(named) ? named : 'claude-code-user';
@@ -487,11 +490,12 @@ test('on macOS a drop of the "unknown" item that throws before its delete starts
   }
 });
 
-/** A Mac where a sign-in with no USER left an item under "unknown" at AgentRun's own folder and the person then signed
- *  in from their terminal, so the item under their account is there too: the case the drop deletes in. */
-function leftUnknown() {
+/** A Mac where a sign-in with no USER left an item under "unknown" at AgentRun's own folder (`at`, default the one in
+ *  PLACES) and the person then signed in from their terminal, so the item under their account is there too: the case
+ *  the drop deletes in. */
+function leftUnknown(at = PLACES["AgentRun's own folder"]) {
   const m = mac();
-  const login = PLACES["AgentRun's own folder"](m);
+  const login = at(m);
   assert.equal(spawnSync(m.cli, ['auth', 'login'], { env: { PATH: m.path, HOME: m.home, ...claude.claudeSignInEnv(login) } }).status, 0, 'a sign-in with no USER');
   const [[, service]] = keychain(m);
   WAYS['the shown line, run in their terminal'](m, login);
@@ -770,3 +774,55 @@ test('on macOS the Keychain service the harness names for AgentRun\'s own folder
   assert.equal(claude.claudeKeychainService(left.login), service, 'the harness names the service the item under "unknown" has');
   assert.equal(claude.claudeKeychainService(PLACES["this machine's login on the CLI's default folder"](left.m)), undefined, "the CLI's default folder's item has no suffix, and the harness names none for it");
 });
+
+// The CLI hashes the credentials dir in Unicode's composed form (NFC). A folder whose path holds a decomposed character
+// (NFD: "e" and a combining acute accent, as a folder name from macOS's Finder may have) names the same item as the
+// composed one. A delete by the decomposed form's hash finds nothing ("not found", 44), so the sign-out would answer
+// the item gone while it stays.
+const COMPOSED = 'Café';
+const DECOMPOSED = 'Café';
+/** AgentRun's own folder, under the folder `name` in the person's home. */
+const ownUnder = (name) => (m) => ({ dir: join(m.home, name, 'claude-login'), profiles: join(m.home, name, 'claude-login', 'anthropic'), userHome: m.home, own: true });
+/** The service the CLI names for a credentials dir `folder` that is already in its composed form. */
+const serviceOf = (folder) => `Claude Code-credentials-${createHash('sha256').update(folder).digest('hex').slice(0, 8)}`;
+
+test('on macOS the Keychain service the harness names for a folder whose path has a decomposed character is the one the CLI names, from the composed form', { skip }, async () => {
+  const m = mac();
+  const decomposed = ownUnder(DECOMPOSED)(m);
+  const composed = ownUnder(COMPOSED)(m);
+  assert.notEqual(decomposed.dir, composed.dir, 'the two paths differ as strings');
+  assert.equal(decomposed.dir.normalize('NFC'), composed.dir, 'the composed form of the one is the other');
+  assert.notEqual(serviceOf(decomposed.dir), serviceOf(composed.dir), 'the decomposed path as written hashes to another service');
+  assert.equal(claude.claudeKeychainService(decomposed), claude.claudeKeychainService(composed), 'the harness names one service for both forms');
+  assert.equal(claude.claudeKeychainService(decomposed), serviceOf(composed.dir), 'that service is the hash of the composed form, as the CLI names it');
+});
+
+/** A `security` that notes the service of each delete under "unknown" (unknown-services.jsonl beside it), then fails it
+ *  (`fails`) or answers it as SECURITY does. Every other command is SECURITY's. */
+const noting = (fails) => `#!${process.execPath}
+if (process.argv[2] === 'delete-generic-password' && process.argv.includes('unknown')) {
+  const args = process.argv.slice(3);
+  require('node:fs').appendFileSync(require('node:path').join(__dirname, 'unknown-services.jsonl'), JSON.stringify(args[args.indexOf('-s') + 1]) + '\\n');
+  ${fails ? 'process.exit(1);' : ''}
+}
+${SECURITY.slice(SECURITY.indexOf('\n') + 1)}
+`;
+const DECOMPOSED_DROP = {
+  'deletes it': { fails: false, gone: true },
+  'fails': { fails: true, gone: false },
+};
+for (const [how, drop] of Object.entries(DECOMPOSED_DROP)) {
+  test(`on macOS the sign-out at AgentRun's own folder under a path with a decomposed character deletes under "unknown" by the service the CLI names, and when that delete ${how} answers that the item ${drop.gone ? 'went' : 'may remain'}`, { skip }, async () => {
+    const left = leftUnknown(ownUnder(DECOMPOSED));
+    const service = serviceOf(left.login.dir.normalize('NFC'));
+    assert.deepEqual(keychain(left.m).filter(([account]) => account === 'unknown').map(([, of]) => of), [service], 'the sign-in with no USER left its item under "unknown" with the service of the composed form');
+    writeFileSync(join(left.m.bin, 'security'), noting(drop.fails), { mode: 0o755 });
+    const out = await within(DROP_MS + 3_000, "the sign-out's answer", asServerOf(left.m, () => claude.claudeLogout(left.m.cli, left.login, { path: left.m.path, platform: 'darwin' })));
+    assert.equal(out.leftoverGone, !left.unknownThere(), `the answer says the item under "unknown" went only where it is gone: leftoverGone ${out.leftoverGone}, items ${JSON.stringify(keychain(left.m))}`);
+    const services = readFileSync(join(left.m.bin, 'unknown-services.jsonl'), 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    assert.deepEqual(services, [service], 'the sign-out deleted under "unknown" by the service the CLI names, from the composed form');
+    assert.deepEqual(out, { signedOut: true, leftoverGone: drop.gone }, `the CLI confirmed its sign-out, and the answer after a delete that ${how}`);
+    assert.equal(left.unknownThere(), !drop.gone, `the item under "unknown" ${drop.gone ? 'went' : 'stayed'}: items ${JSON.stringify(keychain(left.m))}`);
+    assert.equal(left.m.items(), drop.gone ? 0 : 1, "the person's own item went with the CLI's sign-out");
+  });
+}
