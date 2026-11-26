@@ -425,7 +425,9 @@ function percentAt(text: string, at: number, to: number): { char: string; end: n
   }
   return { char: "\ufffd", end: at + 3 };
 }
-const UTF8 = new TextDecoder("utf-8", { fatal: true });
+// ignoreBOM: each character is decoded alone, and a decoder that strips a BOM would read %EF%BB%BF as nothing at all
+// where the views read U+FEFF. Fatal, with the BOM kept, one whole UTF-8 sequence decodes to exactly one character.
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
 /** What every view drops between a text's strings: a quote, an apostrophe (the join of single-quoted strings) and JSON's
