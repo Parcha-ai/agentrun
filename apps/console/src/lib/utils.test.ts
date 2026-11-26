@@ -19,6 +19,7 @@ describe("cn", () => {
     expect(cn("!rounded-none", "!rounded-action")).toBe("!rounded-action");
     expect(cn("z-raised", "z-popover")).toBe("z-popover");
     expect(cn("shadow-float", "shadow-none")).toBe("shadow-none");
+    expect(cn("shadow-float", "shadow-drawer")).toBe("shadow-drawer");
     expect(cn("duration-fast", "duration-slow")).toBe("duration-slow");
   });
   it("keeps a line height written before a size", () => {

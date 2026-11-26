@@ -29,7 +29,7 @@ export function FactorySession({ v2, runId, caps, agentName, label, onClose, onC
   };
   return (
     <aside aria-label="Session" data-factory-session={runId} onKeyDown={keys}
-      className="absolute inset-y-0 right-0 z-sticky flex w-full flex-col border-l bg-background shadow-float xl:w-3/5 xl:max-w-3xl">
+      className="absolute inset-y-0 right-0 z-sticky flex w-full flex-col border-l bg-background xl:w-3/5 xl:max-w-3xl xl:shadow-drawer">
       <div className="flex min-h-10 shrink-0 items-center gap-3 border-b px-3 py-1">
         <p className="caps min-w-0 flex-1 truncate text-label text-muted-foreground" title={label}>{label}</p>
         <a href={`#/runs/${encodeURIComponent(runId)}`} className="shrink-0 text-small underline underline-offset-2 hover:text-primary-text">Open run</a>

@@ -43,6 +43,10 @@ describe("Agent Factory's session panel", () => {
     const { panel, v2, onClose } = await open();
     expect(v2.getRun).toHaveBeenCalledWith("r/1");
     expect(panel.getAttribute("data-factory-session")).toBe("r/1");
+    // A drawer at the board's right from xl: a line and the drawer's shadow at its left edge say it is above the board.
+    // Below xl it covers the board whole, with nothing beside it to cast a shadow on.
+    for (const c of ["border-l", "xl:shadow-drawer"]) expect(panel.className.split(" "), c).toContain(c);
+    expect(panel.className).not.toMatch(/(^| )shadow-(float|drawer)( |$)/);
     expect(panel.textContent).toContain("Issue triage · run r/1");
     // The run as its own page shows it: its title, and what it asks.
     expect(panel.querySelector("h2")?.textContent).toBe(asking().title);

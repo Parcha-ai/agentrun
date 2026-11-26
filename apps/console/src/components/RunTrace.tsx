@@ -279,7 +279,7 @@ function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose, onRec
     ["Span", span.id],
   ];
   return (
-    <aside ref={panel} aria-label="Call details" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }} className="relative border-t bg-card p-5 xl:w-2/5 xl:max-w-lg xl:shrink-0 xl:overflow-auto xl:border-l xl:border-t-0">
+    <aside ref={panel} aria-label="Call details" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }} className="relative border-t bg-card p-5 xl:w-2/5 xl:max-w-lg xl:shrink-0 xl:overflow-auto xl:border-l xl:border-t-0 xl:shadow-drawer">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">

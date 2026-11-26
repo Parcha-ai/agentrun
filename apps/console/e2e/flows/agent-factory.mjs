@@ -243,8 +243,13 @@ export default {
       // nothing scrolls sideways. On a phone it covers the board.
       const wide = await page.evaluate(beside, [PANE, PANEL]);
       check(wide.right === 0 && wide.left > 200 && wide.top === 0 && wide.bottom === 0 && wide.sideways <= 0, `at 1280px the panel must sit over the board's right side, as tall as the pane: ${JSON.stringify(wide)}`);
+      // Over the board's right side the panel is a drawer: a soft shadow cast to its left only (no drop, a negative x)
+      // says it is above the board.
+      const cast = () => page.evaluate((selector) => getComputedStyle(document.querySelector(selector)).boxShadow, PANEL);
+      check(/rgba\(0, 0, 0, 0\.\d+\) -\d+px 0px \d+px -\d+px$/.test(await cast()), `at 1280px the panel must cast the drawer's shadow to its left: ${await cast()}`);
       if (shots) await page.screenshot({ path: join(shots, "agent-factory-session-light-1280.png") });
       await page.setViewportSize({ width: 390, height: 844 });
+      check((await cast()) === "none", `at 390px the panel covers the board and casts no shadow: ${await cast()}`);
       const phone = await page.evaluate(beside, [PANE, PANEL]);
       check(phone.right === 0 && phone.left === 0 && phone.sideways <= 0, `at 390px the panel must cover the board with no sideways scroll: ${JSON.stringify(phone)}`);
       // Covered whole, the board is out of the keyboard's way: Shift+Tab from the panel's first control lands on nothing

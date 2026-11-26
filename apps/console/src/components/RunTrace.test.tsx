@@ -643,6 +643,15 @@ describe("the Dev tools tab", () => {
     expect(callRows(host)).toHaveLength(320);
   });
 
+  it("draws a call's panel as a drawer where it is beside the table: a line and the drawer's shadow at its left edge", async () => {
+    const host = await open(TRACE, { open: "m:0:24" });
+    const drawer = panel(host)!;
+    // Beside the table from xl, under it below: the shadow is the breakpoint's, and the panel is positioned, so the
+    // shadow is drawn over the table's own content.
+    for (const c of ["relative", "xl:border-l", "xl:shadow-drawer"]) expect(drawer.className.split(/\s+/), c).toContain(c);
+    expect(drawer.className).not.toMatch(/(^|\s)shadow-(float|drawer)(\s|$)/);
+  });
+
   it("every pane of the tab that scrolls is the place its out-of-flow content is set against, so none of it scrolls the page", async () => {
     // A Segmented's hidden radios are absolutely placed. Under a pane that is not `relative` they are set against the
     // page: the one beside the Breakdown's chart, far down that pane, made the whole page scroll with nothing under it.
