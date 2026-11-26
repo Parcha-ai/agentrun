@@ -8,7 +8,7 @@
 //   - a running replay's cost is null while one of its runs' costs is unknown, never 0;
 //   - an owner's replay stopped after some of its runs is finished by a later claim on the owner's launch.
 // The replay runs are records the read reads (row, launch, metrics, and the answer said(): a real run's journal); the
-// learning folder is real (landWorkflows).
+// agent's learning is real (landWorkflows).
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,9 +23,9 @@ const { askReplay, promotionGate, replayView } = await import("../dist/runner/pr
 const { launchBody } = await import("../dist/run-launch.js");
 const { sealRunMcpAuth } = await import("../dist/store/seal.js");
 const { REPLAY_DEADLINE_MS, REPLAY_LAUNCH_GRACE_MS } = await import("../dist/runner/promotion.js");
-const { championOf, promotionOf, promotionsOf, recordPromotion, servingOf, trimPromotions, PROMOTIONS_KEPT } = await import("../dist/learn/promote.js");
+const { championOf, promotionOf, promotionsOf, recordPromotion, servingOf } = await import("../dist/learn/promote.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
-const { learningFolderOf, secretsShown } = await import("../dist/learning.js");
+const { secretsShown } = await import("../dist/learning.js");
 
 const FLOW = {
   v: 2, name: "answer",
@@ -52,7 +52,7 @@ async function world(t, { graded = 5 } = {}) {
     rmSync(dir, { recursive: true, force: true });
   });
   await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
-  const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: FLOW }]);
+  const seed = await landWorkflows(store, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: FLOW }]);
   const launchOf = (question) => ({ input: { content: `${question}?`, question }, title: question, place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, learning: startAt(seed) });
   const gradedRuns = Array.from({ length: graded }, (_, i) => `graded-${i}`);
   const old = new Map(gradedRuns.map((run, i) => [run, launchOf(`Question ${i}`)]));
@@ -116,12 +116,12 @@ async function world(t, { graded = 5 } = {}) {
   const logs = [];
   const ask = () => ({
     store: storeOf(store), agentId: "agent-1", context: BACKGROUND_CONTEXT, log: (line) => logs.push(line),
-    folder: () => learningFolderOf(dir, "agent-1"), shown: async () => secretsShown([]),
+    shown: async () => secretsShown([]),
     launchOf: async (input) => ({ launch: { ...launchOf("asked"), input }, revisionId: "rev-1" }),
     now: () => clock.at,
   });
   /** The replaying record a reservation writes: `runs` reserved for the graded runs in order, and the launch they run with. */
-  const reserve = (replayId, runs, extra = {}) => recordPromotion(store.settings, "agent-1", {
+  const reserve = (replayId, runs, extra = {}) => recordPromotion(store.learning, "agent-1", {
     workflow: "answer", digest: DIGEST, at: new Date(clock.at).toISOString(), decided: "replaying", reason: "replaying, as its owner asked",
     runs, inputs: runs.map((_, i) => gradedRuns[i % gradedRuns.length]), replay_id: replayId, commit: seed, launch: { revision: "rev-1", body: launchBody({ ...launchOf("asked"), input: null }) }, ...extra,
   }, (was) => was?.decided !== "replaying");
@@ -129,7 +129,7 @@ async function world(t, { graded = 5 } = {}) {
     await store.close();
     store = await openSqliteStore({ dataDir: dir, role: "server" });
   };
-  const records = async () => promotionsOf(store.settings, "agent-1");
+  const records = async () => promotionsOf(store.learning, "agent-1");
   const read = (id) => replayView(ask(), "answer", DIGEST, id);
   return { store: () => store, seed, gradedRuns, replayRun, said, reserve, reopen, records, read, ask, clock, gate, logs, creates };
 }
@@ -206,15 +206,13 @@ test("a revision promoted, held, then promoted again by a replay serves again", 
   const items = [rec("A", "promote", { source: "dry_run" }), rec("A", "hold", { source: "graded" }), rec("B", "promote"), rec("A", "replaying"), rec("A", "promote")];
   assert.equal(championOf(items, "answer")?.digest, "A");
   assert.equal(championOf([...items, rec("B", "hold"), rec("B", "replaying"), rec("B", "promote")], "answer")?.digest, "B", "B replayed and promoted again after A");
-  const filler = Array.from({ length: PROMOTIONS_KEPT }, (_, i) => ({ ...rec(`o${i}`, "replaying"), workflow: "other" }));
-  assert.equal(championOf(trimPromotions([...items, ...filler]), "answer")?.digest, "A", "the trim keeps A's latest promotion");
 
   // Through the read: A served, was held, B promoted, then A's replay (its runs say what the agent said) promotes it.
   const w = await world(t);
-  const settings = w.store().settings;
-  await recordPromotion(settings, "agent-1", { workflow: "answer", digest: DIGEST, at: "t1", decided: "promote", reason: "r", commit: w.seed }, () => true);
-  await recordPromotion(settings, "agent-1", { workflow: "answer", digest: DIGEST, at: "t2", decided: "hold", reason: "r" }, () => true);
-  await recordPromotion(settings, "agent-1", { workflow: "answer", digest: "bbbbbbbbbbbbbbbb", at: "t3", decided: "promote", reason: "r", commit: w.seed }, () => true);
+  const learning = w.store().learning;
+  await recordPromotion(learning, "agent-1", { workflow: "answer", digest: DIGEST, at: "t1", decided: "promote", reason: "r", commit: w.seed }, () => true);
+  await recordPromotion(learning, "agent-1", { workflow: "answer", digest: DIGEST, at: "t2", decided: "hold", reason: "r" }, () => true);
+  await recordPromotion(learning, "agent-1", { workflow: "answer", digest: "bbbbbbbbbbbbbbbb", at: "t3", decided: "promote", reason: "r", commit: w.seed }, () => true);
   const runs = w.gradedRuns.map((of, i) => (w.replayRun(`a-${i}`, of), `a-${i}`));
   for (const run of w.gradedRuns) await w.said(run, FIXED());
   for (const run of runs) await w.said(run, FIXED());

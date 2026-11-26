@@ -9,10 +9,10 @@ import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { journalEntries } from "../dist/runner/journal-reader.js";
 import { reflectRequestId } from "../dist/runner/end-of-run.js";
 import { learningCommit } from "../dist/learn/commit.js";
-import { textsAt } from "../dist/learn/folder.js";
+import { learningOf, readAt } from "../dist/learn/rows.js";
 import { recordPromotion } from "../dist/learn/promote.js";
 import { workflowDigest } from "../dist/runner/workflow-first.js";
-import { learningFolderOf, seedOf } from "../dist/learning.js";
+import { seedOf } from "../dist/learning.js";
 const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const tool = {
@@ -61,22 +61,18 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) for (const moved of [fa
       id, name: id, instructions: description, sdk: { runtime }, learning: true, tools: [], output_schema: tool.output_schema,
     } })).status, 201);
     const land = async label => {
-      await seedOf(s.data, id);
-      const folder = learningFolderOf(s.data, id);
-      try {
-        const merged = await learningCommit(folder.workspace, {
-          runId: `fixture-${label}`, reason: `Keep ${label}`,
-          files: [
-            { path: "workflows/release-status/workflow.json", text: JSON.stringify(flow(label)) },
-            { path: "workflows/release-status/README.md", text: readmeOf("release-status", description) },
-          ],
-        });
-        assert.equal(merged.ok, true, JSON.stringify(merged));
-      } finally { await folder.end(); }
-      return (await seedOf(s.data, id)).sha;
+      const merged = await learningCommit(learningOf(s.store, id), {
+        runId: `fixture-${label}`, reason: `Keep ${label}`,
+        files: [
+          { path: "workflows/release-status/workflow.json", text: JSON.stringify(flow(label)) },
+          { path: "workflows/release-status/README.md", text: readmeOf("release-status", description) },
+        ],
+      });
+      assert.equal(merged.ok, true, JSON.stringify(merged));
+      return (await seedOf(s.data, s.store, id)).sha;
     };
     const hold = async label => {
-      await recordPromotion(s.store.settings, id, {
+      await recordPromotion(s.store.learning, id, {
         workflow: "release-status", digest: workflowDigest({ workflow: JSON.stringify(flow(label)) }),
         at: new Date().toISOString(), decided: "hold", source: "graded", reason: "The owner held this revision for correction.",
       }, () => true);
@@ -136,7 +132,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) for (const moved of [fa
     assert.equal(kept.proposal.job_cost_usd, 0.25);
     assert.ok(Math.abs(kept.proposal.look_back_usd - 0.05) < 1e-9);
     assert.ok(Math.abs((await s.store.runs.get(runId)).costUsd - 0.3) < 1e-9, "the one compiler request is charged once");
-    const after = (await seedOf(s.data, id)).sha;
+    const after = (await seedOf(s.data, s.store, id)).sha;
     if (moved) {
       assert.equal(kept.proposal.reason, "checker", JSON.stringify(kept.proposal));
       assert.ok((kept.proposal.problems ?? []).some(problem => problem.path === "workflows/release-status/workflow.json"), JSON.stringify(kept.proposal.problems));
@@ -144,10 +140,8 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) for (const moved of [fa
     } else {
       assert.notEqual(after, current, "a change before the compiler read is accepted as its actual base");
       assert.equal(kept.proposal.merged, after, "the run's own commit is main");
-      const folder = learningFolderOf(s.data, id);
-      let texts;
-      try { texts = await textsAt(folder.workspace, after, ["workflows/release-status/workflow.json"]); } finally { await folder.end(); }
-      assert.deepEqual(JSON.parse(texts["workflows/release-status/workflow.json"]), compiled, "main holds the compiled revision");
+      const read = await readAt(learningOf(s.store, id), after);
+      assert.deepEqual(JSON.parse(read.text("workflows/release-status/workflow.json")), compiled, "main holds the compiled revision");
     }
   });
 }

@@ -16,10 +16,11 @@ import { scratch, serve, whenFree } from "./support.mjs";
 const FILE = { folder: "stripe", show: ["successful", "data.has_more", "data.data.-1.id"] };
 
 /** A package of the fake MCP server's add and delete_thing (from `source`), its mcp entry ending in `entry` (YAML); its
- *  folder. */
+ *  folder. It names its tools (none: the ticked MCP tools are its own), so its apply keeps the runner where this server
+ *  has no Docker box, never refused for want of a place. */
 function packageWith(dir, name, entry, source = "url") {
   mkdirSync(join(dir, name), { recursive: true });
-  writeFileSync(join(dir, name, "agent.md"), `---\nname: ${name}\nversion: 1.0.0\ndescription: Uses the fake MCP server.\nharness: [pi]\nmcp:\n  - source: ${source}\n    toolkit: fake\n    tools: [add, delete_thing]\n    required: true\n    allow: [add]\n${entry}\napprovals: never\n---\nCall the tool you are asked to call.\n`);
+  writeFileSync(join(dir, name, "agent.md"), `---\nname: ${name}\nversion: 1.0.0\ndescription: Uses the fake MCP server.\ntools: []\nharness: [pi]\nmcp:\n  - source: ${source}\n    toolkit: fake\n    tools: [add, delete_thing]\n    required: true\n    allow: [add]\n${entry}\napprovals: never\n---\nCall the tool you are asked to call.\n`);
   return join(dir, name);
 }
 

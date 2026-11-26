@@ -1170,26 +1170,39 @@ async function noteChecked(data, file) {
 }
 
 test("a server takes a recipe it names only once its install is checked: hidden until then, by the code and the command that fix it, and a plan-billed one on keys saved for its harness, never the shell's", { timeout: 60_000 }, async (t) => {
-  const [{ harnessIds, harnessOf, harnessRecipesEnv, harnessTable, tableIds }, { checkedNoteOf, signedInNoteOf }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/harness-recipe.js")]);
-  // Named but not installed: in the table, so a run naming it is refused in words, and listed nowhere.
+  const [{ harnessIds, harnessOf, harnessRecipesEnv, harnessTable, offeredIds, tableIds }, { checkedNoteOf, signedInNoteOf }, { harnessOffers }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/harness-recipe.js"), import("../dist/harness.js")]);
+  // What capabilities say of it: the recipe its owner started the server with is always offered, not available until it
+  // runs, with the reason (the code and the command that fix it), never left out of the list.
+  const offerOf = async (on) => (await harnessOffers({ ...on })).find((each) => each.id === "model-agent");
+  // Named but not installed: in the table, so a run naming it is refused in words; no definition may pick it, and
+  // capabilities offer it as not available, saying why.
   const bare = join(await scratch(t), "agents");
   const bareFile = await recipeFile(t, recipeOf());
   const bareEnv = harnessRecipesEnv([bareFile], bare);
   assert.ok(tableIds(bareEnv).includes("model-agent"));
   assert.equal(harnessIds(bareEnv).includes("model-agent"), false);
   assert.match(harnessOf(bareEnv, "model-agent").hidden(bareEnv), /^HARNESS_NOT_INSTALLED: .*Install it with: agentrun harness install --recipe/);
+  assert.ok(offeredIds(bareEnv).includes("model-agent"));
+  const bareOffer = await offerOf(bareEnv);
+  assert.deepEqual([bareOffer?.label, bareOffer?.available], ["Model Agent", false], JSON.stringify(bareOffer));
+  assert.match(bareOffer.reason, /^HARNESS_NOT_INSTALLED: .*Install it with: agentrun harness install --recipe/);
 
-  // Installed, never checked: hidden, and a run is refused, naming the check.
+  // Installed, never checked: hidden, and a run is refused, naming the check; offered as not available, naming it too.
   const proxy = await installed(t, recipeOf());
   const env = harnessRecipesEnv([proxy.file], proxy.data);
   const entry = harnessOf(env, "model-agent");
   assert.match(entry.hidden(env), /^HARNESS_NOT_CHECKED: .*Check it with: agentrun harness-check --recipe/);
   assert.match((await entry.refusal(env, undefined, { atStart: false }))?.reason ?? "", /HARNESS_NOT_CHECKED/);
+  const unchecked = await offerOf(env);
+  assert.equal(unchecked?.available, false, JSON.stringify(unchecked));
+  assert.match(unchecked.reason, /^HARNESS_NOT_CHECKED: .*Check it with: agentrun harness-check --recipe/);
+  assert.deepEqual([unchecked.models, unchecked.default_model], [[], null], "no model is offered for a harness that does not run");
   // Checked for this recipe, binary and tree: listed, through this server's model proxy.
   await noteChecked(proxy.data, proxy.file);
   assert.equal(statSync(checkedNoteOf(proxy.data, "model-agent")).mode & 0o777, 0o600);
   assert.equal(entry.hidden(env), undefined);
   assert.ok(harnessIds(env).includes("model-agent"));
+  assert.notEqual((await offerOf(env))?.reason ?? "", unchecked.reason, "the check's reason is gone once it passed");
   // A pass noted for another install (its tree, the binary among it) is no pass for this one.
   const note = JSON.parse(readFileSync(checkedNoteOf(proxy.data, "model-agent"), "utf8"));
   writeFileSync(checkedNoteOf(proxy.data, "model-agent"), JSON.stringify({ ...note, tree: "0".repeat(64) }));

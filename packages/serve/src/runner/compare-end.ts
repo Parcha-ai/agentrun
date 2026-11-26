@@ -7,7 +7,6 @@
 // (runner/promotion.ts decideCheck) and the audit (runner/audit.ts settleAudits) read it, through checkInputOf.
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { LearningFolder } from "../learn/folder.js";
 import { answersPair, type Compared, type ComparedGrade, comparedGrade, type GraderReply, gradeAnswers, gradesOf, knownAnswerText, sameAnswer } from "../learn/promote.js";
 import type { PortModels } from "../port-models.js";
 import type { RunLaunch } from "../run-launch.js";
@@ -27,7 +26,6 @@ const GRADER_MAX_TOKENS = 1_000;
 
 export type CompareEndDeps = {
   readonly store: Store;
-  readonly folder: () => LearningFolder;
   readonly log: (line: string) => void;
   readonly redact: (text: string) => string;
 };
@@ -52,7 +50,10 @@ async function pairOf(launch: RunLaunch, deps: CompareEndDeps, runId: string): P
     return workflow === null || agent === null ? null : { agent, workflow, graded };
   }
   if (launch.audit) {
-    const [agent, workflow] = [await answerOf(deps.store, runId, BACKGROUND_CONTEXT), await auditedAnswerOf({ store: deps.store, context: BACKGROUND_CONTEXT, folder: deps.folder }, runId)];
+    // The shadow's agent's audit ledger: the shadow run is its agent's, as the served run it audits is.
+    const agentId = (await deps.store.runs.get(runId))?.agentId;
+    if (agentId === undefined) return null;
+    const [agent, workflow] = [await answerOf(deps.store, runId, BACKGROUND_CONTEXT), await auditedAnswerOf({ store: deps.store, agentId, context: BACKGROUND_CONTEXT }, runId)];
     return workflow === null || agent === null ? null : { agent, workflow };
   }
   return null;
@@ -61,7 +62,7 @@ async function pairOf(launch: RunLaunch, deps: CompareEndDeps, runId: string): P
 /** Run `of`'s newest grade as the check judges it (comparedGrade), null when it has none. */
 async function gradeOf(store: Store, of: string): Promise<ComparedGrade | null> {
   const source = await store.runs.get(of);
-  return comparedGrade(source ? (await gradesOf(store.settings, source.agentId)).findLast((one) => one.run === of) : undefined);
+  return comparedGrade(source ? (await gradesOf(store.learning, source.agentId)).findLast((one) => one.run === of) : undefined);
 }
 
 /** The end-of-run step of a replay run or an audit's shadow (its callers pass no other run): its comparison (above),

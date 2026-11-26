@@ -12,7 +12,7 @@ import { capShortOf } from "./cap-short.js";
 import { chooseModel } from "./model.js";
 import { llmTiers, MODEL_NODES, type ModelNeeds, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./place-offers.js";
-import { boxAvailability, newAgentPlace, placeFix } from "./place.js";
+import { boxAvailability, newAgentPlace, noPlaceIssue, placeFix } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, shellTools, toolOf, workflowTools } from "./tools.js";
 import { DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
 import { computerDenied, denyPlace, permissionFrom, permissionKeys, permissionOf } from "./tool-gate.js";
@@ -138,16 +138,28 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
   // server's folder with the runner-only tools, which the runnerOnly check below holds to a sandbox place alone.
   const onRunner = revision.kind === "agentic" && shellOf && (place?.mode ?? "runner") === "runner";
   const runnerShell = onRunner && (await shellOf(revision.computer ?? { kind: "none" })) === "local" ? shellTools("local") : new Set<string>();
-  /** A shell tool the runner does not run: a box this server runs in is the fix; with none, why it has none
-   *  (capabilities' default_reason) and both ways out, fixing that or keeping the agent on the runner without the tool.
-   *  Where the runner has a shell that runs others (Mode 2's Archil exec runs bash), it says which. */
+  /** A shell tool the runner does not run. One that names no place, on a runner with no shell (Mode 1), is there only
+   *  because Docker's box, its default, is not here (place.ts defaultPlaceOf): it names a box or the runner, in the words
+   *  its create is refused in (nameABox), never given another box. One whose place is the runner: a box this server runs in is the fix; with none, why
+   *  Docker's box is not here and both ways out, fixing that or keeping the agent on the runner without the tool. Where
+   *  the runner has a shell that runs others (Mode 2's Archil exec runs bash), it says which. */
   const shellOnRunner = (tool: string, field: string, named: boolean): Blocker => {
+    const fresh = newAgentPlace(boxes);
+    if (!named && !runnerShell.size && "reason" in fresh) {
+      // A tool the box refuses (the browser) keeps this agent out of every box, so naming one is no way out: its words
+      // say that it is one tool or the other.
+      const boxless = (revision.tools ?? []).filter((one) => toolOf(one)?.runnerOnly);
+      if (!boxless.length) return { ...noPlaceIssue(boxes), host: false, tool };
+      const them = new Intl.ListFormat("en", { type: "conjunction" }).format(boxless.map((one) => `"${one}"`));
+      return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${boxless.join(", ")} never ${boxless.length > 1 ? "run" : "runs"} in one, so no place runs this agent with both: remove "${tool}" from definition.tools to keep it on the runner, or remove ${them} and name a box.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
+    }
     const where = named ? "this agent's place is the runner" : "this agent names no place, so it runs on the runner";
     const has = runnerShell.size ? `whose shell here runs ${[...runnerShell].join(", ")} alone` : "which has no shell";
     const box = boxAvailability(boxes).find((b) => b.available);
     if (box) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, ${has}: give it a sandbox computer (a sandbox place).`, fix: placeFix({ mode: "sandbox", box: box.id }), host: false, tool };
-    const fresh = newAgentPlace(boxes);
-    const why = "reason" in fresh ? fresh.reason : "no box runs execute in is available here";
+    // In Mode 2 new agents do run on the runner (placesOf), so its words say so, as they always have; in Mode 1 a new
+    // agent names its place, so they say only why Docker's box is not here.
+    const why = "why" in fresh ? `${runnerShell.size ? "new agents run on the runner, because " : ""}the docker box is unavailable here: ${fresh.why}` : "no box runs execute in is available here";
     return { field, reason: "not_an_option", message: `${tool} runs only in a box, and ${where}, ${has} (${runnerShell.size ? tool : "a shell"} needs a sandbox computer), and ${why}. Do that, or keep this agent on the runner: name "place": {"mode": "runner"} and remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
   };
   // A harness's own MCP client may drop or retype a shape of a tool's schema (its facts' schemaProblems, measured on its
@@ -203,7 +215,11 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       }
       if (!allows(BOUND_TOOLS, tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} is not a tool here: grant one of ${BOUND_TOOLS.join(", ")}, an MCP server's tool as mcp:<server>/<tool>, or a monid endpoint as monid:<provider>/<endpoint>.`, host: false, tool });
       // A shell runs in a box; on the runner (no place names one) only what its shell here runs (runnerShell).
-      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && !runnerShell.has(tool)) out.push(shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed));
+      // One that names no place is refused at its place, once, whatever shell tools it names.
+      else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && !runnerShell.has(tool)) {
+        const blocker = shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed);
+        if (!out.some((b) => b.field === "definition.place" && b.message === blocker.message)) out.push(blocker);
+      }
       // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
       // Another harness gets the host tools only (host-tools.ts: the file tools, ask_person, web_fetch and web_search):

@@ -72,7 +72,7 @@ async function piSpec(t, { seed = "landed", kind, promoted = true } = {}) {
     ledger,
     before: async (server, _key, dir) => {
       if (seed === "landed") launch.learning = startAt(await landWorkflows(dir, AGENT, FLOWS));
-      if (seed === "landed" && promoted) await promoteChecked(server.settings, AGENT, FLOWS.filter(({ status }) => !status));
+      if (seed === "landed" && promoted) await promoteChecked(server, AGENT, FLOWS.filter(({ status }) => !status));
     },
   });
 }
@@ -93,7 +93,7 @@ async function cliSpec(t, harness, { seed = "landed", promoted = true } = {}) {
     rmSync(dir, { recursive: true, force: true });
   });
   const sha = seed === "landed" ? await landWorkflows(dir, AGENT, FLOWS) : undefined;
-  if (seed === "landed" && promoted) await promoteChecked(server.settings, AGENT, FLOWS.filter(({ status }) => !status));
+  if (seed === "landed" && promoted) await promoteChecked(server, AGENT, FLOWS.filter(({ status }) => !status));
   const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : { provider: "openai", modelId: "gpt-6.1-sol" };
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: GRANTED, learning: true } });
   const launch = { input: { content: "Run what you learned." }, title: "t", place: { mode: "runner" }, harness, model, ...(sha !== undefined ? { learning: startAt(sha) } : {}) };
@@ -145,15 +145,14 @@ test("active drafts with no check promotion are not offered to pi, Claude or Cod
 test("a seed read whose secrets read fails starts the run with no learned workflow and says so: it never stops the run", async () => {
   const { layLearningSeed } = await import("../dist/runner/learning-seed.js");
   const log = [];
-  let ended = 0;
   const laid = await layLearningSeed({
+    store: { learning: {} },
+    agentId: AGENT,
     seed: null,
-    folder: () => ({ workspace: {}, end: async () => void ended++ }),
     shown: async () => { throw new Error("the secrets read failed"); },
     log: (line) => log.push(line),
   });
   assert.deepEqual(laid, { seed: { sha: null, corrections: "", workflows: [] }, workflows: [] });
-  assert.equal(ended, 1, "the folder is ended");
   assert.equal(log.length, 1, JSON.stringify(log));
   assert.match(log[0], /no learned workflow: the secrets read failed/);
 });

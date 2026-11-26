@@ -41,10 +41,13 @@
 // an agent was purged (runs.purged_at, agents.purged_at; DELETE /runs/{id} and /agents/{id}, agent-delete.ts): its row is
 // then a tombstone, its content gone and its cost kept. Version 15 keeps the disk a run's launch named as its own
 // (runs.disk; a run on one learns nothing, learn/learning-of.ts). Version 16 keeps no epoch on a learning ledger row
-// (learning_ledger; 15 kept one, which a runner of 15 writes at each end and this build's end does not). The server
-// upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13, diskUpgrade
-// from 14, then ledgerUpgrade from 15); a runner waits for it.
-export const SCHEMA_VERSION = 16;
+// (learning_ledger; 15 kept one, which a runner of 15 writes at each end and this build's end does not). Version 17 keeps
+// each agent's learning as rows (LEARNING_ROWS) in place of a git folder and settings keys: a runner of an earlier build
+// would still write learning where this server neither reads nor purges it, so it must not open the store (it opens only
+// its own version). The server upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12,
+// purgeUpgrade from 13, diskUpgrade from 14, ledgerUpgrade from 15, then learningRowsUpgrade from 16); a runner of this
+// build waits for it.
+export const SCHEMA_VERSION = 17;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -84,6 +87,12 @@ export function diskUpgrade(runColumns: ReadonlySet<string>): readonly string[] 
     "UPDATE runs SET disk = (SELECT json_extract(body, '$.archil_disk.disk_id') FROM run_launch WHERE run_launch.run_id = runs.id AND json_extract(body, '$.archil_disk.kind') = 'launch')",
     "UPDATE store_meta SET schema_version = 15 WHERE singleton = 1",
   ];
+}
+/** Version 16 → 17 on SQLite (the server's open, sqlite/store.ts, after ledgerUpgrade, which writes 16): each agent's
+ *  learning as rows (LEARNING_ROWS, made at the same open) and the version, so no runner of an earlier build (which knows
+ *  16 or before) opens the store again. */
+export function learningRowsUpgrade(): readonly string[] {
+  return [...LEARNING_ROWS, "UPDATE store_meta SET schema_version = 17 WHERE singleton = 1"];
 }
 /** A trigger's package mark (TriggerRow.templateId): the id of the template package whose apply made or last kept it, null
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
@@ -225,6 +234,73 @@ export const HAND_BACKS_AT = "CREATE INDEX IF NOT EXISTS hand_backs_at ON hand_b
 export const HAND_BACKS_RUN = "CREATE INDEX IF NOT EXISTS hand_backs_run ON hand_backs (run_id)";
 /** How long a hand-back's row is kept: the longest window the capacity read takes. */
 export const HAND_BACKS_KEPT_MS = 24 * 60 * 60_000;
+
+/** An agent's learning as versioned rows (store.learning: seed, itemsAt, save, purgeRun, reset, erase, diff).
+ *  - learning_saves: each save of the agent's learning, one version (1, 2, ...), its id (40 hex, random: what a run's
+ *    seed and the log name), its kind (`init`, the empty first one a run's seed makes; a `run`'s merge; a `person`'s
+ *    change; `purged`, a purged run's), who saved it and why (`change`: its reason and the paths it changed), and a
+ *    run's merge key (one merge a run's round). A purged run's save keeps its version, id and merge key (a seed read
+ *    from it stays held, and the round never merges again) and loses its words (`by_run`, `change`).
+ *  - learning_items: each item's versions, never updated by a save (a run's purge rewrites the workflow versions that
+ *    held its files): a note (one line of corrections.md, `pos` its place) or a
+ *    workflow (its folder's files as one JSON object of path to text, `digest` its workflow.json's). The item at a
+ *    version is its newest row at or before it; a null body is gone. A workflow's `writers`: each file's writer, the run
+ *    whose merge changed it to its text (a merge that gives a file unchanged, and a person's edit of it, keep the writer
+ *    before; null: a person's own file), so a run's purge takes each file it wrote back to its text before, file by
+ *    file. `by_run`: a note's run; a workflow's, its workflow.json's writer (what its promotions are of).
+ *  - learning_records: the agent's promotion records, grades and audit rows, each its data whole, never trimmed; its
+ *    run, workflow and digest read out for a purge.
+ *  The CHECKs also allow kinds no code writes yet: a `label` item, and `lifecycle` and `note` records (the follow-up
+ *  PRs write them; Postgres 0032_learning_rows.sql has the same CHECKs). A run's purge deletes every item of
+ *  the run's but a workflow, a label too, and every record whose run is the run (learning-rows.ts dropRunLearning). A PR
+ *  that first writes a lifecycle or note record whose data names another run extends the purge's scrub
+ *  (learning-rows.ts forgetRunRecords) in the same PR.
+ *  In STORE_DDL, and made at a server open on a store an earlier build of this version made. */
+export const LEARNING_ROWS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS learning_saves (
+    agent_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    id TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('init', 'run', 'person', 'purged')),
+    by_run TEXT,
+    merge_key TEXT,
+    ${json("change")},
+    PRIMARY KEY (agent_id, version)
+  ) STRICT`,
+  "CREATE UNIQUE INDEX IF NOT EXISTS learning_saves_id ON learning_saves (agent_id, id)",
+  "CREATE UNIQUE INDEX IF NOT EXISTS learning_saves_merge ON learning_saves (agent_id, merge_key)",
+  "CREATE INDEX IF NOT EXISTS learning_saves_run ON learning_saves (by_run)",
+  `CREATE TABLE IF NOT EXISTS learning_items (
+    agent_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('note', 'workflow', 'label')),
+    name TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    body TEXT,
+    by_run TEXT,
+    change TEXT NOT NULL,
+    person INTEGER NOT NULL,
+    pos INTEGER NOT NULL,
+    digest TEXT,
+    writers TEXT,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (agent_id, kind, name, version)
+  ) STRICT`,
+  "CREATE INDEX IF NOT EXISTS learning_items_version ON learning_items (agent_id, version)",
+  "CREATE INDEX IF NOT EXISTS learning_items_run ON learning_items (by_run)",
+  `CREATE TABLE IF NOT EXISTS learning_records (
+    agent_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('promotion', 'grade', 'audit', 'lifecycle', 'note')),
+    seq INTEGER NOT NULL,
+    run_id TEXT,
+    workflow TEXT,
+    digest TEXT,
+    ${json("data")},
+    at INTEGER NOT NULL,
+    PRIMARY KEY (agent_id, kind, seq)
+  ) STRICT`,
+  "CREATE INDEX IF NOT EXISTS learning_records_run ON learning_records (run_id)",
+];
 
 /** Each claim of a run (store.runAttempts, RunAttemptRow): the turn it works and its attempt at it, why the attempt before
  *  was cut (`cause`: drain, crash, lease_lapse, retry; null on a turn's first), why this one let the run go unfinished
@@ -794,6 +870,7 @@ export const STORE_DDL: readonly string[] = [
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (agent_id, key)
   ) STRICT`,
+  ...LEARNING_ROWS,
   IMPORTED_TEMPLATES,
   MINTED_TOKENS,
   RUNNERS,

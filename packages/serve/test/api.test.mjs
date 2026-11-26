@@ -292,7 +292,7 @@ test("a run's input is checked against the default schema {content: string} befo
   assert.deepEqual(noContent.body.error.fields.map((f) => [f.field, f.reason]), [["input.content", "missing"]]);
   const quote = await api("POST", "/agents/plain/runs", { input: { content: "x" }, quote_id: "q" });
   assert.deepEqual([quote.status, quote.body.error.capability], [501, "quotes"]);
-  const unbound = await api("POST", "/agents", agent("shell", { tools: ["read", "bash"] }));
+  const unbound = await api("POST", "/agents", agent("shell", { tools: ["read", "bash"], place: { mode: "runner" } }));
   assert.deepEqual([unbound.status, unbound.body.error.fields.map((f) => f.field)], [422, ["definition.tools[1]"]]);
   assert.deepEqual((await api("GET", "/agents/plain/runs")).body, { runs: [], next_cursor: null });
 });

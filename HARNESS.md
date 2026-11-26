@@ -505,8 +505,9 @@ runs each run as a user of its own (the image's default) a run is refused at its
 is set there. A recipe the loader refuses, one with no
 archive for this platform, or one whose id a harness module or another recipe already has refuses the start.
 
-The harness is in the server's table from the start, so a run naming it is refused in words, but `GET /v2/capabilities`
-lists it as available only once all of these hold, and a run starts only then:
+The harness is in the server's table from the start, so a run naming it is refused in words. `GET /v2/capabilities`
+always lists it, but as available only once all of these hold, and a run starts only then. Until then its offer says
+`available: false` and its `reason` is the first code below that still applies, with the command that fixes it:
 
 - the binary and its tree are installed and pinned on `<data>` (else `HARNESS_NOT_INSTALLED`, with the install command);
 - a `harness-check` passed on `<data>` for this recipe file, this binary and this tree: the `.checked` note's three

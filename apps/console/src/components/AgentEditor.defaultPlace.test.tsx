@@ -56,7 +56,8 @@ describe("AgentEditor, a new agent's default place", () => {
     expect(boxed.input('input[type="checkbox"][value="browser"]')!.checked).toBe(false);
     act(() => root?.unmount());
     document.body.innerHTML = "";
-    const runner = mount(served({ default_place: { mode: "runner" }, default_reason: "fixture: no docker" }));
+    // The runner as the default (Mode 2, whose runner has a shell): no default_reason, which comes only with null.
+    const runner = mount(served({ default_place: { mode: "runner" } }));
     expect(runner.input('input[name="place"][value="runner"]')!.checked).toBe(true);
     runner.step(/Tools/);
     expect(runner.input('input[type="checkbox"][value="bash"]')!.checked).toBe(false);
@@ -80,5 +81,27 @@ describe("AgentEditor, a new agent's default place", () => {
     runner.click(runner.input('input[name="place"][value="runner"]'));
     runner.fill();
     expect(await runner.save()).toMatchObject({ place: { mode: "runner" }, tools: ["read", "write"] });
+  });
+
+  // No default place (default_place null: no Docker box, and a runner with no shell): the server refuses a create that
+  // names no place and would get a box, so the form picks neither and Create waits for the person's choice.
+  it("with no default place, starts on neither the server nor a box, ticks no shell tool, and creates only once a place is chosen", async () => {
+    const none = served({ default_place: null, default_reason: "name a box: this server has no Docker box for a new agent." });
+    expect(none?.defaultPlace).toBeNull();
+    const form = mount(none);
+    expect(form.input('input[name="place"][value="runner"]')!.checked).toBe(false);
+    expect(form.input('input[name="place"][value="sandbox"]')!.checked).toBe(false);
+    expect(form.host.querySelector("input[name=\"box\"]:checked")).toBeNull();
+    expect(form.host.textContent).not.toContain("runs on the server");
+    form.step(/Tools/);
+    expect(form.input('input[type="checkbox"][value="bash"]')!.checked).toBe(false);
+    form.fill();
+    const create = () => [...document.querySelectorAll("button")].find((b) => /^Create/.test(b.textContent ?? "")) as HTMLButtonElement;
+    expect(create().disabled).toBe(true);
+    expect(form.host.textContent).toContain("Choose where it runs, in Computer: a box, or On the server.");
+    form.step(/Computer/);
+    form.click(form.input('input[name="place"][value="runner"]'));
+    expect(create().disabled).toBe(false);
+    expect(await form.save()).toMatchObject({ place: { mode: "runner" } });
   });
 });
