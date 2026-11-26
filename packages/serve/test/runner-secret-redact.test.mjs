@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { queue, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { messagesFetch } = await import("../dist/runner/model-route.js");
@@ -209,7 +210,7 @@ test("a run spec's own log lines hold no key: a CLI run's computer release refus
     env, data: dir, journal: (c) => store.journal(c), store, sealKey: Buffer.alloc(32, 7), routeOf: async () => assert.fail("no pi route"), log: (line) => logged.push(line),
     computerForClaim: async () => ({ release: async () => { throw new Error(`the computer refused to go, key ${PLANTED}`); } }),
   };
-  const built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  const built = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
   await built.release?.();
   const text = logged.join("\n");
   assert.match(text, /computer could not be let go/, `the release's failure is logged: ${text}`);

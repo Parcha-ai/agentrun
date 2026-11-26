@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+With `AGENTRUN_RUN_KEYS=1`, an update apply that skips a template's trigger and keeps the agent's trigger of that name on now says, in the skip's warning, which of its firings are refused: one that would start a run of the new revision is refused 409 for the keys it owes and starts no run, but a `message_run` firing aimed at a run of an earlier revision that owes no keys still reaches that run, which may spend. Turning the trigger off stops both. In 0.1.0-beta.55 the warning said only that the trigger is kept and still fires.
+- `serve()`'s launch hook keeps its 10-second bound on every POST: the hook's `bound` signal, a test's seam, can cut a POST sooner, never later. In 0.1.0-beta.55 a `bound` given replaced the 10 seconds.
+- A note on 0.1.0-beta.55's refusal of a `message_run` firing to a run that owes a key: a firing is checked as one that brings no keys, whatever the run holds then. So a `message_run` firing to a run mid-turn, still holding the keys its start or a person's message carried, is refused, while a person's message to that run passes on those keys. For a run whose template's keys the server does not hold, that is the safe side: a trigger's message never spends the keys a person handed that run. A run that owes no keys (an agent from no template, or one whose keys the server holds) is not checked, so a `message_run` firing to it mid-turn still runs on the keys its start or a person's message carried.

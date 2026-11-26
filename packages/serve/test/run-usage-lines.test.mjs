@@ -384,6 +384,11 @@ test("a computer still open is counted up to the read, and says so; a provider t
     ["vcpu", 60, "estimate", 0, 1, new Date(ENDED).toISOString()],
     ["memory", 60, "estimate", 0, 1, new Date(ENDED).toISOString()],
   ]);
+  // No claim books a provider that bills nothing, yet none of its time is outside the run's cost: unheld reads 0, so a
+  // free run on Docker reads as free all through (the console's $0 receipt), where a paid provider's unbooked time does not.
+  assert.deepEqual(lines.map((one) => one.unheld_quantity), [0, 0]);
+  const paid = usageLinesOf([...keys()], undefined, new Map(), { rows: [interval("sbx-1", { provider: "e2b", cpus: 1, memoryMb: 1024, startedAt: ENDED - 60_000, endedAt: ENDED })], at: ENDED }).lines;
+  assert.deepEqual(paid.map((one) => [one.basis, one.usd, one.unheld_quantity]), [["unpriced", null, 60], ["unpriced", null, 60]]);
 });
 
 test("a run that made no computer reads [] for its computers; a run with no lines reads null, as its browser sessions do", async () => {

@@ -17,6 +17,7 @@ import { closeOpenSessions, hostTools } from "./conformance-pi-adapter.mjs";
 import { capRun, quiet, specCap } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 after(closeOpenSessions);
 
@@ -62,7 +63,7 @@ function origin(sent) {
 const read = { name: "read", replaySafe: true, ask: false, run: async () => PAGE };
 const specOf = (fetch) => (_claim, run) => ({
   // The translation's origin: not Anthropic's, so the proxy asks no provider to count a body.
-  adapter: piAdapter({ run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch, price }),
+  adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch, price }),
   session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools({ read }), context: "fresh" },
   input: "Follow the script.",
   hooks: quiet,
@@ -141,7 +142,7 @@ test("a code review's merge step on sol: a pi parent at $2 with $0.62 spent, who
   };
   const review = { name: "review", replaySafe: true, ask: false, run: async (args) => FINDING(args.reviewer ?? 0) };
   const spec = (_claim, run) => ({
-    adapter: piAdapter({ run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch, price }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch, price }),
     session: { key: "root", label: "root", system: ["Review the pasted diff: start eight reviewers, then merge their findings."], tools: hostTools({ review }), context: "fresh" },
     input: `Review this change.\n\n${DIFF}`,
     hooks: quiet,
@@ -221,7 +222,7 @@ async function reviewRun(t, capUsd) {
   const read = { name: "read", replaySafe: true, ask: false, run: async () => SKILL };
   // codemode is pi's own tool: the script call goes to it, and its arguments never parse.
   const spec = (_claim, run) => ({
-    adapter: piAdapter({ run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch: reviewOrigin(sent), price }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch: reviewOrigin(sent), price }),
     session: { key: "root", label: "root", system: ["Review the pasted diff with eight reviewers and return the review JSON."], tools: hostTools({ read }), context: "fresh" },
     input: `Review this diff (no pull request behind it):\n\n${REVIEW_DIFF}`,
     hooks: quiet,

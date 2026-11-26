@@ -17,6 +17,7 @@ import { linkHarnesses } from "./support.mjs";
 import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
@@ -47,7 +48,7 @@ async function piSpec(t, { toolSettings, settings } = {}) {
     ledger,
     before: async (server, _key, dir) => {
       launch.learning = startAt(await landWorkflows(dir, AGENT, FLOWS));
-      await promoteChecked(server.settings, AGENT, FLOWS);
+      await promoteChecked(server, AGENT, FLOWS);
     },
   });
 }
@@ -67,7 +68,7 @@ async function codexSpec(t, { toolSettings }) {
     rmSync(dir, { recursive: true, force: true });
   });
   const sha = await landWorkflows(dir, AGENT, FLOWS);
-  await promoteChecked(server.settings, AGENT, FLOWS);
+  await promoteChecked(server, AGENT, FLOWS);
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "codex", tools: GRANTED, learning: true, toolSettings } });
   const launch = { input: { content: "Fetch it." }, title: "t", place: { mode: "runner" }, harness: "codex", model: { provider: "openai", modelId: "gpt-6.1-sol" }, learning: startAt(sha) };
   await server.runs.create({ id: "run-1", agentId: AGENT, revisionId: "rev-1" }, { body: launch });
@@ -80,7 +81,7 @@ async function codexSpec(t, { toolSettings }) {
   await harnessRun.commit((tx) => tx.createRootConversation(), ctx);
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
-  built = await cliRunSpecFromLaunch(launch, { harness: harnessRun, registry, setModels: (given) => (models = given), ledger }, deps, claim);
+  built = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness: harnessRun, registry, setModels: (given) => (models = given), ledger }, deps, claim);
   return built;
 }
 

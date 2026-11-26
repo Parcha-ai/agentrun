@@ -5,8 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import { freeRequestLimitOf } from "@parcha/agentrun-kernel/kernel/cap";
-import { learningFolderOf, secretsShown } from "../learning.js";
-import { refusedIn } from "../purged-workflow.js";
+import { secretsShown } from "../learning.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { RunLaunch } from "../run-launch.js";
 import { cliPolicyOf, closeSdkInbox, type SdkInbox, sdkInbox } from "../sdk/runs.js";
@@ -22,6 +21,7 @@ import { capNowOf, KINDS } from "./journal-kinds.js";
 import { bookedSpend } from "./metrics.js";
 import { stopEnd, type AlsoRow, type Claim, type EndOfRunAnswer, type EndOfRunKept, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { END_PATCH_MS, END_PATCH_UNKNOWN, REAL_TIMER } from "./loop.js";
+import { mustHold } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 
 const ROOT = ROOT_CONVERSATION_ID;
@@ -33,6 +33,7 @@ export function createSdkLoop(
   const execution=launch.cli_learning ?? launch.sdk!;
   const MARK=launch.cli_learning?"agentrun.cli":"agentrun.sdk";
   return (deps) => {
+    mustHold(deps.redact, "An SDK loop");
     let stopped: StopReason | undefined;
     const abort = new AbortController(),
       signal = AbortSignal.any([deps.signal, abort.signal]);
@@ -93,7 +94,7 @@ export function createSdkLoop(
             });
             return (asked?.data as { kept?: EndOfRunKept } | undefined)?.kept;
           };
-          const redacted = (value: string) => deps.redact?.(value) ?? value;
+          const redacted = (value: string) => deps.redact(value);
           let also: readonly AlsoRow[] | undefined;
           const droppedLearning = (cancelled: boolean): readonly AlsoRow[] | undefined =>
             launch.learning && !launch.learning.use ? [{
@@ -117,7 +118,6 @@ export function createSdkLoop(
                 store: host.store, agentId: agent, launch, inbox,
                 shown: async () => secretsShown(Object.values(await storeSecrets(host.store, host.sealKey, host.data)), { local: true }),
                 log: (line) => host.log?.(line),
-                refused: refusedIn(() => learningFolderOf(host.data, agent), host.store, (line) => host.log?.(line)),
               });
             } catch (error) {
               host.log?.(`workflow-first: the connected agent's check on run ${claim.runId} could not be settled (${error instanceof Error ? error.message : String(error)}); it is decided at its deadline`);
@@ -292,7 +292,6 @@ export function createSdkLoop(
               const end = learningEndOfRun(launch, {
                 store: host.store,
                 data: host.data,
-                learningFolder: (id) => learningFolderOf(host.data, id),
                 env: host.env ?? process.env,
                 stored: () => storeSecrets(host.store, host.sealKey, host.data),
               });
@@ -430,7 +429,7 @@ export function createSdkLoop(
                 }).filter((turn) => !turn.givenBack && !turn.unsent);
                 const tokens = (key: keyof typeof spend.tokens) =>
                   spend.unmetered || turns.some((turn) => typeof turn.usage?.[key] !== "number") ? null : spend.tokens[key];
-                const path = completeEvidence ? await runPathMetricsOverStore(host.store, claim.runId, launch) : {};
+                const path = completeEvidence ? await runPathMetricsOverStore(host.store, claim.runId, launch, { redact: deps.redact }) : {};
                 return {
                   costUsd: spend.usd,
                   metrics: { ...metrics, input: tokens("input"), output: tokens("output"), cacheRead: tokens("cacheRead"), cacheWrite: tokens("cacheWrite"), ...path },
@@ -453,7 +452,7 @@ export function createSdkLoop(
             also = droppedLearning(cancelled);
             const patch = await patchOf(async () => ({
               costUsd: usage?.cost_usd ?? null,
-              metrics: { ...metrics, ...(completeEvidence ? await runPathMetricsOverStore(host.store, claim.runId, launch) : {}) },
+              metrics: { ...metrics, ...(completeEvidence ? await runPathMetricsOverStore(host.store, claim.runId, launch, { redact: deps.redact }) : {}) },
             }));
             await append(
               [

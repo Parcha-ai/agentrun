@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { childLoops, runTops } from '../dist/runner/run-child-host.js';
+import { heldRedactor } from '../dist/runner/redact.js';
 import { launchBody } from '../dist/run-launch.js';
 import { storeOn } from './store-helpers.mjs';
 
@@ -25,7 +26,7 @@ test('a refused local moved-project UID claim never asks its helper to change se
   await chmod(helper, 0o755);
   const deps = { store, data, sealKey, env: {}, computerForClaim: async () => { throw new Error('computer must not start'); } };
   const loop = childLoops({ deps, isolation: { kind: 'uid', helper, first: 0, slots: 1 }, log: () => {} })({
-    signal: new AbortController().signal, journal: claim => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(),
+    signal: new AbortController().signal, journal: claim => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(), redact: heldRedactor(text => text),
   });
   const claim = await store.claim('run', 'fixture', { leaseMs: 60_000 });
   await assert.rejects(loop.start(claim), /project_mode_fidelity/);

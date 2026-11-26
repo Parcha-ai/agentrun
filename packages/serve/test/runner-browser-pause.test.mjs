@@ -21,6 +21,7 @@ const { TOOLS, FAUX_BROWSER_ENV } = await import("../dist/tools.js");
 const { FAUX_ENV } = await import("../dist/model.js");
 const { TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 const { hostLifecycle } = await import("../dist/runner/adapter-loop.js");
+const { heldRedactor, runnerSecrets, secretRedactor } = await import("../dist/runner/redact.js");
 const kernelCap = await import("../../run-adapters/dist/kernel/cap/index.js");
 
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
@@ -49,7 +50,9 @@ async function browse(t, ledger, script) {
   const registry = createRegistry();
   const handed = [];
   const liveViewers = { put: async (handover) => (handed.push(handover), true), drop: async () => {} };
-  const host = { where: { root, work: join(root, "work"), ref: { id: "run-1" } }, env: { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: "browserbase" }) }, install: (extension) => registry.install(extension), ...lifecycle.register, liveViewers, ledger };
+  const env = { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: "browserbase" }) };
+  // The runner's one redactor, as the run's spec hands its ToolHost (run.redact): held, over the env's secrets.
+  const host = { where: { root, work: join(root, "work"), ref: { id: "run-1" } }, env, redact: heldRedactor(secretRedactor(runnerSecrets(env))), install: (extension) => registry.install(extension), ...lifecycle.register, liveViewers, ledger };
   const binding = await TOOLS.browser.bind(host);
   const model = faux.fauxProvider({ models: [{ id: "faux-1" }] });
   const results = [];

@@ -90,6 +90,16 @@ export function script(spec, session = {}) {
   // <question> when the line names one: the harness's third request comes after the workflow's node request.
   const thrice = /Grow three requests(?:, the second running the learned workflow (\S+) on (.+?))?\./.exec(text);
   if (thrice) return [grown(0), thrice[1] ? { ...grown(1), call: "learned_workflow", args: { name: thrice[1], input: { question: thrice[2] } } } : grown(1), grown(2), { say: "Grown.", usd: 0.001 }];
+  // "Call learned_workflow with <json>, again after a crash.": the run's learned_workflow on those arguments, then a
+  // closing answer. A crash that cuts the call off mid-call leaves it for the recovered turn to issue again (`again`),
+  // the gate asked first as the tool bridge asks it, as a CLI sends its transcript's unanswered call again through it.
+  const cutAgain = /Call learned_workflow with (\{.*\}), again after a crash\./.exec(text);
+  if (cutAgain) return [{ call: "learned_workflow", args: JSON.parse(cutAgain[1]), usd: 0.001, again: true }, { say: "Done after the crash.", usd: 0.001 }];
+  // "Call learned_workflow with <json>, the process dying once its gate answers.": the process stops once the call's gate
+  // has answered, before the CLI writes anything of it (`dies`), so the recovered turn issues it again; then a closing answer.
+  // With ", and again after a crash" it is also issued again when a later crash cuts it mid-call (`again`).
+  const diesAtGate = /Call learned_workflow with (\{.*\}), the process dying once its gate answers(, and again after a crash)?\./.exec(text);
+  if (diesAtGate) return [{ call: "learned_workflow", args: JSON.parse(diesAtGate[1]), usd: 0.001, dies: true, ...(diesAtGate[2] ? { again: true } : {}) }, { say: "Done after the crash.", usd: 0.001 }];
   // "Use the learned workflow <name> on <question>, and write note.md in the same answer.": one answer that asks for the
   // run's learned_workflow and a write, run in turn, then a closing answer.
   const beside = /Use the learned workflow (\S+) on (.+?), and write note\.md in the same answer\./.exec(text);

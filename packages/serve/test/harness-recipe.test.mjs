@@ -15,6 +15,7 @@ import { HarnessKeysOverStore, layHarnessKeys } from "../dist/harness-keys.js";
 import { planRecipesOf } from "../dist/harness-table.js";
 import { launchBody, readLaunchBody } from "../dist/run-launch.js";
 import { putSealedKey } from "../dist/server-keys.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const [{ checkedNoteOf, installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenTreeOf, signedInNoteOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
   import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
@@ -1089,7 +1090,7 @@ test("an archive is pinned by exactly one digest, its sha256 or its sha512 (as G
   assert.equal(refusalOf(pinned({ sha512: SHA512 })).code, RECIPE_CODES.binary);
 });
 
-// The Antigravity example (examples/harness-recipe/antigravity.json): Google's agy CLI 1.5.14 as its release manifests
+// The Antigravity recipe AgentRun ships (@parcha/agentrun-harness-acp's recipes/bundled/antigravity.json): Google's agy CLI 1.5.14 as its release manifests
 // list it (https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/<target>.json), each archive
 // pinned by the manifest's sha512, as T3 Code installs it. It runs on its owner's own sign-in, or a key saved for it alone.
 // The digests are the manifests' own and are read again at each bump; offline, the test holds the file to what a bump must
@@ -1102,8 +1103,8 @@ const agyTarget = (platform) => {
   return `${os}-${x64 ? "x64" : "arm"}/cli_${os === "darwin" ? "mac" : os}_${x64 ? "x64" : "arm64"}.tar.gz`;
 };
 
-test("the Antigravity example recipe loads under the five rules: agy CLI 1.5.14, each platform's archive of one build pinned by its own sha512, `agy acp`, the agent's own --login with --gemini-dir, and a key handed as GEMINI_API_KEY with gemini-api-key", () => {
-  const file = new URL("../../../examples/harness-recipe/antigravity.json", import.meta.url).pathname;
+test("the Antigravity recipe loads under the five rules: agy CLI 1.5.14, each platform's archive of one build pinned by its own sha512, `agy acp`, the agent's own --login with --gemini-dir, and a key handed as GEMINI_API_KEY with gemini-api-key", () => {
+  const file = new URL("../../run-adapters-acp/recipes/bundled/antigravity.json", import.meta.url).pathname;
   const { recipe } = loadRecipe(file);
   assert.equal(recipe.id, "antigravity");
   assert.equal(recipe.release.registry, undefined, "the agy CLI is not in the ACP registry");
@@ -1169,26 +1170,39 @@ async function noteChecked(data, file) {
 }
 
 test("a server takes a recipe it names only once its install is checked: hidden until then, by the code and the command that fix it, and a plan-billed one on keys saved for its harness, never the shell's", { timeout: 60_000 }, async (t) => {
-  const [{ harnessIds, harnessOf, harnessRecipesEnv, harnessTable, tableIds }, { checkedNoteOf, signedInNoteOf }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/harness-recipe.js")]);
-  // Named but not installed: in the table, so a run naming it is refused in words, and listed nowhere.
+  const [{ harnessIds, harnessOf, harnessRecipesEnv, harnessTable, offeredIds, tableIds }, { checkedNoteOf, signedInNoteOf }, { harnessOffers }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/harness-recipe.js"), import("../dist/harness.js")]);
+  // What capabilities say of it: the recipe its owner started the server with is always offered, not available until it
+  // runs, with the reason (the code and the command that fix it), never left out of the list.
+  const offerOf = async (on) => (await harnessOffers({ ...on })).find((each) => each.id === "model-agent");
+  // Named but not installed: in the table, so a run naming it is refused in words; no definition may pick it, and
+  // capabilities offer it as not available, saying why.
   const bare = join(await scratch(t), "agents");
   const bareFile = await recipeFile(t, recipeOf());
   const bareEnv = harnessRecipesEnv([bareFile], bare);
   assert.ok(tableIds(bareEnv).includes("model-agent"));
   assert.equal(harnessIds(bareEnv).includes("model-agent"), false);
   assert.match(harnessOf(bareEnv, "model-agent").hidden(bareEnv), /^HARNESS_NOT_INSTALLED: .*Install it with: agentrun harness install --recipe/);
+  assert.ok(offeredIds(bareEnv).includes("model-agent"));
+  const bareOffer = await offerOf(bareEnv);
+  assert.deepEqual([bareOffer?.label, bareOffer?.available], ["Model Agent", false], JSON.stringify(bareOffer));
+  assert.match(bareOffer.reason, /^HARNESS_NOT_INSTALLED: .*Install it with: agentrun harness install --recipe/);
 
-  // Installed, never checked: hidden, and a run is refused, naming the check.
+  // Installed, never checked: hidden, and a run is refused, naming the check; offered as not available, naming it too.
   const proxy = await installed(t, recipeOf());
   const env = harnessRecipesEnv([proxy.file], proxy.data);
   const entry = harnessOf(env, "model-agent");
   assert.match(entry.hidden(env), /^HARNESS_NOT_CHECKED: .*Check it with: agentrun harness-check --recipe/);
   assert.match((await entry.refusal(env, undefined, { atStart: false }))?.reason ?? "", /HARNESS_NOT_CHECKED/);
+  const unchecked = await offerOf(env);
+  assert.equal(unchecked?.available, false, JSON.stringify(unchecked));
+  assert.match(unchecked.reason, /^HARNESS_NOT_CHECKED: .*Check it with: agentrun harness-check --recipe/);
+  assert.deepEqual([unchecked.models, unchecked.default_model], [[], null], "no model is offered for a harness that does not run");
   // Checked for this recipe, binary and tree: listed, through this server's model proxy.
   await noteChecked(proxy.data, proxy.file);
   assert.equal(statSync(checkedNoteOf(proxy.data, "model-agent")).mode & 0o777, 0o600);
   assert.equal(entry.hidden(env), undefined);
   assert.ok(harnessIds(env).includes("model-agent"));
+  assert.notEqual((await offerOf(env))?.reason ?? "", unchecked.reason, "the check's reason is gone once it passed");
   // A pass noted for another install (its tree, the binary among it) is no pass for this one.
   const note = JSON.parse(readFileSync(checkedNoteOf(proxy.data, "model-agent"), "utf8"));
   writeFileSync(checkedNoteOf(proxy.data, "model-agent"), JSON.stringify({ ...note, tree: "0".repeat(64) }));
@@ -1793,7 +1807,7 @@ test("a held run on a plan-billed recipe whose model was refused at its create i
     const harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
     const deps = { env, data, journal: (c) => store.journal(c), store, sealKey: seal, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
     asked.length = 0;
-    const spec = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+    const spec = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
     specs.push({ spec, harness });
     return { spec, asked: [...asked] };
   };
@@ -1859,7 +1873,7 @@ async function planClaim(t, { over = {}, installed = true, perRunProcess = false
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const deps = { env, data, journal: (c) => store.journal(c), store, sealKey: perRunProcess ? undefined : seal, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
-  spec = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  spec = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
   return spec;
 }
 

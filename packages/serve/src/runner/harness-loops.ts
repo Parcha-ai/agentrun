@@ -1,6 +1,6 @@
 import { envGatewayInForce, readSavedGateway, savedGatewayIn, savedGatewayMarked, SAVED_GATEWAY_ENV, withSavedGateway } from "../model-gateway.js";
 import { GATEWAY_KEY_ENV } from "../model.js";
-import { heldRedactor } from "./redact.js";
+import { mustHold } from "./redact.js";
 import { envValue } from "../key-meta.js";
 import { createSdkLoop } from "./sdk-loop.js";
 import { createNativeLoop } from "./native-loop.js";
@@ -81,7 +81,7 @@ function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined
   const key = env && savedGatewayIn(env) ? env[GATEWAY_KEY_ENV] : undefined;
   if (!key) return made;
   return (loopDeps) => {
-    if (loopDeps.redact) heldRedactor(loopDeps.redact).hold([key]);
+    mustHold(loopDeps.redact, "A loop over the saved gateway").hold([key]);
     return made(loopDeps);
   };
 }
@@ -168,9 +168,8 @@ async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch,
     if (tooBig) throw new NeverFits(tooBig);
     const entry = harnessOf(env, harness);
     // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
-    // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
-    // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The spec is the loop's only source of a step; a run that does
-    // not learn supplies none. The same for the pi and the CLI spec.
+    // (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The spec is the loop's only source of a step; a run that
+    // does not learn supplies none. The same for the pi and the CLI spec.
     return createAdapterLoop((claim, adapterRun) =>
       entry?.facts && entry.adapter
         ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)

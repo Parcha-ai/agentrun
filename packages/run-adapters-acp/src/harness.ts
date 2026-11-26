@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { announceCall, announcedField, CallIds, MCP_SERVER, nameCall, ourTool, permissionCallId } from "./calls.js";
+import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, mcpServerName, nameCall, namesTooLong, ourTool, permissionCallId, TOOL_NAME_CAP, type AcpAnnounces } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { allowFileText, homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -113,7 +113,11 @@ type Outcome = { status: "completed" | "interrupted" | "failed"; error?: string;
 
 /** The turn in flight. */
 interface Turn {
+  /** The agent's text since its last call was announced or ended: its answer, unless nothing follows (then `kept`). */
   final: string;
+  /** The text the agent wrote before a call of its ended (Cursor narrates between a call's announcement and its end):
+   *  the answer only when the agent writes nothing after it. */
+  kept: string;
   limitHit?: string;
   /** Aborted when the turn ends or is cancelled: a permission request still waiting is answered cancelled. */
   stop: AbortController;
@@ -142,6 +146,10 @@ interface Runtime {
   /** What the next prompt carries ahead of its own words (the instructions, the context note), once. */
   firstBlocks: string[];
   calls: CallIds;
+  /** The name our MCP server is given to the agent under at this start (mcpServerName). */
+  server: string;
+  /** The recipe's announces as this start reads them, its prefix naming `server` (announcesAt). */
+  announces: AcpAnnounces | undefined;
   counted: Set<string>;
   /** The permission call ids this agent process's requests took: each request of the open turn takes one of its own. */
   claimed: Set<string>;
@@ -263,6 +271,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   const plan = recipe.billing.kind === "plan" ? recipe.billing : undefined;
   const listed = options.tools.filter((tool) => !tool.deferred);
   const names = new Set(listed.map((tool) => tool.name));
+  /** For each tool, the recipe's announces.extras its own input schema declares: kept in its arguments (announceCall). */
+  const declared = new Map(listed.map((tool) => [tool.name, new Set((recipe.announces?.extras ?? []).filter((name) => declaresProperty(tool.inputSchema, name)))]));
   let runtime: Runtime | undefined;
 
   /** The recipe's refusal `text` (the agent's stderr, an error it answered) says, as `<code>: <words>`; undefined when it
@@ -356,10 +366,10 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       }
       case "tool_call": {
         if (!cur) return;
-        if (cur.turn) cur.turn.final = "";
+        if (cur.turn) cur.turn.final = cur.turn.kept = "";
         countCall(rt, cur, update.toolCallId);
         // Kept for the MCP call it may be, named by the recipe's announces field, never by its title (announceCall).
-        announceCall(rt.calls, update, recipe.announces, names);
+        announceCall(rt.calls, update, rt.announces, names, declared);
         logAnnounced(rt, update);
         return;
       }
@@ -367,10 +377,12 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (!cur) return;
         // A call the agent named only after announcing it with no input (Cursor's): by the recipe's field (nameCall).
         const held = rt.calls.held(update.toolCallId);
-        nameCall(rt.calls, update, recipe.announces, names);
+        nameCall(rt.calls, update, rt.announces, names, declared);
         if (held && !rt.calls.held(update.toolCallId)) logAnnounced(rt, update);
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
         if (update.status !== "completed" && update.status !== "failed") return;
+        // What the agent wrote before the call ended is set aside: what it writes after is the answer.
+        if (cur.turn?.final.trim()) [cur.turn.kept, cur.turn.final] = [cur.turn.final, ""];
         // An ended call takes no MCP call's id (CallIds.settle).
         rt.calls.settle(update.toolCallId);
         mirrorInto(rt, cur.journal);
@@ -457,7 +469,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     // title never sets that: CallIds.announced comes from the field alone). Without the
     // quirk (Goose, which asks nothing for our tools: its allowFile) every request is the host gate's, journaled.
     if (recipe.quirks?.permissionTie === "title") {
-      const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names);
+      const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names, rt.server);
       if (mine && rt.calls.announced(request.toolCall.toolCallId) === mine) return choose("allow_once");
     }
     const call = request.toolCall;
@@ -577,6 +589,12 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       else absent.push(name);
     }
     if (absent.length) throw new Error(`${ACP_CODES.keyMissing}: ${recipe.label ?? recipe.id} runs on ${absent.join(" and ")}, which this host does not hold; the agent was not started`);
+    // Under a start's own server name each of our tools is named longer: one past the agent's cap could never be called,
+    // so the start is refused before anything is made.
+    const serverName = mcpServerName(recipe.announces);
+    const prefix = announcesAt(recipe.announces, serverName)?.prefix ?? "";
+    const tooLong = joinsByOne(recipe.announces) ? namesTooLong(announcesAt(recipe.announces, serverName), names) : [];
+    if (tooLong.length) throw new Error(`acp: ${recipe.label ?? recipe.id} names each of our tools ${prefix}<tool>, at most ${TOOL_NAME_CAP} characters in all, so a tool's own name may be at most ${TOOL_NAME_CAP - prefix.length}; ${tooLong.map((tool) => JSON.stringify(tool)).join(", ")} ${tooLong.length === 1 ? "is" : "are"} longer; the agent was not started`);
     mkdirSync(base, { recursive: true, mode: 0o700 });
     // Everything the agent kept goes: what it starts with is the session's records, never an earlier process's files.
     for (const dir of [home, tmp]) {
@@ -612,7 +630,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const stopped = new AbortController();
     const signal = AbortSignal.any([ctx.signal, stopped.signal]);
     const key = randomBytes(32).toString("base64url");
-    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log, (words) => (rt.current?.ctx ?? ctx).live({ type: "notice", text: words })) } as unknown as Runtime;
+    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), server: serverName, announces: announcesAt(recipe.announces, serverName), counted: new Set(), claimed: new Set(), ownIds: new Set(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log, (words) => (rt.current?.ctx ?? ctx).live({ type: "notice", text: words })) } as unknown as Runtime;
     const mcp = await startMcpServer({ tools: listed.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as Record<string, unknown> })), key, log, call: (name, args, callSignal) => onMcpCall(rt, name, args, callSignal) });
     let proxy: { env: Record<string, string>; close(): Promise<void> } | undefined;
     let agent: AgentProcess | undefined;
@@ -717,8 +735,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
 
       const server: AcpMcpServer =
         recipe.declares.mcp === "http"
-          ? { type: "http", name: MCP_SERVER, url: mcp.url, headers: [{ name: "Authorization", value: `Bearer ${key}` }] }
-          : { name: MCP_SERVER, command: process.execPath, args: [STDIO_BRIDGE], env: [{ name: "AGENTRUN_MCP_URL", value: mcp.url }, { name: "AGENTRUN_MCP_KEY", value: key }] };
+          ? { type: "http", name: rt.server, url: mcp.url, headers: [{ name: "Authorization", value: `Bearer ${key}` }] }
+          : { name: rt.server, command: process.execPath, args: [STDIO_BRIDGE], env: [{ name: "AGENTRUN_MCP_URL", value: mcp.url }, { name: "AGENTRUN_MCP_KEY", value: key }] };
       const instructions = options.instructions?.trim() ? options.instructions : undefined;
       const systemPrompt: SystemPrompt | undefined = instructions && caps.sessionCapabilities?.systemPrompt ? { mode: "append", content: [{ type: "text", text: instructions }] } : undefined;
       const last = journalRecords<{ sessionId?: unknown }>(ctx.state(), SESSION_STREAM).map((r) => r.data?.sessionId).filter((id): id is string => typeof id === "string").at(-1);
@@ -863,7 +881,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       await journal.flush();
       const prompt: ContentBlock[] = [...agent.firstBlocks.splice(0), ...body].map((text) => ({ type: "text", text }));
       let ended!: () => void;
-      const turn: Turn = { final: "", stop: new AbortController(), ended: new Promise<void>((resolve) => (ended = resolve)) };
+      const turn: Turn = { final: "", kept: "", stop: new AbortController(), ended: new Promise<void>((resolve) => (ended = resolve)) };
       cur.turn = turn;
       let answer: { stopReason?: string } | undefined;
       let failure: unknown;
@@ -918,7 +936,9 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         else if (reason === "max_turn_requests") outcome = { status: "failed", error: `${ACP_CODES.agentTurnRequests}: the agent stopped the turn at its own limit of requests` };
         else outcome = { status: "failed", error: `acp: the agent ended the turn with an unknown stop reason ${JSON.stringify(reason)}` };
       }
-      if (turn.final) journal.message({ type: "message", role: "assistant", text: turn.final });
+      // Only whitespace after the call (a trailing newline) is no answer of its own: the text before it is.
+      const lastText = turn.final.trim() ? turn.final : turn.kept;
+      if (lastText) journal.message({ type: "message", role: "assistant", text: lastText });
       journal.message({ type: "turn", ...outcome } as TranscriptEntry);
       await journal.flush();
       return outcome;
