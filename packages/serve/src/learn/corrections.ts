@@ -1,4 +1,4 @@
-// An agent's standing corrections: one file, corrections.md, at its learning folder's top, in its owner's words. An
+// An agent's standing corrections: one file, corrections.md, at its learning's top, in its owner's words. An
 // owner's feedback (a grade with words, a message after the answer) adds one line; a person may replace it whole over
 // v2. Every run of the agent is served it whole under # Learned. Nothing that must never be stored (a host secret, text
 // shaped like one, a character a reader does not see) is written, and the file never grows past CORRECTIONS_CAP.

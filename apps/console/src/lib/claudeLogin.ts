@@ -74,6 +74,13 @@ export const UNKNOWN = "The Claude Code CLI didn't say whether it is signed in. 
 export const OTHER_MACHINE = "Turned on for another machine: Claude Agent runs here use the model keys.";
 /** Said of a login kept while the server refuses its folders (state `refused`), above the server's own words for why. */
 export const KEPT_REFUSED = "Turned on, and not used while this server refuses its folders: Claude Agent runs here use the model keys. It is used again once that is mended, or turn it off.";
+/** Whether the row offers Sign out: signed in on AgentRun's own login. This machine's own login is the person's, which
+ *  the server refuses to sign out (claude-login.ts signOutClaudeLogin), so the row never offers it there. */
+export const canSignOut = (v: LoginView): boolean => v.state === "signed_in" && v.place === "agentrun";
+/** Asked before a sign-out. */
+export const SIGN_OUT_ASK = "Sign out of Claude here? AgentRun's copy of the login is removed and the mode turns off. Turn it on again to sign in, with this account or another.";
+/** Said after a sign-out the CLI confirmed. */
+export const SIGNED_OUT_HERE = "Signed out. Turn it on again to sign in, with this account or another.";
 /** A plan's requests in dollars: none. A run on the login says it on hover, as a ChatGPT plan run does. */
 export const LOGIN_NO_DOLLARS = "Requests on your Claude plan through Claude Code's login cost no dollars here; your plan's own limits apply.";
 

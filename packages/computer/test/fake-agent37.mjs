@@ -3,7 +3,7 @@
 // fake WebSocket that checks the edge's X-Agent37-Key and carries the bytes over TCP. A command runs as sshd runs one:
 // the login shell's -c, as a session leader of its own (detached). The shell is the test machine's own.
 import { spawn } from "node:child_process";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { connect } from "node:net";
 import ssh2 from "ssh2";
 
@@ -30,15 +30,36 @@ export function keyPair() {
 const json = (status, body) => new Response(body === undefined ? null : JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const envelope = (status, code, message) => json(status, { error: { code, message } });
 
+/** At most this many SSH keys on one workspace: the next POST answers 400 invalid_request (docs: agents-api/ssh). */
+export const MAX_SSH_KEYS = 20;
+
+/** An OpenSSH public key line's fingerprint as Agent37 answers it: "SHA256:" and the blob's sha256 in base64, unpadded. */
+export const fingerprintOf = (line) => `SHA256:${createHash("sha256").update(Buffer.from(line.split(" ")[1], "base64")).digest("base64").replace(/=+$/, "")}`;
+
 /**
  * The REST API. Each instance is the object Agent37 answers (docs: instances/object). fail(method, path, response)
  * answers the next call matching with response once; calls lists every call, its method, path, auth and body.
+ * sshKeys: the workspace's registered SSH keys (docs: agents-api/ssh), each { id, name, fingerprint, type, created } as
+ * Agent37 lists it, with its public line and liveAt, when it reaches instances made before it: settleMs after its POST.
+ * bootKeys: each instance's keys from its boot, the fingerprints registered when it was made. authorizedFor(id): the
+ * public lines instance id's sshd takes now.
  */
-export function fakeRest({ key = KEY } = {}) {
+export function fakeRest({ key = KEY, settleMs = 0 } = {}) {
 	const instances = new Map();
 	const calls = [];
 	const failures = [];
+	const sshKeys = [];
+	const bootKeys = new Map();
 	let next = 0;
+	let nextKey = 0;
+	const keyOf = (entry) => ({ id: entry.id, name: entry.name, fingerprint: entry.fingerprint, type: entry.type, created: entry.created });
+	/** A key registered as if by someone else, at created (s); live on every instance at once unless liveAt says. */
+	const register = (line, { name = null, created = Math.floor(Date.now() / 1000), liveAt = 0 } = {}) => {
+		const entry = { id: `sshkey_${String(nextKey++).padStart(6, "0")}`, object: "ssh_key", name, fingerprint: fingerprintOf(line), type: line.split(" ")[0], created, line, liveAt };
+		sshKeys.push(entry);
+		return entry;
+	};
+	const authorizedFor = (id) => sshKeys.filter((entry) => entry.liveAt <= Date.now() || (bootKeys.get(id) ?? new Set()).has(entry.fingerprint)).map((entry) => entry.line);
 	const fetch = async (url, init = {}) => {
 		const { pathname } = new URL(url);
 		const method = init.method ?? "GET";
@@ -52,6 +73,23 @@ export function fakeRest({ key = KEY } = {}) {
 			return typeof response === "function" ? response() : response;
 		}
 		if (auth !== `Bearer ${key}`) return envelope(401, "invalid_api_key", "Invalid API key");
+		if (pathname === "/v1/ssh-keys" && method === "GET") return json(200, { object: "list", data: [...sshKeys].reverse().map(keyOf) });
+		if (pathname === "/v1/ssh-keys" && method === "POST") {
+			const line = typeof body?.public_key === "string" ? body.public_key.trim() : "";
+			if (!/^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( \S+)?$/.test(line) || utils.parseKey(line) instanceof Error) return envelope(400, "invalid_request", "public_key must be one OpenSSH public key line");
+			const fingerprint = fingerprintOf(line);
+			if (sshKeys.some((entry) => entry.fingerprint === fingerprint)) return envelope(409, "ssh_key_exists", "An SSH key with this fingerprint already exists in this workspace");
+			if (sshKeys.length >= MAX_SSH_KEYS) return envelope(400, "invalid_request", `A workspace can have at most ${MAX_SSH_KEYS} SSH keys`);
+			const entry = register(line, { name: typeof body.name === "string" ? body.name : null, liveAt: Date.now() + settleMs });
+			return json(201, keyOf(entry));
+		}
+		const sshKey = /^\/v1\/ssh-keys\/([^/]+)$/.exec(pathname);
+		if (sshKey && method === "DELETE") {
+			const at = sshKeys.findIndex((entry) => entry.id === sshKey[1]);
+			if (at < 0) return envelope(404, "not_found", `No such SSH key: ${sshKey[1]}`);
+			sshKeys.splice(at, 1);
+			return json(200, { id: sshKey[1], object: "ssh_key", deleted: true });
+		}
 		if (pathname === "/v1/instances" && method === "POST") {
 			const id = `fake${String(next++).padStart(6, "0")}`;
 			const shape = body.resources ?? { cpu: 2, memory: 4 };
@@ -74,6 +112,8 @@ export function fakeRest({ key = KEY } = {}) {
 				created: 1_800_000_000,
 			};
 			instances.set(id, instance);
+			// An instance made after a key is registered has it from boot (docs: agents-api/ssh).
+			bootKeys.set(id, new Set(sshKeys.map((entry) => entry.fingerprint)));
 			return json(201, instance);
 		}
 		if (pathname === "/v1/instances" && method === "GET") return json(200, { data: [...instances.values()].reverse() });
@@ -99,6 +139,9 @@ export function fakeRest({ key = KEY } = {}) {
 		fetch,
 		instances,
 		calls,
+		sshKeys,
+		register,
+		authorizedFor,
 		fail: (method, path, response) => failures.push({ method, path, response }),
 	};
 }
@@ -112,16 +155,18 @@ export function fakeRest({ key = KEY } = {}) {
  * refuseSessions(n) refuses the next n session channels besides, dropAll() cuts every connection from the server's
  * side, and close() ends them all, then the server. accept(ctx), when given, decides each login in place of the one
  * key as root (Morph's gateway: its own username, any key); run(command, stream), when given, may answer a command
- * itself (true), in place of bash.
+ * itself (true), in place of bash. authorized(id), when given, is the public lines instance id's sshd takes as root now
+ * (fakeRest's authorizedFor: the workspace's registered keys), the instance named by the client's port in routes, which
+ * fakeWebSocket fills; state.denied counts the logins refused.
  */
-export async function fakeSshd({ publicKey, accept, run }) {
+export async function fakeSshd({ publicKey, accept, run, authorized, routes }) {
 	const host = keyPair();
 	const allowed = publicKey === undefined ? undefined : utils.parseKey(publicKey);
 	const commands = [];
 	const children = new Set();
 	const clients = new Set();
-	const state = { logins: 0, live: 0, sessions: 0, refusing: 0 };
-	const server = new Server({ hostKeys: [host.private] }, (client) => {
+	const state = { logins: 0, live: 0, sessions: 0, refusing: 0, denied: 0 };
+	const server = new Server({ hostKeys: [host.private] }, (client, info) => {
 		clients.add(client);
 		state.live++;
 		client.on("close", () => {
@@ -132,9 +177,12 @@ export async function fakeSshd({ publicKey, accept, run }) {
 		client.on("authentication", (ctx) => {
 			if (accept !== undefined) return accept(ctx) ? ctx.accept() : ctx.reject(["publickey"]);
 			const key = ctx.method === "publickey" ? ctx.key : undefined;
-			const same = key && ctx.username === "root" && key.algo === allowed.type && key.data.length === allowed.getPublicSSH().length && timingSafeEqual(key.data, allowed.getPublicSSH());
-			if (!same) return ctx.reject(["publickey"]);
-			if (ctx.signature && allowed.verify(ctx.blob, ctx.signature, ctx.hashAlgo) !== true) return ctx.reject(["publickey"]);
+			const takes = authorized === undefined ? [allowed] : authorized(routes?.get(info.port)).map((line) => utils.parseKey(line));
+			const match = key && ctx.username === "root" ? takes.find((one) => key.algo === one.type && key.data.length === one.getPublicSSH().length && timingSafeEqual(key.data, one.getPublicSSH())) : undefined;
+			if (!match || (ctx.signature && match.verify(ctx.blob, ctx.signature, ctx.hashAlgo) !== true)) {
+				if (ctx.method === "publickey") state.denied++;
+				return ctx.reject(["publickey"]);
+			}
 			ctx.accept();
 		});
 		client.on("ready", () => {
@@ -217,7 +265,7 @@ export async function fakeSshd({ publicKey, accept, run }) {
  * 1008 before it opens, as Agent37's edge closes it), then every binary frame rides a TCP connection to port. opened lists
  * each URL and its headers.
  */
-export function fakeWebSocket({ port, key = KEY }) {
+export function fakeWebSocket({ port, key = KEY, routes }) {
 	const opened = [];
 	/** How many of the next tunnels fail to open (an error, then 1006), as a fresh instance's edge did once live. */
 	const state = { failing: 0, hanging: 0 };
@@ -244,6 +292,8 @@ export function fakeWebSocket({ port, key = KEY }) {
 					return;
 				}
 				this.#socket = connect(port, "127.0.0.1", () => {
+					// The instance this tunnel reaches, by the sshd's view of the connection: its client port.
+					routes?.set(this.#socket.localPort, new URL(url).hostname.split("-")[0]);
 					this.readyState = 1;
 					this.#emit("open", {});
 				});
@@ -286,4 +336,36 @@ export async function fakeAgent37() {
 	const sshd = await fakeSshd({ publicKey: pair.public });
 	const ws = fakeWebSocket({ port: sshd.port });
 	return { rest, sshd, ws, sshKey: pair.private, options: { apiKey: KEY, sshKey: pair.private, ssh2, fetch: rest.fetch, WebSocket: ws.WebSocket, apiUrl: API_URL, proxyDomain: PROXY } };
+}
+
+/**
+ * All three, wired as a workspace whose instances' sshd takes only the keys registered on it (POST /v1/ssh-keys): a key
+ * reaches an instance made before it settleMs after its registration, and one made after it from boot. options carry
+ * the API key alone, no SSH key.
+ */
+export async function fakeWorkspace({ settleMs = 0 } = {}) {
+	const rest = fakeRest({ settleMs });
+	const routes = new Map();
+	const sshd = await fakeSshd({ authorized: rest.authorizedFor, routes });
+	const ws = fakeWebSocket({ port: sshd.port, routes });
+	return { rest, sshd, ws, options: { apiKey: KEY, ssh2, fetch: rest.fetch, WebSocket: ws.WebSocket, apiUrl: API_URL, proxyDomain: PROXY } };
+}
+
+/**
+ * A store of a provider's own secrets in memory, as a server's sealed one is used: get by name, and putIfAbsent, which
+ * keeps the first value under a name and answers the one kept. puts lists each write asked.
+ */
+export function memorySecrets() {
+	const held = new Map();
+	const puts = [];
+	return {
+		held,
+		puts,
+		get: async (name) => held.get(name),
+		putIfAbsent: async (name, value) => {
+			puts.push(name);
+			if (!held.has(name)) held.set(name, value);
+			return held.get(name);
+		},
+	};
 }

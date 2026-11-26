@@ -14,16 +14,16 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
-import { mergesOf, repoOf } from "./learn-support.mjs";
+import { mergesOf } from "./learn-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { runReflect } = await import("../dist/store-reads/journal.js");
 const { runLearningEnd, runLearningOverStore } = await import("../dist/store-reads/learning.js");
 const { recordPromotion } = await import("../dist/learn/promote.js");
-const { textsAt } = await import("../dist/learn/folder.js");
+const { learningOf, readAt } = await import("../dist/learn/rows.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
-const { learningFolderOf, secretsShown, seedOf } = await import("../dist/learning.js");
+const { secretsShown, seedOf } = await import("../dist/learning.js");
 const { said } = await import("../dist/learning-words.js");
 const { saveToolSettings } = await import("../dist/tool-plane.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
@@ -52,7 +52,7 @@ async function world(t, body, launchOf, setup = async () => {}) {
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body });
   await setup(server, dir);
-  const launch = await launchOf(dir);
+  const launch = await launchOf(dir, server);
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   const until = async (check, what) => {
     const deadline = Date.now() + WAIT_MS;
@@ -72,8 +72,7 @@ async function world(t, body, launchOf, setup = async () => {}) {
     const store = await openSqliteStore({ dataDir: dir, role: "runner" });
     stores.push(store);
     const spec = piAdapterSpec({ script, tools, hooks: quiet }, { requests });
-    // Mode 1: the agent's learning folder is the local one under the data directory.
-    const endOfRun = endOfRunOf({ store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId) });
+    const endOfRun = endOfRunOf({ store, data: dir, env: {} });
     const createLoop = createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1", ...(endOfRun ? { endOfRun } : {}) }));
     runners.push(startRunner({ store, createLoop, name: "runner-a", ...TIMING }));
   };
@@ -91,21 +90,17 @@ async function world(t, body, launchOf, setup = async () => {}) {
     });
     return { reflect: await runReflect(server, "run-1", BACKGROUND_CONTEXT), users };
   };
-  /** The texts of `paths` on agent-1's learning folder at `commit`. */
-  const textsOn = async (commit, paths) => {
-    const folder = learningFolderOf(dir, "agent-1");
-    try {
-      return await textsAt(folder.workspace, commit, paths);
-    } finally {
-      await folder.end();
-    }
+  /** The texts of `paths` in agent-1's learning at save `id`. */
+  const textsOn = async (id, paths) => {
+    const read = await readAt(learningOf(server, "agent-1"), id);
+    return Object.fromEntries(paths.map((path) => [path, read?.text(path)]));
   };
   return { dir, server, launch, start, ended, turnOf, textsOn };
 }
 
 const runner = (learning) => (dir) => ({ input: { content: "Follow the script." }, title: "t", place: { mode: "runner" }, ...(learning ? { learning: learning(dir) } : {}) });
-/** A learning start over agent-1's folder as it is now (its definition's compile_after says when it is asked to compile). */
-const learnsFrom = (dir) => seedOf(dir, "agent-1").then((seed) => runner(() => ({ seed: seed.sha, section: "" }))(dir));
+/** A learning start over agent-1's learning as it is now (its definition's compile_after says when it is asked to compile). */
+const learnsFrom = (dir, server) => seedOf(dir, server, "agent-1").then((seed) => runner(() => ({ seed: seed.sha, section: "" }))(dir));
 /** The compile turn's first ask among a run's user messages. */
 const compileAskIn = (users) => users.find((text) => text.startsWith("One more turn: write this agent's job as a learned workflow.")) ?? "";
 const againIn = (users) => users.filter((text) => text.startsWith("Your workflow draft did not pass the checks"));
@@ -121,7 +116,7 @@ test("a learning agent's run with its owner's feedback, through a real runner, i
   assert.deepEqual([kept?.proposal?.state, kept?.proposal?.corrections, kept?.proposal?.workflows], ["merged", 1, undefined], JSON.stringify(kept?.proposal));
   assert.equal(kept.proposal.detail, said.merged([], 1, []));
   assert.equal(kept.proposal.look_back_usd, 0, "nothing asked, nothing spent");
-  assert.deepEqual(mergesOf(repoOf(w.dir, "agent-1"), "run-1"), [`${kept.proposal.merged} run-1`], "one merge on main, by the run");
+  assert.deepEqual((await mergesOf(w.server, "agent-1", "run-1")).map((save) => save.id), [kept.proposal.merged], "one save of the agent's learning, by the run");
   const texts = await w.textsOn(kept.proposal.merged, ["corrections.md"]);
   assert.ok(texts["corrections.md"].includes(FEEDBACK), texts["corrections.md"]);
   const end = await runLearningEnd(w.server, "run-1");
@@ -408,9 +403,9 @@ test("compile: a draft the checks refuse goes back with their words, up to 3 tim
   const read = async () => (await runLearningOverStore(w.server, "run-1", secretsShown([]), [])).compiled;
   assert.deepEqual([(await read()).digest, (await read()).promoted], [digest, null], "undecided");
   const record = { workflow: "answer", digest, at: new Date().toISOString(), source: "replay", reason: "r" };
-  await recordPromotion(w.server.settings, "agent-1", { ...record, decided: "hold" }, () => true);
+  await recordPromotion(w.server.learning, "agent-1", { ...record, decided: "hold" }, () => true);
   assert.equal((await read()).promoted, false, "held");
-  await recordPromotion(w.server.settings, "agent-1", { ...record, decided: "promote" }, () => true);
+  await recordPromotion(w.server.learning, "agent-1", { ...record, decided: "promote" }, () => true);
   assert.equal((await read()).promoted, true, "promoted");
 });
 

@@ -553,6 +553,9 @@ async function handle(m) {
       const reserved = (p.dynamicTools ?? []).find((t) => t?.name === 'mcp' || String(t?.name ?? '').startsWith('mcp__'));
       if (reserved) return fail(-32600, `dynamic tool name is reserved: ${reserved.name}`);
       thread = { id, path, cwd: p.cwd, dynamicTools: p.dynamicTools ?? [], lines: [], planted: projectConfig(p.cwd) };
+      // `FAKE_CODEX_OFFERED`: the dynamic tools the thread was given, one JSON line of their names at each start and resume,
+      // for a test to read.
+      if (process.env.FAKE_CODEX_OFFERED) appendFileSync(process.env.FAKE_CODEX_OFFERED, `${JSON.stringify(thread.dynamicTools.map((t) => t.name))}\n`);
       return reply({ thread: { id, path }, approvalPolicy: p.approvalPolicy, sandbox: { type: 'readOnly' } });
     }
     case 'thread/resume': {
@@ -561,6 +564,8 @@ async function handle(m) {
       const lines = readFileSync(path, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
       ordinal = lines.length;
       thread = { id: p.threadId, path, cwd: p.cwd, dynamicTools: lines[0]?.payload?.dynamic_tools ?? [], lines, planted: projectConfig(p.cwd) };
+      // As Codex's own: a resumed thread keeps the dynamic tools it was started with (thread/resume takes none).
+      if (process.env.FAKE_CODEX_OFFERED) appendFileSync(process.env.FAKE_CODEX_OFFERED, `${JSON.stringify(thread.dynamicTools.map((t) => t.name))}\n`);
       return reply({ thread: { id: p.threadId, path } });
     }
     case 'thread/inject_items': {

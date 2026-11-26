@@ -380,11 +380,18 @@ export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick
   return shellPlaceOf(mounts, mode);
 }
 
-/** What a choice of computer leaves out of the shell, in plain words: shown beside it (GET /v2/computers shell_note) and
- *  said by the save's refusal of a tool it leaves out. A computer that mounts the folder leaves nothing out. */
+/** What a choice of no computer leaves out of the shell, in plain words: shown beside it (GET /v2/computers shell_note).
+ *  A computer that mounts the folder leaves nothing out; one that doesn't says so in its own words (APART_SHELL_NOTES). */
 export const SHELL_NOTES: Readonly<Record<Exclude<ShellPlace, "computer">, string>> = Object.freeze({
   local: "No computer: bash runs in a fresh container on the folder's own storage; background commands need a computer.",
   none: "No computer on this server: the agent gets the file tools only, no shell. Pick a computer to run commands.",
+});
+
+/** What a computer that gives the run no shell of its own leaves out (it doesn't mount the run's folder, or runs no
+ *  programs): a computer all the same, so never "no computer". */
+export const APART_SHELL_NOTES: Readonly<Record<Exclude<ShellPlace, "computer">, string>> = Object.freeze({
+  local: "This computer doesn't mount the run's folder: bash runs in a fresh container on the folder's own storage; background commands need a computer that mounts it.",
+  none: "This computer gives the run no shell: the agent gets the file tools only. Pick a computer that mounts the run's folder to run commands.",
 });
 
 /** The host tools a run with its shell at `shell` gets, by name: the kernel registry's own list (hostToolDefs), never a
@@ -395,7 +402,7 @@ export const hostToolsOf = (shell: ShellPlace): string[] => hostToolDefs({ maxEx
  *  gives, and what it leaves out, in words (none for a computer that mounts the folder). */
 export function shellChoiceOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): { shell: ShellPlace; host_tools: string[]; shell_note?: string } {
   const shell = runShellOf(setting, mode, registry);
-  return { shell, host_tools: hostToolsOf(shell), ...(shell === "computer" ? {} : { shell_note: SHELL_NOTES[shell] }) };
+  return { shell, host_tools: hostToolsOf(shell), ...(shell === "computer" ? {} : { shell_note: (setting.kind === "none" ? SHELL_NOTES : APART_SHELL_NOTES)[shell] }) };
 }
 
 /** The server's default where an agent has no computer setting: in Mode 1 a sandbox on the first provider that binds a

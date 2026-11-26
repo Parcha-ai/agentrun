@@ -1,4 +1,4 @@
-// The fetch step: a part judged in passages, or the chunks of a page looking_for asks for, with the page guard beside.
+// The fetch step: a part judged in passages, or the chunks of a page its objective asks for, with the page guard beside.
 import type { Fee, Pay } from "../fees.js";
 import type { WebPage, WebRead, WebUnread } from "../fetch.js";
 import { clip, type Page } from "../page.js";
@@ -12,11 +12,13 @@ import { bounded, byScore, decisionPay, type DecisionRecord, droppedOf, drops, f
 export const LEFT_OUT = "\n…\n";
 
 /** A fetched part judged by `decider` in passages: the kept ones in order, LEFT_OUT for each run left out, the part's
- *  place in the page (chars, offset, next_offset) unchanged, and `sift` telling the model what was done. */
+ *  place in the page (chars, offset, next_offset) unchanged, and `sift` telling the model what was done. With no task
+ *  the part is not judged and comes back as it is, with no `sift`: a line saying nothing was done, on every fetch,
+ *  would only cost the model tokens; the record says why (`skipped: "no task"`). */
 export async function judgePart(decider: WebDecider, url: string, page: WebPage | Page, options: StepOptions): Promise<Sifted<(WebPage | Page) & { sift?: string }>> {
   if (!page.ok || !page.text) return { answer: page, classifier: skipped(decider, "fetch", "no page") };
   const spans = passagesOf(page.text);
-  if (!options.task) return { answer: { ...page, sift: "not run (no task given); this part is whole" }, classifier: skipped(decider, "fetch", "no task", spans.length) };
+  if (!options.task) return { answer: page, classifier: skipped(decider, "fetch", "no task", spans.length) };
   const judged = await judgeSpans(decider, url, options.task, page.text, spans, page.offset ?? 0, options);
   if ("failure" in judged) return { answer: { ...page, sift: `not run (${judged.failure.error!.code}); this part is whole` }, classifier: judged.failure };
   const { texts, scored } = judged;
@@ -42,15 +44,15 @@ async function judgeSpans(decider: WebDecider, url: string, need: string, text: 
   return { texts, scored, record: (dropped: DecisionRecord["dropped"], kept?: number) => ran(decider, "fetch", got, ms, requests, scored, dropped, kept) };
 }
 
-/** The most chunks a page is cut into for looking_for (passagesOf), and how many of them an answer shows. */
+/** The most chunks a page is cut into for an objective (passagesOf), and how many of them an answer shows. */
 export const FIND_CHUNKS_MAX = 200;
 export const FOUND_CHUNKS = 8;
-/** A chunk of a page looking_for shows: where it starts in the page (web_fetch's offset), and its text. */
+/** A chunk of a page an objective shows: where it starts in the page (web_fetch's offset), and its text. */
 export type FoundChunk = { offset: number; relevance?: number; text: string };
-/** A page as looking_for answers it: the chunks most likely to hold what the agent is looking for, in page order. */
+/** A page as an objective answers it: the chunks most likely to hold what the agent wants from it, in page order. */
 export type FoundPage = Pick<Page, "ok" | "url" | "status" | "title" | "original_chars" | "beyond_read"> & Pick<WebPage, "via" | "parallel"> & { found: FoundChunk[]; sift: string };
 
-/** The FOUND_CHUNKS chunks of the whole page `read` most likely to hold `need` (what the agent is looking for), in page
+/** The FOUND_CHUNKS chunks of the whole page `read` most likely to hold `need` (what the agent wants from it), in page
  *  order: its text cut into at most FIND_CHUNKS_MAX chunks, each judged by `decider` with `need` as the task (its
  *  judge request), ranked by score, a refused one after every scored one, ties in page order. A step that fails answers
  *  null, its record saying why. */
@@ -74,34 +76,34 @@ export async function findInPage(decider: WebDecider, url: string, read: WebRead
     found: shown.map((i) => ({ offset: spans[i]![0], ...relevanceOf(scored[i]!.score), text: chunks[i]! })),
     via: read.via,
     ...(read.parallel ? { parallel: read.parallel } : {}),
-    sift: `${decider.id} showed the ${shown.length} of ${spans.length} chunks of the page most likely to hold what you are looking for (relevance 0 to 1), in page order; to read on from one, call web_fetch with its offset and no looking_for`,
+    sift: `${decider.id} showed the ${shown.length} of ${spans.length} chunks of the page most likely to hold what your objective asks for (relevance 0 to 1), in page order; to read on from one, call web_fetch with its offset and no objective`,
   };
   return { answer, classifier: judged.record([], shown.length) };
 }
 
-/** A fetch's answer: the part (judged or not), or what looking_for found; with the guard's warning when it gave one. */
+/** A fetch's answer: the part (judged or not), or what its objective found; with the guard's warning when it gave one. */
 export type FetchAnswer = (((WebPage | Page) & Sift) | FoundPage) & Warned;
-/** How a fetch is decided: the call's `task` and `lookingFor`, the step's bounds, `pay` and the call's fee `lines`, and
+/** How a fetch is decided: the call's `task` and `objective`, the step's bounds, `pay` and the call's fee `lines`, and
  *  `guard`, the run's page guard for this read (absent when it is off). */
-export type FetchStep = Pick<StepOptions, "task" | "signal" | "ms"> & { lookingFor?: unknown; pay: Pay; lines: Fee[]; guard?: ((options: StepOptions) => Promise<PageGuard>) | undefined };
+export type FetchStep = Pick<StepOptions, "task" | "signal" | "ms"> & { objective?: unknown; pay: Pay; lines: Fee[]; guard?: ((options: StepOptions) => Promise<PageGuard>) | undefined };
 
-/** A fetch decided: with `lookingFor`, what findInPage finds in the whole page (or the part, saying looking_for was not
- *  applied); else the part judged against `task`; and the page guard asked beside either, its warning added and its
- *  fee lines put after the step's once both have settled. With no decider the part is the answer. */
+/** A fetch decided: with an `objective` and a decider, what findInPage finds in the whole page (or the part, saying the
+ *  objective was not applied, where the step fails); else the part judged against `task`; and the page guard asked
+ *  beside either, its warning added and its fee lines put after the step's once both have settled. With no decider the
+ *  part is the answer, an objective or none. */
 export async function decideFetch(decider: WebDecider | undefined, url: string, whole: WebRead | WebUnread, part: WebPage, options: FetchStep): Promise<{ answer: FetchAnswer; classifier: DecisionRecord | "off"; guard?: PageGuard }> {
   const step: StepOptions = { signal: options.signal, ms: options.ms, pay: decisionPay(options.pay, options.lines) };
   const guardLines: Fee[] = [];
   const guarding = whole.ok && whole.text ? options.guard?.({ ...step, pay: decisionPay(options.pay, guardLines) }) : undefined;
-  const need = typeof options.lookingFor === "string" ? clip(options.lookingFor.trim(), QUERY_MAX) : "";
-  const notApplied = (why: string) => ({ ...part, sift: `looking_for not applied (${why}); this part is in page order` });
+  const need = typeof options.objective === "string" ? clip(options.objective.trim(), QUERY_MAX) : "";
+  const notApplied = (why: string) => ({ ...part, sift: `objective not applied (${why}); this part is in page order` });
   let answer: FetchAnswer = part;
   let classifier: DecisionRecord | "off" = "off";
   if (need && whole.ok && whole.text && decider) {
     const found = await findInPage(decider, url, whole, need, step);
     answer = found.answer ?? notApplied(found.classifier.error!.code);
     classifier = found.classifier;
-  } else if (need && whole.ok && whole.text) answer = notApplied("no classifier in this run");
-  else if (decider) ({ answer, classifier } = await judgePart(decider, url, part, { task: options.task, ...step }));
+  } else if (decider) ({ answer, classifier } = await judgePart(decider, url, part, { task: options.task, ...step }));
   const guard = await guarding;
   options.lines.push(...guardLines);
   if (guard?.warning) answer = { ...answer, warning: guard.warning };

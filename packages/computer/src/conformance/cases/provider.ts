@@ -215,7 +215,10 @@ export const providerCases: Case[] = [
 			const made = t.ok(first, "create");
 			t.deepEqual(refOf(t.ok(early, "the same create again while the first starts")), refOf(made), "the computer a create retried while it starts answers");
 			t.deepEqual(refOf(t.ok(await t.attempt(spec, t.provider, requestId), "the same create again once it is up")), refOf(made), "the computer a create retried once it is up answers");
-			t.equal(made.name, computerNameFor(requestId), "the computer's name, computer-<12 hex of sha256(request id)>");
+			// The request's name (computerNameFor) is the computer's, or begins it before a dash: a vendor whose name also
+			// carries what list reads (Orgo's deadline) puts that after it.
+			const request = computerNameFor(requestId);
+			t.assert(made.name === request || made.name.startsWith(`${request}-`), `the computer's name is ${request} (computer-<12 hex of sha256(request id)>), or begins with it and a dash: got ${made.name}`);
 			t.deepEqual(await names(t, labels), [made.name], "the computers three creates of one request made");
 			const other = t.refused(await t.attempt(t.spec({ labels: { ...labels, role: "other" } }), t.provider, requestId), "the same request id with other labels", ["exists"]);
 			t.assert(other.message.includes(made.name), `the refusal names the request's computer ${made.name}: ${other.message}`);

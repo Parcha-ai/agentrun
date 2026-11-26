@@ -8,8 +8,7 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { test } from "node:test";
 import { serialize } from "node:v8";
-import { parseHome } from "../dist/index.js";
-import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexContext, codexFile, codexMeta, codexTokens, codexUser, jsonl, openaiUsage, piAnswer, piFile, piMeta, piUser, tempHome } from "./fixtures.mjs";
+import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, codexContext, codexFile, codexMeta, codexTokens, codexUser, jsonl, openaiUsage, parseHome, piAnswer, piFile, piMeta, piUser, tempHome } from "./fixtures.mjs";
 
 const N = 3000;
 const hex = (i) => i.toString(16).padStart(12, "0");
@@ -64,33 +63,53 @@ for (const [source, file, opening, lines, bound] of [
 }
 
 // A session's file often holds a request or two (a short session, a subagent's): its cursor carries no room to grow
-// into, nor more of an index than its keys. Holding the requests as objects, a state of 300 such files held 1,370 bytes
-// a file of one request, 2,110 of three, 4,782 of ten (v8 serialize): within 200 bytes of that for one request (an
-// index and counts cost a little more than one request's object), and under it from three.
-for (const [requests, bound] of [
-  [1, 1370 + 200],
-  [3, 2110],
-  [10, 4782],
-]) {
-  test(`Claude Code: a state over files of ${requests} request${requests > 1 ? "s" : ""} each holds under ${bound} bytes a file`, async (t) => {
-    const home = await tempHome(t);
-    const FILES = 300;
-    for (let f = 0; f < FILES; f += 1) {
-      const id = `00000000-0000-4000-8000-${hex(f)}`;
-      const records = [];
-      for (let i = 0; i < requests; i += 1) {
-        records.push(claudeUser({ uuid: `10000000-0000-4000-8000-${hex(f * 100 + i)}`, text: "Go.", i: 2 * i, session: id }));
-        records.push(claudeAnswer({ uuid: `20000000-0000-4000-8000-${hex(f * 100 + i)}`, msg: `msg_${f}_${i}`, req: `req_${f}_${i}`, usage: anthropicUsage(10, 5), i: 2 * i + 1, session: id }));
-      }
-      await write(claudeFile(home, id), records);
-    }
-    const state = {};
-    const sessions = await parseHome(home, { sources: ["claude-code"], state, catalog: false });
-    assert.equal(sessions.length, FILES);
-    const bytes = serialize(state).length / FILES;
-    assert.ok(bytes < bound, `${Math.round(bytes)} bytes a file`);
-  });
+// into, nor more of an index than its keys, and a second request adds its counts and keys, not its object. Its paths
+// (a cursor's key, its session's file) are as long as the temp directory's, so the bounds leave them out.
+const ONE = 1400;
+const SECOND = 300;
+
+/** The bytes of every string in `state` under `home`, as v8 serialize writes a one-byte string: one a character. */
+function pathBytes(state, home) {
+  let bytes = 0;
+  const stack = [state];
+  while (stack.length) {
+    const value = stack.pop();
+    if (typeof value === "string") bytes += value.startsWith(home) ? value.length : 0;
+    else if (value instanceof Map) for (const entry of value) stack.push(...entry);
+    else if (value && typeof value === "object" && !ArrayBuffer.isView(value)) stack.push(...Object.values(value));
+  }
+  return bytes;
 }
+
+/** The state of a pass over 300 Claude Code files of `requests` requests each: its bytes a file, its paths aside. */
+async function stateOf(t, requests) {
+  const home = await tempHome(t);
+  const FILES = 300;
+  for (let f = 0; f < FILES; f += 1) {
+    const id = `00000000-0000-4000-8000-${hex(f)}`;
+    const records = [];
+    for (let i = 0; i < requests; i += 1) {
+      records.push(claudeUser({ uuid: `10000000-0000-4000-8000-${hex(f * 100 + i)}`, text: "Go.", i: 2 * i, session: id }));
+      records.push(claudeAnswer({ uuid: `20000000-0000-4000-8000-${hex(f * 100 + i)}`, msg: `msg_${f}_${i}`, req: `req_${f}_${i}`, usage: anthropicUsage(10, 5), i: 2 * i + 1, session: id }));
+    }
+    await write(claudeFile(home, id), records);
+  }
+  const state = {};
+  assert.equal((await parseHome(home, { sources: ["claude-code"], state, catalog: false })).length, FILES);
+  const paths = pathBytes(state, home);
+  // Each file's path twice at least: a count that found none would leave the bound to the temp directory's length.
+  assert.ok(paths >= 2 * FILES * home.length, `${paths} bytes of paths`);
+  return (serialize(state).length - paths) / FILES;
+}
+
+test(`Claude Code: a state over files of one request each holds under ${ONE} bytes a file, and a second request under ${SECOND} more, paths aside`, async (t) => {
+  const one = await stateOf(t, 1);
+  const second = (await stateOf(t, 2)) - one;
+  // Mutants, checked by hand: cursors holding each request's object (totals: false) give 966 and 400; untrimmed counts,
+  // 1,996 and 166. This code: 1,080 and 227, under a TMPDIR of 13 characters or 79.
+  assert.ok(one < ONE, `${Math.round(one)} bytes a file of one request`);
+  assert.ok(second < SECOND, `${Math.round(second)} bytes more for a second request`);
+});
 
 test("passes with a state across appends (a request's lines split between them), a rewrite and a failed read give a fresh pass's totals each time", async (t) => {
   const home = await tempHome(t);

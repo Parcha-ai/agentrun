@@ -76,11 +76,14 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
       const { hostMemory, neverFits } = await import("./host.js");
       const memory = hostMemory();
       const { harnessInstalled } = await import("./adapters.js");
-      const { harnessIds, harnessOf, NATIVE_PROMISES } = await import("./harness-table.js");
-      const probed = await Promise.all(harnessIds(env).map(async (id): Promise<HarnessOffer> => {
+      const { harnessOf, NATIVE_PROMISES, offeredIds } = await import("./harness-table.js");
+      const probed = await Promise.all(offeredIds(env).map(async (id): Promise<HarnessOffer> => {
         const entry = harnessOf(env, id)!;
         const card = entry.card?.(env);
         const named = { label: entry.label, promises: entry.promises ?? NATIVE_PROMISES, ...(card ? { card } : {}) };
+        // A recipe the server is started with that its entry hides (offeredIds): not available, with why.
+        const hidden = entry.hidden?.(env);
+        if (hidden !== undefined) return { id, ...named, available: false, steer: entry.steer, reason: hidden };
         // The start's probe: these offers hold until a restart (server.ts), so the reason says so where installing fixes it.
         // Claude Code not installed yet says so (its install probes the offers again).
         const firstUse = entry.installs && !(await harnessInstalled(entry, env)) ? { installs: "on_first_use" as const } : {};

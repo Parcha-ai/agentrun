@@ -5,17 +5,15 @@
 // once 20 runs follow the takeover). The same runs as CSV for the CLI.
 import assert from "node:assert/strict";
 import { promoteChecked } from "./learned-workflow-seed-support.mjs";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { agentFolderOf } from "../dist/files.js";
-import { seedOf } from "../dist/learning.js";
 import { CHEAPER_AFTER_RUNS, costCsv, costSummary } from "../dist/learning-cost.js";
 import { figuresOf, record, summarize } from "../dist/learn/ledger.js";
 import { runPathOf } from "../dist/runner/learning-end.js";
+import { workflowDigest } from "../dist/runner/workflow-first.js";
 import { servingReplayOf } from "../dist/store-reads/learning.js";
-import { git, resnap, savedOf } from "./learn-support.mjs";
+import { putLearning, savedOf } from "./learn-support.mjs";
 import { agent, answerFlow, follow, serve, storeRun } from "./support.mjs";
 
 const row = (kind, extra = {}) => ({ id: `${kind}-${Math.random()}`, kind, agent_label: null, tool_name: null, tool_use_id: null, tool_status: null, ...extra });
@@ -178,20 +176,8 @@ test("the series as CSV: a text cell a spreadsheet would run as a formula opens 
 });
 
 const DESCRIPTION = "Answers a question as a number; use when the person asks for the answer";
-/** Agent `id`'s learning folder made as a first run makes it, then learned workflow `name` committed on main. */
-async function landFlow(data, id, name) {
-  await seedOf(data, id);
-  const repo = join(agentFolderOf(data, id), "learning");
-  const files = { [`workflows/${name}/workflow.json`]: JSON.stringify(answerFlow()), [`workflows/${name}/README.md`]: `---\nname: ${name}\ndescription: ${DESCRIPTION}\n---\n` };
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
-  return git(repo, ["rev-parse", "main"]).trim();
-}
+/** Learned workflow `name` saved in agent `id`'s learning, as a run's merge lands it. */
+const landFlow = (store, id, name) => putLearning(store, id, { [`workflows/${name}/workflow.json`]: JSON.stringify(answerFlow()), [`workflows/${name}/README.md`]: `---\nname: ${name}\ndescription: ${DESCRIPTION}\n---\n` });
 
 test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a learned workflow takes over, each path read from its run's records, the workflow revision that ran it and its costs; the same as CSV; limit keeps each run's number", { timeout: 240_000 }, async (t) => {
   const { api, data, store } = await serve(t, { learning: "on" });
@@ -209,10 +195,10 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   assert.deepEqual(await cost(), { agent: id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: EMPTY, workflows: [], bill });
 
   const byHand = [await runOf("What is six times seven."), await runOf("What is two times three.")];
-  await landFlow(data, id, "answer");
+  await landFlow(store, id, "answer");
   assert.equal((await cost()).summary.replay, null, "landing a draft provides no check evidence");
   // This series begins serving only after the learned revision has passed its check.
-  await promoteChecked(store.settings, id, [{ name: "answer", workflow: answerFlow() }]);
+  await promoteChecked(store, id, [{ name: "answer", workflow: answerFlow() }]);
   const alone = await runOf("Use the learned workflow answer on What is six times seven.");
   const back = await runOf("Use the learned workflow absent on What is two.");
   const body = await cost();
@@ -256,7 +242,10 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   assert.deepEqual(body.summary, { ...EMPTY, ...PRICED, takeover: { n: 3, run_id: alone }, before: { runs: 2, mean_usd: before }, after: { runs: 2, mean_usd: after }, hand_backs: { ran: 2, back: 1, cut: 0 }, replay });
   assert.ok(body.runs.every((run) => run.cost_upper_bound === false), "no run's stored cost is a bound");
   assert.deepEqual([body.total_runs, body.unknown_cost_runs, body.unknown_path_runs], [4, 0, 0], "every run that learns ended with its path");
-  assert.deepEqual(body.workflows, [], "the money rule holds a workflow that ran first; the agent calling one is the agent's own run");
+  // The money rule holds a workflow to every run that called it, the agent's own call too: `alone` called answer (its one
+  // call that ran a workflow; `back` named one it has not, which ran none).
+  const digest = workflowDigest({ workflow: JSON.stringify(answerFlow()) });
+  assert.deepEqual(body.workflows.map(({ workflow, digest: at, served }) => [workflow, at, served.runs]), [["answer", digest, 1]], "the agent's own call counts on its served side");
 
   const last = await cost("?limit=2");
   assert.deepEqual(last.runs.map((run) => run.n), [3, 4], "the latest runs, each keeping its number");

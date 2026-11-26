@@ -1,5 +1,5 @@
-// The audit ledger: audits.jsonl at the top of an agent's git learning folder, one JSON line each, appended by the host
-// alone (runner/audit.ts, and the server for an owner's grade). A `started` line is a shadow audit begun (written before
+// The audit ledger: the agent's audit records (Store.learning records of kind audit), one line each, appended by the
+// host alone (runner/audit.ts, and the server for an owner's grade). A `started` line is a shadow audit begun (written before
 // its shadow run is created); a row is one finished audit of a run a promoted learned workflow served first: its shadow
 // run's answer (the same agent on the same input, learning off) against the served one (source `shadow`, the started
 // line's result), or an owner's grade of the served run (source `grade`: the served answer against the grade's known
@@ -10,21 +10,19 @@
 // run cost.
 import { createHash } from "node:crypto";
 import { COMPUTER_TOOLS } from "@parcha/agentrun-kernel/kernel";
-import type { Workspace } from "../workspace/index.js";
+import { type LearningRecord, LearningRecordRefused, type LearningRecordWrite, type Store } from "../store/store.js";
 import type { AuditLoop } from "../learning-setting.js";
 import type { McpPin } from "../mcp-gateway.js";
 import type { RunLaunch } from "../run-launch.js";
 import { pinAnnotations, toolClassOf, toolWord } from "./replay-calls.js";
-import { AUDITS_FILE, type FolderChange, type FolderRead, readLearning } from "./folder.js";
-import { type CostStop, type PromotionRecord, promotionStartOf, type Refused, servingOf, type ServingState, servingStateOf } from "./promote.js";
+import { type CostStop, type PromotionRecord, promotionStartOf, servingOf, type ServingState, servingStateOf } from "./promote.js";
 
-export { AUDITS_FILE };
-
-/** The newest rows the ledger keeps: twice the widest window a definition may set (AUDIT_MAX), and a file well under the
- *  folder's file cap (a line is a few hundred bytes); with them, the started lines of theirs, and every open one. */
-export const AUDITS_KEPT = 2_000;
 /** What every shadow run's id starts with: its served run's id follows (shadowRunId). No server-minted id starts so. */
 export const SHADOW_PREFIX = "audit.";
+
+/** The newest rows the ledger keeps: twice the widest window a definition may set (AUDIT_MAX); with them, the started
+ *  lines of theirs, and every open one (addAuditLines trims it in the write that adds). */
+export const AUDITS_KEPT = 2_000;
 
 /** One finished audit. `run`: the served run; `shadow_run`: its shadow (null for a grade's row, or one never started);
  *  `workflow` at `digest` served it, under the promotion begun at `promoted_at` (learn/promote.ts promotionStartOf: the
@@ -138,58 +136,78 @@ const noVerdictOf = (line: AuditRow): Pick<AuditRow, "skipped" | "parked"> =>
 /** A line's turn (AuditRow.turn), as written: none when it has none. */
 const turnOf = (line: { readonly turn?: string }): Pick<AuditRow, "turn"> => (line.turn === undefined ? {} : { turn: line.turn });
 
-/** The lines of a ledger's text, in the order written; one out of shape is skipped. */
-export function parseLedger(text: string): LedgerLine[] {
-  const out: LedgerLine[] = [];
-  for (const raw of text.split("\n")) {
-    if (!raw.trim()) continue;
-    try {
-      const value = JSON.parse(raw) as unknown;
-      if (!isLine(value)) continue;
-      const { run, workflow, digest, promoted_at, at } = value;
-      out.push(value.source === "started"
-        ? { source: "started", run, shadow_run: value.shadow_run, workflow, digest, promoted_at, ...turnOf(value), at }
-        : { run, shadow_run: value.shadow_run, workflow, digest, promoted_at, source: value.source, agreed: value.agreed, served_cost: value.served_cost, shadow_cost: value.shadow_cost, ...turnOf(value), ...noVerdictOf(value), at });
-    } catch {
-      // A torn line is no line.
-    }
-  }
-  return out;
+/** A ledger line as read back, or undefined for one out of shape. */
+function lineOf(value: unknown): LedgerLine | undefined {
+  if (!isLine(value)) return undefined;
+  const { run, workflow, digest, promoted_at, at } = value;
+  return value.source === "started"
+    ? { source: "started", run, shadow_run: value.shadow_run, workflow, digest, promoted_at, ...turnOf(value), at }
+    : { run, shadow_run: value.shadow_run, workflow, digest, promoted_at, source: value.source, agreed: value.agreed, served_cost: value.served_cost, shadow_cost: value.shadow_cost, ...turnOf(value), ...noVerdictOf(value), at };
 }
 
-/** The ledger's text for `lines`: from the AUDITS_KEPT-th newest row on, and every open started line before it. */
-export function auditsText(lines: readonly LedgerLine[]): string {
-  const rows = lines.flatMap((line, i) => (line.source === "started" ? [] : [i]));
-  const from = rows.length > AUDITS_KEPT ? rows[rows.length - AUDITS_KEPT]! : 0;
-  const open = new Set<LedgerLine>(openAudits(lines));
-  return lines.filter((line, i) => i >= from || open.has(line)).map((line) => JSON.stringify(line)).join("\n") + "\n";
-}
+/** The store's learning records, as the ledger is read and written. */
+export type AuditRecords = Pick<Store["learning"], "records" | "changeRecords">;
 
-/** The ledger's lines on the folder's main as `folder` reads it (none before the first). */
-export async function ledgerOf(folder: FolderRead): Promise<LedgerLine[]> {
-  const at = folder.snapshot?.audits;
-  return at ? parseLedger(await folder.body(AUDITS_FILE, at.oid)) : [];
-}
+const linesOf = (records: readonly Pick<LearningRecord, "data">[]): LedgerLine[] => records.flatMap((one) => { const line = lineOf(one.data); return line ? [line] : []; });
+/** A line's record: its served run, so the run's purge deletes it. */
+const lineWrite = (line: LedgerLine): LearningRecordWrite => ({ runId: line.run, workflow: line.workflow, digest: line.digest, data: line });
 
-/** The ledger's rows on the folder's main: its finished audits, oldest first. */
-export const readAudits = async (ws: Workspace): Promise<AuditRow[]> => rowsOf(await readLearning(ws, ledgerOf));
+/** The agent's ledger, in the order written (none before the first line). */
+export const ledgerOf = async (rows: Pick<AuditRecords, "records">, agentId: string): Promise<LedgerLine[]> => linesOf(await rows.records(agentId, "audit"));
+
+/** The ledger's rows: its finished audits, oldest first. */
+export const readAudits = async (rows: Pick<AuditRecords, "records">, agentId: string): Promise<AuditRow[]> => rowsOf(await ledgerOf(rows, agentId));
 
 /** A line's place in the ledger: one per served run and source (a started line's, its shadow's row, a grade's row). */
 export const lineKey = (line: LedgerLine): string => `${line.source}:${line.run}`;
 
-/** The change that appends `lines` to the ledger `before` (none when each is there already: lineKey), with the lines it
- *  appends. */
-export function auditChange(before: readonly LedgerLine[], lines: readonly LedgerLine[]): { added: LedgerLine[]; change?: FolderChange } {
-  const known = new Set(before.map(lineKey));
-  const added: LedgerLine[] = [];
-  for (const line of lines) {
-    if (known.has(lineKey(line))) continue;
-    known.add(lineKey(line));
-    added.push(line);
+/** Appends `lines` to the ledger, each not there yet (lineKey), in one transaction: `replace`, a line whose key is there
+ *  takes the place of the one there (a grade's row of a run graded again). The ledger after (`all`) with the lines it
+ *  appended. A line of a digest no version of its workflow holds (a run's purge took it since the line was read), or of a
+ *  run that was purged, is never appended (Store.learning changeRecords refuses it): the others are. */
+export async function addAuditLines(rows: AuditRecords, agentId: string, lines: readonly LedgerLine[], replace = false): Promise<{ all: LedgerLine[]; added: LedgerLine[] }> {
+  let left = lines;
+  for (let tries = 0; ; tries++) {
+    try {
+      return await appendLines(rows, agentId, left, replace);
+    } catch (error) {
+      // A purged run's line, refused in the write's own transaction: the write again without it.
+      if (!(error instanceof LearningRecordRefused) || tries >= 2) throw error;
+      const refused = new Set(error.records.map((one) => one.runId));
+      const kept = left.filter((line) => !refused.has(line.run));
+      if (kept.length === left.length) throw error;
+      left = kept;
+    }
   }
-  const rows = rowsOf(added).length;
-  const said = rows ? `${rows} audit row${rows === 1 ? "" : "s"}` : `${added.length} audit${added.length === 1 ? "" : "s"} started`;
-  return added.length ? { added, change: { by: { host: said }, writes: [{ path: AUDITS_FILE, text: auditsText([...before, ...added]) }] } } : { added };
+}
+
+function appendLines(rows: AuditRecords, agentId: string, lines: readonly LedgerLine[], replace: boolean): Promise<{ all: LedgerLine[]; added: LedgerLine[] }> {
+  return rows.changeRecords(agentId, "audit", (records, held) => {
+    const keys = new Set(lines.map(lineKey));
+    const kept = records.filter((one) => { const line = lineOf(one.data); return !replace || !line || !keys.has(lineKey(line)); });
+    const before = linesOf(kept);
+    const known = new Set(before.map(lineKey));
+    const added: LedgerLine[] = [];
+    for (const line of lines) {
+      if (known.has(lineKey(line))) continue;
+      if (held !== undefined && !held(line.workflow, line.digest)) continue;
+      known.add(lineKey(line));
+      added.push(line);
+    }
+    if (!added.length && kept.length === records.length) return { result: { all: before, added } };
+    const writes = trimmed([...kept.map((one) => ({ seq: one.seq, runId: one.runId, workflow: one.workflow, digest: one.digest, data: one.data })), ...added.map(lineWrite)]);
+    return { records: writes, result: { all: linesOf(writes), added } };
+  });
+}
+
+/** The ledger's records from the AUDITS_KEPT-th newest row on, and every open started line before it (main's folder
+ *  ledger kept the same): so it never grows past its cap. */
+function trimmed(writes: readonly LearningRecordWrite[]): LearningRecordWrite[] {
+  const lines = writes.map((one) => lineOf(one.data));
+  const rows = lines.flatMap((line, i) => (line && line.source !== "started" ? [i] : []));
+  const from = rows.length > AUDITS_KEPT ? rows[rows.length - AUDITS_KEPT]! : 0;
+  const open = new Set<LedgerLine>(openAudits(lines.filter((line): line is LedgerLine => line !== undefined)));
+  return writes.filter((_, i) => i >= from || (lines[i] !== undefined && open.has(lines[i]!)));
 }
 
 /** The rows the hold rule counts for `workflow` at `digest` under the promotion begun at `promotedAt` (learn/promote.ts
@@ -219,20 +237,20 @@ export function auditLineOf(rows: readonly AuditRow[], workflow: string, digest:
 /** What the promotions read says of each learned workflow beside what serves (learn/promote.ts servingOf, in its order):
  *  `state` (learn/promote.ts servingStateOf with the money rule's decision, `costStop`: the word the learning view's
  *  `status` says too), its newest decided check's numbers, and its audit line over the rows of the serving (else the
- *  newest) revision's newest promotion (the ones the hold rule counts). Its champions skip `refused` (championOf). */
+ *  newest) revision's newest promotion (the ones the hold rule counts). */
 export type ServingLine = {
   readonly state: ServingState;
   readonly check: { readonly n: number; readonly agreed: number; readonly alone: number; readonly attempt: 1 | 2 } | null;
   readonly audit: AuditLine | null;
 };
-export function servingLinesOf(records: readonly PromotionRecord[], rows: readonly AuditRow[], loop: Pick<AuditLoop, "hold_window" | "hold_disagree">, costStop: CostStop, refused?: Refused): ServingLine[] {
-  return servingOf(records, refused).map(({ workflow, digest }) => {
+export function servingLinesOf(records: readonly PromotionRecord[], rows: readonly AuditRow[], loop: Pick<AuditLoop, "hold_window" | "hold_disagree">, costStop: CostStop): ServingLine[] {
+  return servingOf(records).map(({ workflow, digest }) => {
     const own = records.filter((one) => one.workflow === workflow);
     const newest = own.at(-1);
     const checked = own.findLast((one) => one.check?.n !== undefined)?.check;
     const at = digest ?? newest?.digest;
     return {
-      state: servingStateOf(records, workflow, costStop, refused),
+      state: servingStateOf(records, workflow, costStop),
       check: checked ? { n: checked.n!, agreed: checked.agreed ?? 0, alone: checked.alone ?? 0, attempt: checked.attempt } : null,
       audit: at === undefined ? null : auditLineOf(rows, workflow, at, promotionStartOf(records, workflow, at)?.at ?? null, loop),
     };

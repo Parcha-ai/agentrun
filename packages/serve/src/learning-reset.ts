@@ -1,14 +1,13 @@
 // DELETE /v2/agents/{agent_id}/learning: an agent's learning reset, the agent kept. What it learned goes (the learning
-// module's deleteLearning: its learning folder's files, its git history and audit ledger among them, on this server and
-// on every Archil disk its runs used, learn/learning-of.ts namedDisksOf, then its promotions and grades); the agent, its
+// module's deleteLearning: its learning rows, every save, note, workflow, promotion record, grade and audit row); the agent, its
 // definition, its runs and everything kept of them (their files, journals, costs, the learning each one kept) stay, so
 // the run list, the stats and the usage read the same before and after. A served run's cost carries its share of its
 // revision's compile and check, read from the promotion records the reset deletes: each revision they name is kept
 // first in the agent's reset ledger (learn/promote.ts keepResetLedger: workflow, digest and K alone), so the share reads
 // the same after.
 //
-// What goes with the folder: each run's learning diff (GET /runs/{id}/learning/diff, the text it merged) is the folder's,
-// so it is 404 after; what the run's own record keeps of its learning end stays with the run.
+// What goes with the rows: each run's learning diff (GET /runs/{id}/learning/diff, the text it merged) is read from its
+// save, so it is 404 after; what the run's own record keeps of its learning end stays with the run.
 //
 // In order, in the agent's delete turn (server.ts agentWrite: one learning write of an agent at a time, and none once
 // its DELETE began):
@@ -18,18 +17,17 @@
 //      a workflow it may be served, its compile turn and look-back at its end), and the owner's job is never cancelled
 //      to reset learning. Any such run, or a learning run this server cannot end (an SDK run, an imported one) or one
 //      not final by the wait's end, is 409 learning_busy, naming them, and the agent's learning is left as it was.
-//   2. In the agent's learning queue (learning.ts withAgentRepo, where a run's start reads its seed and a person's edit
-//      commits), the agent's runs are read again: one still going (a run started meanwhile) is 409 learning_busy, nothing
+//   2. In the agent's learning queue (learning.ts inLearningQueue, where a run's start reads its seed), the agent's runs are read again: one still going (a run started meanwhile) is 409 learning_busy, nothing
 //      deleted. Then deleteLearning, which reads them once more itself.
 // Idempotent: an agent that never learned, or one reset already, has nothing to delete, and is answered as done.
 //
 // Step 2 sets the agent's reset watermark (learn/promote.ts resetAtKey) before it deletes: from then on learning reads
 // only runs after it (learn/compile.ts sinceReset: compile_after's count, a compile's traces, a check's inputs, an
-// audit's draws, the money rule). A run whose start read the learning folder before step 2
+// audit's draws, the money rule). A run whose start read its seed before step 2
 // and whose row the store wrote after it keeps what it was started with (its corrections are in its launch), but
 // learns nothing: its seed was read before the watermark, so its learning end drops it whole at its entry
-// (runner/learning-end.ts, reason `reset`), and the learning script refuses a merge on a seed the folder no longer holds
-// (learning.sh `seed`). No workflow is laid for it either: they are read at its seed's commit, which is gone.
+// (runner/learning-end.ts, reason `reset`), and the store refuses a save on a seed the agent's learning no longer holds
+// (Store.learning save). No workflow is laid for it either: they are read at its seed's save, which is gone.
 import { ApiError } from "./errors.js";
 import type { DeleteLearning } from "./agent-delete.js";
 import { LearningInFlight } from "./learn/delete.js";
@@ -45,7 +43,7 @@ export interface LearningResetHost {
   /** The cancel path, for one run that is not final: true once a cancel stands for it, false when this server cannot
    *  end it (agent-delete.ts AgentDeleteHost.cancel). */
   cancel(runId: string): Promise<boolean>;
-  /** `work` in agent `agentId`'s learning queue (learning.ts withAgentRepo). */
+  /** `work` in agent `agentId`'s learning queue (learning.ts inLearningQueue). */
   inQueue<T>(agentId: string, work: () => Promise<T>): Promise<T>;
   /** How long step 1 waits for the agent's learning runs to be final, and how often it reads them meanwhile. */
   readonly waitMs: number;
@@ -88,7 +86,7 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
     const still = await goingOf(host.store, agentId);
     if (still.length) throw busy(agentId, still.map((run) => run.id), still.some((run) => !run.learning) ? OWN(still.filter((run) => !run.learning).length) : "its learning work started again");
     // What the agent's kept runs carry of their revisions' compile and check, kept before the records it is read from go.
-    await keepResetLedger(host.store.settings, agentId, await promotionsOf(host.store.settings, agentId));
+    await keepResetLedger(host.store.settings, agentId, await promotionsOf(host.store.learning, agentId));
     // The watermark, before anything goes: learning reads no run that started, or read its seed, at or before it (each
     // seed is read in this queue, so one read before this moment never holds a later time). A seed read after the reset
     // in the same millisecond counts as before it: its run learns nothing (reason reset) and an SDK start is refused, to
@@ -100,7 +98,7 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
     const at = Date.now();
     await keepResetAt(host.store.settings, agentId, at);
     try {
-      await host.deleteLearning(host.store, agentId, { keepResetLedger: true, agentDisk: true });
+      await host.deleteLearning(host.store, agentId, { keepResetLedger: true });
     } catch (error) {
       if (!(error instanceof LearningInFlight)) throw error;
       await (earlier === undefined ? host.store.settings.remove(resetAtKey(agentId)) : keepResetAt(host.store.settings, agentId, earlier));

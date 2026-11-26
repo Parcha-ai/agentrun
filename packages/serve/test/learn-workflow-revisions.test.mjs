@@ -1,54 +1,42 @@
-// A learned workflow's revisions (GET /v2/agents/{id}/learning/workflows/{name}/revisions): the commits on main that changed
-// its workflow.json, oldest first, each with who made it, when, why and the text it had then; the latest `limit` of them;
-// a workflow no commit changed is 404; a README-only commit (a retire, an approval) is no revision of its workflow.json.
+// A learned workflow's revisions (GET /v2/agents/{id}/learning/workflows/{name}/revisions): the saves of the agent's
+// learning that changed its workflow.json, oldest first, each with who made it, when, why and the text it had then; the
+// latest `limit` of them; a workflow no save changed is 404; a README-only save (a retire, an approval) is no revision of
+// its workflow.json.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { agentFolderOf } from "../dist/files.js";
-import { seedOf } from "../dist/learning.js";
-import { git, resnap } from "./learn-support.mjs";
+import { putLearning } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, answerFlow, serve } from "./support.mjs";
 
-/** `files` committed on agent `id`'s main as one commit, its message `message`; then the snapshot rebuilt. */
-async function commit(data, id, files, message) {
-  const repo = join(agentFolderOf(data, id), "learning");
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", message]);
-  await resnap(data, id);
-  return git(repo, ["rev-parse", "main"]);
-}
+/** `files` saved on agent `id`'s learning in one save, by `by` (a run's merge `{ runId, reason }`, or a person's change
+ *  `{ person, file }`); its version id. */
+const commit = (store, id, files, by) => putLearning(store, id, files, by);
 const README = (name) => `---\nname: ${name}\ndescription: Answers a question as a number; use when the person asks for the answer\n---\n`;
 const JSON_OF = (flow) => JSON.stringify(flow);
 
-test("a learned workflow's revisions: oldest first with the text each had, by run and by person, the latest `limit`, 404 for one no commit changed", { timeout: 120_000 }, async (t) => {
-  const { api, baseUrl, data } = await serve(t, { learning: "on" });
+test("a learned workflow's revisions: oldest first with the text each had, by run and by person, the latest `limit`, 404 for one no save changed", { timeout: 120_000 }, async (t) => {
+  const { api, baseUrl, store } = await serve(t, { learning: "on" });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const schema = doc.paths["/agents/{agent_id}/learning/workflows/{name}/revisions"].get.responses["200"].content["application/json"].schema;
   const id = "invoice-sorter";
   assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness: "pi", instructions: "Answer the question." }))).status, 201);
-  await seedOf(data, id);
+  await store.learning.seed(id);
   const path = "workflows/answer/workflow.json";
   const v1 = answerFlow("Answer the question.");
   const v2 = answerFlow("Answer the question, in whole numbers.");
   const v3 = { ...v2, root: { node: "chain", steps: [...v2.root.steps, { node: "extract", label: "check", instructions: "Check it.", out: "Answer", as: "answer" }] } };
-  const first = await commit(data, id, { [path]: JSON_OF(v1), "workflows/answer/README.md": README("answer") }, "learning: run-1: merged\n\nIt does the job again.\n\nRun-Id: run-1");
-  await commit(data, id, { "corrections.md": "- Answer in whole numbers.\n" }, "learning: run-2: merged\n\nRun-Id: run-2");
-  const second = await commit(data, id, { [path]: JSON_OF(v2) }, "learning: run-3: merged\n\nThe instruction said whole numbers.\n\nRun-Id: run-3");
-  await commit(data, id, { "workflows/answer/README.md": `${README("answer")}retired\n` }, "learning: retired by a person: workflows/answer/README.md\n\nChanged-By: user");
-  const third = await commit(data, id, { [path]: JSON_OF(v3) }, "learning: edited by a person: workflows/answer/workflow.json\n\nChanged-By: user");
+  const first = await commit(store, id, { [path]: JSON_OF(v1), "workflows/answer/README.md": README("answer") }, { runId: "run-1", reason: "It does the job again." });
+  await commit(store, id, { "corrections.md": "- Answer in whole numbers.\n" }, { runId: "run-2", reason: "Its owner's correction." });
+  const second = await commit(store, id, { [path]: JSON_OF(v2) }, { runId: "run-3", reason: "The instruction said whole numbers." });
+  await commit(store, id, { "workflows/answer/README.md": `${README("answer")}retired\n` }, { person: "retired", file: "workflows/answer/README.md" });
+  const third = await commit(store, id, { [path]: JSON_OF(v3) }, { person: "edited", file: path });
 
   const read = async (query = "", name = "answer") => api("GET", `/agents/${id}/learning/workflows/${name}/revisions${query}`);
   const all = await read();
   assert.equal(all.status, 200, JSON.stringify(all.body));
   assert.deepEqual(schemaProblems(doc, schema, all.body), []);
-  assert.deepEqual(all.body.revisions.map((r) => [r.commit, r.by, r.text && JSON.parse(r.text)]), [[first, { run: "run-1" }, v1], [second, { run: "run-3" }, v2], [third, { user: true }, v3]], "oldest first; the README commit and the corrections commit are no revisions");
+  assert.deepEqual(all.body.revisions.map((r) => [r.commit, r.by, r.text && JSON.parse(r.text)]), [[first, { run: "run-1" }, v1], [second, { run: "run-3" }, v2], [third, { user: true }, v3]], "oldest first; the README save and the corrections save are no revisions");
   assert.deepEqual([all.body.name, all.body.total, all.body.truncated], ["answer", 3, false]);
   // Each revision's digest is its file's (workflow-first.ts workflowDigest): what runs' metrics and promotion records name it by.
   assert.deepEqual(all.body.revisions.map((r) => r.digest), all.body.revisions.map((r) => createHash("sha256").update(r.text).digest("hex").slice(0, 16)));

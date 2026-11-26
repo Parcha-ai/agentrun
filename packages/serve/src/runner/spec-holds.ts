@@ -17,7 +17,9 @@ type Held = {
   /** Whether this claim's gate turned the run's computer off for the rest of the run (RunGate.computerOff): a park lets
    *  it go instead of keeping it, since no later claim of the run attaches it. */
   readonly computerOff?: () => boolean;
-  readonly archil?: { revoke(): Promise<void> } | undefined;
+  /** The claim's Archil step: its revoke at an end that keeps nothing, and where that fails, its remove left for the
+   *  janitor (ArchilClaim.leave). */
+  readonly archil?: { revoke(): Promise<void>; leave?(): Promise<void> } | undefined;
   readonly ws?: { end(): Promise<void> };
   /** The claim's Archil keys, dropped from memory last, once nothing more reads the disk (the CLI spec's). */
   readonly keys?: { release(): void } | undefined;
@@ -92,7 +94,12 @@ export class SpecHolds {
     if (kept) await (this.#checkoutEnded ?? this.#held.checkout?.end())?.catch((error: unknown) => log(words(error)));
     else await this.endCheckout();
     await computer?.release().catch((error: unknown) => log(`the run's computer could not be let go: ${words(error)}`));
-    if (!kept) await archil?.revoke().catch((error: unknown) => log(`the run's Archil mount credential could not be revoked: ${words(error)}`));
+    if (!kept) {
+      await archil?.revoke().catch(async (error: unknown) => {
+        log(`the run's Archil mount credential could not be revoked: ${words(error)} (its remove is left for the janitor's next pass)`);
+        await archil.leave?.().catch((left: unknown) => log(`the run's Archil mount credential's remove could not be left for the janitor, so it lapses at its ttl: ${words(left)}`));
+      });
+    }
     await ws?.end().catch((error: unknown) => log(`the run's workspace end failed: ${words(error)}`));
     await scratch?.sweep().catch((error: unknown) => log(`the run's scratch folder could not be swept: ${words(error)}`));
     keys?.release();

@@ -3,9 +3,11 @@
 // note is told), so it never takes a file it saved on the desktop for one the user gets; and computer_screenshot's
 // save_as puts the screen in the run's files, for an agent given write alone. A run not given write, or with write set to
 // deny, is told instead that screenshots can't be saved to the run's files. Through the runner, the pi spec and the adapter loop as they really run.
-// A resumed claim (a park on a tool's approval, then the approval) never tells the files note again.
+// A resumed claim (a park on a tool's approval, then the approval) never tells the files note again. A person's own
+// paired desktop is never deleted when the run ends, so its note never says it is, with write or without.
 //
-// The desktop is --faux's (faux-computers.ts): nothing is rented.
+// The desktop is --faux's (faux-computers.ts): nothing is rented. The paired one is the computer package's fake UI
+// driver on a socket to this process's attach hub.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -13,7 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { readBackOf } from "@parcha/agentrun-computer";
+import { AttachHub, readBackOf } from "@parcha/agentrun-computer";
+import { FakeUiDriver, serveUiSocket } from "@parcha/agentrun-computer/fake-ui-driver";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
@@ -63,8 +66,9 @@ const FAUX_DEPS = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, launch: FAUX.lau
 
 /** run-1 on --faux's desktop, run by a runner on the pi spec with `script` as its model, or with `cli` (`{ env }`) on
  *  opencode's CLI spec; `body`, the agent's; `approvers`, given, the server's approvers row. Each pi request's body is
- *  kept in `requests`, and each claim's spec in `specs`. */
-async function desktopRun(t, { script = [], body = { tools: ["read", "write"] }, approvers, cli }) {
+ *  kept in `requests`, and each claim's spec in `specs`. `paired`: the agent's desktop is instead this paired computer
+ *  (`{ row, hub }`: its store row, and the hub its socket is on). */
+async function desktopRun(t, { script = [], body = { tools: ["read", "write"] }, approvers, cli, paired }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-desktop-files-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -75,14 +79,14 @@ async function desktopRun(t, { script = [], body = { tools: ["read", "write"] },
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Desk" }, { id: "rev-1", kind: "agentic", body: { instructions: "Look.", computer: DESKTOP, ...body } });
+  await server.agents.create({ id: "agent-1", name: "Desk" }, { id: "rev-1", kind: "agentic", body: { instructions: "Look.", computer: paired ? { kind: "desktop", provider: paired.row.id } : DESKTOP, ...body } });
   const model = cli ? { harness: "opencode", model: { provider: "openai", modelId: "gpt-6.1-sol" } } : { harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Look." }, title: "t", place: { mode: "runner" }, ...model } });
   if (approvers !== undefined) await server.settings.put("approvers", { approvers });
   await server.flush?.();
   const requests = [];
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
-  const deps = { env: cli?.env ?? {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps: FAUX_DEPS };
+  const deps = { env: cli?.env ?? {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps: paired ? { ...FAUX_DEPS, attached: { rows: async () => [paired.row], hub: paired.hub } } : FAUX_DEPS };
   const specs = [];
   const kept = async (made) => {
     const spec = await made;
@@ -212,6 +216,48 @@ test("the files note is told once a run: the claim that resumes it after a park 
   assert.equal(count(one.requests, NOTES).reduce((a, b) => a + b, 0), 1, `the files note once in the whole run: ${JSON.stringify(count(one.requests, NOTES))}`);
   const said = (await runTimeline(one.server, RUN, ctx)).map((entry) => entry.summary);
   assert.deepEqual(fileRows(said), [ROW], "its row once");
+});
+
+/** Two ends of one socket, delivering in order (a paired computer's driver on one, the hub on the other). */
+function socketPair() {
+  const ends = [{ text: [], closes: [] }, { text: [], closes: [] }];
+  let closed;
+  const side = (me, peer) => ({
+    send(text) { if (!closed) queueMicrotask(() => peer.text.forEach((listener) => listener(text))); },
+    close(code, reason) {
+      if (closed) return;
+      closed = { code, reason };
+      queueMicrotask(() => [...me.closes, ...peer.closes].forEach((listener) => listener(code, reason)));
+    },
+    onText(listener) { me.text.push(listener); },
+    onClose(listener) { me.closes.push(listener); },
+    get closed() { return closed; },
+  });
+  return [side(ends[0], ends[1]), side(ends[1], ends[0])];
+}
+
+test("a person's own paired desktop, which mounts no folder: the files note says what is saved on it stays there after the run, never that it is deleted when the run ends, given write or not", { timeout: 120_000 }, async (t) => {
+  const { pairedOf } = await import("../dist/workspace/attached-computers.js");
+  const OUTLIVES = "this desktop's own disk is not this run's files: nothing saved on the desktop reaches the user, and it stays on the desktop after the run ends.";
+  for (const [what, body, keep] of [
+    ["given write", undefined, " Keep anything the user should get in the run's files, the folder your file tools work on; computer_screenshot with save_as saves the screen there as a PNG."],
+    ["not given write", { tools: ["read"] }, " Screenshots can't be saved to the run's files here (write isn't offered): put what you found in your answer."],
+  ]) {
+    const driver = new FakeUiDriver({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] });
+    t.after(() => driver.close());
+    const row = { id: "cmp-0000000000000001", name: "Test box", hello: driver.hello(), driver: "0", labels: { owner: "test" }, pairingId: "p-1", createdAt: 0, seenAt: 0, revokedAt: null };
+    const hub = new AttachHub();
+    const [served, computer] = socketPair();
+    serveUiSocket(driver, computer);
+    assert.equal((await hub.accept(pairedOf(row), served)).ok, true, `${what}: the paired desktop is attached`);
+    const one = await desktopRun(t, { script: [{ say: "done" }], ...(body ? { body } : {}), paired: { row, hub } });
+    const ran = await rests(one, ["ended"]);
+    assert.equal(ran.state, "ended", `${what}: ${JSON.stringify(ran)}`);
+    const told = JSON.stringify(one.requests[0]).match(NOTES)?.[0];
+    assert.equal(told, `AgentRun server note: ${OUTLIVES}${keep}`, `${what}: the model is told the paired desktop outlives the run`);
+    const said = (await runTimeline(one.server, RUN, ctx)).map((entry) => entry.summary);
+    assert.deepEqual(fileRows(said), [`AgentRun: T${OUTLIVES.slice(1)}${keep}`], `${what}: and the person reading the run is never told their computer is deleted`);
+  }
 });
 
 /** A model gateway opencode's stand-in talks to, answering "Done." to each request, and the env that points it there;

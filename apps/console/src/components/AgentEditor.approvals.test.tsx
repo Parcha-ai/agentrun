@@ -44,7 +44,7 @@ describe("AgentEditor, the agent's approvals", () => {
     expect(t.host.textContent).not.toContain(NEVER_LINE);
     t.click(t.radio(/^Never ask/));
     expect(t.host.textContent).toContain(NEVER_LINE);
-    t.click([...t.host.querySelectorAll("main ol button, ol button")].find((b) => /Context/.test(b.textContent ?? "")));
+    t.click([...t.host.querySelectorAll('nav[aria-label="Agent settings sections"] ul button')].find((b) => /General/.test(b.textContent ?? "")));
     t.set("#agent-name", "Unattended one");
     const sent = await t.save();
     expect(sent?.approvals).toBe("never");

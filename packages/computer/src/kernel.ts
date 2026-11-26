@@ -32,9 +32,13 @@ import {
 	carries,
 	causeOf,
 	checkBrowser,
-	createLabelValue,
 	createUncertain,
 	DEFAULT_CONFIRM,
+	ATTEMPT_LABEL,
+	convergedBrowser,
+	type HeldBrowser,
+	heldBrowser,
+	newAttempt,
 	defaultSleep,
 	idProblem,
 	labelsOf,
@@ -43,8 +47,10 @@ import {
 	pointerOk,
 	queryable,
 	type ReleaseConfirm,
+	RECOVER_MS,
 	recoverCreate,
 	releaseConfirmed,
+	boundedRelease,
 	restCall,
 	type RestInit,
 	type RestReply,
@@ -53,6 +59,7 @@ import {
 	vendorFailure,
 	withoutCreateLabel,
 } from "./browser.js";
+import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { httpsBase } from "./hosted/rest.js";
 import type { KindCapabilities } from "./kinds.js";
 import {
@@ -100,8 +107,20 @@ export interface KernelBrowser {
 	/** The live view's URL: a secret. */
 	browser_live_view_url?: unknown;
 	tags?: unknown;
+	/** When Kernel made the browser. */
+	created_at?: unknown;
 	deleted_at?: unknown;
 }
+
+/** A browser as #browsers lists it: its id, its tags (the create label left out) and when Kernel made it. */
+interface KernelRow {
+	id: string;
+	tags: Record<string, string>;
+	createdAt?: string;
+}
+
+/** A browser as its create label finds it. */
+const heldOf = ({ id, tags, createdAt }: KernelRow): HeldBrowser => ({ id, labels: tags, ...(createdAt === undefined ? {} : { createdAt }) });
 
 /**
  * One Kernel request, never retried: a create sent twice would be a second paid browser. It answers 404 as a reply,
@@ -130,6 +149,12 @@ export interface KernelProviderOptions {
 	fetch?: typeof fetch;
 	confirm?: ReleaseConfirm;
 	sleep?: (ms: number) => Promise<void>;
+	/**
+	 * How long, in all, a cleanup a create runs for itself may take: the release of the browser its POST made once its
+	 * caller is gone, or once another create of the request made one first, and the search and release after a lost
+	 * reply. Default RECOVER_MS. The caller's signal never cuts it short.
+	 */
+	cleanupMs?: number;
 }
 
 const refOf = (id: string): ComputerRef => ({ id, name: id });
@@ -137,7 +162,7 @@ const refOf = (id: string): ComputerRef => ({ id, name: id });
 const statusOf = (error: unknown) => (error as { status?: unknown } | null)?.status;
 
 /** What a Kernel browser offers beyond the protocol, a fresh copy each time. */
-const KERNEL_BROWSER = (): BrowserFeatures => ({ timeout: "inactivity", minLifetimeMs: KERNEL_MIN_LIFETIME_MS, profiles: { settleMs: 0 }, headless: true });
+const KERNEL_BROWSER = (): BrowserFeatures => ({ timeout: "inactivity", minLifetimeMs: KERNEL_MIN_LIFETIME_MS, profiles: { settleMs: KERNEL.profiles.settleMs }, headless: true });
 
 /** Computers that are Kernel browsers. */
 export class KernelProvider implements ComputerProvider, BrowserComputerProvider {
@@ -149,8 +174,19 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	readonly #live: UrlStore;
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
+	/** The bound of each cleanup a create runs for itself (cleanupMs). */
+	readonly #cleanupMs: number;
+	/** Idempotent create's in-process half: one browser per request id (provider.md). */
+	readonly #requests = new CreateRequests();
+	/** The request's name of each browser this provider made or found for a create, by id: its release ends the request. */
+	readonly #requestOf = new Map<string, string>();
+	/**
+	 * The browser each request's create answered, by the request's name, kept past its release: a request whose browser
+	 * ended on its own (its timeout, the vendor) is refused exists, as one released here is, never made again.
+	 */
+	readonly #madeFor = new Map<string, string>();
 
-	constructor({ apiKey, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: KernelProviderOptions) {
+	constructor({ apiKey, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep, cleanupMs = RECOVER_MS }: KernelProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Kernel API key: the provider reads no environment");
 		const api = apiUrl || env.KERNEL_BASE_URL?.trim() || undefined;
 		this.#request = kernelRest({ apiKey, ...(api ? { apiUrl: api } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
@@ -158,6 +194,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		this.#live = memoryUrls();
 		this.#confirm = confirm;
 		this.#sleep = sleep;
+		this.#cleanupMs = cleanupMs;
 	}
 
 	/**
@@ -186,21 +223,46 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	}
 
 	/**
-	 * Makes a browser at most once, with the lifetime as its idle timeout in whole seconds and the labels as its tags.
-	 * spec.browser is the session's own options, each refused by check() unless declared; a profile is made first if
-	 * Kernel does not know it.
+	 * Makes a browser once per request (provider.md, Idempotent create), with the lifetime as its idle timeout in whole
+	 * seconds and the labels as its tags, with the request's name (computerNameFor) as its create label. A request whose
+	 * browser Kernel still holds undeleted answers that one, found by its create label; one whose browser was deleted here
+	 * is refused exists; a create of a request in flight here waits for the first (CreateRequests). spec.browser is the
+	 * session's own options, each refused by check() unless declared; a profile is made first if Kernel does not know it.
 	 */
 	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
-		const signal = context?.signal;
 		const refusals = this.check(spec);
-		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
+		return this.#requests.create(spec, context, {
+			refuse: fail,
+			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
+			make: async (request) => {
+				const made = await this.#createNamed(spec, request, context.signal);
+				if (made.ok) this.#madeFor.set(request, made.value.id);
+				return made;
+			},
+		});
+	}
+
+	/** Everything create does under the request's name: the browser Kernel holds under it, or a new one. */
+	async #createNamed(spec: ComputerSpec, request: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
 		if (signal?.aborted) return fail("aborted", "create was aborted before Kernel was called");
+		const held = await this.#browsers({ [CREATE_LABEL]: request }, signal);
+		if (!held.ok) return held;
+		const found = heldBrowser(spec.labels ?? {}, held.value.map(heldOf));
+		if (found !== undefined) {
+			if (found.differ.length > 0) return fail("exists", otherSpecWords(`${request} (browser ${found.id})`, "was made", found.differ));
+			this.#requestOf.set(found.id, request);
+			return ok(refOf(found.id));
+		}
+		const ended = await this.#ended(spec, request, signal);
+		if (ended !== undefined) return ended;
 		const options = spec.browser;
 		if (options?.profile !== undefined) {
 			const ensured = await this.#ensureProfile(options.profile.pointer, signal);
 			if (!ensured.ok) return causedFail(ensured.error.code, `the profile could not be made ready: ${ensured.error.message}; no browser was made`, causeOf(ensured), "kernel");
 		}
-		const written = { [CREATE_LABEL]: createLabelValue(), ...spec.labels };
+		// The request's label, which a retry and a converge find it by, and this POST's own, which its recovery finds it by.
+		const attempt = { [ATTEMPT_LABEL]: newAttempt() };
+		const written = { [CREATE_LABEL]: request, ...attempt, ...spec.labels };
 		const body = {
 			...(options !== undefined ? { stealth: false } : {}),
 			...(options?.viewport ? { viewport: { width: options.viewport.width, height: options.viewport.height } } : {}),
@@ -215,8 +277,10 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		} catch (error) {
 			const failed = vendorFailure("kernel", NAME, "POST /browsers", error);
 			if (failed.ok || !createUncertain(error)) return failed;
-			// The browser may have been made though its answer never came: found by its create label, never made again.
-			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`, causeOf(failed), "kernel");
+			// The browser may have been made though its answer never came: found by this POST's attempt label and deleted,
+			// and the request is ended, so it is never made again.
+			this.#requests.end(request);
+			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(attempt)}`, causeOf(failed), "kernel");
 		}
 		const browser = (made.json ?? {}) as KernelBrowser;
 		const id = text(browser.session_id);
@@ -224,8 +288,15 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		if (made.status === 404) return vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
 		if (idProblem(id, NAME) !== undefined) {
 			const failed = vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
-			return failed.ok ? failed : fail(failed.error.code, `${failed.error.message}; ${await this.#recover(written)}`);
+			if (failed.ok) return failed;
+			this.#requests.end(request);
+			return fail(failed.error.code, `${failed.error.message}; ${await this.#recover(attempt)}`);
 		}
+		this.#requests.made(request);
+		// Another process's create of this request may have made one too (#converge): the older is answered.
+		const converged = await this.#converge(spec, request, { id, tags: {}, ...(text(browser.created_at) === "" ? {} : { createdAt: text(browser.created_at) }) }, signal);
+		if (converged !== undefined) return converged;
+		this.#requestOf.set(id, request);
 		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
 			// The browser is made and billed until its idle timeout: deleted here, not left to a later sweep.
@@ -236,6 +307,58 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		const live = text(browser.browser_live_view_url);
 		if (live !== "") this.#live.set(id, live);
 		return ok(refOf(id));
+	}
+
+	/**
+	 * The one browser a request keeps (convergedBrowser): the request's create label listed again once Kernel made mine.
+	 * Undefined when mine is the oldest (or the listing fails: the create goes on with its own); an abort deletes mine,
+	 * never under the caller's signal, and the create is aborted. Else mine is deleted,
+	 * never under the caller's signal, and the older answered: refused exists when it is gone by then, or when its labels
+	 * are another spec's.
+	 */
+	async #converge(spec: ComputerSpec, request: string, mine: KernelRow, signal?: AbortSignal): Promise<Result<CreatedComputer> | undefined> {
+		const listed = await this.#browsers({ [CREATE_LABEL]: request }, signal);
+		if (!listed.ok) {
+			if (listed.error.code !== "aborted" && !signal?.aborted) return undefined;
+			// The caller is gone: the browser this POST made is deleted, never under the caller's signal.
+			this.#requests.end(request);
+			const released = await boundedRelease("browser", mine.id, this.#cleanupMs, (bound) => this.#releaseBrowser(mine.id, bound));
+			return fail("aborted", `create was aborted once Kernel had made the browser ${mine.id}; ${released.ok ? "the browser was released" : `the browser could not be released (${released.error.message}), and its tags let a sweep find it`}`);
+		}
+		const kept = convergedBrowser(listed.value.map(heldOf), heldOf(mine));
+		if (kept === "mine") return undefined;
+		const released = await boundedRelease("browser", mine.id, this.#cleanupMs, (bound) => this.#releaseBrowser(mine.id, bound));
+		if (!released.ok) return fail(released.error.code, `${request} keeps the browser ${kept.id}, the older of its two, and the browser ${mine.id} made for it could not be deleted (${released.error.message})`);
+		const alive = await this.#alive(kept.id, signal);
+		if (!alive.ok) return alive;
+		if (!alive.value) {
+			this.#requests.end(request);
+			return fail("exists", endedWords(request));
+		}
+		const differ = labelsDiffer(spec.labels ?? {}, kept.labels, "read back");
+		if (differ.length > 0) return fail("exists", otherSpecWords(`${request} (browser ${kept.id})`, "was made", differ));
+		this.#requestOf.set(kept.id, request);
+		return ok(refOf(kept.id));
+	}
+
+	/**
+	 * A request this provider answered a browser for before, which its create label no longer finds: refused exists, the
+	 * request ended, once Kernel reads that browser as gone too; one it still holds (a listing that left it out) is
+	 * answered when its labels are this spec's. Undefined for a request with no browser here yet.
+	 */
+	async #ended(spec: ComputerSpec, request: string, signal?: AbortSignal): Promise<Result<CreatedComputer> | undefined> {
+		const before = this.#madeFor.get(request);
+		if (before === undefined) return undefined;
+		const read = await this.#running(before, signal);
+		if (!read.ok && read.error.code !== "not_found" && read.error.code !== "gone") return read;
+		if (!read.ok) {
+			this.#requests.end(request);
+			return fail("exists", endedWords(request));
+		}
+		const differ = labelsDiffer(spec.labels ?? {}, withoutCreateLabel(labelsOf(read.value.tags)), "read back");
+		if (differ.length > 0) return fail("exists", otherSpecWords(`${request} (browser ${before})`, "was made", differ));
+		this.#requestOf.set(before, request);
+		return ok(refOf(before));
 	}
 
 	/** A browser names only a profile Kernel knows: made if it is not (GET, then POST); a 409 is another process making it. */
@@ -283,16 +406,16 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 
 	/**
 	 * The browsers a lost create made, released: what recoverCreate says of them. They are found as list finds any, by the
-	 * tags the create wrote (its create label first, so the query names it, then the run's), through #browsers: another
-	 * browser of the same run carries a create label of its own and is left alone. #browsers reads every state not
-	 * deleted, so a browser still starting is found and released too.
+	 * attempt label its POST wrote (ATTEMPT_LABEL), through #browsers: another create's browser, of this request or
+	 * another, carries an attempt label of its own and is left alone, even one another instance has answered. #browsers
+	 * reads every state not deleted, so a browser still starting is found and released too.
 	 */
 	#recover(labels: Record<string, string>): Promise<string> {
 		const find = async (signal: AbortSignal): Promise<Result<string[]>> => {
 			const found = await this.#browsers(labels, signal);
 			return found.ok ? ok(found.value.map((b) => b.id)) : found;
 		};
-		return recoverCreate("browser", find, (id) => this.release(refOf(id), "delete"), this.#sleep);
+		return recoverCreate("browser", find, (id, signal) => this.release(refOf(id), "delete", { signal }), this.#sleep, this.#cleanupMs);
 	}
 
 	/**
@@ -367,12 +490,12 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	 * provider's own, so a lane that drops the filter never hands back another's. A page that cannot be read fails the
 	 * whole list: a release trusts it.
 	 */
-	async #browsers(labels: Record<string, string>, signal?: AbortSignal): Promise<Result<Array<{ id: string; tags: Record<string, string> }>>> {
+	async #browsers(labels: Record<string, string>, signal?: AbortSignal): Promise<Result<KernelRow[]>> {
 		const problem = labelsProblem(labels);
 		if (problem) return fail("invalid", problem);
 		if (Object.keys(labels).length === 0) return fail("invalid", "list and attach take at least one label: a Kernel organization holds browsers this provider did not make");
 		const first = Object.entries(labels).find(queryable);
-		const found: Array<{ id: string; tags: Record<string, string> }> = [];
+		const found: KernelRow[] = [];
 		const seen = new Set<string>();
 		const call = "GET /browsers";
 		for (let offset = 0, pages = 0; pages < MAX_PAGES; pages++) {
@@ -390,7 +513,8 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 				const id = text(row?.session_id);
 				if (id !== "" && !row.deleted_at && carries(row.tags, labels) && !seen.has(id)) {
 					seen.add(id);
-					found.push({ id, tags: withoutCreateLabel(labelsOf(row.tags)) });
+					const createdAt = text(row.created_at);
+					found.push({ id, tags: withoutCreateLabel(labelsOf(row.tags)), ...(createdAt === "" ? {} : { createdAt }) });
 				}
 			}
 			if (page.headers.get("x-has-more") !== "true") return ok(found);
@@ -452,6 +576,16 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		const id = ref?.id;
 		const problem = idProblem(id, NAME);
 		if (problem) return fail("invalid", problem);
+		// The request's browser is ended here: a later create of it is refused exists, never made again.
+		const request = this.#requestOf.get(id);
+		if (request !== undefined) this.#requests.end(request);
+		const released = await this.#releaseBrowser(id, signal);
+		if (released.ok) this.#requestOf.delete(id);
+		return released;
+	}
+
+	/** Deletes the browser and waits until Kernel reads it as gone; the request it was made for is not ended. */
+	async #releaseBrowser(id: string, signal?: AbortSignal): Promise<Result<void>> {
 		const released = await releaseConfirmed({
 			request: async () => {
 				try {

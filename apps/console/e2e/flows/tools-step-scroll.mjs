@@ -1,5 +1,5 @@
-// The agent editor's Tools & skills step, scrolled with a mouse wheel in Chromium (QA #21, beta.57: "scrolling moves the whole
-// page instead of the list"). On a desktop window the editor's toolbar and its steps stay put and the step's own body
+// The shared agent editor's Tools section, scrolled with a mouse wheel in Chromium (QA #21, beta.57: "scrolling moves the whole
+// page instead of the list"). On a desktop window the editor's toolbar and its settings navigation stay put and the step's own body
 // scrolls: a wheel over a tool card moves the step's list, never the page (main, the console's one page scroller) nor
 // the document. Many MCP tools (routed, so no MCP server has to run) make the list longer than any window. Six windows,
 // desktop to phone: the report did not reproduce on beta.57 or later at any of them, so this pins the layout as it is.
@@ -27,12 +27,18 @@ export default {
       await page.setViewportSize({ width, height });
       await page.goto(`${base}/#/agents/${encodeURIComponent(made.body.agent_id)}/edit`);
       await page.reload();
-      await page.locator("ol").first().getByRole("button", { name: /Tools & skills/ }).click();
+      const sections = page.getByRole("navigation", { name: "Agent settings sections" });
+      if (width < 768) {
+        await sections.getByRole("button", { name: "Settings section" }).click();
+        await page.getByRole("option", { name: "Tools", exact: true }).click();
+      } else {
+        await sections.getByRole("button", { name: /^Tools/ }).click();
+      }
       await page.locator('[data-tool-card="mcp:many/tool_10"]').waitFor();
       // A card in view: the first one.
       const card = page.locator("[data-tool-card]").first();
       const where = () => page.evaluate(() => {
-        const step = [...document.querySelectorAll("section")].find((s) => s.querySelector("h2")?.textContent === "Tools & skills");
+        const step = [...document.querySelectorAll("h2")].find((h) => h.textContent === "Tools")?.closest("section");
         const main = document.querySelector("main");
         return { step: step?.scrollTop ?? null, stepScrolls: step ? step.scrollHeight > step.clientHeight : null, main: main?.scrollTop ?? null, page: document.scrollingElement?.scrollTop ?? null, title: document.querySelector("h1")?.getBoundingClientRect().top ?? null };
       });
@@ -45,7 +51,7 @@ export default {
       // Wait for the step's list to move, up to 5 s: a slow worker scrolls late, never wrong. The checks below then say
       // what moved instead when it did not.
       await page.waitForFunction((from) => {
-        const step = [...document.querySelectorAll("section")].find((s) => s.querySelector("h2")?.textContent === "Tools & skills");
+        const step = [...document.querySelectorAll("h2")].find((h) => h.textContent === "Tools")?.closest("section");
         return (step?.scrollTop ?? 0) > from;
       }, before.step, { timeout: 5000 }).catch(() => {});
       const after = await where();

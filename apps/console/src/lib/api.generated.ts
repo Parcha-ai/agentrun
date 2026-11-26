@@ -180,7 +180,7 @@ export interface components {
       } | {
         mode: "sandbox";
         box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
-      };
+      } | null;
       default_reason?: string;
       allow: string[];
     };
@@ -317,7 +317,6 @@ export interface components {
     followup_usd?: number | null;
     shadow_usd?: number | null;
     share_usd?: number | null;
-    degraded?: true;
     plan?: {
       requests: number;
       tokens: number;
@@ -491,6 +490,10 @@ export interface components {
           keys: string[];
         }>;
         pin_broken?: true;
+        file?: {
+          folder: string;
+          show: string[];
+        };
       } | {
         permission?: "allow" | "ask" | "deny";
       } | {
@@ -632,7 +635,6 @@ export interface components {
       routes: boolean;
       at_rest: "sealed";
       harnesses: string[];
-      kept: string[];
     };
     mcp_client?: {
       transports: "streamable-http"[];
@@ -949,6 +951,37 @@ export interface components {
       };
       model_requests: null;
     };
+    factory?: {
+      lifecycle_version: string;
+      source: "managed" | "native" | "sdk" | "cli";
+      runtime: string;
+      control: "managed" | "observed";
+      controls: {
+        stop: boolean;
+        cancel: boolean;
+        approve: boolean;
+      };
+      observation: {
+        basis: "runner" | "connector" | "unreported";
+        status: "current" | "offline" | "revoked" | "unreported";
+        last_seen_at: string | null;
+      };
+      last_activity_at: string | null;
+      github: null | {
+        repository: string;
+        issue: number | null;
+        pull_request: number | null;
+        head_sha: string | null;
+        provenance: "launch" | "github_trigger";
+      };
+      children: {
+        id: string;
+        conversation_id: number;
+        parent_call_id: string;
+        status: "active" | "completed";
+        label: string | null;
+      }[];
+    };
     console_url?: string;
     revision: string;
     kind: "agentic" | "workflow";
@@ -992,7 +1025,7 @@ export interface components {
     };
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
       detail: string | null;
       at: string;
       workflows?: {
@@ -1064,6 +1097,14 @@ export interface components {
       digest: string | null;
       repick: "found" | "missed" | null;
     } | null;
+    workflow_calls?: {
+      workflow: string;
+      digest: string;
+      caller: "platform" | "agent";
+      outcome: "answered" | "handed_back" | "failed" | "refused";
+      usd: number | null;
+    }[] | null;
+    first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1142,6 +1183,8 @@ export interface components {
   RunList: {
     runs: components["RunSummary"][];
     next_cursor: string | null;
+    scope?: "active" | "review";
+    observed_at?: string;
   };
   RunResult: {
     output: unknown;
@@ -1161,6 +1204,18 @@ export interface components {
     created_at: components["Timestamp"];
     ended_at: components["Timestamp"] | null;
     cost: components["Cost"];
+    computer?: {
+      kind: "sandbox" | "desktop" | "phone" | "browser";
+      provider: string;
+      state: "starting" | "ready" | "taken_over" | "released" | "ended" | "failed";
+      why?: string;
+      held?: {
+        state: "starting" | "waiting" | "started" | "ended" | "released";
+        minutes: number;
+        until?: string;
+        why?: "timeout" | "lost";
+      };
+    };
     sdk?: {
       runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
       model: string | null;
@@ -1234,6 +1289,37 @@ export interface components {
       };
       model_requests: null;
     };
+    factory?: {
+      lifecycle_version: string;
+      source: "managed" | "native" | "sdk" | "cli";
+      runtime: string;
+      control: "managed" | "observed";
+      controls: {
+        stop: boolean;
+        cancel: boolean;
+        approve: boolean;
+      };
+      observation: {
+        basis: "runner" | "connector" | "unreported";
+        status: "current" | "offline" | "revoked" | "unreported";
+        last_seen_at: string | null;
+      };
+      last_activity_at: string | null;
+      github: null | {
+        repository: string;
+        issue: number | null;
+        pull_request: number | null;
+        head_sha: string | null;
+        provenance: "launch" | "github_trigger";
+      };
+      children: {
+        id: string;
+        conversation_id: number;
+        parent_call_id: string;
+        status: "active" | "completed";
+        label: string | null;
+      }[];
+    };
     console_url?: string;
     revision: string;
     kind: "agentic" | "workflow";
@@ -1245,7 +1331,7 @@ export interface components {
     error?: components["RunError"] | null;
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
       detail: string | null;
       workflows?: {
         file: string;
@@ -1315,6 +1401,14 @@ export interface components {
       digest: string | null;
       repick: "found" | "missed" | null;
     } | null;
+    workflow_calls?: {
+      workflow: string;
+      digest: string;
+      caller: "platform" | "agent";
+      outcome: "answered" | "handed_back" | "failed" | "refused";
+      usd: number | null;
+    }[] | null;
+    first_choice?: "served" | "replay" | "replay_missing" | "none_laid" | "off" | "none_fit" | "many_fit" | "not_promoted" | "champion_misfit" | "many_champions" | "cost_stop" | "no_by_hand_cost" | "past_unread" | "held" | null;
   };
   SecretMeta: {
     name: string;
@@ -1436,7 +1530,7 @@ export interface components {
     tool_result_text?: string | null;
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
       detail: string | null;
     };
   };
@@ -2371,6 +2465,7 @@ export interface operations {
     body: never;
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -2380,6 +2475,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };
@@ -3257,6 +3353,13 @@ export interface operations {
     body: never;
     answer: Record<string, unknown>;
   };
+  getRevisionSkills: {
+    body: never;
+    answer: {
+      revision: string;
+      skills: Record<string, string>;
+    };
+  };
   getRun: {
     body: never;
     answer: components["Run"];
@@ -3432,7 +3535,7 @@ export interface operations {
     answer: {
       run: string;
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
       detail: string | null;
       at: string;
       seed: string | null;
@@ -3964,6 +4067,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -4230,6 +4337,7 @@ export interface operations {
     body: never;
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -4239,6 +4347,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };
@@ -4517,6 +4626,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -5479,6 +5592,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -6044,7 +6161,7 @@ export interface operations {
   putWorkspaceArchil: {
     body: {
       region: string;
-      s3Url: string;
+      s3Url?: string;
       image?: string;
       keys?: {
         ARCHIL_API_KEY?: string | null;
@@ -6052,6 +6169,7 @@ export interface operations {
     };
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -6061,6 +6179,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };
@@ -7063,6 +7182,41 @@ export interface operations {
     answer: {
       revoked: boolean;
       message?: string;
+    };
+  };
+  signOutClaudeLogin: {
+    body: never;
+    answer: {
+      confirmed: boolean;
+      message?: string;
+      login: {
+        state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+        place: "agentrun" | "machine";
+        command: string;
+        can_start: boolean;
+        refused?: string;
+        account?: {
+          method?: string;
+          email?: string;
+          organization?: string;
+          plan?: string;
+        };
+        folder: string;
+        machine: {
+          folder: string;
+          source: "CLAUDE_CONFIG_DIR" | "default";
+          credentials?: string;
+        };
+        sign_in?: {
+          state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+          started_at: string;
+          ended_at?: string;
+          limit_ms: number;
+          exit_code?: number;
+          signal?: string;
+          error?: string;
+        };
+      };
     };
   };
   sourceSyncFailure: {
