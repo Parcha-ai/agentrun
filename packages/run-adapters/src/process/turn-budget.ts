@@ -186,13 +186,16 @@ export class TurnBudget {
     return max;
   }
 
-  /** Call `callId`'s result reached the model at `chars` characters: what it claimed and did not use is left for the rest. */
+  /** Call `callId`'s result reached the model at `chars` characters: what it claimed and did not use is left for the rest,
+   *  and what it took past its claim (a short result is whole under any bound, a refusal's words are what they are) is
+   *  held, so the calls after it split only what is left. */
   settle(callId: string, chars: number): void {
     const claimed = this.#claims.get(callId);
-    if (!claimed || claimed.settled) return;
+    const handed = count(chars);
+    if (!claimed || claimed.settled || handed === undefined) return;
     claimed.settled = true;
-    this.#held += Math.min(chars, claimed.max) - claimed.max;
-    this.#kept = this.#sink?.({ settled: { callId, chars: Math.min(chars, claimed.max) } });
+    this.#held += handed - claimed.max;
+    this.#kept = this.#sink?.({ settled: { callId, chars: handed } });
   }
 
   /** Resolves once the last result length settled is kept by the sink (journalTurn: committed to the journal), so a result
