@@ -810,6 +810,8 @@ test("the page and its assets load under /r/: share.html at /r/<id> with every a
   assert.doesNotMatch(SHARE_HOST_CSP, /https?:/, "no outside origin: a VerdictCard's http image is blocked on a public page");
   assert.match(SHARE_HOST_CSP, /img-src 'self' data:;/);
   assert.match(SHARE_HOST_CSP, /frame-ancestors 'none'/);
+  // The hosted page's CSP is the local preview's, never a looser copy of it.
+  assert.equal(SHARE_HOST_CSP, (await import("../dist/page.js")).SHARE_PAGE_CSP);
   assert.equal((await send(s.port, { method: "HEAD", path: `/r/${id}` })).status, 200);
   for (const path of [`/r/${"b".repeat(26)}`, "/r/not-an-id", "/r/_assets/missing.js", "/r/_assets/../share.html", "/r/_assets/%2e%2e/share.html", "/r/_assets/.hidden.js", "/r/_assets/x.html", `/r/${id}/other.json`, `/r/${id}/bundle.json/x`]) {
     assert.equal((await send(s.port, { path })).status, 404, path);
