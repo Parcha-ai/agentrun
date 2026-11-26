@@ -176,6 +176,7 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
     const max = known ? known.max : Math.min(resultMaxChars(options.budget), claims ? claims.claim(callId, options.budget?.contextWindow) : HOST_RESULT_MAX_CHARS);
     const { text, truncated, bound } = boundTo(whole, max);
     claims?.settle(callId, text.length);
+    await claims?.kept();
     if (bound && !known) await ctx.effect(key, { name: 'bound', replay: 'safe', input: null }, async () => bound);
     return truncated ? { text, truncated } : { text };
   };
