@@ -2,9 +2,8 @@
 // a copy exactly when the reader's own key says so.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseHome } from "../dist/index.js";
 import { packed, packInto } from "../dist/record-key.js";
-import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, tempHome, writeJsonl } from "./fixtures.mjs";
+import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, parseHome, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const UUID = "0f1e2d3c-4b5a-4697-8877-665544332211";
 /** `key` packed, as bytes of its own. */

@@ -12,7 +12,8 @@ import { createServer, request } from "node:http";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { serve } from "../../serve/test/support.mjs";
+import { startFakeComposio } from "../../serve/test/fixtures/fake-composio.mjs";
+import { serve, withEnv } from "../../serve/test/support.mjs";
 import { packageFiles, packageSha256 } from "../lib/deploy.mjs";
 import { cli as agentrun, scratch as scratchOf, server as serverOf } from "./support.mjs";
 
@@ -52,12 +53,14 @@ description: Check what changed and say it in one line.
 
 ${line}
 `;
-const AGENT = ({ name = "pr-alert", extra = [] } = {}) => `---
+// It names its tools (none): a package that names none would get Docker's box, which these servers do not have (a deploy
+// of one is refused, below).
+const AGENT = ({ name = "pr-alert", extra = [], bare = false } = {}) => `---
 name: ${name}
 version: 0.1.0
 description: Says what changed in the repository today.
 budget: { per_run_usd: 1.00 }
-${extra.join("\n")}
+${bare ? "" : "tools: []\n"}${extra.join("\n")}
 triggers:
   - name: daily
     source: { kind: schedule, cron: "0 8 * * *" }
@@ -66,11 +69,11 @@ triggers:
 You check what changed. Use your check skill.
 `;
 
-/** A package folder named as its manifest. */
-function folder(dir, { name = "pr-alert", extra = [], skill } = {}) {
+/** A package folder named as its manifest; `bare`, one that names no tools. */
+function folder(dir, { name = "pr-alert", extra = [], skill, bare = false } = {}) {
   const at = join(dir, name);
   mkdirSync(join(at, "skills", "check"), { recursive: true });
-  writeFileSync(join(at, "agent.md"), AGENT({ name, extra }));
+  writeFileSync(join(at, "agent.md"), AGENT({ name, extra, bare }));
   writeFileSync(join(at, "skills", "check", "SKILL.md"), SKILL(skill));
   return at;
 }
@@ -392,6 +395,7 @@ name: watch
 version: 0.1.0
 description: Watches vendors' status feeds.
 budget: { per_run_usd: 0.25 }
+tools: []
 parameters:
   status_feeds: { type: array, items: { type: string }, required: false, default: [], description: "each vendor's status feed" }
 triggers:
@@ -679,6 +683,117 @@ test("agentrun deploy DIR to an API-only install of a package whose one trigger 
   assert.doesNotMatch(again.err, /Not made on/);
 });
 
+/** pr-alert whose one trigger is a Composio one, which an API-only install says is not an option there. */
+const MAILED = AGENT({ extra: ["mcp:", "  - { source: composio, toolkit: gmail, tools: [add], required: true }"] }).replace(`  - name: daily
+    source: { kind: schedule, cron: "0 8 * * *" }
+    target: { kind: start_run, input: { content: "Run the daily check." } }
+`, `  - name: new-mail
+    source: { kind: composio, server: gmail, event: GMAIL_NEW_GMAIL_MESSAGE, config: {} }
+    target: { kind: start_run, input: { content: "A mail arrived." } }
+`);
+
+const COMPOSIO_KEY = `not-a-secret-${"composio-env-key-0202"}`;
+const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
+
+/** An API-only install (no runner) beside a fake Composio, with the per-run Composio server of gmail its token saved, as
+ *  a backend in front of it saves one before it deploys an agent that needs it. */
+async function mailInstall(t) {
+  withEnv(t, { COMPOSIO_API_KEY: COMPOSIO_KEY });
+  const composio = await startFakeComposio({ apiKey: COMPOSIO_KEY, toolkits: { gmail: { no_auth: false, tools: [ADD] } }, authConfigs: { gmail: [{ id: "ac_managed_gmail", is_composio_managed: true, status: "ENABLED" }] } });
+  t.after(() => composio.close());
+  const hosted = await serve(t, { runner: false, apiOnly: true, composioControl: { baseUrl: composio.baseUrl }, composioMcpOrigin: composio.mcpOrigin });
+  const saved = await hosted.api("PUT", "/settings/mcp-servers/mail/composio", { api_key_env: "COMPOSIO_API_KEY", toolkit: "gmail", tools: [ADD.slug], user_id: "per_run" }, { authorization: `Bearer ${hosted.token}` });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  return hosted;
+}
+
+/** A deploy target that sets up Composio triggers itself, in front of the API-only install at `to`: each apply's answer
+ *  (its plan's too) is the install's, with `triggers_set_up` added, `said(dryRun)` its entries. */
+async function settingUp(t, to, said) {
+  const target = new URL(to);
+  const front = createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const sent = Buffer.concat(chunks);
+      const headers = { ...req.headers, "content-length": String(sent.length) };
+      const out = request({ host: target.hostname, port: target.port, path: req.url, method: req.method, headers }, (answer) => {
+        const parts = [];
+        answer.on("data", (chunk) => parts.push(chunk));
+        answer.on("end", () => {
+          let bytes = Buffer.concat(parts);
+          if (req.method === "POST" && /\/templates\/[^/]+\/apply$/.test(req.url) && answer.statusCode < 300) {
+            const dryRun = JSON.parse(sent.toString("utf8")).dry_run === true;
+            bytes = Buffer.from(JSON.stringify({ ...JSON.parse(bytes.toString("utf8")), triggers_set_up: said(dryRun) }));
+          }
+          const { "content-length": _length, "transfer-encoding": _encoding, ...kept } = answer.headers;
+          res.writeHead(answer.statusCode, { ...kept, "content-length": String(bytes.length) });
+          res.end(bytes);
+        });
+      });
+      out.on("error", () => res.writeHead(502).end());
+      out.end(sent);
+    });
+  });
+  await new Promise((resolve) => front.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (front.closeAllConnections(), front.close(resolve))));
+  return `http://127.0.0.1:${front.address().port}${target.pathname}`;
+}
+
+test("agentrun deploy to a target that sets up a Composio trigger itself in front of an API-only install: the trigger it made is said set up, never skipped, though the install's plan and warning skip it", { timeout: 180_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const hosted = await mailInstall(t);
+  const base = await settingUp(t, hosted.baseUrl, (dryRun) => [{ name: "new-mail", kind: "composio", made: true, ...(dryRun ? {} : { enabled: true }) }]);
+  const pkg = folder(dir);
+  writeFileSync(join(pkg, "agent.md"), MAILED);
+
+  const done = await cli(env, ["deploy", pkg, "--to", base, "--yes"], { AGENTRUN_API_KEY: hosted.token });
+  assert.equal(done.code, 0, done.err);
+  assert.match(done.err, /\+ trigger\s+new-mail\s+composio \(the target sets it up\)/);
+  assert.match(done.err, /Trigger new-mail \(composio\) set up by /);
+  const mailLines = done.err.split("\n").filter((line) => line.includes("new-mail"));
+  assert.ok(mailLines.length > 0);
+  for (const line of mailLines) assert.doesNotMatch(line, /skipped|was not made|through the API instead/, line);
+  assert.doesNotMatch(done.err, /Not made on/);
+  const answer = done.json();
+  assert.deepEqual(answer.warnings.filter((one) => one.field.startsWith("triggers.")), [], "the install's warning on new-mail gives way to the target's word");
+  assert.deepEqual(answer.triggers_set_up, [{ name: "new-mail", kind: "composio", made: true, enabled: true }]);
+  assert.match(answer.package_sha256 ?? "", /^[0-9a-f]{64}$/, "made, so the lock names the package");
+  // The install behind the target skips new-mail all the same: the words given way to are its own.
+  const planned = await hosted.api("POST", "/templates/upload%3Apr-alert/apply", { dry_run: true });
+  assert.deepEqual(planned.body.plan.triggers.map((one) => [one.name, one.action, one.code]), [["new-mail", "skip", "not_an_option"]]);
+  assert.match(planned.body.plan.triggers[0].reason, /Start its runs through the API instead/);
+});
+
+test("agentrun deploy to a target that sets up Composio triggers itself but did not make this one: still said skipped in the target's words, a warning after the apply, and not made yet, so the next deploy applies again", { timeout: 180_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const hosted = await mailInstall(t);
+  const why = "Connect a Gmail account, then deploy again.";
+  let said = { name: "new-mail", kind: "composio", made: false, reason: "account_not_connected", message: why };
+  const base = await settingUp(t, hosted.baseUrl, () => [said]);
+  const pkg = folder(dir);
+  writeFileSync(join(pkg, "agent.md"), MAILED);
+
+  const done = await cli(env, ["deploy", pkg, "--to", base, "--yes"], { AGENTRUN_API_KEY: hosted.token });
+  assert.equal(done.code, 0, done.err);
+  assert.match(done.err, /! trigger\s+new-mail\s+composio skipped: Connect a Gmail account/);
+  assert.match(done.err, /Warning \(triggers\.0\): Connect a Gmail account, then deploy again\./);
+  assert.match(done.err, /Not made on .* yet: new-mail\./);
+  assert.doesNotMatch(done.err, /set up by |through the API instead/);
+  const answer = done.json();
+  assert.deepEqual(answer.warnings.filter((one) => one.field.startsWith("triggers.")), [{ field: "triggers.0", reason: "account_not_connected", message: why }]);
+  assert.equal(answer.package_sha256, null, "the lock names no package, so the next deploy applies again");
+
+  // A target that gives its reason alone: the install's skip still gives way, to the target's reason.
+  said = { name: "new-mail", kind: "composio", made: false, reason: "account_not_connected" };
+  const again = await cli(env, ["deploy", pkg, "--yes"], { AGENTRUN_API_KEY: hosted.token });
+  assert.equal(again.code, 0, again.err);
+  assert.equal(again.json().status, "deployed", "applied again, never up to date");
+  assert.match(again.err, /! trigger\s+new-mail\s+composio skipped: \S+ did not set up the trigger new-mail \(composio\): account_not_connected\./);
+  assert.match(again.err, /Warning \(triggers\.0\): \S+ did not set up the trigger new-mail \(composio\): account_not_connected\./);
+  assert.doesNotMatch(again.err, /through the API instead/);
+});
+
 test("agentrun deploy with no lock for a target that has an agent made from the package with these parameters: exit 2, nothing applied, naming it; --agent ID deploys onto it, --agent new makes another; with a lock, --agent naming another agent is refused", { timeout: 300_000 }, async (t) => {
   const { dir, env } = scratch();
   const target = await serve(t, { runner: false });
@@ -764,6 +879,40 @@ test("a package the target's import refuses (422 input_invalid) exits 2 with the
   assert.match(refused.err, /category productivity is not one this server has/, refused.err);
   assert.deepEqual(fake.seen, ["POST /templates/import"], "nothing applied");
   assert.equal(existsSync(join(pkg, ".agentrun", "deploy.json")), false, "no lock written");
+});
+
+test("agentrun deploy of a package that names no tools and no computer, to a server with no Docker box whose runner has no shell, exits 2 in the server's words that name a box, nothing made and no lock; naming its tools, it deploys", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const target = await serve(t, { runner: false });
+  const key = { AGENTRUN_API_KEY: target.token };
+  const bare = folder(dir, { name: "bare", bare: true });
+  const refused = await cli(env, ["deploy", bare, "--to", target.baseUrl, "--yes"], key);
+  assert.equal(refused.code, 2, refused.err);
+  assert.match(refused.err, /name a box: this server has no Docker box for a new agent\. Set place to /, refused.err);
+  assert.deepEqual((await target.api("GET", "/agents")).body.agents, [], "nothing made");
+  assert.equal(existsSync(join(bare, ".agentrun", "deploy.json")), false, "no lock written");
+  const named = folder(dir, { name: "named" });
+  const deployed = await cli(env, ["deploy", named, "--to", target.baseUrl, "--yes"], key);
+  assert.equal(deployed.code, 0, deployed.err);
+  assert.equal(deployed.json().agent_change, "made");
+});
+
+test("agentrun deploy of that package stops at its preview: the target's dry_run refuses it in the words that name a box, so no plan is printed, no confirmation is asked and no apply is sent", { timeout: 120_000 }, async (t) => {
+  const { dir, env } = scratch();
+  const target = await serve(t, { runner: false });
+  const proxy = await recorder(t, target.baseUrl);
+  const key = { AGENTRUN_API_KEY: target.token };
+  const bare = folder(dir, { name: "bare", bare: true });
+  for (const yes of [[], ["--yes"]]) {
+    proxy.seen.length = 0;
+    const refused = await cli(env, ["deploy", bare, "--to", proxy.base, ...yes], key);
+    assert.equal(refused.code, 2, refused.err);
+    assert.match(refused.err, /name a box: this server has no Docker box for a new agent\. Set place to /, refused.err);
+    assert.doesNotMatch(refused.err, /\+ +agent|Apply this plan|off a terminal/, `${yes.join("") || "no --yes"}: no plan printed and no confirmation asked: ${refused.err}`);
+    assert.equal(proxy.seen.filter((line) => /^POST \/v2\/templates\/[^/]+\/apply$/.test(line)).length, 1, `the dry_run alone, no apply: ${proxy.seen.join("\n")}`);
+  }
+  assert.deepEqual((await target.api("GET", "/agents")).body.agents, [], "nothing made");
+  assert.equal(existsSync(join(bare, ".agentrun", "deploy.json")), false, "no lock written");
 });
 
 test("packageFiles reads a folder holding hidden files and leaves them out", async () => {

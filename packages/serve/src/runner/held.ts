@@ -137,9 +137,6 @@ export interface Held {
   emailAccount(): Promise<OpenedAccount | undefined>;
   /** The server's calendar, opened, for a run whose revision grants calendar_events; else none. */
   calendar(): Promise<SavedCalendar | undefined>;
-  /** A call of the run's agent's learning folder (learn/folder.ts), the runner's own Workspace of it, held to what a
-   *  run's learning does there (run-child-host.ts learningCall). */
-  learning(method: string, args: readonly unknown[]): Promise<unknown>;
   /** The harness `name`'s install for the claim (harness-install.ts installForClaim), run by the runner. */
   install(name: string, signal?: AbortSignal): Promise<void>;
   /** The claim's computer (workspace/computer-for-claim.ts), made and held by the runner. */
@@ -191,32 +188,6 @@ export function heldSignInReads(): { peek(agentId: string, resolution: string): 
     peek: (_agentId, resolution) => at.signInPeek(resolution) as Promise<never>,
     forgotten: (_agentId, resolution) => at.signInForgotten(resolution) as Promise<never>,
   };
-}
-
-/** The agent's learning folder in a run's own process (learn/folder.ts learningWorkspace): each call made by its runner on
- *  the folder of the claim's agent (Held.learning), whatever place this process names. No background program, mount or
- *  attach: a learning folder has none. */
-export function heldLearningFolder(): { readonly workspace: Workspace; end(): Promise<void> } {
-  const at = heldOrThrow("a run's learning folder");
-  const call = (method: string) => (...args: unknown[]) => at.learning(method, args) as Promise<never>;
-  const none = (what: string) => async (): Promise<never> => {
-    throw new Error(`a learning folder has no ${what} in a run's own process`);
-  };
-  const workspace = {
-    read: call("read"),
-    write: call("write"),
-    append: call("append"),
-    stat: call("stat"),
-    list: call("list"),
-    mkdir: call("mkdir"),
-    grep: call("grep"),
-    remove: call("remove"),
-    exec: call("exec"),
-    process: { start: none("background program"), list: none("background program"), output: none("background program"), signal: none("background program"), wait: none("background program") },
-    mountSpec: none("mount"),
-    attach: none("attach"),
-  } as unknown as Workspace;
-  return { workspace, end: async () => {} };
 }
 
 /** A learning run's end-of-run step in a run's own process (learning-end.ts learningEndOfRun): its runner's

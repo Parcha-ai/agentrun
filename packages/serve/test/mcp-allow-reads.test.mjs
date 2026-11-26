@@ -7,10 +7,10 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { permissionFrom, SETTINGS_UNREAD, toolEffect } from "../dist/tool-gate.js";
+import { raw } from "./store-target.mjs";
 import { agent, call, clientOwnerSession, follow, serve as serveOf, whenFree, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
@@ -346,11 +346,11 @@ test("an agent's read (GET /v2/agents/{id}) gives each MCP tool's permission by 
   // A revision with no pin yet (saved before pins were made at save) is pinned from the listing at its first run: its read
   // says that listing now.
   const revision = (await api("GET", "/agents/pinned-read")).body.revision;
-  const raw = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+  const db = await raw(join(data, "store.sqlite"), { timeout: 10_000 });
   try {
-    raw.prepare("UPDATE revisions SET mcp_pin = NULL WHERE id = ?").run(revision);
+    await db.run("UPDATE revisions SET mcp_pin = NULL WHERE id = ?", revision);
   } finally {
-    raw.close();
+    await db.close();
   }
   assert.equal((await api("GET", "/agents/pinned-read")).body.mcp_pin, null, "unpinned");
   assert.deepEqual(await permissions("pinned-read"), { "mcp:fake/note": "allow", "mcp:fake/add": "ask" }, "no pin: the listing its first run would pin");

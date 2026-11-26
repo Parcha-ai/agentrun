@@ -93,6 +93,15 @@ test("on pi a call's window opens at the answer that asked for it and closes at 
   assert.equal(workflowCallsOf(two)[0].usd, null);
 });
 
+test("a refused call ran nothing, so its $ is 0 wherever its window can't be told apart: two denied calls in one pi answer, a platform call with no start", () => {
+  const asked = (...ids) => ({ kind: "pi.assistant", conversationId: ROOT, model: [{ role: "assistant", content: ids.map((id) => ({ type: "toolCall", id, name: "learned_workflow", arguments: {} })) }] });
+  const result = (id) => ({ kind: "pi.tool-result", conversationId: ROOT, model: [{ role: "toolResult", toolCallId: id }] });
+  const refused = { ended: "failed", refused: true };
+  const two = [...booked(1, 1), asked("c1", "c2"), kept("c1", refused), kept("c2", refused), result("c1"), result("c2"), ...booked(2, 1)];
+  assert.deepEqual(workflowCallsOf(two).map(({ outcome, usd }) => [outcome, usd]), [["refused", 0], ["refused", 0]]);
+  assert.deepEqual(workflowCallsOf([kept(WORKFLOW_FIRST_CALL, refused)]).map(({ caller, outcome, usd }) => [caller, outcome, usd]), [["platform", "refused", 0]]);
+});
+
 test("on pi a subagent's call is its own only while no other conversation works: a sibling subagent running beside it makes its $ unknown", () => {
   const CHILD = 3;
   const SIBLING = 4;

@@ -1,26 +1,18 @@
 // The runner's own spec builder supplies a run's end-of-run step (adapter-run-spec.ts adapterRunSpecFromLaunch endOfRun),
-// moved off the dispatch (harness-loops.ts) so a Mode 2 run's learning folder is the one on the run's own Workspace — the
-// claim's Archil disk — never this machine's local data directory. A Mode 2 learning run through the real adapter loop and
-// this spec builder compiles from and merges into that folder: the Archil folder stands in for the disk as a local
-// directory of its own (folderTestHooks.workspace, every place it is asked for recorded), so the test sees the run asked
-// for the folder as { mode: "archil" } and the merge is on the disk's main; the local learning path holds a decoy (a learned
-// workflow), and a read of it would make the compile not due.
+// moved off the dispatch (harness-loops.ts). A Mode 2 learning run (its folder on the claim's Archil disk) through the
+// real adapter loop and this spec builder compiles from and merges into the agent's learning rows in the store, as a
+// Mode 1 run does: nothing of its learning is on the disk.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { closeOpenSessions, MODEL, scriptedOrigin } from "./conformance-pi-adapter.mjs";
-import { readmeOf } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
-const { seedOf } = await import("../dist/learning.js");
-const { folderTestHooks } = await import("../dist/learn/folder.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
-const { learningCommit } = await import("../dist/learn/commit.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
@@ -44,51 +36,31 @@ const flow = (name) => ({
 });
 const DRAFT = `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number; use when asked\nexample: {"content":"What is six times seven?"}\n---\n${JSON.stringify(flow("answer"))}\n\`\`\`\``;
 
-test("a Mode 2 learning run through the pi spec builder checks its proposal against the learning folder on the run's Archil disk, never the local data directory", async (t) => {
+test("a Mode 2 learning run through the pi spec builder compiles from and merges into the agent's learning rows", async (t) => {
   const local = scratch("agentrun-learning-local-");
-  const diskFolder = scratch("agentrun-learning-disk-");
   const server = await openSqliteStore({ dataDir: local, role: "server" });
   const store = await openSqliteStore({ dataDir: local, role: "runner" });
   let runner;
   const control = archilControlFetch();
   t.after(async () => {
-    delete folderTestHooks.workspace;
     await runner?.close().catch(() => {});
     await store.close().catch(() => {});
     await server.close().catch(() => {});
-    for (const dir of [local, diskFolder]) rmSync(dir, { recursive: true, force: true });
+    rmSync(local, { recursive: true, force: true });
   });
 
-  // The disk's learning folder is the run's seed, with no workflow yet; the local data directory a decoy with one.
-  const seed = await seedOf(diskFolder, "agent-1");
-  const decoyFolder = learningWorkspace({ mode: "local", data: local, agentId: "agent-1" });
-  try {
-    const made = await learningCommit(decoyFolder.workspace, { runId: "person-decoy", reason: "A decoy", files: [{ path: "workflows/decoy/workflow.json", text: JSON.stringify(flow("decoy")) }, { path: "workflows/decoy/README.md", text: readmeOf("decoy", "A decoy; use never") }] });
-    assert.equal(made.ok, true, JSON.stringify(made));
-  } finally {
-    await decoyFolder.end();
-  }
-  const decoy = await seedOf(local, "agent-1");
-  assert.notEqual(decoy.sha, seed.sha, "the decoy is another commit, with a learned workflow");
+  // The agent's learning, its first save empty: the run's seed.
+  const seed = (await server.learning.seed("agent-1")).save.id;
 
   // A job due to compile at every run.
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: { compile_after: 1 } } });
-  const launch = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, learning: { seed: seed.sha, section: "" } };
+  const launch = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, learning: { seed, section: "" } };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await saveArchilSettings(server, ARCHIL_SETTINGS);
   // The agent's own disk, made by an earlier run (run-disk.ts): this run keeps its folder there.
   await storeAgentDisk(server, "agent-1", { diskId: ARCHIL_SETTINGS.diskId });
   await server.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
   await server.flush?.();
-
-  // The run's Archil learning folder stands in for the disk as a real local Workspace on diskFolder: every place it is
-  // asked for is recorded, so the test sees the spec builder asked for it as { mode: "archil" }. Set after the seed and the
-  // decoy are written, so those are the real ones.
-  const places = [];
-  folderTestHooks.workspace = (place) => {
-    places.push(place);
-    return learningWorkspace({ mode: "local", data: place.mode === "archil" ? diskFolder : place.data, agentId: place.agentId });
-  };
 
   // The run answers the job, then its compile turn drafts the job as workflow `answer`.
   const provider = { api: "anthropic-messages", origin: "https://route.invalid", credential: () => `not-a-secret-${"x"}` };
@@ -105,19 +77,18 @@ test("a Mode 2 learning run through the pi spec builder checks its proposal agai
   for (;;) {
     const row = await server.runs.get("run-1");
     if (row.state === "ended" && row.runner === null) break;
-    if (Date.now() > deadline) throw new Error(`run-1 did not end: ${JSON.stringify(row)}; places ${JSON.stringify(places)}`);
+    if (Date.now() > deadline) throw new Error(`run-1 did not end: ${JSON.stringify(row)}`);
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 
-  // The spec builder asked for the run's learning folder as the Archil disk's, for this agent (Mode 2).
-  assert.ok(places.some((place) => place.mode === "archil" && place.agentId === "agent-1"), `the learning folder was asked for as the run's Archil disk: ${JSON.stringify(places)}`);
-  assert.ok(!places.some((place) => place.mode === "local"), `and never as the local data directory: ${JSON.stringify(places)}`);
-  // The compile was due on the disk's folder (the local decoy's workflow would make it not due) and merged there.
+  // The compile was due and merged on the agent's rows: the newest save, the one after the seed.
   const kept = await server.learning.proposal("run-1");
   assert.equal(kept?.proposal?.state, "merged", JSON.stringify(kept?.proposal));
   assert.deepEqual(kept.proposal.workflows, [{ file: "workflows/answer/workflow.json", name: "answer" }]);
-  assert.equal(kept.proposal.merged, (await seedOf(diskFolder, "agent-1")).sha, "the merge is the disk's main");
-  assert.equal((await seedOf(local, "agent-1")).sha, decoy.sha, "the local folder is the decoy still");
+  const newest = await server.learning.newest("agent-1");
+  assert.equal(kept.proposal.merged, newest.save.id, "the merge is the agent's newest save");
+  assert.deepEqual(newest.save.by, { run: "run-1" });
+  assert.deepEqual(newest.items.filter((item) => item.kind === "workflow").map((item) => item.name), ["answer"]);
 });
 
 test("a Mode 1 run supplies its end-of-run step from the spec builder only when it learns", async (t) => {

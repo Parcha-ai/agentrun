@@ -17,8 +17,8 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *    of an agent made here is purged too (deleteRun): the token may archive and delete that whole agent below, every
  *    run of it purged, so one run of it is no more;
  *  - a run's computer, take-over, hand-back and viewer link go to the backend, which has no owner's session here;
- *  - a backend reads what its agents learned (loop, promotions, cost per run, a run's learning), cut as the console's,
- *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
+ *  - a backend reads what its agents learned (loop, promotions, audits, cost per run, a run's learning), cut as the
+ *    console's, and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
  *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
  *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
  *  - a backend reads the saved MCP servers' names (listMcpServerNames), never a URL or a credential;
@@ -52,7 +52,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
   "listComputers", "listRunningComputers", "getWorkspaceArchil",
   "getAgentArchil", "deleteAgentArchil", "deleteAgent", "deleteAgentLearning", "deleteRun",
-  "getLearningLoop", "listLearningPromotions", "getLearningCost", "getRunLearning",
+  "getLearningLoop", "listLearningPromotions", "listLearningAudits", "getLearningCost", "getRunLearning",
   "getRun", "getRunUsage", "listRuns", "listAllRuns", "getTimeline",
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
   "listRunFiles", "readRunFile",

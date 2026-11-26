@@ -20,8 +20,9 @@ import { cn } from "@/lib/utils";
 import { workflowShape } from "@/lib/workflowDoc";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { newAgentEditorHref } from "@/lib/agentEditorRoute";
+import { runsHere } from "@/lib/runHere";
 import { editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 
 export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void };
 
@@ -36,12 +37,12 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
   const incomplete = loading || !!error || !!connected?.error;
   const storageFull = connected?.data?.connectors.some((connector) => connector.storage_full);
   return (
-    <section className="flex min-h-full flex-col">
+    <section className={pageClass}>
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
         <h1 className={pageTitleClass}><Brain className="size-4" aria-hidden />{archived ? "Archived agents" : "Agents"}</h1>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{handoff}{!archived && <a href={newAgentEditorHref()} className={buttonVariants({ size: "sm", variant: "primary" })}><Plus aria-hidden />New agent</a>}</div>
       </header>
-      <div className="p-5 md:p-6">
+      <div data-page-body className={cn(pageBodyClass, "p-5 md:p-6")}>
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <label className={cn(fieldBoxClass, "flex h-control-lg min-w-0 flex-1 items-center gap-3 px-3")}>
           <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -81,6 +82,7 @@ function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: Age
   const native = nativeReadinessOf(a);
   const sdk = backendSdkOf(a.definition);
   const cli = cliLearningOf(a.definition);
+  const here = runsHere(a);
   // Its learned items that wait for its owner's OK (the list's own read: each agent's `learning.pending`); nothing at 0.
   const waiting = waitingOf(a);
   const supportsLearning = a.kind === "agentic" && learning !== null;
@@ -106,8 +108,14 @@ function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: Age
           )}
       </>}
       actions={<>
-          {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id, sdk, cli?.runtime)} playgroundHref={sdk || cli ? undefined : `#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
-          <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native, sdk, cli?.runtime)} playgroundHref={native || sdk || cli ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
+          {/* An agent this server runs: Run opens its page, where the Run box is, and Edit its settings in the console. */}
+          {here ? <>
+            <a href={agentHash(a.agent_id)} aria-label={`Run ${a.definition.name}`} title="Run" className={buttonVariants({ size: "icon", variant: "outline" })}><Play className="size-3.5" aria-hidden /></a>
+            <a href={agentHash(a.agent_id, "settings")} aria-label={`Edit ${a.definition.name}`} title="Edit" className={buttonVariants({ size: "icon", variant: "outline" })}><Pencil className="size-3.5" aria-hidden /></a>
+          </> : <>
+            {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id, sdk, cli?.runtime)} playgroundHref={sdk || cli ? undefined : `#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
+            <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native, sdk, cli?.runtime)} playgroundHref={native || sdk || cli ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
+          </>}
           <Button size="sm" className="gap-1 px-2" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden />{a.runs?.count ?? 0}</Button>
           <Button size="icon" variant="outline" aria-label={`Settings for ${a.definition.name}`} title="Settings" onClick={() => actions.onEdit?.(a.agent_id)}><Settings aria-hidden /></Button>
       </>}

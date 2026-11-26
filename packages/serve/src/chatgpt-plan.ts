@@ -219,6 +219,11 @@ export class ChatGPTPlan implements PlanReader {
   /** Moved on by each write of the snapshot (wrote: a sign-in kept, a renewal, an expiry, a sign-out): a read of the row
    *  that was out across one never takes its row over it (readTaken). */
   #writes = 0;
+  /** Moved on by each read of the row as it starts (readTaken). */
+  #reads = 0;
+  /** The read whose row is the snapshot (its #reads at its start): an older read that answers after it never takes its
+   *  row over it. */
+  #takenRead = 0;
   #pending: Pending | undefined;
   /** An access token OpenAI refused (refused): token() renews rather than send it again. */
   #refusedAccess: string | undefined;
@@ -296,12 +301,18 @@ export class ChatGPTPlan implements PlanReader {
     return row ? { row, bytes } : undefined;
   }
 
-  /** The row as sealed now (readSealed), taken as the snapshot unless a write moved the snapshot while the read was out:
-   *  a load or token() that read the row before a sign-in was kept, or before a sign-out removed it, leaves their state. */
+  /** The row as sealed now (readSealed), taken as the snapshot unless a write moved the snapshot while the read was out
+   *  (a load or token() that read the row before a sign-in was kept, or before a sign-out removed it, leaves their state),
+   *  or a read that started after it was taken first (reads that overlap can answer oldest last: the newest one's row,
+   *  an expiry another process wrote, stays). */
   private async readTaken(): Promise<{ row: Row; bytes: Uint8Array } | undefined> {
     const writes = this.#writes;
+    const started = ++this.#reads;
     const read = await this.readSealed();
-    if (this.#writes === writes) this.#snapshot = read?.row;
+    if (this.#writes === writes && started > this.#takenRead) {
+      this.#snapshot = read?.row;
+      this.#takenRead = started;
+    }
     return read;
   }
 

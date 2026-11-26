@@ -67,4 +67,18 @@ describe("RunGraphView", () => {
     expect(host.textContent).toContain("Decisions");
     expect([...host.querySelectorAll('[role="status"]')].map((node) => node.textContent).join(" ")).toMatch(/agent and revision are withheld/);
   });
+  it("draws a run whose node states the server withheld as \"[redacted]\" (a saved secret split across them), and says so", () => {
+    const workflow = { v: 2, root: { node: "code", label: "one", code: "(s) => s" } };
+    const data = {
+      run: { id: "r", agent: "a", revision: "1", status: "completed", paused: false, startedAt: "2026-11-24T00:00:00Z", endedAt: "2026-11-24T00:00:09Z" },
+      workflow, graph: workflowGraph(workflow),
+      nodes: "[redacted]", decisions: [], effects: [], totals: { cost_usd: 0, decisions: 0, effects: 0, elapsed_ms: 9000 },
+    } as unknown as RunGraph;
+    const host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    act(() => root!.render(createElement(RunGraphView, { data, fileUrl: (ref: string) => ref })));
+    expect(host.textContent).toContain("Decisions");
+    expect([...host.querySelectorAll('[role="status"]')].map((node) => node.textContent).join(" ")).toMatch(/node states are withheld/);
+  });
 });

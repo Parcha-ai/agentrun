@@ -145,7 +145,7 @@ test("a recipe the server no longer names keeps its keys, sealed and cut and run
   await later.load();
   const listed = later.list().harnesses;
   assert.deepEqual(listed.map((h) => [h.id, h.named]), [["other", true], ["acme", false]], "named first, then each id kept");
-  assert.deepEqual(later.unnamed(), ["acme"], "what capabilities name kept");
+  assert.deepEqual(later.unnamed(), ["acme"], "the ids the page lists to remove");
   const acme = listed[1];
   assert.deepEqual({ label: acme.label, keys: acme.keys, ready: acme.ready, kept: acme.kept.map((k) => [k.name, k.set, k.source]) },
     { label: "acme", keys: [], ready: false, kept: [["harness:acme:ACME_API_KEY", true, "console"]] });
