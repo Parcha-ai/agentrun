@@ -475,12 +475,26 @@ const afterEmpty = (value: string): string[] => {
   return [after, ...(piece === undefined ? [] : [piece])].filter((taken) => !plainPair(taken));
 };
 
-/** A value up to each `%20` in it, each at the floor or longer (atFloor): a read that keeps a `%20` in a key also runs
- *  on past a `%20` that splits pairs (`api_key=<p>%20<n>;<s>%20region=us`), a read that splits at `%20` cuts the key at
- *  its own, and only a head of the long value is the key alone. A later pair never starts a head, so it is not held
- *  alone (`region=us` above), and a short head, which would cut ordinary words from the tracer's lines, is not taken. */
-const spacedHeads = (value: string): string[] =>
-  [...value.matchAll(/%20/g)].map((space) => value.slice(0, space.index)).filter(atFloor);
+/** How many characters spacedHeads takes from one value in all, its heads together: a value of thousands of pairs
+ *  joined by `%20` has a head before each, and holding every one would hold their count times the value's length. */
+const HEADS_BUDGET = 4096;
+
+/** A value up to each `%20` in it that a `name=` follows, each at the floor or longer (atFloor), while HEADS_BUDGET has
+ *  room: a read that keeps a `%20` in a key also runs on past a `%20` that splits pairs
+ *  (`api_key=<p>%20<n>;<s>%20region=us`), a read that splits at `%20` cuts the key at its own, and only a head of the
+ *  long value is the key alone. A later pair never starts a head, so it is not held alone (`region=us` above), and a
+ *  short head, which would cut ordinary words from the tracer's lines, is not taken. */
+const spacedHeads = (value: string): string[] => {
+  const heads: string[] = [];
+  let left = HEADS_BUDGET;
+  for (const space of value.matchAll(/%20(?=[\w.-]+=)/g)) {
+    if (space.index > left) break;
+    left -= space.index;
+    const head = value.slice(0, space.index);
+    if (atFloor(head)) heads.push(head);
+  }
+  return heads;
+};
 
 /** The value of each `name=value` pair of `text` split at `breaks` whose name says it is a credential (credentialNamed),
  *  out of any quotes around it, raw or written `%22` or `%27`, as written and decoded. A value that opens with a quote
