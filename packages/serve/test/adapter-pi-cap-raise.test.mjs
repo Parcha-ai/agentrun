@@ -546,6 +546,76 @@ test("a retry of the raise that resumed a run, sent once it parked again, takes 
   assert.deepEqual(await rootEntries(w.store, "agentrun.budget"), budgets, "two pauses in the run's life");
 });
 
+test("a covering raise that reaches a claim while it takes a retry of the raise that resumed the run waits for the run's next claim, which resumes it: never taken by the claim that parks again", async (t) => {
+  // From the retry on, the claim's raise entry commit (the retry's) is held until the covering raise has reached the
+  // loop and the event loop has turned once after: the claim is between reading whether a raise resumes the run and its
+  // park, and the covering raise has been answered or has gone on to its own commit, queued behind the held one.
+  let armed = false;
+  let held = () => {};
+  const holding = new Promise((resolve) => (held = resolve));
+  let open = () => {};
+  const opened = new Promise((resolve) => (open = resolve));
+  let answer = () => {};
+  const answered = new Promise((resolve) => (answer = resolve));
+  let enter = () => {};
+  const entered = new Promise((resolve) => (enter = resolve));
+  let raiseCommits = 0;
+  let covers;
+  const bound = (target, value) => (typeof value === "function" ? value.bind(target) : value);
+  const journalOf = (journal) => new Proxy(journal, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key !== "commit") return bound(target, value);
+      return async (batches, ...rest) => {
+        if (armed && batches.flat().some((write) => write.type === "entry" && write.value?.kind === "agentrun.raise")) {
+          raiseCommits += 1;
+          if (raiseCommits === 1) {
+            held();
+            await opened;
+          }
+        }
+        return value.call(target, batches, ...rest);
+      };
+    },
+  });
+  const loopOf = (loop) => new Proxy(loop, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key !== "command") return bound(target, value);
+      return async (command) => {
+        if (command.kind === "raise" && command.body?.capUsd === covers) enter();
+        const out = await value.call(target, command);
+        if (command.kind === "raise" && command.body?.capUsd === covers) answer(out);
+        return out;
+      };
+    },
+  });
+  const w = await cappedRun(t, [{ say: "done" }], { journalOf, loopOf, release: () => open() });
+  await w.settled("parked");
+  const [first] = await rootEntries(w.store, "agentrun.budget");
+  const short = Number(((CAP + first.pending.least_cap_usd) / 2).toFixed(6));
+  const raised = await w.raise(short);
+  await until(async () => (await commandOf(w.server, raised.id))?.takenAt != null, "the short raise taken");
+  await w.settled("parked");
+  const budgets = await rootEntries(w.store, "agentrun.budget");
+  assert.equal(budgets.length, 2, `parked again at the raised cap: ${JSON.stringify(budgets)}`);
+  covers = budgets[1].pending.suggested_cap_usd;
+  armed = true;
+  await w.raise(short);
+  await reached(holding, "the retry's claim commits its raise entry");
+  const covering = await w.raise(covers);
+  await reached(entered, "the covering raise reaches the claim");
+  await new Promise((resolve) => setImmediate(resolve));
+  armed = false;
+  open();
+  const outcome = await reached(answered, "the covering raise is answered");
+  assert.ok("later" in outcome, `the covering raise waits for the run's next claim: ${JSON.stringify(outcome)}`);
+  await until(async () => (await commandOf(w.server, covering.id))?.takenAt != null, "the covering raise taken by the next claim");
+  await w.settled("ended");
+  assert.equal(followUpsSent(w.sent, covers), 1, "resumed once, with one follow-up");
+  assert.deepEqual(await rootEntries(w.store, "agentrun.budget"), budgets, "two pauses in the run's life");
+});
+
 test("a covering raise that reaches a claim parking the run again (a refused raise woke it) waits for the run's next claim, which resumes it: never taken by the claim that parks", async (t) => {
   // From the refused raise's refusal on, the claim's journal reads wait until the covering raise is answered: the claim is
   // between that refusal and its park, where a slow park (a computer kept) leaves it.
