@@ -17,9 +17,10 @@ const FAUX_JEV = new URL("./fixtures/faux-jev-redirect.mjs", import.meta.url).pa
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
 
-/** Two loopback servers: `from` answers every request with a 307 to `to`, which records what reaches it. */
+/** Two loopback servers: `from` counts each request and answers it with a 307 to `to`, which records what reaches it. */
 async function redirecting(t) {
   const reached = [];
+  let sent = 0;
   const listen = (handler) => new Promise((resolve) => {
     const server = createServer(handler);
     server.listen(0, "127.0.0.1", () => resolve(server));
@@ -32,14 +33,15 @@ async function redirecting(t) {
   });
   const toUrl = `http://127.0.0.1:${to.address().port}`;
   const from = await listen((req, res) => {
+    sent += 1;
     req.resume();
     res.writeHead(307, { location: `${toUrl}${req.url}` }).end();
   });
-  return { fromUrl: `http://127.0.0.1:${from.address().port}`, reached };
+  return { fromUrl: `http://127.0.0.1:${from.address().port}`, reached, sent: () => sent };
 }
 
 test("Jev's requests through serve's handed fetch refuse a 307 to another port, and the other port never sees one", async (t) => {
-  const { fromUrl, reached } = await redirecting(t);
+  const { fromUrl, reached, sent } = await redirecting(t);
   const before = process.env.AGENTRUN_TEST_FAUX_JEV_REDIRECT_FROM;
   process.env.AGENTRUN_TEST_FAUX_JEV_REDIRECT_FROM = fromUrl;
   t.after(() => (before === undefined ? delete process.env.AGENTRUN_TEST_FAUX_JEV_REDIRECT_FROM : (process.env.AGENTRUN_TEST_FAUX_JEV_REDIRECT_FROM = before)));
@@ -57,6 +59,7 @@ test("Jev's requests through serve's handed fetch refuse a 307 to another port, 
   assert.equal(found.error, undefined, `the search still answers: ${JSON.stringify(found).slice(0, 300)}`);
   assert.ok(found.results.length > 0, "with its results");
   assert.match(found.sift ?? "", /^not run/, `Jev's sift failed on the redirect: sift ${JSON.stringify(found.sift)}`);
+  assert.ok(sent() > 0, "Jev: the request reached the redirecting address");
   assert.equal(reached.length, 0, "Jev: the redirect's target never sees a request");
   assert.ok(!JSON.stringify(reached).includes(JEV_KEY), "Jev: the redirect's target never sees the key");
 });

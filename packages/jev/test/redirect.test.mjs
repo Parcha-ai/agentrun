@@ -10,9 +10,10 @@ const KEY = 'jev-redirect-canary-0123456789';
 const ctx = () => ({ decisionId: 'decision-1', signal: new AbortController().signal, deadlineMs: 5000 });
 const request = { label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Does it hold?' } } };
 
-/** Two loopback servers: `from` answers every request with a 307 to `to`, which records what reaches it. */
+/** Two loopback servers: `from` counts each request and answers it with a 307 to `to`, which records what reaches it. */
 async function redirecting(t) {
   const reached = [];
+  let sent = 0;
   const listen = (handler) => new Promise((resolve) => {
     const server = createServer(handler);
     server.listen(0, '127.0.0.1', () => resolve(server));
@@ -25,16 +26,18 @@ async function redirecting(t) {
   });
   const toUrl = `http://127.0.0.1:${to.address().port}`;
   const from = await listen((req, res) => {
+    sent += 1;
     req.resume();
     res.writeHead(307, { location: `${toUrl}${req.url}` }).end();
   });
-  return { fromUrl: `http://127.0.0.1:${from.address().port}`, reached };
+  return { fromUrl: `http://127.0.0.1:${from.address().port}`, reached, sent: () => sent };
 }
 
 test("Jev's request to TypeSafe refuses a 307 to another port when the host passes no fetch, and the other port never sees it", async (t) => {
-  const { fromUrl, reached } = await redirecting(t);
+  const { fromUrl, reached, sent } = await redirecting(t);
   const jev = jevProvider({ apiKey: KEY, baseURL: fromUrl, maxAttempts: 2, retryBaseMs: 1, retryMaxMs: 2 });
   await assert.rejects(jev.decide(request, ctx()), 'Jev: the decision fails');
+  assert.ok(sent() > 0, "Jev: the request reached the redirecting address");
   assert.equal(reached.length, 0, "Jev: the redirect's target never sees a request");
   assert.ok(!JSON.stringify(reached).includes(KEY), "Jev: the redirect's target never sees the key");
 });
