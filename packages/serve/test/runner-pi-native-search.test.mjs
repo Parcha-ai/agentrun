@@ -175,7 +175,7 @@ test("a learned workflow's web_search call node on a pi run with native search s
     ledger,
     before: async (server, _key, dir) => {
       launch.learning = startAt(await landWorkflows(dir, "agent-1", [{ name: "search-one", description: "Searches once", workflow: SEARCH_FLOW }]));
-      await promoteChecked(server.settings, "agent-1", [{ name: "search-one", workflow: SEARCH_FLOW }]);
+      await promoteChecked(server, "agent-1", [{ name: "search-one", workflow: SEARCH_FLOW }]);
     },
   });
   const tool = spec.session.tools.find((one) => one.name === LEARNED_WORKFLOW_TOOL);

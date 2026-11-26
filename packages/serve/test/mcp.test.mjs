@@ -255,7 +255,7 @@ test("runs_get names the question a waiting run asked, runs_respond answers it, 
 test("GET /v2/runs/{id}/timeline takes a limit: pages of at most that many rows, has_more between them", async (t) => {
   const server = await serve(t);
   const mcp = mcpClient(server);
-  await mcp.tool("agents_create", { id: "calc", name: "Calc", instructions: "Answer." });
+  await mcp.tool("agents_create", { id: "calc", name: "Calc", instructions: "Answer.", tools: [] });
   const { run_id } = (await mcp.tool("runs_start", { agent_id: "calc", input: { content: "What is six times seven?" } })).structuredContent;
   await mcp.until(run_id, ["completed"]);
   // A run is settled once its end is in the store (settled = terminal): the first read after it reads completed is final.
@@ -347,7 +347,7 @@ test("a run paused at its spend cap: the instructions, runs_get and runs_respond
   assert.match(described.runs_get, /waits for its cap to be raised, PATCH \/v2\/runs\/\{run_id\} \{max_cost_usd\}, which a person decides; suggested_cap_usd is a raise that resumes it/);
   assert.match(described.runs_respond, /paused at its spend cap \(pending kind budget\) takes no message: 409 budget_reached/);
   // The run: a $0.05 cap under the least of one request ($0.1024), paused before anything was sent.
-  await mcp.tool("agents_create", { id: "capped", name: "Capped", instructions: "Answer." });
+  await mcp.tool("agents_create", { id: "capped", name: "Capped", instructions: "Answer.", tools: [] });
   const started = await v2(server, "POST", "/agents/capped/runs", { input: { content: "hi" }, max_cost_usd: 0.05 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const paused = await mcp.until(started.body.run_id, ["input_required", "failed"]);

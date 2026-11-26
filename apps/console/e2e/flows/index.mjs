@@ -33,6 +33,7 @@ import templateUnattended from "./template-unattended.mjs";
 import templateUnattendedNavigation from "./template-unattended-navigation.mjs";
 import watchLive from "./watch-live.mjs";
 import screenSteps from "./screen-steps.mjs";
+import agentFactory from "./agent-factory.mjs";
 import screenUnopened from "./screen-unopened.mjs";
 import serverDeny from "./server-deny.mjs";
 import computersKeys from "./computers-keys.mjs";
@@ -78,6 +79,7 @@ export const flows = [
   reportJson,
   watchLive,
   screenSteps,
+  agentFactory,
   screenUnopened,
   takeOver,
   askDone,

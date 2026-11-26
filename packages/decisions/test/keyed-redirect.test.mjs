@@ -11,9 +11,10 @@ const ctx = () => ({ decisionId: 'decision-1', signal: new AbortController().sig
 const request = { label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Does it hold?' } } };
 const retries = { retryBaseMs: 1, retryMaxMs: 2, maxAttempts: 2 };
 
-/** Two loopback servers: `from` answers every request with a 307 to `to`, which records what reaches it. */
+/** Two loopback servers: `from` counts each request and answers it with a 307 to `to`, which records what reaches it. */
 async function redirecting(t) {
   const reached = [];
+  let sent = 0;
   const listen = (handler) => new Promise((resolve) => {
     const server = createServer(handler);
     server.listen(0, '127.0.0.1', () => resolve(server));
@@ -26,10 +27,11 @@ async function redirecting(t) {
   });
   const toUrl = `http://127.0.0.1:${to.address().port}`;
   const from = await listen((req, res) => {
+    sent += 1;
     req.resume();
     res.writeHead(307, { location: `${toUrl}${req.url}` }).end();
   });
-  return { fromUrl: `http://127.0.0.1:${from.address().port}`, reached };
+  return { fromUrl: `http://127.0.0.1:${from.address().port}`, reached, sent: () => sent };
 }
 
 for (const [who, make] of [
@@ -38,8 +40,9 @@ for (const [who, make] of [
   ['OpenRouter', (baseURL) => openrouterProvider({ apiKey: KEY, baseURL, model: 'liquid/d1', ...retries })],
 ]) {
   test(`${who}'s keyed decision refuses a 307 to another port, and the other port never sees the key`, async (t) => {
-    const { fromUrl, reached } = await redirecting(t);
+    const { fromUrl, reached, sent } = await redirecting(t);
     await assert.rejects(make(fromUrl).decide(request, ctx()), `${who}: the decision fails`);
+    assert.ok(sent() > 0, `${who}: the request reached the redirecting address`);
     assert.equal(reached.length, 0, `${who}: the redirect's target never sees a request`);
     assert.ok(!JSON.stringify(reached).includes(KEY), `${who}: the redirect's target never sees the key`);
   });
