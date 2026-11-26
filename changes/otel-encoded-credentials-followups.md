@@ -6,6 +6,7 @@ OTLP redaction now holds a credential-named pair's value in `OTEL_EXPORTER_OTLP_
 - a credential in a list joined by `%3B`, such as a cookie, including one with a `%20`, quotes or a `%26` in it;
 - a credential with an encoded space in it between pairs joined by different separators, such as `%3B` before it and `%26` after it;
 - the part of a quoted credential before an encoded comma, when the closing quote comes after the comma;
-- a quoted credential with an encoded space in it, followed by another encoded space and the next pair.
+- a quoted credential with an encoded space in it, followed by another encoded space and the next pair;
+- a credential longer than 4,096 characters with a separator in it, such as `%3B`, ended by a separator of another kind.
 
 A malformed header no longer cuts commas, `&`, a literal `%27` or single letters from the tracer's own lines, and a pair like `theme=dark-mode` after an empty first `;` is no longer held.
