@@ -422,6 +422,12 @@ function sequenceEnd(text: string, at: number, to: number, intro: string, found:
       k = unit.end;
       unit = next();
     }
+    // A printable character past ASCII: the rest is read to the final byte, as readingsOf reads it (csi_ignore).
+    if (unit && unit.code >= 0xa0)
+      while (unit && (unit.code >= 0xa0 || (unit.code >= 0x20 && unit.code <= 0x3f))) {
+        k = unit.end;
+        unit = next();
+      }
     return done((unit && unit.code >= 0x40 && unit.code <= 0x7e) || aborts(unit) ? unit!.end : at);
   }
   for (let unit = next(true); unit; unit = next(true)) {
@@ -439,13 +445,22 @@ function sequenceEnd(text: string, at: number, to: number, intro: string, found:
 function percentByte(text: string, at: number, to: number): number {
   return at + 3 <= to && text[at] === "%" && HEX_PAIR.test(text.slice(at + 1, at + 3)) ? Number.parseInt(text.slice(at + 1, at + 3), 16) : -1;
 }
-/** The character a percent-encoded byte at text[at] decodes to inside a terminal sequence, as the percent views decode
- *  it: an ASCII byte, or U+0080-009F as its two UTF-8 bytes; undefined for anything else. */
+/** The character percent-encoded bytes at text[at] decode to inside a terminal sequence, as the percent views decode
+ *  them: an ASCII byte, or one whole UTF-8 sequence of two to four bytes (U+0080-009F among them); undefined for
+ *  anything else. */
 function percentAt(text: string, at: number, to: number): { char: string; end: number } | undefined {
-  const byte = percentByte(text, at, to);
-  if (byte >= 0 && byte < 0x80) return { char: String.fromCharCode(byte), end: at + 3 };
-  const c1 = byte === 0xc2 ? percentByte(text, at + 3, to) : -1;
-  return c1 >= 0x80 && c1 <= 0x9f ? { char: String.fromCharCode(c1), end: at + 6 } : undefined;
+  const lead = percentByte(text, at, to);
+  if (lead >= 0 && lead < 0x80) return { char: String.fromCharCode(lead), end: at + 3 };
+  const size = lead >= 0xc2 && lead <= 0xdf ? 2 : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 0;
+  if (!size) return undefined;
+  const bytes = [lead];
+  for (let i = 1; i < size; i++) {
+    const next = percentByte(text, at + 3 * i, to);
+    if (next < 0x80 || next > 0xbf) return undefined;
+    bytes.push(next);
+  }
+  const char = Buffer.from(bytes).toString("utf8");
+  return char.includes("\ufffd") ? undefined : { char, end: at + 3 * size };
 }
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
