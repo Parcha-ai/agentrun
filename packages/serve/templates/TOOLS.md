@@ -168,17 +168,18 @@ fallback. An answer that is not JSON is filed the same way, every path showing `
 
 The setting keeps the answer out of the tool's result, and the tool gate keeps these tools out of the folder: the
 agent's own `read`, `write` and `edit` (claude-agent's `Read`, `Write` and `Edit`, a computer script's file ops, a
-screenshot's `save_as`), `web_save` and `browser_upload`. A call of one of them whose path is in the folder or under it
-is refused, with an error naming the setting. The check reads the path as given and as pi's file tools take it (one
+screenshot's `save_as`), `web_save`, `browser_upload`, and a learned workflow's call node that opens a run file
+(`pdf_pages`). A call of one of them whose path is in the folder or under it is refused, with an error naming the setting. The check reads the path as given and as pi's file tools take it (one
 leading `@` dropped), resolving `./`, `..` and every name of the run's folder, and compares each segment as a disk that
 folds names would, so `Stripe/Pages/` and a fullwidth spelling count as `stripe/pages/`, and a zero-width or other
 ignorable character in a name doesn't count. It reads no file, so it doesn't follow links.
 
 A computer that mounts the run's folder holds the filed folder under `/workspace`, and its system reaches a file by
 names no check of the words can follow (`/proc/self/root`, `/proc/self/cwd`, `/dev/fd`). So while a folder is filed,
-a script's file ops there (`files.read`, `files.list`, `files.write` and `files.stat`) must name a path inside
-`/workspace`; any other path is refused, with an error saying a run with a filed folder keeps a script's file ops in
-`/workspace`. The cost: a script can't read or write the rest of the computer's disk with them (its `Downloads`
+a script's file ops there (`files.read`, `files.list`, `files.write` and `files.stat`) must name an absolute path
+inside `/workspace`. Any other path is refused, with an error saying a run with a filed folder keeps a script's file ops
+in `/workspace`: a relative path (the computer is handed the path as written), and a path under the run folder's name
+on the runner's machine (a bind's source folder, a CLI's working folder), which is another folder on the computer. The cost: a script can't read or write the rest of the computer's disk with them (its `Downloads`
 folder, say) while a folder is filed. A computer that doesn't mount the run's folder, or a run with no filed folder, is
 unchanged.
 
@@ -189,13 +190,14 @@ Anything else that opens the run's files is outside the gate:
   and `processes.start` follow bash's setting, not whether `bash` is among the agent's tools, so leaving `bash` out of
   the tools doesn't stop them.
 - The computer's screen: input ops on a terminal app or a file manager, and `apps.open` with a path or a `file://` URL.
+  A desktop's scripts reach these even when the model is handed no screen tools (`surface: code`).
 - A link already inside `/workspace`: a script's file op at its path opens what it points to.
 - A harness's own file reads that never ask the host, such as Cursor's.
 - A tool that writes into a fixed folder of its own (`browser_downloads` into `downloads/`), so don't name a filed
   folder after one.
 
-If the model must not read the answer, set `bash` to `deny` and don't give the run a computer's screen, or run your
-skill's code where the model can't read its output. Opening a script's file on the computer beneath `/workspace` with
+If the model must not read the answer, set `bash` to `deny`, and give the run no desktop or set the desktop kind to
+`deny`; or run your skill's code where the model can't read its output. Opening a script's file on the computer beneath `/workspace` with
 links refused is planned.
 
 The setting is per tool. File every tool that returns the same data: a retrieve tool beside a filed list tool returns
