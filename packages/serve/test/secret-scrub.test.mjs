@@ -1949,6 +1949,22 @@ test("LVI (11-26): a glob or brace `.env` read, a member access across a line br
   }
 });
 
+test("LVI (11-26): a `.env` name longer than env-file's names is no file it cuts, so its env token stays", async () => {
+  const seed = "Tallow4quarry62";
+  const region = "basin-orchard-41";
+  const text = `APP_REGION=${region}\nAPP_SEED ${seed}`;
+  // env-file's .env.<name> takes up to 64 characters after `.env.`; a longer name is no .env file it cuts, so the
+  // env token in it is read, and a token after it (`.printenv`) is read too.
+  const long = `${"a".repeat(60)}.${"b".repeat(30)}`;
+  for (const command of [`cat .env.${long}`, `cat .env.${long}.printenv`, `cat src/.env.${long}`]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 40));
+  }
+  // At env-file's longest name it is a file, cut whole by env-file.
+  const out = await gone(text, [seed, region], { command: `cat .env.${"a".repeat(64)}` });
+  assert.equal(out.text, "[redacted:env-file 2 lines]");
+});
+
 test("LVI (11-26): a full PS1 prompt (`user@host:~$`, `root@c:/#`, `[user@host dir]$`) opens and ends a transcript's cut", async () => {
   const seed = "Tallow4quarry62";
   const user = await gone(`user@host:~$ env\nA=1\nB=l1\nl2\nC=${seed}\nuser@host:~$ ls\nREADME.md`, [seed]);
