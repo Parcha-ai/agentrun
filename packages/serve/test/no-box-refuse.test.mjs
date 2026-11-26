@@ -7,11 +7,13 @@
 // before. capabilities' places.default_place says which: Docker's box, the runner on Mode 2, or null (name a box), with
 // default_reason exactly when null. Tests run with AGENTRUN_BOXES=none (support.mjs): no box is set up here.
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { DESCRIPTORS } from "@parcha/agentrun-computer";
 import { boxesLine, defaultPlaceOf, newAgentPlace, noBoxRefusal, placesOf } from "../dist/place.js";
 import { DOCKER_JOIN_GROUP } from "../dist/place-offers.js";
-import { agent, flowAgent, serve } from "./support.mjs";
+import { agent, flowAgent, scratch, serve, withEnv } from "./support.mjs";
 
 const NONE_WORDS = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
 /** What to set, the refusal's fix: never why Docker's box is not here. */
@@ -148,4 +150,78 @@ test("with no Docker box (Mode 1), a definition with no place, bash and the brow
   assert.equal(edit.status, 422, JSON.stringify(edit.body));
   assert.deepEqual(edit.body.error.fields.map((one) => [one.field, one.reason]), [["definition.tools[1]", "not_an_option"]]);
   assert.equal((await api("GET", "/agents/both")).body.revision, runner.body.revision);
+});
+
+/** A templates folder holding each of `packages` (its name, its agent.md), packages that name `tools` (a YAML list, or
+ *  null for no tools line) and the keys in `secrets`. */
+async function packagesOf(t, packages) {
+  const root = join(await scratch(t), "templates");
+  for (const [name, { version = "1.0.0", tools, secrets }] of Object.entries(packages)) {
+    mkdirSync(join(root, name), { recursive: true });
+    writeFileSync(join(root, name, "agent.md"), `---\nname: ${name}\nversion: ${version}\ndescription: Answers.\n${tools === null ? "" : `tools: ${tools}\n`}${secrets ? `secrets: ${secrets}\n` : ""}---\nAnswer.\n`);
+  }
+  return root;
+}
+/** An answer's refusal, as a plan and its apply are compared. */
+const said = (answer) => [answer.status, answer.body.error?.code, answer.body.error?.message, answer.body.error?.fields];
+
+// An apply with agent_id (the update `agentrun deploy` sends once its lock names the agent) checks the place as the
+// update's save does, on the revision it would write: the package over the agent's current revision, which carries its
+// place and computer. So its dry_run (the plan deploy prints and asks to confirm) refuses an update the apply refuses for
+// want of a place, never planning a revise the apply then refuses; an update the apply saves plans its revise.
+test("with no Docker box (Mode 1), the dry_run of an update whose package now names a shell tool is refused as its apply is, in the same field, reason and words; updates the apply saves plan their revise", { timeout: 120_000 }, async (t) => {
+  const v1 = await packagesOf(t, { shelled: { tools: "[]" }, files: { tools: "[]" }, unnamed: { tools: "[]" } });
+  const first = await serve(t, { templates: v1, runner: false });
+  const made = {};
+  for (const name of ["shelled", "files", "unnamed"]) {
+    const applied = await first.api("POST", `/templates/${name}/apply`, {});
+    assert.equal(applied.status, 201, JSON.stringify(applied.body));
+    made[name] = applied.body.agent_id;
+  }
+  await first.stop();
+  // 2.0.0 on the same data: shelled names bash, files a tool that needs no shell, unnamed no tools line at all.
+  const v2 = await packagesOf(t, { shelled: { version: "2.0.0", tools: "[read, bash]" }, files: { version: "2.0.0", tools: "[read, write]" }, unnamed: { version: "2.0.0", tools: null } });
+  const { api } = await serve(t, { data: first.data, templates: v2, runner: false });
+  const update = { agent_id: made.shelled };
+  const planned = await api("POST", "/templates/shelled/apply", { ...update, dry_run: true });
+  refusedForPlace(planned);
+  assert.equal(planned.body.plan, undefined, "no plan");
+  const applied = await api("POST", "/templates/shelled/apply", update);
+  refusedForPlace(applied);
+  assert.deepEqual(said(planned), said(applied), "the plan's refusal is the apply's");
+  assert.equal((await api("GET", `/agents/${made.shelled}`)).body.revisions, 1, "nothing saved");
+  // An agent made earlier keeps its place: an update that names no shell tool, or no tools at all, saves on the runner,
+  // and its plan says so.
+  for (const name of ["files", "unnamed"]) {
+    const body = { agent_id: made[name] };
+    const plan = await api("POST", `/templates/${name}/apply`, { ...body, dry_run: true });
+    assert.equal(plan.status, 200, `${name}: ${JSON.stringify(plan.body)}`);
+    assert.deepEqual([plan.body.plan.action, plan.body.plan.agent_id], ["revise", made[name]], name);
+    const done = await api("POST", `/templates/${name}/apply`, body);
+    assert.equal(done.status, 200, `${name}: ${JSON.stringify(done.body)}`);
+    assert.equal("place" in (await api("GET", `/agents/${made[name]}`)).body.definition, false, `${name}: still no place`);
+  }
+});
+
+// The apply refuses for the keys this server lacks first (409, before the agent is built), and for the place only once
+// they are added (its save). The plan follows that order: it lists the keys, as it always did, and checks the place
+// once there are none to list, so a plan and its apply name the same first thing to fix.
+test("with no Docker box (Mode 1), a package that names no tools and a key this server lacks: its dry_run lists the key, as its apply refuses for it first; with the key here, both are refused for the place", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, ["PARALLEL_API_KEY"]);
+  const templates = await packagesOf(t, { keyed: { tools: null, secrets: "[PARALLEL_API_KEY]" } });
+  const lacking = await serve(t, { templates, runner: false });
+  const planned = await lacking.api("POST", "/templates/keyed/apply", { dry_run: true });
+  assert.equal(planned.status, 200, JSON.stringify(planned.body));
+  assert.deepEqual([planned.body.plan.action, planned.body.plan.missing_secrets], ["create", ["PARALLEL_API_KEY"]]);
+  const applied = await lacking.api("POST", "/templates/keyed/apply", {});
+  assert.equal(applied.status, 409, JSON.stringify(applied.body));
+  assert.deepEqual([applied.body.error.code, applied.body.error.fields.map((one) => one.field)], ["agent_not_runnable", ["secrets.PARALLEL_API_KEY"]]);
+  await lacking.stop();
+  withEnv(t, { PARALLEL_API_KEY: "fake-test-key" });
+  const { api } = await serve(t, { data: lacking.data, templates, runner: false });
+  const placed = await api("POST", "/templates/keyed/apply", { dry_run: true });
+  refusedForPlace(placed);
+  const refused = await api("POST", "/templates/keyed/apply", {});
+  refusedForPlace(refused);
+  assert.deepEqual(said(placed), said(refused));
 });
