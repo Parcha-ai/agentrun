@@ -369,11 +369,13 @@ const dropAfter = new Map<string, number>();
 
 /** The service of `login`'s Keychain items on macOS, as the CLI names it from the login's credentials dir there
  *  (loginEnv): `Claude Code-credentials-<first 8 hex of the folder's sha256>`, or undefined where that dir is empty (the
- *  item with no suffix, the person's own CLI's on its default folder). A hash of the folder, so it holds no path and no
- *  secret, and words for a person may name it. */
+ *  item with no suffix, the person's own CLI's on its default folder). The CLI hashes the folder in Unicode's composed
+ *  form (`.normalize("NFC")`), so a path with a decomposed character (as a folder name from macOS's Finder may have)
+ *  names the same item as its composed form; hashed as written it would name a service no item has. A hash of the
+ *  folder, so it holds no path and no secret, and words for a person may name it. */
 export function keychainService(login: ClaudeAgentLogin): string | undefined {
   const folder = loginEnv(login, "darwin").CLAUDE_SECURESTORAGE_CONFIG_DIR;
-  return folder ? `Claude Code-credentials-${createHash("sha256").update(folder).digest("hex").slice(0, 8)}` : undefined;
+  return folder ? `Claude Code-credentials-${createHash("sha256").update(folder.normalize("NFC")).digest("hex").slice(0, 8)}` : undefined;
 }
 
 /** On macOS, at AgentRun's own folder (`own`) alone, delete the login's Keychain item under the account "unknown", which
