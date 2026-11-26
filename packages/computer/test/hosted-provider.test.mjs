@@ -2381,3 +2381,32 @@ test("the adapter reads AbortError and TimeoutError by name; a host with no erro
 		assert.equal(result.error?.code, code, name);
 	}
 });
+
+test("facts.labels.packed.unpacked: a listing by name that finds none packed asks for the labels as given, and answers only the machines that carry every one of them, though the host answers more", async () => {
+	const { listedBy } = await import("../dist/hosted/provider.js");
+	const name = "computer-0123456789ab";
+	const before = { id: "m-before", state: "running", labels: { "agentrun.computer": "1", "agentrun.computer.name": name } };
+	const other = { id: "m-other", state: "running", labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-ba9876543210" } };
+	const asked = [];
+	const host = {
+		descriptor: { id: "tight" },
+		errorCode: () => "failed",
+		facts: { labels: { count: 10, bytes: 512, packed: { unpacked: true } } },
+		// A vendor's listing may answer more than it was asked for (MachineHost.list): this one answers every machine to a
+		// listing by labels, and none to one by the packed name.
+		async list(labels) {
+			asked.push(labels);
+			return "agentrun" in labels ? [] : [before, other];
+		},
+	};
+	const listed = await listedBy(host, "the listing by name", { "agentrun.computer": "1", "agentrun.computer.name": name }, 5_000);
+	assert.equal(listed.ok, true, JSON.stringify(listed));
+	assert.deepEqual(listed.value.map(({ id }) => id), ["m-before"], "the machine of another name is left out");
+	assert.deepEqual(listed.value[0].labels, before.labels, "its labels as they are stored");
+	assert.deepEqual(asked, [{ agentrun: name }, { "agentrun.computer": "1", "agentrun.computer.name": name }]);
+	asked.length = 0;
+	const packedOnly = { ...host, facts: { labels: { count: 10, bytes: 512, packed: {} } } };
+	const none = await listedBy(packedOnly, "the listing by name", { "agentrun.computer": "1", "agentrun.computer.name": name }, 5_000);
+	assert.deepEqual(none, { ok: true, value: [] }, "a host whose machines are all packed is asked by the packed name alone");
+	assert.deepEqual(asked, [{ agentrun: name }]);
+});

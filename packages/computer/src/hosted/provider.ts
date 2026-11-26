@@ -1813,19 +1813,32 @@ function packedRoom(host: MachineHost): NonNullable<HostFacts["labels"]> | undef
 	return room?.packed ? room : undefined;
 }
 
-/** A machine as the host read it, with a packed host's labels unpacked: none where it holds no packed map (not the adapter's). */
-const unpacked = (host: MachineHost, machine: Machine): Machine => (packedRoom(host) === undefined ? machine : { ...machine, labels: unpackLabels(machine.labels) ?? {} });
+/**
+ * A machine as the host read it, with a packed host's labels unpacked. One that holds no packed map has none (not the
+ * adapter's), or its stored labels on a host whose machines may carry them as given (facts.labels.packed.unpacked).
+ */
+function unpacked(host: MachineHost, machine: Machine): Machine {
+	const room = packedRoom(host);
+	if (room === undefined) return machine;
+	return { ...machine, labels: unpackLabels(machine.labels) ?? (room.packed?.unpacked ? machine.labels : {}) };
+}
 
 /**
  * The host's listing by labels, bounded by ms: only the machines that carry every one of them, since a vendor's listing
  * may answer more (MachineHost.list). A packed host is asked for PACKED_NAME alone, the name's where one is asked, and
- * its machines' labels unpacked.
+ * its machines' labels unpacked; where none is found by the name and its machines may carry their labels as given
+ * (facts.labels.packed.unpacked), it is asked for the labels as they are.
  */
 export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal): Promise<Result<Machine[]>> {
 	const name = labels[NAME_LABEL];
-	const asked = packedRoom(host) === undefined ? labels : name === undefined ? {} : { [PACKED_NAME]: name };
-	const listed = await hostCall(host, what, (ctx) => host.list(asked, ctx), ms, signal);
-	return listed.ok ? ok(listed.value.map((machine) => unpacked(host, machine)).filter((machine) => carries(machine, labels))) : listed;
+	const room = packedRoom(host);
+	const listed = await hostCall(host, what, (ctx) => host.list(room === undefined ? labels : name === undefined ? {} : { [PACKED_NAME]: name }, ctx), ms, signal);
+	if (!listed.ok) return listed;
+	const found = listed.value.map((machine) => unpacked(host, machine)).filter((machine) => carries(machine, labels));
+	// A name's machines are all packed or all made before the host packed (create finds a name's machine before it makes one).
+	if (found.length > 0 || name === undefined || !room?.packed?.unpacked) return ok(found);
+	const given = await hostCall(host, what, (ctx) => host.list(labels, ctx), ms, signal);
+	return given.ok ? ok(given.value.map((machine) => unpacked(host, machine)).filter((machine) => carries(machine, labels))) : given;
 }
 
 /** Whether a machine carries every one of these labels. */

@@ -1322,12 +1322,17 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
 - **Sizes are limits**, as in Docker: `cpus` (at least 0.25) becomes `cpuLimit` in physical cores (2 CPUs each) and
   `memoryMb` becomes `memoryLimitMiB`, each with Modal's default request (0.125 cores, 128 MiB) or less. `pids` and
   `workdir` are refused: Modal has no pids limit, and a computer works in `/work`, its home.
-- **Tags.** A sandbox's tags are the adapter's labels (`agentrun.computer`, its name, deadline and image, and a GPU
-  computer's GPUs; no max-deadline, which only `extend` reads) and the caller's. Modal takes 10 tags, 512 bytes of them, names and
-  values together (the host's `labels`): the adapter's `check()` counts them as create gives them, its own at their
-  longest, and refuses past either in words with no call; create refuses the same words first. An Archil computer's mount label records the
-  folder's agent alone, as on every host: the folder's run is the `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still
-  lists after its terminate is polled and left out once `poll()` reads it finished.
+- **Tags.** A sandbox's labels are the adapter's (`agentrun.computer`, its name, deadline and image, and a GPU
+  computer's GPUs; no max-deadline, which only `extend` reads) and the caller's. Modal takes 10 tags, 512 bytes of them,
+  names and values together, and a computer with a mount, a network list and a run's labels passes 512 bytes as they
+  are, so the adapter keeps them packed (the host's `labels.packed`): two tags, `agentrun` with the computer's name and
+  `agentrun-0` with the labels deflated, and get and list answer them unpacked. `check()` packs them as create gives
+  them, its own at their longest, and refuses in words with no call where the packed tags pass either bound; create
+  refuses the same words first. A sandbox made before the tags were packed carries its labels as tags, and reads as
+  them (`labels.packed.unpacked`): a listing by name that finds none packed asks for the labels as given. An Archil
+  computer's mount label records the folder's agent alone, as on every host: the folder's run is the `agentrun.run`
+  label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal
+  still lists after its terminate is polled and left out once `poll()` reads it finished.
 - **release** `delete` is `terminate()`, and the adapter waits until get answers none (`poll()` reads it finished).
   `stop` is refused as `unsupported`: terminate is a sandbox's only end.
 - **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,

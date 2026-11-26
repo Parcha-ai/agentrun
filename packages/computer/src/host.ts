@@ -283,9 +283,11 @@ export interface HostFacts {
 	 * value together, the adapter's at their longest. Past either, check() refuses, and so create, before any host call.
 	 * Absent: no bound. packed: the adapter packs the labels it gives create (packLabels, ./hosted/values.ts: one name to
 	 * list by, the map in parts of at most valueBytes each), unpacks those get and list answer, and asks list for that
-	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'.
+	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'. unpacked:
+	 * the host's machines may also carry their labels as given (made before it packed): one with no packed map reads as
+	 * its stored labels, and a listing by name that finds none packed asks for the labels as given.
 	 */
-	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } };
+	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number; unpacked?: true } };
 	/**
 	 * Paths of the vendor's image that root runs or reads and whose permissions its template build sets wider than
 	 * root's: create makes each root's alone (owned by root, writable by no group or other user), and everything under a
