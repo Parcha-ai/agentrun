@@ -789,12 +789,12 @@ test("a migration that fails leaves nothing of it: the schema's version is uncha
   assert.deepEqual(await sql(schema, "SELECT to_regclass('half_made') AS t"), [{ t: null }], "its table not made");
 });
 
-test("an applied migration whose file changed since is refused at the server's open, naming the file", ONLY, async (t) => {
+test("an applied migration whose file changed since is refused at the server's open, naming the applied file and this build's", ONLY, async (t) => {
   const schema = await schemaFor(t);
   const store = await openPostgresStore({ url: PG_URL, schema });
   await store.close();
   await sql(schema, "UPDATE schema_migrations SET sha256 = 'edited' WHERE version = 1");
-  await assert.rejects(openPostgresStore({ url: PG_URL, schema }), /0001_initial\.sql with other text than this build's/);
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema }), /applied 0001_initial\.sql \(sha256 edited\) where this build has 0001_initial\.sql \(sha256 [0-9a-f]{12}\)/);
 });
 
 test("a store holding two answers to one approval is refused migration 0003 in words: the run, the call, its commands, and what to do", ONLY, async (t) => {

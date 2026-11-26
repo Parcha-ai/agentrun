@@ -34,7 +34,7 @@ export const defaultData = (env: NodeJS.ProcessEnv = process.env): string => joi
  *  npxLine). */
 export const DATA_ENV = "AGENTRUN_SERVE_DATA";
 
-/** Agent `agentId`'s folder on the disk, which holds its learning folder (learning.ts) and its runs: `<data>/disk/agents/<agent>`. */
+/** Agent `agentId`'s folder on the disk, which holds its runs: `<data>/disk/agents/<agent>`. */
 /** The folder of a data directory that holds each agent's disk: its runs and its learning. */
 export const DISK_DIR = "disk";
 /** An agent's folder's name on the disk: its id in lower case, then 16 hex digits of the id's SHA-256, so ids that differ

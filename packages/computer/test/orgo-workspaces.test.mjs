@@ -11,6 +11,10 @@ import { ORGO } from "../dist/descriptors/orgo.js";
 import { API, fakeOrgoApi, fakeOrgoChannel, fakeTerminal, fakeWorkspace, KEY, WORKSPACE } from "./fake-orgo.mjs";
 import { fakeOrgoDesktop } from "./fake-orgo-desktop.mjs";
 
+/** A create's context with a request id of its own: each create here is a new request. */
+let requests = 0;
+const newRequest = (context = {}) => ({ requestId: `orgo-workspaces-${++requests}`, ...context });
+
 const { create } = await import("../dist/orgo.js");
 const { NO_WORKSPACE, orgoWorkspaces, soleWorkspace, workspaceHolder } = await import("../dist/orgo-workspaces.js");
 const { orgoRest, orgoTerminalChannel } = await import("../dist/orgo-channel.js");
@@ -88,12 +92,13 @@ test("a provider with no workspace option reads the key's one workspace once, an
 	assert.deepEqual(api.routes(), ["GET /workspaces", `GET /workspaces/${WORKSPACE}`, `GET /workspaces/${WORKSPACE}`], "the workspace is read once, then kept");
 	const tested = await provider.testConnection();
 	assert.equal(tested.ok, true);
-	// A create, from a new provider: GET /workspaces first, then the computer asked for in that workspace.
+	// A create, from a new provider: GET /workspaces first, then the request's computer looked for in that workspace, then
+	// the computer asked for there.
 	const fresh = fakeOrgoApi();
 	const maker = create({ apiKey: KEY, apiUrl: API, fetch: fresh.fetch, channel: fakeOrgoChannel(), daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-	const made = await maker.create(SPEC);
+	const made = await maker.create(SPEC, newRequest());
 	assert.equal(made.ok, true, JSON.stringify(made.error));
-	assert.deepEqual(fresh.routes().slice(0, 2), ["GET /workspaces", "POST /computers"]);
+	assert.deepEqual(fresh.routes().slice(0, 3), ["GET /workspaces", `GET /workspaces/${WORKSPACE}`, "POST /computers"]);
 	assert.equal([...fresh.computers.values()].at(-1).asked.workspace_id, WORKSPACE);
 });
 

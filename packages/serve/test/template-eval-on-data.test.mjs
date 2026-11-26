@@ -176,7 +176,8 @@ test("a folder whose server has work of its own (an enabled trigger, a run not e
 test("a data folder is the eval's own server's: with a named server it is refused, in the API and on the command line", async () => {
   const data = join(await scratch(), "agents");
   await assert.rejects(evalTemplate({ dir: PKG, data, server: { baseUrl: "http://127.0.0.1:9/v2", token: "t" } }), /--on-data .*--server/);
-  const cli = spawnSync(process.execPath, [CLI, "eval-template", PKG, "--server", "http://127.0.0.1:9", "--on-data", data], { encoding: "utf8", env: { ...process.env, AGENTRUN_API_KEY: "t" } });
+  // Bounded: a CLI that never exits fails here in its own words, never holds the file (and its shard) open to the job's limit.
+  const cli = spawnSync(process.execPath, [CLI, "eval-template", PKG, "--server", "http://127.0.0.1:9", "--on-data", data], { encoding: "utf8", timeout: 60_000, env: { ...process.env, AGENTRUN_API_KEY: "t" } });
   assert.equal(cli.status, 2, cli.stderr);
   assert.match(cli.stderr, /--on-data .*--server/);
 });

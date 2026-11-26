@@ -12,6 +12,7 @@ import { storeOn } from "./store-helpers.mjs";
 import { answerFlow, FAUX } from "./support.mjs";
 
 const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { runModels, FAUX_ENV } = await import("../dist/model.js");
 
 const INPUT = { question: "What is six times seven?" };
@@ -73,7 +74,7 @@ async function runWithFirstAttemptFailing(t, onFirst) {
     };
   };
   const loop = createWorkflowLoop(specOf)({
-    journal: (held) => failingJournal(store.journal(held), state),
+    redact: heldRedactor((text) => text), journal: (held) => failingJournal(store.journal(held), state),
     flush: async () => {
       if (state.failing) throw fsyncFailed();
       return store.flush();

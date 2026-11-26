@@ -17,6 +17,7 @@ import { quiet, until } from "./live-support.mjs";
 import { queued, storeOn } from "./store-helpers.mjs";
 
 const { withLiveTicker } = await import("../dist/runner/live-ticker.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 after(closeOpenSessions);
 
 /** A loop that runs until `end()` is called. */
@@ -37,7 +38,7 @@ test("a loop that ends after its claim was lost and the run claimed again drops 
   const { control, createLoop } = heldLoop();
   const ticker = withLiveTicker(store, createLoop, { tickMs: 60_000 });
   t.after(() => ticker.close());
-  const started = ticker.createLoop({ journal: () => undefined, flush: async () => {}, signal: new AbortController().signal }).start(stale);
+  const started = ticker.createLoop({ redact: heldRedactor((text) => text), journal: () => undefined, flush: async () => {}, signal: new AbortController().signal }).start(stale);
 
   // The claim runs out; another runner claims the run and writes its live row.
   clock.now += 61_000;
@@ -92,7 +93,7 @@ test("a loop that ends under its own claim drops its run's live row", async (t) 
   const { control, createLoop } = heldLoop();
   const ticker = withLiveTicker(store, createLoop, { tickMs: 60_000 });
   t.after(() => ticker.close());
-  const started = ticker.createLoop({ journal: () => undefined, flush: async () => {}, signal: new AbortController().signal }).start(claim);
+  const started = ticker.createLoop({ redact: heldRedactor((text) => text), journal: () => undefined, flush: async () => {}, signal: new AbortController().signal }).start(claim);
   await store.live.put([{ claim, state: { text: "running" } }]);
   control.end();
   await started;

@@ -33,5 +33,5 @@ export async function servedRunLearning(deps: { serverSecrets: () => string[]; s
 /** Run `runId`'s learning diff as GET /runs/{id}/learning/diff serves it (learning-routes.ts runDiffOverStore), cut as its
  *  learning is, or ApiError forbidden for a withheld run. */
 export async function servedRunDiff(deps: { serverSecrets: () => string[]; signIns?: SignInReader; sealKey: Buffer | undefined }, store: Store, data: string, runId: string) {
-  return runDiffOverStore(data, store, runId, secretsShown(await learningCutOf(deps, store, runId)));
+  return runDiffOverStore(store, runId, secretsShown(await learningCutOf(deps, store, runId)));
 }

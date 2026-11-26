@@ -490,6 +490,58 @@ export interface Learning {
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
+  /** The agent's learning at its newest save, what a run starts from: its items there, and every version's facts (no
+   *  bodies) up to it. An agent with no save yet is given its first, empty (an `init` save), so every seed names one. */
+  seed(agentId: string): Promise<LearningAt>;
+  /** The agent's learning at its newest save, as seed reads it; undefined before its first save (none is made). */
+  newest(agentId: string): Promise<LearningAt | undefined>;
+  /** The id of the agent's newest purge save (a run's purge, the host's save of kind `purged`), undefined when none: the
+   *  one save that rewrites saves before it in place, so a read across two reads that this moved under reads again. */
+  newestPurge(agentId: string): Promise<string | undefined>;
+  /** The id of the agent's newest save of any kind (a purge's host save included), undefined before its first: in one
+   *  read, none of its items, so a read keyed on the newest save (learning-routes.ts statusesOf) is checked cheaply. */
+  newestSave(agentId: string): Promise<string | undefined>;
+  /** The agent's learning as save `id` (a version id) left it, read now: a purged run's rows are gone from every
+   *  version. Undefined when the agent's learning holds no such save (a reset removed it, or it never was). */
+  itemsAt(agentId: string, id: string): Promise<LearningAt | undefined>;
+  /** The agent's saves its log shows (a purged run's left out), newest first: at most `limit`, below version `before`
+   *  when given; `total`, how many the log shows in all. */
+  saves(agentId: string, options?: { limit?: number; before?: number }): Promise<{ saves: LearningSave[]; more: boolean; total: number }>;
+  /** One save of the agent's, by its version id or by its merge key; undefined when there is none. */
+  saveOf(agentId: string, by: { id: string } | { mergeKey: string }): Promise<LearningSave | undefined>;
+  /** Every version of one item, newest first, bodies included (a gone version's body null), each with its save. */
+  versions(agentId: string, kind: LearningItemKind, name: string): Promise<(LearningItem & { readonly save: LearningSave })[]>;
+  /** What save `id` changed: each item it wrote, with its body just before the save and at it (null: none there). */
+  diff(agentId: string, id: string): Promise<LearningDiff | undefined>;
+  /** One save, in one transaction: refused as stale unless the agent's newest version is `base`, as already done when a
+   *  save with its merge key is there, as refused when its seed is not held, and as purged when a run's purge came after
+   *  a save it was read at (`readAt`). */
+  save(agentId: string, save: LearningSaveInput): Promise<LearningSaved>;
+  /** Run `runId`'s learning gone from its agent `agentId`'s (no other agent's row is touched): the item versions it
+   *  wrote (a person's change of its text with them), its grades, its audits, and the promotions and audits of each
+   *  workflow version it wrote. Its saves stay as facts with no text (their merge keys still taken). A purge that
+   *  changed a row is a save too, the host's (kind `purged`, no item) at the newest version + 1, so every save computed
+   *  before it is stale. Idempotent: a purge that finds nothing of the run's adds none. */
+  purgeRun(agentId: string, runId: string): Promise<void>;
+  /** The agent's learning gone: items, saves and records. Its runs and what they cost stay. Under the agent's learning
+   *  lock, then its records' lock, as a purge takes them: a records write that began before it is in before it. */
+  reset(agentId: string): Promise<void>;
+  /** Every learning row of the agent gone, its reset's included: its delete. Locked as reset is. */
+  erase(agentId: string): Promise<void>;
+  /** The agent's records of `kind`, oldest first. */
+  records(agentId: string, kind: LearningRecordKind): Promise<LearningRecord[]>;
+  /** Adds one record of `kind`, after every other; refused as changeRecords refuses one it adds. */
+  addRecord(agentId: string, kind: LearningRecordKind, record: LearningRecordWrite): Promise<LearningRecord>;
+  /** The agent's records of `kind` changed in one transaction: `update` reads them all and answers the list they become
+   *  (a record with its `seq` kept is that record, one without is added after the others), or undefined for no change.
+   *  `update` reads too, in the same transaction, whether a version of a workflow holds a digest (`held`): a run's purge
+   *  takes the records' lock before it changes a version, so none goes between the read and the write. Each record the
+   *  write adds (or moves to another workflow, digest or run) is checked in that transaction: a promotion's or an
+   *  audit's digest must be held by a version of its workflow (unless it is `anyDigest`, a failed draft's, which no
+   *  version holds), and its run (the `runId` column) is not purged. Else the write throws LearningRecordRefused and
+   *  writes nothing. A promotion written (added or changed) is kept with its `commit` a save that holds its digest, and
+   *  with each purged run's copies its data names blanked (learn/promote.ts forgetRunIn). */
+  changeRecords<T>(agentId: string, kind: LearningRecordKind, update: (records: readonly LearningRecord[], held?: (workflow: string, digest: string) => boolean) => { records: readonly LearningRecordWrite[]; result: T } | { result: T }, options?: { readonly anyDigest?: string }): Promise<T>;
   /** Agent `agentId`'s ledger (learn/ledger.ts), in one read (one snapshot of both tables): every run's row its end
    *  recorded, oldest first, and every spend row. With `runIds`, those runs' rows alone and the spend rows they booked or
    *  that audit them (none for none). Written only beside a run's end and a heal of its cost (run-patch.ts recordLedger);
@@ -500,6 +552,90 @@ export interface Learning {
    *  rule's by-hand side read past its window (store-reads/learning.ts pastRunsRead). One read. */
   byHandBefore(agentId: string, before: { readonly id: string; readonly startedAt: number }, limit: number): Promise<{ readonly id: string; readonly startedAt: number; readonly jobUsd: number }[]>;
 }
+
+/** A learning item: one line of the owner's notes (corrections.md), or one learned workflow's folder. */
+export type LearningItemKind = "note" | "workflow";
+/** What a version of an item was: a run's merge, or a person's change. */
+export type LearningChangeKind = "learned" | "approved" | "edited" | "created" | "retired" | "restored";
+/** One version of an item. A note's body is its line; a workflow's is JSON, its files by path. */
+export interface LearningItem {
+  readonly kind: LearningItemKind;
+  readonly name: string;
+  readonly version: number;
+  /** Null: the item is gone at this version. */
+  readonly body: string | null;
+  /** The run whose text it is: a note's, the run whose merge wrote it, kept by a person's change of it (null: a
+   *  person's own); a workflow's, its workflow.json's writer (`writers`). */
+  readonly byRun: string | null;
+  /** A workflow's writer of each of its files, by path: the run whose merge changed the file to its text (a merge that
+   *  gives it unchanged, and a person's edit of it, keep the writer before; null: a person's own file). Null for a note. */
+  readonly writers: Readonly<Record<string, string | null>> | null;
+  readonly change: LearningChangeKind;
+  readonly person: boolean;
+  /** A note's place among the notes. */
+  readonly pos: number;
+  /** A workflow's digest (its workflow.json's), which its promotions and audits name. */
+  readonly digest: string | null;
+  readonly at: number;
+}
+/** One save: a version of the agent's learning. `id` is the version id a run's seed names. */
+export interface LearningSave {
+  readonly version: number;
+  readonly id: string;
+  readonly at: number;
+  readonly by: LearningSaveBy;
+  readonly reason: string;
+  /** The paths the save changed, as the folder names them. */
+  readonly files: readonly string[];
+  readonly mergeKey: string | null;
+}
+/** Who saved: a run's merge (its round past the first), a person's change, or the host: the empty first save of a run's
+ *  seed (`init`), or a purged run's save with its words gone (`purged`). */
+export type LearningSaveBy = { readonly run: string; readonly round?: number } | { readonly person: Exclude<LearningChangeKind, "learned">; readonly file: string; readonly approved?: boolean } | { readonly host: "init" | "purged" };
+/** The agent's learning at one save: the save, its live items, and the facts of every item version up to it. */
+export interface LearningAt {
+  readonly save: LearningSave;
+  readonly items: readonly LearningItem[];
+  readonly history: readonly Omit<LearningItem, "body">[];
+}
+export type LearningItemWrite = Omit<LearningItem, "version" | "at">;
+export interface LearningSaveInput {
+  /** The version the save was computed on (0 before the first). */
+  readonly base: number;
+  readonly by: Exclude<LearningSaveBy, { host: string }>;
+  readonly reason: string;
+  readonly files: readonly string[];
+  readonly items: readonly LearningItemWrite[];
+  /** A run's merge: one save per key, ever (a purge keeps the key taken). */
+  readonly mergeKey?: string;
+  /** A version id the agent's learning must still hold (a run's seed). */
+  readonly seed?: string;
+  /** The saves the write's text was read at (a run's seed, and each save its compile turn read a workflow at): refused
+   *  as purged when a run's purge came after any of them (its host save, kind `purged`, is newer), since that purge
+   *  rewrote what was read in place and the write can't be told apart from the purged run's bytes. */
+  readonly readAt?: readonly string[];
+}
+export type LearningSaved =
+  | { readonly saved: LearningSave }
+  | { readonly stale: number }
+  | { readonly refused: { readonly seed: string } }
+  | { readonly purged: { readonly readAt: string } }
+  | { readonly already: LearningSave };
+export interface LearningDiff {
+  readonly save: LearningSave;
+  readonly parent: LearningSave | undefined;
+  readonly items: readonly { readonly kind: LearningItemKind; readonly name: string; readonly before: string | null; readonly after: string | null }[];
+}
+export type LearningRecordKind = "promotion" | "grade" | "audit";
+export interface LearningRecord {
+  readonly seq: number;
+  readonly runId: string | null;
+  readonly workflow: string | null;
+  readonly digest: string | null;
+  readonly data: unknown;
+  readonly at: number;
+}
+export type LearningRecordWrite = Omit<LearningRecord, "seq" | "at"> & { readonly seq?: number };
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
 export interface LearningSpend {
@@ -1087,7 +1223,7 @@ export interface Runs {
   /** Run `runId`'s list_mark now (the mark a build of its listing starts from), or undefined when there is no such run. */
   listMark(runId: string): Promise<number | undefined>;
   /** Moves the mark of every run whose listing read something outside the run (`flags`, RUN_LISTING_COLUMNS' listing_flags),
-   *  of agent `agentId` when given: the server's keys changed, or an agent's learning folder did. The number of runs moved. */
+   *  of agent `agentId` when given: the server's keys changed, or an agent's learning did. The number of runs moved. */
   relist(options: { flags: number; agentId?: string }): Promise<number>;
   /** Writes `cost`, what its booking gives by the end's own rule (metrics.ts endCostOf: a figure, the most the run can
    *  have cost when `costUpperBound`), as ended run `runId`'s stored cost, as its end would have, only while that cost is
@@ -1104,7 +1240,7 @@ export interface Runs {
   archive(runId: string, archived: boolean): Promise<void>;
   /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs and purged runs included
    *  (which list leaves out): what deleting the agent stops and removes, with the runner that holds each (null: none),
-   *  its purge time and its disk (RunRow.disk: where a learning folder of the agent may be, learn/learning-of.ts namedDisksOf). */
+   *  its purge time and its disk (RunRow.disk). */
   every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null; disk: string | null }[]>;
   /** The runs made from run `runId` that hold what it was given or did, by id: each run whose launch replays its input
    *  (the launch body's `replay.of`) or audits it (`audit.of`: its audit's shadow run), and each learning run its kept
@@ -1119,8 +1255,8 @@ export interface Runs {
    *  comes first (one that can't be written, a full disk, throws with nothing purged), and a WAL checkpoint (TRUNCATE)
    *  follows the commit, so with secure_delete neither the file nor its WAL keeps the bytes; a checkpoint another
    *  connection holds back keeps the marker for the next start's scrub. Postgres keeps old row versions until its
-   *  VACUUM. The run's text in its agent's learning folder is the server's to take off (agent-delete.ts forgetCopies),
-   *  and the purge time set here is what the folder's history reads skip its merges by. */
+   *  VACUUM. The run's learning rows go in the same transaction (Learning.purgeRun): its saves' words, its notes and
+   *  workflow files, its records. */
   purge(runId: string, kept: PurgeKept): Promise<void>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
@@ -2144,6 +2280,20 @@ export class SchemaVersionUnknown extends Error {
     this.name = "SchemaVersionUnknown";
     this.found = found;
     this.known = known;
+  }
+}
+
+/** A learning record write refused in its own transaction, nothing written (Store.learning changeRecords, addRecord): a
+ *  promotion or audit of a digest no version of its workflow holds (a run's purge took it since the write read it), or
+ *  a record of a run that was purged. */
+export class LearningRecordRefused extends Error {
+  readonly records: readonly LearningRecordWrite[];
+  constructor(agentId: string, records: readonly LearningRecordWrite[], why: "unheld" | "purged") {
+    super(why === "unheld"
+      ? `agent ${agentId}'s learning holds no version of ${records.map((one) => `${one.workflow}@${one.digest}`).join(", ")}: a run's purge took it, so no record of it is written`
+      : `run ${records.map((one) => one.runId).join(", ")} was purged, so no learning record of it is written`);
+    this.name = "LearningRecordRefused";
+    this.records = records;
   }
 }
 

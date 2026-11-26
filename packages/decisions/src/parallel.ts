@@ -198,6 +198,7 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
         const refId = await response.json().then((b: unknown) => (isRecord(b) && isRecord(b.error) && typeof b.error.ref_id === "string" ? b.error.ref_id : undefined), () => undefined);
         const details = { status, attempts: attempt, ...(refId !== undefined ? { refId } : {}) };
         if (status === 401 || status === 403) throw new DecisionProviderError("auth", `Parallel refused the key (HTTP ${status}).`, details);
+        if (status === 402) throw new DecisionProviderError("payment_required", `Parallel refused the key's account: it is out of credit (HTTP 402).`, details);
         if (status === 400 || status === 422) throw new DecisionProviderError("invalid_request", `Parallel refused the request (HTTP ${status}).`, details);
         if (status === 429) throw new DecisionProviderError("rate_limited", `Parallel rate-limited the request after ${attempt} attempts.`, details);
         throw new DecisionProviderError("http", `Parallel answered HTTP ${status}.`, details);
