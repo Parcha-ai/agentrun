@@ -1973,6 +1973,36 @@ test("a stop waits for a renewal already spent at OpenAI to save its pair before
   assert.equal(openai.refreshes, 1);
 });
 
+test("while its store stops, a token that outlives the stop's remaining drain plus RENEWAL_DRAIN_MS is sent as it is, with no refresh; one that would not, or one OpenAI refused, is refused with PlanStopping; nothing is sent to OpenAI either way", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan, PlanStopping, RENEWAL_DRAIN_MS, stopRenewals } = await import("../dist/chatgpt-plan.js");
+  const sealKey = randomBytes(32);
+  const drain = 10_000;
+  // Inside the 5-minute refresh margin either way: without a stop, this token is renewed before it is sent.
+  const outlives = drain + RENEWAL_DRAIN_MS + 60_000;
+  const short = drain + RENEWAL_DRAIN_MS - 5_000;
+  const running = mapStore();
+  const before = await seatRow(running, sealKey, outlives);
+  assert.notEqual(await new ChatGPTPlan({ store: running, sealKey }).token(), before.access, "no stop: a token inside the margin is renewed");
+  assert.equal(openai.refreshes, 1);
+  // Its store stopping with `drain` left: one that outlives drain + RENEWAL_DRAIN_MS goes out as it is.
+  const kept = mapStore();
+  const long = await seatRow(kept, sealKey, outlives);
+  await stopRenewals(kept, drain);
+  const plan = new ChatGPTPlan({ store: kept, sealKey });
+  assert.equal(await plan.token(), long.access, "a token that outlives the stop is sent as it is");
+  assert.equal(openai.refreshes, 1, "with no refresh");
+  // One that ends inside drain + RENEWAL_DRAIN_MS, though it has more than RENEWAL_DRAIN_MS left: the remaining drain counts.
+  const ending = mapStore();
+  await seatRow(ending, sealKey, short);
+  await stopRenewals(ending, drain);
+  await assert.rejects(new ChatGPTPlan({ store: ending, sealKey }).token(), (error) => error instanceof PlanStopping, "a token that would need a refresh before the stop ends is refused");
+  // A token OpenAI refused is never sent again, however long it has left.
+  await plan.refused(long.access);
+  await assert.rejects(plan.token(), (error) => error instanceof PlanStopping, "a refused token is not sent as it is");
+  assert.equal(openai.refreshes, 1, "and OpenAI is sent nothing");
+});
+
 test("a stop whose drain bound runs out with a renewal still out says so, and a write-back the closed store then refuses says the pair goes unsaved before it is revoked, with no token in the log", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
   const { ChatGPTPlan, stopRenewals } = await import("../dist/chatgpt-plan.js");
