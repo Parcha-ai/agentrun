@@ -140,7 +140,7 @@ export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean
   readonly permission?: (tool: string) => Promise<"allow" | "ask" | "deny">;
   /** The run's learned workflow a learned_workflow call's arguments name (its name and its digest, workflow-first.ts
    *  workflowDigest), or undefined for a name the run has none of: what the record of such a call the gate refuses
-   *  names (keepRefusedLearned). */
+   *  names (learnedEntry). */
   readonly learnedOf?: (args: unknown) => { readonly workflow: string; readonly digest: string } | undefined;
 };
 
@@ -918,7 +918,8 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       });
     },
     nestedIn: (callId, parent) => void parents.set(callId, parent),
-    unsentParked: () => [...parked].filter((callId) => !sent.has(callId) && started.get(callId) === false),    openCalls: () => openNow().sort((a, b) => Number(nesting.has(a)) - Number(nesting.has(b))),
+    unsentParked: () => [...parked].filter((callId) => !sent.has(callId) && started.get(callId) === false),
+    openCalls: () => openNow().sort((a, b) => Number(nesting.has(a)) - Number(nesting.has(b))),
     noteEnd(callId, status, output) {
       started.set(callId, true);
       ends.set(callId, { status, ...(output === undefined ? {} : { output }) });
@@ -2717,15 +2718,17 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // go is marked first (LEARNED_ALLOWED), committed before the tool runs: a call issued again after a crash cut it may
         // have run nodes and spent on such an attempt, so its refusal is then no proof it ran nothing, and it is kept
         // `failed`, never `refused`, priced from what its call id booked (failedRecord). The newest of the call's marks and
-        // records says which (learned-nodes.ts learnedCallRan): its bridge can't (a tool that nests is asked alike on every
-        // attempt: process/tools.ts runNesting), nor can the call's start on the CLI record, which a refusal writes too.
+        // records says which (learned-nodes.ts learnedCallRan): its bridge can't alone (a tool that nests is asked alike on
+        // every attempt: process/tools.ts runNesting), nor can the call's start on the CLI record, which a refusal writes
+        // too. With neither, the bridge's `replayed` stands in: a run begun before the marks existed has none. Whatever is
+        // kept, a refusal reads `failed` once anything was booked under the call id (workflow-calls.ts workflowCallsOf).
         const learnedEntry = async (call: Parameters<typeof gateOf>[0], answer: Awaited<ReturnType<typeof gateOf>>): Promise<void> => {
           const named = call.tool === LEARNED_WORKFLOW_TOOL ? spec.gate?.learnedOf?.(call.args) : undefined;
           const [journalOf, rootOf] = [harness, root];
           if (!named || !journalOf || !rootOf || !gate || gate.sealed) return;
           const [kind, data] = answer === "allow"
             ? [LEARNED_ALLOWED, { call: call.callId }]
-            : [LEARNED_NODES, (learnedCallRan(await entriesOf(gate.journal, rootOf.id, context), call.callId) ? failedRecord : refusedRecord)(call.callId, named.workflow, named.digest, "agent")];
+            : [LEARNED_NODES, (learnedCallRan(await entriesOf(gate.journal, rootOf.id, context), call.callId, call.replayed === true) ? failedRecord : refusedRecord)(call.callId, named.workflow, named.digest, "agent")];
           await journalOf.commit((tx) => tx.appendEntry(rootOf.id, { kind, data: data as unknown as JsonValue }), context).catch(unlessSealed);
         };
         const sessionGate: typeof gateOf = async (call, hookContext) => {
