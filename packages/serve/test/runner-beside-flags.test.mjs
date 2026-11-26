@@ -167,17 +167,14 @@ test("every shipped deploy gives each AgentRun process at least a signed-in serv
   }
 });
 
-test("every stop grace the repo ships, found by a scan of its files and not a list, is at least a signed-in server's stop bound and the bound of a ChatGPT renewal its runner serves at the drain that target runs, and every deploy target sets one: Compose, the chart, Fly, launchd, Railway, the CLI's stop and the installer's (Render's is the platform's fixed 30 s)", async () => {
+test("every stop grace the repo ships, found by a scan of its files and not a list, is at least a signed-in server's stop bound and the bound of a ChatGPT renewal its runner serves, and every deploy target sets one: Compose, the chart, Fly, launchd, Railway, the CLI's stop and the installer's (Render's is the platform's fixed 30 s)", async () => {
   const { PLAN_STOP_BOUND_MS } = await import("../dist/server.js");
-  const runnerModule = await import("../dist/runner/runner.js");
-  // The drain each target's runner runs: the image's (its CMD's --drain-timeout), or the CLI start's runner beside its
-  // server (launchd, systemd, `agentrun stop`, the installer's stop), which the service passes no --drain-timeout.
-  const dockerfile = readFileSync(fileURLToPath(new URL("../docker/Dockerfile", import.meta.url)), "utf8");
-  const imageDrain = /"--drain-timeout",\s*"([^"]+)"/.exec(dockerfile);
-  assert.ok(imageDrain, "the image's CMD sets --drain-timeout");
-  const drains = { image: durationMs(imageDrain[1]), cli: durationMs(DRAIN_TIMEOUT) };
-  // A stop is killed after the grace: by then the server's stop is over, and so is every renewal its runner sent.
-  const bound = (runs) => Math.max(PLAN_STOP_BOUND_MS, runnerModule.runnerRenewalBoundMs(drains[runs]));
+  const { RUNNER_RENEWAL_BOUND_MS } = await import("../dist/runner/runner.js");
+  // A stop is killed after the grace: by then the server's stop is over, and so is every renewal its runner sent, whatever
+  // the drain that target's runner runs (the image's 6 s, the CLI start's 30 s): a runner tells its renewals to stop
+  // RUNNER_RENEWALS_SERVED_MS into its close at the latest.
+  const bound = Math.max(PLAN_STOP_BOUND_MS, RUNNER_RENEWAL_BOUND_MS);
+  assert.equal(bound, 29_000, "a renewal a runner serves outlasts a server's 27 s stop");
   const { renderValue } = await import(new URL("../../../deploy/railway/template.mjs", import.meta.url));
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   // Each way a shipped file sets how long a stop may take before the kill, and its value in seconds.
@@ -185,17 +182,16 @@ test("every stop grace the repo ships, found by a scan of its files and not a li
     const m = /^"?(\d+)(s|m)?"?$/.exec(given.trim());
     return m ? Number(m[1]) * (m[2] === "m" ? 60 : 1) : NaN;
   };
-  // Each with the drain of the runner it stops.
   const settings = [
-    ["stop_grace_period", /stop_grace_period:\s*(\S+)/g, seconds, "image"],
-    ["terminationGracePeriodSeconds", /terminationGracePeriodSeconds:\s*(\S+)/g, (v) => (v.startsWith("{{") ? undefined : seconds(v)), "image"],
-    ["kill_timeout", /kill_timeout\s*=\s*(\S+)/g, seconds, "image"],
-    ["ExitTimeOut", /<key>ExitTimeOut<\/key>\s*<integer>(\d+)<\/integer>/g, seconds, "cli"],
-    ["TimeoutStopSec", /TimeoutStopSec=(\S+)/g, seconds, "cli"],
-    ["maxShutdownDelaySeconds", /maxShutdownDelaySeconds:\s*(\S+)/g, seconds, "image"],
-    ["RAILWAY_DEPLOYMENT_DRAINING_SECONDS", /"RAILWAY_DEPLOYMENT_DRAINING_SECONDS"\s*:\s*\{\s*"defaultValue"\s*:\s*("(?:[^"\\]|\\.)*")/g, (v) => seconds(renderValue(JSON.parse(v), { domain: "x" })), "image"],
-    ["STOP_WAIT_MS", /STOP_WAIT_MS = ([\d_]+);/g, (v) => Number(v.replace(/_/g, "")) / 1_000, "cli"],
-    ["the background stop's wait", /ours "\$server"; \} && \[ "\$waited" -lt (\d+) \]/g, Number, "cli"],
+    ["stop_grace_period", /stop_grace_period:\s*(\S+)/g, seconds],
+    ["terminationGracePeriodSeconds", /terminationGracePeriodSeconds:\s*(\S+)/g, (v) => (v.startsWith("{{") ? undefined : seconds(v))],
+    ["kill_timeout", /kill_timeout\s*=\s*(\S+)/g, seconds],
+    ["ExitTimeOut", /<key>ExitTimeOut<\/key>\s*<integer>(\d+)<\/integer>/g, seconds],
+    ["TimeoutStopSec", /TimeoutStopSec=(\S+)/g, seconds],
+    ["maxShutdownDelaySeconds", /maxShutdownDelaySeconds:\s*(\S+)/g, seconds],
+    ["RAILWAY_DEPLOYMENT_DRAINING_SECONDS", /"RAILWAY_DEPLOYMENT_DRAINING_SECONDS"\s*:\s*\{\s*"defaultValue"\s*:\s*("(?:[^"\\]|\\.)*")/g, (v) => seconds(renderValue(JSON.parse(v), { domain: "x" }))],
+    ["STOP_WAIT_MS", /STOP_WAIT_MS = ([\d_]+);/g, (v) => Number(v.replace(/_/g, "")) / 1_000],
+    ["the background stop's wait", /ours "\$server"; \} && \[ "\$waited" -lt (\d+) \]/g, Number],
   ];
   const files = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\0").filter((path) => path && !/(^|\/)test\//.test(path) && !path.endsWith(".md") && !path.startsWith("changes/"));
   const found = new Map();
@@ -207,13 +203,13 @@ test("every stop grace the repo ships, found by a scan of its files and not a li
       continue;
     }
     if (text.includes("\0")) continue;
-    for (const [what, pattern, parse, runs] of settings) {
+    for (const [what, pattern, parse] of settings) {
       for (const m of text.matchAll(pattern)) {
         const s = parse(m[1]);
         if (s === undefined) continue;
         const line = text.slice(0, m.index).split("\n").length;
         found.set(path, [...(found.get(path) ?? []), what]);
-        assert.ok(s * 1_000 >= bound(runs), `${path}:${line}: ${what} ${m[1]} is under ${bound(runs) / 1_000} s (the ${runs} runner's ${drains[runs] / 1_000} s drain), so a stop is killed inside a renewal's drain`);
+        assert.ok(s * 1_000 >= bound, `${path}:${line}: ${what} ${m[1]} is under ${bound / 1_000} s, so a stop is killed inside a renewal's drain`);
       }
     }
   }
@@ -234,7 +230,7 @@ test("every stop grace the repo ships, found by a scan of its files and not a li
   ]) assert.ok(found.get(path)?.includes(what), `${path} sets no ${what}`);
   // Render: no setting of its own (it takes no maxShutdownDelaySeconds with a persistent disk); its fixed wait holds.
   assert.equal(found.get("render.yaml"), undefined, "render.yaml sets no grace Render would refuse");
-  assert.ok(RENDER_GRACE_S * 1_000 >= bound("image"), `Render's ${RENDER_GRACE_S} s is under ${bound("image") / 1_000} s`);
+  assert.ok(RENDER_GRACE_S * 1_000 >= bound, `Render's ${RENDER_GRACE_S} s is under ${bound / 1_000} s`);
 });
 
 test("--max-runs 2 with 4 runs queued: the runner holds 2 at once, the other 2 wait queued, then run as places free", async (t) => {

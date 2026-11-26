@@ -2,7 +2,7 @@
 // the template eval's in-process server (template-eval.ts), which would otherwise leave every run it starts queued.
 import { maxRunsOf } from "../host.js";
 import { durationMs } from "../print.js";
-import { RUNNER_LOOPS, type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
+import { RUNNER_LOOPS, RUNNER_RENEWAL_BOUND_MS, type RunnerEvent, runnerCloseBoundMs } from "./runner.js";
 
 /** How long a busy run may finish its turn when the server stops, unless --drain-timeout says (cli.ts). */
 export const DRAIN_TIMEOUT = "30s";
@@ -22,11 +22,11 @@ export function besideRunnerOptions(serve: { maxRuns?: number; drainTimeout?: st
 /** What the CLI's stop waits on (stop-signals.ts StopDeps.stopping) with a runner beside the server: the server's runs
  *  and the runs the runner holds, and the longer of the server's bound and the runner's whole close (its drain, then
  *  the stop of the loops left: runnerCloseBoundMs), so the stop's deadline never cuts a run's end and release short. The
- *  runner's ChatGPT renewals stop RUNNER_RENEWALS_SERVED_MS into the close, or at the drain's end if sooner, and drain
- *  for the window the close hands (stopRenewals for renewalDrainFor: at most RENEWAL_DRAIN_MS): runnerRenewalBoundMs,
- *  under the close's bound. */
+ *  runner's ChatGPT renewals stop RUNNER_RENEWALS_SERVED_MS into the close at the latest, and drain for the window the
+ *  close hands from then (stopRenewals for renewalDrainFor: at most RENEWAL_DRAIN_MS), so the bound is also at least
+ *  RUNNER_RENEWAL_BOUND_MS: with a short drain, a renewal may outlast the close. */
 export function besideStopping(server: { runs: number; boundMs: number }, held: number, drainMs: number): { runs: number; boundMs: number } {
-  return { runs: server.runs + held, boundMs: Math.max(server.boundMs, runnerCloseBoundMs(drainMs)) };
+  return { runs: server.runs + held, boundMs: Math.max(server.boundMs, runnerCloseBoundMs(drainMs), RUNNER_RENEWAL_BOUND_MS) };
 }
 
 /** A runner beside the server on the same data directory (the CLI start's server-and-runner, and the `runner` subcommand):

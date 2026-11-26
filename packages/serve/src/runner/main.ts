@@ -373,7 +373,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       // Its claims' readers start no ChatGPT renewal on its store once the close tells it (RUNNER_RENEWALS_SERVED_MS in,
       // or the drain's end if sooner: a run the drain lets finish may need one); one OpenAI is answering saves its new
       // pair before the store closes (awaited last, bounded by the window the close hands, at most RENEWAL_DRAIN_MS:
-      // renewalDrainFor, so it ends inside runnerRenewalBoundMs, which every shipped grace holds).
+      // renewalDrainFor, so it ends inside RUNNER_RENEWAL_BOUND_MS, which every shipped grace holds).
       let renewalsStopped: Promise<void> | undefined;
       const stopRenewing = (by?: number) => (renewalsStopped ??= stopRenewals(store, renewalDrainFor(by)));
       // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
