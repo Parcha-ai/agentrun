@@ -171,10 +171,13 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
     const key = boundKey(callId);
     const recorded = ctx.state().effects.get(key);
     const known = recorded?.status === 'completed' && isBound(recorded.output) ? recorded.output : undefined;
-    const claims = known || nested || options.outsideTurn?.(callId) ? undefined : turn;
+    // A call a script made (nested in a tool's, or one the harness says is outside the model's turn): what it is handed is
+    // the script's to compute on, not the model's to read.
+    const script = Boolean(nested || options.outsideTurn?.(callId));
+    const claims = known || script ? undefined : turn;
     if (claims) await claims.ready();
     const max = known ? known.max : Math.min(resultMaxChars(options.budget), claims ? claims.claim(callId, options.budget?.contextWindow) : HOST_RESULT_MAX_CHARS);
-    const { text, truncated, bound } = boundTo(whole, max);
+    const { text, truncated, bound } = boundTo(whole, max, script);
     claims?.settle(callId, text.length);
     await claims?.kept();
     if (bound && !known) await ctx.effect(key, { name: 'bound', replay: 'safe', input: null }, async () => bound);
@@ -395,10 +398,30 @@ export function boundResult(text: string, budget?: ResultBudget): { text: string
   return truncated ? { text: bounded, truncated } : { text: bounded };
 }
 
+/** What a script's JSON read too large for its bound reads as: none of it, since part of a JSON document does not parse,
+ *  and a note a script's parse fails on by name (`Unexpected token 'r', "[read cut:"...`), which a script that prints it
+ *  shows the model. */
+function scriptCutNote(total: number, max: number, windowed: boolean): string {
+  return `[read cut: this result is ${total} characters of JSON, past the ${max} characters ${windowed ? "this model's context window leaves a tool result" : 'a tool result may have'}. Part of a JSON document does not parse, so none of it was handed. Ask for less: a narrower query, or a small range where the tool takes an offset.]`;
+}
+
+/** Whether `text` is a whole JSON object or array (what a script parses). */
+function isJsonDocument(text: string): boolean {
+  if (!/^\s*[[{]/.test(text)) return false;
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** `text` held to `max` characters as `boundResult` holds it to its budget's bound, with how it was cut (`ResultBound`)
- *  when it was. The window's note wherever `max` is under HOST_RESULT_MAX_CHARS. */
-export function boundTo(text: string, max: number): { text: string; truncated?: true; bound?: ResultBound } {
+ *  when it was. The window's note wherever `max` is under HOST_RESULT_MAX_CHARS. `script`: a code-mode script's read,
+ *  which computes on what it is handed: a JSON document past the bound is handed as a note alone (scriptCutNote). */
+export function boundTo(text: string, max: number, script?: boolean): { text: string; truncated?: true; bound?: ResultBound } {
   if (text.length <= max || text.length <= RESULT_ALWAYS_WHOLE_CHARS) return { text };
+  if (script && isJsonDocument(text)) return { text: scriptCutNote(text.length, max, max < HOST_RESULT_MAX_CHARS), truncated: true, bound: { kept: 0, whole: text.length, max } };
   const windowed = max < HOST_RESULT_MAX_CHARS;
   // The note's own length counted at the bound: what is kept is never longer than that, so neither is its note.
   let kept = max - cutNote(max, text.length, windowed).length;
