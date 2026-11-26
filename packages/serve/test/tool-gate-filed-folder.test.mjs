@@ -105,9 +105,9 @@ test("a path with one leading @ is the path the file tools open (pi's read, writ
   }
 });
 
-test("the folder in another spelling a disk that folds names opens as the same folder (case, fullwidth, a compatibility letter) is refused; a sibling in any case is not", async () => {
+test("the folder in another spelling a disk that folds names opens as the same folder (case, fullwidth, a compatibility letter, a default-ignorable code point) is refused; a sibling in any case is not", async () => {
   const gate = gateOn("pi", FILED, ["/workspace", SCRATCH]);
-  const inside = ["Stripe/pages/a.json", "stripe/Pages/a.json", "STRIPE/PAGES", "stripe/ＰＡＧＥＳ/a.json", "ſtripe/pages/a.json", "/workspace/Stripe/Pages/a.json", `${SCRATCH}/STRIPE/pages/a.json`, "@Stripe/Pages/a.json"];
+  const inside = ["Stripe/pages/a.json", "stripe/Pages/a.json", "STRIPE/PAGES", "stripe/ＰＡＧＥＳ/a.json", "ſtripe/pages/a.json", "/workspace/Stripe/Pages/a.json", `${SCRATCH}/STRIPE/pages/a.json`, "@Stripe/Pages/a.json", "stri\u200Bpe/pages/a.json", "stripe/pa\u00ADges/a.json", "stripe/pages\u2060/a.json", "\uFEFFStripe/pages"];
   for (const given of inside) {
     assert.equal(await verdictOf(gate, "read", { path: given }), refusal("read", given), `read ${given}`);
     assert.equal(await verdictOf(gate, "write", { path: given, content: "x" }), refusal("write", given), `write ${given}`);
