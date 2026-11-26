@@ -376,9 +376,11 @@ const dropAfter = new Map<string, number>();
  *  Never at the person's own CLI's places, whose "unknown" item may be theirs, never the item with no suffix, never an
  *  item of any other account, and never where the user this server runs as is named "unknown" itself. Nothing is thrown.
  *  An item deleted, or found gone ("not found", exit 44), is not asked again in this process. One delete runs per item at
- *  a time: a call while it runs waits on that one and starts none. One whose delete was killed at its limit, failed or
- *  never started is still there: a call that a person made (`asked`: a sign-in that exited 0, a sign-out) asks again at
- *  once, a status check only DROP_BACKOFF_MS after that delete ended, measured on `now` (Date.now by default). */
+ *  a time: a call while it runs waits on that one and starts none of its own beside it. One whose delete was killed at its
+ *  limit, failed or never started is still there: a call that a person made (`asked`: a sign-in that exited 0, a
+ *  sign-out) asks again at once, and so does one that waited on a delete that left it, once (a status check's, say, that
+ *  a sign-out arrived during); a status check only DROP_BACKOFF_MS after that delete ended, measured on `now` (Date.now
+ *  by default), and never after one it waited on. */
 export async function dropUnknownItem(login: ClaudeAgentLogin, options: { path: string; platform?: NodeJS.Platform; asked?: boolean; now?: () => number }): Promise<void> {
   if ((options.platform ?? process.platform) !== "darwin" || login.own !== true) return;
   const folder = loginEnv(login, "darwin").CLAUDE_SECURESTORAGE_CONFIG_DIR;
@@ -388,30 +390,40 @@ export async function dropUnknownItem(login: ClaudeAgentLogin, options: { path: 
   const HOME = personHome(login);
   const key = JSON.stringify([HOME, service]);
   if (dropped.has(key)) return;
-  const running = dropping.get(key);
-  if (running) return running;
   const now = options.now ?? Date.now;
-  if (options.asked !== true && now() < (dropAfter.get(key) ?? -Infinity)) return;
-  const deleting = new Promise<void>((resolve) => {
-    const left = () => {
-      dropAfter.set(key, now() + DROP_BACKOFF_MS);
-      resolve();
-    };
-    try {
-      const child = spawn("security", ["delete-generic-password", "-a", "unknown", "-s", service], { env: { PATH: options.path, HOME, ...user }, stdio: "ignore", timeout: DROP_MS, killSignal: "SIGKILL" });
-      child.once("error", left);
-      child.once("close", (code) => {
-        if (code !== 0 && code !== 44) return left();
-        dropped.add(key);
-        dropAfter.delete(key);
+  const start = (): Promise<void> => {
+    const deleting = new Promise<void>((resolve) => {
+      const left = () => {
+        dropAfter.set(key, now() + DROP_BACKOFF_MS);
         resolve();
-      });
-    } catch {
-      left();
-    }
-  }).finally(() => dropping.delete(key));
-  dropping.set(key, deleting);
-  return deleting;
+      };
+      try {
+        const child = spawn("security", ["delete-generic-password", "-a", "unknown", "-s", service], { env: { PATH: options.path, HOME, ...user }, stdio: "ignore", timeout: DROP_MS, killSignal: "SIGKILL" });
+        child.once("error", left);
+        child.once("close", (code) => {
+          if (code !== 0 && code !== 44) return left();
+          dropped.add(key);
+          dropAfter.delete(key);
+          resolve();
+        });
+      } catch {
+        left();
+      }
+    }).finally(() => dropping.delete(key));
+    dropping.set(key, deleting);
+    return deleting;
+  };
+  const running = dropping.get(key);
+  if (running) {
+    await running;
+    // A status check only waits. A call a person made, whose wait left the item (that delete was killed or failed), asks
+    // once more: after a sign-out no status check reads signed in to ask again. Once, joining a delete another such call
+    // started meanwhile rather than starting a second.
+    if (options.asked !== true || dropped.has(key)) return;
+    return dropping.get(key) ?? start();
+  }
+  if (options.asked !== true && now() < (dropAfter.get(key) ?? -Infinity)) return;
+  return start();
 }
 
 /** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, with only PATH, the user (loginUser)
