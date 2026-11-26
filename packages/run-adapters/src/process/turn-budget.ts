@@ -114,9 +114,12 @@ export class TurnBudget {
     void Promise.resolve(this.#sink?.({ open: this.#facts ? { ...this.#facts } : null })).catch(() => {});
   }
 
-  /** Each answer's facts and each result's length, as they happen, to `sink` (the session's journal: journalTurn), in place of any before. */
+  /** Each answer's facts and each result's length, as they happen, to `sink` (the session's journal: journalTurn), in place of any before.
+   *  A new sink (a new drive's journal) starts with nothing waited for: a length the last one failed to keep failed its
+   *  own drive, never the next. */
   journal(sink: (record: TurnRecord) => void | Promise<void>): void {
     this.#sink = sink;
+    this.#kept = Promise.resolve();
   }
 
   /** The turn `records` (journal's, in order) leave: the last answer's facts, and each result handed since, held. Only a
