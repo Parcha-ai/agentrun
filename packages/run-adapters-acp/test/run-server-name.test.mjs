@@ -39,7 +39,7 @@ async function twoStarts(t, recipe, { cwd, between = () => {}, during = () => {}
   const open = (sessionsDir) => openSession(t, recipe, {
     store,
     sessionsDir,
-    options: cwd ? { cwd } : {},
+    cwd,
     tools: [tool('look_up', () => (during(kept(), sessionsDir), 'found it'))],
     gate: async (call) => (asked[start].push(call), call.tool.startsWith('acp_') ? { deny: 'not ours' } : 'allow'),
   });
