@@ -597,6 +597,51 @@ test("prepareImage shares an import only between providers of one key: a wrong k
 	assert.deepEqual(right, { ok: true, value: BUILD }, "the right key's import is not the wrong key's 401");
 });
 
+test("a labels file its guest rewrote to another run or epoch than its name's is unread: a listing by run fails closed on it, naming it, and get answers the name's", async () => {
+	for (const [what, rewrite, said] of [
+		["another run", { "agentrun.run": "run-9" }, `run: the name's run hash "${runHash("run-1")}" is not the labels file's run "run-9"`],
+		["another epoch", { "agentrun.epoch": "7" }, `epoch: the name says "1", the labels file "7"`],
+	]) {
+		const render = fakeRender();
+		const { id: kept } = await provider(render).host.create(runRequest(1, "run-1", 1), CTX);
+		const { id: rewritten } = await provider(render).host.create(runRequest(2, "run-1", 1), CTX);
+		const sandbox = render.sandboxes.get(rewritten);
+		// The guest's root writes the file: the name is Render's, set at create.
+		sandbox.files.set(LABELS_FILE, JSON.stringify({ ...JSON.parse(sandbox.files.get(LABELS_FILE)), ...rewrite }));
+		const reader = provider(restarted(render)).host;
+		const error = await reader.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX).catch((caught) => caught);
+		assert.equal(error instanceof Error, true, `${what}: the listing fails closed, never leaves the sandbox out or answers the file's labels`);
+		assert.equal(error.message, `could not read the labels of ${rewritten}: the labels file of ${rewritten} does not match its name ${sandbox.record.name}: ${said}; the listing can't tell whether it carries agentrun.run=run-1`, what);
+		assert.equal(error.message.includes(kept), false, `${what}: naming that sandbox alone`);
+		assert.deepEqual((await reader.get(rewritten, CTX)).labels, { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000002" }, `${what}: get answers the name's labels, so release still finds it`);
+	}
+});
+
+test("a create's sweeps by name, its run and epoch known, ask Render for the sandbox's whole name and read no other page: a workspace of more than 100 pages doesn't fail it", async () => {
+	const dial = dialServer();
+	const daemonPath = fileURLToPath(import.meta.url);
+	const render = fakeRender({ start: (sandbox, script) => bootDial({ ...sandbox.env, AGENTRUN_ATTACH_URL: /AGENTRUN_ATTACH_URL='([^']*)'/.exec(script)[1] }, dial, { daemon: readFileSync(daemonPath) }) });
+	// 100 pages of 100 is the most a listing reads (MAX_PAGES): one more sandbox than that.
+	for (let i = 0; i <= 100 * 100; i++) plant(render, `sbx-other${String(i).padStart(12, "0")}`, `someone-else-${i}`);
+	const made = provider(render, { dial, daemonPath, timeouts: { pollMs: 1, listedStableMs: 0 } });
+	const created = await made.create({ image: BUILD, lifetimeMs: 600_000, network: "none", labels: { "agentrun.run": "run-1", "agentrun.epoch": "2" } }, { requestId: "render-named-sweep" });
+	assert.equal(created.ok, true, created.ok ? "" : `${created.error.code}: ${created.error.message}`);
+	const whole = `${created.value.name}-r${runHash("run-1")}-e2`;
+	const listings = render.calls.filter(({ method, url }) => method === "GET" && url.pathname === "/v1/sandboxes");
+	assert.ok(listings.length > 0);
+	assert.deepEqual([...new Set(listings.map(({ url }) => `${url.searchParams.get("name")} ${url.searchParams.get("cursor")}`))], [`${whole} null`], "every sweep asks for the whole name, one page each");
+});
+
+test("a sweep by name whose run and epoch are known, of a sandbox whose guest can't answer, reads no file: the name proves them", async () => {
+	const render = fakeRender({ answer: (method, path) => (path === "/runs/sync" ? json(200, { stdout: "", stderr: "fork: out of memory", exit_code: 1 }) : undefined) });
+	plant(render, SBX, `${NAME}-r${runHash("run-1")}-e3`, { labels: { ...LABELS, "agentrun.epoch": "3" } });
+	const asked = { "agentrun.computer": "1", "agentrun.computer.name": NAME, "agentrun.run": "run-1", "agentrun.epoch": "3" };
+	const listed = await provider(render).host.list(asked, CTX);
+	assert.deepEqual(listed.map(({ id, labels }) => [id, labels]), [[SBX, asked]]);
+	assert.deepEqual(render.runs(), [], "no guest read");
+	assert.deepEqual(await provider(render).host.list({ ...asked, "agentrun.epoch": "4" }, CTX), [], "another epoch's whole name is another sandbox's");
+});
+
 test("delete terminates the sandbox, which Render answers 204 even once it is terminated", async () => {
 	const render = fakeRender();
 	const { host } = provider(render);
