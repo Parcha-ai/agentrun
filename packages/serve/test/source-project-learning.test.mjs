@@ -9,16 +9,27 @@ import { launchBody, readLaunchBody } from '../dist/run-launch.js';
 import { startAudit } from '../dist/runner/audit.js';
 import { runProjectCheckpoint } from '../dist/runner/project-checkpoint.js';
 import { projectCandidate, projectCheckpointStatuses, reconcileProjectCheckpoints } from '../dist/source-sync/checkpoints.js';
+import { workflowDigest } from '../dist/runner/workflow-first.js';
+import { landWorkflows } from './learned-workflow-seed-support.mjs';
 
 const binding = { id: 'a'.repeat(64), snapshot: 'b'.repeat(64), project: 'b'.repeat(64), configuration: 'c'.repeat(64) };
 const placed = { version: 1, sourceId: binding.id, baselineRevision: 'revision', digest: binding.project, receipt: 'd'.repeat(64) };
 const base = { input: { content: 'Answer the question.' }, title: 'Question', place: { mode: 'runner' }, sourceProject: placed };
-const check = { of: 'served', workflow: 'answer', digest: 'e'.repeat(64) };
+// The workflow the served run was served, landed on the agent's learning (fixture): an audit's started line is kept only
+// while a version holds its digest (runner/audit.ts startAudit), so the digest is a real version's.
+const FLOW = {
+  v: 2, name: 'answer',
+  schemas: { In: { type: 'object', required: ['question'], properties: { question: { type: 'string' } } }, Answer: { type: 'object', required: ['answer'], properties: { answer: { type: 'number' } } } },
+  input: { schemaId: 'In' }, output: { schemaId: 'Answer', path: 'answer' },
+  root: { node: 'extract', label: 'answer', instructions: 'Answer the question.', out: 'Answer', as: 'answer', tier: 'fast' },
+};
+const check = { of: 'served', workflow: 'answer', digest: workflowDigest({ workflow: JSON.stringify(FLOW) }) };
 async function fixture(t) {
   const data = await mkdtemp(join(tmpdir(), 'source-learning-'));
   const store = await openSqliteStore({ file: join(data, 'store.sqlite'), role: 'server' });
   t.after(async () => { await store.close(); await rm(data, { recursive: true, force: true }); });
   await store.agents.create({ id: 'agent', name: 'Fixture' }, { id: 'revision', kind: 'agentic', body: { instructions: 'Answer.', tools: [], learning: { audit_every: 1 }, sourceSync: binding } });
+  await landWorkflows(store, 'agent', [{ name: 'answer', description: 'Answers a question', workflow: FLOW }]);
   return { store, data };
 }
 
