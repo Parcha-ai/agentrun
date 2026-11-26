@@ -116,6 +116,22 @@ const digestOf = (doc: Record<string, unknown>): string => {
   return createHash("sha256").update(stable(rest)).digest("hex");
 };
 
+/** Each run field's type as the run's view serves it (the openapi Run, and the view's own fields): a string, a number
+ *  or an object, any of them null too. The page reads them as such (a title's text, a cost's figures), so a stored
+ *  share never breaks its own page. */
+const RUN_FIELD_TYPES: Readonly<Record<(typeof SHARE_RUN_FIELDS)[number], "string" | "number" | "object">> = {
+  kind: "string", status: "string", state: "string", title: "string", created_at: "string", ended_at: "string", stopped_for: "string", effort: "string",
+  approvals: "string", budget_refused_calls: "number", result: "object", error: "object", review: "object", cost: "object",
+};
+function runShape(run: Record<string, unknown>): void {
+  for (const [field, type] of Object.entries(RUN_FIELD_TYPES)) {
+    const value = run[field];
+    if (value === undefined || value === null) continue;
+    const ok = type === "object" ? isObject(value) : type === "number" ? Number.isFinite(value) : typeof value === "string";
+    if (!ok) refuse(`run.${field} is not ${type === "object" ? "an object" : `a ${type}`} or null`);
+  }
+}
+
 /** A workflow run's graph as the page draws it (RunGraphView): the fields of the route's graph it reads, each of its
  *  type, so a stored share never breaks its own page. Other keys may stay: the scrubber reads the graph whole. */
 function graphShape(value: unknown): void {
@@ -164,6 +180,7 @@ export function checkShareBundle(text: string): { sha256: string } {
   string(agent.name, "agent.name");
   string(agent.kind, "agent.kind");
   const run = closed(top.run, "run", [], [...RUN_FIELDS]);
+  runShape(run);
   if (run.imported_from !== undefined && run.imported_from !== null) string(closed(run.imported_from, "run.imported_from", ["source"]).source, "run.imported_from.source");
   array(top.rows, "rows");
   if (top.graph !== null) graphShape(top.graph);
