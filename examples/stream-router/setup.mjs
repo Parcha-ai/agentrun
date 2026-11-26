@@ -57,7 +57,8 @@ const source = { kind: "webhook", signature: "stream", accept: [{ event: "intera
 const target = { kind: "start_run", agent_id: AGENT, input: { content: "A voice note arrived from the Stream ring." }, max_cost_usd: 1 };
 const listed = await call("GET", "/triggers");
 if (listed.status !== 200) fail("Listing the triggers", listed);
-const kept = listed.body.triggers.find((trigger) => trigger.name === TRIGGER);
+// A trigger is named once per agent: only the router's own is reused, never another agent's of the same name.
+const kept = listed.body.triggers.find((trigger) => trigger.name === TRIGGER && trigger.target?.agent_id === AGENT);
 let trigger;
 if (kept && kept.source?.signature !== "stream") fail(`A trigger named "${TRIGGER}" exists with another signature; rename or delete it first`, { status: 409, body: kept.source });
 if (kept) {
