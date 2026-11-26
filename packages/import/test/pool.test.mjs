@@ -224,8 +224,8 @@ test("the default threads are the cores less one, at most 16, and no more worker
   assert.equal(defaultThreads(48, 512 * MiB, GiB), 1, "less free than the read-ahead: the calling thread alone");
   assert.equal(defaultThreads(48, GiB + 3 * 48 * MiB, GiB, 32), 3, "a smaller old generation fits more");
   assert.equal(defaultThreads(48, GiB + 3 * 48 * MiB, GiB), 1, "at the default's 80 MiB, the same memory holds one");
-  assert.equal(poolModule.freeMemory(8 * GiB, 2 * GiB), 2 * GiB, "a 2 GiB container: its limit");
-  assert.equal(poolModule.freeMemory(GiB, 512 * GiB), GiB, "1 GiB free on the machine: 1 GiB");
+  assert.equal(poolModule.freeMemory(8 * GiB, 2 * GiB, Infinity), 2 * GiB, "a 2 GiB container: its limit");
+  assert.equal(poolModule.freeMemory(GiB, 512 * GiB, Infinity), GiB, "1 GiB free on the machine: 1 GiB");
 });
 
 test("without threads, parseHome starts the default's workers: the cores less one, none when the heaps or the read-ahead fill the memory free", async (t) => {
