@@ -97,8 +97,9 @@ export function script(spec, session = {}) {
   if (cutAgain) return [{ call: "learned_workflow", args: JSON.parse(cutAgain[1]), usd: 0.001, again: true }, { say: "Done after the crash.", usd: 0.001 }];
   // "Call learned_workflow with <json>, the process dying once its gate answers.": the process stops once the call's gate
   // has answered, before the CLI writes anything of it (`dies`), so the recovered turn issues it again; then a closing answer.
-  const diesAtGate = /Call learned_workflow with (\{.*\}), the process dying once its gate answers\./.exec(text);
-  if (diesAtGate) return [{ call: "learned_workflow", args: JSON.parse(diesAtGate[1]), usd: 0.001, dies: true }, { say: "Done after the crash.", usd: 0.001 }];
+  // With ", and again after a crash" it is also issued again when a later crash cuts it mid-call (`again`).
+  const diesAtGate = /Call learned_workflow with (\{.*\}), the process dying once its gate answers(, and again after a crash)?\./.exec(text);
+  if (diesAtGate) return [{ call: "learned_workflow", args: JSON.parse(diesAtGate[1]), usd: 0.001, dies: true, ...(diesAtGate[2] ? { again: true } : {}) }, { say: "Done after the crash.", usd: 0.001 }];
   // "Use the learned workflow <name> on <question>, and write note.md in the same answer.": one answer that asks for the
   // run's learned_workflow and a write, run in turn, then a closing answer.
   const beside = /Use the learned workflow (\S+) on (.+?), and write note\.md in the same answer\./.exec(text);

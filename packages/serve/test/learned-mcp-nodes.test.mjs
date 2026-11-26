@@ -592,6 +592,55 @@ test("a CLI's learned_workflow call the gate refused, a crash cutting it before 
   assert.equal(view.path, "agent", "every call refused: the agent's path");
 });
 
+// The same call refused, its refusal kept, a crash before the CLI wrote anything of it; the setting changes and the call
+// issued again on the next runner is allowed: its first model node books, and a crash cuts it before it keeps a record
+// (the second node held at the gateway). Issued again once more and denied, its newest record is still the first
+// refusal, yet an attempt after it ran and spent: the workflow's failed call at what it booked, never refused at $0.
+test("a CLI's learned_workflow call refused, then allowed after a crash and cut by another after its model node booked, denied on the next runner, is the workflow's failed call at what it booked, never refused at $0", { timeout: 300_000 }, async (t) => {
+  const HELD = "Hold this node.";
+  const submits = ({ body }) => {
+    const offers = (body?.tools ?? []).some((tool) => tool?.name === "submit");
+    const answered = (body?.input ?? []).some((item) => item?.type === "function_call_output");
+    return offers && !answered ? { name: "submit", input: { value: { title: "a note" } } } : undefined;
+  };
+  const heldNode = (request) => JSON.stringify(request.body ?? "").includes(HELD);
+  const gw = await startFauxGateway({ call: submits, hang: heldNode });
+  t.after(() => gw.close());
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: ["not-a-secret", "gateway"].join("-"), AGENT_MODEL_PRICE: "1,2,0.5" }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY"]);
+  const server = await serveOf(t, { faux: undefined, harnessTable: fauxTable(FAUX_HARNESS), accounts: true, openSetup: true, runnerTiming: CRASHABLE });
+  const { api, data } = server;
+  const permission = async (to) => assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: to } })).status, 200);
+  await permission("deny");
+  const flow = titled("title-then-hold", [{ node: "extract", label: "held", instructions: HELD, out: "Title", as: "held" }]);
+  // The faux harness takes its script from the agent's instructions.
+  const ask = `${runOf("title-then-hold", { a: 2, b: 3 })}, the process dying once its gate answers, and again after a crash.`;
+  const runId = await learnedRun(server, "cli-refused-allowed", [], [flow], ask, {}, { harness: "codex", instructions: ask });
+  const refusedRow = (row) => row.kind === "tool_result" && row.tool_name === LEARNED_WORKFLOW_TOOL && Array.isArray(row.learned_nodes);
+  await follow(api, runId, ["working"], { deadlineMs: 120_000, done: (rows) => rows.some(refusedRow) });
+  const refused = runRecordOf(data, runId);
+  await server.crashRunner();
+  await permission("allow");
+  for (let i = 0; !gw.requests.some(heldNode); i++) {
+    const run = (await api("GET", `/runs/${runId}`)).body;
+    if (i >= 1200 || ["completed", "failed", "cancelled"].includes(run.status)) assert.fail(`the allowed attempt never reached its held node (run ${run.status})`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const held = runRecordOf(data, runId);
+  assert.ok(held.epoch > refused.epoch, "the allowed attempt ran on another runner");
+  await server.crashRunner();
+  await permission("deny");
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
+  assert.ok(runRecordOf(data, runId).epoch > held.epoch, "a third runner took the run up");
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  const booked = (await nodeBookings(server, runId)).turns.reduce((sum, turn) => sum + (turn.usd ?? 0), 0);
+  assert.ok(booked > 0, "the allowed attempt's first model node is booked under the call");
+  assert.equal(view.workflow_calls?.length, 1, JSON.stringify(view.workflow_calls));
+  const [called] = view.workflow_calls;
+  assert.deepEqual({ workflow: called.workflow, caller: called.caller, outcome: called.outcome }, { workflow: "title-then-hold", caller: "agent", outcome: "failed" }, "the workflow's call, failed: never refused");
+  assert.ok(typeof called.usd === "number" && Math.abs(called.usd - booked) < 1e-9, `its $ is what its call booked, never 0: ${called.usd} vs ${booked}`);
+  assert.deepEqual([view.path, view.workflow?.name], ["handed_back", "title-then-hold"], "charged to the workflow, never the agent's path");
+});
+
 test("an approved card covers its own call only: an action an earlier call's card named, asked in a later call of the same workflow whose card did not name it, parks on a card of its own", { timeout: 240_000 }, async (t) => {
   // One run, three calls in turn (faux-calls.mjs): the workflow, the harness's own call of `paid`, the workflow again.
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
