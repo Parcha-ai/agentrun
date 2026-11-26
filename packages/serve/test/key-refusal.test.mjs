@@ -246,6 +246,9 @@ const FOLLOWED_TITLES = [
   ["a raw OSC title holding a percent-encoded ESC, ended by a raw ST, then a letter", (before, after) => `${before}\u001b]0;${X250}%1B\u001b\\${after}`, FROM_R],
   ["a raw OSC title ended by a percent-encoded ESC and a backslash, then a letter", (before, after) => `${before}\u001b]0;${X250}%1B\\${after}`, FROM_R],
   ["a JSON writer's OSC title ended by a percent-encoded ESC and a JSON-escaped backslash, then a letter", (before, after) => `["${before}${String.raw`\u001b]0;`}${X250}%1B${String.raw`\\`}${after}"]`, FROM_R],
+  // Two views read this title whole, the one that decodes JSON's two levels in the whole text and the one that does
+  // in its strings; each read covers the other, and dropping both fails it.
+  ["an OSC title written in JSON twice, holding a percent-encoded ESC, ended by an ST whose backslash is written as it stands, then x and two hex digits", (before, after) => `["${before}${String.raw`\\u001b]0;`}${X250}%1B${String.raw`\\u001b`}\\${after}"]`, ["Wc3MhT8qLz5N", `xab${PY_REST}`]],
 ];
 for (const [what, text, [head, rest]] of FOLLOWED_TITLES) {
   test(`kr-9 (${what}): a held value split at a call's stop around it is withheld`, () => {
