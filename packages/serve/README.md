@@ -292,20 +292,21 @@ its first word is held too when that word is a known auth scheme (`Bearer`, `Bas
 `x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
 and any query parameter named like a credential, and, inside any header's value, the value of each `name=value` pair
 named like a credential, read over the whole value as written, a URL's query and fragment included (a cookie's
-`session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`; pairs split at `;`, `&`, a
-comma or its `%2C`, and spaces, again at `?`, `#` and `/` too, and three times keeping a `;`: at all but `;`, so
-`api_key=<key;rest>%2Cregion=us` holds the key; at `&` and spaces alone, so `api_key=<key;rest%2Cmore>` holds the
-whole key; and at those or their `%26` and `%20`, so that key is held as written before an encoded `&` or space too,
-and at those or `%26` alone, so a key with a `%20` in it is held before a `%26`; and at `&`, spaces and `%3B`, so a
-key in a list joined by an encoded `;` (`session=<token>%3Btheme=dark`) is held, a `%20`, quotes or a `%26` in it
-too (all are held, since a redactor matches each held value exactly and the longer reading never covers the key
-alone); a value is also held up to each `%20` in it that a `name=` follows, 8 characters or more, 4,096 characters of
-those at most, so `api_key=<key%20rest>%20region=us` holds the key and never `region=us` alone; a value whose part before its first `;` is empty, `token=;<key>` or
-`token=%3B<key>`, is held after that `;` too, whole and as its first piece of 8 characters or more, but not when that
-is a pair named like no credential (`token=;theme=dark`); a value in quotes, raw or written `%22` or `%27`, is held
-without them, and one with an opening quote and no closing one (a quoted key cut at its `%2C`) without that quote
-too, 8 characters or more; `theme=dark` is not held, nor is a value of only `=`, `;`, quotes, commas or spaces, as written or decoded, so
-`api_key=%2C` cuts no comma from the `[otel]` lines), and the user, password and
+`session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`). Such a pair's value is held
+at every boundary: a key may hold a `&`, `;`, comma or space, raw or written `%26`, `%3B`, `%2C` or `%20`, and the
+pairs around it may be joined by any other of them, so no one split finds it. So its value runs from the `=` to the
+end of the header value, and each prefix of it that ends just before one of those separators is held, the whole rest
+too, so `region=us%3Bapi_key=<key%20rest>%26theme=dark` holds `<key%20rest>` (all are held, since a redactor matches
+each held value exactly and a longer reading never covers the key alone). Each prefix is held as written and decoded,
+out of a matching pair of quotes (raw, `%22` or `%27`), and without a lone opening or closing quote when what is left
+is 8 characters or more. A value whose part before its first `;` is empty, `token=;<key>` or `token=%3B<key>`, is held
+after that `;` too, whole and as its first piece of 8 characters or more, but not when that is a pair named like no
+credential (`token=;theme=dark`). The prefixes past a pair's first separator take 4,096 characters of one header value
+at most, but the last such pair's whole rest; one that opens or ends with a raw `&` or space is held only at 8
+characters or more. `theme=dark` is not held, nor is a value of only `=`, `;`, `&`, quotes, commas or spaces, as
+written or decoded, so `api_key=%2C` cuts no comma from the `[otel]` lines. Inside a URL that is a pair's value, a
+pair after a `?`, `#` or `/` is read up to the next of those, a `;`, `&`, comma, space or `%2C`. Also held are the
+user, password and
 credential-named query parameters of every URL in it, one inside another's query or path too, scheme-relative
 (`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL's query, an endpoint's too, is read split at `&`
 alone and again at `&` and `;`, so `?api_key=<key;rest>` holds the whole key and `?region=us;session=<token>` the
