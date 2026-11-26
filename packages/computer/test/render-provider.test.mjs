@@ -62,14 +62,21 @@ function runLine(sandbox, command, start) {
 	return { stdout: read ? (sandbox.files.get(read[1]) ?? "") : "", stderr: "", exit_code: 0 };
 }
 
+/** A fetch answer that never comes: it fails once the call's own signal aborts (its bound, or its caller), as a wedged guest's run does. */
+const hang = (signal) => new Promise((_, reject) => (signal?.aborted ? reject(signal.reason) : signal?.addEventListener("abort", () => reject(signal.reason), { once: true })));
+
 /**
  * A fake Render: its sandboxes by id, each walking `statuses` one GET at a time (its last held), every call kept. A
- * sandbox's data plane takes the run token its token call minted. `answer(method, path, body)` may answer a call first.
+ * sandbox's data plane takes the run token its token call minted. `answer(method, path, body, { url, signal })` may
+ * answer a call first. `idOf(n)` names the nth sandbox made; `lag` GETs still read a terminated sandbox running, as a
+ * vendor whose terminate answers before the sandbox ends, and its runs fail meanwhile (409); `runMs` holds each run that
+ * long, and `inFlight.most` is the most runs answered at once.
  */
-function fakeRender({ statuses = ["running"], answer = () => undefined, start = () => undefined, builds = [] } = {}) {
+function fakeRender({ statuses = ["running"], answer = () => undefined, start = () => undefined, builds = [], idOf = (n) => (n === 0 ? SBX : `sbx-${String(n).padStart(20, "0")}`), lag = 0, runMs = 0 } = {}) {
 	const calls = [];
 	const sandboxes = new Map();
 	const made = [...builds];
+	const inFlight = { now: 0, most: 0 };
 	const fetch = async (url, init = {}) => {
 		const u = new URL(url);
 		const body = init.body === undefined ? undefined : JSON.parse(init.body);
@@ -77,14 +84,21 @@ function fakeRender({ statuses = ["running"], answer = () => undefined, start = 
 		if (u.hostname.endsWith(".sandbox.onrender.com")) {
 			const sandbox = sandboxes.get(u.hostname.split(".")[0]);
 			if (sandbox === undefined || init.headers?.Authorization !== `Bearer tok-${sandbox.record.id}` || u.pathname !== "/runs/sync") return json(401, { message: "not this run's token" });
-			return answer(init.method, u.pathname, body) ?? json(200, runLine(sandbox, body.command, start));
+			inFlight.most = Math.max(inFlight.most, ++inFlight.now);
+			try {
+				if (runMs > 0) await new Promise((resolve) => setTimeout(resolve, runMs));
+				if (sandbox.ending !== undefined) return json(409, { code: "sandbox_not_running", message: "sandbox is terminating" });
+				return (await answer(init.method, u.pathname, body, { url: u, signal: init.signal })) ?? json(200, runLine(sandbox, body.command, start));
+			} finally {
+				inFlight.now -= 1;
+			}
 		}
 		if (init.headers?.Authorization !== `Bearer ${KEY}`) return json(401, { message: "unauthorized" });
 		const path = u.pathname.replace(/^\/v1/, "");
-		const said = answer(init.method, path, body);
+		const said = answer(init.method, path, body, { url: u, signal: init.signal });
 		if (said !== undefined) return said;
 		if (init.method === "POST" && path === "/sandboxes") {
-			const id = sandboxes.size === 0 ? SBX : `sbx-${String(sandboxes.size).padStart(20, "0")}`;
+			const id = idOf(sandboxes.size);
 			const record = { id, name: body.name, status: statuses[0], plan: body.plan, region: "oregon", networkPolicy: body.networkPolicy, timeoutSeconds: body.timeoutSeconds, idleTimeoutSeconds: body.idleTimeoutSeconds, createdAt: "2026-11-25T10:00:00Z", terminatedAt: null };
 			sandboxes.set(id, { record, env: body.env, files: new Map(), starts: [], reads: 0 });
 			return json(201, record);
@@ -105,18 +119,23 @@ function fakeRender({ statuses = ["running"], answer = () => undefined, start = 
 		}
 		const one = /^\/sandboxes\/([^/]+)(\/terminate)?$/.exec(path);
 		if (one) {
-			const sandbox = sandboxes.get(one[1]);
+			const sandbox = sandboxes.get(decodeURIComponent(one[1]));
 			if (one[2] && init.method === "POST") {
-				if (sandbox) sandbox.record.status = "terminated";
+				if (sandbox && lag > 0) sandbox.ending ??= lag;
+				else if (sandbox) sandbox.record.status = "terminated";
 				return new Response(null, { status: 204 });
 			}
 			if (sandbox === undefined) return json(404, { message: "sandbox not found" });
-			if (sandbox.record.status !== "terminated") sandbox.record.status = statuses[Math.min(++sandbox.reads, statuses.length - 1)];
+			if (sandbox.ending !== undefined) {
+				if (sandbox.ending-- <= 0) sandbox.record.status = "terminated";
+			} else if (sandbox.record.status !== "terminated") sandbox.record.status = statuses[Math.min(++sandbox.reads, statuses.length - 1)];
 			return json(200, sandbox.record);
 		}
 		if (init.method === "GET" && path === "/sandbox-groups") return json(200, [{ sandboxGroup: { id: "sbg-other0123456789", isDefault: false }, cursor: "a" }, { sandboxGroup: { id: GROUP, isDefault: true }, cursor: "b" }]);
 		if (path === `/sandbox-groups/${GROUP}/builds` && init.method === "GET") {
-			return json(200, made.filter((one) => (u.searchParams.get("name") ?? one.name) === one.name && (u.searchParams.get("status") ?? one.status) === one.status).map((build) => ({ build, cursor: build.id })));
+			// S, list-sandbox-builds: newest first; status an array, sent as one key per status (C's openapi-fetch).
+			const statuses = u.searchParams.getAll("status");
+			return json(200, made.filter((one) => (u.searchParams.get("name") ?? one.name) === one.name && (statuses.length === 0 || statuses.includes(one.status))).reverse().map((build) => ({ build, cursor: build.id })));
 		}
 		if (path === `/sandbox-groups/${GROUP}/builds` && init.method === "POST") {
 			const build = { id: `sbb-${String(made.length).padStart(20, "0")}`, sandboxGroupId: GROUP, name: body.name, status: "pending", walk: ["running", "succeeded"] };
@@ -131,7 +150,7 @@ function fakeRender({ statuses = ["running"], answer = () => undefined, start = 
 		}
 		return json(404, { message: `no route ${init.method} ${path}` });
 	};
-	return { calls, sandboxes, builds: made, fetch, runs: () => calls.filter(({ url }) => url.pathname === "/runs/sync") };
+	return { calls, sandboxes, builds: made, fetch, inFlight, runs: () => calls.filter(({ url }) => url.pathname === "/runs/sync") };
 }
 
 const provider = (render, options = {}) => new RenderProvider({ apiKey: KEY, ownerId: OWNER, fetch: render.fetch, timeouts: { pollMs: 1 }, ...options });
@@ -235,9 +254,22 @@ test("get reads Render's statuses as the adapter's, the plan as its resources an
 	const read = await provider(odd).host.get(SBX, CTX);
 	assert.deepEqual([read.state, read.why], ["gone", 'Render reads the sandbox\'s status "levitating", which this provider does not know']);
 	await assert.rejects(host.get("sbx-nothere0123456789", CTX), (error) => error.code === "not_found");
-	const before = render.calls.length;
 	await assert.rejects(host.get("../sandboxes", CTX), (error) => error.code === "not_found");
-	assert.equal(render.calls.length, before, "an id that is no Render sandbox id reaches no path");
+	assert.equal(render.calls.at(-1).url.pathname, "/v1/sandboxes/..%2Fsandboxes", "an id is one path segment, encoded");
+	const before = render.calls.length;
+	for (const id of ["", ".", ".."]) await assert.rejects(host.get(id, CTX), (error) => error.code === "not_found", JSON.stringify(id));
+	assert.equal(render.calls.length, before, "an id that can't be one path segment reaches no path");
+});
+
+test("a sandbox id of a form Render never answered before is read and terminated by it, never left running", async () => {
+	const odd = "sbx-2026-abcdefghij";
+	const render = fakeRender({ idOf: () => odd });
+	const { host } = provider(render);
+	assert.deepEqual(await host.create(REQUEST, CTX), { id: odd });
+	assert.deepEqual((await host.get(odd, CTX)).labels, LABELS);
+	await host.delete(odd, CTX);
+	assert.equal(render.sandboxes.get(odd).record.status, "terminated");
+	assert.equal(await host.get(odd, CTX), undefined);
 });
 
 test("labels: the host that made a sandbox keeps them; another reads the labels file once through runs/sync; one with no file yet carries its name's labels, and a sandbox not named as a computer none", async () => {
@@ -258,7 +290,89 @@ test("labels: the host that made a sandbox keeps them; another reads the labels 
 	assert.deepEqual((await provider(render).host.get("sbx-00000000000000000001", CTX)).labels, {});
 	assert.equal(render.runs().length, runsNow, "a sandbox not named as a computer is not read");
 	render.sandboxes.get(SBX).files.set(LABELS_FILE, "not json");
-	await assert.rejects(provider(render).host.get(SBX, CTX), (error) => error.code === "vendor" && /labels file/.test(error.message));
+	const reader = provider(render).host;
+	assert.deepEqual((await reader.get(SBX, CTX)).labels, { "agentrun.computer": "1", "agentrun.computer.name": NAME }, "a file that is no labels map: the name's");
+	render.sandboxes.get(SBX).files.set(LABELS_FILE, JSON.stringify(LABELS));
+	assert.deepEqual((await reader.get(SBX, CTX)).labels, LABELS, "a read that failed is not kept: the next one reads the file");
+});
+
+test("a labels read that fails or never answers gives get the name's labels within its own bound, kept for nothing", async () => {
+	const own = { "agentrun.computer": "1", "agentrun.computer.name": NAME };
+	for (const [what, fails] of [
+		["exits 1", () => json(200, { stdout: "", stderr: "cat: I/O error", exit_code: 1 })],
+		["answers 409", () => json(409, { code: "sandbox_not_running", message: "sandbox is not running" })],
+		["never answers", (signal) => hang(signal)],
+	]) {
+		let failing = true;
+		const render = fakeRender({ answer: (method, path, body, { signal }) => (failing && path === "/runs/sync" && body.command.includes(LABELS_FILE) ? fails(signal) : undefined) });
+		plant(render, SBX, NAME, { labels: LABELS });
+		const { host } = provider(render);
+		const started = Date.now();
+		assert.deepEqual((await host.get(SBX, { timeoutMs: 300 })).labels, own, what);
+		assert.ok(Date.now() - started < 2_000, `${what}: answered within get's own bound, not past every retry`);
+		failing = false;
+		assert.deepEqual((await host.get(SBX, CTX)).labels, LABELS, `${what}: the next get reads the file`);
+	}
+	const caller = new AbortController();
+	const render = fakeRender({ answer: (method, path, body, { signal }) => (path === "/runs/sync" ? (caller.abort(), hang(signal)) : undefined) });
+	plant(render, SBX, NAME, { labels: LABELS });
+	await assert.rejects(provider(render).host.get(SBX, { ...CTX, signal: caller.signal }), (error) => error.code === "aborted", "the caller's own abort is no failed read: it aborts");
+});
+
+test("release with no labels known and a labels read that fails still terminates the sandbox", async () => {
+	for (const [what, fails] of [["exits 1", () => json(200, { stdout: "", stderr: "fork: out of memory", exit_code: 1 })], ["never answers", (signal) => hang(signal)]]) {
+		const render = fakeRender({ answer: (method, path, body, { signal }) => (path === "/runs/sync" ? fails(signal) : undefined) });
+		plant(render, SBX, NAME, { labels: LABELS });
+		// A server that restarted: this provider made nothing, so it knows no labels.
+		const restarted = provider(render, { dial: dialServer(), daemonPath: fileURLToPath(import.meta.url), timeouts: { pollMs: 1, listedStableMs: 0, requestMs: 300 } });
+		const released = await restarted.release({ id: SBX, name: NAME }, "delete");
+		assert.equal(released.ok, true, released.ok ? what : `${what}: ${released.error.code}: ${released.error.message}`);
+		assert.equal(render.sandboxes.get(SBX).record.status, "terminated", `${what}: terminated, not left to bill to its timeout`);
+	}
+});
+
+test("a sandbox Render still reads running after its terminate is read without its guest: release settles, and its labels go once Render reads it gone", async () => {
+	for (const warm of [true, false]) {
+		const render = fakeRender({ lag: 2 });
+		const maker = provider(render, { dial: dialServer(), daemonPath: fileURLToPath(import.meta.url), timeouts: { pollMs: 1, listedStableMs: 0 } });
+		await maker.host.create(REQUEST, CTX);
+		const { host } = warm ? maker : provider(render);
+		await host.delete(SBX, CTX);
+		const runs = render.runs().length;
+		const lagging = await host.get(SBX, CTX);
+		assert.equal(lagging.state, "running", "Render still reads it running");
+		assert.equal(lagging.labels["agentrun.computer.name"], NAME);
+		assert.equal(render.runs().length, runs, `${warm ? "warm" : "cold"}: a terminated sandbox's guest is never read`);
+	}
+	const render = fakeRender({ lag: 1 });
+	const made = provider(render, { dial: dialServer(), daemonPath: fileURLToPath(import.meta.url), timeouts: { pollMs: 1, listedStableMs: 0 } });
+	await made.host.create(REQUEST, CTX);
+	const released = await made.release({ id: SBX, name: NAME }, "delete");
+	assert.equal(released.ok, true, released.ok ? "" : `${released.error.code}: ${released.error.message}`);
+	// The fake brings it back, as no vendor does, to see what the host still keeps: once read gone, nothing.
+	const sandbox = render.sandboxes.get(SBX);
+	assert.equal(sandbox.record.status, "terminated");
+	Object.assign(sandbox, { ending: undefined });
+	sandbox.record.status = "running";
+	sandbox.files.set(LABELS_FILE, JSON.stringify({ ...LABELS, "agentrun.run": "run-2" }));
+	assert.equal((await made.host.get(SBX, CTX)).labels["agentrun.run"], "run-2", "the labels were let go once Render read it terminated");
+});
+
+test("a sandbox Render ended by itself, which a listing no longer shows, leaves no labels behind", async () => {
+	const render = fakeRender();
+	const { host } = provider(render);
+	await host.create(REQUEST, CTX);
+	await host.create({ ...REQUEST, name: "computer-0123456789ac", labels: { ...LABELS, "agentrun.computer.name": "computer-0123456789ac" } }, CTX);
+	const ended = render.sandboxes.get(SBX);
+	render.sandboxes.delete(SBX);
+	assert.deepEqual((await host.list({ "agentrun.computer": "1" }, CTX)).map(({ id }) => id), ["sbx-00000000000000000001"]);
+	render.sandboxes.set(SBX, ended);
+	ended.files.set(LABELS_FILE, JSON.stringify({ ...LABELS, "agentrun.run": "run-2" }));
+	const runs = render.runs().length;
+	assert.equal((await host.get(SBX, CTX)).labels["agentrun.run"], "run-2", "read again: the listing that missed it let its labels go");
+	assert.equal(render.runs().length, runs + 1);
+	assert.deepEqual((await host.get("sbx-00000000000000000001", CTX)).labels["agentrun.run"], "run-1");
+	assert.equal(render.runs().length, runs + 1, "one the listing showed is kept");
 });
 
 /** A sandbox put straight into the fake, named `name`, its labels file holding `labels` where given. */
@@ -296,11 +410,29 @@ test("list asks Render by name when the name is asked, every page by cursor, lea
 	assert.equal(few.runs().length, 2, "read once, then kept");
 });
 
-test("list throws in words when a running computer's labels file can't be read, rather than answer a listing without it", async () => {
-	const render = fakeRender({ answer: (method, path, body) => (path === "/runs/sync" && body.command.includes(LABELS_FILE) ? json(200, { stdout: "", stderr: "cat: Permission denied", exit_code: 1 }) : undefined) });
-	plant(render, "sbx-one0123456789", "computer-000000000001", { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000001", "agentrun.run": "run-1" } });
+test("a listing reads labels files a few at a time, and one that fails or never answers fails nothing: that sandbox carries its name's labels, the rest are answered", async () => {
+	const ids = Array.from({ length: 12 }, (_, i) => `sbx-run${String(i).padStart(12, "0")}`);
+	const wedged = new Set([ids[3], ids[8]]);
+	const render = fakeRender({
+		runMs: 5,
+		answer: (method, path, body, { url, signal }) => {
+			const id = url.hostname.split(".")[0];
+			if (path !== "/runs/sync" || !wedged.has(id)) return undefined;
+			return id === ids[3] ? json(200, { stdout: "", stderr: "cat: Permission denied", exit_code: 1 }) : hang(signal);
+		},
+	});
+	ids.forEach((id, i) => {
+		const name = `computer-${i.toString(16).padStart(12, "0")}`;
+		plant(render, id, name, { labels: { "agentrun.computer": "1", "agentrun.computer.name": name, "agentrun.run": "run-1" } });
+	});
 	const { host } = provider(render);
-	await assert.rejects(host.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX), (error) => error.code === "vendor" && /labels file of sbx-one0123456789 exited 1: cat: Permission denied/.test(error.message));
+	const listed = await host.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, { timeoutMs: 500 });
+	assert.deepEqual(listed.map(({ id }) => id), ids.filter((id) => !wedged.has(id)), "the sandboxes whose file was read; the two that could not be carry no run label");
+	assert.equal(render.runs().length, ids.length, "each running computer's file read once");
+	assert.ok(render.inFlight.most <= 4, `at most 4 reads at once, not ${render.inFlight.most}`);
+	assert.ok(render.inFlight.most > 1, "reads go on side by side");
+	const byName = await host.list({ "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000003" }, CTX);
+	assert.deepEqual(byName.map(({ id, labels }) => [id, labels]), [[ids[3], { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000003" }]], "one whose file could not be read is listed by its name's labels");
 });
 
 test("delete terminates the sandbox, which Render answers 204 even once it is terminated", async () => {
@@ -378,7 +510,7 @@ test("prepareImage answers the box image's build in the workspace's default sand
 	assert.deepEqual(waits, []);
 	assert.deepEqual(
 		ready.calls.map(({ method, url }) => `${method} ${url.pathname}${url.search}`),
-		[`GET /v1/sandbox-groups?ownerId=${OWNER}&limit=100`, `GET /v1/sandbox-groups/${GROUP}/builds?name=${BUILD}&status=succeeded&limit=1`],
+		[`GET /v1/sandbox-groups?ownerId=${OWNER}&limit=100`, `GET /v1/sandbox-groups/${GROUP}/builds?name=${BUILD}&status=succeeded&status=pending&status=running&limit=100`],
 	);
 	const fresh = fakeRender();
 	const made = provider(fresh);
@@ -393,6 +525,33 @@ test("prepareImage answers the box image's build in the workspace's default sand
 	const answer = await provider(failed).prepareImage();
 	assert.equal(answer.error?.code, "vendor");
 	assert.match(answer.error.message, /^the box image as the Render build agentrun-box-[0-9a-f]{12}: Render's build sbb-00000000000000000000 failed: the image's manifest is not linux\/amd64$/);
+});
+
+test("prepareImage imports the box image once: calls side by side share one import, and a build of its name still pending or running is waited for, not posted again", async () => {
+	const fresh = fakeRender();
+	const made = provider(fresh);
+	const waits = [];
+	const both = await Promise.all([made.prepareImage({ onWait: (...said) => waits.push(["a", ...said]) }), made.prepareImage({ onWait: (...said) => waits.push(["b", ...said]) })]);
+	assert.deepEqual(both, [{ ok: true, value: BUILD }, { ok: true, value: BUILD }]);
+	assert.equal(fresh.calls.filter(({ method, url }) => method === "POST" && url.pathname.endsWith("/builds")).length, 1, "one import");
+	assert.deepEqual(waits.sort(), [["a", "build", BUILD], ["b", "build", BUILD]], "each caller told once");
+	for (const status of ["pending", "running"]) {
+		const under = fakeRender({ builds: [{ id: "sbb-00000000000000000007", sandboxGroupId: GROUP, name: BUILD, status: "failed" }, { id: "sbb-00000000000000000008", sandboxGroupId: GROUP, name: BUILD, status, walk: ["running", "succeeded"] }] });
+		const told = [];
+		assert.deepEqual(await provider(under).prepareImage({ onWait: (...said) => told.push(said) }), { ok: true, value: BUILD }, status);
+		assert.equal(under.calls.filter(({ method, url }) => method === "POST" && url.pathname.endsWith("/builds")).length, 0, `${status}: no second import`);
+		assert.ok(under.calls.some(({ method, url }) => method === "GET" && url.pathname.endsWith("/builds/sbb-00000000000000000008")), `${status}: the build under way is waited for`);
+		assert.deepEqual(told, [["build", BUILD]], status);
+	}
+	let importing = true;
+	const slow = fakeRender({ answer: (method, path) => (importing && method === "GET" && /\/builds\/sbb-/.test(path) ? json(200, { id: "sbb-00000000000000000000", name: BUILD, status: "running" }) : undefined) });
+	const shared = provider(slow);
+	const caller = new AbortController();
+	setTimeout(() => caller.abort(), 30);
+	assert.equal((await shared.prepareImage({ signal: caller.signal })).error?.code, "aborted", "a caller's abort ends its own wait");
+	importing = false;
+	assert.deepEqual(await shared.prepareImage(), { ok: true, value: BUILD });
+	assert.equal(slow.calls.filter(({ method, url }) => method === "POST" && url.pathname.endsWith("/builds")).length, 1, "the import a caller left is the next caller's");
 });
 
 test("prepareImage reads the sandbox groups page by page, by cursor, until it finds the default one", async () => {
