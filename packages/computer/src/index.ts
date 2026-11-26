@@ -31,6 +31,9 @@ export {
 // The shared machine-host adapter: a vendor writes a MachineHost (src/host.ts), and HostedProvider makes it a provider.
 export type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 export { HostedProvider, type HostedDial, type HostedOptions, type HostedTimeouts, hostedDaemonPath } from "./hosted/provider.js";
+// The one rule for a URL a key is sent to, which serve applies to the URLs it reads from its environment too: httpsBase,
+// and keyBase for one whose protocol allows another scheme (a socket's wss, a collector's or loopback's http).
+export { httpsBase, keyBase } from "./hosted/rest.js";
 // The provider classes and their option types are not here: each provider loads by its id through the registry
 // (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /agent37, /morph, /orgo,
 // /phone-harness, /browserbase, /kernel, /local, /smolcloud, /groundbox: each the provider file's name).

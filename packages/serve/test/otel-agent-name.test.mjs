@@ -31,6 +31,8 @@ const PASS = "dummy-otlp-pass-0000";
 const KEY = "dummy-otlp-key-0000";
 const USERINFO = [USER, PASS].join(":");
 const CREDENTIALED = { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `https://${USERINFO}@collector.invalid:4318/v1/traces?region=us-east-1&api_key=${KEY}`, OTEL_EXPORTER_OTLP_HEADERS: "x-api-key=dummy-header-key-0000" };
+// The endpoint a key may go to (keyBase: no user, password, query or fragment), its key in a header, where OTLP puts one.
+const CLEAN = { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.invalid:4318/v1/traces", OTEL_EXPORTER_OTLP_HEADERS: "x-api-key=dummy-header-key-0000" };
 // A line shows the endpoint's origin alone: where spans go, and nothing of its user, password, path, query or fragment.
 const SHOWN = "https://collector.invalid:4318";
 // Endpoints that carry a credential where a line's credential cut looks and where it does not: a user and password, a
@@ -39,13 +41,20 @@ const SHOWN = "https://collector.invalid:4318";
 const dummy = (what) => ["dummy", what, "0000", "1111"].join("-");
 const [TOKEN, API_KEY, PATH_KEY, HMAC, FRAGMENT] = [dummy("token"), dummy("api-key"), dummy("path-key"), dummy("hmac"), dummy("fragment")];
 const query = (name, value) => [name, value].join("=");
+// The rule of a URL a key goes to (keyBase) refuses every one but the path's, and tracing is off for it, in words that
+// name the variable and the origin alone (the third column); the path's traces, its line the origin alone.
+const PASSINFO = ["", PASS].join(":");
+const USERPART = `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT takes no user or password, since the key goes to it: ${SHOWN}`;
+const QUERYPART = `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT takes no query or fragment: ${SHOWN}`;
 const ENDPOINTS = [
-  ["a user and password", `https://${USERINFO}@collector.invalid:4318/v1/traces`],
-  ["a token parameter", `${SHOWN}/v1/traces?${query("token", TOKEN)}`],
-  ["a key parameter beside a plain one", `${SHOWN}/v1/traces?${query("api_key", API_KEY)}&region=us-east-1`],
+  ["a user and password", `https://${USERINFO}@collector.invalid:4318/v1/traces`, USERPART],
+  ["a user", `https://${USER}@collector.invalid:4318/v1/traces`, USERPART],
+  ["a password", `https://${PASSINFO}@collector.invalid:4318/v1/traces`, USERPART],
+  ["a token parameter", `${SHOWN}/v1/traces?${query("token", TOKEN)}`, QUERYPART],
+  ["a key parameter beside a plain one", `${SHOWN}/v1/traces?${query("api_key", API_KEY)}&region=us-east-1`, QUERYPART],
   ["a key as a path segment", `${SHOWN}/v1/traces/${PATH_KEY}`],
-  ["a parameter named like no credential", `${SHOWN}/v1/traces?${query("hmac", HMAC)}`],
-  ["a fragment", `${SHOWN}/v1/traces#${FRAGMENT}`],
+  ["a parameter named like no credential", `${SHOWN}/v1/traces?${query("hmac", HMAC)}`, QUERYPART],
+  ["a fragment", `${SHOWN}/v1/traces#${FRAGMENT}`, QUERYPART],
 ];
 // A GitHub token's shape, a dummy: a name of that shape is cut whatever the runner holds.
 const TOKEN_SHAPED = `ghp_${"a1B2".repeat(9)}`;
@@ -53,7 +62,7 @@ const TOKEN_SHAPED = `ghp_${"a1B2".repeat(9)}`;
 const attributesOf = (span) => Object.fromEntries((span.attributes ?? []).map(({ key, value }) => [key, value.stringValue ?? value.intValue ?? value.boolValue ?? value.doubleValue]));
 const credentialFree = (line) => ![USER, PASS, KEY, "dummy-header-key-0000"].some((value) => line.includes(value));
 
-test("a traced run of a saved agent names it: gen_ai.agent.name is the agent's name, gen_ai.agent.id its id, the harness on agentrun.harness; and the runner's start says once that tracing is on, without the endpoint's credentials", { timeout: 120_000 }, async (t) => {
+test("a traced run of a saved agent names it: gen_ai.agent.name is the agent's name, gen_ai.agent.id its id, the harness on agentrun.harness; and the runner's start says once that tracing is on, without the key its header carries", { timeout: 120_000 }, async (t) => {
   // A collector on loopback that takes OTLP/HTTP JSON: every span it was sent.
   const spans = [];
   const collector = createServer((req, res) => {
@@ -77,7 +86,9 @@ test("a traced run of a saved agent names it: gen_ai.agent.name is the agent's n
     collector.close();
   });
   const port = collector.address().port;
-  withEnv(t, { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://${USERINFO}@127.0.0.1:${port}/v1/traces?api_key=${KEY}` }, ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_SDK_DISABLED", "OTEL_TRACES_SAMPLER"]);
+  // The endpoint the rule of a URL a key goes to takes (keyBase): no user, password, query or fragment; the key in the
+  // header OTLP sends it in.
+  withEnv(t, { OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `http://127.0.0.1:${port}/v1/traces`, OTEL_EXPORTER_OTLP_HEADERS: `x-api-key=${KEY}` }, ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_SDK_DISABLED", "OTEL_TRACES_SAMPLER"]);
   // The tracer's lines go to the console's warnings: every one said from the server's start on.
   const said = [];
   const warn = console.warn;
@@ -119,20 +130,29 @@ test("a traced run of a saved agent names it: gen_ai.agent.name is the agent's n
 
 test("tracing on says so once, with the origin of the endpoint its spans go to; off (no endpoint, or the SDK disabled) says nothing", async () => {
   const lines = [];
-  const tracing = await genAiTracing(CREDENTIALED, { exporter: new InMemorySpanExporter(), log: (line) => lines.push(line) });
+  const tracing = await genAiTracing(CLEAN, { exporter: new InMemorySpanExporter(), log: (line) => lines.push(line) });
   assert.ok(tracing, "on");
   assert.deepEqual(lines, [`[otel] tracing is on: spans export to ${SHOWN}`]);
   const quiet = [];
   assert.equal(await genAiTracing({}, { exporter: new InMemorySpanExporter(), log: (line) => quiet.push(line) }), undefined);
+  assert.equal(await genAiTracing({ ...CLEAN, OTEL_SDK_DISABLED: "true" }, { exporter: new InMemorySpanExporter(), log: (line) => quiet.push(line) }), undefined);
   assert.equal(await genAiTracing({ ...CREDENTIALED, OTEL_SDK_DISABLED: "true" }, { exporter: new InMemorySpanExporter(), log: (line) => quiet.push(line) }), undefined);
   assert.deepEqual(quiet, [], "off: no line at all");
+});
+
+test("an endpoint with a user, a password, a query or a fragment is refused as a URL a key goes to (keyBase): tracing is off for it, said once with the variable and the origin alone, and nothing is ever thrown", async () => {
+  const lines = [];
+  const tracing = await genAiTracing(CREDENTIALED, { exporter: new InMemorySpanExporter(), log: (line) => lines.push(line) });
+  assert.equal(tracing, undefined, "off: no exporter, so nothing is ever sent to the endpoint");
+  assert.deepEqual(lines, [`[otel] tracing is off: ${USERPART}`]);
+  assert.ok(lines.every(credentialFree), `no line holds a credential: ${JSON.stringify(lines)}`);
 });
 
 test("a collector that keeps failing is one line with the endpoint and the time, then at most one a minute that counts the failures it did not say, never one a span", async () => {
   const lines = [];
   let clock = Date.UTC(2026, 10, 25, 7, 1, 31, 465);
   const failing = { export: (_spans, done) => done({ code: 1, error: new Error("503 Service Unavailable") }), shutdown: async () => {}, forceFlush: async () => {} };
-  const tracing = await genAiTracing(CREDENTIALED, { exporter: failing, log: (line) => lines.push(line), now: () => clock });
+  const tracing = await genAiTracing(CLEAN, { exporter: failing, log: (line) => lines.push(line), now: () => clock });
   // Each run's root span is its own export (the test's processor exports each span as it ends): 25 failures in a second.
   const runOnce = async (n) => {
     const trace = tracing.open({ startedAt: clock });
@@ -154,33 +174,50 @@ test("a collector that keeps failing is one line with the endpoint and the time,
   assert.ok(lines.every(credentialFree), `no line holds a credential: ${JSON.stringify(lines)}`);
 });
 
-test("the startup line and a failed export's line show the endpoint's origin alone: never its user, password, path, query or fragment, wherever a credential sits in it", async (t) => {
-  const failing = { export: (_spans, done) => done({ code: 1, error: new Error("503 Service Unavailable") }), shutdown: async () => {}, forceFlush: async () => {} };
+test("the startup line and a failed export's line show the endpoint's origin alone, and tracing off says why with the variable and the origin alone: never its user, password, path, query or fragment, wherever a credential sits in it", async (t) => {
+  // Counts every export it is handed: an endpoint refused is handed none.
+  let exports = 0;
+  const failing = { export: (_spans, done) => (exports++, done({ code: 1, error: new Error("503 Service Unavailable") })), shutdown: async () => {}, forceFlush: async () => {} };
   const at = Date.UTC(2026, 10, 25, 7, 1, 31, 465);
   const linesOf = async (endpoint) => {
     const lines = [];
+    exports = 0;
     const tracing = await genAiTracing({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: endpoint }, { exporter: failing, log: (line) => lines.push(line), now: () => at });
-    const trace = tracing.open({ startedAt: at });
-    trace.known({ runId: "run-origin", harness: "pi" });
-    await trace.end();
-    return lines;
+    if (tracing) {
+      const trace = tracing.open({ startedAt: at });
+      trace.known({ runId: "run-origin", harness: "pi" });
+      await trace.end();
+    }
+    return { tracing, lines };
   };
   const hidden = [USER, PASS, TOKEN, API_KEY, PATH_KEY, HMAC, FRAGMENT, "/v1/traces", "region"];
-  // Each endpoint its own subtest, so each says its own failure.
-  for (const [what, endpoint] of ENDPOINTS) {
+  // Each endpoint its own subtest, so each says its own words.
+  for (const [what, endpoint, refused] of ENDPOINTS) {
     await t.test(what, async () => {
-      const lines = await linesOf(endpoint);
-      assert.deepEqual(lines, [
-        `[otel] tracing is on: spans export to ${SHOWN}`,
-        `[otel] a trace export to ${SHOWN} failed at 2026-11-25T07:01:31.465Z; its spans were dropped: 503 Service Unavailable`,
-      ], `${what}: the origin alone`);
+      const { tracing, lines } = await linesOf(endpoint);
+      if (refused) {
+        assert.equal(tracing, undefined, `${what}: tracing is off, no exporter built on it`);
+        assert.equal(exports, 0, `${what}: nothing is sent`);
+        assert.deepEqual(lines, [`[otel] tracing is off: ${refused}`], `${what}: one line, why, with the variable and the origin alone`);
+      } else {
+        assert.deepEqual(lines, [
+          `[otel] tracing is on: spans export to ${SHOWN}`,
+          `[otel] a trace export to ${SHOWN} failed at 2026-11-25T07:01:31.465Z; its spans were dropped: 503 Service Unavailable`,
+        ], `${what}: the origin alone`);
+      }
       assert.ok(lines.every((line) => !hidden.some((value) => line.includes(value))), `${what}: no part of the endpoint past its origin: ${JSON.stringify(lines)}`);
     });
   }
-  await t.test("a value that is not a URL is said as that alone, never as written", async () => {
-    const lines = await linesOf(`not a URL ${TOKEN}`);
-    assert.equal(lines[0], "[otel] tracing is on: spans export to an endpoint that is not a URL");
-    assert.ok(lines.every((line) => !line.includes(TOKEN)), JSON.stringify(lines));
+  await t.test("a value that is not a URL is off, said as that alone, never as written", async () => {
+    const { tracing, lines } = await linesOf(`not a URL ${TOKEN}`);
+    assert.equal(tracing, undefined);
+    assert.equal(exports, 0);
+    assert.deepEqual(lines, ["[otel] tracing is off: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT is not a URL"]);
+  });
+  await t.test("the general endpoint is refused in its own name", async () => {
+    const lines = [];
+    assert.equal(await genAiTracing({ OTEL_EXPORTER_OTLP_ENDPOINT: `${SHOWN}#${FRAGMENT}` }, { exporter: failing, log: (line) => lines.push(line) }), undefined);
+    assert.deepEqual(lines, [`[otel] tracing is off: OTEL_EXPORTER_OTLP_ENDPOINT takes no query or fragment: ${SHOWN}`]);
   });
 });
 

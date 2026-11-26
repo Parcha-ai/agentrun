@@ -129,6 +129,15 @@ const NO_BODY: AsyncIterable<Uint8Array> = { async *[Symbol.asyncIterator]() {} 
  * host name and Fly nothing, and each builds its https URL itself.
  */
 export function httpsBase(url: string, what: string): string {
+	return keyBase(url, what, ["https:"]);
+}
+
+/**
+ * httpsBase's rule over `schemes` (each as URL.protocol gives it, `https:`): the same refusals in the same words, the
+ * same normalized form. For a URL a key goes to whose own protocol allows another scheme: a socket's wss, or the http
+ * of an OpenTelemetry collector or of a server on loopback.
+ */
+export function keyBase(url: string, what: string, schemes: readonly string[]): string {
 	let parsed: URL;
 	try {
 		parsed = new URL(url);
@@ -136,7 +145,8 @@ export function httpsBase(url: string, what: string): string {
 		// Nothing of the string is echoed: it may carry a key in its query.
 		throw new Error(`${what} is not a URL`);
 	}
-	if (parsed.protocol !== "https:") throw new Error(`${what} must be https, so the key never crosses in the clear: ${parsed.protocol}`);
+	const clear = schemes.includes("http:") || schemes.includes("ws:") ? "" : ", so the key never crosses in the clear";
+	if (!schemes.includes(parsed.protocol)) throw new Error(`${what} must be ${schemes.map((scheme) => scheme.replace(/:$/, "")).join(" or ")}${clear}: ${parsed.protocol}`);
 	// The words give the origin alone: a user, a password or a query may be a key.
 	if (parsed.username !== "" || parsed.password !== "") throw new Error(`${what} takes no user or password, since the key goes to it: ${parsed.origin}`);
 	if (parsed.search !== "" || parsed.hash !== "") throw new Error(`${what} takes no query or fragment: ${parsed.origin}`);
