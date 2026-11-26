@@ -1,6 +1,7 @@
 package apps
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +32,33 @@ func symlink(t *testing.T, target, link string) {
 	}
 }
 
+// A file the user owns is its own to change, though every folder above it is out of its reach: here one straight in
+// the system's sticky temporary folder.
+func TestWriterChangesAFileItOwnsInAStickyFolderItDoesNot(t *testing.T) {
+	var st syscall.Stat_t
+	if err := syscall.Lstat(os.TempDir(), &st); err != nil || st.Mode&syscall.S_ISVTX == 0 {
+		t.Skipf("%s is not a sticky folder", os.TempDir())
+	}
+	for dir := os.TempDir(); ; dir = filepath.Dir(dir) {
+		if err := syscall.Lstat(dir, &st); err != nil || st.Uid == uint32(os.Getuid()) || st.Mode&syscall.S_IFMT != syscall.S_IFDIR {
+			t.Skipf("%s is not a folder of another user's on a way of folders of others", dir)
+		}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	f, err := os.CreateTemp("", "*.desktop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	t.Cleanup(func() { _ = os.Remove(f.Name()) })
+	self := Writer{UID: uint32(os.Getuid()), GIDs: []uint32{uint32(os.Getgid())}}
+	if got, want := self.Changes(f.Name()), fmt.Sprintf("uid %d owns %s", os.Getuid(), f.Name()); got != want {
+		t.Fatalf("Changes = %q, want %q", got, want)
+	}
+}
+
 // A desktop file is out of a user's reach when the user owns neither it nor a folder above it, and the mode bits let
 // it write none of them; a sticky folder lets it move aside only its own.
 func TestWriterChangesADesktopFileItOwnsOrMayWriteOrMoveAside(t *testing.T) {
@@ -48,18 +76,20 @@ func TestWriterChangesADesktopFileItOwnsOrMayWriteOrMoveAside(t *testing.T) {
 			write(t, path, "x")
 			return path, ""
 		}, ""},
+		// The walk goes down from "/", so the words name the first thing on the way the user owns: the test's own
+		// temporary folder, above dir, for the test's own user.
 		{"a file the user owns, though it is read-only", self, func(t *testing.T, dir string) (string, string) {
 			path := filepath.Join(dir, "a.desktop")
 			write(t, path, "x")
 			chmod(t, path, 0o444)
-			return path, path
+			return path, filepath.Dir(dir)
 		}, "owns"},
 		{"a read-only folder the user owns, holding a read-only file", self, func(t *testing.T, dir string) (string, string) {
 			path := filepath.Join(dir, "locked", "a.desktop")
 			write(t, path, "x")
 			chmod(t, path, 0o444)
 			chmod(t, filepath.Dir(path), 0o555)
-			return path, path
+			return path, filepath.Dir(dir)
 		}, "owns"},
 		{"a file everyone may write", stranger, func(t *testing.T, dir string) (string, string) {
 			path := filepath.Join(dir, "a.desktop")

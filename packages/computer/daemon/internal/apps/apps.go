@@ -105,25 +105,25 @@ func Handlers(display *desktop.Display, table *process.Table, options Options) m
 	}
 }
 
-// entries are the apps whose desktop files computerd's user can't change (Writer.Changes): the only ones listed,
-// launched, ended or owning a window. An app runs its desktop file's Exec, so one the user could change would run
-// whatever a file written through the files group says, exec off or not.
+// entries are the apps whose desktop files computerd's user can't change, each read from the file Writer.Open checked:
+// the only ones listed, launched, ended or owning a window. An app runs its desktop file's Exec, so one the user could
+// change would run whatever a file written through the files group says, exec off or not. Each call reads them again,
+// so a launch runs the Exec of a file checked for that launch.
 func (g *group) entries() []Entry {
-	var out []Entry
-	for _, e := range g.all() {
-		if g.writer.Changes(e.Path) == "" {
-			out = append(out, e)
-		}
-	}
-	return out
+	return entriesOpened(g.applicationDirs(), g.writer.Open)
 }
 
-// all are the apps of every desktop file, the ones entries leaves out too.
+// all are the apps of every desktop file, the ones entries leaves out too: read only to name one left out.
 func (g *group) all() []Entry {
+	return Entries(g.applicationDirs())
+}
+
+// applicationDirs are where the group reads desktop files.
+func (g *group) applicationDirs() []string {
 	if g.dirs != nil {
-		return Entries(g.dirs)
+		return g.dirs
 	}
-	return Entries(ApplicationDirs())
+	return ApplicationDirs()
 }
 
 // find is the app asked for, or why not in words: denied, naming its desktop file, for an app entries left out, else
