@@ -2,7 +2,8 @@
 // state (a running tool's name, its args and its streamed output, the partial answer) with the run's one redactor (the
 // runner's, LoopDeps.redact, the one its journal's text goes through) before it writes it. The live stream a console
 // watches (live/stream.ts watchRun) builds its held events from that row alone (heldEvents: a running tool's name and
-// args, the partial answer), so it shows the secret cut, never whole. A loop given no redactor writes no live view.
+// args, the partial answer), so it shows the secret cut, never whole. A loop whose redactor cannot name its values
+// writes no live view; one given no redactor that holds keys is never made (runner-redact-required.test.mjs).
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -151,8 +152,8 @@ test("a real pi run's running bash streaming a held secret: its live row (and so
   assert.ok(held.includes("token [redacted]"), `the secret cut, the rest of the output kept: ${held.slice(0, 400)}`);
 });
 
-test("a loop given no redactor has no live view: its held state is never written, so never written uncut", async (t) => {
-  // The ticker over a store whose live puts are counted; the loop's deps carry no redactor.
+test("a loop whose redactor does not know its values has no live view: its held state is never written, so never written uncut", async (t) => {
+  // The ticker over a store whose live puts are counted; the loop's redactor holds keys but cannot name its values.
   const puts = [];
   const store = { live: { put: async (rows) => void puts.push(...rows), drop: async () => {}, read: async () => [] } };
   const ticker = withLiveTicker(store, (deps) => ({
@@ -168,5 +169,5 @@ test("a loop given no redactor has no live view: its held state is never written
   const loop = ticker.createLoop({ redact: heldRedactor((text) => text), journal: () => undefined, flush: async () => {}, signal: new AbortController().signal });
   await loop.start({ runId: "run-1", runner: "runner-a", epoch: 1, until: Date.now() + 60_000, from: "queued" });
   await ticker.close();
-  assert.deepEqual(puts, [], `nothing put for a loop with no redactor: ${JSON.stringify(puts)}`);
+  assert.deepEqual(puts, [], `nothing put for a loop whose redactor does not know its values: ${JSON.stringify(puts)}`);
 });

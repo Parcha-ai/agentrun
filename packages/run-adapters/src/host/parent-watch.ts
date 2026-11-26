@@ -27,7 +27,9 @@ if (!Number.isSafeInteger(parent) || parent < 1 || (graceAsked && termGraceMs ==
 // Started after the host was already gone: nothing to run for.
 if (process.ppid !== parent) process.exit(1);
 
-const child = spawn(command, args, { stdio: "inherit" });
+// The signals are taken before the child is started: a handler runs on a later turn of the loop, once spawn has
+// returned, so a TERM that lands as the child starts is passed on to it. Taken after, such a TERM would end this process
+// alone, with its child left running and nothing watching it.
 const passed = ["SIGTERM", "SIGINT", "SIGHUP"] as const;
 let grace: ReturnType<typeof setTimeout> | undefined;
 for (const signal of passed) {
@@ -36,6 +38,7 @@ for (const signal of passed) {
     if (signal === "SIGTERM" && termGraceMs !== undefined) grace ??= setTimeout(() => child.kill("SIGKILL"), termGraceMs);
   });
 }
+const child = spawn(command, args, { stdio: "inherit" });
 child.on("error", (error) => {
   process.stderr.write(`parent-watch: ${error.message}\n`);
   process.exit(127);
