@@ -1338,12 +1338,20 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
     else if (char.charCodeAt(0) < 128 && isSpace(char.charCodeAt(0))) {
       // A run of ASCII whitespace is gone from the view: only its last character is held, as the one a non-ASCII
       // character after it could compose onto.
+      // Each of its characters is a unit (a space takes a terminal cell a backspace can strike out); one the screen
+      // hides whole is skipped as a control is.
       BLANKS.lastIndex = stop;
       BLANKS.test(text);
-      scanned.chars += BLANKS.lastIndex - stop;
-      flushGroup();
-      flushHeld();
-      held = { char: text[BLANKS.lastIndex - 1]!, from: BLANKS.lastIndex - 1, to: BLANKS.lastIndex };
+      const run = BLANKS.lastIndex - stop;
+      scanned.chars += run;
+      const index = units;
+      units += run;
+      if (!screen) record.push(text.slice(stop, BLANKS.lastIndex));
+      if (!screen || screen.hiddenBefore[units]! - screen.hiddenBefore[index]! < run) {
+        flushGroup();
+        flushHeld();
+        held = { char: text[BLANKS.lastIndex - 1]!, from: BLANKS.lastIndex - 1, to: BLANKS.lastIndex };
+      }
       at = BLANKS.lastIndex;
     } else if (separates && char === SEPARATOR) {
       // A separator as it stands is copied, never squeezed, and nothing composes across it.
@@ -1366,16 +1374,19 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
 
 const isHigh = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
 const isLow = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
-/** One character IGNORABLE matches. */
-const IGNORABLE_ONE = new RegExp(`^${IGNORABLE.source.slice(0, -1)}$`, "u");
-/** Whether a unit takes no place on screen, as the views drop it: a control character, whitespace from tab to
- *  carriage return, or a character IGNORABLE holds (not half of a surrogate pair, which stays). A backspace after it
- *  strikes out the character before it. */
+/** A character of zero width on a terminal: a default-ignorable one (a zero-width space or joiner, a word joiner, a
+ *  byte order mark, a variation selector, a soft hyphen) or a combining mark; not a Hangul filler, which shows as a
+ *  blank cell. */
+const ZERO_WIDTH = /^(?![\u115f\u3164\uffa0])[\p{Default_Ignorable_Code_Point}\p{Mn}\p{Me}]$/u;
+/** Whether a unit takes no cell on a terminal, so a backspace after it strikes out the character before it: a control
+ *  character (C0, tab to carriage return, DEL, C1) or a character of zero width. "The views drop it" is not this: a
+ *  space, a no-break space, the braille blank, a private use character and a noncharacter each take a cell (a blank,
+ *  a box or a glyph), as does half of a surrogate pair. */
 const placeless = (code: number, char: string): boolean =>
-  (isControl(code) && !isTerminal(code)) || (code >= 0x09 && code <= 0x0d) || code === 0x20 || (code >= 0xa0 && !isHigh(code) && !isLow(code) && IGNORABLE_ONE.test(char));
+  (isControl(code) && !isTerminal(code)) || (code >= 0x09 && code <= 0x0d) || (code >= 0xa0 && !isHigh(code) && !isLow(code) && ZERO_WIDTH.test(char));
 /** Whether a terminal passes over a unit inside a sequence without ending it: a NUL or a DEL (ignored), any other C0
  *  control but ESC, CAN and SUB (run: a backspace moves back), a BEL but where it ends an OSC, a C1 control but the
- *  8-bit CSI, ST and OSC, and a character that shows as nothing, a box or a blank (placeless). */
+ *  8-bit CSI, ST and OSC, and a character of zero width (placeless). */
 const passedIn = (code: number, char: string, osc: boolean): boolean =>
   code === 0x18 || code === 0x1a || code === 0x1b || code === 0x9b || code === 0x9c || code === 0x9d || code === 0x20 || (osc && code === 0x07)
     ? false
@@ -1419,10 +1430,13 @@ function readingsOf(text: string, spec: ViewSpec, cuts: readonly Span[] | undefi
   const aborts = (code: number): boolean => code === 0x18 || code === 0x1a;
   // Where a CSI whose parameters start at k ends (its final byte, or the CAN or SUB that aborts it), or -1: parameter
   // bytes (0x30-0x3F), then intermediate bytes (0x20-0x2F), then a final byte (0x40-0x7E).
+  // A printable character past ASCII inside it does not end it: a DEC parser reads a GR code as its GL one and goes to
+  // csi_ignore for a byte out of place, so the rest, to the final byte, is read and the whole sequence hidden.
   const csi = (): number => {
     let code = byte(false);
     while (code >= 0x30 && code <= 0x3f) (k++, (code = byte(false)));
     while (code >= 0x20 && code <= 0x2f) (k++, (code = byte(false)));
+    if (code >= 0xa0) while (code >= 0xa0 || (code >= 0x20 && code <= 0x3f)) (k++, (code = byte(false)));
     return (code >= 0x40 && code <= 0x7e) || aborts(code) ? k : -1;
   };
   // Where an OSC whose body starts at k ends (its BEL, its U+009C, the backslash of its ESC and backslash, or the CAN or
