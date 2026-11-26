@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import fsSync, { mkdirSync, readFileSync, writeFileSync, utimesSync, truncateSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, utimesSync, truncateSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import fs from 'node:fs/promises';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { syncBuiltinESMExports } from 'node:module';
+import { READERS } from '@parcha/agentrun-import';
 import { scratch } from './support.mjs';
-import { claudeSession, codexSession } from './fixtures/import-sessions.mjs';
+import { claudeSession, codexSession, copilotSession, piSession, sessionId } from './fixtures/import-sessions.mjs';
 import { exportRemoteHistory } from '../dist/import.js';
 import { remoteHistorySessions } from '../dist/native/history.js';
 
@@ -70,26 +72,29 @@ for (const [runtime, makeSession] of [['claude-code', claudeSession], ['codex', 
   truncateSync(oversized,8_000_001);
   const old=new Date(Date.now()-3600_000);utimesSync(oversized,old,old);
   const before=statSync(oversized);
-  let transcriptReads=0,metadataBytes=0;
-  const createReadStream=fsSync.createReadStream,open=fs.open;
-  const streamMock=t.mock.method(fsSync,'createReadStream',(...args)=>{
-   if(args[0]===oversized)transcriptReads++;
-   return createReadStream(...args);
+  // Bodies counted where the importer reads them (READERS[source].read), however it reads the bytes; opens made inside
+  // a body read are the body's, so metadataBytes is serve's own probe.
+  let transcriptReads=0,bodyReads=0,metadataBytes=0;
+  const body=new AsyncLocalStorage(),reader=READERS[runtime],readBody=reader.read,open=fs.open;
+  const readMock=t.mock.method(reader,'read',function(at,...rest){
+   bodyReads++;if(at.file===oversized)transcriptReads++;
+   return body.run(true,()=>readBody.call(this,at,...rest));
   });
   const openMock=t.mock.method(fs,'open',async (...args)=>{
    const handle=await open(...args);
-   if(args[0]===oversized){
+   if(args[0]===oversized && !body.getStore()){
     const read=handle.read.bind(handle);
     t.mock.method(handle,'read',async (...args)=>{const result=await read(...args);metadataBytes+=result.bytesRead;return result;});
    }
    return handle;
   });
-  syncBuiltinESMExports();t.after(()=>{streamMock.mock.restore();openMock.mock.restore();syncBuiltinESMExports();});
+  syncBuiltinESMExports();t.after(()=>{readMock.mock.restore();openMock.mock.restore();syncBuiltinESMExports();});
   const preview=await exportRemoteHistory(target,{...f.options,preview:true});
   assert.equal(transcriptReads,0,'preview must reject the oversized transcript before parsing it');
   assert.equal(preview.total,21);
   assert.deepEqual(preview.skipped,[{reason:'Source session file exceeds the remote import size limit.',count:1}]);
   const first=await exportRemoteHistory(target,{...f.options,inventory:preview.inventory});
+  assert.equal(bodyReads,20,'the body-read counter sees the first page read its 20 bodies');
   assert.equal(transcriptReads,0,'the first page must not parse a transcript it cannot export');
   assert.equal(first.sessions.length,20);assert.equal(first.next_cursor,20);
   const last=await exportRemoteHistory(target,{...f.options,inventory:preview.inventory,cursor:first.next_cursor});
@@ -99,3 +104,30 @@ for (const [runtime, makeSession] of [['claude-code', claudeSession], ['codex', 
   const after=statSync(oversized);assert.equal(after.size,before.size);assert.equal(after.mtimeMs,before.mtimeMs);
  });
 }
+
+test('copilot: a session names its project in session.start, and a run the CLI started on another session\'s exit is a child', async t => {
+ const f=await fixture(t),target={...f.target,runtime:'copilot'};
+ const file=copilotSession(f.home,f.project,1);
+ const child=copilotSession(f.home,f.project,2);
+ writeFileSync(child,readFileSync(child,'utf8').replace('"sessionId"','"detachedFromSpawningParentSessionId":"00000000-0000-4000-8000-000000000001","sessionId"'));
+ const old=new Date(Date.now()-3600_000);utimesSync(child,old,old);
+ copilotSession(f.home,join(f.home,'unrelated'),3);
+ const preview=await exportRemoteHistory(target,{...f.options,preview:true});
+ assert.equal(preview.total,1);
+ assert.deepEqual(preview.skipped,[{reason:'Subagent history is not a separate session.',count:1}]);
+ assert.ok(readFileSync(file).length>0);
+});
+
+test('a pi session whose session record names no id is exported under the id its reader gives it, not skipped as changed',async t=>{
+ const f=await fixture(t),target={...f.target,runtime:'pi'};
+ const file=piSession(f.home,f.project,7);
+ // pi names the session in its file too (<time>_<id>.jsonl): with no id in the record, that is the session's id.
+ const records=readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+ delete records[0].id;
+ const stat=statSync(file);writeFileSync(file,records.map(r=>JSON.stringify(r)).join('\n')+'\n');utimesSync(file,stat.atime,stat.mtime);
+ const preview=await exportRemoteHistory(target,{...f.options,preview:true});
+ assert.equal(preview.total,1);
+ const exported=await exportRemoteHistory(target,{...f.options,inventory:preview.inventory});
+ assert.deepEqual(exported.skipped,[]);
+ assert.deepEqual(exported.sessions.map(s=>s.id),[sessionId(7)]);
+});

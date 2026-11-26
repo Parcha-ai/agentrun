@@ -6,7 +6,8 @@ import { promotionsOf, promotionOf, championOf, recordPromotion } from '../dist/
 import { heldNamesOf } from '../dist/learn/compile.js';
 import { workflowDigest } from '../dist/runner/workflow-first.js';
 import { toolFlowsFor } from '../dist/runner/promotion.js';
-import { learningFolderOf, secretsShown } from '../dist/learning.js';
+import { secretsShown } from '../dist/learning.js';
+import { learningOf } from '../dist/learn/rows.js';
 import { learningCommit } from '../dist/learn/commit.js';
 
 const tool = { name: 'mcp:backend/status', description: 'Read release status.', input_schema: { type: 'object' }, permission: 'allow', price_usd: 0 };
@@ -21,14 +22,14 @@ async function setup(t, runtime = 'eve', runner = true, learning = { compile_aft
   const server = await serve(t, { runner });
   const id = `shadow-${runtime}`;
   assert.equal((await server.api('POST', '/agents', { definition: { id, name: id, instructions: 'Report readiness.', sdk: { runtime }, learning, tools: [] } })).status, 201);
-  await landWorkflows(server.data, id, [flow]);
+  await landWorkflows(server, id, [flow]);
   const start = async (key, input = TASK) => {
     const response = await server.api('POST', `/agents/${id}/sdk-runs`, { runtime, input, instructions: 'Report readiness.', workflow_tools: [tool] }, { 'Idempotency-Key': key });
     assert.equal(response.status, 201, JSON.stringify(response.body));
     return response.body;
   };
   const send = receipt => client(server.baseUrl, receipt.token);
-  const records = () => promotionsOf(server.store.settings, id);
+  const records = () => promotionsOf(server.store.learning, id);
   const latest = async name => (await records()).findLast(one => one.workflow === name);
   return { ...server, id, start, send, records, latest };
 }
@@ -48,22 +49,19 @@ async function finish(server, receipt, event, completion = {}, extra = []) {
   await follow(server.api, receipt.run_id, [completion.status ?? 'completed']);
 }
 const cancel = (server, receipt) => server.send(receipt)('POST', `/sdk-runs/${receipt.run_id}/complete`, { status: 'cancelled', answer: '' });
-/** Lands `next` as the folder's newest revision of the status workflow, as a recompile or an owner's edit would. */
+/** Lands `next` as the agent's newest revision of the status workflow, as a recompile or an owner's edit would. */
 async function land(server, next = nextFlow) {
-  const folder = learningFolderOf(server.data, server.id);
-  try {
-    const committed = await learningCommit(folder.workspace, { runId: `land-${workflowDigest({ workflow: JSON.stringify(next.workflow) })}`, reason: 'A separately compiled revision.', files: [
-      { path: 'workflows/status/workflow.json', text: JSON.stringify(next.workflow) },
-      { path: 'workflows/status/README.md', text: `---\nname: status\ndescription: ${next.description}\n---\n` },
-    ] });
-    assert.equal(committed.ok, true, JSON.stringify(committed));
-  } finally { await folder.end(); }
+  const committed = await learningCommit(learningOf(server.store, server.id), { runId: `land-${workflowDigest({ workflow: JSON.stringify(next.workflow) })}`, reason: 'A separately compiled revision.', files: [
+    { path: 'workflows/status/workflow.json', text: JSON.stringify(next.workflow) },
+    { path: 'workflows/status/README.md', text: `---\nname: status\ndescription: ${next.description}\n---\n` },
+  ] });
+  assert.equal(committed.ok, true, JSON.stringify(committed));
 }
 /** Moves the reservation of `receipt`'s check two hours back, past its deadline, as a turn the backend never completed. */
 async function expire(server, receipt) {
   const pending = promotionOf(await server.records(), flow.name, receipt.learning.check.digest);
   assert.equal(pending.decided, 'replaying');
-  await recordPromotion(server.store.settings, server.id, { ...pending, at: new Date(Date.now() - 2 * 3_600_000).toISOString() }, () => true);
+  await recordPromotion(server.store.learning, server.id, { ...pending, at: new Date(Date.now() - 2 * 3_600_000).toISOString() }, () => true);
 }
 const settleDeps = async (server, receipt) => {
   const { sdkInbox } = await import('../dist/sdk/runs.js');
@@ -375,7 +373,7 @@ test('a give-back hold written after a landed turn carries that turn\'s disagree
   const { compilePrompt } = await import('../dist/learn/compile.js');
   const prompt = compilePrompt({ mode: 'revise', workflow: flow.name, current: '{}', held: { workflow: flow.name, digest: held.digest, reason: held.reason, check: held.check }, reference: '', traces: [], tools: [], judges: false });
   assert.match(prompt, /Your answer: \{"ready":true\}\nThe draft's answer: \{"ready":false\}/);
-  assert.match(prompt, /1 of your inputs were checked before it was held/);
+  assert.match(prompt, /1 of your inputs was checked before it was held/);
   assert.doesNotMatch(prompt, /no disagreements to show/);
 });
 
@@ -510,7 +508,7 @@ test('a given-back turn of a check a newer revision overtook writes nothing over
   const first = await server.start('overtaken');
   await land(server);
   const owner = { workflow: flow.name, digest: workflowDigest({ workflow: JSON.stringify(nextFlow.workflow) }), at: new Date().toISOString(), decided: 'hold', reason: 'The owner held this revision for correction.' };
-  await recordPromotion(server.store.settings, server.id, owner, () => true);
+  await recordPromotion(server.store.learning, server.id, owner, () => true);
   assert.equal((await cancel(server, first)).status, 200);
   await settleSdkCheck(await settleDeps(server, first));
   await settleSdkCheck({ ...(await settleDeps(server, first)), inbox: { ...(await settleDeps(server, first)).inbox, completion: undefined, closed: 'expired' } });
@@ -524,8 +522,9 @@ test('a newer revision\'s hold that lands while a release is written is not hidd
   await server.start('racing');
   const pending = await server.latest(flow.name);
   const owner = { workflow: flow.name, digest: workflowDigest({ workflow: JSON.stringify(nextFlow.workflow) }), at: new Date().toISOString(), decided: 'hold', reason: 'The owner held this revision for correction.' };
-  // The newer hold lands during the release's own await, after its first read of the records.
-  const shown = async () => { await recordPromotion(server.store.settings, server.id, owner, () => true); return secretsShown([]); };
+  // The newer hold lands during the release's own await, after its first read of the records (a revision not landed here:
+  // its digest exempt from the store's check that a version holds it, anyDigest).
+  const shown = async () => { await recordPromotion(server.store.learning, server.id, owner, () => true, { anyDigest: true }); return secretsShown([]); };
   await releaseSdkCheck({ store: server.store, agentId: server.id, shown, log() {} }, pending, 'its native turn was cancelled');
   assert.deepEqual(await server.latest(flow.name), owner);
 });
@@ -557,10 +556,10 @@ test('server-native learned_workflow tool also withholds drafts without promotio
   const laid = [{ ...flow, workflow: JSON.stringify(flow.workflow) }];
   const deps = { store: server.store, agentId: server.id, log() {} };
   assert.deepEqual(await toolFlowsFor(deps, {}, laid, {}), []);
-  await promoteChecked(server.store.settings, server.id, [flow]);
+  await promoteChecked(server.store, server.id, [flow]);
   assert.deepEqual(await toolFlowsFor(deps, {}, laid, {}), laid);
   const record = championOf(await server.records(), flow.name);
-  await recordPromotion(server.store.settings, server.id, { ...record, decided: 'hold', reason: 'Owner held it.' }, () => true);
+  await recordPromotion(server.store.learning, server.id, { ...record, decided: 'hold', reason: 'Owner held it.' }, () => true);
   assert.deepEqual(await toolFlowsFor(deps, {}, laid, {}), []);
 });
 

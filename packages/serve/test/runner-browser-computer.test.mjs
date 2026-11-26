@@ -18,6 +18,7 @@ import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs"
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
@@ -152,7 +153,7 @@ test("a CLI harness refuses a browser computer at its claim, in words, before an
   const registry = createRegistry();
   const harness = await Harness.open(opened.store.journal(claim), { models: () => undefined, registry, onReport: () => {} }, ctx);
   t.after(() => harness.close(ctx).catch(() => {}));
-  const run = { harness, registry, setModels: () => {} };
+  const run = { redact: heldRedactor((text) => text), harness, registry, setModels: () => {} };
   const deps = { env: { OPENAI_API_KEY: "not-a-secret" }, data: opened.dir, journal: (c) => opened.store.journal(c), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim, computerDeps: computerDepsOver("ws://127.0.0.1:9/devtools/browser/none", record) };
   const error = await cliRunSpecFromLaunch(await opened.store.runs.launch(RUN).then((row) => row.body), run, deps, claim).then(() => undefined, (thrown) => thrown);
   assert.ok(error, "refused");

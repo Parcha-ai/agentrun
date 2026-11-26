@@ -43,7 +43,7 @@ const daytona: ComputerProvider = { id: "daytona", name: "Daytona", metered: tru
 const DESK: PairedComputer = {
   id: "cmp-abc", name: "desk-1", kind: "desktop", serves: ["desktop"], unserved: null, runs_refused: null, os: "windows", os_version: "11", device: { maker: "Acme", model: "Book 14" }, arch: "x86_64",
   screen: { width: 1920, height: 1080, scale: 1 }, groups: ["screen", "input.pointer", "input.keys"], features: { "ui.tree": { off: "no accessibility grant" } },
-  driver: "0.2.0", online: true, held_by_run: null, held_until: null, pairing: "pairing-mine", created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
+  driver: "0.2.0", online: true, held_by_run: null, held_until: null, held_on: null, hold_note: null, pairing: "pairing-mine", created_at: "2026-11-12T10:00:30.000Z", seen_at: "2026-11-12T10:00:31.000Z",
 };
 const DESK_PROVIDER: ComputerProvider = { id: "cmp-abc", name: "desk-1 (windows)", metered: false, secrets: [], required: [], ready: true, runs_refused: null, ...NO_SHELL };
 const kind = (k: ComputerKindView["kind"], providers: ComputerProvider[], extra: Partial<ComputerKindView> = {}): ComputerKindView => ({ kind: k, offered: true, groups: [], tools: [], settings: [], record: { available: true }, providers, ...extra });
@@ -447,7 +447,7 @@ describe("Settings → Computers", () => {
   it("on a server whose runner runs in a process of its own, says with the code, and on the computer it paired, that no run here can use a paired computer, in the server's words", async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: Date.parse("2026-11-12T10:00:00.000Z") });
     try {
-      const APART = "no run on this server can use a paired computer: its runner runs in a process of its own, and the computer's socket is held by the server's: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
+      const APART = "no run on this server can use a paired computer: its runner runs in a process of its own and relays no computer's socket: give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
       const apart: PairedComputer = { ...DESK, runs_refused: APART };
       const { v2 } = server([view(), view(), { ...view(), paired: [apart] }], () => json(201, { id: "pairing-mine", code: "K7PD-W3QX", expires_at: "2026-11-12T10:10:00.000Z", runs_refused: APART }));
       const { section, click, settle } = await open(v2);
@@ -515,6 +515,21 @@ describe("Settings → Computers", () => {
     expect(calls.filter((c) => c.method === "DELETE")).toMatchObject([{ path: "/v2/computers/cmp-old", body: undefined }]);
     expect(calls.filter((c) => c.method === "GET")).toHaveLength(2);
     expect(row("cmp-old")).toBeNull();
+  });
+
+  it("names the runner a relayed computer's holding run is on, and says the server's note of a refused relay in its words instead of the offline hint", async () => {
+    const relayed: PairedComputer = { ...DESK, held_by_run: "0190f0aa-0000-7000-8000-00000000beef", held_until: "2026-11-12T11:00:00.000Z", held_on: "runner-b" };
+    const NOTE = "runner runner-b, which holds it, restarted since, and the hold was its earlier process's: it comes back to this server at its next dial, within 60 s, and the run's next claim takes it again";
+    const refused: PairedComputer = { ...DESK, id: "cmp-late", name: "late-desk", online: false, hold_note: NOTE };
+    const { v2 } = server([{ ...view(), paired: [relayed, refused] }], () => new Response(null, { status: 204 }));
+    const { section } = await open(v2);
+    const mine = section("Your computers");
+    const row = (id: string) => mine.querySelector(`[data-paired="${id}"]`)!;
+    expect(row("cmp-abc").textContent).toContain("In use by run 0000beef on runner-b");
+    expect(row("cmp-abc").querySelector("[data-hold-note]"), "nothing went wrong").toBeNull();
+    expect(row("cmp-late").querySelector("[data-hold-note]")?.textContent).toBe(NOTE);
+    expect(row("cmp-late").textContent).toContain("Offline");
+    expect(row("cmp-late").textContent, "the note says what to do").not.toContain("Open its driver on that computer: it dials this server.");
   });
 
   it("says a failed read in the server's words, and reads again on Try again", async () => {

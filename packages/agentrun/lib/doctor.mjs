@@ -162,13 +162,13 @@ export async function doctorOf({
     try {
       token = readToken({ data, record, env });
     } catch (error) {
-      capsWhy = error.message;
+      capsWhy = error.message.replace(/\.$/, "");
     }
     if (token) {
       const answer = await getJson(`${base}/capabilities`, { authorization: `Bearer ${token}` });
       if (answer.status === 200 && answer.body && typeof answer.body === "object") caps = answer.body;
       else capsWhy = `GET /v2/capabilities answered ${answer.status || answer.error}`;
-    } else capsWhy ??= `no token to read the server's capabilities with: ${join(data, ".token")} is not there${record?.token_file ? "" : " (the server was started with AGENTRUN_TOKEN; set AGENTRUN_API_KEY to it)"}`;
+    } else capsWhy ??= `no token to read the server's capabilities with: ${join(data, ".token")} is not there`;
   }
   const version = caps?.server?.version;
 
@@ -331,8 +331,17 @@ export async function doctorOf({
   // Another box that is ready (Daytona, Modal, ...) runs an agent's computer without Docker: then Docker's absence is a fact.
   const others = boxes.filter((b) => b.id !== "docker" && b.available === true).map((b) => b.id);
   if (box?.available) add("docker", "Docker", "ok", "Docker boxes are ready: an agent with a computer runs its tools in one.");
-  else if (box && others.length) add("docker", "Docker", "info", `No Docker box: ${box.reason ?? "unavailable"}. An agent that needs a computer runs in ${others.join(" or ")} instead.`, { details: { ready: others } });
-  else if (box) add("docker", "Docker", "warn", `No Docker box: ${box.reason ?? "unavailable"}. An agent that needs a computer (bash, files) fails to start, and new agents run on the runner.`, { fix: dockerFix(box.reason ?? ""), docs: DOCS.docker });
+  // Where a new agent with no place goes is the server's places.default_place: null where it has no default (no Docker,
+  // and a runner with no shell: Mode 1), so it names its place, never another box that is ready; else as before.
+  else if (box && others.length) {
+    const ready = others.join(" or ");
+    const goes = caps?.places?.default_place === null ? `A new agent must name its place: a box (${ready}), or the runner` : `An agent that needs a computer runs in ${ready} instead`;
+    add("docker", "Docker", "info", `No Docker box: ${box.reason ?? "unavailable"}. ${goes}.`, { details: { ready: others } });
+  }
+  else if (box) {
+    const goes = caps?.places?.default_place === null ? "a new agent must name its place: a box, or the runner" : "new agents run on the runner";
+    add("docker", "Docker", "warn", `No Docker box: ${box.reason ?? "unavailable"}. An agent that needs a computer (bash, files) fails to start, and ${goes}.`, { fix: dockerFix(box.reason ?? ""), docs: DOCS.docker });
+  }
   else {
     const info = exec("docker", ["info", "--format", "{{.ServerVersion}}"]);
     const said = `${info.stderr ?? ""}`.trim().split("\n")[0];
@@ -370,11 +379,7 @@ export const DOCTOR = {
   options: { json: { type: "boolean" } },
   async run({ values, io, env, cli }) {
     if (values["base-url"] !== undefined) throw cli.fail(2, "agentrun doctor checks the AgentRun on this machine, the server of --data (default ~/.agentrun); it takes no --base-url.");
-    const readToken = ({ data, record, env: vars }) => {
-      if (record && !record.token_file) return vars.AGENTRUN_API_KEY || undefined;
-      return cli.privateFile(join(data, ".token"))?.trim() || undefined;
-    };
-    const report = await doctorOf({ data: values.data, env, readRecord: cli.privateFile, readToken });
+    const report = await doctorOf({ data: values.data, env, readRecord: cli.privateFile, readToken: cli.localToken });
     io.stdout.write(values.json ? `${JSON.stringify(report, null, 2)}\n` : textOf(report));
     return report.exit;
   },

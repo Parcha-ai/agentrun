@@ -6,8 +6,9 @@
 // (the harness its owner installs: goose) is harness.mjs's, and service
 // (AgentRun as a launchd or systemd user service) and stop (the AgentRun the installer started in the background) are
 // service.mjs's, doctor (how this AgentRun is set up, read-only) is doctor.mjs's, export (an agent written as a template
-// package folder) is export.mjs's, and deploy (an agent's package sent to another AgentRun, with its lock, rollback and
-// delete) is deploy.mjs's. Any other word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
+// package folder) is export.mjs's, share (what sharing a run would send, shown with --dry-run) is share.mjs's, and
+// deploy (an agent's package sent to another AgentRun, with its lock, rollback and delete) is deploy.mjs's. Any other
+// word runs agentrun-WORD from PATH, as git runs git-WORD (externalOf, below).
 import { spawn } from "node:child_process";
 import { accessSync, closeSync, constants, fstatSync, openSync, readFileSync, statSync } from "node:fs";
 import { homedir, constants as osConstants } from "node:os";
@@ -17,7 +18,7 @@ import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
 import { guarded, refusalExit } from "./login.mjs";
 import { LOCAL } from "./local.mjs";
-import { apiBase } from "./target.mjs";
+import { apiBase, checkedBase } from "./target.mjs";
 
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
@@ -70,7 +71,8 @@ const HELP = () => {
     "The server: --base-url, else AGENTRUN_BASE_URL, else base_url in $XDG_CONFIG_HOME/agentrun/config.json, else the",
     "server started on this machine with the data directory (--data, default ~/.agentrun); /v2 is added to an address",
     "whose path holds none, its path prefix kept. The token: AGENTRUN_API_KEY, else api_key in the config file (for",
-    "the same address, with or without /v2), else that server's own; it is never a flag and never printed. agentrun login",
+    "the same address, with or without /v2), else that server's own (its .token file, or AGENTRUN_TOKEN for one started",
+    "with its token there; AGENTRUN_TOKEN goes to no other address); it is never a flag and never printed. agentrun login",
     "--base-url URL checks a token read from stdin and writes the config file (0600), or on a terminal signs in with a",
     "device code when the server offers one; agentrun login --to URL (or cloud) signs in with a device code when the",
     "server offers one, else reads the token from stdin; agentrun logout removes it.",
@@ -154,28 +156,31 @@ const alive = (pid) => {
   }
 };
 
-/** A base URL as every command takes it: http or https, with no query, fragment, user or password, which would carry
- *  the token elsewhere or swallow the path appended to it; then its API base (target.mjs apiBase: /v2 added when its
- *  path holds no v2 segment, the origin unchanged). `where` names it in the refusal; the URL itself is never echoed, as
- *  it may hold a password. */
+/** A base URL as every command takes it (target.mjs checkedBase): its API base, or a refusal `where` names; the URL
+ *  itself is never echoed, as it may hold a password. */
 function baseOf(given, where) {
-  const url = URL.canParse(given) ? new URL(given) : undefined;
-  if (!url || !/^https?:$/.test(url.protocol) || /[?#]/.test(given) || url.username || url.password) {
-    throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the server's address, or its API's base ending /v2.`);
-  }
-  return apiBase(given);
+  const base = checkedBase(given);
+  if (base === undefined) throw usageError(`${where} must be an http or https URL with no query, fragment, user or password: the server's address, or its API's base ending /v2.`);
+  return base;
 }
 
-const isBase = (url) => {
-  try {
-    return baseOf(url, ""), true;
-  } catch {
-    return false;
+const isBase = (url) => checkedBase(url) !== undefined;
+
+/** The token of the server on this machine whose data directory is `data` and whose record is `record`: one started with
+ *  its token in AGENTRUN_TOKEN (its record names no token file) takes AGENTRUN_API_KEY, else AGENTRUN_TOKEN, and is
+ *  refused (exit 4) when neither is set; else the directory's private .token. Undefined when that file is not there.
+ *  Every command (targetOf) and the doctor read it so. */
+function localToken({ data, record, env }) {
+  if (record && !record.token_file) {
+    const token = env.AGENTRUN_API_KEY || env.AGENTRUN_TOKEN;
+    if (!token) throw new Exit(4, `The server recorded in ${join(data, ".server.json")} was started with its token in AGENTRUN_TOKEN; set AGENTRUN_API_KEY (or AGENTRUN_TOKEN) to it.`);
+    return token;
   }
-};
+  return privateFile(join(data, ".token"))?.trim() || undefined;
+}
 
 /** Where the request goes and the token it carries. A token goes only with the address it came with: the local
- *  server's own token is never sent to another server. The local token is DIR/.token, whatever the record says. */
+ *  server's own token is never sent to another server. The local token is localToken's. */
 function targetOf(values, env) {
   const data = resolve(values.data ?? join(homedir(), ".agentrun"));
   const configFile = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agentrun", "config.json");
@@ -200,10 +205,9 @@ function targetOf(values, env) {
   let token = env.AGENTRUN_API_KEY || (config.base_url && base === apiBase(config.base_url) ? config.api_key : undefined);
   const isLocal = base === local;
   if (isLocal && record && !alive(record.pid)) throw new Exit(3, stale);
-  if (!token && isLocal) {
-    if (record && !record.token_file) throw new Exit(4, `The server recorded in ${recordFile} was started with its token in AGENTRUN_TOKEN; set AGENTRUN_API_KEY to it.`);
-    token = privateFile(join(data, ".token"))?.trim();
-  }
+  // Only here, on the local server's own address, is AGENTRUN_TOKEN sent; another address takes AGENTRUN_API_KEY or the
+  // token kept for it.
+  if (!token && isLocal) token = localToken({ data, record, env });
   if (!token) {
     throw new Exit(4, isLocal
       ? `No token: AGENTRUN_API_KEY is not set and ${join(data, ".token")} does not exist; ${START}.`
@@ -500,7 +504,13 @@ async function command(entry, argv, env, io) {
   const req = { method: entry.method, path: `${path}${search}`, headers, body, type, raw: entry.raw };
   if (values.follow) return followTimeline(client, req.path, headers);
   if (values.all) return listAll(client, req, entry);
-  if (!values.wait) return send(client, req);
+  if (!values.wait) {
+    const code = await send(client, req);
+    // Whoever reads the answer (a person, or a coding agent running this) is told whose text it holds, on a pipe too.
+    const notice = FLAGS[entry.operationId]?.notice;
+    if (code === 0 && notice) io.stderr.write(`${notice}\n`);
+    return code;
+  }
   // The start is bounded as the wait is: by --timeout, which the wait then has what is left of, else as one of the
   // wait's requests is.
   const began = Date.now();
@@ -526,7 +536,7 @@ async function local(entry, argv, env, io) {
   const count = entry.pathParams.length;
   // An entry whose arguments a flag can stand in for (`harness install --recipe FILE`) takes none too; its run checks.
   if (args.length !== count && !(entry.argsOptional && args.length === 0)) throw usageError(`${helpOf(entry, entry.help)}\n\n${usageOf(entry)} takes ${count || "no"} argument${count === 1 ? "" : "s"}, given ${args.length}.`);
-  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, privateFile, alive, BAD_HEADER };
+  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, localToken, clientOf, request, privateFile, alive, BAD_HEADER };
   return entry.run({ values, args, env, io, cli });
 }
 
@@ -632,6 +642,18 @@ async function run(argv, env, io) {
   if (entry) return command(entry, argv, env, io);
   if (verb === undefined) return io.stdout.write(`${nounHelp(noun, listed)}\n`), 0;
   throw usageError(`agentrun ${noun} has no verb ${verb}.\n\n${nounHelp(noun, listed)}`);
+}
+
+/** `entry`, a hand-written command, run as main runs one of LOCAL: for a test whose entry is bound to what it injects
+ *  (share.mjs shareOf's opener). Its exit code, a refusal's message on stderr. */
+export async function runLocal(entry, argv, env, io) {
+  try {
+    return await local(entry, argv, env, io);
+  } catch (error) {
+    if (!(error instanceof Exit)) throw error;
+    io.stderr.write(`${error.message}\n`);
+    return error.code;
+  }
 }
 
 export async function main(argv, env = process.env, io = process) {

@@ -6,26 +6,25 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { inspectWorkflow, resolveSchemaForWorkflow } from "@parcha/agentrun-dsl";
 import { ApiError, invalid } from "../errors.js";
 import { canonical, isObject, cliLearningOf, learningSettingForBody, type AgenticBody } from "../store/agent-body.js";
-import type { Claim, RunOrigin, Store, SettingsGuard } from "../store/store.js";
+import type { Claim, LearningAt, RunOrigin, Store, SettingsGuard } from "../store/store.js";
 import type { AgentEntry } from "../agents-store.js";
 import { uuidv7 } from "../ids.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
 import { labelsIssues, labelsOf } from "../run-labels.js";
-import { chooseWorkflows, type LearnedWorkflow, learningFolderOf, seedAt, secretsShown, withAgentRepo } from "../learning.js";
+import { chooseWorkflows, inLearningQueue, type LearnedWorkflow, seedAt, secretsShown } from "../learning.js";
 import { INSTRUCTION_EVIDENCE_BYTES } from "../native/instructions.js";
 import { CLI_POLICY_BYTES } from "../cli-learning/policy.js";
 import { refuseWhileNoRunner } from "../runner/presence.js";
 import { secretRedactor } from "../runner/redact.js";
-import { redactedOutput } from "../key-refusal.js";
+import { redactedOutput, withheldWhole } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
-import { snapshotAt } from "../learn/folder.js";
-import { purgedRun, purgeGate, refusedIn, refusedOf } from "../purged-workflow.js";
-import type { RunRow } from "../store/index.js";
+import { learningOf } from "../learn/rows.js";
+import { purgedRun, purgedRows } from "../purged-workflow.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 import type { SdkWorkflowCheckEvent } from "./check.js";
-import { promotionOf, type PromotionRecord, promotionsOf, resetAtOf } from "../learn/promote.js";
+import { promotionOf, promotionsOf, resetAtOf } from "../learn/promote.js";
 import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
 import { sdkTakes, workflowDigest } from "../runner/workflow-first.js";
 
@@ -78,9 +77,15 @@ export type SdkInbox = {
   batches: { sequence: number; events: SdkEvent[] }[];
   /** Exact promoted executable workflows delivered by the start receipt. */
   learning_workflows?: LearnedWorkflow[];
-  /** The learning commit each of learning_workflows was read at, by name (its seed's, or its champion record's): where
-   *  the receipt asks whether a purged run wrote it (receipt). */
+  /** The runs whose text learning_workflows and learning_check's draft are, every file's writer (a README.md's as well
+   *  as a workflow.json's): a receipt sent again after one of them is purged answers 410 purged (receipt). */
+  learning_writers?: string[];
+  /** Legacy: a server before learning rows wrote this (the save each workflow was read at) and no learning_writers. */
   learning_commits?: Record<string, string>;
+  /** The learned workflow a learned_workflow start names, by its call's id as stored, where its input is stored withheld (a held
+   *  value split across its arguments, withheldParts): the parent check of a callback nested in it reads its name here
+   *  (checkToolParents). Only a name of learning_workflows, never what the caller wrote otherwise. */
+  workflow_calls?: Record<string, string>;
   /** A compiled draft reserved for a shadow check, never supplied to the native agent. */
   learning_check?: SdkWorkflowCheck;
   /** Server cleaning changed evidence: two different secret-bearing answers must never agree by their placeholder. */
@@ -163,6 +168,34 @@ export async function sdkInbox(store: Pick<Store, "settings">, runId: string): P
   return row as unknown as SdkInbox;
 }
 
+/** An inbox a server before learning rows wrote: it holds learning and names no writers (a start now always names them,
+ *  none too), so whether a purged run wrote its text can't be known. Its receipt is refused (receipt). */
+const unwritten = (inbox: SdkInbox): boolean =>
+  inbox.learning_writers === undefined && (inbox.learning_commits !== undefined || !!inbox.learning_workflows?.length || !!inbox.learning_check);
+
+/** What every SDK run's inbox holds of run `runId`'s text, gone (its purge; `agentId` the run's agent): an inbox whose
+ *  workflows or check draft it wrote (`learning_writers` names it) keeps none of them, its writers kept, so its receipt
+ *  answers 410 purged. An inbox that names no writers (unwritten) is emptied by the purge of any run of its own agent,
+ *  since the run may be one of them, its learning_commits kept, so its receipt is refused still. A run of another agent
+ *  never wrote that agent's learning, so its purge writes no row of such an inbox. Run after the run's purge committed,
+ *  and a start checks its writers after its inbox is written (start), so one of the two always sees the other: no
+ *  inbox keeps a purged run's workflow text. */
+export async function forgetSdkCopies(store: Pick<Store, "settings" | "runs">, agentId: string, runId: string): Promise<void> {
+  for (const row of await store.settings.all({ prefix: keyOf("") })) {
+    for (let value = row.value, retry = 0; retry < 20; retry++) {
+      if (!isObject(value)) break;
+      const inbox = value as unknown as SdkInbox;
+      if (!inbox.learning_workflows?.length && !inbox.learning_check) break;
+      const legacy = unwritten(inbox);
+      if (!legacy && !inbox.learning_writers?.includes(runId)) break;
+      if (legacy && (await store.runs.get(inbox.run_id))?.agentId !== agentId) break;
+      const { learning_check: _check, ...rest } = inbox;
+      if (await store.settings.replaceIf(row.key, value, { ...rest, learning_workflows: [], ...(legacy ? { learning_commits: inbox.learning_commits ?? {} } : {}) })) break;
+      value = await store.settings.get(row.key);
+    }
+  }
+}
+
 /** Completion and closure compete on the same inbox. A stale runner cannot close it, and a completion that won
  *  remains available to the next claim even if this one cannot read or journal it. No external SDK call is replayed.
  *  An expiry is checked against the row it replaces: an events batch that moved the deadline keeps the inbox open. */
@@ -183,8 +216,9 @@ const writableInbox = (row: SdkInbox) => {
 };
 
 /** Parents are evidence relationships within this inbox, never caller-chosen labels that hide top-level work. Check
- *  inside modify's compare-and-replace so a concurrent upload cannot change the history we validated. */
-function checkToolParents(row: SdkInbox, events: readonly SdkEvent[]): void {
+ *  inside modify's compare-and-replace so a concurrent upload cannot change the history we validated. A learned_workflow
+ *  start stored withheld names its workflow in `named` (the row's workflow_calls and this batch's). */
+function checkToolParents(row: SdkInbox, events: readonly SdkEvent[], named: Readonly<Record<string, string>> = {}): void {
   const calls = new Map<string, { name: string; parent?: string; workflow?: string; open: boolean }>();
   const openChildren = new Map<string, number>();
   const tools = new Map<string, ReadonlySet<string>>();
@@ -204,7 +238,7 @@ function checkToolParents(row: SdkInbox, events: readonly SdkEvent[]): void {
         openChildren.set(event.parent_tool_use_id, (openChildren.get(event.parent_tool_use_id) ?? 0) + 1);
       }
       calls.set(event.id, { name: event.name, parent: event.parent_tool_use_id, open: true,
-        ...(event.name === "learned_workflow" && isObject(event.input) && typeof event.input.name === "string" ? { workflow: event.input.name } : {}),
+        ...(event.name === "learned_workflow" && isObject(event.input) && typeof event.input.name === "string" ? { workflow: event.input.name } : event.name === "learned_workflow" && Object.hasOwn(named, event.id) ? { workflow: named[event.id] } : {}),
       });
     } else {
       if (openChildren.get(event.id)) refuse("SDK workflow callbacks must finish before their parent workflow.");
@@ -218,6 +252,44 @@ function checkToolParents(row: SdkInbox, events: readonly SdkEvent[]): void {
       }
     }
   }
+}
+
+/** Which of `parts` (what a run reported: a tool event's input and output, a completion's answer and error) are stored
+ *  withheld, as "[redacted]": each whose text (a string as it is, anything else as its JSON) holds a held value no cut in
+ *  place takes (key-refusal.ts withheldWhole, whose join view reads a JSON text's strings joined: one split across two
+ *  of its strings), then every one when a value is split across two of them. That second read takes the parts as they
+ *  came, one JSON text, each part withheld by itself a span cut in place (withheldWhole's `held`): a value read wholly
+ *  inside one is that part's, and one with any of its characters in another part withholds them all. Read with a
+ *  withheld part as "[redacted]" instead, the head of a second value at its edge would be gone, and the rest of it in
+ *  the next part stored as it came. Only these parts, never the event's or the completion's own facts; each part not
+ *  withheld is cut in place after (clean). A part JSON cannot write is withheld. */
+function withheldParts(parts: Record<string, unknown>, values: readonly string[]): Set<string> {
+  const given = Object.entries(parts).filter(([, part]) => part !== undefined);
+  const jsonOf = (part: unknown): string | undefined => {
+    try {
+      return JSON.stringify(part);
+    } catch {
+      return undefined;
+    }
+  };
+  const withheld = new Set<string>();
+  for (const [name, part] of given) {
+    const text = typeof part === "string" ? part : jsonOf(part);
+    if (text === undefined || withheldWhole(text, values)) withheld.add(name);
+  }
+  if (given.length < 2) return withheld;
+  // The parts as one JSON array, each withheld one's span of it held; one JSON cannot write is read as "[redacted]".
+  let joined = "[";
+  const held: [number, number][] = [];
+  for (const [i, [name, part]] of given.entries()) {
+    if (i) joined += ",";
+    const json = jsonOf(part) ?? JSON.stringify("[redacted]");
+    if (withheld.has(name)) held.push([joined.length, joined.length + json.length]);
+    joined += json;
+  }
+  joined += "]";
+  if (withheldWhole(joined, values, held)) for (const [name] of given) withheld.add(name);
+  return withheld;
 }
 
 /** The key a server signs its SDK runs' credentials with: derived from its seal key (seal-key.ts), which stays the
@@ -249,11 +321,14 @@ export class SdkRuns {
     if (!ok) throw new ApiError("unauthenticated", "This credential is scoped to a different SDK run.");
     await sdkInbox(this.store, runId);
   }
+  /** The values a body is cut of: the server's secrets and, for a run, its credentials. */
+  private held(runId?: string): readonly string[] {
+    return secretRedactor([...this.secrets(), ...(runId ? [this.secret, ...this.earlier].map((key) => sign(key, runId, this.lane)) : [])]).heldValues?.() ?? [];
+  }
   private clean<T>(body: T, runId?: string): T {
-    const redact = secretRedactor([...this.secrets(), ...(runId ? [this.secret, ...this.earlier].map((key) => sign(key, runId, this.lane)) : [])]);
     // Redact values structurally: a long string or encoded credential can be withheld whole,
     // so treating serialized JSON as prose could remove its delimiters and corrupt the envelope.
-    return redactedOutput(body, redact.heldValues?.() ?? []) as T;
+    return redactedOutput(body, this.held(runId)) as T;
   }
   async start(
     entry: AgentEntry,
@@ -346,7 +421,7 @@ export class SdkRuns {
       if (learning.seedFailed)
         throw new ApiError(
           "unavailable",
-          "The learning seed could not be read. Retry after restoring the agent learning folder.",
+          "The learning seed could not be read. Retry the start.",
         );
     }
     const revision = entry.revision;
@@ -356,17 +431,18 @@ export class SdkRuns {
       const reset = learning ? await resetAtOf(this.store.settings, entry.agent.id) : undefined;
       if (learning && reset !== undefined && !(learning.seededAt !== undefined && learning.seededAt > reset))
         throw new ApiError("unavailable", "The agent's learning was reset while this run started: start it again.", { retry_after_ms: 1_000 });
-      const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], commits: {}, candidates: [] };
+      const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], writers: new Map<LearnedWorkflow, string[]>(), candidates: [], drafts: {} as Record<string, string[]> };
       const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
       const runId = uuidv7();
       const redacted = cleanedInput !== input || cleaned.instructions !== instructions;
       // A turn is a check only when it can be one's baseline: no protected value in its task or policy, and an input the
       // draft takes (sdkTakes). A prose turn whose input the client cannot resolve is given back (releaseSdkCheck).
       const takes = (flow: LearnedWorkflow) => !redacted && sdkTakes(flow, input, resolveSchemaForWorkflow as never);
-      const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }), refused: refusedIn(() => learningFolderOf(this.data, entry.agent.id), this.store) };
+      const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }) };
       const check = learning ? await reserveSdkCheck(checkDeps, { runId, revision: learning.seed, learning: revisionBody.learning, flows: selected.candidates, takes }) : undefined;
       // A shadow check needs the original agent's own answer, not an answer produced by its existing champion.
       const workflows = check ? [] : selected.workflows;
+      const writers = [...new Set([...workflows.flatMap((flow) => selected.writers.get(flow) ?? []), ...(check ? (selected.drafts[check.workflow.name] ?? []) : [])])];
       const launch: RunLaunch = {
         input: { content: cleanedInput },
         title: title === undefined ? cleanedInput.trim().replace(/\s+/g, " ").slice(0, 80) : this.clean({ title }).title,
@@ -388,11 +464,16 @@ export class SdkRuns {
           expires_at: now + (cli ? SDK_MAX_OPEN_MS : SDK_OPEN_MS),
           batches: [],
           learning_workflows: workflows,
-          ...(workflows.length ? { learning_commits: selected.commits } : {}),
+          // Named whenever it holds learning, none too: an inbox without the key is an earlier server's (unwritten).
+          ...(workflows.length || check ? { learning_writers: writers } : {}),
           ...(check ? { learning_check: check } : {}),
           ...(redacted ? { check_redacted: true } : {}),
           ...(cli && cleanedInput !== input ? { evidence_incomplete: true } : {}),
         } satisfies SdkInbox);
+        // A writer purged since the selection read it (the purge's own scrub of inboxes, forgetSdkCopies, runs after it
+        // commits, so it sees this inbox unless this read sees the purge): the start is refused, its inbox removed.
+        if (writers.length && (await purgedRows(this.store, writers)).size)
+          throw new ApiError("unavailable", "The agent's learning changed while this run started: start it again.", { retry_after_ms: 1_000 });
         await this.store.runs.create(
           { id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(cli ? { expectedCurrent, settingsGuards: sourceGuards } : {}), ...(origin ? { origin } : {}), ...(labels ? { labels } : {}), ...(startedAt !== undefined ? { startedAt } : {}) },
           { body: launchBody(launch) },
@@ -402,7 +483,7 @@ export class SdkRuns {
         // The reservation comes first because the launch it is created with withholds the champion from a check's turn.
         // No turn ran, so the check waits for the next one, the release uncounted: never a hold of a draft never compared.
         if (check) {
-          const record = promotionOf(await promotionsOf(this.store.settings, entry.agent.id).catch(() => []), check.workflow.name, check.digest);
+          const record = promotionOf(await promotionsOf(this.store.learning, entry.agent.id).catch(() => []), check.workflow.name, check.digest);
           if (record?.decided === "replaying" && record.replay_id === check.id) await releaseSdkCheck(checkDeps, record, "its start could not be admitted", false).catch(() => undefined);
         }
         // Two source hooks may admit the same immutable prompt window under different transport keys.
@@ -419,11 +500,11 @@ export class SdkRuns {
       }
       return runId;
     };
-    // A learning start is admitted in its agent's learning queue (learning.ts withAgentRepo), the one a reset of the
+    // A learning start is admitted in its agent's learning queue (learning.ts inLearningQueue), the one a reset of the
     // agent's learning deletes it in: either the reset comes first, and the seed read before it is refused above, or this
     // run's row is made first, and the reset refuses while it goes (409 learning_busy). No check of a draft the reset
     // deleted is reserved, and no run starts on it.
-    const runId = learning ? await withAgentRepo(this.data, entry.agent.id, admit) : await admit();
+    const runId = learning ? await inLearningQueue(this.data, entry.agent.id, admit) : await admit();
     return this.receipt(runId, consoleOrigin);
   }
   async receipt(runId: string, consoleOrigin: string) {
@@ -432,13 +513,13 @@ export class SdkRuns {
     const launch = (await this.store.runs.launch(runId)).body as unknown as RunLaunch;
     const inbox = await sdkInbox(this.store, runId);
     const workflows = inbox.learning_workflows ?? [];
+    if (unwritten(inbox))
+      throw new ApiError(
+        "not_continuable",
+        "This SDK start was pinned before a server upgrade, so the runs that wrote its learning can't be checked. Start a new run with a new Idempotency-Key.",
+      );
     // A start sent again answers the receipt it pinned, never a workflow a purged run wrote: 410 purged, as its file read.
-    // Each is read at the commit it was taken from (learning_commits; the check's draft at the seed).
-    const seed = launch.learning?.seed ?? null;
-    const purged = seed === null ? undefined : await this.purgedPinned(run.agentId, [
-      ...workflows.map((flow) => [flow, inbox.learning_commits?.[flow.name] ?? seed] as const),
-      ...(inbox.learning_check ? [[inbox.learning_check.workflow, seed] as const] : []),
-    ]);
+    const purged = [...(await purgedRows(this.store, inbox.learning_writers ?? [])).values()][0];
     if (purged) throw purgedRun(purged);
     const shown = secretsShown(this.secrets(), { local: true });
     if (
@@ -466,53 +547,62 @@ export class SdkRuns {
       },
     };
   }
-  /** The purged run (purgeGate) that wrote a workflow of `pinned`, each read at the learning commit a start took its
-   *  text from. One read-only exec per commit. */
-  private async purgedPinned(agentId: string, pinned: readonly (readonly [LearnedWorkflow, string])[]): Promise<RunRow | undefined> {
-    if (pinned.length === 0) return undefined;
-    const folder = learningFolderOf(this.data, agentId);
-    try {
-      const reads = new Map<string, Promise<ReadonlyMap<string, RunRow>>>();
-      const at = (commit: string) => reads.get(commit) ?? reads.set(commit, snapshotAt(folder.workspace, commit).then(async (snapshot) => (await purgeGate(snapshot, this.store)).workflows)).get(commit)!;
-      for (const [flow, commit] of pinned) {
-        const row = (await at(commit)).get(flow.name);
-        if (row) return row;
-      }
-      return undefined;
-    } finally { await folder.end(); }
+  /** The workflows a start delivers, each the seed's or its champion's text read at its record's save, and the runs whose
+   *  text each is (`writers`: every run that wrote one of its files there, its README.md's description as well as its
+   *  workflow.json's text); the drafts a check may take, and the runs whose text each is (`drafts`, by name). A text and
+   *  its writer are two reads, and a purge rewrites the saves they read in place: it adds a save of its own after the
+   *  newest (Store.learning purgeRun), so a selection a purge save moved under is read again (a normal save rewrites
+   *  nothing it read), and one that keeps moving refuses the start, to start again. Never the purged run's text named as
+   *  no run's. */
+  private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; writers: Map<LearnedWorkflow, string[]>; candidates: LearnedWorkflow[]; drafts: Record<string, string[]> }> {
+    const newest = () => this.store.learning.newestPurge(agentId);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const before = await newest();
+      const selected = await this.selectedOnce(agentId, revision, binding);
+      if ((await newest()) === before) return selected;
+    }
+    throw new ApiError("unavailable", "The agent's learning changed while this run started: start it again.", { retry_after_ms: 1_000 });
   }
-  /** The workflows a start delivers and the learning commit each was read at (`commits`: the seed's, or its champion
-   *  record's), and the drafts a check may take. */
-  private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; commits: Record<string, string>; candidates: LearnedWorkflow[] }> {
-    const folder = learningFolderOf(this.data, agentId);
-    try {
-      const seed = await seedAt(folder.workspace, revision, this.store);
-      const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
-      const dsl = await import("@parcha/agentrun-dsl");
-      const { tools, gated, deniedBy } = sdkDraftTools(binding.workflow_tools);
-      const records = await promotionsOf(this.store.settings, agentId);
-      let room = 256 * 1024;
-      const compatible = (flow: LearnedWorkflow) => {
-        const bytes = Buffer.byteLength(JSON.stringify(flow));
-        if (bytes > room || draftProblems(dsl, flow.workflow, tools, gated, deniedBy, undefined, binding.workflow_adapters).length) return false;
-        room -= bytes;
-        return true;
-      };
-      const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [], commits: Record<string, string> = {};
-      const atCommit = async (name: string, commit: string) =>
-        chooseWorkflows(await seedAt(folder.workspace, commit, this.store), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
-      // The champion skips a record the purge gate refuses at its commit (purged-workflow.ts refusedOf), as a claim's does.
-      const refused = async (all: readonly PromotionRecord[], names?: Iterable<string>) => refusedOf(all, names ?? all.map((one) => one.workflow), folder.workspace, this.store);
-      for (const flow of flows) {
-        const { text: serving, champion } = await championTextOf(records, flow, atCommit, refused);
-        if (serving && compatible(serving)) {
-          workflows.push(serving);
-          commits[serving.name] = serving === flow ? seed.sha! : champion!.commit!;
-        }
-        if ((!serving || workflowDigest(serving) !== workflowDigest(flow)) && compatible(flow)) candidates.push(flow);
+  private async selectedOnce(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; writers: Map<LearnedWorkflow, string[]>; candidates: LearnedWorkflow[]; drafts: Record<string, string[]> }> {
+    const learning = learningOf(this.store, agentId);
+    const reads = new Map<string, Promise<LearningAt | undefined>>();
+    const readSave = (save: string) => reads.get(save) ?? reads.set(save, this.store.learning.itemsAt(agentId, save)).get(save)!;
+    // Every run whose file of workflow `name` save `save` holds: its README.md's (the description delivered) as well as
+    // its workflow.json's (the item's run), and any other file's, so a purge of any of them refuses the receipt.
+    const writersAt = async (name: string, save: string | null): Promise<string[]> => {
+      const item = save === null ? undefined : (await readSave(save))?.items.find((one) => one.kind === "workflow" && one.name === name);
+      if (!item) return [];
+      return [...new Set([item.byRun, ...Object.values(item.writers ?? {})].filter((run): run is string => typeof run === "string"))];
+    };
+    const seed = await seedAt(learning, revision);
+    const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
+    const dsl = await import("@parcha/agentrun-dsl");
+    const { tools, gated, deniedBy } = sdkDraftTools(binding.workflow_tools);
+    const records = await promotionsOf(this.store.learning, agentId);
+    let room = 256 * 1024;
+    const compatible = (flow: LearnedWorkflow) => {
+      const bytes = Buffer.byteLength(JSON.stringify(flow));
+      if (bytes > room || draftProblems(dsl, flow.workflow, tools, gated, deniedBy, undefined, binding.workflow_adapters).length) return false;
+      room -= bytes;
+      return true;
+    };
+    const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [], writers = new Map<LearnedWorkflow, string[]>(), drafts: Record<string, string[]> = {};
+    const atSave = async (name: string, save: string) =>
+      chooseWorkflows(await seedAt(learning, save), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
+    for (const flow of flows) {
+      const { text: serving, champion } = await championTextOf(records, flow, atSave);
+      if (serving && compatible(serving)) {
+        workflows.push(serving);
+        const runs = await writersAt(serving.name, serving === flow ? seed.sha : champion!.commit ?? null);
+        if (runs.length) writers.set(serving, runs);
       }
-      return { workflows, commits, candidates };
-    } finally { await folder.end(); }
+      if ((!serving || workflowDigest(serving) !== workflowDigest(flow)) && compatible(flow)) {
+        candidates.push(flow);
+        const runs = await writersAt(flow.name, seed.sha);
+        if (runs.length) drafts[flow.name] = runs;
+      }
+    }
+    return { workflows, writers, candidates, drafts };
   }
   private async modify(runId: string, change: (row: SdkInbox) => SdkInbox, limit = TOTAL_LIMIT): Promise<void> {
     for (let retry = 0; retry < 20; retry++) {
@@ -595,7 +685,32 @@ export class SdkRuns {
       }
       return refuse("Unsupported SDK event type.");
     });
-    const batch = this.clean({ sequence: body.sequence as number, events }, runId);
+    // A tool event's input and output (a web tool's answer among them), and a workflow check's answer and reason, are
+    // read whole first, alone and together (withheldParts): a held value split across two of their strings stores the
+    // part that holds it as "[redacted]", the event's own facts as they came.
+    const values = this.held(runId);
+    const REDACTED = "[redacted]";
+    const shown = events.map((event): SdkEvent => {
+      if (event.type === "tool") {
+        const withheld = withheldParts({ input: event.input, output: event.output }, values);
+        return { ...event, ...(withheld.has("input") ? { input: REDACTED } : {}), ...(withheld.has("output") ? { output: REDACTED } : {}) };
+      }
+      if (event.type === "workflow_check") {
+        const withheld = withheldParts({ answer: event.answer, reason: event.reason }, values);
+        return { ...event, ...(withheld.has("answer") ? { answer: REDACTED } : {}), ...(withheld.has("reason") ? { reason: REDACTED } : {}) };
+      }
+      return event;
+    });
+    const batch = this.clean({ sequence: body.sequence as number, events: shown }, runId);
+    // The workflow a learned_workflow start names, where its input is stored withheld: kept apart from it, for the
+    // parent check of a callback nested in it (SdkInbox.workflow_calls), when the run was given that workflow. Keyed
+    // by the start's id as stored (cut like the rest of the batch), the id that check reads: never the id as sent.
+    const named: Record<string, string> = {};
+    for (const [i, event] of events.entries()) {
+      const stored = batch.events[i];
+      if (event.type === "tool" && stored?.type === "tool" && event.name === "learned_workflow" && event.status === "started" && stored.input === REDACTED && isObject(event.input) && typeof event.input.name === "string")
+        named[stored.id] = event.input.name;
+    }
     const checkRedacted = canonical(events) !== canonical(batch.events);
     const known = (await sdkInbox(this.store, runId)).batches.find((item) => item.sequence === batch.sequence);
     if (known) {
@@ -617,14 +732,17 @@ export class SdkRuns {
         if (row.completion) throw new ApiError("not_continuable", "SDK run completion is already recorded.");
         if (batch.sequence !== row.batches.length + 1)
           throw new ApiError("idempotency_mismatch", "SDK event sequences must be contiguous.");
-        checkToolParents(row, batch.events);
+        const given = new Set((row.learning_workflows ?? []).map((flow) => flow.name));
+        const kept = Object.fromEntries(Object.entries(named).filter(([, name]) => given.has(name)));
+        const calls = { ...row.workflow_calls, ...kept };
+        checkToolParents(row, batch.events, calls);
         const checks = [...row.batches.flatMap(item => item.events), ...batch.events].filter((event): event is SdkWorkflowCheckEvent => event.type === "workflow_check");
         if (checks.length > 1) refuse("Only one workflow check may be delivered per SDK run.");
         for (const check of checks) if (!row.learning_check || check.id !== row.learning_check.id || check.digest !== row.learning_check.digest)
           refuse("The workflow check must name this SDK run's reserved candidate.");
         // Every accepted batch, an empty one too, keeps the inbox open another hour, up to a day after its start.
         const expires = Math.max(row.expires_at, Math.min(Date.now() + SDK_OPEN_MS, row.created_at + SDK_MAX_OPEN_MS));
-        return { ...row, batches: [...row.batches, batch], expires_at: expires, ...(checkRedacted ? { check_redacted: true, ...(launch.cli_learning ? { evidence_incomplete: true as const } : {}) } : {}) };
+        return { ...row, batches: [...row.batches, batch], expires_at: expires, ...(Object.keys(kept).length ? { workflow_calls: calls } : {}), ...(checkRedacted ? { check_redacted: true, ...(launch.cli_learning ? { evidence_incomplete: true as const } : {}) } : {}) };
       },
       EVIDENCE_LIMIT,
     );
@@ -663,7 +781,10 @@ export class SdkRuns {
         ...(body.session_id !== undefined ? { session_id: text(body.session_id, "session_id", 256) } : {}),
         ...(body.usage !== undefined ? { usage: usageOf(body.usage) } : {}),
     };
-    const completion = this.clean(submitted, runId);
+    // Its answer and error read whole first, alone and together (withheldParts): a held value split across two strings
+    // of one, or across the two, stores what holds it as "[redacted]"; its status and the rest as they came.
+    const withheld = withheldParts({ answer: submitted.answer, error: submitted.error }, this.held(runId));
+    const completion = this.clean({ ...submitted, ...(withheld.has("answer") ? { answer: "[redacted]" } : {}), ...(withheld.has("error") ? { error: "[redacted]" } : {}) }, runId);
     // Source policy has its own completeness flag; redacted execution evidence cannot
     // be represented as complete even when the source explicitly claimed it was.
     const { source_policy: _submittedPolicy, ...submittedEvidence } = submitted;

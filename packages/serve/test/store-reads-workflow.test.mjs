@@ -10,6 +10,7 @@ import { storeOn } from "./store-helpers.mjs";
 import { answerFlow, FAUX } from "./support.mjs";
 
 const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { readWorkflowRunOver } = await import("../dist/store-reads/workflow.js");
 const { runModels, FAUX_ENV } = await import("../dist/model.js");
 
@@ -24,7 +25,7 @@ async function runWorkflowToEnd(store, claim, workflow, input) {
       },
     };
   };
-  const loop = createWorkflowLoop(specOf)({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const loop = createWorkflowLoop(specOf)({ redact: heldRedactor((text) => text), journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
   return loop.start(claim);
 }
 

@@ -1,4 +1,5 @@
 import { isPlanModel, PLAN_PROVIDER } from "@/lib/chatgpt";
+import { withoutRoutePrefix } from "@/lib/routePrefix";
 import type { RunUsage } from "@/lib/v2";
 
 /** A model id as a person reads it: without the gateway's routing prefix, the full id kept for a title. `routePrefix` is
@@ -9,15 +10,18 @@ import type { RunUsage } from "@/lib/v2";
  *  says its tag and where it runs: "qwen3:8b · local (Ollama)". The one wording for a plan or local model, in the Model
  *  picker, on an agent's page and on what a run's node ran on. */
 export function modelLabel(id: string, routePrefix: string | null | undefined): { text: string; title?: string } {
-  if (isPlanModel(id)) return { text: `${id.slice(PLAN_PROVIDER.length + 1)} · on your ChatGPT plan`, title: id };
+  // A gateway sends a plan default under its prefix (agent-model/chatgpt/<id>), and serve runs it on the plan (chooseModel
+  // asks the plan before the gateway). Any other id under the prefix, ollama/ too, goes to the gateway.
+  const own = withoutRoutePrefix(id, routePrefix);
+  if (isPlanModel(own)) return { text: `${own.slice(PLAN_PROVIDER.length + 1)} · on your ChatGPT plan`, title: id };
   if (isLocalModel(id)) return { text: `${id.slice(LOCAL_PROVIDER.length + 1)} · local (Ollama)`, title: id };
-  return routePrefix && id.startsWith(`${routePrefix}/`) && id.length > routePrefix.length + 1 ? { text: id.slice(routePrefix.length + 1), title: id } : { text: id };
+  return own !== id ? { text: own, title: id } : { text: id };
 }
 
 /** The provider of the models on this machine's Ollama, which the server lists itself (`ollama/<tag>`). */
 const LOCAL_PROVIDER = "ollama";
 /** Whether `id` names a model on this machine's Ollama: $0, with no limit on its requests. */
-const isLocalModel = (id: string): boolean => id.startsWith(`${LOCAL_PROVIDER}/`) && id.length > LOCAL_PROVIDER.length + 1;
+export const isLocalModel = (id: string): boolean => id.startsWith(`${LOCAL_PROVIDER}/`) && id.length > LOCAL_PROVIDER.length + 1;
 
 /** The model a run ran on, as the server booked it (GET /v2/runs/{id}/usage, its `tokens` lines): the one most of its
  *  requests went to (a side call's or a subagent's model aside), its lines summed first (the server books one per
@@ -38,7 +42,7 @@ export function runModel(usage: Pick<RunUsage, "lines"> | undefined): string | u
 /** A harness as capabilities offer it: its default model, and whether this server runs it (`available` false, with
  *  the server's `reason`, when it doesn't). `needs`, on one that runs nothing here for want of a key: what would give it a
  *  model (`key`, a model key; `chatgpt`, the ChatGPT sign-in). */
-export type HarnessInfo = { id: string; default_model?: string | null; models?: readonly string[]; free_models?: readonly FreeModel[]; available?: boolean; reason?: string; needs?: readonly string[] };
+export type HarnessInfo = { id: string; default_model?: string | null; models?: readonly string[]; ready_models?: readonly string[]; free_models?: readonly FreeModel[]; available?: boolean; reason?: string; needs?: readonly string[] };
 /** A model the server says runs at $0 (`harnesses[].free_models`: its catalog price is all zeros), with its context window
  *  in tokens. */
 export type FreeModel = { id: string; context_window: number };
@@ -78,3 +82,17 @@ export function harnessDefault(harness: string, harnesses: readonly HarnessInfo[
 export const NO_DEFAULT = "No default for this harness yet: add a model key in Settings → Model keys, or choose a model here.";
 /** The agent page's Model fact for an agent that names no model on a harness with no default here: the same fix. */
 export const NO_MODEL_YET = "none yet: add a model key in Settings → Model keys";
+
+/** The models of `models` a run takes now, their provider connected here (`harnesses[].ready_models`), or null from a
+ *  server that does not say (one before it): then every offered model is listed, as before. */
+export function harnessReady(harness: string, harnesses: readonly HarnessInfo[] | undefined): readonly string[] | null {
+  return harnesses?.find((h) => h.id === harness)?.ready_models ?? null;
+}
+
+/** A model's provider as people name it, from its id's first part (`anthropic/claude-…` → Anthropic). One not here is its
+ *  first part as it is. */
+const PROVIDERS: Record<string, string> = {
+  anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", google: "Google", gemini: "Google", mistral: "Mistral",
+  ollama: "Ollama", particle: "Particle", xai: "xAI", deepseek: "DeepSeek", groq: "Groq", faux: "Test model",
+};
+export const providerLabel = (model: string): string => { const first = model.split("/")[0] ?? model; return PROVIDERS[first] ?? first; };

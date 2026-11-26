@@ -6,8 +6,11 @@
 import { type Packed, UUID } from "./record-key.js";
 
 /** One kind of key's entries, in the order added, and the open-addressing slots (linear probing) that find them:
- *  0 an empty slot, else an entry's index + 1. */
-type Table = { count: number; slots: Int32Array; owners: Int32Array };
+ *  0 an empty slot, else an entry's index + 1. Each slot's tag is its entry's hash's top byte: a probe passes a slot
+ *  whose tag differs without reading the entry (a miss walks the whole run). A table of fewer than TAGGED slots has
+ *  none (a file's own index, saved in its cursor, stays as small as it was); an index saved without them (an older
+ *  HomeState) has them built the first time it is probed. */
+type Table = { count: number; slots: Int32Array; tags?: Uint8Array; owners: Int32Array };
 /** A uuid's keys: four 32-bit words an entry. */
 type Uuids = Table & { words: Int32Array };
 /** Any other key's: entry i's bytes are bytes[ends[i - 1] (0 for the first), ends[i]). */
@@ -22,8 +25,10 @@ export type RecordIndex = {
 };
 
 const LOAD = 0.75;
+/** The slots from which a table's slots carry tags. */
+const TAGGED = 1024;
 
-const table = (slots: number) => ({ count: 0, slots: new Int32Array(slots), owners: new Int32Array(slots >> 1) });
+const table = (slots: number) => ({ count: 0, slots: new Int32Array(slots), ...(slots >= TAGGED ? { tags: new Uint8Array(slots) } : {}), owners: new Int32Array(slots >> 1) });
 
 /** An empty index, its slots `slots` (a power of 2) to start with. */
 export const recordIndex = (slots = 1024): RecordIndex => ({
@@ -33,11 +38,19 @@ export const recordIndex = (slots = 1024): RecordIndex => ({
   numbers: new Map(),
 });
 
-/** Whether `value` is a RecordIndex: a HomeState kept by an earlier version holds its records in a Map instead. */
-export function isRecordIndex(value: unknown): value is RecordIndex {
-  const index = value as Partial<RecordIndex> | null;
-  return typeof index === "object" && index !== null && index.uuids?.slots instanceof Int32Array && index.others?.bytes instanceof Uint8Array && Array.isArray(index.locators) && index.numbers instanceof Map;
-}
+/** Every typed array `index` holds, its slots' tags with them when its tables have any: what a worker moves to the main
+ *  thread with the index (pool-worker.ts), and what the pool counts it holding (pool.ts). */
+export const indexArrays = ({ uuids, others }: RecordIndex): (Int32Array | Uint8Array | Float64Array)[] => [
+  uuids.slots,
+  uuids.owners,
+  uuids.words,
+  ...(uuids.tags ? [uuids.tags] : []),
+  others.slots,
+  others.owners,
+  others.ends,
+  others.bytes,
+  ...(others.tags ? [others.tags] : []),
+];
 
 /** The number of `locator` in `index`, given one when it has none. */
 export function locatorNumber(index: RecordIndex, locator: string): number {
@@ -45,9 +58,6 @@ export function locatorNumber(index: RecordIndex, locator: string): number {
   if (n === undefined) index.numbers.set(locator, (n = index.locators.push(locator) - 1));
   return n;
 }
-
-/** How many records `index` holds. */
-export const recordCount = (index: RecordIndex): number => index.uuids.count + index.others.count;
 
 // murmur3's finalizer: every bit of the input moves the slot.
 const mix = (h: number): number => {
@@ -64,12 +74,24 @@ function bytesHash(b: Uint8Array, from: number, to: number): number {
   return mix(h ^ (to - from));
 }
 
+/** `t`'s tags: none below TAGGED slots; built for an index saved before tags (retag). */
+const uuidTags = (t: Uuids): Uint8Array | undefined => (t.slots.length < TAGGED ? undefined : t.tags !== undefined && t.tags.length === t.slots.length ? t.tags : retag(t, (e) => uuidHash(t.words[e * 4]!, t.words[e * 4 + 1]!, t.words[e * 4 + 2]!, t.words[e * 4 + 3]!)));
+const otherTags = (t: Others): Uint8Array | undefined => (t.slots.length < TAGGED ? undefined : t.tags !== undefined && t.tags.length === t.slots.length ? t.tags : retag(t, (e) => bytesHash(t.bytes, e === 0 ? 0 : t.ends[e - 1]!, t.ends[e]!)));
+function retag(t: Table, hashOf: (e: number) => number): Uint8Array {
+  const tags = new Uint8Array(t.slots.length);
+  for (let s = 0; s < t.slots.length; s += 1) if (t.slots[s] !== 0) tags[s] = hashOf(t.slots[s]! - 1) >>> 24;
+  return (t.tags = tags);
+}
+
 /** The entry of `t` with these words, else -1. */
 function findUuid(t: Uuids, w0: number, w1: number, w2: number, w3: number, h: number): number {
   const mask = t.slots.length - 1;
+  const tags = uuidTags(t);
+  const tag = h >>> 24;
   for (let s = h & mask; ; s = (s + 1) & mask) {
     const e = t.slots[s]!;
     if (e === 0) return -1;
+    if (tags !== undefined && tags[s] !== tag) continue;
     const at = (e - 1) * 4;
     if (t.words[at] === w0 && t.words[at + 1] === w1 && t.words[at + 2] === w2 && t.words[at + 3] === w3) return e - 1;
   }
@@ -79,9 +101,12 @@ function findUuid(t: Uuids, w0: number, w1: number, w2: number, w3: number, h: n
 function findOther(t: Others, b: Uint8Array, from: number, to: number, h: number): number {
   const mask = t.slots.length - 1;
   const n = to - from;
+  const tags = otherTags(t);
+  const tag = h >>> 24;
   for (let s = h & mask; ; s = (s + 1) & mask) {
     const e = t.slots[s]!;
     if (e === 0) return -1;
+    if (tags !== undefined && tags[s] !== tag) continue;
     const end = t.ends[e - 1]!;
     const start = e === 1 ? 0 : t.ends[e - 2]!;
     if (end - start !== n) continue;
@@ -91,12 +116,13 @@ function findOther(t: Others, b: Uint8Array, from: number, to: number, h: number
   }
 }
 
-/** A free slot of `t` for a key hashed `h`. */
-function freeSlot(t: Table, h: number): number {
+/** Entry `e` put in a free slot of `t` for its key's hash `h`, with its tag. */
+function put(t: Table, tags: Uint8Array | undefined, h: number, e: number): void {
   const mask = t.slots.length - 1;
   let s = h & mask;
   while (t.slots[s] !== 0) s = (s + 1) & mask;
-  return s;
+  t.slots[s] = e + 1;
+  if (tags !== undefined) tags[s] = h >>> 24;
 }
 
 /** Room in `t` for one more entry: its entries' arrays and its slots doubled when full. */
@@ -107,7 +133,8 @@ function roomUuid(t: Uuids): void {
   }
   if (t.count + 1 > t.slots.length * LOAD) {
     t.slots = new Int32Array(t.slots.length * 2);
-    for (let i = 0; i < t.count; i += 1) t.slots[freeSlot(t, uuidHash(t.words[i * 4]!, t.words[i * 4 + 1]!, t.words[i * 4 + 2]!, t.words[i * 4 + 3]!))] = i + 1;
+    const tags = t.slots.length >= TAGGED ? (t.tags = new Uint8Array(t.slots.length)) : undefined;
+    for (let i = 0; i < t.count; i += 1) put(t, tags, uuidHash(t.words[i * 4]!, t.words[i * 4 + 1]!, t.words[i * 4 + 2]!, t.words[i * 4 + 3]!), i);
   }
 }
 
@@ -119,10 +146,8 @@ function roomOther(t: Others, n: number): void {
   if (t.used + n > t.bytes.length) t.bytes = grown(t.bytes, Math.max(t.bytes.length * 2, t.used + n)) as Uint8Array;
   if (t.count + 1 > t.slots.length * LOAD) {
     t.slots = new Int32Array(t.slots.length * 2);
-    for (let i = 0; i < t.count; i += 1) {
-      const start = i === 0 ? 0 : t.ends[i - 1]!;
-      t.slots[freeSlot(t, bytesHash(t.bytes, start, t.ends[i]!))] = i + 1;
-    }
+    const tags = t.slots.length >= TAGGED ? (t.tags = new Uint8Array(t.slots.length)) : undefined;
+    for (let i = 0; i < t.count; i += 1) put(t, tags, bytesHash(t.bytes, i === 0 ? 0 : t.ends[i - 1]!, t.ends[i]!), i);
   }
 }
 
@@ -140,7 +165,7 @@ function addUuid(t: Uuids, w0: number, w1: number, w2: number, w3: number, owner
   t.words[i * 4 + 2] = w2;
   t.words[i * 4 + 3] = w3;
   t.owners[i] = owner;
-  t.slots[freeSlot(t, uuidHash(w0, w1, w2, w3))] = i + 1;
+  put(t, uuidTags(t), uuidHash(w0, w1, w2, w3), i);
 }
 
 function addOther(t: Others, b: Uint8Array, from: number, to: number, owner: number): void {
@@ -150,7 +175,7 @@ function addOther(t: Others, b: Uint8Array, from: number, to: number, owner: num
   t.used += to - from;
   t.ends[i] = t.used;
   t.owners[i] = owner;
-  t.slots[freeSlot(t, bytesHash(b, from, to))] = i + 1;
+  put(t, otherTags(t), bytesHash(b, from, to), i);
 }
 
 /** The owner (its number) of the record packed as `key`, else -1. */
@@ -170,7 +195,12 @@ export function ownerOf(index: RecordIndex, { bytes, length }: Packed): number {
 /** The record packed as `key` added, owned by `owner` (a number of the index the owners refer to); one held already is
  *  left as it is. */
 export function addRecord(index: RecordIndex, key: Packed, owner: number): void {
-  if (ownerOf(index, key) !== -1) return;
+  if (ownerOf(index, key) === -1) addNew(index, key, owner);
+}
+
+/** The record packed as `key` added, owned by `owner`, where `index` is known not to hold it (ownerOf gave -1 for it,
+ *  and nothing was added since): addRecord without looking it up again. */
+export function addNew(index: RecordIndex, key: Packed, owner: number): void {
   const { bytes, length } = key;
   if (bytes[0] === UUID && length === 17) addUuid(index.uuids, word(bytes, 1), word(bytes, 5), word(bytes, 9), word(bytes, 13), owner);
   else addOther(index.others, bytes, 0, length, owner);
@@ -194,6 +224,81 @@ export function addAll(into: RecordIndex, from: RecordIndex): void {
   }
 }
 
+/** Whether `into` holds any record of `from`. */
+export function anyIn(into: RecordIndex, from: RecordIndex): boolean {
+  const u = from.uuids;
+  for (let i = 0; i < u.count; i += 1) {
+    const w0 = u.words[i * 4]!;
+    const w1 = u.words[i * 4 + 1]!;
+    const w2 = u.words[i * 4 + 2]!;
+    const w3 = u.words[i * 4 + 3]!;
+    if (findUuid(into.uuids, w0, w1, w2, w3, uuidHash(w0, w1, w2, w3)) !== -1) return true;
+  }
+  const o = from.others;
+  for (let i = 0; i < o.count; i += 1) {
+    const start = i === 0 ? 0 : o.ends[i - 1]!;
+    const end = o.ends[i]!;
+    if (findOther(into.others, o.bytes, start, end, bytesHash(o.bytes, start, end)) !== -1) return true;
+  }
+  return false;
+}
+
+/** The records of `from` that `held` does not hold, with their owners, in an index of their own. */
+export function notIn(from: RecordIndex, held: RecordIndex): RecordIndex {
+  const out = recordIndex(64);
+  const u = from.uuids;
+  for (let i = 0; i < u.count; i += 1) {
+    const w0 = u.words[i * 4]!;
+    const w1 = u.words[i * 4 + 1]!;
+    const w2 = u.words[i * 4 + 2]!;
+    const w3 = u.words[i * 4 + 3]!;
+    if (findUuid(held.uuids, w0, w1, w2, w3, uuidHash(w0, w1, w2, w3)) === -1) addUuid(out.uuids, w0, w1, w2, w3, u.owners[i]!);
+  }
+  const o = from.others;
+  for (let i = 0; i < o.count; i += 1) {
+    const start = i === 0 ? 0 : o.ends[i - 1]!;
+    const end = o.ends[i]!;
+    if (findOther(held.others, o.bytes, start, end, bytesHash(o.bytes, start, end)) === -1) addOther(out.others, o.bytes, start, end, o.owners[i]!);
+  }
+  return out;
+}
+
+/** Every record of `from` added to `into`, where the two hold no record in common: per kind of key, the table with more
+ *  entries keeps its arrays and the other's entries are added to it, so a big read's records are not copied (and held
+ *  twice) to join a smaller index. `from` is used up: it holds what `into` held. */
+export function addDisjoint(into: RecordIndex, from: RecordIndex): void {
+  if (from.uuids.count > into.uuids.count) [into.uuids, from.uuids] = [from.uuids, into.uuids];
+  if (from.others.count > into.others.count) [into.others, from.others] = [from.others, into.others];
+  addAll(into, from);
+}
+
+/** Where `index`'s entries end now: undoTo takes it back there. */
+export type Mark = { uuids: number; others: number; used: number };
+export const markOf = (index: RecordIndex): Mark => ({ uuids: index.uuids.count, others: index.others.count, used: index.others.used });
+
+/** The slot of `t` holding entry `e`, found from the key's hash. */
+function slotOf(t: Table, e: number, h: number): number {
+  const mask = t.slots.length - 1;
+  let s = h & mask;
+  while (t.slots[s] !== e + 1) s = (s + 1) & mask;
+  return s;
+}
+
+/** `index` as it was at `mark`: the entries added since taken out, last first. With linear probing, taking out the
+ *  last entry added leaves the slots as they were before it (a grow puts the entries back in their order, so this holds
+ *  across one), at the cost of the entries taken out, where dropOwner rebuilds the whole index. */
+export function undoTo(index: RecordIndex, mark: Mark): void {
+  const u = index.uuids;
+  for (let i = u.count - 1; i >= mark.uuids; i -= 1) u.slots[slotOf(u, i, uuidHash(u.words[i * 4]!, u.words[i * 4 + 1]!, u.words[i * 4 + 2]!, u.words[i * 4 + 3]!))] = 0;
+  u.count = Math.min(u.count, mark.uuids);
+  const o = index.others;
+  for (let i = o.count - 1; i >= mark.others; i -= 1) o.slots[slotOf(o, i, bytesHash(o.bytes, i === 0 ? 0 : o.ends[i - 1]!, o.ends[i]!))] = 0;
+  if (o.count > mark.others) {
+    o.count = mark.others;
+    o.used = mark.used;
+  }
+}
+
 /** `index` without the records `owner` owns: the rest kept in their order. */
 export function dropOwner(index: RecordIndex, owner: number): void {
   const u = index.uuids;
@@ -205,4 +310,10 @@ export function dropOwner(index: RecordIndex, owner: number): void {
   for (let i = 0; i < o.count; i += 1) if (o.owners[i] !== owner) addOther(kept.others, o.bytes, i === 0 ? 0 : o.ends[i - 1]!, o.ends[i]!, o.owners[i]!);
   index.uuids = kept.uuids;
   index.others = kept.others;
+}
+
+/** Every record of `index` now owned by `owner`. */
+export function ownAll(index: RecordIndex, owner: number): void {
+  index.uuids.owners.fill(owner, 0, index.uuids.count);
+  index.others.owners.fill(owner, 0, index.others.count);
 }

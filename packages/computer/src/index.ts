@@ -4,6 +4,7 @@ export * from "./provider.js";
 export * from "./ui-engine.js";
 export * from "./attach.js";
 export * from "./mount.js";
+export { SDK_MISSING } from "./vendor-sdk.js";
 export { type CallOptions, DaemonClient, type DaemonStream, findNodes, refusedStep, type UiActOptions, type UiQuery, UiSession } from "./client.js";
 export { type ActionFailure, type CheckActionsOptions, checkActions, isKey } from "./actions.js";
 export { pullTar, pullTarStream, pushTar, readFile, writeFile, type PulledTar } from "./files.js";
@@ -30,6 +31,9 @@ export {
 // The shared machine-host adapter: a vendor writes a MachineHost (src/host.ts), and HostedProvider makes it a provider.
 export type { HostCall, HostFacts, Machine, MachineHost, MachineProcess, MachineRequest } from "./host.js";
 export { HostedProvider, type HostedDial, type HostedOptions, type HostedTimeouts, hostedDaemonPath } from "./hosted/provider.js";
+// The one rule for a URL a key is sent to, which serve applies to the URLs it reads from its environment too: httpsBase,
+// and keyBase for one whose protocol allows another scheme (a socket's wss, a collector's or loopback's http).
+export { httpsBase, keyBase } from "./hosted/rest.js";
 // The provider classes and their option types are not here: each provider loads by its id through the registry
 // (providerFor), or from its own subpath (@parcha/agentrun-computer/docker, /daytona, /modal, /e2b, /agent37, /morph, /orgo,
 // /phone-harness, /browserbase, /kernel, /local, /smolcloud, /groundbox: each the provider file's name).
@@ -50,7 +54,8 @@ export {
 	recipeHash,
 	recipeTag,
 } from "./docker/image.js";
-export { EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
+export { ADB_ENV_NAMES, adbEnv, BASE_ENV_NAMES, CHROME_ENV_NAMES, childEnv, chromeEnv, DOCKER_ENV_NAMES, dockerEnv, type HostEnv } from "./child-env.js";
+export { containerSigns, EGRESS_IMAGE, EGRESS_LABEL, EGRESS_MOUNT, EGRESS_SOCKET } from "./docker/egress.js";
 export {
 	ARCHIL_HELPER,
 	ARCHIL_SYNC_SOCKET,
@@ -93,6 +98,7 @@ export {
 	isBrowserProvider,
 	BrowserVendorError,
 	CREATE_LABEL,
+	ATTEMPT_LABEL,
 	causeOf,
 	memoryUrls,
 	RECOVER_MS,
@@ -122,7 +128,7 @@ export {
 	type ProviderOptions,
 	providers,
 } from "./providers.js";
-export { connectOf, type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, mountsOf, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
+export { connectOf, type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, mountsOf, type ParkedConfiguration, type ProviderDescriptor, type ProviderSecrets } from "./descriptor.js";
 export {
 	AGENT37,
 	AGENT37_BASE_TEMPLATE,

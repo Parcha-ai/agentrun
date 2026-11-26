@@ -18,7 +18,7 @@ const template: TemplateView = {
 };
 const copied = vi.fn(async (_prompt: string) => {});
 const applyTemplate = vi.fn(async () => ({ agent_id: "review-1", triggers: [], warnings: [] }));
-const v2 = { listTemplates: async () => ({ templates: [template] }), listMcpServers: async () => ({ servers: [] }), applyTemplate };
+const v2 = { listMarketplaceTemplates: async () => ({ url: null, state: "off", read_at: null, templates: [] }), listTemplates: async () => ({ templates: [template] }), listMcpServers: async () => ({ servers: [] }), applyTemplate };
 async function mount(name?: string, playground = false, draft?: string) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -61,6 +61,23 @@ describe("running a served template", () => {
     expect(applyTemplate.mock.calls[0]).toEqual([withChoice.id, selected, expect.any(String)]);
   });
 
+  it("keeps the agent's model from Use free through the prepared playground link to Apply", async () => {
+    localStorage.setItem(CODING_AGENT_PREFERENCE, "other");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copied } });
+    const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+    await act(async () => root!.render(createElement(TemplatesPage, { v2: v2 as never, name: template.id, model: "ollama/qwen3:8b", go: () => {} })));
+    type(host, "repo", "acme/web");
+    await click(host.querySelector('[aria-label="Choose coding agent for Run"]')!);
+    const routed = route(document.querySelector<HTMLAnchorElement>('[role="menu"] a')!.getAttribute("href")!);
+    unmount();
+    const target = document.body.appendChild(document.createElement("div")); root = createRoot(target);
+    await act(async () => root!.render(createElement(TemplatesPage, { v2: v2 as never, name: template.id, playground: true, draft: routed.draft, go: () => {} })));
+    expect(target.querySelector('[role="alert"]')).toBeNull();
+    expect(target.querySelector("[data-model-override]")?.getAttribute("title")).toBe("ollama/qwen3:8b");
+    await click(button("Apply"));
+    expect(applyTemplate.mock.calls[0]).toEqual([template.id, { parameters: { repo: "acme/web" }, overrides: { approvals: "ask", model: "ollama/qwen3:8b" } }, expect.any(String)]);
+  });
+
   it("hydrates prepared array choices as individual lines and applies the same typed values", async () => {
     const lists: TemplateView = { ...template, parameters: { type: "object", additionalProperties: false, required: ["names", "counts", "flags"], properties: {
       names: { type: "array", items: { type: "string" }, description: "Names" },
@@ -96,7 +113,7 @@ describe("running a served template", () => {
     expect(copied.mock.calls[0][0]).toContain('template "review/kit", version "2.4.0"');
     expect(copied.mock.calls[0][0]).toContain("/v2/templates/review%2Fkit/apply");
     expect(copied.mock.calls[0][0]).toContain("instructions, rules, skills, schemas, learning and triggers");
-    expect(copied.mock.calls[0][0]).toContain("Then read the created agent's current revision and run the template's intended task");
+    expect(copied.mock.calls[0][0]).not.toContain("current revision");
     expect(host.querySelector('[aria-label="Run options"] button')?.getAttribute("title")).toBe("Copy prompt for Codex CLI");
     expect(applyTemplate).not.toHaveBeenCalled();
   });

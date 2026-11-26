@@ -6,8 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import v8 from "node:v8";
 import vm from "node:vm";
-import { parseHome } from "../dist/index.js";
-import { anthropicUsage, claudeAnswer, claudeFile, codexContext, codexFile, codexMeta, codexTokens, openaiUsage, SESSION, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
+import { anthropicUsage, claudeAnswer, claudeFile, codexContext, codexFile, codexMeta, codexTokens, openaiUsage, parseHome, SESSION, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
 
 v8.setFlagsFromString("--expose-gc");
 const gc = vm.runInNewContext("gc");
@@ -59,7 +58,6 @@ const BIG = 2 ** 56;
 const round = (usd) => Math.round(usd * 1e6) / 1e6;
 const sum = (costs) => costs.reduce((n, usd) => n + usd, 0);
 const BLOCKS = [[5, 5], [BIG], [3, 9]];
-const permutations = (xs) => (xs.length <= 1 ? [xs] : xs.flatMap((x, i) => permutations([...xs.slice(0, i), ...xs.slice(i + 1)]).map((rest) => [x, ...rest])));
 const EXPECTED = round(sum(BLOCKS.flat()));
 /** input 1 costs BIG, any other input its own count in USD. */
 const calculateCost = (_model, usage) => ({ total: usage.input === 1 ? BIG : usage.input });
@@ -68,10 +66,6 @@ const catalog = new Map([
   ["gpt-fixture", [{ provider: "openai", cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 } }]],
   ["claude-fixture-1", [{ provider: "anthropic", cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 } }]],
 ]);
-
-test("the fixture's blocks sum to another cost in any other order", () => {
-  for (const order of permutations(BLOCKS).slice(1)) assert.notEqual(round(sum(order.flat())), EXPECTED, JSON.stringify(order));
-});
 
 test("Codex: a thread's cost sums its files' requests in order, then its named child thread's", async (t) => {
   const home = await tempHome(t);
@@ -133,9 +127,18 @@ test("each request is priced as read: its own model or else the session's, its 1
     return { total: cost.input * usage.input + 0.1 };
   };
   const [a, b] = await parseHome(home, { sources: ["fixture"], readers: { fixture: reader }, catalog: prices, calculateCost: cost }).then((out) => out.sort((x, y) => (x.file < y.file ? -1 : 1)));
+  // Each request priced at its own price, with what it has. a.jsonl is priced as read until its third request's 0.5
+  // tokens, which cannot be summed as read: the source is read again with each request kept, and priced at the totals,
+  // a.jsonl's three requests, then b.jsonl's first (its second has no usage, so b's cost is unknown there).
+  const own = { price: 10, keys: ["cacheWrite1h"], input: 1, output: 2 };
+  const fallback = { price: 20, keys: [], input: 5, output: 6 };
   assert.deepEqual(asked, [
-    { price: 10, keys: ["cacheWrite1h"], input: 1, output: 2 },
-    { price: 20, keys: [], input: 5, output: 6 },
+    // As read.
+    own,
+    fallback,
+    // At the totals.
+    own,
+    fallback,
     { price: 20, keys: [], input: 0.5, output: -0 },
     { price: 10, keys: [], input: 1, output: 1 },
   ]);

@@ -44,7 +44,7 @@ describe("a Docker computer, as Docker shows it", { skip: LIVE ? false : "set AG
 		arch = docker("version", "--format", "{{.Server.Arch}}").trim();
 		const daemonPath = fileURLToPath(new URL(`../../dist/computerd-linux-${arch}`, import.meta.url));
 		assert.ok(existsSync(daemonPath), `no daemon for Docker's arch at ${daemonPath}: run npm run build:daemon`);
-		provider = new DockerProvider({ daemonPath });
+		provider = new DockerProvider({ env: process.env, daemonPath });
 	});
 
 	after(async () => {

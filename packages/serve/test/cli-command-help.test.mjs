@@ -33,7 +33,7 @@ for (const command of ["native", "import", "reset-password", "runner", "install-
 
 test("import --help says what the command does, with the flags the docs name for it", (t) => {
   const run = help(t, ["import", "--help"]);
-  assert.match(run.stdout, /^`agentrun-serve import` reads the Claude Code, Codex and pi sessions in your own home/m, run.stdout);
+  assert.match(run.stdout, /^`agentrun-serve import` reads the Claude Code, Codex, pi, OpenCode and Copilot CLI sessions in your own home/m, run.stdout);
   assert.match(run.stdout, /--dry-run lists what it would\s+import/, run.stdout);
 });
 

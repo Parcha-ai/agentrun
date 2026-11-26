@@ -1,5 +1,5 @@
 // A fake docker program for the image tests (src/docker/image.ts): it answers `image inspect`, `build` and `pull` as the
-// docker CLI does, keeps its images as files, and records each call. No Docker is reached; nothing is pulled or built.
+// docker CLI does, keeps its images as files, and records each call and the environment it was started with. No Docker is reached; nothing is pulled or built.
 // Marks are files in its state directory, made with mark(name, text) and removed with clear(name):
 //   build-hold, pull-hold, inspect-hold   the step waits, once called, while the mark is there (at most a minute)
 //   build-fail, pull-fail, inspect-fail   the step fails with exit 1, the mark's text on stderr
@@ -7,10 +7,11 @@
 //   podman-words                          a missing image is Podman's `image not known`, not Docker's `No such image`
 //   build-race, pull-race                 another process tags the image first: it is there, and this step fails as
 //                                         Docker 29's image store says it (`already exists`)
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
+import { records } from "./jsonl.mjs";
 
 const dirs = [];
 after(() => {
@@ -23,6 +24,7 @@ const { join } = require("node:path");
 const state = __STATE__;
 const args = process.argv.slice(2);
 appendFileSync(join(state, "calls.jsonl"), JSON.stringify(args) + "\\n");
+appendFileSync(join(state, "envs.jsonl"), JSON.stringify({ args, names: Object.keys(process.env).sort(), seen: Object.fromEntries(["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG"].map((n) => [n, process.env[n] ?? null])) }) + "\\n");
 const file = (name) => join(state, "images", encodeURIComponent(name) + ".json");
 const marked = (name) => existsSync(join(state, name));
 const held = (step, then) => {
@@ -85,8 +87,6 @@ if (args[0] === "image" && args[1] === "inspect") {
 }
 `;
 
-const lines = (path) => (existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
-
 /**
  * A fake docker program in a fresh directory: `docker` is its path, for ensureImage's or the provider's docker option.
  * `keep(name, labels)` gives it an image; `calls()`, `builds()` and `pulls()` read what it was asked.
@@ -107,9 +107,11 @@ export function fakeImageDocker(marks = {}) {
 		clear: (name) => rmSync(join(state, name), { force: true }),
 		keep: (name, labels) => writeFileSync(join(state, "images", `${encodeURIComponent(name)}.json`), JSON.stringify({ labels })),
 		has: (name) => existsSync(join(state, "images", `${encodeURIComponent(name)}.json`)),
-		calls: () => lines(join(state, "calls.jsonl")),
-		builds: () => lines(join(state, "builds.jsonl")),
-		pulls: () => lines(join(state, "pulls.jsonl")),
+		calls: () => records(join(state, "calls.jsonl")),
+		/** Each call's environment: { args, names, seen } (seen: PATH, HOME, DOCKER_HOST, DOCKER_CONFIG). */
+		envs: () => records(join(state, "envs.jsonl")),
+		builds: () => records(join(state, "builds.jsonl")),
+		pulls: () => records(join(state, "pulls.jsonl")),
 	};
 }
 

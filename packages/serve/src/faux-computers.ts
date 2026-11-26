@@ -165,7 +165,7 @@ export function fauxComputers(): FauxComputers {
    *  the socket. Refused in words where the machine has nowhere to dial, or did not attach within DIAL_WAIT_MS. */
   async function fauxDial(dial: HostedDial | undefined, run: string | undefined): Promise<LaunchedComputer> {
     // The computer package's words for a dial provider with no dial (hosted/provider.ts #dialed).
-    if (dial === undefined) throw new Error("Faux dial machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)");
+    if (dial === undefined) throw new Error("Faux dial machines dial in to this server, and this runner runs in a process of its own and relays no machine's socket: give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)");
     if (!dial.url) throw new Error("Faux dial machines dial in to this server, which has no public address: set AGENTRUN_PUBLIC_URL");
     const name = `faux-dial-${randomBytes(6).toString("hex")}`;
     const token = await dial.tokens.mint(name, { kind: "desktop", os: "linux", arch: "amd64", expiresAt: new Date(Date.now() + DIAL_LIFE_MS), ...(run !== undefined ? { run } : {}) });

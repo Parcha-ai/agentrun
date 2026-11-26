@@ -28,8 +28,9 @@ const CLI = [...(existsSync("/usr/bin/setpriv") ? ["claude-agent"] : []), "codex
 const HARNESSES = ["pi", ...CLI];
 const READS = { "mcp:fake/*": { allow_reads: true } };
 /** A read's answer that echoes the server's own credential and runs past the host's bound on a result the model reads
- *  (HOST_RESULT_MAX_CHARS, 120,000), and so past the server's (a filed answer, filed-answer.ts). */
-const BIG = `5 key=${TOKEN} ${"x".repeat(130_000)}`;
+ *  (HOST_RESULT_MAX_CHARS, 120,000), and so past the server's (a filed answer, filed-answer.ts). Lines of words, as a
+ *  person's text is: the run's redactor withholds whole any run with no whitespace past a piece (key-refusal.ts). */
+const BIG = `5 key=${TOKEN} ${Array.from({ length: 6_500 }, (_, i) => `line ${i} of the read`).join("\n")}`;
 const calls = (fake, tool) => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === tool);
 /** What a scripted model says of a result: its start, so an answer stays short whatever the result's size. */
 const shown = (text) => String(text).slice(0, 40);

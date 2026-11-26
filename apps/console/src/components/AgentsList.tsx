@@ -2,15 +2,16 @@ import { cliLearningOf, cliLearningLabel } from "@/lib/cliLearning";
 import { ConnectedAgentCard } from "@/components/ObservedSessions";
 import type { ObservationRead } from "@/lib/observations";
 import { agentInventory } from "@/lib/agentInventory";
-import { Archive, ArchiveRestore, Bot, Brain, History, Pencil, Play, Search, Workflow } from "lucide-react";
+import { Archive, Plus, Settings, Bot, Brain, History, Pencil, Play, Search, Workflow } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ListSkeleton } from "@/components/Skeleton";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Banner } from "@/components/ui/banner";
 import { Chip } from "@/components/ui/chip";
 import { fieldBoxClass, Input } from "@/components/ui/field";
-import { type Agent, learningOn } from "@/lib/agentForm";
+import { type Agent, harnessLabel, learningOn } from "@/lib/agentForm";
 import { AgentCardFrame, AgentCardLearning } from "@/components/AgentCard";
+import { agentHarness } from "@/components/HarnessIcon";
 import { agentHash } from "@/components/AgentPage";
 import { nativeReadinessOf, nativeRuntimeLabel, nativeStateLabel } from "@/lib/native";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
@@ -18,10 +19,12 @@ import { waitingOf, waitingWords } from "@/lib/learning";
 import { cn } from "@/lib/utils";
 import { workflowShape } from "@/lib/workflowDoc";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
-import { buildAgentPrompt, editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { newAgentEditorHref } from "@/lib/agentEditorRoute";
+import { runsHere } from "@/lib/runHere";
+import { editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 
-export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void; onArchive?: (id: string, archive: boolean) => void };
+export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void };
 
 /** The hosted console's agent grid: a search box, the count, and a card per agent (name, kind, harness, what it does,
  *  its revision and runs, and its actions). Archived agents are their own view. */
@@ -34,12 +37,12 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
   const incomplete = loading || !!error || !!connected?.error;
   const storageFull = connected?.data?.connectors.some((connector) => connector.storage_full);
   return (
-    <section className="flex min-h-full flex-col">
+    <section className={pageClass}>
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
-        <h1 className={pageTitleClass}><Brain className="size-4" aria-hidden />{archived ? "Archived agents" : "Connected agents"}</h1>
-        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{handoff}{!archived && <CodingAgentAction variant="primary" label="Build an agent" prompt={buildAgentPrompt(location.origin)} playgroundHref="#/playground?operation=create-agent" />}</div>
+        <h1 className={pageTitleClass}><Brain className="size-4" aria-hidden />{archived ? "Archived agents" : "Agents"}</h1>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{handoff}{!archived && <a href={newAgentEditorHref()} className={buttonVariants({ size: "sm", variant: "primary" })}><Plus aria-hidden />New agent</a>}</div>
       </header>
-      <div className="p-5 md:p-6">
+      <div data-page-body className={cn(pageBodyClass, "p-5 md:p-6")}>
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <label className={cn(fieldBoxClass, "flex h-control-lg min-w-0 flex-1 items-center gap-3 px-3")}>
           <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -64,7 +67,7 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
       {!count && !incomplete && (
           <div className="border px-4 py-16 text-center">
             <p className="font-mono text-body text-muted-foreground">{q ? "No agent matches." : archived ? "No archived agents." : "No agents yet."}</p>
-            {!q && !archived && <a className="mt-4 inline-block text-lead text-primary-text hover:underline" href="#/agents/new">Describe your agent or start from a template</a>}
+            {!q && !archived && <p className="mt-4 text-lead text-muted-foreground">Create an agent or connect one you already use. You can also <a className="text-primary-text underline underline-offset-4" href="#/templates">start from a template</a>.</p>}
           </div>
       )}
       </div>
@@ -79,6 +82,7 @@ function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: Age
   const native = nativeReadinessOf(a);
   const sdk = backendSdkOf(a.definition);
   const cli = cliLearningOf(a.definition);
+  const here = runsHere(a);
   // Its learned items that wait for its owner's OK (the list's own read: each agent's `learning.pending`); nothing at 0.
   const waiting = waitingOf(a);
   const supportsLearning = a.kind === "agentic" && learning !== null;
@@ -87,9 +91,9 @@ function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: Age
     : learning === null ? "This server does not support learning." : learning === undefined ? "The server's learning status has not been read yet."
       : learning === "off" ? "Learning is disabled on this server. Its owner must enable it before this agent can learn." : undefined;
   return (
-    <AgentCardFrame name={a.definition.name} icon={Icon} harness={a.kind === "workflow" ? "workflow" : cli?.runtime ?? sdk?.runtime ?? native?.runtime ?? a.definition.harness ?? "pi"} archived={archived} onOpen={() => actions.onOpen?.(a.agent_id)}
+    <AgentCardFrame name={a.definition.name} icon={Icon} harness={agentHarness(a)} archived={archived} onOpen={() => actions.onOpen?.(a.agent_id)}
+      harnessName={a.kind === "agentic" ? (cli ? cliLearningLabel(cli.runtime) : sdk ? backendSdkLabel(sdk) : native ? nativeRuntimeLabel(native.runtime) : harnessLabel(a.definition.harness ?? "pi")) : undefined}
       badges={<><Chip>{a.kind}</Chip>
-        {a.kind === "agentic" && <Chip>{cli ? cliLearningLabel(cli.runtime) : sdk ? backendSdkLabel(sdk) : native ? nativeRuntimeLabel(native.runtime) : a.definition.harness ?? "pi"}</Chip>}
         {native && <Chip tone={native.connected && native.state === "ready" ? "success" : "warning"}>{nativeStateLabel(native)}</Chip>}
         {archived && <Chip tone="muted">Archived</Chip>}</>}
       description={a.definition.description || (a.kind === "workflow" ? workflowShape(a.definition.workflow) : "No description.")}
@@ -104,12 +108,16 @@ function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: Age
           )}
       </>}
       actions={<>
-          {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id, sdk, cli?.runtime)} playgroundHref={sdk || cli ? undefined : `#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
-          <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native, sdk, cli?.runtime)} playgroundHref={native || sdk || cli ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
+          {/* An agent this server runs: Run opens its page, where the Run box is, and Edit its settings in the console. */}
+          {here ? <>
+            <a href={agentHash(a.agent_id)} aria-label={`Run ${a.definition.name}`} title="Run" className={buttonVariants({ size: "icon", variant: "outline" })}><Play className="size-3.5" aria-hidden /></a>
+            <a href={agentHash(a.agent_id, "settings")} aria-label={`Edit ${a.definition.name}`} title="Edit" className={buttonVariants({ size: "icon", variant: "outline" })}><Pencil className="size-3.5" aria-hidden /></a>
+          </> : <>
+            {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id, sdk, cli?.runtime)} playgroundHref={sdk || cli ? undefined : `#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
+            <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native, sdk, cli?.runtime)} playgroundHref={native || sdk || cli ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
+          </>}
           <Button size="sm" className="gap-1 px-2" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden />{a.runs?.count ?? 0}</Button>
-          <Button size="icon" variant="outline" aria-label={`${archived ? "Unarchive" : "Archive"} ${a.definition.name}`} onClick={() => actions.onArchive?.(a.agent_id, !archived)}>
-            {archived ? <ArchiveRestore aria-hidden /> : <Archive aria-hidden />}
-          </Button>
+          <Button size="icon" variant="outline" aria-label={`Settings for ${a.definition.name}`} title="Settings" onClick={() => actions.onEdit?.(a.agent_id)}><Settings aria-hidden /></Button>
       </>}
     >
       {native && <p className="break-all font-mono">{native.project} · {native.machine_id}</p>}

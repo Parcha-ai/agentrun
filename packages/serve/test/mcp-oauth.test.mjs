@@ -14,7 +14,7 @@ import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 import { mcpServersOverStore } from "../dist/mcp-servers-store.js";
 import { mcpClaim } from "../dist/runner/mcp-claim.js";
-import { openSqliteStore } from "../dist/store/index.js";
+import { MCP_REFRESH_LEASE_MS, openSqliteStore } from "../dist/store/index.js";
 import { systemNetwork } from "../dist/mcp-oauth.js";
 import { network as fakeNetwork } from "./fixtures/fake-network.mjs";
 import { agent, clientOwnerSession, follow, retried, scratch, serve, storeBytes, withEnv } from "./support.mjs";
@@ -23,6 +23,7 @@ import { withToolSearch } from "./fixtures/claude-tool-search.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFakeOAuth } from "./fixtures/fake-oauth-server.mjs";
 import { stranger } from "./fixtures/stranger.mjs";
+import { fakeClock } from "./runner-support.mjs";
 
 const TOOLS = ["add", "slow_write", "delete_thing", "paid"];
 /** The owner's sign-in phrase, made up for these tests. */
@@ -486,7 +487,7 @@ test("a stop while a refresh waits on its authorization server drops the claim's
   const bounds = { requestMs: 500, tries: 2 };
   const launch = launchOn(t, server, key, { signal: stop.signal, bounds });
   assert.equal((await reached).form.grant_type, "refresh_token", "the refresh reached the authorization server");
-  const { step, when } = await launch;
+  const { step } = await launch;
   stop.abort();
   assert.deepEqual({ ...step.credentials }, {}, "the stopped claim holds nothing at once, and its gateway can send nothing after");
   // The refresh on the wire may have spent the refresh token, so its lease is held to its end: no claim sends that token
@@ -495,8 +496,11 @@ test("a stop while a refresh waits on its authorization server drops the claim's
   assert.ok((await sealedNow()).equals(before), "nothing written: the token set is as it was");
 
   // Once the held lease runs out, the next start refreshes with the refresh token it kept, which the authorization server
-  // spent: a sign-in again.
-  const { step: next } = await launchOn(t, server, key);
+  // spent: a sign-in again. That start's store reads the clock past the lease's end, so the lease has run out by it
+  // (as a runner's, a whole lease later, would find it), never by a wait for the real one.
+  const later = await openSqliteStore({ dataDir: data, role: "runner", now: () => Date.now() + MCP_REFRESH_LEASE_MS + 1_000 });
+  t.after(() => later.close().catch(() => undefined));
+  const { step: next, when } = await launchOn(t, server, key, { store: later });
   await when(() => next.credentials.docs?.unopened !== undefined);
   assert.equal(next.credentials.docs.unopened, "its sign-in expired or was revoked: sign in again in Settings → MCP servers");
   const read = await api("GET", "/settings/mcp-servers/docs");
@@ -872,14 +876,21 @@ for (const down of ["503", "timeout"]) {
 
 test("a sign-in whose endpoint's name lookup outlives the request's time says that endpoint could not be reached, and why", { timeout: 120_000 }, async (t) => {
   const key = sealKey();
-  // A resolver that never answers: each request's own timeout ends its lookup (an unreferenced timer, as in a server that
-  // has other work: this test keeps the process up meanwhile).
-  const up = setInterval(() => {}, 1_000);
-  t.after(() => clearInterval(up));
+  // Every bound this process sets with AbortSignal.timeout in this case (a request's 15 s, the MCP server's own address
+  // check's 15 s) runs out on a clock the case moves: a lookup that never answers moves it to the next bound once its
+  // caller listens, so each is run out in the order the real clock would, and none is waited for. The words still name
+  // the bound the server sets.
+  const clock = fakeClock();
+  t.mock.method(AbortSignal, "timeout", (ms) => {
+    const bound = new AbortController();
+    clock.setTimeout(() => bound.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), ms);
+    return bound.signal;
+  });
+  const never = () => (setImmediate(() => clock.toNext()), new Promise(() => {}));
   // The MCP server's own address check is answered (a public address); every lookup after it, its sign-in's endpoints',
   // never is.
   let lookups = 0;
-  const net = { network: { lookup: () => (lookups++ === 0 ? Promise.resolve(["192.0.2.10"]) : new Promise(() => {})), fetch: async () => new Response("", { status: 404 }) } };
+  const net = { network: { lookup: () => (lookups++ === 0 ? Promise.resolve(["192.0.2.10"]) : never()), fetch: async () => new Response("", { status: 404 }) } };
   const store = await storeOn(t, key, net);
   await assert.rejects(store.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => {
     assert.equal(error.code, "upstream_failed");
@@ -887,7 +898,7 @@ test("a sign-in whose endpoint's name lookup outlives the request's time says th
     return true;
   });
   // The server's own name never answers: its address check says so, and nothing is sent.
-  const hung = await storeOn(t, key, { network: { lookup: () => new Promise(() => {}), fetch: async () => assert.fail("nothing is sent") } });
+  const hung = await storeOn(t, key, { network: { lookup: never, fetch: async () => assert.fail("nothing is sent") } });
   await assert.rejects(hung.oauthStart("pub", { url: "https://mcp.example.test/mcp" }), (error) => {
     assert.equal(error.code, "upstream_failed");
     assert.match(error.message, /^Could not reach the MCP server at https:\/\/mcp\.example\.test \(DNS lookup timed out after \d+ s\)\.$/);

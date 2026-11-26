@@ -1,8 +1,8 @@
 // A per-run Composio server: the Composio preset saved with `user_id: "per_run"` keeps no Composio user and no connected
 // account in its address, and each run binds it to one (`mcp_auth.<server> = {composio_user_id, connected_account_id?}`
 // on POST /runs, POST /agents/{id}/runs and POST /runs/{id}/messages). The runner's claim calls Composio's MCP endpoint as
-// that user and account for that run alone; a run bound to none is refused before anything is sent, in the per_run
-// missing-credential words; the binding is in no row, answer, span or log line, and the run's end erases it. A server saved
+// that user and account for that run alone; a run bound to none is offered none of its tools and sends nothing, its
+// timeline saying why in the per_run missing-credential words; the binding is in no row, answer, span or log line, and the run's end erases it. A server saved
 // for one user behaves as before. Composio's MCP endpoint refuses an address that names no user, its listing too (probed
 // live 2026-11-19), so the server's save, refresh, preview and an agent's save list its tools as a listing-only user no
 // binding can name. Fake Composio on loopback (fixtures/fake-composio.mjs, which refuses as Composio does), the faux MCP
@@ -13,7 +13,7 @@ import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, secretWritePath, serve, serverLog, storeBytes, whenFree } from "./support.mjs";
 
-const { UNUSABLE } = await import("../dist/mcp-probe.js");
+const { unconnectedWords } = await import("../dist/mcp-probe.js");
 const { COMPOSIO_LISTING_USER, COMPOSIO_USER, COMPOSIO_USER_ID } = await import("../dist/composio-preset.js");
 const { composioMadeKey } = await import("../dist/composio-made.js");
 const { ISSUE_ADDED } = await import("./fixtures/fake-composio.mjs");
@@ -92,11 +92,13 @@ test("a user id with a ':' binds a run as any other does; a space, a slash or th
   }
 });
 
-test("an unbound run of a per-run server is refused before any request, in UNUSABLE.perRunMissing's words; a bound run beside it reaches Composio", async (t) => {
+test("an unbound run of a per-run server is offered none of its tools and sends nothing, its timeline saying why in UNUSABLE.perRunMissing's words; a bound run beside it reaches Composio", async (t) => {
   const s = await setup(t);
   const unbound = await runOnce(s);
   assert.deepEqual(unbound.sent.map((entry) => `${entry.http} ${entry.path} ${entry.method ?? ""}`), [], "Composio's MCP endpoint got nothing from the unbound run");
-  assert.ok(unbound.answer.includes(UNUSABLE.perRunMissing), `refused in the per_run missing words: ${unbound.answer}`);
+  assert.match(unbound.answer, /mcp__mail__add is not available/, `the model was offered no tool of it: ${unbound.answer}`);
+  const timeline = (await s.api("GET", `/runs/${unbound.id}/timeline`)).body.rows;
+  assert.deepEqual(timeline.filter((row) => row.kind === "phase" && String(row.summary).startsWith("The MCP server mail")).map((row) => row.summary), [unconnectedWords("mail")], "one note naming it and why");
   const bound = await runOnce(s, bind(USER_A));
   assert.equal(toolCalls(bound.sent).length, 1, `the bound run's call reached Composio: ${bound.answer}`);
   assert.deepEqual(bound.sent.map(asWho), bound.sent.map(() => [USER_A, null]), "as its user, with no account named when the binding names none");
@@ -299,7 +301,7 @@ async function literalPerRunServer(t, { triggered = false } = {}) {
   const row = await server.store.mcp.server("gh");
   const url = new URL(row.url);
   url.searchParams.set("user_id", LITERAL);
-  assert.ok(await server.store.mcp.rewrite({ name: row.name, url: url.href, auth: row.auth, protocol: row.protocol, tools: row.tools, prices: row.prices, serverInfo: row.serverInfo, instructions: row.instructions }, row.sealed), "the row rewritten");
+  assert.ok(await server.store.mcp.rewrite({ name: row.name, url: url.href, auth: row.auth, protocol: row.protocol, tools: row.tools, prices: row.prices, serverInfo: row.serverInfo, instructions: row.instructions }, row), "the row rewritten");
   const record = await server.store.settings.get(composioMadeKey("gh"));
   assert.equal(record.per_run, undefined, "the seed save wrote no per_run marker");
   await server.store.settings.put(composioMadeKey("gh"), { ...record, user: LITERAL });

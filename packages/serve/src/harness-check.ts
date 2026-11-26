@@ -8,26 +8,25 @@
 //     provider sees only the turns' Messages requests; anything it reaches for beyond loopback goes to the check's own
 //     proxy, which refuses and lists it).
 //   Stage 3, live: the agent is killed (SIGKILL) after a turn and the next turn resumes it (its own session/load, or a
-//     fresh session told the conversation), a denied call never runs, one of our tools runs over MCP, and another runner
-//     with its own directory picks the session up from the records.
+//     fresh session told the conversation), a denied call never runs, one of our tools runs over MCP without the agent
+//     asking permission for it (unless its recipe declares the title tie), and another runner with its own directory
+//     picks the session up from the records.
 // It prints the three facts a harness row carries: resume (load | restart), tool_gate (permission | config: whether the
 // agent asks before a tool call) and billing (proxy | plan).
 // The check spends: four short turns on the run's model, under a cap (default $0.25).
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, HostTool, SessionRecord, SessionStore } from "@parcha/agentrun-kernel";
 import { modelPortFor, SessionFenced } from "@parcha/agentrun-kernel";
 import { beforeRequestOf } from "@parcha/agentrun-kernel/kernel/cap";
-import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
 import type { AdapterNeeds } from "./adapters.js";
-import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
+import { archivePlatform } from "./harness-archive.js";
 import { egressProxy, egressVars } from "./harness-egress.js";
-import { installDirOf } from "./harness-install.js";
-import { AGENT_VARS, loadRecipe, pinnedDigest, pinnedTree, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor, writeChecked } from "./harness-recipe.js";
+import { AGENT_VARS, installHolds, loadRecipe, recipeInstall, RecipeRefused, recipeSaid, writeChecked } from "./harness-recipe.js";
 import { recipeEntryOf } from "./harness-recipe-entry.js";
 import { providerModels } from "./model.js";
 import { capModelOf } from "./runner/cli-run-spec.js";
@@ -53,7 +52,8 @@ export interface HarnessCheckOptions {
   /** The most the check may spend, USD. */
   capUsd?: number;
   platform?: string;
-  /** For tests: the fetch the model proxy forwards with. */
+  /** For tests: the network the model proxy forwards to, under the check's recorder. A model the route translates goes
+   *  through the route's own fetch instead, as on a server. */
   fetch?: typeof fetch;
   /** Each step as it happens, a line of words. */
   say?: (line: string) => void;
@@ -68,7 +68,9 @@ export interface HarnessCheckReport {
   refused?: { code: string; message: string };
   platform?: string;
   model?: string;
-  binary?: { path: string; sha256: string; pinnedBy: "recipe" | "first-seen" };
+  /** The installed binary, and the tree digest it and every file beside it were held to: the recipe's or the first one
+   *  its install recorded. */
+  binary?: { path: string; tree: string; pinnedBy: "recipe" | "first-seen" };
   stage2?: Record<string, Check>;
   stage3?: Record<string, Check>;
   facts?: { resume: "load" | "restart" | "unknown"; tool_gate: "permission" | "config"; billing: "proxy" | "plan" };
@@ -199,35 +201,22 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   held.push(...recipe.keys.map((name) => options.env[name]).filter((value): value is string => typeof value === "string"));
   const head = { recipe: { id: recipe.id, label: recipe.label, file: loaded.file, sha256: loaded.sha256 }, checkedAt } as const;
   const refuse = (code: string, message: string): HarnessCheckReport => ({ ok: false, ...head, refused: { code, message: `${code}: ${message}` }, failures: [`${code}: ${message}`] });
+  say(recipeSaid(recipe.label, loaded.file, loaded.bundled));
   say(`${recipe.label}: the recipe holds the five rules (${loaded.file})`);
   // What the agent runs on: the recipe's keys, read from this shell, alone (a proxy-billed one's: none, the model proxy's).
   // A check never runs on its owner's own sign-in, which a schedule, a check and a shared server never take
   // (HARNESS.md#sign-in): a plan-billed recipe whose key is not set here is refused before its agent starts.
   const route = { on: "keys" } as const;
 
-  // Stage 2's pins: the installed binary, the one the owner's install put there. Nothing is downloaded here.
-  const platform = options.platform ?? archivePlatform();
-  const release = releaseFor(recipe, platform);
-  if (!platform || !release) return refuse("HARNESS_PLATFORM_UNSUPPORTED", `${recipe.label} ${recipe.release.version} has no release for ${platform ?? `${process.platform}-${process.arch}`}`);
-  const binary = recipeBinaryOf(options.data, recipe, release);
-  const line = recipeInstallLine(loaded.file, options.data, options.env);
-  const pin = pinnedDigest(options.data, recipe, release, platform);
-  if (!existsSync(binary) || !pin) return refuse("HARNESS_NOT_INSTALLED", `${recipe.label} ${recipe.release.version} is not installed in ${installDirOf(options.data, recipe.id)}; a check never downloads it. Install it with: ${line}`);
-  const found = await digestOf(binary).catch(() => undefined);
-  if (found !== pin.sha256) return refuse(ARCHIVE_CODES.binary, `${binary} has sha256 ${found ?? "(unreadable)"}, and ${pin.by === "recipe" ? "the recipe pins" : "its first install recorded"} ${pin.sha256}. Install it again with: ${line}`);
-  say(`${recipe.label}: the binary is the pinned one (${pin.by === "recipe" ? "the recipe's sha256" : "the first sha256 its install recorded"})`);
-
-  const acp = acpPackage();
-  if (!acp) return refuse("HARNESS_NOT_INSTALLED", `the ACP adapter (${ACP_PACKAGE}) is not installed beside this server`);
-  // Every file beside the binary (a launcher's code, a server's sidecar): the recipe's treeSha256, else the tree its
-  // install recorded. One installed before trees were recorded is installed again, so nothing in it runs unpinned.
-  const installed = installDirOf(options.data, recipe.id);
-  const treePin = pinnedTree(options.data, recipe, release, platform);
-  if (!treePin) return refuse("HARNESS_NOT_INSTALLED", `${recipe.label} ${recipe.release.version}'s files beside its binary were never recorded by its install, so they cannot be checked. Install it again with: ${line}`);
-  const treeNow = async () => acp.treeDigest(installed).catch(() => undefined);
-  const treeFound = await treeNow();
-  if (treeFound !== treePin.sha256) return refuse(ARCHIVE_CODES.binary, `${installed} has the tree sha256 ${treeFound ?? "(unreadable)"}, and ${treePin.by === "recipe" ? "the recipe pins" : "its first install recorded"} ${treePin.sha256}. Install it again with: ${line}`);
-  say(`${recipe.label}: every file beside the binary is the pinned tree (${treePin.by === "recipe" ? "the recipe's treeSha256" : "the tree its install recorded"})`);
+  // Stage 2's pins: every file the owner's install put there, the binary among them, the recipe's treeSha256 or the tree
+  // its install recorded (recipeInstall). Nothing is downloaded here; one installed before trees were recorded is
+  // installed again, so nothing in it runs unpinned.
+  const install = recipeInstall(options.data, recipe, loaded.file, options.env, options.platform ?? archivePlatform());
+  if ("code" in install) return refuse(install.code, install.message);
+  const { platform, release, binary } = install;
+  const off = await installHolds(install);
+  if (off) return refuse(off.code, off.message);
+  say(`${recipe.label}: the binary and every file beside it are the pinned tree (${install.tree.by === "recipe" ? "the recipe's treeSha256" : "the tree its install recorded"})`);
 
   // The run's model, for a recipe billed through the proxy: named here; its key, the login refusal and its price are its
   // entry's (below), as a server's are.
@@ -239,25 +228,42 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     needs = { model: ref, models: await providerModels(env) };
   }
 
-  // The session: the check's tools, its gate, its egress proxy, the recording fetch.
+  // The session: the check's tools, its gate, its egress proxy, its recorder.
   const nonce = randomBytes(6).toString("hex");
   const echoed: unknown[] = [];
   const deniedRan: unknown[] = [];
   const tools: HostTool[] = [
-    { name: "check_echo", description: "Echo the text back, prefixed with ECHO.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, replay: "never", call: async (args) => (echoed.push(args), { text: `ECHO:${(args as { text?: unknown })?.text ?? ""}` }) },
+    // A path beside the text: Goose 1.59.2 titles a call whose arguments hold one with a summary of it (` · proof.txt`), so
+    // each release's title form for such a call runs here, and the adapter ties nothing to it.
+    { name: "check_echo", description: "Echo the text back, prefixed with ECHO.", inputSchema: { type: "object", properties: { text: { type: "string" }, path: { type: "string", description: "A file name to echo beside it." } }, required: ["text"] }, replay: "never", call: async (args) => (echoed.push(args), { text: `ECHO:${(args as { text?: unknown })?.text ?? ""}` }) },
     { name: "check_denied", description: "A tool this run refuses: calling it shows the refusal.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, replay: "never", call: async (args) => (deniedRan.push(args), { text: "this call should never have run" }) },
   ];
   // The gate allows check_echo alone. Everything else is denied, the agent's own calls (`acp_<kind>`) included, as a
-  // server's gate answers them: a call of ours whose title the adapter can't tie is one of those, so it fails mcp_tool.
+  // server's gate answers them: a permission request for a call of ours, on a recipe with no title tie or one whose title
+  // the adapter can't tie, is one of those: refused, so mcp_tool fails (on calls 0, or on ourAsks where the agent runs it
+  // anyway), and the row counts it in ourAsks either way.
   const gateAsked: { tool: string; answer: string }[] = [];
-  const gate = async (call: { tool: string }) => {
+  // The ids of check_echo's MCP calls, as the gate got them: the agent's announced toolCallId where the adapter matched
+  // the call to one. A permission request under one of these ids was for our tool.
+  const echoIds = new Set<string>();
+  // The agent's toolCallIds (the gate call's args carry each) of the permission requests (`acp_<kind>`) whose input's
+  // `text` is the nonce, as check_echo's text argument is: requests for our tool by its arguments, as the adapter
+  // matches a call to its MCP call (CallIds), never by a title. The nonce is new for each check. Its `text` field and not
+  // anywhere in the input: an agent may write the nonce into proof.txt with an editor of its own (Goose's
+  // developer__text_editor, `file_text`), and Goose asks with kind "other" for every call, so the kind can't tell the
+  // two apart. This catches a request the gate refused and the agent never ran, which no check_echo id ever names.
+  const nonceToolCallIds = new Set<string>();
+  const gate = async (call: { tool: string; callId: string; args?: Record<string, unknown> }) => {
     const answer = call.tool === "check_echo" ? "allow" : "deny";
+    if (call.tool === "check_echo") echoIds.add(call.callId);
+    else if (call.tool.startsWith("acp_") && (call.args?.input as { text?: unknown } | null | undefined)?.text === nonce && typeof call.args?.toolCallId === "string") nonceToolCallIds.add(call.args.toolCallId);
     gateAsked.push({ tool: call.tool, answer });
     return answer === "allow" ? ("allow" as const) : { deny: "harness-check refuses this call on purpose" };
   };
   const forwarded: { method: string; path: string; tools: string[]; text: string }[] = [];
-  const forward = options.fetch ?? fetch;
-  const recording: typeof fetch = async (input, init) => {
+  // The recorder wraps the hop the proxy forwards with: the route's own fetch for a model it translates (an Ollama
+  // model), else the network (options.fetch in tests). So a check on such a model runs the route a server's run takes.
+  const record = (next: typeof fetch | undefined): typeof fetch => async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const text = bodyText(init?.body);
     let toolNames: string[] = [];
@@ -268,7 +274,7 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
       // Not JSON: no tools.
     }
     forwarded.push({ method: init?.method ?? "GET", path: url.pathname, tools: toolNames, text });
-    return forward(input, init);
+    return (next ?? options.fetch ?? fetch)(input, init);
   };
   const logs: { message: string; [field: string]: unknown }[] = [];
   const log = (message: string, fields?: Record<string, unknown>) => void logs.push({ message, ...(fields ?? {}) });
@@ -288,18 +294,17 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   const modelVar = recipe.model.billing === "proxy" ? recipe.model.env : undefined;
   // The plan's model, where the recipe names one: chosen among those the agent lists (session/set_model).
   const planModel = recipe.model.billing === "plan" ? recipe.model.id : undefined;
-  const starts: string[] = [];
-  // Each start of the agent's process checks the pin again: a binary swapped after the check began never runs.
+  // Each start of the agent's process checks the pin again (installHolds): a binary or a file beside it swapped after the
+  // check began never runs. `starts`: the starts that held.
+  let starts = 0;
   const beforeStart = async (command: string) => {
-    const now = await digestOf(command);
-    starts.push(now);
-    if (now !== pin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: ${command} changed after the check began (sha256 ${now})`);
-    const tree = await treeNow();
-    if (tree !== treePin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: the files beside ${command} changed after the check began (tree sha256 ${tree ?? "(unreadable)"})`);
+    const off = await installHolds(install);
+    if (off) throw new Error(`${off.code}: ${command} or a file beside it changed after the check began: ${off.message}`);
+    starts += 1;
   };
   // The recipe's entry as a server builds it (harness-recipe-entry.ts), on this check's route, log, variables (its egress
-  // proxy) and recording fetch.
-  const entry = recipeEntryOf({ recipe, binary, release, route: () => route, beforeStart, vars: () => childVars, fetch: recording, log });
+  // proxy) and recorder.
+  const entry = recipeEntryOf({ recipe, binary, release, route: () => route, beforeStart, vars: () => childVars, record, log });
   const planNeeds: AdapterNeeds = { model: { provider: recipe.id, modelId: planModel ?? "default" }, models: { getModel: () => undefined } };
   const adapterFor = async (): Promise<AgentAdapter> => entry.adapter!(hostEnv, needs ?? planNeeds);
   // The first runner's adapter is made before any turn, so a model this server can't run is refused before the agent
@@ -361,12 +366,25 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     // Turn 1: one of our tools over MCP.
     say(`${recipe.label}: turn 1, a call of our check_echo tool over MCP`);
     const first = await sessionOn(join(work, "runner-a"));
-    const t1 = await first.turn(`Use the check_echo tool once, with the text argument set to ${nonce}. Then reply with exactly what it returned and nothing else.`);
+    const t1 = await first.turn(`Use the check_echo tool once, with the text argument set to ${nonce} and the path argument set to proof.txt. Then reply with exactly what it returned and nothing else.`);
+    // The permissions the agent asked for in turn 1 (permissionAsks), and of those the ones for our tool (ourAsks), each
+    // counted once: a request whose toolCallId is the id a check_echo MCP call reached the gate under, or one whose gate
+    // question's input carried check_echo's nonce as its text (nonceToolCallIds, by the toolCallId its args carry).
+    // Matched by id and arguments, never by title. The adapter answers a request for our tool only where
+    // the recipe declares the title tie (quirks.permissionTie, Cursor's); any other agent must ask nothing for our tools
+    // (an allowFile, Goose's), since the server's gate asks at the MCP call. Any other request is the agent's own call:
+    // the gate denied it and lists it (gate.permissionsAsked), and it fails no stage.
+    const turnAsks = asked();
+    const permissionAsks = turnAsks.length;
+    const ourIds = new Set([...echoIds, ...nonceToolCallIds]);
+    const ourAsks = turnAsks.filter((l) => typeof l.toolCallId === "string" && ourIds.has(l.toolCallId)).length;
+    const tied = recipe.quirks.permissionTie === "title";
+    const askedProblem = ourAsks > 0 && !tied ? `the agent asked permission for our tool ${ourAsks} time(s) (a request under the id of a check_echo call, or with check_echo's arguments): its recipe needs an allowFile in the form the agent reads, so it runs our tools unasked, or the title tie (quirks.permissionTie) when the agent asks for every MCP call whatever its config says` : undefined;
     const firstOpen = opened()[0];
     // The environment while the agent runs.
     const environ = firstOpen?.pid ? environOf(firstOpen.pid) : undefined;
     const echoReached = messages().some((r) => r.text.includes(`ECHO:${nonce}`));
-    stage3.mcp_tool = { ok: t1.status === "completed" && echoed.length >= 1 && (recipe.model.billing !== "proxy" || echoReached), turn: t1.status, ...(t1.error ? { error: t1.error } : {}), calls: echoed.length, resultReachedModel: recipe.model.billing === "proxy" ? echoReached : null };
+    stage3.mcp_tool = { ok: t1.status === "completed" && echoed.length >= 1 && (recipe.model.billing !== "proxy" || echoReached) && !askedProblem, turn: t1.status, ...(t1.error ? { error: t1.error } : {}), calls: echoed.length, resultReachedModel: recipe.model.billing === "proxy" ? echoReached : null, permissionAsks, ourAsks, ...(askedProblem ? { problem: askedProblem } : {}) };
 
     // Stage 2: the tools the agent offered its model on its first request. The proxy refuses a request that offers a tool
     // its policy does not allow, so one that reached the provider at all passed that rule: the stage is whether one did.
@@ -425,7 +443,7 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     await other.session.close();
 
     // Stage 2: the pin held at every start; no side request.
-    stage2.pins = { ok: starts.length > 0 && starts.every((sha) => sha === pin.sha256), binary, sha256: pin.sha256, pinnedBy: pin.by, archiveSha256: release.sha256, starts: starts.length };
+    stage2.pins = { ok: starts > 0, binary, tree: install.tree.sha256, pinnedBy: install.tree.by, archiveSha256: release.sha256, starts };
     if (recipe.model.billing === "proxy") {
       const paths = [...new Set(forwarded.map((r) => `${r.method} ${r.path}`))];
       // What the agent asked the proxy for beyond the Messages route: refused there, never sent on.
@@ -446,14 +464,14 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   for (const name of ["tools_off", "env_allowlist", "limits", "pins", "side_requests"]) if (!(name in stage2) && !failures.some((f) => f.startsWith("the check stopped"))) failures.push(`stage2.${name} did not run`);
   for (const name of ["mcp_tool", "resume", "denied_call", "other_runner"]) if (!(name in stage3) && !failures.some((f) => f.startsWith("the check stopped"))) failures.push(`stage3.${name} did not run`);
   // A pass is noted on the data directory, by digest, for a server that names the recipe (harness-recipe-entry.ts
-  // recipeServerEntry): it runs this recipe, binary and tree, and no other.
-  if (failures.length === 0) writeChecked(options.data, recipe.id, { recipe: loaded.sha256, binary: pin.sha256, tree: treePin.sha256, version: recipe.release.version, platform });
+  // recipeServerEntry): it runs this recipe and this install's tree, and no other.
+  if (failures.length === 0) writeChecked(options.data, recipe.id, { recipe: loaded.sha256, tree: install.tree.sha256, platform });
   return {
     ok: failures.length === 0,
     ...head,
     platform,
     ...(options.model ? { model: options.model } : {}),
-    binary: { path: binary, sha256: pin.sha256, pinnedBy: pin.by },
+    binary: { path: binary, tree: install.tree.sha256, pinnedBy: install.tree.by },
     stage2,
     stage3,
     facts: { resume: resumeFact, tool_gate: asked().length > 0 ? "permission" : "config", billing: recipe.model.billing },

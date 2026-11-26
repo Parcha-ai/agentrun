@@ -13,7 +13,9 @@
 //     default context is small, so every request names it: options.num_ctx, the model's trained context up to 64k
 //     (OLLAMA_NUM_CTX), and the model's window here is that same number.
 // Listing never stalls a caller: one short deadline for the whole listing, no redirects, and a down, hung or refused Ollama
-// lists no models and throws nothing. Each address's answer is kept (OLLAMA_TTL_MS) and refreshed behind the caller.
+// throws nothing. Each address's answer is kept (OLLAMA_TTL_MS) and refreshed behind the caller; a failed ask is no
+// answer: the models kept before it stay (none for a refused one: that Ollama is down), and are asked again at the next
+// call (listOllama).
 import { AsyncLocalStorage } from "node:async_hooks";
 import { calculateCost, collapseSystemMessages, createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools, type AssistantMessage, type AssistantMessageEventStream, type Model, type SimpleStreamOptions, type StreamOptions, type TranscriptContext } from "@earendil-works/pi-ai";
 import { transformMessages } from "@earendil-works/pi-ai/api/transform-messages";
@@ -27,12 +29,14 @@ export const OLLAMA_PROVIDER = "ollama";
 export const OLLAMA_API = "ollama-chat";
 /** The most context a request asks Ollama for (options.num_ctx), and so the most window a model has here: 64k. */
 export const OLLAMA_NUM_CTX = 65_536;
-/** How long a listing may take, all of it: a stuck Ollama costs a caller this once per OLLAMA_TTL_MS at most. */
+/** How long a listing may take, all of it: a stuck Ollama costs a caller this only where nothing is kept for its address
+ *  (ollamaModels); after that it is asked behind its callers. */
 export const OLLAMA_LIST_TIMEOUT_MS = 2_000;
-/** How long an address's listing is kept before it is asked again (behind the caller, which takes the kept one). */
+/** How long an address's listing is kept before it is asked again (behind the caller, which takes the kept one). A
+ *  failed ask is never kept fresh (listOllama). */
 export const OLLAMA_TTL_MS = 30_000;
 /** Ollama's port, where OLLAMA_HOST names none and no scheme. */
-const OLLAMA_PORT = "11434";
+export const OLLAMA_PORT = "11434";
 const ZERO = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 
 /** A model as Ollama lists it: its tag, its capabilities, and the context it was trained on (undefined: /api/show says none). */
@@ -75,9 +79,13 @@ function splitHostPort(hostport: string): [string, string | undefined] {
   return [hostport, undefined];
 }
 
-/** Each address's last listing, by base URL, and the listing under way for it. */
+/** Each address's last listing, by base URL (`at` -Infinity: a failed ask's, stale at once), and the listing under way
+ *  for it. */
 const kept = new Map<string, { at: number; models: readonly OllamaListed[] }>();
 const asking = new Map<string, Promise<readonly OllamaListed[]>>();
+/** Bumped by ollamaForget, per address: a listing asked before a forget answers its caller but is never kept, since it
+ *  may be from before the pull that made the forget. */
+const forgets = new Map<string, number>();
 /** The clock a listing is kept by: Date.now, or a test's (ollamaClock). */
 let now: () => number = Date.now;
 
@@ -173,25 +181,46 @@ async function shownOf(ask: ReturnType<typeof askerOf>, name: string): Promise<O
 
 /**
  * The models the Ollama `env` names has, asked now: its tags (/api/tags), each one's capabilities and trained context
- * (/api/show), in the order Ollama lists them. All of it within `timeoutMs`, with no redirect followed; a refused
- * OLLAMA_HOST, a down or hung Ollama, or an answer of the wrong shape lists none, and nothing is thrown. A model /api/show
- * does not answer for, before the deadline included, is left out and the others kept; so is a cloud model (remote_host or
- * remote_model, in either answer). The answer is kept for its address (ollamaModels, ollamaKept). `fetch`: a test's.
+ * (/api/show), in the order Ollama lists them. All of it within `timeoutMs`, with no redirect followed; nothing is thrown.
+ * A model /api/show refuses is left out and the others kept; so is a cloud model (remote_host or remote_model, in either
+ * answer). The answer is kept for its address (ollamaModels, ollamaKept), fresh for OLLAMA_TTL_MS. A failed ask (a
+ * hung Ollama, an /api/tags of the wrong shape, or the deadline passing before every /api/show answered) is no listing:
+ * the address keeps the models it had (none kept, what this ask got), stale at once, so the next caller takes them and
+ * asks again behind it. A refused connection is an Ollama that is down: its address keeps none, stale too. `fetch`: a
+ * test's.
  */
 export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_LIST_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<readonly OllamaListed[]> {
   const base = baseOf(env);
   if (base === undefined) return [];
-  const ask = askerOf(base, send, AbortSignal.timeout(timeoutMs));
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const ask = askerOf(base, send, deadline);
+  const asked = forgets.get(base) ?? 0;
   let models: readonly OllamaListed[] = [];
+  let whole = false;
+  let down = false;
   try {
     const tags = (await ask("/api/tags")) as { models?: ({ name?: unknown; model?: unknown } & Remote)[] } | null;
-    const names = (Array.isArray(tags?.models) ? tags.models : []).filter((tag) => !remote(tag)).map((tag) => tag?.name ?? tag?.model).filter((name): name is string => typeof name === "string" && name.length > 0);
+    if (!Array.isArray(tags?.models)) throw new Error("/api/tags: no models list");
+    const names = tags.models.filter((tag) => !remote(tag)).map((tag) => tag?.name ?? tag?.model).filter((name): name is string => typeof name === "string" && name.length > 0);
     models = (await Promise.all(names.map((name) => shownOf(ask, name)))).filter((model): model is OllamaListed => model !== undefined);
-  } catch {
-    models = [];
+    whole = !deadline.aborted;
+  } catch (error) {
+    down = refused(error);
   }
-  kept.set(base, { at: now(), models });
-  return models;
+  const before = kept.get(base)?.models;
+  const listing = whole ? { at: now(), models } : { at: -Infinity, models: !down && before?.length ? before : models };
+  // A forget since this listing was asked: it answers its caller, and is never kept.
+  if ((forgets.get(base) ?? 0) === asked) kept.set(base, listing);
+  return listing.models;
+}
+
+/** Whether `error` is a refused connection (ECONNREFUSED anywhere in its causes): nothing listens at the address. */
+function refused(error: unknown): boolean {
+  for (let at = error; at instanceof Error; at = at.cause) {
+    if ((at as NodeJS.ErrnoException).code === "ECONNREFUSED") return true;
+    if (at instanceof AggregateError && at.errors.some(refused)) return true;
+  }
+  return false;
 }
 
 /** How long a run gives the /api/show of the one Ollama model it names (ollamaShown): longer than a listing's, since the
@@ -221,7 +250,8 @@ export async function ollamaModels(env: NodeJS.ProcessEnv): Promise<readonly Oll
   if (known && now() - known.at < OLLAMA_TTL_MS) return known.models;
   let listing = asking.get(base);
   if (!listing) {
-    listing = listOllama(env).finally(() => asking.delete(base));
+    const mine: Promise<readonly OllamaListed[]> = listOllama(env).finally(() => { if (asking.get(base) === mine) asking.delete(base); });
+    listing = mine;
     asking.set(base, listing);
   }
   return known ? known.models : listing;
@@ -236,11 +266,103 @@ export async function ollamaRelisted(env: NodeJS.ProcessEnv): Promise<readonly O
   kept.delete(base);
   return ollamaModels(env);
 }
-/** The models the Ollama `env` names had when last asked (ollamaModels): none where it was never asked. Synchronous, for
- *  the host's default model (model.ts hostModel), which a listing primes before it is read. */
+/** The models the Ollama `env` names had when last listed (ollamaModels; a failed ask keeps the ones before it, a refused
+ *  one none): none where it was never asked. Synchronous, for the host's default model (model.ts hostModel), which a
+ *  listing primes before it is read. */
 export function ollamaKept(env: NodeJS.ProcessEnv): readonly OllamaListed[] {
   const base = baseOf(env);
   return base === undefined ? [] : (kept.get(base)?.models ?? []);
+}
+
+/** Forgets the listing kept for the Ollama `env` names, and the one under way for it, so the next ollamaModels asks it
+ *  again at once: after a pull here (local-model.ts), the model is in the picker with no wait for OLLAMA_TTL_MS. A
+ *  listing under way when it is forgotten still answers its caller, but is never kept: it may be from before the pull. */
+export function ollamaForget(env: NodeJS.ProcessEnv): void {
+  const base = baseOf(env);
+  if (base === undefined) return;
+  forgets.set(base, (forgets.get(base) ?? 0) + 1);
+  kept.delete(base);
+  asking.delete(base);
+}
+
+/** How long the version of the Ollama here is waited for (ollamaVersion): a listing's deadline. */
+export const OLLAMA_VERSION_TIMEOUT_MS = OLLAMA_LIST_TIMEOUT_MS;
+
+/** The version the Ollama `env` names says it is (GET /api/version), or undefined where it names none, is refused, down,
+ *  hung past `timeoutMs` or answers another shape. Nothing thrown. */
+export async function ollamaVersion(env: NodeJS.ProcessEnv, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_VERSION_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<string | undefined> {
+  const base = baseOf(env);
+  if (base === undefined) return undefined;
+  try {
+    const answer = (await askerOf(base, send, AbortSignal.timeout(timeoutMs))("/api/version")) as { version?: unknown } | null;
+    return typeof answer?.version === "string" && answer.version.length > 0 && answer.version.length <= 64 ? answer.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One line of a pull's progress as Ollama streams it (POST /api/pull): its status, and a layer's digest with its bytes. */
+export type OllamaPullLine = { readonly status: string; readonly digest?: string; readonly total?: number; readonly completed?: number };
+
+/** How long a pull may go with no byte from Ollama before it stops (ollamaPull): a registry that stalls, or an Ollama
+ *  that wedges, frees the one pull here instead of holding it at `pulling` until the server restarts. */
+export const PULL_STALL_MS = 120_000;
+/** The longest progress line a pull takes: Ollama's are a few hundred bytes, so a stream that sends no newline ends. */
+export const PULL_LINE_MAX = 64 * 1024;
+
+/**
+ * Pulls `tag` through the Ollama `env` names (POST /api/pull, streamed as NDJSON), each line of progress to `onLine` as it
+ * comes. Resolves once Ollama says `success`; throws, in Ollama's words, on an `error` line, a refusal, a stream that ends
+ * before `success`, or `signal`; in its own, on `stallMs` with no byte from Ollama (the answer's head or a chunk of the
+ * stream) or a line past PULL_LINE_MAX. No deadline on the whole: a model is gigabytes, and a pull that moves is let run.
+ */
+export async function ollamaPull(env: NodeJS.ProcessEnv, tag: string, onLine: (line: OllamaPullLine) => void, { fetch: send = globalThis.fetch, signal, stallMs = PULL_STALL_MS }: { fetch?: typeof fetch; signal?: AbortSignal; stallMs?: number } = {}): Promise<void> {
+  const base = baseOf(env);
+  if (base === undefined) throw new Error("no Ollama is asked here");
+  const stall = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const moved = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => stall.abort(), stallMs);
+  };
+  const stopped = signal ? AbortSignal.any([signal, stall.signal]) : stall.signal;
+  moved();
+  try {
+    const response = await send(`${base}/api/pull`, { method: "POST", redirect: "error", signal: stopped, headers: { "content-type": "application/json" }, body: JSON.stringify({ model: tag, stream: true }) });
+    if (!response.ok || !response.body) {
+      const said = safeJson(await response.text().catch(() => "")) as { error?: unknown } | undefined;
+      throw new Error(typeof said?.error === "string" ? said.error : `/api/pull: ${response.status}`);
+    }
+    const decoder = new TextDecoder();
+    let rest = "";
+    let succeeded = false;
+    const take = (text: string) => {
+      const line = safeJson(text) as { status?: unknown; error?: unknown; digest?: unknown; total?: unknown; completed?: unknown } | undefined;
+      if (!line || typeof line !== "object") return;
+      if (typeof line.error === "string") throw new Error(line.error);
+      if (typeof line.status !== "string") return;
+      if (line.status === "success") succeeded = true;
+      onLine({ status: line.status, ...(typeof line.digest === "string" ? { digest: line.digest } : {}), ...(line.total !== undefined ? { total: count(line.total) } : {}), ...(line.completed !== undefined ? { completed: count(line.completed) } : {}) });
+    };
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+      moved();
+      rest += decoder.decode(chunk, { stream: true });
+      let cut: number;
+      while ((cut = rest.indexOf("\n")) >= 0) {
+        const text = rest.slice(0, cut).trim();
+        rest = rest.slice(cut + 1);
+        if (text) take(text);
+      }
+      if (rest.length > PULL_LINE_MAX) throw new Error(`Ollama sent a progress line longer than ${PULL_LINE_MAX} bytes, so the pull stopped. Press Pull again.`);
+    }
+    if (rest.trim()) take(rest.trim());
+    if (!succeeded) throw new Error("the pull ended before Ollama said success");
+  } catch (error) {
+    if (stall.signal.aborted && !signal?.aborted) throw new Error(`Ollama sent nothing for ${Math.round(stallMs / 1000)} s, so the pull stopped. Press Pull again.`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** `env`'s Ollama listing as last kept (ollamaKept), in one string: each model's tag, capabilities and trained context.
@@ -313,9 +435,13 @@ type ChatLine = {
   error?: string;
 };
 
+/** What a request asks Ollama past pi-ai's own options (model-route.ts ollamaAsks): `format`, the JSON schema its answer is
+ *  held to (/api/chat's format); `think: false`, a thinking model asked not to think. */
+export type OllamaAsks = { format?: Record<string, unknown>; think?: false };
+
 /** `context` as /api/chat's body for `model`: the current system prompt first, each message in Ollama's shape (a call's
  *  arguments an object, a result `tool` with the tool's name, images as base64), and the current tools in its `tools`. */
-export function chatBody(model: Model<string>, context: TranscriptContext, options: SimpleStreamOptions | undefined): Record<string, unknown> {
+export function chatBody(model: Model<string>, context: TranscriptContext, options: (SimpleStreamOptions & OllamaAsks) | undefined): Record<string, unknown> {
   const collapsed = collapseSystemMessages(context);
   const system = getCurrentSystemPrompt(collapsed.messages);
   const tools = getCurrentTools(collapsed.messages);
@@ -338,21 +464,23 @@ export function chatBody(model: Model<string>, context: TranscriptContext, optio
     }
   }
   const window = Math.min(model.contextWindow, OLLAMA_NUM_CTX);
+  const topP = options?.samplingParams?.top_p;
   return {
     model: model.id,
     messages,
     ...(tools.length ? { tools: tools.map((tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: tool.parameters } })) } : {}),
     stream: true,
-    // A thinking model asked to reason thinks; asked nothing, Ollama's default.
-    ...(model.reasoning && options?.reasoning ? { think: true } : {}),
-    options: { num_ctx: window, ...(options?.maxTokens ? { num_predict: options.maxTokens } : {}), ...(options?.temperature === undefined ? {} : { temperature: options.temperature }) },
+    // A thinking model asked to reason thinks; asked not to (think false), does not; asked nothing, Ollama's default.
+    ...(model.reasoning && options?.reasoning ? { think: true } : model.reasoning && options?.think === false ? { think: false } : {}),
+    ...(options?.format ? { format: options.format } : {}),
+    options: { num_ctx: window, ...(options?.maxTokens ? { num_predict: options.maxTokens } : {}), ...(options?.temperature === undefined ? {} : { temperature: options.temperature }), ...(typeof topP === "number" ? { top_p: topP } : {}) },
   };
 }
 
 /** One request on /api/chat, its NDJSON read into pi-ai's events: text and thinking as they stream, each tool call whole,
  *  and the end with Ollama's counts as its usage (prompt_eval_count in, eval_count out), at the model's price ($0). An
  *  error line, a refused status or a broken stream ends in an error event; a stopped one in an aborted one. */
-function streamChat(model: Model<string>, context: TranscriptContext, options?: StreamOptions & SimpleStreamOptions): AssistantMessageEventStream {
+function streamChat(model: Model<string>, context: TranscriptContext, options?: StreamOptions & SimpleStreamOptions & OllamaAsks): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
   const output: AssistantMessage = { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { ...ZERO, total: 0 } }, stopReason: "stop", timestamp: Date.now() };
   void (async () => {

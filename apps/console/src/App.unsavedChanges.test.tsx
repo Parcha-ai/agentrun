@@ -99,11 +99,11 @@ describe("App, the agent builder's unsaved changes", () => {
     serve();
     const p = await open("#/agents/calc/edit");
     await p.type(p.instructions()!, "Answer in French.");
-    await act(async () => { p.host.querySelector<HTMLButtonElement>('button[aria-label="Back to agents"]')!.click(); });
+    await act(async () => { p.host.querySelector<HTMLButtonElement>('header button[aria-label="Back"]')!.click(); });
     await wait(() => !!p.dialog(), "Leave without saving? is asked");
     expect(location.hash).toBe("#/agents/calc/edit");
     await act(async () => { p.button("Leave", p.dialog())!.click(); });
-    await wait(() => location.hash === "#/agents" && !p.instructions(), "on the agents list");
+    await wait(() => location.hash === "#/agents/calc" && !p.instructions(), "on its agent's page: the editor was opened at its own address");
   });
 
   it("the browser's back on an edited agent is taken back and asks first: Stay keeps the edits, Leave goes back", async () => {
@@ -140,7 +140,7 @@ describe("App, the agent builder's unsaved changes", () => {
   it("a choice put back to the saved one is no change: approvals switched and switched back go with no question", async () => {
     serve();
     const p = await open("#/agents/calc/edit");
-    await act(async () => { [...p.host.querySelectorAll<HTMLButtonElement>("ol button")].find((b) => /Tools & skills/.test(b.textContent ?? ""))!.click(); });
+    await act(async () => { [...p.host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find((b) => /Tools/.test(b.textContent ?? ""))!.click(); });
     const radio = (value: string) => p.host.querySelector<HTMLInputElement>(`input[name="approvals"][value="${value}"]`);
     await wait(() => !!radio("never"), "the approvals choice");
     await act(async () => { radio("never")!.click(); });
@@ -184,22 +184,23 @@ describe("App, the agent builder's unsaved changes", () => {
     expect(p.dialog()).toBeUndefined();
   });
 
-  it("the new-agent page prepares a request without any server write", async () => {
+  it("the new-agent editor keeps an unsaved draft without any server write", async () => {
     const writes = serve();
     const p = await open("#/agents/calc/edit");
     await act(async () => { location.hash = "#/agents/new"; });
-    await wait(() => p.host.querySelector("h1")?.textContent === "What do you want to build?", "the brief composer");
-    await p.type(p.host.querySelector<HTMLTextAreaElement>('textarea[placeholder]')!, "Answer in French.");
-    expect(p.host.querySelector('textarea[readonly]')?.textContent).toContain("Answer in French.");
+    await wait(() => p.host.querySelector("h1")?.textContent === "New agent", "the new agent form");
+    await p.type(p.instructions()!, "Answer in French.");
+    expect(p.instructions()?.value).toBe("Answer in French.");
+    expect(p.unloadAsks()).toBe(true);
     expect(writes).toEqual([]);
     expect(p.dialog()).toBeUndefined();
   });
 
-  it("a new-agent brief leaves without a definition write or a legacy editor guard", async () => {
+  it("a clean new-agent editor leaves without a definition write or a confirmation", async () => {
     const writes = serve();
     const p = await open("#/agents/calc/edit");
     await act(async () => { location.hash = "#/agents/new"; });
-    await wait(() => p.host.querySelector("h1")?.textContent === "What do you want to build?", "the brief composer");
+    await wait(() => p.host.querySelector("h1")?.textContent === "New agent", "the new agent form");
     await act(async () => p.sidebar("Runs").click());
     await wait(() => location.hash === "#/runs", "the runs list");
     expect(p.dialog()).toBeUndefined();

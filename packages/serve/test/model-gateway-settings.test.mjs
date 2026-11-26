@@ -20,6 +20,7 @@ import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { agent, follow, serve, storeBytes, withEnv } from "./support.mjs";
 
 const { gatewayBase } = await import("../dist/provider.js");
+const { testGateway } = await import("../dist/model-gateway.js");
 const { withSavedGateway, GATEWAY_KEY_ROW } = await import("../dist/model-gateway.js");
 const { withoutSecrets } = await import("../dist/secrets.js");
 
@@ -155,6 +156,44 @@ test("an address is refused by the one rule AGENT_MODEL_BASE_URL is, in its word
   assert.deepEqual([noModel.status, noModel.body.error?.fields?.[0]?.field], [422, "models.default"]);
 });
 
+// A run refuses more than the one address rule: Particle's API speaks Chat Completions, not a gateway's Responses
+// (provider.ts modelGatewayBase). The view's `problem`, which the console's first screen shows, is a run's refusal.
+test("the view's problem is the one a run meets: Particle's API, which the address rule takes, is refused in a run's words; a save refuses it too", { timeout: 60_000 }, async (t) => {
+  const particle = "https://api.particle.ai/v1";
+  withEnv(t, { AGENT_MODEL_BASE_URL: particle }, NAMES);
+  const atStart = await serve(t, { faux: undefined });
+  const env = (await atStart.api("GET", "/settings/model-gateway")).body;
+  assert.deepEqual([env.source, env.base_url], ["env", particle]);
+  assert.match(env.problem ?? "", /Particle.*Chat Completions/, JSON.stringify(env));
+  const models = (await atStart.api("GET", "/capabilities")).body.models;
+  assert.deepEqual([models.source, models.ready, models.needs], ["gateway", false, "key"]);
+  await atStart.stop();
+
+  // Saved from Settings, the same refusal is the save's 422 on base_url, in words for that field (not the variable's).
+  withEnv(t, {}, NAMES);
+  const { api } = await serve(t, { faux: undefined });
+  const saved = await api("PUT", "/settings/model-gateway", { base_url: particle, models: { default: MODEL } });
+  assert.deepEqual([saved.status, saved.body.error?.fields?.[0]?.field], [422, "base_url"], JSON.stringify(saved.body));
+  assert.match(saved.body.error.fields[0].message, /Particle.*Chat Completions/);
+  assert.doesNotMatch(saved.body.error.fields[0].message, /AGENT_MODEL_BASE_URL/);
+  assert.equal((await api("GET", "/settings/model-gateway")).body.source, null, "nothing was saved");
+});
+
+// Test holds an address to the rule Save does (a run's): Particle's API is said refused, in a run's words, and never asked,
+// whether typed in the form or the gateway in force. Called directly, so the stub fetch shows nothing went out.
+test("Test refuses what Save refuses: a Particle API base, typed or in force, is refused in a run's words and never asked", async () => {
+  const particle = "https://api.particle.ai/v1";
+  const asked = [];
+  const fetch = async (url) => (asked.push(String(url)), new Response(JSON.stringify({ data: [{ id: "particle-1" }] }), { status: 200 }));
+  // A store with no gateway saved and no key sealed.
+  const store = { settings: { get: async () => undefined }, sealedKeys: { get: async () => undefined } };
+  await assert.rejects(testGateway({ store, env: {}, fetch }, { base_url: particle }), (error) => error.extra?.fields?.[0]?.field === "base_url" && /Particle.*Chat Completions/.test(error.extra.fields[0].message));
+  const inForce = await testGateway({ store, env: { AGENT_MODEL_BASE_URL: particle }, fetch }, undefined);
+  assert.equal(inForce.ok, false);
+  assert.match(inForce.why, /Particle.*Chat Completions.*remove AGENT_MODEL_BASE_URL/);
+  assert.deepEqual(asked, [], "Particle's API was never asked");
+});
+
 test("the test follows no redirect: a gateway that redirects is said so, and the key never reaches the address it names", { timeout: 60_000 }, async (t) => {
   const elsewhere = await startFauxGateway({ models: ["m-1"] });
   t.after(() => elsewhere.close());
@@ -215,7 +254,7 @@ test("a claimed run's tools never get the saved gateway's key: its model routes 
   const runEnv = withSavedGateway({ PATH: "/bin" }, { v: 1, base_url: "https://gateway.example", ids: "as_named", models: { default: "m-1" }, key: CANARY });
   const tools = await claimSecrets({ store, sealKey: randomBytes(32), env: runEnv }, { kind: "agentic", body: { tools: [] } }, { model: { provider: "agent-model", modelId: "m-1" } });
   assert.equal(JSON.stringify(Object.getOwnPropertyNames(tools).map((name) => tools[name])).includes(CANARY), false, "not on the tools' environment");
-  assert.equal(claimModelEnv(runEnv, tools, undefined).AGENT_MODEL_API_KEY, CANARY, "the model routes read it");
+  assert.equal(claimModelEnv(runEnv, [tools], undefined).AGENT_MODEL_API_KEY, CANARY, "the model routes read it");
 });
 
 test("the saved key is sealed with its origin: read beside an address of another origin, between a change's two writes or after the second failed, it is not handed on", async (t) => {
@@ -308,6 +347,16 @@ test("the test reads no more of the gateway's answer than MAX_TEST_BYTES: a long
   assert.equal(answer.ok, false);
   assert.match(answer.why, /is over 4 MB/);
   assert.ok(pulled <= MAX_TEST_BYTES + 4 * chunk.byteLength, `read ${pulled} bytes`);
+});
+
+test("an answer whose body breaks off while it is read is read as none: the test says so in words, and never throws", async () => {
+  const { testGateway } = await import("../dist/model-gateway.js");
+  const body = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('{"data": [')); controller.error(new Error("the connection dropped")); } });
+  const fetch = async () => new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  const store = { settings: { get: async () => undefined }, sealedKeys: { get: async () => undefined } };
+  const answer = await testGateway({ store, sealKey: Buffer.alloc(32), env: {}, changed: async () => {}, fetch }, { base_url: "https://gateway.example", api_key: CANARY });
+  assert.equal(answer.ok, false);
+  assert.match(answer.why, /is not JSON/);
 });
 
 test("a run in the runner holds the saved gateway's key, as its claim read it, in its one redactor before its loop starts: a reply that echoes it is cut though the store holds another by then", async () => {

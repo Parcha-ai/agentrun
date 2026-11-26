@@ -3,13 +3,14 @@
 // data, the few things a tour does (answering a question or an approval, starting or stopping a run) change only the
 // world in this page's memory, and every other write is refused, saying so.
 //
-// Three reads go to the server all the same. The session and sign-out (`/auth/…`), since the person is signed in to it.
+// A few reads go to the server all the same. The session and sign-out (`/auth/…`), since the person is signed in to it.
 // And its catalogue, which is the product's own and holds nothing of the owner's: what the server can do
 // (`/capabilities`, shown as a server with every model and tool ready, without its secrets' names or its switches) and the
-// templates it ships with (`/templates`, the bundled ones only).
+// templates it ships with (`/templates`, the bundled ones only), with the marketplace's list beside them
+// (`/marketplace/templates`), whose entries are marked here only for a bundled one.
 import { DAY } from "./tale";
 import { DEMO_REFUSAL, demoPicked } from "./mode";
-import type { GradeBody, TemplateApply, TemplateView, TriggerCreate, TriggerInput } from "@/lib/v2";
+import type { GradeBody, MarketplaceList, TemplateApply, TemplateView, TriggerCreate, TriggerInput } from "@/lib/v2";
 import { createSuggestions } from "./suggestions";
 import { createWorld, hex, type World } from "./world";
 
@@ -80,6 +81,13 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
       templates = (served.templates ?? []).filter((t) => t.bundled === true);
       return json({ ...served, templates });
     }
+    if (method === "GET" && path === "/marketplace/templates") {
+      const res = await real(input, init);
+      if (!res.ok) return res;
+      const served = (await res.json()) as MarketplaceList;
+      const ids = new Set((await bundled()).map((t) => t.id));
+      return json({ ...served, templates: served.templates.map(({ here, ...t }) => (here && ids.has(here) ? { ...t, here } : t)) });
+    }
     const template = path.match(/^\/templates\/([^/]+)(\/apply)?$/);
     if (template) {
       const t = (await bundled()).find((x) => x.id === decodeURIComponent(template[1]));
@@ -95,7 +103,7 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
     if (root === "agents") {
       if (!id) {
         // Building an agent is part of the tour: it is made in the page's memory, and runs as a stand-in.
-        if (method === "POST" && body.definition && typeof body.definition === "object") return json(world.createAgent(body.definition as Record<string, unknown>), 201);
+        if (method === "POST" && body.definition && typeof body.definition === "object") return json(world.createAgent(body.definition as Record<string, unknown>, body.skills as Record<string, string> | undefined), 201);
         if (!get) return refused();
         const all = world.agents().filter((a) => !!a.archived_at === (q.get("archived") === "true"));
         const p = page(all, q, 100);
@@ -105,7 +113,9 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
       if (!agent) return notFound(`agent ${id}`);
       if (!sub) return get ? json(agent, 200, { etag: agent.home_etag }) : refused();
       if (sub === "definition" && method === "PUT" && body.definition && typeof body.definition === "object") {
-        const saved = world.saveDefinition(id, body.definition as Record<string, unknown>, typeof body.note === "string" ? body.note : null)!;
+        const etag = new Headers(init?.headers).get("if-match");
+        if (etag && etag !== agent.home_etag) return refusal(412, "precondition_failed", "The agent changed. Reload it before saving.");
+        const saved = world.saveDefinition(id, body.definition as Record<string, unknown>, typeof body.note === "string" ? body.note : null, body.skills as Record<string, string> | undefined)!;
         return json(saved, 200, { etag: saved.home_etag });
       }
       if (sub === "native" && get) return json({ native: agent.definition.native ?? null });
@@ -115,7 +125,14 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
       }
       if ((sub === "archive" || sub === "unarchive") && method === "POST") return json(world.archiveAgent(id, sub === "archive"));
       if (sub === "current" && method === "POST") { const a = world.setCurrent(id, String(body.revision ?? "")); return a ? json(a, 200, { etag: a.home_etag }) : notFound(`revision ${String(body.revision ?? "")}`); }
-      if (sub === "revisions" && get) return json({ revisions: world.revisions(id), next_cursor: null });
+      if (sub === "revisions" && get) {
+        if (!rest.length) return json({ revisions: world.revisions(id), next_cursor: null });
+        if (rest.length === 2 && rest[1] === "skills") {
+          const files = world.revisionSkills(id, rest[0]);
+          return files ? json(files) : notFound(`revision ${rest[0]}`);
+        }
+        return notFound(path);
+      }
       if (sub === "runs" && get) {
         const p = page(world.runs({ agent: id, status: q.get("status") ?? undefined, archived: q.get("archived") === "true" }), q);
         return json({ runs: p.items, next_cursor: p.next_cursor });

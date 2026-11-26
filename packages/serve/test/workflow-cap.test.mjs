@@ -76,7 +76,7 @@ const collecting = (body, out) => ({
   v: 2, name: "each",
   schemas: {
     In: { type: "object", required: ["questions"], properties: { questions: { type: "array", items: { type: "string" } } } },
-    Search: { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array", minItems: 1 } } },
+    Search: { type: "object", required: ["objective", "results"], properties: { objective: { type: "string" }, results: { type: "array", minItems: 1 } } },
     Llm: { type: "object", required: ["text"], properties: { text: { type: "string" } } },
     Found: { type: "array" },
   },
@@ -330,12 +330,12 @@ test("a capped workflow's polled call held at its cap past its poll window is se
       v: 2, name: "polled",
       schemas: {
         In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
-        Search: { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array" } } },
+        Search: { type: "object", required: ["objective", "results"], properties: { objective: { type: "string" }, results: { type: "array" } } },
       },
       input: { schemaId: "In" },
       output: { schemaId: "Search", path: "found" },
       // A poll window of 8 s, which the hold below outlasts (wide enough that a loaded box's own delays are not the window).
-      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: 8, poll: { until: { predicate: "field_type", path: "query", type: "string" }, interval_s: 1, deadline_s: 8 } }] },
+      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: 8, poll: { until: { predicate: "field_type", path: "objective", type: "string" }, interval_s: 1, deadline_s: 8 } }] },
     };
     const id = `polled-${letGoFirst}`;
     const made = await api("POST", "/agents", flowAgent(id, flow, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }));
@@ -369,11 +369,11 @@ test("a polled call held at its cap and resumed by a raise while its window stil
       v: 2, name: "polled-resumed",
       schemas: {
         In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
-        Search: { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array" } } },
+        Search: { type: "object", required: ["objective", "results"], properties: { objective: { type: "string" }, results: { type: "array" } } },
       },
       input: { schemaId: "In" },
       output: { schemaId: "Search", path: "found" },
-      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: deadline, poll: { until: { predicate: "field_type", path: "query", type: "string" }, interval_s: 1, deadline_s: 36 } }] },
+      root: { node: "chain", steps: [{ node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{question}", n: 2 }, out: "Search", as: "found", deadline_s: deadline, poll: { until: { predicate: "field_type", path: "objective", type: "string" }, interval_s: 1, deadline_s: 36 } }] },
     };
     const id = `polled-resumed-${deadline}`;
     assert.equal((await api("POST", "/agents", flowAgent(id, flow, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } }))).status, 201);

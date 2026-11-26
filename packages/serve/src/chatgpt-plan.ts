@@ -40,6 +40,8 @@ const DIRECT_SCOPE = "chatgpt.tokens.use.direct";
 const AGENT_NAME = "AgentRun";
 const HOST_ID_SETTING = "chatgpt_host_id";
 const PENDING_MS = 10 * 60_000;
+/** How long a sign-in waits before its view says why it may be stuck (STILL_WAITING): long before PENDING_MS ends it. */
+const HINT_AFTER_MS = 60_000;
 const REFRESH_MARGIN_MS = 5 * 60_000;
 /** The longest one refresh call at OpenAI may take: its holder gives it up by then. */
 const REFRESH_CALL_MS = 15_000;
@@ -59,8 +61,9 @@ const RENEW_LATER = "OpenAI could not renew the ChatGPT sign-in just now: try ag
 const REDIRECT = Object.assign(new URL("http://callback.invalid/auth/callback"), { hostname: "127.0.0.1", port: "1455" });
 
 export type PlanState = "signed_out" | "pending" | "signed_in" | "expired";
-/** GET /settings/chatgpt: never a token. `problem`: why the last sign-in ended without signing in, in words. */
-export type PlanView = { state: PlanState; email?: string; plan?: string; authorize_url?: string; expires_at?: string; models?: string[]; problem?: string };
+/** GET /settings/chatgpt: never a token. `problem`: why the last sign-in ended without signing in, in words. `hint`: on a
+ *  sign-in waiting past its first minute, why it may be stuck (STILL_WAITING). */
+export type PlanView = { state: PlanState; email?: string; plan?: string; authorize_url?: string; expires_at?: string; models?: string[]; problem?: string; hint?: string };
 
 type Credential = { type: "oauth"; access: string; refresh: string; expires: number; clientId: string; scopes?: string[] };
 /** The sealed row. `lease`: a renewal in flight, its holder and its end (ms, on the store's clock). A sign-in is saved
@@ -147,7 +150,17 @@ const PLAN_NOT_USABLE = "This ChatGPT plan can't be used here: OpenAI's sign-in 
 /** What a refusal whose reason OpenAI doesn't name ends with: a Free plan's sign-in has ended in one, and nothing tells it
  *  apart. It never says Free can't be used: OpenAI changes which plans can. */
 const FREE_OR_AGAIN = "a Free ChatGPT plan may be the reason; with a paid plan, start it again.";
-const TIMED_OUT = "The sign-in timed out before OpenAI sent the code back: start it again.";
+/** The likely cause of a sign-in OpenAI never sends back: a workspace whose admin has turned off open-source apps gets
+ *  OpenAI's refusal on OpenAI's own page, with no way back to this server, so nothing here can tell it from a tab left
+ *  open. Named first in a sign-in still waiting (STILL_WAITING) and in its timeout. */
+const ADMIN_LIKELY = "If OpenAI's page showed an error instead of signing you in, your ChatGPT workspace's admin has likely turned off open-source apps (External access → OSS → Use ChatGPT plan): ask them to turn it on, or sign in with another account.";
+const TIMED_OUT = `The sign-in timed out: OpenAI never sent the code back. ${ADMIN_LIKELY} Otherwise, start it again.`;
+/** A pending view's `hint` from HINT_AFTER_MS into its wait on, while no code is in: a sign-in that goes through is back
+ *  well within it. */
+const STILL_WAITING = `OpenAI hasn't sent the code back yet. ${ADMIN_LIKELY}`;
+/** The timeout of a sign-in whose code came back (the browser's return or a paste) while OpenAI was still answering it:
+ *  no admin guess, since OpenAI's page did send the browser back. */
+const CUT_OFF = "The sign-in timed out while OpenAI was still answering its code: start it again.";
 /** The words for OpenAI's refusal `code` at its sign-in page: fixed words, never the code. Anything on this machine can
  *  send the loopback callback an `error` while a sign-in waits, so the code goes to the log alone. */
 const deniedWords = (code: string): string => (code === WORKSPACE_DENIED ? ADMIN_OFF : `ChatGPT did not sign you in: ${FREE_OR_AGAIN}`);
@@ -224,8 +237,10 @@ const faultClass = (error: unknown): string => {
  *  deadline). Any other fault, Postgres's commit Unanswered first, may still land after it was told. */
 const rolledBack = (error: unknown): boolean => error instanceof StoreBusy || error instanceof StoreDeadline;
 
-/** `answered`: OpenAI answered the code with a credential, which is being kept: past the wait, so its end is no timeout. */
-type Pending = { abort: AbortController; state: string; authorizeUrl: string; expiresAt: number; paste: (url: string) => void; result: Promise<void>; timer: NodeJS.Timeout; answered?: boolean };
+/** `startedAt`: when it started (the clock's ms), which its hint counts from. `codeIn`: a code came back (the browser's
+ *  return or a paste) and OpenAI is answering it: no hint, and a timeout says the exchange was cut off. `answered`: OpenAI
+ *  answered the code with a credential, which is being kept: past the wait, so its end is no timeout. */
+type Pending = { abort: AbortController; state: string; authorizeUrl: string; startedAt: number; expiresAt: number; paste: (url: string) => void; result: Promise<void>; timer: NodeJS.Timeout; codeIn?: boolean; answered?: boolean };
 
 export interface ChatGPTPlanDeps {
   /** `settings`: where a server keeps its host id, for a sign-in. A runner's reader may be given a store with settings
@@ -406,7 +421,12 @@ export class ChatGPTPlan implements PlanReader {
     if (this.#pending && this.#pending.expiresAt <= this.now()) this.expire();
     const row = this.#snapshot;
     const who = row ? { ...(row.email ? { email: row.email } : {}), ...(row.plan ? { plan: row.plan } : {}) } : {};
-    if (this.#pending) return { state: "pending", authorize_url: this.#pending.authorizeUrl, expires_at: new Date(this.#pending.expiresAt).toISOString(), ...who };
+    if (this.#pending) {
+      // Past its first minute with no code back, it says why it may be stuck. Once a code is in (the browser's return or a
+      // paste), OpenAI is answering it, and one it answered is being kept: neither is stuck at OpenAI's page.
+      const stuck = !this.#pending.codeIn && !this.#pending.answered && this.now() >= this.#pending.startedAt + HINT_AFTER_MS;
+      return { state: "pending", authorize_url: this.#pending.authorizeUrl, expires_at: new Date(this.#pending.expiresAt).toISOString(), ...who, ...(stuck ? { hint: STILL_WAITING } : {}) };
+    }
     const problem = this.#problem ? { problem: this.#problem } : {};
     if (!row) return { state: "signed_out", ...problem };
     return { state: row.state, ...who, ...(row.state === "signed_in" ? { models: [...row.models] } : {}), ...problem };
@@ -431,12 +451,14 @@ export class ChatGPTPlan implements PlanReader {
     void ended.then(() => this.#ending.delete(ended));
   }
 
-  /** Ends the sign-in waiting past its 10 minutes: a cancel, which says nothing by itself, that says it timed out. One
-   *  whose code OpenAI answered is past waiting (it is being kept) and never times out. */
+  /** Ends the sign-in waiting past its 10 minutes: a cancel, which says nothing by itself, that says it timed out (with
+   *  no admin guess when a code came back and its exchange was cut off). One whose code OpenAI answered is past waiting
+   *  (it is being kept) and never times out. */
   private expire(): void {
     if (!this.#pending || this.#pending.answered) return;
+    const codeIn = this.#pending.codeIn;
     this.cancel();
-    this.#problem = TIMED_OUT;
+    this.#problem = codeIn ? CUT_OFF : TIMED_OUT;
     this.#deps.log?.({ chatgpt: "sign_in_failed", reason: "timed_out" });
   }
 
@@ -460,7 +482,11 @@ export class ChatGPTPlan implements PlanReader {
     const link = new Promise<string>((resolve) => (linked = resolve));
     const login = oauth.login({
       signal: abort.signal,
-      notify: (event) => void (event.type === "auth_url" ? linked(event.url) : undefined),
+      // pi-ai's progress note comes as a code is in, from the browser's return or a paste, before it asks OpenAI for tokens.
+      notify: (event) => {
+        if (event.type === "auth_url") linked(event.url);
+        else if (event.type === "progress" && this.#pending?.abort === abort) this.#pending.codeIn = true;
+      },
       prompt: (prompt) => (prompt.type === "manual_code" ? Promise.race([pasted, new Promise<string>((_, reject) => prompt.signal?.addEventListener("abort", () => reject(new Error("closed")), { once: true }))]) : Promise.reject(new Error("not asked here"))),
     }, { getDeviceId: () => hostId, agentName: AGENT_NAME });
     const settle = () => {
@@ -488,10 +514,11 @@ export class ChatGPTPlan implements PlanReader {
       throw new PlanSignInRefused(/in use/.test(String((error as Error)?.message)) ? "Another sign-in holds this machine's port 1455: finish or cancel it, then start again." : "The sign-in could not start: try again.");
     })]);
     if (!authorizeUrl) throw new PlanSignInRefused("The sign-in could not start: try again.");
-    const expiresAt = this.now() + PENDING_MS;
+    const startedAt = this.now();
+    const expiresAt = startedAt + PENDING_MS;
     const timer = setTimeout(() => (this.#pending?.abort === abort ? this.expire() : undefined), PENDING_MS);
     timer.unref();
-    this.#pending = { abort, state: new URL(authorizeUrl).searchParams.get("state") ?? "", authorizeUrl, expiresAt, paste, result, timer };
+    this.#pending = { abort, state: new URL(authorizeUrl).searchParams.get("state") ?? "", authorizeUrl, startedAt, expiresAt, paste, result, timer };
     waiting = true;
     return { authorize_url: authorizeUrl, expires_at: new Date(expiresAt).toISOString() };
   }
@@ -513,6 +540,8 @@ export class ChatGPTPlan implements PlanReader {
     if (error) throw new PlanSignInRefused(deniedWords(tag(error)));
     if (url.searchParams.get("state") !== pending.state) throw new PlanSignInRefused("That address is from another sign-in: paste the one from the sign-in you started last, or start again.");
     if (!url.searchParams.get("code") || !url.searchParams.get("client_id")) throw new PlanSignInRefused(`That address has no sign-in code in it. ${shape}`);
+    // A code is in from here (pi-ai's progress note says the same a moment later): a view meanwhile shows no hint.
+    pending.codeIn = true;
     pending.paste(url.href);
     try {
       await pending.result;

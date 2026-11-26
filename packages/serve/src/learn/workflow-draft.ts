@@ -1,4 +1,4 @@
-// A learned workflow draft: `workflows/<name>/workflow.json` with its `README.md`, their place in the learning folder, the
+// A learned workflow draft: `workflows/<name>/workflow.json` with its `README.md`, their place in the learning, the
 // shape each file must have, and what its dry run reads. check.ts checks a draft; nothing here reads a file, runs a draft
 // or calls a model.
 import { mcpNameOf } from "../tool-names.js";
@@ -9,6 +9,16 @@ import type { assertWorkflowCapabilities, desugarWorkflow, dryRunWorkflow, inspe
 export const WORKFLOWS_DIR = "workflows";
 /** A workflow's name: lowercase letters, digits, dashes and underscores, at most 64, starting with a letter or digit. */
 export const WORKFLOW_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/** A learned workflow's run (Store LearningItem.byRun) from its files' writers (LearningItem.writers): its
+ *  workflow.json's (what its promotions are of), else its README.md's, else none. */
+export function workflowRunOf(name: string, writers: Readonly<Record<string, string | null>>): string | null {
+  for (const file of ["workflow.json", "README.md"]) {
+    const path = `${WORKFLOWS_DIR}/${name}/${file}`;
+    if (Object.hasOwn(writers, path)) return writers[path] ?? null;
+  }
+  return null;
+}
 
 /** A workflow's `workflow.json` or its `README.md`, by the folder it names. */
 export type LearnedPlace = { readonly kind: "workflow" | "readme"; readonly name: string };
@@ -373,7 +383,7 @@ function frontLine(key: string, value: string): string {
  *  README with no description, which the checker refuses; what the JSON holds is the checker's to judge. `example`, its
  *  `example:` front matter line as written (the run's own input to the workflow, one JSON object): what its dry run runs
  *  on (draftDryRun), and never a file's: the README holds its name and description alone, so the run's input, which can
- *  be a customer's data, is never kept in the learning folder. */
+ *  be a customer's data, is never kept in the learning. */
 export function draftFiles(name: string, block: string): { json: string; readme: string; example?: string } {
   const front = frontOf(block);
   if (typeof front === "string") return { json: block, readme: readmeOf(name, "") };

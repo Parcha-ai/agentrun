@@ -5,7 +5,7 @@
 // can take in text (key-refusal.ts redactedAnswer: as written, JSON-escaped, base64, hex and percent-encoded).
 import { heldNumber, redactedAnswer } from "../key-refusal.js";
 import { MIN_SECRET } from "../learn/secrets.js";
-import { hostSecrets, SECRET_NAMES } from "../secrets.js";
+import { hostSecrets, keptSecrets, SECRET_NAMES } from "../secrets.js";
 import { planOf } from "../chatgpt-plan.js";
 
 /** Text with every secret value the redactor holds cut out. `heldValues()`, when the redactor knows them: every value it
@@ -27,10 +27,12 @@ export const keepText: Redact = withHeldValues((text) => text, () => []);
 /** Every secret value `env` holds for the runner: the server's held secrets, the MCP credentials and every key-, token-,
  *  secret- or password-named value (secrets.ts hostSecrets), and the value `env` itself gives each launcher name (a
  *  runner's key comes in its env, which hostSecrets reads only for names off the launcher's list), with any `extra` a
- *  caller holds. One shorter than MIN_SECRET, whitespace aside, matches too much text by chance and is left out. */
+ *  caller holds, and each OTLP header value. One shorter than MIN_SECRET, whitespace aside, matches too much text by
+ *  chance and is left out, an OTLP header value's too (secrets.ts keptSecrets); the tracer's own lines cut a short
+ *  header value as well (secrets.ts otlpHeaderCut). */
 export function runnerSecrets(env: NodeJS.ProcessEnv, extra: readonly string[] = []): string[] {
   const own = SECRET_NAMES.map((name) => env[name] ?? "");
-  return [...new Set([...hostSecrets(env), ...own, ...extra])].filter((value) => value.replace(/\s+/g, "").length >= MIN_SECRET);
+  return keptSecrets([...hostSecrets(env), ...own, ...extra], env);
 }
 
 /** The redactor over `values`: each one, in every form, replaced with "[redacted]". With none, text is left as it is. */
@@ -61,6 +63,13 @@ export interface HeldRedact extends Redact {
 }
 
 const isHeld = (redact: Redact): redact is HeldRedact => typeof (redact as Partial<HeldRedact>).hold === "function";
+
+/** `redact` when it is a held redactor (heldRedactor), else a throw naming `where` (a loop or a run's spec): one given
+ *  none fails before it opens a key, and never runs with the keys it opens unheld. For a caller the types don't reach. */
+export function mustHold(redact: HeldRedact | undefined, where: string): HeldRedact {
+  if (typeof redact !== "function" || !isHeld(redact)) throw new TypeError(`${where} was given no redactor that holds keys (heldRedactor), so it does not run: a key it opened would reach the run's record uncut`);
+  return redact;
+}
 
 /** `base`, then every value held since (`hold`). One that holds already is itself: wrapped once, the one instance. */
 export function heldRedactor(base: Redact): HeldRedact {

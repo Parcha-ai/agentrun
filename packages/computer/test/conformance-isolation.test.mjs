@@ -215,7 +215,10 @@ test("isolation.root-runs fails where the user can write a directory on root's P
 	}
 });
 
-test("isolation.root-runs' check, run by sh: each path that is there and every directory above it, writable or closed by test -w, a missing one skipped, nothing written", () => {
+// The check runs as the computer's user, never root: root's test -w passes over the mode bits, so a 0555 directory is
+// writable to it (the BusyBox case below proves root's closed path, a read-only mount).
+const asRoot = process.getuid?.() === 0;
+test("isolation.root-runs' check, run by sh: each path that is there and every directory above it, writable or closed by test -w, a missing one skipped, nothing written", { skip: asRoot ? "runs as root, whose test -w passes over the mode bits; the check runs as the computer's user" : false }, () => {
 	const root = mkdtempSync(join(tmpdir(), "computer-root-runs-"));
 	try {
 		const open = join(root, "open");

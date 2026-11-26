@@ -6,7 +6,7 @@ export {
   type Processes,
 } from "./attach.js";
 export {
-  agentDirName, agentFolder, agentHomeFolder, agentLearningFolder, COMPUTER_ROOT, DISK_DIR, homeKey, learningKey, portPath,
+  agentDirName, agentFolder, agentHomeFolder, COMPUTER_ROOT, DISK_DIR, homeKey, portPath,
   relativePath, relativeSegments, runFolder, runKey, scratchFolder,
 } from "./paths.js";
 export type { Place } from "./place.js";
@@ -24,7 +24,6 @@ export { ARCHIL_API_KEY_ENV, archilApiKey, type ArchilKeyOptions } from "./archi
 export { openRunWorkspace, type RunWorkspace, type RunWorkspaceOptions } from "./run-workspace.js";
 export { readOnlyWorkspace, SERVER_READS_ONLY, serverRunWorkspace, type ServerRunWorkspaceOptions } from "./server-run-workspace.js";
 export { type LedgerEntry, type ProviderLedger, storeLedger } from "./computer-ledger.js";
-export { type LearningPlace, type LearningWorkspace, learningWorkspace, type LearningWorkspaceOptions } from "./learning-workspace.js";
 export { ARCHIL_MAX_EXEC_S, handsOf, MAX_EXEC_S, processesOf, shellEnv } from "./hands.js";
 export { type AgentComputer, type RunComputer, type RunHold, runTools, type RunTools, type ScriptComputer, withKindTools } from "./run-tools.js";
 export { NO_PROGRAMS_WORDS, portOf } from "./computer-ports.js";
@@ -35,7 +34,7 @@ export {
   type ClaimSide, computerReadiness, type ComputerSetting, type KindRegistry, type LaunchedComputer, type Port, resolveComputer,
   type ResolvedComputer, runShellOf, type ShellPlace, shellPlaceOf, type StartedComputer,
 } from "./resolve-computer.js";
-export { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
+export { computerProviderFactories, computerProviderMakers, hostEnvOf, type ProviderLoad } from "./computer-providers.js";
 export {
   claimComputer, claimKinds, type ComputerDeps, computerDepsFrom, type ComputerDepsOptions, computerSpecOf, DAEMON_CACHE_IN_VOLUME, DOCKER_HOST_ADDRESSES_ENV,
   type DockerComputerOptions, dockerHostAddressesOf, dockerVolumeOf,
@@ -44,4 +43,4 @@ export { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerFo
 export { JANITOR_EVERY_MS, type JanitorDeps, type ProviderSweep, startJanitor, sweepServerComputers } from "./computer-janitor.js";
 export { agentComputerOf, agentComputerView, ownerGoneOf, reconcileAgentComputer, serverIdOf } from "./agent-computer.js";
 export { layOwnSkills, RUN_SKILLS_DIR } from "./revision-skills.js";
-export { KIND_SKILLS, type KindSkill, kindSkillOf, type SkillKind } from "./kind-skills.js";
+export { KIND_SKILLS, type KindSkill, kindSkillOf, type SkillKind, withoutKindSkill } from "./kind-skills.js";

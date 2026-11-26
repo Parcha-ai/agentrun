@@ -10,7 +10,7 @@ import { sealKeyOf } from "../dist/tool-keys.js";
 
 const ROOT = new URL("../../../", import.meta.url);
 const { differences, loadTemplate, onlyService, renderValue, renderVariables, startArgv } = await import(new URL("deploy/railway/template.mjs", ROOT));
-const { BUTTON_MARK, BUTTON_PLACEHOLDER, FIRST_RUN, buttonCode, PRICE_PER_MINUTE, PUBLISH, WALK_MAX_MS, buttonLine, curlArgs, curlConfig, formValues, planClient, run, sourcePatch, usageOf } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
+const { BUTTON_MARK, BUTTON_PLACEHOLDER, FIRST_RUN, buttonCode, PRICE_PER_MINUTE, PUBLISH, TimedOut, WALK_MAX_MS, buttonLine, curlArgs, curlConfig, formValues, planClient, run, sourcePatch, until, usageOf } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
 const { dockerRunArgs } = await import(new URL("deploy/railway/local-walk.mjs", ROOT));
 const read = (path) => readFile(new URL(path, ROOT), "utf8");
 const { service } = onlyService(loadTemplate());
@@ -270,6 +270,48 @@ test("a deploy that never succeeds in its 20 minutes is reported with the status
       assert.doesNotMatch(stopped, /#code=/);
       assert.ok(client.calls.some((c) => c.op === "ProjectDelete") && !client.calls.some((c) => c.op === "TemplatePublish"));
     }
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("a deploy whose deployment is listed once and then no more is reported with the one it saw, never as none listed", async () => {
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const client = planClient({ log: quiet, workspaceId: "ws" });
+    const call = client.call.bind(client);
+    client.sleep = async (ms) => { now += ms; };
+    let polls = 0;
+    client.call = async (op, v) => (op === "Deployments" ? (await call(op, v), { deployments: { edges: ++polls === 1 ? [{ node: { id: "<deployment>", status: "QUEUED" } }] : [] } }) : call(op, v));
+    const rows = await run(client, { workspaceId: "ws", log: quiet });
+    const stopped = rows.find((r) => r[0] === "stopped")[2];
+    assert.ok(polls > 2, `polled ${polls} times`);
+    assert.match(stopped, /deploy succeeded: not within 1200 s: deployment <deployment> was still QUEUED; its last log lines:/);
+    assert.doesNotMatch(stopped, /listed no deployment/);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("a wait that runs out hands the walk the last value its check saw, never words to read it back from", async () => {
+  // Its message may say anything: the walk reads the timeout by its type and the status from `last`.
+  const realNow = Date.now;
+  let now = realNow();
+  Date.now = () => now;
+  try {
+    const client = { sleep: async (ms) => { now += ms; } };
+    const seen = ["QUEUED", "BUILDING", undefined];
+    const error = await until(client, "the deploy", 30_000, 10_000, async (saw) => void saw(seen.shift())).catch((e) => e);
+    assert.ok(error instanceof TimedOut, String(error));
+    assert.equal(error.last, "BUILDING", "a poll that saw nothing keeps the one before");
+    assert.equal(error.message, "the deploy: not within 30 s");
+    const none = await until(client, "the deploy", 0, 1, async () => undefined).catch((e) => e);
+    assert.deepEqual([none instanceof TimedOut, none.last], [true, undefined], "nothing seen at all");
+    // A check's own throw is its own, never a timeout.
+    const thrown = await until(client, "the deploy", 30_000, 10_000, async () => { throw new Error("ended FAILED"); }).catch((e) => e);
+    assert.ok(!(thrown instanceof TimedOut));
   } finally {
     Date.now = realNow;
   }

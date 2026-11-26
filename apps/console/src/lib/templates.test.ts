@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { keeper } from "./idempotency";
-import { TEMPLATES, templateHarness, templateOffer, tryTemplate } from "./templates";
+import { TEMPLATES, templateHarness, templateOffer, templatePick, tryTemplate } from "./templates";
 import { toolOffers } from "./agentForm";
 
 const offers = toolOffers([
@@ -27,6 +27,24 @@ describe("templateHarness", () => {
   });
 });
 
+// A local model just pulled (the Free local model card's onReady) is the pick, though another tools model is listed and
+// is the server's default; without one, or where no harness lists it, the server's default as before.
+describe("templatePick", () => {
+  const pi = { id: "pi", available: true, default_model: "ollama/synth-tools:latest", models: ["ollama/synth-tools:latest", "ollama/qwen3:8b", "ollama/inkling-2-mini:latest"] };
+  it("is the pulled tag on the harness that lists it, never the default another model holds", () => {
+    expect(templatePick([pi], "ollama/qwen3:8b")).toEqual({ harness: "pi", model: "ollama/qwen3:8b" });
+    expect(templatePick([{ id: "codex", available: true, default_model: "openai/gpt-x", models: ["openai/gpt-x"] }, pi], "ollama/qwen3:8b")).toEqual({ harness: "pi", model: "ollama/qwen3:8b" });
+  });
+  it("finds a tag with no version as Ollama lists it (:latest)", () => {
+    expect(templatePick([pi], "ollama/inkling-2-mini")).toEqual({ harness: "pi", model: "ollama/inkling-2-mini:latest" });
+  });
+  it("is the server's default with no pull, or where no harness lists the pulled tag yet", () => {
+    expect(templatePick([pi], null)).toEqual({ harness: "pi" });
+    expect(templatePick([pi], "ollama/qwen3:4b")).toEqual({ harness: "pi" });
+    expect(templatePick([{ id: "pi", available: true, default_model: null }], null)).toBeNull();
+  });
+});
+
 describe("templateOffer", () => {
   it("offers a template whose tools the harness runs here, and says why not otherwise", () => {
     expect(templateOffer(TEMPLATES[1]!, "pi", offers)).toEqual({ ok: true });
@@ -38,7 +56,7 @@ describe("templateOffer", () => {
 
 // One click: the template's agent is made once, and each click starts a run of it.
 describe("tryTemplate", () => {
-  const fake = (existing: { agent_id: string; definition: { name: string }; archived_at: string | null }[] = []) => {
+  const fake = (existing: { agent_id: string; definition: { name: string; harness?: string; model?: string }; archived_at: string | null }[] = []) => {
     const calls: string[] = [];
     const v2 = {
       listAgents: async () => ({ agents: existing, next_cursor: null }),
@@ -52,13 +70,38 @@ describe("tryTemplate", () => {
     expect(await tryTemplate(v2 as never, TEMPLATES[0]!, "pi")).toBe("run-1");
     expect(calls).toEqual(["create Hello, AgentRun on pi with write", "run made-1: Write hello.md listi"]);
   });
+  it("makes the agent on the model picked, where one is", async () => {
+    const made: unknown[] = [];
+    const v2 = {
+      listAgents: async () => ({ agents: [], next_cursor: null }),
+      createAgent: async (body: { definition: unknown }) => { made.push(body.definition); return { agent_id: "made-1" }; },
+      startRun: async () => ({ run: { run_id: "run-1" }, status: 202 }),
+    };
+    await tryTemplate(v2 as never, TEMPLATES[2]!, { harness: "pi", model: "ollama/qwen3:8b" });
+    expect(made).toEqual([expect.objectContaining({ harness: "pi", model: "ollama/qwen3:8b" })]);
+    await tryTemplate(v2 as never, TEMPLATES[2]!, { harness: "pi" });
+    expect(made[1]).not.toHaveProperty("model");
+  });
   it("runs the agent again when it already exists, never a second one; an archived one is made anew", async () => {
-    const { v2, calls } = fake([{ agent_id: "hello-1", definition: { name: "Hello, AgentRun" }, archived_at: null }]);
+    const { v2, calls } = fake([{ agent_id: "hello-1", definition: { name: "Hello, AgentRun", harness: "pi" }, archived_at: null }]);
     await tryTemplate(v2 as never, TEMPLATES[0]!, "pi");
     expect(calls).toEqual(["run hello-1: Write hello.md listi"]);
-    const archived = fake([{ agent_id: "hello-0", definition: { name: "Hello, AgentRun" }, archived_at: "2026-11-01T00:00:00Z" }]);
+    const archived = fake([{ agent_id: "hello-0", definition: { name: "Hello, AgentRun", harness: "pi" }, archived_at: "2026-11-01T00:00:00Z" }]);
     await tryTemplate(archived.v2 as never, TEMPLATES[0]!, "pi");
     expect(archived.calls[0]).toBe("create Hello, AgentRun on pi with write");
+  });
+  it("runs an agent of the template's name again only on the harness and model picked: a pull's tag never runs an earlier attempt's model", async () => {
+    const earlier = { agent_id: "paid-1", definition: { name: "Hello, AgentRun", harness: "pi", model: "openrouter/paid-model" }, archived_at: null };
+    const onTag = fake([earlier]);
+    await tryTemplate(onTag.v2 as never, TEMPLATES[0]!, { harness: "pi", model: "ollama/qwen3:8b" });
+    expect(onTag.calls[0]).toBe("create Hello, AgentRun on pi with write");
+    expect(onTag.calls[1]).toBe("run made-1: Write hello.md listi");
+    const otherHarness = fake([{ ...earlier, definition: { name: "Hello, AgentRun", harness: "claude-agent" } }]);
+    await tryTemplate(otherHarness.v2 as never, TEMPLATES[0]!, "pi");
+    expect(otherHarness.calls[0]).toBe("create Hello, AgentRun on pi with write");
+    const same = fake([earlier]);
+    await tryTemplate(same.v2 as never, TEMPLATES[0]!, { harness: "pi", model: "openrouter/paid-model" });
+    expect(same.calls).toEqual(["run paid-1: Write hello.md listi"]);
   });
   // A start whose answer was lost may have started the run: Try it again sends the same key, so the server answers with
   // that run rather than start a second one. Once a start lands, the next click is a new run.
@@ -66,7 +109,7 @@ describe("tryTemplate", () => {
     const keys: string[] = [];
     let lose = true;
     const v2 = {
-      listAgents: async () => ({ agents: [{ agent_id: "hello-1", definition: { name: "Hello, AgentRun" }, archived_at: null }], next_cursor: null }),
+      listAgents: async () => ({ agents: [{ agent_id: "hello-1", definition: { name: "Hello, AgentRun", harness: "pi" }, archived_at: null }], next_cursor: null }),
       createAgent: async () => ({ agent_id: "never" }),
       startRun: async (_id: string, _body: unknown, key: string) => { keys.push(key); if (lose) { lose = false; throw new TypeError("Failed to fetch"); } return { run: { run_id: "run-1" }, status: 202 }; },
     };

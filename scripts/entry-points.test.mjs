@@ -22,14 +22,15 @@ const reviewed = new Map([
   ['packages/computer/src/entry.ts', realpathForm],
   ['packages/computer/test/fake-computerd.mjs', realpathForm],
   ['packages/serve/test/secret-custody.test.mjs', childScript],
-  ['packages/serve/test/learn-support.mjs', childScript],
   ['packages/computer/test/phone-provider.test.mjs', childScript],
   ['packages/serve/test/launcher-worker.test.mjs', childScript],
+  ['packages/import/test/pool-oom.test.mjs', childScript],
   ['examples/eve-learning/workflow.test.mjs', childScript],
   ['spec/lean/sweep/capture-dsl.mjs', label],
   ['packages/serve/test/store-target.mjs', label],
   ['packages/serve/test/native-fixtures/cli.mjs', 'reads argv[1] only to label the native CLI fixture and select its canned protocol; it never decides whether this module is the command'],
   ['packages/serve/test/native-fixtures/feedback-cli.mjs', 'reads argv[1] only to label the native CLI fixture and select its canned protocol; it never decides whether this module is the command'],
+  ['packages/import/test/index-once.test.mjs', 'its `node -e` child reads argv[1] as the path of the dist to import; it never decides whether this module is the command'],
 ]);
 
 const suspect = (source) => source.includes('process.argv[1]');

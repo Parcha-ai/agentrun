@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { ComposioTriggers } from "../dist/composio-triggers.js";
-import { startFakeComposio } from "./fixtures/fake-composio.mjs";
+import { ISSUE_ADDED, STAR_ADDED, startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { secretWritePath, serve } from "./support.mjs";
 import { firings, made, until } from "./trigger-support.mjs";
@@ -158,6 +158,87 @@ test("several connected accounts: refused, naming each with when it was made, an
   assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
 });
 
+test("an account Composio answers as another user's is never the one a trigger runs as: with no account of the server's user, it is refused as not connected, and nothing is made", async (t) => {
+  // A Composio that answers every user's accounts under the config, whatever user_ids names.
+  const s = await setup(t, { connected: false, composio: { ignoreUserIds: true, accounts: { github: [{ id: "ca_someone_github", user: "someone-else", status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-10T08:00:00.000Z" }] } } });
+  const res = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(res.body.error?.code, "composio_not_connected", JSON.stringify(res.body));
+  assert.deepEqual(upsertedAs(s.composio), [], "no trigger instance runs as another user's account");
+  assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+});
+
+test("an account Composio answers with no user_id is never the one a trigger runs as: refused as not connected, and nothing is made", async (t) => {
+  const s = await setup(t, { connected: false, composio: { accounts: { github: [{ id: "ca_nouser_github", user: null, status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-10T08:00:00.000Z" }] } } });
+  const res = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(res.body.error?.code, "composio_not_connected", JSON.stringify(res.body));
+  assert.deepEqual(upsertedAs(s.composio), [], "no trigger instance runs as an account of no named user");
+  assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+});
+
+for (const [blank, said] of [[" ", "a space"], ["", "empty"]]) {
+  test(`a trigger on a server whose saved Composio user is blank (${said}) is refused before Composio is asked anything: no account read, no connect link`, async (t) => {
+    const s = await setup(t, { connected: false });
+    // A row whose URL names a blank user (an older or damaged save; a save itself refuses one). Only a URL with no user_id
+    // at all takes the default user.
+    const row = await s.server.store.mcp.server("gh");
+    const url = new URL(row.url);
+    url.searchParams.set("user_id", blank);
+    await s.server.store.mcp.put({ ...row, url: url.href });
+    const before = s.composio.calls.length;
+    const res = await s.api("POST", "/triggers", issueTrigger());
+    assert.deepEqual([res.status, res.body.error?.fields?.map((f) => f.field)], [422, ["source.server"]], JSON.stringify(res.body));
+    assert.deepEqual(s.composio.calls.slice(before).map((call) => `${call.method} ${call.path}`), [], "Composio was asked nothing: no connected accounts, no connect link");
+    assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+  });
+}
+
+for (const [blank, said] of [[" ", "a space"], ["", "empty"]]) {
+  test(`a server whose saved Composio user is blank (${said}) keeps its routes, and its delete takes the project's turn`, async (t) => {
+    const s = await setup(t);
+    const blankUser = async () => {
+      const row = await s.server.store.mcp.server("gh");
+      const url = new URL(row.url);
+      url.searchParams.set("user_id", blank);
+      await s.server.store.mcp.put({ ...row, url: url.href });
+    };
+    // A create holds the project's turn at its upsert; the row is saved blank meanwhile (an older or damaged save).
+    const upsert = s.composio.hold("/upsert", "POST");
+    const create = s.api("POST", "/triggers", issueTrigger());
+    await upsert.reached;
+    await blankUser();
+    // Its routes send Composio no user: they answer, not as if the server were missing.
+    const events = await s.api("GET", "/settings/mcp-servers/gh/composio/events");
+    assert.equal(events.status, 200, JSON.stringify(events.body));
+    const listed = await s.api("GET", "/settings/mcp-servers/gh/composio/triggers");
+    assert.equal(listed.status, 200, JSON.stringify(listed.body));
+    // Its delete waits for the create's turn: it checks who uses the server only once the create is saved or undone. Each
+    // step that takes a project's turn from here (composio-triggers.ts serial, the server's own instance of the class) is
+    // seen as it takes its place, and says as it begins whether the create's upsert was let go: a delete that takes its
+    // place is seen at once, and one that skips the turn answers instead, each with no clock.
+    assert.equal(typeof ComposioTriggers.prototype.serial, "function", "the project's turn is taken by ComposioTriggers' serial, the method seen below");
+    const { serial } = ComposioTriggers.prototype;
+    t.after(() => void (ComposioTriggers.prototype.serial = serial));
+    let released = false;
+    const began = [];
+    let placed;
+    const inTurn = new Promise((resolve) => (placed = resolve));
+    ComposioTriggers.prototype.serial = function (key, step) {
+      placed();
+      return serial.call(this, key, () => (began.push(released), step()));
+    };
+    const removed = s.api("DELETE", "/settings/mcp-servers/gh");
+    assert.equal(await Promise.race([inTurn.then(() => "in the project's turn"), removed.then(() => "answered")]), "in the project's turn", "the delete takes its place in the project's turn, behind the create holding it, never answered past it");
+    released = true;
+    upsert.release();
+    const [made, gone] = await Promise.all([create, removed]);
+    assert.ok(began.length > 0 && began.every(Boolean), `each step in the project's turn, the delete's among them, began only once the create's upsert was let go: ${JSON.stringify(began)}`);
+    // The create finds the row's user blank on its re-check and undoes what it made; the delete then finds no trigger.
+    assert.deepEqual([made.status, made.body.error?.fields?.map((f) => f.field)], [422, ["source.server"]], JSON.stringify(made.body));
+    assert.ok(gone.status < 300, JSON.stringify(gone.body));
+    assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+  });
+}
+
 // A server saved with auth_config_id stands on that config: its MCP server serves only the accounts under it, so its
 // triggers run as one of those, and its connect link is made under it. The user here has a GitHub account under the
 // managed config too, which that server never serves.
@@ -223,6 +304,20 @@ test("a server with no recorded auth config (saved before one was): its trigger 
   await assert.rejects(bare.make(source, "trg_b", true, async (s) => s), (error) => error.code === "composio_not_connected" && error.extra.details?.connect_url === "https://connect.composio.test/link/ac_managed");
 });
 
+test("a trigger whose server's Composio user is no Composio user id (a blank one) never asks for its accounts, and runs as none of them", async (t) => {
+  // A Composio that answers every user's accounts, with no user_id on them, as it would for a user_ids it trims to empty.
+  const accounts = { github: [{ id: "ca_anyone_github", user: null, status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-11T08:00:00.000Z" }] };
+  const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, authConfigs: BOTH_CONFIGS, accounts, ignoreUserIds: true });
+  t.after(() => composio.close());
+  const kept = new Map();
+  const sealed = { get: (scope, field) => kept.get(`${scope}/${field}`), set: async (scope, field, value) => void kept.set(`${scope}/${field}`, value), remove: async (scope) => void [...kept.keys()].filter((k) => k.startsWith(`${scope}/`)).forEach((k) => kept.delete(k)) };
+  const triggers = new ComposioTriggers({ control: { baseUrl: composio.baseUrl }, publicUrl: PUBLIC, sealed, credential: async () => ({ key: composio.apiKey, user: " ", toolkit: "github" }), holders: async () => [], say: () => {} });
+  const source = { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "many-drop", repo: "agentrun-scratch" } };
+  await triggers.make(source, "trg_blank", true, async (s) => s).catch(() => undefined);
+  assert.deepEqual(composio.calls.filter((call) => call.method === "GET" && call.path === "/api/v3/connected_accounts").map((call) => call.query), [], "Composio's connected accounts were never asked for a blank user");
+  assert.deepEqual(upsertedAs(composio), [], "no trigger instance runs as an account of no one user");
+});
+
 // The create reads the server's credential first and again just before it saves. A save over the server in between, with
 // another key or now on another auth config, would leave the trigger on an account the server no longer serves: refused,
 // and what the create made is undone. Driven here by a credential that answers otherwise on its second read.
@@ -269,6 +364,25 @@ test("a failure after the subscription undoes it: nothing is left on Composio or
   assert.equal(bad.status, 422, JSON.stringify(bad.body));
   assert.ok(bad.body.error.fields.some((f) => f.field === "source.config" && /repo/.test(f.message)), JSON.stringify(bad.body.error.fields));
   assert.equal(s2.composio.subscriptions.length, 0);
+});
+
+/** A webhook event whose config schema needs no field, as a new-channel event's is. */
+const PUSHED = { ...ISSUE_ADDED, slug: "GITHUB_PUSH_EVENT", name: "Push Event", description: "Triggered when commits are pushed.", config: { type: "object", title: "WebhookConfigSchema", properties: {} } };
+
+test("a composio trigger's config is the event's: {} for an event that needs no field is made with it; one left out is refused, saying to send {}; one Composio needs fields in is refused in its words, naming them", async (t) => {
+  const s = await setup(t, { composio: { triggerTypes: { github: [ISSUE_ADDED, STAR_ADDED, PUSHED] } } });
+  const pushed = await s.api("POST", "/triggers", issueTrigger({}, {}, { event: "GITHUB_PUSH_EVENT" }));
+  assert.equal(pushed.status, 201, JSON.stringify(pushed.body));
+  assert.deepEqual((await s.api("GET", `/triggers/${pushed.body.id}`)).body.source.config, {});
+  assert.deepEqual([...s.composio.instances.values()].map((i) => [i.trigger_name, i.trigger_config]), [["GITHUB_PUSH_EVENT", {}]]);
+  const { config: _left, ...unconfigured } = issueTrigger().source;
+  const left = await s.api("POST", "/triggers", { ...issueTrigger(), source: { ...unconfigured, event: "GITHUB_PUSH_EVENT" } });
+  assert.equal(left.status, 422, JSON.stringify(left.body));
+  assert.ok(left.body.error.fields.some((f) => f.field === "source.config" && f.reason === "missing" && f.message.includes("{} for an event whose schema needs no field")), JSON.stringify(left.body.error.fields));
+  const issues = await s.api("POST", "/triggers", issueTrigger({}));
+  assert.equal(issues.status, 422, JSON.stringify(issues.body));
+  assert.ok(issues.body.error.fields.some((f) => f.field === "source.config" && /owner/.test(f.message) && /repo/.test(f.message)), JSON.stringify(issues.body.error.fields));
+  assert.equal(s.composio.instances.size, 1, "no instance made for a refused one");
 });
 
 test("a delivery starts only its own trigger, matched by instance id; two triggers on two repositories never cross", async (t) => {
@@ -612,7 +726,7 @@ test("a trigger the server turns off itself (its agent archived, a failure strea
   assert.equal((await s.api("POST", "/agents/triage/archive")).status, 200);
   assert.ok(s.composio.instances.get(shared).disabled_at, "off once no trigger that holds it is on");
   // Five failed firings in a row: the trigger pauses itself, and its instance is turned off on Composio.
-  assert.equal((await s.api("POST", "/agents", { definition: { id: "unrunnable", version: 1, name: "Unrunnable", harness: "claude-agent", instructions: "Triage.", max_cost_usd: 0.5 } })).status, 201);
+  assert.equal((await s.api("POST", "/agents", { definition: { id: "unrunnable", version: 1, name: "Unrunnable", harness: "claude-agent", instructions: "Triage.", tools: [], max_cost_usd: 0.5 } })).status, 201);
   const flaky = (await s.api("POST", "/triggers", issueTrigger({ owner: "many-drop", repo: "flaky" }, { target: { kind: "start_run", agent_id: "unrunnable", input: { content: "Triage this issue." }, max_cost_usd: 0.5 } }))).body;
   assert.ok(flaky.source?.instance_id, JSON.stringify(flaky));
   const secret = s.composio.subscriptions[0].secret;
@@ -668,6 +782,30 @@ test("the capabilities say whether this server has a public address Composio can
   const caps = (await s.api("GET", "/capabilities")).body;
   assert.equal(caps.features.triggers.public_url, true);
   assert.ok(!JSON.stringify(caps).includes("agentrun.example.com"), "the address itself is not answered");
+});
+
+test("a saved Composio server's own routes send Composio no user: its events, its triggers, the subscription's rotate and delete, and the server's delete in the project's turn each ask by the key alone", async (t) => {
+  const s = await setup(t);
+  // What each route asked Composio, apart from the trigger's own create and delete, which send the server's user.
+  const routed = [];
+  const route = async (step, ...args) => {
+    const from = s.composio.calls.length;
+    const res = await s.api(...args);
+    routed.push(...s.composio.calls.slice(from).map((call) => ({ step, ...call })));
+    return res;
+  };
+  const one = (await s.api("POST", "/triggers", issueTrigger())).body;
+  assert.ok(one.id, JSON.stringify(one));
+  assert.equal((await route("events", "GET", "/settings/mcp-servers/gh/composio/events")).status, 200);
+  assert.equal((await route("triggers", "GET", "/settings/mcp-servers/gh/composio/triggers")).status, 200);
+  assert.equal((await route("rotate", "POST", "/settings/mcp-servers/gh/composio/rotate-secret")).status, 200);
+  assert.equal((await s.api("DELETE", `/triggers/${one.id}`)).status, 204);
+  assert.equal((await route("forget", "DELETE", "/settings/mcp-servers/gh/composio/subscription")).status, 200);
+  assert.ok((await route("delete", "DELETE", "/settings/mcp-servers/gh")).status < 300);
+  // Each route asked Composio something, so none of the checks below holds by asking nothing.
+  assert.deepEqual([...new Set(routed.map(({ step }) => step))], ["events", "triggers", "rotate", "forget", "delete"], `each route asked Composio: ${JSON.stringify(routed.map(({ step, method, path }) => `${step} ${method} ${path}`))}`);
+  const sentUser = routed.filter(({ query, body }) => Object.hasOwn(query ?? {}, "user_id") || Object.hasOwn(query ?? {}, "user_ids") || JSON.stringify(body ?? {}).includes('"user_id"'));
+  assert.deepEqual(sentUser.map(({ step, method, path }) => `${step} ${method} ${path}`), [], "no route sends Composio a user_id, in its query or its body");
 });
 
 test("rotate keeps the new secret: the old one signs nothing from then on; the subscription is deleted only once no trigger uses it", async (t) => {

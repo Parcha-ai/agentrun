@@ -1,5 +1,5 @@
 // The Orgo workspace a provider's computers live in when its settings name none (src/orgo-workspaces.ts): the key's
-// account's one workspace from GET /workspaces; several refused in words naming them and pointing at Settings; none
+// account's one workspace from GET /workspaces; several refused in words naming each and its id; none
 // refused saying to make one; a deleted one never counted; an HTTP failure in words. And keyChoices, Settings' picker:
 // each workspace's id and its name. Against a fake fetch (test/fake-orgo.mjs); nothing reaches the network.
 import assert from "node:assert/strict";
@@ -10,6 +10,10 @@ import test from "node:test";
 import { ORGO } from "../dist/descriptors/orgo.js";
 import { API, fakeOrgoApi, fakeOrgoChannel, fakeTerminal, fakeWorkspace, KEY, WORKSPACE } from "./fake-orgo.mjs";
 import { fakeOrgoDesktop } from "./fake-orgo-desktop.mjs";
+
+/** A create's context with a request id of its own: each create here is a new request. */
+let requests = 0;
+const newRequest = (context = {}) => ({ requestId: `orgo-workspaces-${++requests}`, ...context });
 
 const { create } = await import("../dist/orgo.js");
 const { NO_WORKSPACE, orgoWorkspaces, soleWorkspace, workspaceHolder } = await import("../dist/orgo-workspaces.js");
@@ -47,14 +51,16 @@ test("one workspace: it is used; a deleted one is skipped; an inactive one is of
 	assert.deepEqual(listed, { ok: true, value: [{ id: WORKSPACE, name: "agentrun", status: "inactive" }] });
 });
 
-test("several workspaces: refused in words naming each and pointing at Settings → Computers", async () => {
+test("several workspaces: refused in words naming each by name and id and pointing at Settings → Computers or ORGO_WORKSPACE_ID", async () => {
 	const { rest } = restOf([fakeWorkspace(WORKSPACE, "agentrun"), fakeWorkspace(OTHER, "second"), fakeWorkspace(GONE, "old", { deleted_at: "2026-10-01T00:00:00Z" })]);
 	const refused = await soleWorkspace(rest, { timeoutMs: 2_000 });
 	assert.equal(refused.ok, false);
 	assert.equal(refused.error.code, "invalid");
-	assert.match(refused.error.message, /has 2 workspaces \(agentrun, second\)/);
-	assert.match(refused.error.message, /Settings → Computers \(ORGO_WORKSPACE_ID\)/);
-	assert.doesNotMatch(refused.error.message, /old/, "a deleted workspace is never named");
+	assert.match(refused.error.message, /has 2 workspaces \(agentrun = ws-0000-agentrun, second = ws-1111-second\)/);
+	assert.match(refused.error.message, /: pick one in Settings → Computers or set ORGO_WORKSPACE_ID to its id$/);
+	assert.doesNotMatch(refused.error.message, /old|ws-2222/, "a deleted workspace is never named");
+	const unnamed = await soleWorkspace(restOf([fakeWorkspace(WORKSPACE, "agentrun", { status: "inactive" }), fakeWorkspace(OTHER, " ")]).rest, { timeoutMs: 2_000 });
+	assert.match(unnamed.error.message, /has 2 workspaces \(agentrun \(inactive\) = ws-0000-agentrun, ws-1111-second\)/, "a workspace with no name is its id, said once");
 });
 
 test("no workspace (or only deleted ones): refused saying to make one at orgo.ai", async () => {
@@ -88,12 +94,13 @@ test("a provider with no workspace option reads the key's one workspace once, an
 	assert.deepEqual(api.routes(), ["GET /workspaces", `GET /workspaces/${WORKSPACE}`, `GET /workspaces/${WORKSPACE}`], "the workspace is read once, then kept");
 	const tested = await provider.testConnection();
 	assert.equal(tested.ok, true);
-	// A create, from a new provider: GET /workspaces first, then the computer asked for in that workspace.
+	// A create, from a new provider: GET /workspaces first, then the request's computer looked for in that workspace, then
+	// the computer asked for there.
 	const fresh = fakeOrgoApi();
 	const maker = create({ apiKey: KEY, apiUrl: API, fetch: fresh.fetch, channel: fakeOrgoChannel(), daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-	const made = await maker.create(SPEC);
+	const made = await maker.create(SPEC, newRequest());
 	assert.equal(made.ok, true, JSON.stringify(made.error));
-	assert.deepEqual(fresh.routes().slice(0, 2), ["GET /workspaces", "POST /computers"]);
+	assert.deepEqual(fresh.routes().slice(0, 3), ["GET /workspaces", `GET /workspaces/${WORKSPACE}`, "POST /computers"]);
 	assert.equal([...fresh.computers.values()].at(-1).asked.workspace_id, WORKSPACE);
 });
 
@@ -135,7 +142,7 @@ test("a provider with several workspaces and none named refuses its test, a list
 	const provider = create({ apiKey: KEY, apiUrl: API, fetch: api.fetch, channel: fakeOrgoChannel(), timeouts: TIMEOUTS, daemonPath: DAEMON_PATH });
 	const tested = await provider.testConnection();
 	assert.equal(tested.ok, false);
-	assert.match(tested.error.message, /2 workspaces \(agentrun, second\): pick the one its computers live in, in Settings → Computers/);
+	assert.match(tested.error.message, /2 workspaces \(agentrun = ws-0000-agentrun, second = ws-1111-second\): pick one in Settings → Computers or set ORGO_WORKSPACE_ID to its id/);
 	const made = await provider.create({ image: "linux", lifetimeMs: 60_000, network: "none" }, { requestId: "claim-1" });
 	assert.equal(made.ok, false);
 	assert.equal(made.error.code, "invalid");

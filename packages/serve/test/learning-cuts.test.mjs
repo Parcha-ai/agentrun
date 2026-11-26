@@ -15,28 +15,22 @@ import { secretsShown } from "../dist/learning.js";
 import { wordsOf } from "../dist/learning-words.js";
 import { runLearningBody } from "../dist/learning-routes.js";
 import { redactSecrets } from "../dist/learn/secrets.js";
-import { learningWorkspace } from "../dist/workspace/index.js";
-import { seedOf } from "../dist/learning.js";
+import { learningOf } from "../dist/learn/rows.js";
 import { readLaunchBody } from "../dist/run-launch.js";
 import { forgotten, holdsNone, pointerOf, saved, server } from "./custody-support.mjs";
-import { git, repoOf, started } from "./learn-support.mjs";
+import { learningAt, started } from "./learn-support.mjs";
 import { agent, serve } from "./support.mjs";
 
 /** A test value the host holds secret, never a real one. */
 const SECRET = `planted${"q8".repeat(12)}`;
 const cut = (text) => redactSecrets(text, [SECRET]);
 
-/** Agent `agentId`'s owner's corrections `lines` appended on main, as a run's merge appends them (no check: a pointer
- *  saved after the correction was written). */
-async function corrected(data, agentId, lines) {
-  const folder = learningWorkspace({ mode: "local", data, agentId });
-  try {
-    for (const [i, text] of lines.entries()) {
-      const made = await appendCorrection(folder.workspace, { runId: `run-${i + 1}`, text });
-      assert.equal(made.ok, true, JSON.stringify(made));
-    }
-  } finally {
-    await folder.end();
+/** Agent `agentId`'s owner's corrections `lines` appended on its learning, as a run's merge appends them (no check: a
+ *  pointer saved after the correction was written). */
+async function corrected(store, agentId, lines) {
+  for (const [i, text] of lines.entries()) {
+    const made = await appendCorrection(learningOf(store, agentId), { runId: `run-${i + 1}`, text });
+    assert.equal(made.ok, true, JSON.stringify(made));
   }
 }
 
@@ -81,10 +75,10 @@ test("4. a served learning text loses only the address: a correction's url: labe
 });
 
 test("4. a run's # Learned section keeps a correction's local address", { timeout: 60_000 }, async (t) => {
-  const { api, data, store } = await serve(t, { runner: false, learning: "on" });
+  const { api, store } = await serve(t, { runner: false, learning: "on" });
   assert.equal((await api("POST", "/agents", agent("local", { learning: true }))).status, 201);
-  await seedOf(data, "local");
-  await corrected(data, "local", ["Call http://localhost:8080 for the proxy."]);
+  await store.learning.seed("local");
+  await corrected(store, "local", ["Call http://localhost:8080 for the proxy."]);
   const runId = await started(api, "local");
   const section = readLaunchBody((await store.runs.launch(runId)).body).learning?.section ?? "";
   assert.match(section, /Call http:\/\/localhost:8080 for the proxy\./, section);
@@ -110,7 +104,7 @@ test("2 and 4. an agent's learning routes cut its own sign-in pointers, live and
   await saved(s, gone);
   await forgotten(s);
   await saved(s, live);
-  await corrected(s.data, "alpha", [`Open ${live} first.`, `It was ${gone}.`, "The proxy is at http://127.0.0.1:43123/v1."]);
+  await corrected(s.store, "alpha", [`Open ${live} first.`, `It was ${gone}.`, "The proxy is at http://127.0.0.1:43123/v1."]);
 
   const view = (await s.api("GET", "/agents/alpha/learning")).body;
   const read = await s.api("GET", "/agents/alpha/learning/corrections");
@@ -124,6 +118,6 @@ test("2 and 4. an agent's learning routes cut its own sign-in pointers, live and
   // What was shown, sent back as it reads: the cut is what is written, never the hidden text.
   const edited = await s.api("PUT", "/agents/alpha/learning/corrections", { text: read.body.text }, { "if-match": read.headers.get("etag") });
   assert.equal(edited.status, 200, JSON.stringify(edited.body));
-  const onMain = git(repoOf(s.data, "alpha"), ["show", "main:corrections.md"]);
-  holdsNone({ onMain }, live, gone, "127.0.0.1:43123");
+  const written = (await learningAt(s.store, "alpha")).text("corrections.md");
+  holdsNone({ written }, live, gone, "127.0.0.1:43123");
 });

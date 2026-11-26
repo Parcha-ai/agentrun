@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { LANE_WAIT_MS, lanesOf, laneStats, MAX_LANES, RACE_PAGES, raceFilter, readRace } from "./race";
-import type { Run, TimelineRow } from "./v2";
+import { defaultPlaceOf, toolOffers } from "./agentForm";
+import type { Places } from "./place";
+import { LANE_WAIT_MS, laneKit, laneStart, lanesOf, laneStats, MAX_LANES, newRaceLabel, RACE_PAGES, raceFilter, readRace } from "./race";
+import type { ComputerKindView, Run, TimelineRow } from "./v2";
 
 const run = (id: string, labels: Record<string, string>, created_at = "2026-11-23T10:00:00Z"): Run => ({
   sha: null, updated_at: created_at, poll_after_ms: 0, place: { mode: "runner" }, run_id: id, agent_id: `a-${id}`, agent_version: 1, revision: `rv-${id}`,
@@ -104,5 +106,75 @@ describe("a lane's stats, from its run and its followed timeline", () => {
     const stats = laneStats(ended, [], { usd: 0.2, basis: "estimate", charge_state: null, cap_usd: 1 } as Run["cost"], Date.parse("2026-11-23T12:00:00Z"));
     expect(stats.seconds).toBe(30);
     expect(stats.cost?.usd).toBe(0.5);
+  });
+});
+
+describe("starting a race: an agent and a run of it per lane", () => {
+  it("a lane is an agent of the console's own (POST /agents, its id race-<label>-<n>-<pick>), and a run of it with the race's task and cap and the labels the race view reads", () => {
+    const start = laneStart("bench-1", 2, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, "Fix the failing test", 1.5, { tools: ["read", "write", "bash"] }, 3);
+    expect(start).toEqual({
+      // An agent like any the console makes, so it is edited, archived and deleted like one: no `external`, which would
+      // make it another system's and read-only here. Its id is the lane's and the pick's: sent again after a lost answer,
+      // the server's 409 agent_exists says it was made. It names its tools and no place: the server puts it where it puts
+      // a new agent with these tools (its defaultPlaceOf: a shell tool in its default box, else the runner).
+      agent: { id: "race-bench-1-2-3", version: 1, name: "Race bench-1, lane 2", instructions: "Do the task you are given.", harness: "pi", model: "anthropic/claude-sonnet-5-5", tools: ["read", "write", "bash"], skills: [] },
+      run: { input: { content: "Fix the failing test" }, max_cost_usd: 1.5, labels: { race: "bench-1", lane: "2", harness: "pi", model: "anthropic/claude-sonnet-5-5" } },
+    });
+    expect(start.agent).not.toHaveProperty("external");
+    // The race view orders and names it from those labels.
+    expect(lanesOf([run("r2", start.run.labels), run("r1", laneStart("bench-1", 1, { harness: "pi", model: "anthropic/claude-sonnet-5-5" }, "x", 1, { tools: [] }, 1).run.labels)]).map((r) => r.run_id)).toEqual(["r1", "r2"]);
+  });
+
+  it("a lane's tools are a new agent's on this server, and it names no place: the server puts it where it puts that agent, so an adapter harness with no shell stays on the runner", () => {
+    // As a server offers them: the shell is pi's alone (an adapter harness gets the host tools only).
+    const offers = toolOffers([
+      { name: "read", available: true, harnesses: ["pi", "codex", "claude-agent"] },
+      { name: "write", available: true, harnesses: ["pi", "codex", "claude-agent"] },
+      { name: "web_search", available: false, reason: "No key.", harnesses: ["pi"] },
+      { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] },
+      { name: "browser", available: true, harnesses: ["pi"] },
+    ]);
+    // Places not read: the runner's tools, no shell.
+    expect(laneKit("pi", offers, null, null)).toEqual({ tools: ["read", "write", "browser"] });
+    // A box by default: pi gets the shell (no browser, which runs on the runner only), so the server runs it in the box.
+    const boxed: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "daytona", available: true }], defaultPlace: { mode: "sandbox", box: "daytona" } };
+    expect(laneKit("pi", offers, boxed, null)).toEqual({ tools: ["read", "write", "bash"] });
+    expect(defaultPlaceOf(false, laneKit("pi", offers, boxed, null).tools, boxed)).toEqual({ mode: "sandbox", box: "daytona" });
+    // An adapter harness gets no shell, so it runs on the runner as a new agent of it does: no box started for it, and
+    // Claude Code's login (the runner's alone) still runs it.
+    for (const harness of ["codex", "claude-agent"]) {
+      expect(laneKit(harness, offers, boxed, null), harness).toEqual({ tools: ["read", "write"] });
+      expect(defaultPlaceOf(false, laneKit(harness, offers, boxed, null).tools, boxed), harness).toEqual({ mode: "runner" });
+    }
+  });
+
+  // GET /v2/computers serves the no-computer choice's shell: "local" in Mode 2 (Archil's serverless exec, which runs
+  // bash), "none" in Mode 1. A pi lane on the runner keeps bash only where it is "local"; the background tools still need
+  // a box. With the list not read, a lane on the runner gets no shell tool.
+  it("a pi lane keeps bash on the runner where no computer's shell is \"local\" (Mode 2), and gets no shell tool where it is \"none\" (Mode 1) or unread", () => {
+    const offers = toolOffers([
+      { name: "read", available: true, harnesses: ["pi", "codex"] },
+      { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] },
+      { name: "bash_background", available: true, sandbox_only: true, harnesses: ["pi"] },
+      { name: "browser", available: true, harnesses: ["pi"] },
+    ]);
+    const none = (shell: string) => [{ kind: "none", providers: [], shell }] as unknown as ComputerKindView[];
+    const runner: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "modal", available: true }], defaultPlace: { mode: "runner" } };
+    expect(laneKit("pi", offers, runner, none("local"))).toEqual({ tools: ["read", "bash", "browser"] });
+    expect(defaultPlaceOf(false, laneKit("pi", offers, runner, none("local")).tools, runner)).toEqual({ mode: "runner" });
+    expect(laneKit("codex", offers, runner, none("local"))).toEqual({ tools: ["read"] });
+    const unplaced: Places = { modes: ["runner", "sandbox"], boxes: [], defaultPlace: null };
+    for (const kinds of [none("none"), null]) expect(laneKit("pi", offers, unplaced, kinds)).toEqual({ tools: ["read", "browser"] });
+  });
+
+  it("a new race's label is a label value the server takes, and two races get two labels", () => {
+    const at = new Date("2026-11-23T10:04:00Z");
+    const a = newRaceLabel(at, () => "1f2e3d4c-5b6a-4000-8000-000000000000");
+    expect(a).toBe("20261123-1004-1f2e3d4c5b6a");
+    expect(a).toMatch(/^[A-Za-z0-9-]{1,256}$/);
+    // Two races opened in the same minute whose random parts share their first characters still get two labels: 48
+    // random bits (a UUID's first 12 hex digits, before its version digit), so their runs never meet on one race page.
+    expect(newRaceLabel(at, () => "1f2e9999-0000-4000-8000-000000000000")).not.toBe(newRaceLabel(at, () => "1f2e3d4c-0000-4000-8000-000000000000"));
+    expect(newRaceLabel()).not.toBe(newRaceLabel());
   });
 });

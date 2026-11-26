@@ -1477,7 +1477,60 @@ test("a sign-out whose change callback fails still answers: the sign-in is gone,
   assert.equal(calls, 3, "taken at the next read");
 });
 
-const TIMED_OUT = "The sign-in timed out before OpenAI sent the code back: start it again.";
+// OpenAI shows a workspace's "open-source apps off" refusal on its own page and never sends the browser back, so the
+// server can't tell it from a tab left open: a sign-in that waits names it first, as the likely cause.
+const ADMIN_LIKELY = "If OpenAI's page showed an error instead of signing you in, your ChatGPT workspace's admin has likely turned off open-source apps (External access → OSS → Use ChatGPT plan): ask them to turn it on, or sign in with another account.";
+const TIMED_OUT = `The sign-in timed out: OpenAI never sent the code back. ${ADMIN_LIKELY} Otherwise, start it again.`;
+const STILL_WAITING = `OpenAI hasn't sent the code back yet. ${ADMIN_LIKELY}`;
+// A code that did come back (the browser's return, or a paste), its exchange still out at the end: no admin guess.
+const CUT_OFF = "The sign-in timed out while OpenAI was still answering its code: start it again.";
+
+test("once a code is in (the browser's return or a paste), a sign-in whose exchange is slow shows no hint, and its timeout says the exchange was cut off, with no admin guess", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const clock = { now: Date.now() };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), now: () => clock.now });
+  t.after(() => plan.close());
+  openai.holdCodes = true;
+  // The browser's return, past the first minute, its exchange held.
+  const returned = await plan.startSignIn();
+  assert.equal((await browserReturns(returned.authorize_url)).status, 200);
+  await until(() => openai.codes === 1, "the code's exchange is out");
+  clock.now += 61_000;
+  assert.deepEqual(plan.view(), { state: "pending", authorize_url: returned.authorize_url, expires_at: returned.expires_at }, "no hint: the code came back");
+  clock.now += 10 * 60_000;
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: CUT_OFF });
+  // A paste, its exchange held: a view at once has no hint, and the paste's own answer at the end says the same as the view.
+  const pasted = await plan.startSignIn();
+  clock.now += 9 * 60_000;
+  assert.equal(plan.view().hint, STILL_WAITING, "waiting, with no code yet");
+  const late = plan.finishSignIn(callbackFor(pasted.authorize_url));
+  late.catch(() => undefined);
+  assert.equal(plan.view().hint, undefined, "the paste is a code in");
+  await until(() => openai.codes === 2, "the code's exchange is out");
+  clock.now += 60_000 + 1;
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: CUT_OFF });
+  await assert.rejects(late, (error) => error.message === CUT_OFF);
+});
+
+test("a sign-in still waiting after its first minute says why it may be stuck, the workspace admin's open-source setting first, long before it times out", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const clock = { now: Date.now() };
+  const plan = new ChatGPTPlan({ store: mapStore(), sealKey: randomBytes(32), now: () => clock.now });
+  t.after(() => plan.close());
+  const { authorize_url, expires_at } = await plan.startSignIn();
+  clock.now += 59_999;
+  assert.deepEqual(plan.view(), { state: "pending", authorize_url, expires_at }, "no hint in its first minute");
+  clock.now += 1;
+  assert.deepEqual(plan.view(), { state: "pending", authorize_url, expires_at, hint: STILL_WAITING });
+  // A new start waits its own minute first.
+  await plan.startSignIn();
+  assert.equal(plan.view().hint, undefined);
+  // Its end says the same likely cause, first.
+  clock.now += 10 * 60_000 + 1;
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
+});
 
 test("a sign-in whose code OpenAI answered never times out: saved, with the server's change still out at the 10 minutes, it reads signed in with no problem", { timeout: 30_000 }, async (t) => {
   fakeOpenAI(t);
@@ -1524,13 +1577,13 @@ test("a sign-in that waits out its 10 minutes says it timed out, in the view and
   assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
   assert.equal(logged.length, 2);
   // The browser returns just before the end, and its code's exchange is still out when the wait ends: the abort cuts it
-  // off after the tab said the sign-in completed, and it says the same.
+  // off after the tab said the sign-in completed, and it says the exchange was cut off (no admin guess: a code came back).
   openai.holdCodes = true;
   const late = await plan.startSignIn();
   assert.equal((await browserReturns(late.authorize_url)).status, 200);
   await until(() => openai.codes === 1, "the code's exchange is out");
   clock.now += 10 * 60_000 + 1;
-  assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: CUT_OFF });
   await plan.close();
   openai.holdCodes = false;
   assert.deepEqual(logged.map((fields) => fields.reason), ["timed_out", "timed_out", "timed_out"], "the cut-off exchange adds no line of its own");
@@ -1566,8 +1619,8 @@ test("a paste whose code's exchange a sign-out or the 10 minutes cut off answers
   late.catch(() => undefined);
   await until(() => openai.codes === 2, "the code's exchange is out");
   clock.now += 10 * 60_000 + 1;
-  assert.deepEqual(plan.view(), { state: "signed_out", problem: TIMED_OUT });
-  await assert.rejects(late, (error) => error.message === TIMED_OUT);
+  assert.deepEqual(plan.view(), { state: "signed_out", problem: CUT_OFF });
+  await assert.rejects(late, (error) => error.message === CUT_OFF);
   assert.deepEqual(logged.map((fields) => fields.reason ?? fields.chatgpt), ["signed_out", "timed_out"]);
 });
 

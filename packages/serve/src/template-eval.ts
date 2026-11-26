@@ -3,7 +3,8 @@
 // Everything goes through the v2 API alone, on an in-process server over a temp data directory by default (an eval never
 // touches the owner's server) or on one named by its address and token. Per case: a fake MCP server per `mcp` fixture,
 // saved under its name with no credential and recording every call; the package applied with the case's parameters and
-// grants, a fresh agent per run, its learning seeded from the case's corrections; one run per `runs` with the prompt's body as
+// grants, a fresh agent per run, its learning seeded from the case's corrections and its work folder from the case's
+// files; one run per `runs` with the prompt's body as
 // its input and the case's cap, on the case's clock when it sets one (`now`), waited for; then its answer, its tool calls (its timeline read with calls=whole, each
 // call's arguments and its output whole, to CALL_RESULT_CHARS, through the run's redaction, and the fakes' own logs) and its files, graded, and held to the package's output schema when it declares one (outputVerdict,
 // the server's own verdict). Every grader is deterministic but `llm`, which is itself a run on the same
@@ -36,6 +37,9 @@ import type { MonidFake } from "./runner/monid-run.js";
 import { nameMapOf, settingsKeyOf, shellToolOf } from "./tool-gate.js";
 import { builtinHarness } from "./harness-table.js";
 import { CALLS_PAGE_ROWS, webShownOf } from "./timeline/index.js";
+/** The rows a calls=whole timeline page holds at most, the page size this eval reads with: learn-bench reads its steps'
+ *  timelines the same way. */
+export { CALLS_PAGE_ROWS };
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { type WebFake, webFixtureOf } from "./web-fake.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
@@ -44,7 +48,9 @@ import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { dayIn, serverZone } from "./environment.js";
 import { instantOf } from "./trigger-adapter.js";
 import { applyBodyOf, compiled, filledPins, filledSource, onServerName, onServers, type Package, packageView, readPackage } from "./templates.js";
+import { INPUTS_DIR } from "./uploads.js";
 import { inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF } from "./validate.js";
+import { RUN_FILE_CUT_MAX } from "./run-files.js";
 
 /** What a grader run is told, whatever the rubric: blind, strict, and its verdict as one JSON block. */
 export const GRADER_INSTRUCTIONS = `You grade one run of an AI agent against one rubric. You see the rubric, the task the agent was given, its answer, and the tool calls it made; nothing else, and nothing else matters.
@@ -58,16 +64,18 @@ End your reply with exactly one fenced json block and nothing after it:
 /** Each grader run's cap, in dollars. */
 export const GRADER_CAP_USD = 0.5;
 /** The most characters an llm grader's prompt takes (about 30k tokens, under GRADER_CAP_USD at $15 per million input
- *  tokens): past it, its calls and a fake MCP server's calls share what is left, each list cut in proportion to its
- *  size, the middle of the longest results (or arguments) first, then the middle calls (fitCalls). The rubric, the task
+ *  tokens): past it, the final files take room first, never so much that the calls' arguments get less than half of it,
+ *  the tool state's texts left out before a file of the run's own is cut (fitFiles); its calls and a fake MCP server's
+ *  calls share what is left, each list cut in proportion to its size and the fake's given at least half, the middle of
+ *  the longest results (or arguments) first, then the middle calls (fitCalls), and a <cuts> note counts it all. The rubric, the task
  *  and the answer are never cut: they are what the grader judges, so a prompt can pass the cap by what they hold alone,
  *  and then the calls are cut to a note that says so. */
 export const GRADER_PROMPT_MAX = 120_000;
 /** How long one run may take before the eval cancels it and fails it. */
 export const RUN_TIMEOUT_MS = 30 * 60_000;
-/** How long a run may stay queued, no runner having taken it, before the eval stops waiting on it: it fails by that
- *  name, its state when the wait gave up, never by the run's whole timeout. */
-export const QUEUE_TIMEOUT_MS = 2 * 60_000;
+/** How long a run may stay queued, no runner holding it, before the eval stops waiting on it: it fails by that name,
+ *  never by the run's whole timeout. 5 minutes: a busy machine's runner can be slow to make its first claim. */
+export const QUEUE_TIMEOUT_MS = 5 * 60_000;
 export const GRADER_NAME = "Template eval grader";
 /** The folder under TMPDIR where local evals keep the one install of each harness's pin they all share. */
 export const EVAL_HARNESSES = "agentrun-eval-harnesses";
@@ -75,11 +83,11 @@ export const EVAL_HARNESSES = "agentrun-eval-harnesses";
 export const ON_DATA_WITH_SERVER = "--on-data is the data folder of the eval's own server, and --server names another server: give one of them";
 
 const PROMPT_FIELDS = ["description", "runs", "max_cost_usd", "input"];
-const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous"];
+const CASE_FIELDS = ["parameters", "grants", "mcp", "web", "monid", "learning", "now", "email", "calendar", "feed", "previous", "files"];
 const GRADER_FIELDS: Record<string, string[]> = {
   llm: ["type", "target"],
   regex: ["type", "pattern", "flags", "expect", "target"],
-  tool_used: ["type", "tool", "tools", "expect", "count", "at_least", "args"],
+  tool_used: ["type", "tool", "tools", "expect", "count", "at_least", "at_most", "args", "args_file"],
   file_exists: ["type", "path"],
   mailbox: ["type", "message_id", "in", "not_in"],
   handed: ["type", "expect", "dropped"],
@@ -93,7 +101,7 @@ const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule each fake MCP server li
 const LOOPBACK_HOST = /^(?:127\.\d+\.\d+\.\d+|localhost|\[::1\])$/; // key-gate: loopback-rule a server on this machine reaches the fakes
 
 /** A case's fields that the eval's own runner alone binds (EvalFakes), each with what it does: a named server refuses them. */
-const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed" | "previous", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"], ["previous", "previous seeds the case's earlier runs in the server's store"]];
+const OWN_SERVER_FAKES: readonly (readonly ["web" | "now" | "monid" | "email" | "calendar" | "feed" | "previous" | "files", string])[] = [["web", "web fakes the web tools"], ["now", "now sets its runs' clock"], ["monid", "monid fakes the package's monid endpoints"], ["email", "email fakes the server's email account"], ["calendar", "calendar fakes the server's calendar"], ["feed", "feed fakes the package's feeds"], ["previous", "previous seeds the case's earlier runs in the server's store"], ["files", "files seeds its runs' work folders"]];
 
 /** A case's run input: its prompt's body as content (none when empty), then its typed fields. */
 export const runInput = (content: string, fields?: Json): Json => ({ ...(content ? { content } : {}), ...fields });
@@ -101,7 +109,7 @@ export const runInput = (content: string, fields?: Json): Json => ({ ...(content
 export type Grader = (
   | { file: string; type: "llm"; rubric: string; target?: string }
   | { file: string; type: "regex"; pattern: string; flags: string; expect: "match" | "no_match"; target?: string }
-  | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; atLeast?: number; args?: Json }
+  | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; atLeast?: number; atMost?: number; args?: Json; argsFile?: string }
   | { file: string; type: "file_exists"; path: string }
   | { file: string; type: "mailbox"; messageId: string; in?: string; notIn: string[] }
   | { file: string; type: "handed"; expect: PreviousHandover["kind"]; dropped?: Record<string, number> }
@@ -109,9 +117,13 @@ export type Grader = (
   /** An email case's layouts this grader grades the runs of; absent, every run. */
   layouts?: Layout[];
 };
-/** One answer of a fake tool: taken when every argument `when` lists equals the call's; `when` a list, when any one of
- *  its entries does (one answer for each spelling of a call: a file by `sha` or by `ref`, say). */
+/** One answer of a fake tool: taken when every argument `when` lists equals the call's, or, listed as `{"$pattern":
+ *  <regex>}`, is a string the regex matches whole; `when` a list, when any one of its entries does (one answer for each
+ *  spelling of a call: a file by `sha` or by `ref`, say). */
 type Answer = { when: Json | Json[]; result: Json };
+/** The regex a `when` value matches by, when it is `{"$pattern": <regex>}` and nothing else: anchored here, so a key
+ *  made of a run's random stem (ns-k7m2p9qa-voice-cold-open) matches whole, never by a prefix the author left open. */
+const patternOf = (value: unknown): RegExp | undefined => (isObject(value) && Object.keys(value).length === 1 && typeof value.$pattern === "string" ? new RegExp(`^(?:${value.$pattern})$`) : undefined);
 /** A fake code search: the call's `query` argument searched over `files` (GitHub's code search syntax, read loosely: bare
  *  and quoted terms every one of which a file holds, /.../ terms read as literal text (a backslash before punctuation
  *  dropped), never as a regular expression, so no query can stall the eval, NOT before a term or a qualifier, and the
@@ -157,6 +169,9 @@ export type EvalCase = {
   /** The case's previous runs (eval-previous.ts): each run's agent gets them seeded as completed runs of the package's
    *  schedule trigger, which then starts the run as it would, handing it the last one's result. */
   previous?: PreviousFixture;
+  /** The files each run's work folder holds before its first turn (`files:`, a path in the folder to its text): the eval's
+   *  own runner writes them at the claim (EvalFakes.files), so a case can start where an earlier run left off. */
+  files?: Record<string, string>;
 };
 
 /** Cases that do not check: every problem, each naming its file. */
@@ -218,6 +233,27 @@ function fixtureOf(text: string, name: string, at: string, bad: (message: string
     if (!ok || !MCP_TOOL_NAME.test(tool)) {
       bad(`${at}: tools.${tool} is {description, input: an object's JSON Schema, answers: [{when: {...} or [{...}, ...], result: an MCP tool result}], default?: a result, search?: {query: the argument's name, files: [{path, text}], limit?, note?}}`);
       continue;
+    }
+    // A `when` value that names $pattern is a regex over the call's argument: one that is no string, does not compile, or
+    // sits beside another key would be compared by equality and match nothing, so it fails here, not as a silent miss.
+    for (const [i, answer] of (answers as Answer[]).entries()) {
+      const whens = Array.isArray(answer.when) ? answer.when.map((when, j) => [`[${j}]`, when] as const) : [["", answer.when] as const];
+      for (const [j, when] of whens) {
+        for (const [key, value] of Object.entries(when as Json)) {
+          if (!isObject(value) || !Object.hasOwn(value, "$pattern")) continue;
+          const where = `${at}: tools.${tool}.answers[${i}].when${j}.${key}`;
+          const others = Object.keys(value).filter((name) => name !== "$pattern");
+          if (others.length) bad(`${where}: a {"$pattern": ...} value holds no other key, and this one holds ${others.join(", ")}`);
+          else if (typeof value.$pattern !== "string") bad(`${where}: $pattern is a regular expression's source, a string`);
+          else {
+            try {
+              new RegExp(value.$pattern);
+            } catch (error) {
+              bad(`${where}: its $pattern does not compile: ${(error as Error).message}`);
+            }
+          }
+        }
+      }
     }
     tools[tool] = { description: spec.description as string, input: spec.input as Json, answers: answers as Answer[], ...(isObject(spec.default) ? { default: spec.default } : {}), ...(isObject(spec.search) ? { search: spec.search as FakeSearch } : {}) };
   }
@@ -291,12 +327,25 @@ function graderOfType(p: Package, file: string, text: string, bad: (message: str
       // at_least: that many matching calls or more (a run that searched once more than the case needs still passes).
       const atLeast = data.at_least;
       if (atLeast !== undefined && !(Number.isSafeInteger(atLeast) && (atLeast as number) >= 1)) return bad(`${file}: at_least is a whole number of calls, 1 or more`), undefined;
-      if (atLeast !== undefined && count !== undefined) return bad(`${file}: count is an exact number of calls and at_least a least one: give one, not both`), undefined;
+      if (atLeast !== undefined && count !== undefined) return bad(`${file}: count is an exact number of calls and at_least a lower bound: give one, not both`), undefined;
       if (atLeast !== undefined && expect === "not_called") bad(`${file}: expect not_called and at_least ${atLeast as number} say different things`);
+      // at_most: that many matching calls or fewer, and at least one (expect: called, as at_least), or at least at_least
+      // when both are given. None is expect: not_called's to say, so at_most is 1 or more.
+      const atMost = data.at_most;
+      if (atMost !== undefined && !(Number.isSafeInteger(atMost) && (atMost as number) >= 1)) return bad(`${file}: at_most is a whole number of calls, 1 or more (for none, say expect: not_called)`), undefined;
+      if (atMost !== undefined && count !== undefined) return bad(`${file}: count is an exact number of calls and at_most an upper bound: give one, not both`), undefined;
+      if (atMost !== undefined && expect === "not_called") bad(`${file}: expect not_called and at_most ${atMost as number} say different things`);
+      if (atMost !== undefined && atLeast !== undefined && (atLeast as number) > (atMost as number)) bad(`${file}: at_least ${atLeast as number} and at_most ${atMost as number} leave no number of calls to pass`);
       // Any call's arguments are known: a faked MCP tool's from its fake's log, any other's from the run's timeline read
-      // with calls=whole (each string through the run's redaction and cut at CAPS.text).
+      // with calls=whole (each string through the run's redaction and cut at CALL_RESULT_CHARS).
       if (data.args !== undefined && !isObject(data.args)) bad(`${file}: args is a mapping of the arguments a call must carry`);
-      return { file, type, tools: tools as string[], expect, ...(count !== undefined ? { count: count as number } : {}), ...(atLeast !== undefined ? { atLeast: atLeast as number } : {}), ...(isObject(data.args) ? { args: data.args } : {}) };
+      // args_file: a file the run writes, a JSON list of argument objects, each carried by its own call (the values a run
+      // computes, which a grader can't hold as literals). Its number of calls is the list's length, or count.
+      const argsFile = data.args_file;
+      if (argsFile !== undefined && (typeof argsFile !== "string" || !argsFile.trim() || argsFile.startsWith("/") || argsFile.split("/").includes(".."))) return bad(`${file}: args_file names a path in the run's work folder`), undefined;
+      if (argsFile !== undefined && expect === "not_called") bad(`${file}: args_file lists the calls the run sends, and expect not_called says it sends none`);
+      if (argsFile !== undefined && (atLeast !== undefined || atMost !== undefined)) bad(`${file}: args_file's calls number its list's length (or count): at_least and at_most don't apply`);
+      return { file, type, tools: tools as string[], expect, ...(count !== undefined ? { count: count as number } : {}), ...(atLeast !== undefined ? { atLeast: atLeast as number } : {}), ...(atMost !== undefined ? { atMost: atMost as number } : {}), ...(isObject(data.args) ? { args: data.args } : {}), ...(typeof argsFile === "string" ? { argsFile } : {}) };
     }
     case "file_exists":
       if (typeof data.path !== "string" || !data.path.trim() || data.path.startsWith("/") || data.path.split("/").includes("..")) return bad(`${file}: a file_exists grader names a path in the run's work folder`), undefined;
@@ -503,6 +552,24 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
       // Its run is the trigger's, on the trigger's input and cap: the prompt gives neither.
       if (body || fields || f.max_cost_usd !== undefined) bad(`${at}/prompt.md: a previous case's run is started by the package's schedule trigger, on the trigger's input and cap: its prompt.md holds description and runs alone`);
     }
+    // The case's files: each run's work folder holds them before its first turn, as a run that resumes finds what the run
+    // before it left (a keys file, say). Text only, each path in the folder and outside inputs/, which the server fills
+    // with the run's uploads and its message.
+    let files: Record<string, string> | undefined;
+    if (c.files !== undefined) {
+      if (!isObject(c.files)) bad(`${at}/case.yaml: files is a mapping of a path in the run's work folder to the text that file starts with`);
+      else {
+        files = {};
+        for (const [path, text] of Object.entries(c.files)) {
+          const shown = JSON.stringify(path);
+          if (!path || path.startsWith("/") || /[\\\0]/.test(path) || path.split("/").some((part) => part === "" || part === "." || part === "..")) bad(`${at}/case.yaml: files: ${shown} is not a path in the run's work folder (relative, with no empty, . or .. segment)`);
+          else if (path.split("/")[0] === INPUTS_DIR) bad(`${at}/case.yaml: files: ${shown} is under ${INPUTS_DIR}/, where the server puts the run's uploads and its message`);
+          else if (typeof text !== "string") bad(`${at}/case.yaml: files: ${shown} is the file's text, a string`);
+          // An own property, so a path such as __proto__ is a file, never the object's prototype.
+          else Object.defineProperty(files, path, { value: text, writable: true, enumerable: true, configurable: true });
+        }
+      }
+    }
     let learning: string | undefined;
     if (c.learning !== undefined) {
       const file = inside(root, c.learning, "file");
@@ -529,7 +596,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     cases.push({
       name, description: typeof f.description === "string" ? f.description : "", runs: typeof f.runs === "number" ? f.runs : 1,
       ...(typeof f.max_cost_usd === "number" ? { maxCostUsd: f.max_cost_usd } : {}), input: body, ...(fields ? { fields } : {}),
-      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}), ...(previous ? { previous } : {}),
+      parameters, grants, mcp, ...(web ? { web } : {}), ...(monid ? { monid } : {}), ...(learning !== undefined ? { learning } : {}), graders, ...(typeof c.now === "string" ? { now: c.now } : {}), ...(email ? { email } : {}), ...(calendar ? { calendar } : {}), ...(feed ? { feed } : {}), ...(previous ? { previous } : {}), ...(files ? { files } : {}),
     });
   }
   if (problems.length) throw new CaseError(dir, problems);
@@ -539,8 +606,9 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
 // ---- grading ---------------------------------------------------------------------------------------------------------
 
 /** A call a run made: from its timeline (`tool`, its gate name, a preview of its input, its `arguments` through the run's
- *  redaction, and the head of its `result`) or, for a faked MCP tool, from the fake's own log (`arguments` whole). */
-export type ToolCall = { tool: string; name?: string; preview?: string | null; status?: string | null; result?: string | null; arguments?: Json };
+ *  redaction, the head of its `result`, and `refused` when the run refused it before it ran) or, in RunRecord.fakeLog
+ *  alone, from a fake MCP server's own log (`arguments` whole). */
+export type ToolCall = { tool: string; name?: string; preview?: string | null; status?: string | null; result?: string | null; arguments?: Json; refused?: true };
 /** A file a run left in its work folder, as a grader is told of it: its name (its path under the run's cut, the listing's
  *  `name`; absent from a server that doesn't cut its listing's names, when the file is shown by no name, never its path),
  *  its size in bytes and, for a text file read whole, its text. */
@@ -549,15 +617,24 @@ export type FinalFile = { name?: string; bytes: number; text?: string };
 export type RunRecord = {
   /** The run's final answer, or "" when it has none. */
   answer: string;
-  /** Its tool calls as its timeline shows them, in order. */
+  /** Its tool calls as its timeline shows them, in order (callRecordOf). */
   calls: ToolCall[];
-  /** The calls each fake MCP server received, with their arguments, in order. */
+  /** The calls on the fake MCP servers' tools that ran, as its timeline shows them (the faked servers' calls of `calls`
+   *  not refused and with a result, mcpCallsOf, each argument through the run's redaction), in order: what an llm grader
+   *  and the report are shown. */
   mcpCalls: ToolCall[];
+  /** Each fake MCP server's own log of the calls that reached it, their arguments whole: read only to match a tool_used
+   *  grader's `args` on a faked tool, never shown to a grader nor put in the report (a value the run's cut holds, handed
+   *  to a fake tool, is whole here). */
+  fakeLog: ToolCall[];
   /** The paths of its files, from its work folder. */
   files: string[];
   /** Its work folder's files as it left them, for its llm graders (finalFilesOf): each text file with its whole `text`,
    *  any other (media, a binary, one past what was read) with its size alone. */
   finalFiles?: FinalFile[];
+  /** Each file a tool_used grader's args_file names, by its path: its whole text under the run's cut, or why it has none
+   *  (argsFilesOf). */
+  argsFiles?: Record<string, { text: string } | { why: string }>;
   /** The clock it ran on, its case's `now`; absent, the real one. */
   now?: string;
   /** Its fake mailbox after it, for a case with `email` (eval-mailbox.ts). */
@@ -584,11 +661,46 @@ const canonical = (value: unknown): unknown => (Array.isArray(value) ? value.map
 /** Whether `call` carries `args`: each key's value equal, an object's compared as a subset in turn. */
 const carries = (call: unknown, args: unknown): boolean => (isObject(args) ? isObject(call) && Object.entries(args).every(([key, value]) => Object.hasOwn(call, key) && carries(call[key], value)) : same(call, args));
 
+/** What the run's cut writes in place of a secret's span in a file it serves (handed-values.ts). */
+const CUT_MARK = "[redacted]";
+/** Whether `text` is `entry` with each CUT_MARK standing for one character or more of it. A scan from the left, each
+ *  part between marks placed at its first fit: linear in the text, so no list the run wrote can make it backtrack. */
+const cutMatches = (text: string, entry: string): boolean => {
+  const parts = entry.split(CUT_MARK);
+  const first = parts[0]!, last = parts[parts.length - 1]!;
+  if (!text.startsWith(first)) return false;
+  let at = first.length;
+  for (const part of parts.slice(1, -1)) {
+    const found = text.indexOf(part, at + 1);
+    if (found < 0) return false;
+    at = found + part.length;
+  }
+  return text.length - last.length >= at + 1 && text.endsWith(last);
+};
+/** `same` for a value read under the run's cut: equal throughout, but a string of `entry` holding CUT_MARK is matched by
+ *  cutMatches. Arrays and the objects inside them are whole, keys and length alike, as `same` compares them. */
+const sameCut = (call: unknown, entry: unknown): boolean => {
+  if (Array.isArray(entry)) return Array.isArray(call) && call.length === entry.length && entry.every((value, i) => sameCut(call[i], value));
+  if (isObject(entry)) return isObject(call) && Object.keys(call).length === Object.keys(entry).length && Object.entries(entry).every(([key, value]) => Object.hasOwn(call, key) && sameCut(call[key], value));
+  if (typeof entry === "string" && entry.includes(CUT_MARK)) return typeof call === "string" && cutMatches(call, entry);
+  return same(call, entry);
+};
+/** carries for an args_file entry, which is read under the run's cut while a fake's calls are whole: objects as subsets
+ *  and everything else equal, as `carries`, except that a string of the entry holding CUT_MARK carries a call's string
+ *  where each mark stands for one character or more (sameCut). So a call that sent a held secret still carries the entry
+ *  that names it cut. Nothing of the call's value is said. */
+const carriesCut = (call: unknown, entry: unknown): boolean =>
+  isObject(entry) ? isObject(call) && Object.entries(entry).every(([key, value]) => Object.hasOwn(call, key) && carriesCut(call[key], value)) : sameCut(call, entry);
+
 /** Whether `fixture`'s tool answers `args` with one of its answers (the first whose `when` matches), else its default. */
 export function fakeAnswer(fixture: McpFixture, tool: string, args: Json): Json {
   const spec = fixture.tools[tool];
   if (!spec) return { isError: true, content: [{ type: "text", text: `The fake ${fixture.server} has no tool ${tool}.` }] };
-  const matches = (when: Json) => Object.entries(when).every(([key, value]) => Object.hasOwn(args, key) && same(args[key], value));
+  const matches = (when: Json) => Object.entries(when).every(([key, value]) => {
+    if (!Object.hasOwn(args, key)) return false;
+    const pattern = patternOf(value);
+    return pattern ? typeof args[key] === "string" && pattern.test(args[key]) : same(args[key], value);
+  });
   const hit = spec.answers.find((answer) => (Array.isArray(answer.when) ? answer.when.some(matches) : matches(answer.when)));
   if (hit) return hit.result;
   if (spec.search && typeof args[spec.search.query] === "string") return { content: [{ type: "text", text: searched(spec.search, args[spec.search.query] as string) }] };
@@ -672,16 +784,21 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
       return { pass, reason: pass ? `the run's work folder holds ${grader.path}` : `the run's work folder has no ${grader.path}${run.files.length ? ` (it holds ${run.files.slice(0, 10).join(", ")}${run.files.length > 10 ? ", ..." : ""})` : " (it holds no file)"}` };
     }
     case "tool_used": {
-      // A faked MCP tool's calls are its fake's log (each call that reached it, whole); any other tool's, the timeline's,
-      // its arguments as the run's redaction shows them (callsOf).
+      // A faked MCP tool's calls are its fake's log (each call that reached it, whole: fakeLog, never shown); any other
+      // tool's, the timeline's, its arguments as the run's redaction shows them (callsOf).
       const calls = grader.tools.flatMap((tool) => {
         const server = mcpNameOf(tool)?.server;
-        const from = server !== undefined && faked.includes(server) ? run.mcpCalls : run.calls;
+        const from = server !== undefined && faked.includes(server) ? run.fakeLog : run.calls;
         return from.filter((call) => call.tool === tool && (!grader.args || carries(call.arguments, grader.args)));
       });
       const what = `${grader.tools.join(" or ")}${grader.args ? ` with ${JSON.stringify(grader.args)}` : ""}`;
       const said = `${calls.length} call${calls.length === 1 ? "" : "s"} of ${what}`;
+      if (grader.argsFile !== undefined) return argsFileVerdict(grader.argsFile, run.argsFiles?.[grader.argsFile], calls, said, grader.count);
       if (grader.count !== undefined) return { pass: calls.length === grader.count, reason: `${said}; the grader expects exactly ${grader.count}` };
+      if (grader.atMost !== undefined) {
+        const least = grader.atLeast ?? 1;
+        return { pass: calls.length >= least && calls.length <= grader.atMost, reason: `${said}; the grader expects at least ${grader.atLeast ?? "one"} and at most ${grader.atMost}` };
+      }
       if (grader.atLeast !== undefined) return { pass: calls.length >= grader.atLeast, reason: `${said}; the grader expects at least ${grader.atLeast}` };
       const pass = grader.expect === "called" ? calls.length > 0 : calls.length === 0;
       return { pass, reason: `${said}; the grader expects ${grader.expect === "called" ? "at least one" : "none"}` };
@@ -691,6 +808,43 @@ export function gradeDeterministic(grader: Exclude<Grader, { type: "llm" }>, run
     case "handed":
       return handedVerdict(run.handed, grader.expect, grader.dropped);
   }
+}
+
+/** A tool_used grader's verdict on its args_file: each listed argument object carried (carries) by its own call of
+ *  `calls` (the grader's tools, its `args` kept), no call standing for two entries, and as many calls as the list has
+ *  entries (or `count`). The entries are given calls by a maximum matching, so one call that carries two entries counts
+ *  for one of them, whatever order they are listed in. */
+export function argsFileVerdict(path: string, file: { text: string } | { why: string } | undefined, calls: readonly ToolCall[], said: string, count?: number): Verdict {
+  if (file === undefined || "why" in file) return { pass: false, reason: `the run's ${path} could not be read${file ? `: ${file.why}` : ""}` };
+  let entries: unknown;
+  try {
+    entries = JSON.parse(file.text);
+  } catch (error) {
+    return { pass: false, reason: `the run's ${path} is not JSON: ${(error as Error).message}` };
+  }
+  if (!Array.isArray(entries)) return { pass: false, reason: `the run's ${path} is not a list of argument objects` };
+  const odd = entries.findIndex((entry) => !isObject(entry));
+  if (odd >= 0) return { pass: false, reason: `entry ${odd + 1} of the run's ${path} is not an argument object` };
+  // Kuhn's augmenting paths: owner[c] is the entry call c stands for.
+  const carriers = entries.map((entry) => calls.flatMap((call, c) => (carriesCut(call.arguments, entry) ? [c] : [])));
+  const owner = new Array<number>(calls.length).fill(-1);
+  const give = (e: number, seen: Set<number>): boolean => carriers[e]!.some((c) => {
+    if (seen.has(c)) return false;
+    seen.add(c);
+    if (owner[c] === -1 || give(owner[c]!, seen)) return (owner[c] = e), true;
+    return false;
+  });
+  const unmatched = entries.flatMap((_, e) => (give(e, new Set()) ? [] : [e]));
+  const head = (e: number) => { const text = JSON.stringify(entries[e]); return text.length > 200 ? `${text.slice(0, 200)}...` : text; };
+  if (unmatched.length) {
+    const e = unmatched[0]!;
+    const why = carriers[e]!.length ? `every call that carries it stands for another entry` : `no call carries it`;
+    return { pass: false, reason: `${said}; ${unmatched.length} of the ${entries.length} entries in the run's ${path} have no call of their own: entry ${e + 1} (${head(e)}): ${why}` };
+  }
+  const expected = count ?? entries.length;
+  const each = `each of the ${entries.length} entries in the run's ${path} is carried by its own call`;
+  if (calls.length !== expected) return { pass: false, reason: `${said}; ${each}, and the grader expects exactly ${expected} call${expected === 1 ? "" : "s"}` };
+  return { pass: true, reason: `${said}; ${each}` };
 }
 
 /** The output check of a completed run of a package that declares `output`, beside its case's graders: the server's own
@@ -719,37 +873,155 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
     ...(run.mailbox ? [`<mailbox-after untrusted>\nThe run's email account was a fake mailbox (layout ${run.mailbox.after.layout}). What the run left in it:\n${mailboxText(run.mailbox.after)}\n</mailbox-after>`] : []),
   ];
   // The files the run left, ahead of its calls. A call shows a file's bytes only in its arguments or its output, each cut
-  // where the timeline cuts it (a string of its arguments at 2,000 characters, its output at CALL_RESULT_CHARS, each
-  // ending "..."), and a cut call reads to a grader as a run that did less than its file holds.
+  // where the timeline cuts it (its arguments' names and values at CALL_RESULT_CHARS in all, its output at as many), and
+  // a cut call reads to a grader as a run that did less than its file holds.
   const files = run.finalFiles ?? [];
   const texts = files.filter((file) => file.text !== undefined);
   // Each call with its arguments (else its input's preview), its status and its output's head; a call that names a file
-  // shown whole says where it is.
-  const lines = run.calls.map((call, i) => {
-    const head = `${i + 1}. ${call.tool}${call.arguments ? ` ${JSON.stringify(call.arguments)}` : call.preview ? ` (${call.preview})` : ""}${call.status ? ` -> ${call.status}` : ""}`;
+  // says where it is. A string argument `held` names (a write's content that a file's text holds whole and whose head
+  // and tail <files> shows: shows) is cut at FILE_ARG_CHARS there, so the grader's room never holds those bytes twice.
+  const callsOf = (held: (text: string) => boolean, shown: (name: string) => boolean = () => true) => run.calls.map((call, i) => {
+    const args = call.arguments ? JSON.stringify(inFiles(call.arguments, held)) : undefined;
+    const tail = call.status ? ` -> ${call.status}` : "";
     const result = call.result ?? "";
-    const named = texts.flatMap((file) => (file.name !== undefined && (head.includes(file.name) || result.includes(file.name)) ? [file.name] : [])).sort((a, b) => b.length - a.length)[0];
-    return { head: named ? `${head} [the file ${named} is in <files>, whole unless marked cut]` : head, result, tool: call.name ?? call.tool };
+    const whole = `${i + 1}. ${call.tool}${args !== undefined ? ` ${args}` : call.preview ? ` (${call.preview})` : ""}${tail}`;
+    const named = texts.flatMap((file) => (file.name !== undefined && shown(file.name) && (whole.includes(file.name) || result.includes(file.name)) ? [file.name] : [])).sort((a, b) => b.length - a.length)[0];
+    const pointer = named ? ` [the file ${named} is in <files>, whole unless marked cut]` : "";
+    const head = (shown: string | undefined) => `${i + 1}. ${call.tool}${shown !== undefined ? ` ${shown}` : call.preview ? ` (${call.preview})` : ""}${tail}${pointer}`;
+    return { args, head, result, tool: call.name ?? call.tool };
   });
-  // Each call a fake MCP server received, its arguments whole in its log: they are the part a cut may take.
-  const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: JSON.stringify(call.arguments ?? {}) }));
+  const linesOf = (list: ReturnType<typeof callsOf>) => list.map((call) => ({ head: call.head(call.args), result: call.result, tool: call.tool }));
+  // Each call a fake MCP server received, its arguments as the run's timeline shows them (RunRecord.mcpCalls, under the
+  // run's cut; never the fake's own log): they are the part a cut of this prompt may take.
+  const mcpLines = run.mcpCalls.map((call, i) => ({ head: `${i + 1}. ${call.tool}`, result: call.arguments !== undefined ? JSON.stringify(call.arguments) : (call.preview ?? "{}") }));
   const wrap = (text: string) => `<tool-calls untrusted>\n${text}\n</tool-calls>`;
   const wrapMcp = (text: string) => `<mcp-calls untrusted>\nThe calls the MCP servers received, with their arguments, in order:\n${text}\n</mcp-calls>`;
   // A run that searched or fetched: each link its answer cites, matched against its web calls' urls in code (link-check.ts).
   const links = linkCheck(run.answer, run.calls);
   const linked = links === undefined ? [] : [`<link-check untrusted>\n${links}\n</link-check>`];
   const wrapFiles = (text: string) => `<files untrusted>\nThe files in the run's work folder when it ended, each text file whole unless marked cut (a call below that shows one only in part shows a cut of it):\n${text}\n</files>`;
-  const room = max - [...before, wrap(""), ...linked, ...(mcpLines.length ? [wrapMcp("")] : []), ...(files.length ? [wrapFiles("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
   const wholeOf = (list: readonly { head: string; result: string }[]) => list.reduce((sum, one) => sum + one.head.length + one.result.length + 3, 0);
-  const [callsWhole, mcpWhole] = [wholeOf(lines), wholeOf(mcpLines)];
+  const headsOf = (list: readonly { head: string }[]) => list.reduce((sum, one) => sum + one.head.length + 1, 0);
+  const mcpWhole = wholeOf(mcpLines);
+  const fixed = [...before, wrap(""), ...linked, ...(mcpLines.length ? [wrapMcp("")] : []), ...(files.length ? [wrapFiles("")] : [])].reduce((sum, part) => sum + part.length + 2, 0);
+  // A prompt that is cut says what was (cutsNote), at the top of the evidence, in room it keeps for that note: built once
+  // to count the cuts, then again with room for the note they make (a few characters more, for counts that grow).
+  const whole = fixed + (files.length ? fitFiles(files, Number.MAX_SAFE_INTEGER).length : 0) + wholeOf(linesOf(callsOf(() => false))) + mcpWhole;
+  if (whole <= max) return build(0).text;
+  const first = build(0);
+  // Under a cap so tight the note would take more than a twentieth of it, the marks each cut leaves in place say it: the
+  // room goes to the evidence (a web call's url list before a summary of what was cut).
+  if (first.note === undefined) return first.text;
+  if (first.note.length > max / 20) return build(0, false).text;
+  const second = build(first.note.length + 2 + 24);
+  return second.text.length <= max ? second.text : build(CUTS_NOTE_ROOM + 2).text;
+
+  function build(reserve: number, noted = true): { text: string; note: string | undefined } {
+  const room = max - fixed - reserve;
   // The files come first: they take what they need of the room, but no more than leaves the calls a quarter of it (or
-  // all they need, when that is less), so a call's result is cut before a file is.
-  const shownFiles = files.length ? fitFiles(files, Math.max(0, room - Math.min(callsWhole + mcpWhole, Math.floor(room / 4)))) : undefined;
-  // Both call lists share the room the rest leave, each in proportion to its whole size.
+  // all they need, when that is less), so a call's result is cut before a file is; and never more than leaves the calls'
+  // arguments half of it (or all they need): what a run sent is what a rubric checks, a file it can hold too. What the
+  // calls need counts each argument a file's text holds whole cut, as it is when <files> shows that file whole.
+  const inText = (text: string) => texts.some((file) => file.text !== undefined && file.text.includes(bareOf(text)));
+  const needLines = linesOf(callsOf(inText));
+  const need = wholeOf(needLines);
+  const argsFloor = Math.min(headsOf(needLines) + mcpWhole, Math.floor(room / 2));
+  const fittedFiles = files.length ? fitFilesWith(files, Math.max(0, room - Math.max(Math.min(need + mcpWhole, Math.floor(room / 4)), argsFloor))) : undefined;
+  const shownFiles = fittedFiles?.text;
+  const showing = (name: string) => shownFiles !== undefined && shownFiles.includes(`<file path="${name}" `);
+  // An argument is cut only when a file's text holds all of it and <files> as shown shows its head and tail. A write of a
+  // whole file <files> shows cut is cut at FILE_ARG_CHARS: its head and tail are in <files>, and its middle is cut in
+  // both, as the file's block marks. One whose text the cut of its file takes from there (an append in its middle, or a
+  // first write the appends after it push past the shown head) stays in its call, cut as fitArgs cuts it, as does a
+  // write a later one overwrote that shares the file's head and tail.
+  const calls = callsOf((text) => inText(text) && shownFiles !== undefined && shows(shownFiles, text), showing);
+  const lines = linesOf(calls);
+  const callsWhole = wholeOf(lines);
+  // Both call lists share the room the rest leave, each in proportion to its whole size; and the fake MCP servers' list,
+  // which is its calls' arguments, gets at least half of it (or all it needs), as the timeline's arguments do of theirs
+  // (fitArgs): a timeline's long results never take what a run sent to a fake down to a few characters each.
   const left = room - (shownFiles === undefined ? 0 : shownFiles.length);
-  const mcpRoom = callsWhole + mcpWhole <= left ? mcpWhole : Math.floor((left * mcpWhole) / Math.max(1, callsWhole + mcpWhole));
-  const after = mcpLines.length ? [wrapMcp(fitCalls(mcpLines, mcpRoom, "argument list"))] : [];
-  return [...before, ...(shownFiles === undefined ? [] : [wrapFiles(shownFiles)]), wrap(lines.length ? fitCalls(lines, left - mcpRoom) : "(none)"), ...linked, ...after].join("\n\n");
+  const mcpRoom = callsWhole + mcpWhole <= left ? mcpWhole : Math.max(Math.floor((left * mcpWhole) / Math.max(1, callsWhole + mcpWhole)), Math.min(mcpWhole, Math.floor(left / 2)));
+  const mcpFit = mcpLines.length ? fitCallsWith(mcpLines, mcpRoom, "argument list") : undefined;
+  // The calls' arguments take what the rest of the calls' lines (their heads' other parts and their results) leave of
+  // the calls' room, and when that is less than half of it, half (fitArgs): whole when the calls fit, and a call with
+  // long arguments never leaves the others without their results.
+  const callsRoom = left - mcpRoom;
+  const rest = callsWhole - calls.reduce((sum, call) => sum + (call.args?.length ?? 0), 0);
+  const kept = fitArgs(calls.map((call) => call.args), Math.max(Math.floor(callsRoom / 2), callsRoom - rest));
+  const fitted = kept === undefined ? lines : calls.map((call, i) => ({ head: call.head(kept[i]), result: call.result, tool: call.tool }));
+  const callsFit = fitted.length ? fitCallsWith(fitted, callsRoom) : undefined;
+  const note = cutsNote({
+    files: fittedFiles,
+    calls: callsFit && { args: kept === undefined ? 0 : kept.filter((shown, i) => shown !== calls[i]!.args).length, results: callsFit.cut, dropped: callsFit.dropped },
+    mcp: mcpFit && { args: mcpFit.cut, dropped: mcpFit.dropped },
+  });
+  return { text: [...before, ...(note && noted ? [note] : []), ...(shownFiles === undefined ? [] : [wrapFiles(shownFiles)]), wrap(callsFit ? callsFit.text : "(none)"), ...linked, ...(mcpFit ? [wrapMcp(mcpFit.text)] : [])].join("\n\n"), note };
+  }
+}
+
+/** The most characters the note on what a grader's input cut takes (cutsNote). */
+const CUTS_NOTE_ROOM = 900;
+
+/** What a grader's input cut, said once ahead of the evidence, so a grader reads a condition only the cut part could show
+ *  as unseen, never as consistent: each list's cuts, counted. Undefined when nothing was cut. */
+function cutsNote(cut: { files?: { cut: number; out: number; state: number }; calls?: { args: number; results: number; dropped: number }; mcp?: { args: number; dropped: number } }): string | undefined {
+  const n = (count: number, one: string) => `${count} ${count === 1 ? one : `${one}s`}`;
+  const of = (count: number, one: string) => `${count} ${count === 1 ? `${one}'s` : `${one}s'`}`;
+  const lines = [
+    ...(cut.files && (cut.files.cut || cut.files.out || cut.files.state) ? [`- <files>: ${[cut.files.state ? `${n(cut.files.state, "file")} of tool state (under a folder whose name starts with ".") listed by name alone` : "", cut.files.cut ? `${of(cut.files.cut, "file")} text cut in the middle` : "", cut.files.out ? `${of(cut.files.out, "file")} text left out` : ""].filter(Boolean).join("; ")}.`] : []),
+    ...(cut.calls && (cut.calls.args || cut.calls.results || cut.calls.dropped) ? [`- <tool-calls>: ${[cut.calls.args ? `${of(cut.calls.args, "call")} arguments cut in the middle` : "", cut.calls.results ? `${n(cut.calls.results, "result")} cut or left out` : "", cut.calls.dropped ? `${n(cut.calls.dropped, "call")} in the middle left out` : ""].filter(Boolean).join("; ")}.`] : []),
+    ...(cut.mcp && (cut.mcp.args || cut.mcp.dropped) ? [`- <mcp-calls>: ${[cut.mcp.args ? `${of(cut.mcp.args, "call")} arguments cut or left out` : "", cut.mcp.dropped ? `${n(cut.mcp.dropped, "call")} in the middle left out` : ""].filter(Boolean).join("; ")}.`] : []),
+  ];
+  if (!lines.length) return undefined;
+  return ["<cuts>", "This input is cut to stay under its cap; each cut is marked where it is:", ...lines, "What a cut leaves out was not seen: a condition only it could show is not shown to hold.", "</cuts>"].join("\n");
+}
+
+/** How much of a write's content a grader's call line shows when a file in <files> holds it whole. */
+const FILE_ARG_CHARS = 2000;
+
+/** A call's copy of a text with the trailing "..." where the timeline cut it at its budget left off. */
+function bareOf(text: string): string {
+  return text.endsWith("...") ? text.slice(0, -3) : text;
+}
+
+/** Whether `where` shows the first and last FILE_ARG_CHARS characters of a call's copy of `text` (bareOf). */
+function shows(where: string, text: string): boolean {
+  const bare = bareOf(text);
+  return where.includes(bare.slice(0, FILE_ARG_CHARS)) && where.includes(bare.slice(-FILE_ARG_CHARS));
+}
+
+/** A call's arguments with each string past FILE_ARG_CHARS that `held` names (one a file holds and <files> shows) cut there,
+ *  ending "...", in a list or an object at any depth. */
+function inFiles(value: unknown, held: (text: string) => boolean): unknown {
+  if (typeof value === "string") return value.length > FILE_ARG_CHARS && held(value) ? `${value.slice(0, FILE_ARG_CHARS - 3)}...` : value;
+  if (Array.isArray(value)) return value.map((item) => inFiles(item, held));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, inFiles(item, held)]));
+}
+
+/** Each call's arguments (their JSON, none for a call with none) in at most `room` characters in all: undefined when they
+ *  fit whole; else each past a length L keeps its first two thirds and last third of L with its middle cut and marked
+ *  (middle), L the longest that fits, so the longest are cut first. A list no longer than L and a marker (40 characters)
+ *  stays whole, so a cut never takes a short list's text for a marker as long; when even L = 0 passes the room, the
+ *  short lists stay whole, the long ones show their marker alone, and fitCalls drops calls as it does. */
+export function fitArgs(args: readonly (string | undefined)[], room: number): (string | undefined)[] | undefined {
+  const cuts = (text: string, keep: number) => text.length > keep + 40;
+  const sizeOf = (keep: number) => args.reduce((sum, text) => sum + (text === undefined ? 0 : cuts(text, keep) ? keep + 40 : text.length), 0);
+  if (sizeOf(Number.MAX_SAFE_INTEGER) <= room) return undefined;
+  const keep = longestKeep(sizeOf, Math.max(0, ...args.map((text) => text?.length ?? 0)), room);
+  return args.map((text) => (text !== undefined && cuts(text, keep) ? middle(text, keep) : text));
+}
+
+/** The longest keep in [0, high] whose `size` is within `room`, else 0: `size` never falls as keep grows. */
+function longestKeep(size: (keep: number) => number, high: number, room: number): number {
+  let [low, top] = [0, high];
+  while (low < top) {
+    const mid = Math.ceil((low + top) / 2);
+    if (size(mid) <= room) low = mid;
+    else top = mid - 1;
+  }
+  return low;
 }
 
 /** A grader's calls, one line each (`head`, then `: <result>`), in at most `room` characters: whole when they fit; else
@@ -760,9 +1032,16 @@ export function graderInput(grader: Extract<Grader, { type: "llm" }>, input: str
  *  cut says so on the list's first line, so the grader knows what it does not see; `what` names what follows each head
  *  there (a fake MCP server's list cuts a call's arguments). */
 export function fitCalls(lines: readonly { head: string; result: string; tool?: string }[], room: number, what = "result"): string {
+  return fitCallsWith(lines, room, what).text;
+}
+
+/** fitCalls, with how many results it cut or left out (`cut`) and how many calls it dropped (`dropped`), for the note on
+ *  what a grader's input cut (cutsNote). */
+function fitCallsWith(lines: readonly { head: string; result: string; tool?: string }[], room: number, what = "result"): { text: string; cut: number; dropped: number } {
   const line = (head: string, result: string) => (result ? `${head}: ${result}` : head);
   const whole = lines.map((one) => line(one.head, one.result)).join("\n");
-  if (whole.length <= room) return whole;
+  if (whole.length <= room) return { text: whole, cut: 0, dropped: 0 };
+  const results = lines.filter((one) => one.result).length;
   const said = saidCut;
   const webs = lines.map((one) => (one.tool ? webShownOf(one.tool, one.result) : undefined));
   const LONG = said(`each long ${what} keeps its head and tail, its middle cut where marked${webs.some(Boolean) ? "; a web_search keeps every result's url, title and date, and a web_fetch its url and title, their snippets and page text cut" : ""}`);
@@ -770,20 +1049,12 @@ export function fitCalls(lines: readonly { head: string; result: string; tool?: 
   // on every result `keep` cuts.
   const cutTo = (text: string, keep: number) => (text.length > keep ? keep + 42 : text ? text.length + 2 : 0);
   const high = Math.max(...lines.map((one) => one.result.length));
-  const longest = (size: (keep: number) => number) => {
-    let [low, top] = [0, high];
-    while (low < top) {
-      const mid = Math.ceil((low + top) / 2);
-      if (size(mid) <= room) low = mid;
-      else top = mid - 1;
-    }
-    return low;
-  };
+  const longest = (size: (keep: number) => number) => longestKeep(size, high, room);
   // A web call's line is measured as it is shown.
   const size = (keep: number) => LONG.length + 1 + lines.reduce((sum, one, i) => sum + (webs[i] ? line(one.head, webs[i](keep)).length : one.head.length + cutTo(one.result, keep)) + 1, 0);
   if (size(0) <= room) {
     const keep = longest(size);
-    return [LONG, ...lines.map((one, i) => line(one.head, webs[i] ? webs[i](keep) : middle(one.result, keep)))].join("\n");
+    return { text: [LONG, ...lines.map((one, i) => line(one.head, webs[i] ? webs[i](keep) : middle(one.result, keep)))].join("\n"), cut: lines.filter((one) => one.result.length > keep).length, dropped: 0 };
   }
   // The web calls' url lists alone pass the room: every other result is left out, and each list keeps its head and tail.
   if (webs.some(Boolean)) {
@@ -792,7 +1063,7 @@ export function fitCalls(lines: readonly { head: string; result: string; tool?: 
     const over = (keep: number) => OVER.length + 1 + lines.reduce((sum, one, i) => sum + one.head.length + cutTo(lists[i]!, keep) + 1, 0);
     if (over(0) <= room) {
       const keep = longest(over);
-      return [OVER, ...lines.map((one, i) => line(one.head, lists[i] ? middle(lists[i]!, keep) : ""))].join("\n");
+      return { text: [OVER, ...lines.map((one, i) => line(one.head, lists[i] ? middle(lists[i]!, keep) : ""))].join("\n"), cut: results, dropped: 0 };
     }
   }
   // Not even every call's head fits: the first and last calls, as many as fit, with no result, the middle ones dropped.
@@ -807,7 +1078,8 @@ export function fitCalls(lines: readonly { head: string; result: string; tool?: 
     else kept[1].unshift(heads[j--]!);
   }
   const dropped = heads.length - kept[0].length - kept[1].length;
-  return [said(`every ${what} is left out, and ${dropped} call${dropped === 1 ? "" : "s"} in the middle`), ...kept[0], `[... ${dropped} call${dropped === 1 ? "" : "s"} cut ...]`, ...kept[1]].join("\n");
+  if (!dropped) return { text: [said(`every ${what} is left out`), ...kept[0], ...kept[1]].join("\n"), cut: results, dropped };
+  return { text: [said(`every ${what} is left out, and ${dropped} call${dropped === 1 ? "" : "s"} in the middle`), ...kept[0], `[... ${dropped} call${dropped === 1 ? "" : "s"} cut ...]`, ...kept[1]].join("\n"), cut: results, dropped };
 }
 
 /** A cut's note, on the first line of what it cut. */
@@ -827,25 +1099,38 @@ function middle(text: string, keep: number): string {
  *  its size on a last line, cut to the room when even that passes it. Each file is named by its cut name alone: one with
  *  none is in a block with no path, or counted. */
 export function fitFiles(files: readonly FinalFile[], room: number): string {
+  return fitFilesWith(files, room).text;
+}
+
+/** Whether a final file is a tool's state, not the run's work: under a folder whose name starts with "." (the package's
+ *  own skills copied under `.agents/skills`, a tool's cache such as `film/.hyperframes`). A file with no name is not. */
+export function toolState(name: string | undefined): boolean {
+  return name !== undefined && name.split("/").slice(0, -1).some((part) => part.startsWith("."));
+}
+
+/** fitFiles, with how many texts it cut in the middle (`cut`) or left out (`out`), and how many of tool state (toolState)
+ *  it listed by name alone (`state`), for the note on what a grader's input cut (cutsNote). A run's own files come first:
+ *  past the room, the tool state's texts are left out before any other file is cut. */
+function fitFilesWith(files: readonly FinalFile[], room: number): { text: string; cut: number; out: number; state: number } {
   const block = (file: FinalFile, text: string) => `<file${file.name === undefined ? "" : ` path="${file.name}"`} bytes="${file.bytes}">\n${text}\n</file>`;
-  const texts = files.filter((file): file is FinalFile & { text: string } => file.text !== undefined);
+  const all = files.filter((file): file is FinalFile & { text: string } => file.text !== undefined);
   const others = files.filter((file) => file.text === undefined);
   const named = others.length ? [`Not shown (not text, or past what a grader is given), by path and size in bytes: ${namesOf(others)}`] : [];
-  const whole = [...texts.map((file) => block(file, file.text)), ...named].join("\n");
-  if (whole.length <= room) return whole;
+  const whole = [...all.map((file) => block(file, file.text)), ...named].join("\n");
+  if (whole.length <= room) return { text: whole, cut: 0, out: 0, state: 0 };
+  const state = all.filter((file) => toolState(file.name));
+  const texts = all.filter((file) => !toolState(file.name));
+  const listed = [...named, ...(state.length ? [`Not shown (tool state: under a folder whose name starts with ".", left out before any file of the run's own is cut), by path and size in bytes: ${namesOf(state)}`] : [])];
+  const own = [...texts.map((file) => block(file, file.text)), ...listed].join("\n");
+  if (own.length <= room) return { text: own, cut: 0, out: 0, state: state.length };
   const LONG = saidCut("each long file keeps its head and tail, its middle cut where marked");
-  const size = (keep: number) => LONG.length + 1 + texts.reduce((sum, file) => sum + block(file, "").length + (file.text.length <= keep ? file.text.length : keep + 40) + 1, 0) + named.reduce((sum, line) => sum + line.length, 0);
+  const size = (keep: number) => LONG.length + 1 + texts.reduce((sum, file) => sum + block(file, "").length + (file.text.length <= keep ? file.text.length : keep + 40) + 1, 0) + listed.reduce((sum, line) => sum + line.length + 1, 0);
   if (texts.length && size(0) <= room) {
-    let [low, top] = [0, Math.max(...texts.map((file) => file.text.length))];
-    while (low < top) {
-      const mid = Math.ceil((low + top) / 2);
-      if (size(mid) <= room) low = mid;
-      else top = mid - 1;
-    }
-    return [LONG, ...texts.map((file) => block(file, middle(file.text, low))), ...named].join("\n");
+    const keep = longestKeep(size, Math.max(...texts.map((file) => file.text.length)), room);
+    return { text: [LONG, ...texts.map((file) => block(file, middle(file.text, keep))), ...listed].join("\n"), cut: texts.filter((file) => file.text.length > keep).length, out: 0, state: state.length };
   }
   const list = [saidCut("every file's text is left out"), `By path and size in bytes: ${namesOf(files)}`].join("\n");
-  return list.length <= room ? list : room < 4 ? "" : `${list.slice(0, room - 4)} ...`;
+  return { text: list.length <= room ? list : room < 4 ? "" : `${list.slice(0, room - 4)} ...`, cut: 0, out: all.length, state: 0 };
 }
 
 /** Files by their cut names and sizes, "a.mp4 (9000000), b.txt (5)", and those with no name counted after them: a file is
@@ -877,7 +1162,8 @@ export function verdictOf(answer: string): { pass: boolean; reason: string } | u
 export type Fake = { name: string; url: string; calls: ToolCall[]; close: () => Promise<void> };
 
 /** A fake MCP server for `fixture` on loopback, Streamable HTTP through the official SDK, one stateless server per
- *  request; every tool call is recorded (its gate name and arguments) and answered from the fixture. */
+ *  request; every tool call is recorded (its gate name and arguments) and answered from the fixture as it is written, so
+ *  the agent and a script it runs read the answer a real server of that shape gives (a JSON text parses as JSON). */
 export async function startFake(name: string, fixture: McpFixture): Promise<Fake> {
   const { createMcpHandler, fromJsonSchema, McpServer } = await import("@modelcontextprotocol/server").catch((error: unknown) => {
     throw new Error(`a case with an mcp fixture needs @modelcontextprotocol/server installed beside agentrun-serve: ${(error as Error).message}`);
@@ -976,67 +1262,147 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** How long the run read that asks whether a runner holds a queued run may take. */
 export const CLAIM_READ_TIMEOUT_MS = 10_000;
-/** Whether a runner holds the run now (the run read's `claim`); undefined when the read fails, takes over
- *  CLAIM_READ_TIMEOUT_MS or is stopped by `signal` (the eval's stop): not known, so never a reason to cancel the run. */
-async function heldNow(api: Api, runId: string, signal?: AbortSignal): Promise<boolean | undefined> {
-  const timeout = AbortSignal.timeout(CLAIM_READ_TIMEOUT_MS);
-  const read = await api("GET", `/runs/${runId}`, undefined, {}, { signal: signal ? AbortSignal.any([signal, timeout]) : timeout }).catch(() => undefined);
-  return read?.status === 200 && isObject(read.body) ? isObject(read.body.claim) : undefined;
+/** The least time between two of those reads of one run. */
+export const CLAIM_READ_EVERY_MS = 5_000;
+/** How long a timeline page read asks the server to wait for a new row (its wait_ms). */
+const PAGE_WAIT_MS = 5_000;
+/** How long that read may take: its wait, and 10 s for the answer to arrive. */
+export const PAGE_READ_TIMEOUT_MS = PAGE_WAIT_MS + 10_000;
+
+/** The bound of a read in waitRun made at `now`: `capMs`, or the time left to `deadline` when that is less (`ms`, whole
+ *  milliseconds and never below 0, as AbortSignal.timeout takes them), and whether the time left is what bounds it
+ *  (`atDeadline`). */
+export function readBound(deadline: number, capMs: number, now: number): { ms: number; atDeadline: boolean } {
+  const left = deadline - now;
+  return left < capMs ? { ms: Math.max(0, Math.ceil(left)), atDeadline: true } : { ms: capMs, atDeadline: false };
+}
+
+/** A read in waitRun, bounded as readBound says and by the eval's stop (`stop`): the `signal` its request takes, whether
+ *  to `send` it at all (not with no time left), and `byDeadline()`, true once the deadline ended it. The wait takes that
+ *  as its end, with no second read of the clock: the timer runs on a monotonic clock in whole milliseconds, and
+ *  Date.now() can still read a millisecond short of the deadline when it fires. */
+function bounded(deadline: number, capMs: number, stop?: AbortSignal): { signal: AbortSignal; send: boolean; byDeadline: () => boolean } {
+  const { ms, atDeadline } = readBound(deadline, capMs, Date.now());
+  const timeout = AbortSignal.timeout(ms);
+  return { signal: stop ? AbortSignal.any([stop, timeout]) : timeout, send: ms > 0, byDeadline: () => atDeadline && (ms === 0 || timeout.aborted) };
+}
+
+/** Whether a runner holds the run now (the run read's `claim`): "deadline" when the read ran to the run's `deadline`, or
+ *  there was no time left to send it; undefined when it fails, takes over CLAIM_READ_TIMEOUT_MS or is stopped by
+ *  `signal` (the eval's stop): not known, so never a reason to cancel the run as unheld. */
+async function heldNow(api: Api, runId: string, deadline: number, signal?: AbortSignal): Promise<boolean | "deadline" | undefined> {
+  const read = bounded(deadline, CLAIM_READ_TIMEOUT_MS, signal);
+  const answered = read.send ? await api("GET", `/runs/${runId}`, undefined, {}, { signal: read.signal }).catch(() => undefined) : undefined;
+  if (read.byDeadline()) return "deadline";
+  return answered?.status === 200 && isObject(answered.body) ? isObject(answered.body.claim) : undefined;
 }
 
 /** A run waited for: its rows until it ends (completed, failed, cancelled) or waits on a person (input_required), or
- *  `deadline` passes (then it is cancelled). A stop of the eval (`signal`) cancels it too, and throws. */
-async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal, queueTimeoutMs = QUEUE_TIMEOUT_MS): Promise<{ status: string; rows: Json[]; waiting?: string; why?: string }> {
+ *  `deadline` passes (then it is cancelled). A stop of the eval (`signal`) cancels it too, and throws. Each of its reads
+ *  ends at the deadline and at the stop (bounded), so a server that stalls one never holds the wait past either.
+ *  Exported for its tests. */
+export async function waitRun(api: Api, runId: string, deadline: number, signal?: AbortSignal, queueTimeoutMs = QUEUE_TIMEOUT_MS): Promise<{ status: string; rows: Json[]; waiting?: string; why?: string }> {
   const view = new Map<string, Json>();
   let after = 0;
   const started = Date.now();
   // A run nobody takes stays queued: given up on once it has gone queueTimeoutMs with no runner holding it, by name, never
   // left to the whole deadline. A run's view reads queued until its first rows show, held or not (a slow start on a busy
-  // machine), so a queued page past the bound asks the run read whether a runner holds it now: one does, and the bound
-  // starts again from now, so a run a runner keeps holding is waited for to its own deadline. A read that doesn't answer
-  // (failed, stalled past its bound, or stopped) says neither: it is asked again at the next page, and the stop and the
-  // deadline still end the wait.
-  let queuedUntil = started + queueTimeoutMs;
+  // machine), so a queued page past the bound asks the run read whether a runner holds it now. Once one has, every queued
+  // page asks (at most one read in CLAIM_READ_EVERY_MS): a claim can lapse for a moment on a stalled machine (not renewed
+  // in time, then claimed again), so one read that finds none never ends the wait. The run is cancelled only when reads
+  // found no runner holding it from the first such read to one queueTimeoutMs later, none between them finding one. A read
+  // that doesn't answer (failed, stalled past its bound, or stopped) says neither.
+  let unheldSince: number | undefined = started;
+  let everHeld = false;
+  let askedAt = -Infinity;
+  let rows: Json[] = [];
+  let state: unknown;
   for (;;) {
     if (signal?.aborted) {
       await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
       signal.throwIfAborted();
     }
     // calls=whole: each call's arguments and its output, whole to CALL_RESULT_CHARS (tool_input, tool_result_text), which its graders read.
-    // CALLS_PAGE_ROWS rows a page, the most a calls=whole page holds (an older server's default is 500).
-    const page = expectOk(`reading run ${runId}'s timeline`, await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=5000&calls=whole&limit=${CALLS_PAGE_ROWS}`));
-    if (page.reset) view.clear();
-    for (const id of (page.drop as string[] | undefined) ?? []) view.delete(id);
-    for (const row of (page.rows as Json[] | undefined) ?? []) view.set(String(row.id), row);
-    after = Number(page.next_after ?? after);
-    const rows = [...view.values()].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0));
-    const status = String(page.status);
-    if (ENDED.includes(status) && page.final && !page.has_more) return { status, rows };
-    if (status === "input_required" && !page.has_more) {
-      const waiting = rows.findLast((row) => row.kind === "waiting");
-      return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
-    }
-    if (status === "queued" && Date.now() > queuedUntil) {
-      const held = await heldNow(api, runId, signal);
-      if (held === true) queuedUntil = Date.now() + queueTimeoutMs;
-      else if (held === false) {
-        await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
-        return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
+    // CALLS_PAGE_ROWS rows a page, the most a calls=whole page holds (an older server's default is 500). A page its bound
+    // cut (stalled past PAGE_READ_TIMEOUT_MS, run to the deadline, or stopped) is no page: it is asked again, unless the
+    // stop or the deadline below ends the wait.
+    const read = bounded(deadline, PAGE_READ_TIMEOUT_MS, signal);
+    const answered = read.send
+      ? await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=${PAGE_WAIT_MS}&calls=whole&limit=${CALLS_PAGE_ROWS}`, undefined, {}, { signal: read.signal }).catch((error: unknown) => {
+          if (read.signal.aborted) return undefined;
+          throw error;
+        })
+      : undefined;
+    let timedOut = read.byDeadline();
+    const page = answered === undefined ? undefined : expectOk(`reading run ${runId}'s timeline`, answered);
+    if (page) {
+      if (page.reset) view.clear();
+      for (const id of (page.drop as string[] | undefined) ?? []) view.delete(id);
+      for (const row of (page.rows as Json[] | undefined) ?? []) view.set(String(row.id), row);
+      after = Number(page.next_after ?? after);
+      rows = [...view.values()].sort((a, b) => Number(a.seq ?? 0) - Number(b.seq ?? 0));
+      state = page.state;
+      const status = String(page.status);
+      if (ENDED.includes(status) && page.final && !page.has_more) return { status, rows };
+      if (status === "input_required" && !page.has_more) {
+        const waiting = rows.findLast((row) => row.kind === "waiting");
+        return { status, rows, waiting: typeof waiting?.summary === "string" ? waiting.summary : "it waits on a person" };
+      }
+      // A page that isn't queued shows a runner took the run: a later queued page starts no lapse from before it.
+      if (status !== "queued") {
+        everHeld = true;
+        unheldSince = undefined;
+      }
+      if (status === "queued" && (everHeld || Date.now() - started > queueTimeoutMs) && Date.now() - askedAt >= CLAIM_READ_EVERY_MS) {
+        askedAt = Date.now();
+        const held = await heldNow(api, runId, deadline, signal);
+        if (held === "deadline") timedOut = true;
+        else if (held === true) {
+          everHeld = true;
+          unheldSince = undefined;
+        } else if (held === false) {
+          unheldSince ??= askedAt;
+          if (Date.now() - unheldSince >= queueTimeoutMs) {
+            await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+            return { status: "timed_out", rows, why: `the run stayed queued for ${Math.round(queueTimeoutMs / 1000)} s with no runner holding it, and it was cancelled` };
+          }
+        }
       }
     }
-    if (Date.now() > deadline) {
-      await api("POST", `/runs/${runId}/cancel`, {});
-      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(page.state)} when the wait gave up) and was cancelled` };
+    if (signal?.aborted) continue;
+    // A read the deadline ended, or the clock at the deadline, not only past it. A cancel that fails is sent again once the
+    // wait's answer is settled (settle cancels a run not ended): the wait still ends timed out.
+    if (timedOut || Date.now() >= deadline) {
+      await api("POST", `/runs/${runId}/cancel`, {}).catch(() => undefined);
+      return { status: "timed_out", rows, why: `the run took longer than ${Math.round((deadline - started) / 1000)} s (state ${String(state ?? "unknown")} when the wait gave up) and was cancelled` };
     }
-    if (page.has_more !== true && page.unchanged === true) await sleep(250);
+    if (page?.has_more !== true && page?.unchanged === true) await sleep(250);
   }
+}
+
+/** The calls on the faked MCP servers `faked` that ran, as the run's timeline shows them (`calls`, from callsOf: each
+ *  argument through the run's redaction): each call on a faked server's tool the run did not refuse before it ran and
+ *  whose result row the timeline holds. A call refused (a deny, a cap, an approval never given) never reached the fake,
+ *  and one with no result (cut off) has no outcome to show. One that failed on its way to the fake shows, with its
+ *  error as its result, never as a success; a tool_used grader counts only what the fake logged (fakeLog). What an llm
+ *  grader's <mcp-calls> and the report's `mcp_calls` show, never the fake's own log. */
+export function mcpCallsOf(calls: readonly ToolCall[], faked: readonly string[]): ToolCall[] {
+  return calls.filter((call) => !call.refused && call.status != null && faked.includes(mcpNameOf(call.tool)?.server ?? ""));
+}
+
+/** A run's calls for its graders and its report, from its timeline's (callsOf) and the fakes it ran against: its calls,
+ *  its fake MCP calls (mcpCallsOf) and the fakes' own log whole. The template eval's runs and learn-bench's steps both
+ *  read them here. */
+export function callRecordOf(calls: readonly ToolCall[], faked: readonly string[], fakes: readonly Pick<Fake, "calls">[]): Pick<RunRecord, "calls" | "mcpCalls" | "fakeLog"> {
+  return { calls: [...calls], mcpCalls: mcpCallsOf(calls, faked), fakeLog: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))) };
 }
 
 /** A run's tool calls, each named as a grader names it: the gate's own rule (RunGate.enter), its settings key, but a
  *  shell tool held to bash's setting (bash_background, bash_output, ...) keeps its own name, so its grader sees it. A
  *  call on a saved server `toolkits` names ({<saved server>: <the package's toolkit>}, a need an owner's server filled
  *  under another name) is named on the package's toolkit, as the package's graders name it. Each with its arguments and
- *  its output as the rows of a calls=whole read carry them (tool_input, tool_result_text), else its previews. */
+ *  its output as the rows of a calls=whole read carry them (tool_input, tool_result_text), else its previews, and
+ *  `refused` when its result row says the run refused it before it ran (a deny, a pin, an approval never given). */
 export function callsOf(rows: readonly Json[], harness: string, toolkits: Readonly<Record<string, string>> = {}): ToolCall[] {
   const results = new Map(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id).map((row) => [String(row.tool_use_id), row]));
   // The rows are a server's, read over its API: the names are the built-in harness's, the only facts known here.
@@ -1046,7 +1412,7 @@ export function callsOf(rows: readonly Json[], harness: string, toolkits: Readon
     const result = results.get(String(row.tool_use_id));
     const key = settingsKeyOf(harness, name, names);
     const output = typeof result?.tool_result_text === "string" ? result.tool_result_text : ((result?.tool_result_preview as string | undefined) ?? null);
-    return { tool: shellToolOf(name) ?? (key === undefined ? undefined : onServerName(key, toolkits)) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, ...(isObject(row.tool_input) ? { arguments: row.tool_input } : {}), status: (result?.tool_status as string | undefined) ?? null, result: output };
+    return { tool: shellToolOf(name) ?? (key === undefined ? undefined : onServerName(key, toolkits)) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, ...(isObject(row.tool_input) ? { arguments: row.tool_input } : {}), status: (result?.tool_status as string | undefined) ?? null, result: output, ...(result?.refused === true ? { refused: true as const } : {}) };
   });
 }
 
@@ -1080,7 +1446,7 @@ export const FILE_READS_TIMEOUT_MS = 30_000;
 
 /** A run's final files for its llm graders: each text file's whole text, read smallest first while the texts read stay
  *  within GRADER_PROMPT_MAX UTF-8 bytes in all (one grader input holds that many characters, and a character is at least
- *  a byte), every other file by its size alone. Each is read under the run's own cut, on the server that holds its
+ *  a byte), the run's own files before any of tool state (toolState), every other file by its size alone. Each is read under the run's own cut, on the server that holds its
  *  secrets (`?cut=run`, run-reads-over-store.ts cutRunFile): every value its timeline's calls are cut of, and every secret
  *  shape, is "[redacted]" in the text a grader sees. An answer without the cut's mark (`x-agentrun-cut: run`: a server
  *  that doesn't know the cut and would serve the raw bytes) leaves the text out. A read that fails, is refused (403, 413,
@@ -1090,7 +1456,7 @@ export async function finalFilesOf(api: Api, runId: string, listed: readonly Lis
   const texts = new Map<string, string>();
   let left = GRADER_PROMPT_MAX;
   const until = Date.now() + Math.max(FILE_READS_TIMEOUT_MS, readTimeoutMs);
-  for (const file of [...listed].filter((one) => !one.unreadable && (one.type === null || TEXT_TYPE.test(one.type))).sort((a, b) => a.bytes - b.bytes)) {
+  for (const file of [...listed].filter((one) => !one.unreadable && (one.type === null || TEXT_TYPE.test(one.type))).sort((a, b) => Number(toolState(a.path)) - Number(toolState(b.path)) || a.bytes - b.bytes)) {
     if (file.bytes > left) continue;
     signal?.throwIfAborted();
     const remaining = until - Date.now();
@@ -1108,6 +1474,32 @@ export async function finalFilesOf(api: Api, runId: string, listed: readonly Lis
   }
   // Each by its cut name alone: its path is for the reads above, never a grader.
   return listed.map((file) => ({ ...(file.name !== undefined ? { name: file.name } : {}), bytes: file.bytes, ...(texts.has(file.path) ? { text: texts.get(file.path)! } : {}) }));
+}
+
+/** The most bytes of an args_file a tool_used grader reads: the most a cut read answers (run-files.ts). */
+export const ARGS_FILE_MAX = RUN_FILE_CUT_MAX;
+
+/** Each file a tool_used grader's args_file names, read whole under the run's cut (as finalFilesOf reads a file: an
+ *  answer without the cut's mark is refused), by its path: its text, or why there is none (absent, refused, past
+ *  ARGS_FILE_MAX bytes, a read that failed or took past `readTimeoutMs`). */
+export async function argsFilesOf(api: Api, runId: string, paths: readonly string[], signal?: AbortSignal, readTimeoutMs = FILE_READ_TIMEOUT_MS): Promise<Record<string, { text: string } | { why: string }>> {
+  const out: Record<string, { text: string } | { why: string }> = {};
+  for (const path of new Set(paths)) {
+    signal?.throwIfAborted();
+    const bound = AbortSignal.timeout(readTimeoutMs);
+    const read = await api("GET", `${filePath(runId, path)}?cut=run`, undefined, {}, { text: true, signal: signal ? AbortSignal.any([signal, bound]) : bound }).catch((error: unknown) => {
+      if (signal?.aborted) throw error;
+      return { error: error instanceof Error ? error.message : String(error) };
+    });
+    if ("error" in read) out[path] = { why: `the read failed (${read.error})` };
+    else if (read.status === 404) out[path] = { why: "its work folder has no such file" };
+    else if (read.status === 413) out[path] = { why: `it is past ${ARGS_FILE_MAX} bytes` };
+    else if (read.status !== 200 || typeof read.body !== "string") out[path] = { why: `the server answered ${read.status}` };
+    else if (read.headers?.get("x-agentrun-cut") !== "run") out[path] = { why: "the server did not read it under the run's cut" };
+    else if (Buffer.byteLength(read.body) > ARGS_FILE_MAX) out[path] = { why: `it is past ${ARGS_FILE_MAX} bytes` };
+    else out[path] = { text: read.body };
+  }
+  return out;
 }
 
 /** Each path a file_exists grader names that the run's work folder holds, read one by one (GET /runs/{id}/files/{path}):
@@ -1223,6 +1615,10 @@ export function v2Base(url: string): string {
 export async function evalTemplate(options: EvalOptions): Promise<Report> {
   const log = options.log ?? (() => undefined);
   if (options.data !== undefined && options.server) throw new Error(ON_DATA_WITH_SERVER);
+  // A NaN bound would never end a wait (no clock reads past it); a fraction of a millisecond is rounded up (readBound).
+  for (const [name, ms] of [["runTimeoutMs", options.runTimeoutMs], ["queueTimeoutMs", options.queueTimeoutMs]] as const) {
+    if (ms !== undefined && !(Number.isFinite(ms) && ms > 0)) throw new RangeError(`${name} is a time in milliseconds over 0, not ${ms}`);
+  }
   const { pkg, cases } = readCases(options.dir, options.cases);
   if (options.graderModel !== undefined && !MODEL_REF.test(options.graderModel)) throw new CaseError(options.dir, [`--grader-model is "provider/model-id", not ${options.graderModel}`]);
   // A case's fakes are bound by the eval's own runner, in this process: a named server's runs would search the real web,
@@ -1608,7 +2004,7 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   }
   stopped();
   // The case's fakes, for this run's agent alone, before its run can be claimed.
-  ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}), ...(mail ? { email: { imap: mail.faux.imap, smtp: mail.faux.smtp, kind: mail.layout } } : {}) });
+  ctx.fakes.set(agentId, { ...(one.web !== undefined ? { web: one.web } : {}), ...(one.now !== undefined ? { now: new Date(instantOf(one.now)!) } : {}), ...(one.monid !== undefined ? { monid: one.monid } : {}), ...(mail ? { email: { imap: mail.faux.imap, smtp: mail.faux.smtp, kind: mail.layout } } : {}), ...(one.files ? { files: one.files } : {}) });
   let runId: string;
   let fired: Fired | undefined;
   if (via !== undefined && kept) {
@@ -1684,10 +2080,10 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const result = isObject(view.result) ? view.result : {};
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
   const listed = await filesOf(api, runId);
+  const calls = callsOf(ended.rows, harness, Object.fromEntries(Object.entries(used).map(([toolkit, server]) => [server, toolkit])));
   const record: RunRecord = {
     answer: typeof result.final_answer === "string" ? result.final_answer : "",
-    calls: callsOf(ended.rows, harness, Object.fromEntries(Object.entries(used).map(([toolkit, server]) => [server, toolkit]))),
-    mcpCalls: fakes.flatMap((fake) => fake.calls.map((call) => ({ ...call }))),
+    ...callRecordOf(calls, Object.keys(one.mcp), fakes),
     files: await (async () => {
       const paths = listed.map((file) => file.path);
       const named = one.graders.flatMap((grader) => (grader.type === "file_exists" ? [grader.path] : []));
@@ -1714,6 +2110,9 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   const output = ended.status === "completed" ? outputVerdict(ctx.pkg, view.result) : undefined;
   // The files it left, read whole for its llm graders: only a run they grade, so a case of other graders reads none.
   if (graded && one.graders.some((grader) => grader.type === "llm")) record.finalFiles = await finalFilesOf(api, runId, listed, options.signal, options.fileReadTimeoutMs);
+  // The lists a tool_used grader's calls are matched against, read whole.
+  const argsFiles = one.graders.flatMap((grader) => (grader.type === "tool_used" && grader.argsFile !== undefined ? [grader.argsFile] : []));
+  if (argsFiles.length) record.argsFiles = await argsFilesOf(api, runId, argsFiles, options.signal, options.fileReadTimeoutMs);
   const graders: GraderResult[] = output ? [output] : [];
   for (const grader of one.graders) {
     stopped();
