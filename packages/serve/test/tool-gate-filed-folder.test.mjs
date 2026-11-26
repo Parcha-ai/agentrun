@@ -235,3 +235,18 @@ test("with no folder filed, or on a computer that does not mount the run's folde
   // A script's shell is not a file op: on the mounted computer with a folder filed, its command runs as bash's setting says.
   assert.equal(await verdictOf(mountedGate(true), "computer_op", { op: "shell.run", args: { command: "cat /proc/self/cwd/stripe/pages/x" } }), "allow");
 });
+
+// A screenshot's save_as is held as the kernel saves it (its savePathOf: posix.normalize, so a `~` or `file:` segment a
+// `..` follows is gone), not only as the agent's file tools read a path: such a spelling saves into the filed folder, so
+// it is refused, held as write, in the words a save_as there always got. A shot outside the folder is saved as before.
+test("a screenshot's save_as is held as the kernel saves it: a ~ or file: prefix that normalizes into the filed folder is refused", async () => {
+  const gate = gateOn("pi");
+  for (const given of ["~x/../stripe/pages/shot.png", "file:x/../stripe/pages/shot.png", "~/../Stripe/Pages/shot.png"]) {
+    const shot = await verdictOf(gate, "computer_screenshot", { save_as: given });
+    assert.ok(typeof shot === "string" && shot.startsWith(refusal("write", given)), `${given}: ${shot}`);
+    assert.ok(shot.endsWith("a screenshot without save_as is not held to it."), shot);
+  }
+  for (const given of ["shot.png", "shots/home.png", "~x/stripe/pages/shot.png"]) {
+    assert.equal(await verdictOf(gate, "computer_screenshot", { save_as: given }), await verdictOf(gate, "computer_screenshot", {}), `${given} is saved outside the folder, as a shot with no save_as runs`);
+  }
+});
