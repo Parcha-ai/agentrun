@@ -5364,8 +5364,10 @@ names it and `<GPU_TYPE>` the provider's own GPU name, both in capitals with eve
 | `AGENTRUN_COMPUTE_USD_PER_DISK_GB_MONTH_<PROVIDER>` | one GB of disk for a month of 730 hours |
 
 A price sheet that quotes by the hour divides by 3,600 (a vCPU at $0.0504 an hour is `0.000014`). What a computer holds
-is its provider's own figure where the provider's answer gives one (Daytona: vCPUs, memory, disk and GPUs; E2B and Fly:
-vCPUs and memory), else what its create asked for. Nothing is built in: a provider that bills nothing (`docker`) is $0,
+is its provider's own figure where the provider's answer gives one (Daytona: vCPUs, memory, disk and GPUs; Agent37:
+vCPUs, memory and disk; E2B, Fly and Render: vCPUs and memory), else what its create asked for. Modal reads no size back
+and bills a sandbox by its use up to the limits its create set, so a Modal computer holds those limits (2 vCPUs and
+4096 MB unless the spec asks other sizes), the most its time can bill. Nothing is built in: a provider that bills nothing (`docker`) is $0,
 a resource set to `0` is $0 (its time booked at $0, its line `estimate` with `usd` 0), and with no setting a resource
 is unpriced.
 
