@@ -118,7 +118,7 @@ async function runnerClaim(t, launchOver, envOver, reads) {
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const deps = { env: { PATH: process.env.PATH, ...envOver }, data, journal: (c) => store.journal(c), store: counted, sealKey: Buffer.alloc(32, 7), routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }), installSettled: async () => "installed" };
-  return cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim).then((spec) => ((built = spec), { spec }), (error) => ({ error }));
+  return cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim).then((spec) => ((built = spec), { spec }), (error) => ({ error }));
 }
 
 test("a claude-agent run in the runner that sends no model key (held, on a --faux runner, faux-pinned) never reads the Claude login's setting at its claim, with the login turned on; the same run off those reads it", async (t) => {
