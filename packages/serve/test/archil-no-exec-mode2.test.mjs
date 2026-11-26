@@ -16,16 +16,20 @@ const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "DOCKER_HOST", "DOCKER_CON
 const NO_EXEC = /gcp-us-central1 has no serverless exec/;
 const SANDBOX = /sandbox computer/;
 
-/** A server in Mode 2 on Archil region `region` (its environment's), on a fake `docker` that answers or not. */
-async function server(t, { region, docker }) {
+/** A server in Mode 2 on Archil region `region` (its environment's), on a fake `docker` that answers or not. `data` and
+ *  `seal` start it again on an earlier server's data, under that server's seal key (a restart's); `env` adds to its
+ *  environment. */
+async function started(t, { region, docker, data, seal = randomBytes(32).toString("base64"), env = {} }) {
   const bin = join(await scratch(t), "bin");
   await mkdir(bin);
   const version = docker ? "echo 27.0.0-fake; exit 0" : "echo 'Cannot connect to the Docker daemon' >&2; exit 1";
   await writeFile(join(bin, "docker"), `#!/bin/sh\nif [ "$1" = version ]; then ${version}; fi\nexit 0\n`, { mode: 0o755 });
   await chmod(join(bin, "docker"), 0o755);
-  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), PATH: [bin, process.env.PATH].join(delimiter), AGENTRUN_ARCHIL_REGION: region, ARCHIL_API_KEY: "fake-test-key" }, UNSET);
-  return (await serve(t, { faux: undefined, runner: false, accounts: true, openSetup: true })).api;
+  withEnv(t, { AGENTRUN_SEAL_KEY: seal, PATH: [bin, process.env.PATH].join(delimiter), AGENTRUN_ARCHIL_REGION: region, ARCHIL_API_KEY: "fake-test-key", ...env }, UNSET);
+  return { seal, ...(await serve(t, { faux: undefined, runner: false, accounts: true, openSetup: true, ...(data ? { data } : {}) })) };
 }
+
+const server = async (t, options) => (await started(t, options)).api;
 
 /** A new agent as `agentrun deploy` and the agent form send it: tools, no place, no computer. */
 const fresh = (id, tools) => ({ definition: { id, version: 1, name: id, instructions: "Answer.", skills: [], ...(tools ? { tools } : {}) } });
@@ -38,6 +42,7 @@ for (const docker of [true, false]) {
   test(`Mode 2 on gcp-us-central1, ${label}: a new agent with bash and no computer is refused, naming a sandbox computer and the region, and nothing is saved`, async (t) => {
     const api = await server(t, { region: "gcp-us-central1", docker });
     const made = await api("POST", "/agents", fresh("gcp-bash", ["read", "write", "bash"]));
+    t.diagnostic(`save refusal ${made.status} ${JSON.stringify(made.body)}`);
     assert.equal(made.status, 422, JSON.stringify(made.body));
     const fields = made.body.error.fields;
     assert.deepEqual(fields.map((one) => one.field), ["definition.computer"], JSON.stringify(fields));
@@ -96,5 +101,25 @@ for (const docker of [true, false]) {
     assert.equal(made.status, 201, JSON.stringify(made.body));
     assert.equal("place" in made.body.definition, false, "no place stamped: the runner");
     assert.equal("computer" in made.body.definition, false);
+  });
+
+  test(`Mode 2, ${label}: an agent saved with bash and no computer on aws-us-east-1, its server started again on gcp-us-central1, is refused its run (409), naming the region and a sandbox computer, and no run starts`, async (t) => {
+    // A model key (a fake: no run starts), so the computer is the run's one blocker.
+    const env = { OPENROUTER_API_KEY: "fake-test-key" };
+    const first = await started(t, { region: "aws-us-east-1", docker, env });
+    const saved = await first.api("POST", "/agents", fresh("moved-bash", ["read", "write", "bash"]));
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    await first.stop();
+    const { api } = await started(t, { region: "gcp-us-central1", docker, env, data: first.data, seal: first.seal });
+    assert.equal((await api("GET", "/agents/moved-bash")).status, 200, "still saved");
+    const run = await api("POST", "/agents/moved-bash/runs", { input: { content: "hi" } });
+    t.diagnostic(`run refusal ${run.status} ${JSON.stringify(run.body)}`);
+    assert.equal(run.status, 409, JSON.stringify(run.body));
+    assert.equal(run.body.error.code, "agent_not_runnable", JSON.stringify(run.body));
+    assert.match(run.body.error.message, NO_EXEC);
+    assert.match(run.body.error.message, SANDBOX);
+    assert.deepEqual(run.body.error.fields.map((one) => one.field), ["definition.computer"], JSON.stringify(run.body.error.fields));
+    assert.match(run.body.error.fields[0].message, NO_EXEC);
+    assert.deepEqual((await api("GET", "/runs")).body.runs, [], "no run started");
   });
 }
