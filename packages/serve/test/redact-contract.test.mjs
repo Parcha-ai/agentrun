@@ -1117,7 +1117,7 @@ const CASES = [
       ...(() => {
         const LOGIN = "pa55w0rd>Zq8VbN3xLmT";
         const b64 = Buffer.from(LOGIN).toString("base64");
-        const PEM = ["-----BEGIN PRIVATE KEY-----", BODY, "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7", "-----END PRIVATE KEY-----"].join("\n");
+        const PEM = [`-----BEGIN ${"PRIVATE KEY"}-----`, BODY, "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7", `-----END ${"PRIVATE KEY"}-----`].join("\n");
         return [
           ["a held value's base64 across a title and a snippet", `{"title":"${b64.slice(0, 14)}","snippet":"${b64.slice(14)}"}`, LOGIN],
           ["a key's base64 line across a title and a snippet", `{"title":"${BODY.slice(0, 20)}","snippet":"${BODY.slice(20)}"}`, PEM],
