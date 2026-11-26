@@ -532,6 +532,93 @@ test('an ended call the model tries again with the same arguments: the retry tak
   assert.equal(await hurry(own.take('look_up', { q: 'y' }, signal, 60_000)), 'call_s');
 });
 
+test("a late MCP call of an ended call takes its own announcement before a live one that matches it less closely: one naming no tool, or reporting no input, or neither", async () => {
+  const signal = new AbortController().signal;
+  const hurry = (taking) => Promise.race([taking, new Promise((resolve) => setTimeout(() => resolve('waited'), 2_000).unref())]);
+  // On a recipe with no announces field: call_s ended (a cancel reported it failed while its MCP call was on its way),
+  // and a call of the agent's own (a think) is announced with no input. Before, the late MCP call took the think's id at
+  // once, its arguments' own announcement being ended; main took call_s, which it kept live.
+  const think = new CallIds(20);
+  calls.announceCall(think, { toolCallId: 'call_s', title: 'Lookup', kind: 'other', rawInput: { q: 'y' } }, undefined, TOOLS);
+  think.settle('call_s');
+  calls.announceCall(think, { toolCallId: 'native', title: 'Thinking', kind: 'think' }, undefined, TOOLS);
+  assert.equal(await hurry(think.take('look_up', { q: 'y' }, signal, 60_000)), 'call_s', 'not the think');
+  assert.equal(await hurry(think.take('look_up', { q: 'other' }, signal, 60_000)), 'native', 'which another call still takes');
+  // Its own arguments under no tool name, and its tool with no input: both match it less closely than call_s does.
+  const toolless = new CallIds(20);
+  toolless.add('call_s', 'look_up', { q: 'y' });
+  toolless.settle('call_s');
+  toolless.add('call_x', undefined, { q: 'y' });
+  assert.equal(await hurry(toolless.take('look_up', { q: 'y' }, signal, 60_000)), 'call_s', 'not the one naming no tool');
+  const inputless = new CallIds(20);
+  inputless.add('call_s', 'look_up', { q: 'y' });
+  inputless.settle('call_s');
+  inputless.add('call_t', 'look_up', undefined);
+  assert.equal(await hurry(inputless.take('look_up', { q: 'y' }, signal, 60_000)), 'call_s', 'not the one reporting no input');
+  // A live one under its very arguments still comes first (a retry, above).
+  const retry = new CallIds(20);
+  retry.add('call_s', 'look_up', { q: 'y' });
+  retry.settle('call_s');
+  retry.add('call_x', undefined, { q: 'y' });
+  retry.add('call_r', 'look_up', { q: 'y' });
+  assert.equal(await hurry(retry.take('look_up', { q: 'y' }, signal, 60_000)), 'call_r');
+});
+
+test("one naming no tool, or reporting no input, that comes while a late MCP call of an ended call holds is not handed it: the call takes its own, and that one stays for the next", async () => {
+  const signal = new AbortController().signal;
+  const hurry = (taking) => Promise.race([taking, new Promise((resolve) => setTimeout(() => resolve('waited'), 2_000).unref())]);
+  for (const [name, input, tool] of [['call_x', { q: 'y' }, undefined], ['call_t', undefined, 'look_up']]) {
+    const ids = new CallIds(200);
+    ids.add('call_s', 'look_up', { q: 'y' });
+    ids.settle('call_s');
+    const taking = ids.take('look_up', { q: 'y' }, signal, 60_000);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    ids.add(name, tool, input);
+    assert.equal(await hurry(taking), 'call_s', `not ${name}, come during the hold`);
+    assert.equal(await hurry(ids.take('look_up', { q: 'y' }, signal, 60_000)), name, `${name} is the next call's`);
+  }
+  // Its own announcement still reaches a waiting call at once, ahead of the hold: a retry whose MCP call came first.
+  const retry = new CallIds(10_000);
+  retry.add('call_s', 'look_up', { q: 'y' });
+  retry.settle('call_s');
+  const retried = retry.take('look_up', { q: 'y' }, signal, 60_000);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  retry.add('call_r', 'look_up', { q: 'y' });
+  assert.equal(await hurry(retried), 'call_r');
+  // With nothing ended, one naming no tool or reporting no input still reaches a waiting call at once.
+  for (const [name, input, tool] of [['call_x', { q: 'y' }, undefined], ['call_t', undefined, 'look_up']]) {
+    const ids = new CallIds(10_000);
+    const taking = ids.take('look_up', { q: 'y' }, signal, 60_000);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    ids.add(name, tool, input);
+    assert.equal(await hurry(taking), name);
+  }
+});
+
+test("a late MCP call of an ended call takes its own before a live one that matches it less closely with no hold at all, and once its wait is over; one kept for it only read without an extra is not its own", async () => {
+  const signal = new AbortController().signal;
+  const hurry = (taking) => Promise.race([taking, new Promise((resolve) => setTimeout(() => resolve('waited'), 2_000).unref())]);
+  // No grace: at once.
+  const none = new CallIds(0);
+  none.add('call_s', 'look_up', { q: 'y' });
+  none.settle('call_s');
+  none.add('call_x', undefined, { q: 'y' });
+  assert.equal(await hurry(none.take('look_up', { q: 'y' }, signal, 60_000)), 'call_s');
+  // A hold longer than the wait: the wait's end takes it.
+  const timer = new CallIds(60_000);
+  timer.add('call_s', 'look_up', { q: 'y' });
+  timer.settle('call_s');
+  timer.add('call_t', 'look_up', undefined);
+  assert.equal(await hurry(timer.take('look_up', { q: 'y' }, signal, 50)), 'call_s');
+  // Kept under these arguments only read without an extra (addAnnounced's also): a guess, not its own, so the live one
+  // of its tool with no input comes first, as it did before.
+  const also = new CallIds(20);
+  also.add('call_s', 'look_up', { q: 'y', toolSummary: 'Looking it up' }, { q: 'y' });
+  also.settle('call_s');
+  also.add('call_t', 'look_up', undefined);
+  assert.equal(await hurry(also.take('look_up', { q: 'y' }, signal, 60_000)), 'call_t');
+});
+
 test('a bare announcement whose call ended is dropped: a later MCP call never takes the id of an agent call that is over', async () => {
   const ids = new CallIds();
   calls.announceCall(ids, { toolCallId: 'done', title: 'Thinking', kind: 'think' }, undefined, TOOLS);

@@ -1102,8 +1102,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let feedbackNow: FeedbackData | undefined;
   /** A reopen of a run whose session is still new (a person stopped it before its first input was sent): resolved once the
    *  person's message is placed as that first input, or once the reopen's own message was answered unplaced (command):
-   *  then no message places it, and the claim goes on with nothing sent. The claim waits on it, never sending the input
-   *  they stopped, however late the runner hands the message over. */
+   *  then no message places it, and the claim ends the run on the end it had before, sending nothing. The claim waits on
+   *  it, never sending the input they stopped, however late the runner hands the message over. */
   let firstInputPlaced: Promise<void> | undefined;
   /** Resolved once a pass of this claim has sent what its session starts on (the run's input, a follow-up, a recovery),
    *  or found nothing to send: a message handed over while the session is still new waits for it, so it lands after the
@@ -1494,8 +1494,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // and a person's stop or cancel (the stop that cuts the workflow's call, its spend and custody), a raise or a hand-back
     // would never reach the run. `taken` here means its take rides on the commit that places it once the input is sent; a
     // claim that ends first (a stop, a park, the workflow's answer) leaves the row untaken, for the run's end or its next
-    // claim to settle, as any message the run's end finds untaken.
-    if (waitingFirst > 0 || (!reopen && session.state === "new") || servingFirst) {
+    // claim to settle, as any message the run's end finds untaken. Once the claim sends nothing more (turnsOver), nothing
+    // waits: the message is the run's next claim's.
+    if (!turnsOver && (waitingFirst > 0 || (!reopen && session.state === "new") || servingFirst)) {
       waitingFirst += 1;
       const placing = afterFirst.then(() => placeSteer(command));
       afterFirst = placing.then(
@@ -3012,7 +3013,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           // runner reads on a later poll is waited for (or the run's stop, park or loss).
           if (firstInputPlaced && !reopen.sent) {
             const lost = new Promise<void>((resolve) => (deps.signal.aborted ? resolve() : deps.signal.addEventListener("abort", () => resolve(), { once: true })));
-            await Promise.race([firstInputPlaced, stopping, parking, harness.closed.then(() => undefined, () => undefined), lost]);
+            const woke = await Promise.race([firstInputPlaced.then(() => true), stopping.then(() => false), parking.then(() => false), harness.closed.then(() => false, () => false), lost.then(() => false)]);
+            // Woken with nothing placed (the reopen's own message refused or left): the claim sends nothing into the
+            // session that never started, asks nothing of it, and ends the run on the end it had before (a stop's, or its
+            // learned workflow's answer). A message handed over from here on is the run's next claim's (`later`), never
+            // queued for a first input that is never sent.
+            if (woke && !reopen.sent) {
+              turnsOver = true;
+              reopen = undefined;
+              inputSent();
+              const { projectCheckpoint: _, ...before } = foundEntries.findLast((entry) => entry.kind === KINDS.end)!.data as unknown as EndData;
+              return await writeEnd(harness, root, gate, before, []);
+            }
           }
           const sent = reopen.sent;
           const fed = reopen.feedback;
