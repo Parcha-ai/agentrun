@@ -105,6 +105,14 @@ describe("runsFree", () => {
     expect(runsFree(template({ ...tagged, ...here({ kind: "sandbox", provider: "docker" }, "the docker sandbox"), tools: ["read", "bash", "web_fetch"] }), harnesses)).toBe(true);
     expect(runsFree(template({ ...tagged, ...here({ kind: "none" }, null) }), harnesses)).toBe(true);
   });
+  // "Use free" swaps the agent's model, and a workflow package takes none (apply refuses overrides.model): its nodes run on
+  // the server's models for their tiers, so its tag can't make it free.
+  it("never a workflow package, even tagged free: it has no model to swap", () => {
+    const flow = template({ tags: ["free"], harness: null, workflow: "router.workflow.json" });
+    expect(runsFree(flow, harnesses)).toBe(false);
+    expect(freeModelFor(flow, harnesses)).toBeNull();
+    expect(runsFree(template({ tags: ["free"], harness: null, workflow: null }), harnesses)).toBe(true);
+  });
   it("a free model only on a choice that needs no key", () => {
     const choice = (secrets: string[]) => ({ model: { tier: "fast" as const, choices: [{ id: "c", label: "C", model: LOCAL.id, harness: "pi", warning: null, note: null, secrets }] } });
     expect(runsFree(template(choice(["OPENROUTER_API_KEY"])), harnesses)).toBe(false);

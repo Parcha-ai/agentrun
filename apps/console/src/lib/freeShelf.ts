@@ -64,8 +64,10 @@ export function asksNothingPaid(t: TemplateView): boolean {
 
 /** Whether a template runs free here: it asks for nothing paid besides its model (asksNothingPaid), and its package marks
  *  it free (its `free` tag) or prefers or offers as a choice one of this server's free models, a choice that needs no
- *  key. */
+ *  key. Never a workflow package: "Use free" swaps the agent's model, and a workflow agent takes none (apply refuses
+ *  `overrides.model`), its nodes running on the server's models for their tiers. */
 export function runsFree(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): boolean {
+  if (t.workflow) return false;
   if (!asksNothingPaid(t)) return false;
   if (t.tags.includes("free")) return true;
   const free = new Set(freeModels(harnesses).map((m) => m.id));
@@ -81,8 +83,9 @@ export function applyHarness(t: TemplateView, harnesses: readonly HarnessInfo[] 
 
 /** The free model "Use free" applies a template on: the free default of the harness apply will make its agent on
  *  (applyHarness), so the agent runs what it is given. Null where that harness has none: another harness's free model
- *  would make an agent that can't run it. */
+ *  would make an agent that can't run it. Null for a workflow package too, which takes no model. */
 export function freeModelFor(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): string | null {
+  if (t.workflow) return null;
   return freeDefault(harnesses, applyHarness(t, harnesses));
 }
 
