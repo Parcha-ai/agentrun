@@ -11,7 +11,13 @@ tags: [kyb, due-diligence, sanctions]
 harness: [pi]
 model: { tier: balanced }
 effort: medium
-tools: [read, web_search, web_fetch, ask_person]
+# A computer with a shell first, else none. With a shell, web_save puts each sanctions list's file in the run's work
+# folder (the server downloads it; the computer reaches no list owner) and bash greps it there, read-only
+# (bash-read-only.ts): the agent reads the rows that match, never a whole list. With none, there is no bash and
+# SANCTIONS.md screens through the list owners' indexes and records instead.
+computer: [shell, none]
+tools: [read, web_search, web_fetch, web_save, bash, ask_person]
+tool_policy: { bash: read-only }
 parameters:
   risk_appetite: { type: string, required: false, default: medium, enum: [low, medium, high], description: "low, medium or high: how much risk you accept, which sets how each red flag is graded and which verdict it leads to. Use medium (the default) unless your policy says otherwise; low is for regulated onboarding, high for low-exposure vendors." }
   jurisdictions_of_interest: { type: string, required: false, pattern: "^$|^[A-Za-z]{2}(\\s*,\\s*[A-Za-z]{2})*$", description: "Optional. Countries that matter to you, as ISO 3166-1 alpha-2 codes separated by commas (e.g. US,GB,AE). Every tie the company has to one (incorporation, address, owner, officer, operations) is reported. Empty: none." }

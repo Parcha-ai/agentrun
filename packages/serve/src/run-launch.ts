@@ -131,11 +131,16 @@ export function sourceProjectOf(value: unknown): SourceProjectLaunch | undefined
   return value as unknown as SourceProjectLaunch;
 }
 
-/** What a replay run replays: the graded run, and the learned workflow at the digest it decides. */
+/** What a replay run replays: the graded run, and the learned workflow at the digest it decides. `paidBy`: a replay
+ *  that spends on run `paidBy`'s own model key (a keyed check, runner/promotion.ts), whose learning its cost is
+ *  (learn/ledger.ts record), never its revision's. `deadlineAt` (ms): a learning child's deadline, its start +
+ *  learning-work.ts LEARNING_CHILD_MS; the runner holding it cancels it there (runner.ts). */
 export interface Replay {
   readonly of: string;
   readonly workflow: string;
   readonly digest: string;
+  readonly paidBy?: string;
+  readonly deadlineAt?: number;
 }
 
 /** The disk a launch record names, and whose it is. */
@@ -149,8 +154,14 @@ const readDisk = (value: unknown): LaunchDisk | undefined =>
   isObject(value) && typeof value.disk_id === "string" && (value.kind === "launch" || value.kind === "agent") ? { diskId: value.disk_id, kind: value.kind } : undefined;
 
 /** The replay a launch body names, as read back, or undefined. */
-const readReplay = (value: unknown): Replay | undefined =>
-  isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string" ? { of: value.of, workflow: value.workflow, digest: value.digest } : undefined;
+const readReplay = (value: unknown): Replay | undefined => {
+  if (!(isObject(value) && typeof value.of === "string" && typeof value.workflow === "string" && typeof value.digest === "string")) return undefined;
+  const deadline = typeof value.deadline_at === "string" ? Date.parse(value.deadline_at) : Number.NaN;
+  return { of: value.of, workflow: value.workflow, digest: value.digest, ...(typeof value.paid_by === "string" ? { paidBy: value.paid_by } : {}), ...(Number.isFinite(deadline) ? { deadlineAt: deadline } : {}) };
+};
+
+/** A replay or an audit as a launch body keeps it. */
+const replayBody = (replay: Replay): Record<string, string> => ({ of: replay.of, workflow: replay.workflow, digest: replay.digest, ...(replay.paidBy ? { paid_by: replay.paidBy } : {}), ...(replay.deadlineAt !== undefined ? { deadline_at: new Date(replay.deadlineAt).toISOString() } : {}) });
 
 /** The trigger a launch body names, as read back: `{ id, firing_key }` and its firing's `attrs` (each a string) when it
  *  kept them, or null (triggerOf of the old serve.json). */
@@ -212,8 +223,8 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.sourceProject ? { source_project: launch.sourceProject } : {}),
     ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}), ...(launch.learning.seededAt !== undefined ? { seededAt: launch.learning.seededAt } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
-    ...(launch.replay ? { replay: { of: launch.replay.of, workflow: launch.replay.workflow, digest: launch.replay.digest } } : {}),
-    ...(launch.audit ? { audit: { of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest } } : {}),
+    ...(launch.replay ? { replay: replayBody(launch.replay) } : {}),
+    ...(launch.audit ? { audit: replayBody({ of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest, ...(launch.audit.deadlineAt !== undefined ? { deadlineAt: launch.audit.deadlineAt } : {}) }) } : {}),
     ...(launch.trigger ? { trigger: launch.trigger } : {}),
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
@@ -263,7 +274,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   const model = readModel(stored.model);
   const boxAllow = readBoxAllow(stored.box_allow);
   const archilDisk = readDisk(stored.archil_disk);
-  const refused = isObject(stored.hold) ? readRefusal(stored.hold.refused) : undefined;
+  const hold = readHold(stored.hold);
   return {
     input: stored.input,
     ...(isObject(stored.sdk) && sdkBindingOf(stored.sdk) && typeof stored.sdk.instructions === "string" ? {sdk: stored.sdk as unknown as NonNullable<RunLaunch["sdk"]>} : {}),
@@ -292,16 +303,29 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
     ...(archilDisk ? { archilDisk } : {}),
-    ...(isObject(stored.hold) ? { hold: { minutes: typeof stored.hold.minutes === "number" ? stored.hold.minutes : HOLD_MINUTES, ...(refused ? { refused } : {}) } } : {}),
+    ...(hold ? { hold } : {}),
   };
 }
+
+/** A launch's hold as it keeps it, else undefined (none kept). A minutes that isn't a number waits HOLD_MINUTES. A hold
+ *  kept that is not an object (a corrupt row, another version's) is a hold whose model was refused, in words that name
+ *  the field and never what it holds: read as none, the run would start and its claim open its model's keys. */
+function readHold(value: unknown): RunLaunch["hold"] {
+  if (value === undefined) return undefined;
+  if (!isObject(value)) return { minutes: HOLD_MINUTES, refused: unreadable("hold") };
+  const refused = readRefusal(value.refused);
+  return { minutes: typeof value.minutes === "number" ? value.minutes : HOLD_MINUTES, ...(refused ? { refused } : {}) };
+}
+
+/** The refusal of a held run whose launch's `field` can't be read. */
+const unreadable = (field: string): HeldRefusal => ({ message: `This run's model was kept from running at its create, and its launch's ${field} can't be read: it holds its computer only. Start a new run to run its agent.`, fields: [], details: {} });
 
 /** A held run's model refusal as its launch keeps it, else undefined (none kept). One kept that can't be read (a corrupt
  *  row, another version's) is a refusal still, in words that name the field and never what it holds: read as none, the
  *  run would start and its claim open the keys its model was refused for. */
 function readRefusal(value: unknown): HeldRefusal | undefined {
   if (value === undefined) return undefined;
-  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return { message: "This run's model was kept from running at its create, and its launch's hold.refused can't be read: it holds its computer only. Start a new run to run its agent.", fields: [], details: {} };
+  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return unreadable("hold.refused");
   return { message: value.message, fields: value.fields as InputIssue[], details: value.details };
 }
 

@@ -84,7 +84,7 @@ async function fakeGitHub(t) {
 
 /** The runner's answers for claim run-own (agent-own, rev-own) of `revision` and `launch`, over `store`; `login` the
  *  login its claim read (staysInRunner), `cut` the runner's redactor for the run. */
-function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } }, login, cut = (text) => text } = {}, lines = []) {
+function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } }, login, cut = heldRedactor((text) => text) } = {}, lines = []) {
   const deps = { store, sealKey: KEY, env, data, ...(githubApi ? { githubApi } : {}) };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision, claimed: {}, ...(login ? { login } : {}) };
   return host.heldFor(deps, reads, cut, (line) => void lines.push(line)).held;
@@ -127,6 +127,31 @@ test("a run's process mints a GitHub token for its own pull request's repository
   }
   // The same launch on a revision that checks out no pull request: nothing to mint for.
   assert.equal(await heldOf(store, { githubApi: github.api, launch }).githubAppAccess(), undefined);
+});
+
+test("a GitHub token minted for a run's process joins its runner's redactor, so nothing the runner writes of the run shows it", async (t) => {
+  const { keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  const cut = heldRedactor(keepText);
+  const launch = { input: { content: PULL }, inputOrigin: { kind: "trigger", source: "github" } };
+  const access = await heldOf(store, { githubApi: github.api, revision: { kind: "agentic", body: { checkout: "pull_request" } }, launch, cut }).githubAppAccess();
+  assert.equal(cut("the token is not-a-secret-ghs-token"), "the token is not-a-secret-ghs-token", "nothing minted yet, nothing held");
+  const minted = await access.mint({ repo: "acme/widgets", installation: 777 });
+  assert.equal(minted.ok, true, JSON.stringify(minted));
+  assert.ok(!cut(`the token is ${minted.token}`).includes(minted.token), "the minted token is cut from what the runner writes");
+});
+
+test("a run's process whose runner's cut cannot hold a key gets no GitHub token: the mint fails rather than hand out one nothing the runner writes would cut", async (t) => {
+  const { keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  const launch = { input: { content: PULL }, inputOrigin: { kind: "trigger", source: "github" } };
+  const access = await heldOf(store, { githubApi: github.api, revision: { kind: "agentic", body: { checkout: "pull_request" } }, launch, cut: keepText }).githubAppAccess();
+  const minted = await access.mint({ repo: "acme/widgets", installation: 777 }).catch((error) => ({ ok: false, error }));
+  assert.notEqual(minted.ok, true, `no token handed: ${JSON.stringify(minted)}`);
 });
 
 const judgeFlow = (name, provider) => ({
@@ -431,6 +456,48 @@ test("the settings a run's process reads are the server's shared configuration a
   assert.equal(await call("settings.get", ["tool-settings"]), "{}");
   assert.deepEqual((await call("settings.all", [])).map(({ key }) => key), ["tool-settings", "sdk-run:run-own", "archil.agent.agent-own"]);
   assert.ok(lines.some((line) => /asked the store for settings\.get, which a run's process may not/.test(line)), lines.join("\n"));
+});
+
+test("a capped run's process reads what its learning work took beside it (learning-end.ts childrenBesideOf) from its runner (held keyedBeside), which reads the claim's own learning_work row and the keyed replays that row names on the server's side; the process's store port reads none of them, its own row and replays refused unread as another run's are", async (t) => {
+  const work = { children: [{ run: "replay-own", kind: "replay", at: 1, keyed: true }, { run: null, kind: "shadow", at: 2, keyed: true, dropped: "no_budget" }] };
+  const settings = new Map([["learning_work:run-own", work], ["learning_work:run-other", { children: [{ run: "replay-other", kind: "replay", at: 1, keyed: true }] }]]);
+  const runs = new Map([
+    ["run-own", { id: "run-own", state: "running", costUsd: null }],
+    ["replay-own", { id: "replay-own", state: "ended", costUsd: 0.25 }],
+    ["replay-other", { id: "replay-other", state: "ended", costUsd: 9 }],
+  ]);
+  const asked = [];
+  const store = {
+    settings: { get: async (key) => (asked.push(`settings.get ${key}`), settings.get(key)) },
+    runs: {
+      get: async (id) => (asked.push(`runs.get ${id}`), runs.get(id)),
+      launch: async (id) => (asked.push(`runs.launch ${id}`), { body: { maxCostUsd: 1 } }),
+    },
+  };
+  // The runner's answer, bound to claim run-own: whatever the process asks, the claim's own run's learning work.
+  const held = heldOf(store);
+  assert.equal(await held.keyedBeside(), 0.25, "its keyed replay's cost, read by its runner");
+  assert.deepEqual(asked, ["settings.get learning_work:run-own", "runs.get replay-own"], "the claim's own row and the replay it names alone");
+  asked.length = 0;
+  const bound = { claim: { runId: "run-own", epoch: 1 }, agentId: "agent-own", revisionId: "rev-own" };
+  const lines = [];
+  const call = (method, args) => host.storeCall(store, method, args, bound, (line) => void lines.push(line));
+  // In the run's own process its cap gate's `beside` (learning-end.ts spentBesideOf) reads through its store port and
+  // its runner's held answers.
+  const ported = [];
+  const port = { settings: { get: (key) => (ported.push(`settings.get ${key}`), call("settings.get", [key])) }, runs: { get: (id) => (ported.push(`runs.get ${id}`), call("runs.get", [id])), launch: (id) => (ported.push(`runs.launch ${id}`), call("runs.launch", [id])) } };
+  const { setHeld } = await import("../dist/runner/held.js");
+  setHeld(held);
+  t.after(() => setHeld(undefined));
+  const { childrenBesideOf } = await import("../dist/runner/learning-end.js");
+  assert.equal(await childrenBesideOf(port, "run-own"), 0.25, "its keyed replay's cost, its runner's answer");
+  assert.deepEqual(ported.filter((one) => /learning_work|replay-/.test(one)), [], `the port read no learning_work row and no replay: ${JSON.stringify(ported)}`);
+  asked.length = 0;
+  for (const [method, arg] of [["settings.get", "learning_work:run-own"], ["settings.get", "learning_work:run-other"], ["runs.get", "replay-own"], ["runs.launch", "replay-own"], ["runs.get", "replay-other"], ["runs.launch", "replay-other"]]) {
+    await assert.rejects(call(method, [arg]), /of another run or agent/, `${method} ${arg}`);
+  }
+  assert.deepEqual(asked, [], "a refused read reached the store");
+  assert.ok(lines.some((line) => /asked the store for runs\.get, which a run's process may not/.test(line)), lines.join("\n"));
 });
 
 test("a run's process reads no channel post: a webhook post, its own run's or another's, is refused unread", async () => {
@@ -794,7 +861,7 @@ test("the install a run's process asks for is readable by every user and writabl
   const asked = [];
   const deps = { store, sealKey: KEY, env: {}, data, installForClaim: async (entry, at) => void asked.push([entry.id, at]) };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." }, harness: "claude-agent" }, revision: { kind: "agentic", body: {} }, claimed: {} };
-  const held = host.heldFor(deps, reads, (text) => text, () => {}).held;
+  const held = host.heldFor(deps, reads, heldRedactor((text) => text), () => {}).held;
   await held.install("claude-agent");
   assert.deepEqual(asked, [["claude-agent", dir]], "the runner installed (or found) the harness");
   const mode = (path) => statSync(path).mode & 0o777;
@@ -811,7 +878,7 @@ test("the computer the runner made for a run is released by the runner at the cl
   const released = [];
   const deps = { store, sealKey: KEY, env: {}, data, computerForClaim: async () => ({ release: async (why) => void released.push(why ?? "released") }) };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision: { kind: "agentic", body: {} }, claimed: {} };
-  const side = host.heldFor(deps, reads, (text) => text, () => {});
+  const side = host.heldFor(deps, reads, heldRedactor((text) => text), () => {});
   const got = await side.held.computer({ hadComputer: async () => false });
   assert.equal(typeof got.release, "function");
   // The run's process ends (a crash, a broken channel) without calling the computer's release.
@@ -896,7 +963,7 @@ test("a Mode 2 run's process writes a file bigger than its channel's frame throu
   // pieces a quarter of a frame.
   const FRAME = 1024 * 1024;
   const bigs = bigWrites.runBigWrites?.({ gate: saveSlots(4), piece: FRAME / 4 });
-  const side = bigs ? host.heldFor(deps, reads, (text) => text, () => {}, bigs) : host.heldFor(deps, reads, (text) => text, () => {});
+  const side = bigs ? host.heldFor(deps, reads, heldRedactor((text) => text), () => {}, bigs) : host.heldFor(deps, reads, heldRedactor((text) => text), () => {});
   const [runnerEnd, childEnd] = duplexPair();
   const runner = host.runChannel(runnerEnd, () => {}, saveSlots(4), { ...(bigs ? { bigs } : {}), maxFrame: FRAME });
   runner.expose("held", (method, args) => side.held[method](...args));

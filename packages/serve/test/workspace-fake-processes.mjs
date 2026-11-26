@@ -2,7 +2,8 @@
 // program started in its own process group, with /workspace/<path> mapped onto the bound host folder; stdout and stderr
 // kept whole and read by offset, a read waiting up to waitMs for bytes or the end; a signal to the program's group;
 // and, as computerd's guard does, every process the program left killed once it ends, so nothing it started outlives
-// it. Only what the attached Workspace's exec calls: start, read, signal, wait.
+// it. Only what the attached Workspace's exec calls: start, write (stdin, for a process started with `stdin`), read,
+// signal, wait.
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { readBackOf } from "@parcha/agentrun-computer";
@@ -26,8 +27,9 @@ export function realProcesses(computer, root) {
     waiters.add(done);
   });
 
-  computer.overrides["process.start"] = ({ argv, cwd = "/workspace", env = {} }) => new Promise((resolve, reject) => {
-    const child = spawn(argv[0], argv.slice(1), { cwd: host(cwd), env: { ...BASE_ENV, ...env }, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+  computer.overrides["process.start"] = ({ argv, cwd = "/workspace", env = {}, stdin = false }) => new Promise((resolve, reject) => {
+    const child = spawn(argv[0], argv.slice(1), { cwd: host(cwd), env: { ...BASE_ENV, ...env }, detached: true, stdio: [stdin ? "pipe" : "ignore", "pipe", "pipe"] });
+    child.stdin?.on("error", () => {});
     const id = `p${next++}`;
     const entry = { child, out: { stdout: [], stderr: [] }, size: { stdout: 0, stderr: 0 }, exit: undefined, closed: false };
     for (const stream of ["stdout", "stderr"]) child[stream].on("data", (chunk) => { entry.out[stream].push(chunk); entry.size[stream] += chunk.length; wake(); });
@@ -49,6 +51,18 @@ export function realProcesses(computer, root) {
     const data = all.subarray(offset, offset + maxBytes);
     const nextOffset = offset + data.length;
     return { data: data.toString("base64"), nextOffset, dropped: 0, exited: entry.closed && nextOffset >= all.length, size: all.length };
+  };
+
+  // As computerd's: a process started without stdin is refused; `close` closes its stdin after the data.
+  computer.overrides["process.write"] = async ({ id, data = "", close = false }) => {
+    const entry = table.get(id);
+    if (!entry) throw fail("ENOENT", `no process ${id}`);
+    const input = entry.child.stdin;
+    if (!input) throw fail("invalid", `process ${id} was started without stdin`);
+    const bytes = Buffer.from(data, "base64");
+    if (bytes.length > 0) await new Promise((resolve) => input.write(bytes, () => resolve()));
+    if (close) input.end();
+    return {};
   };
 
   computer.overrides["process.signal"] = ({ id, signal }) => {

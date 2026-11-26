@@ -66,6 +66,7 @@ export interface components {
       provider_from?: "agent" | "server" | "default";
       default_provider?: string;
       resolved?: string;
+      ceiling?: string;
       permission: "allow" | "ask" | "deny";
       permission_from: "agent" | "server" | "default" | "unattended";
       default_permission: "allow" | "ask" | "deny";
@@ -167,7 +168,7 @@ export interface components {
     places: {
       modes: ("runner" | "sandbox")[];
       boxes: {
-        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
         available: boolean;
         state: "ready" | "unavailable";
         reason?: string;
@@ -179,7 +180,7 @@ export interface components {
         mode: "runner";
       } | {
         mode: "sandbox";
-        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
       } | null;
       default_reason?: string;
       allow: string[];
@@ -316,6 +317,7 @@ export interface components {
     compile_usd?: number | null;
     followup_usd?: number | null;
     shadow_usd?: number | null;
+    check_usd?: number | null;
     share_usd?: number | null;
     plan?: {
       requests: number;
@@ -391,7 +393,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
     };
     computer?: {
       kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -1009,7 +1011,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
     };
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -1091,6 +1093,12 @@ export interface components {
       firing_key: string;
     } | null;
     audit_of?: string | null;
+    learning_work: {
+      state: "none" | "running" | "ended";
+      runs: string[];
+      ended_at: string | null;
+      deadline_at: string | null;
+    };
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
     workflow?: {
       name: string | null;
@@ -2719,6 +2727,7 @@ export interface operations {
         provider_from?: "agent" | "server" | "default";
         default_provider?: string;
         resolved?: string;
+        ceiling?: string;
         permission: "allow" | "ask" | "deny";
         permission_from: "agent" | "server" | "default" | "unattended";
         default_permission: "allow" | "ask" | "deny";
@@ -3034,6 +3043,7 @@ export interface operations {
         compile_usd?: number | null;
         followup_usd?: number | null;
         shadow_usd?: number | null;
+        check_usd?: number | null;
         share_usd?: number | null;
         not_served?: "cost_stop" | "cut" | null;
       }[];
@@ -4438,6 +4448,27 @@ export interface operations {
         runs: number;
       }[];
       unread_files: number;
+      cache: {
+        runs: number;
+        hit_rate: number | null;
+        breaks: {
+          model: number;
+          idle: number;
+          compaction: number;
+          edited: number;
+          sidechain: number;
+          unknown: number;
+        };
+        extra_cost_usd: {
+          model: number;
+          idle: number;
+          compaction: number;
+          edited: number;
+          sidechain: number;
+          unknown: number;
+        };
+        unpriced_breaks: number;
+      } | null;
     };
   };
   gitHubCallback: {

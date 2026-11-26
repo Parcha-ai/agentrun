@@ -223,7 +223,8 @@ async function keptRevision(tx: Tx, agentId: string, runId: string, name: string
 
 /** Whether a run of agent `agentId` other than `runId` is billed against revision `name` at `digest` (learn/ledger.ts
  *  summarize spreads a revision's compile and check over its served runs), read inside the caller's transaction, with
- *  run `runId`'s own ledger and spend rows left out (its purge drops them after this, dropLedger): a ledger row names it
+ *  run `runId`'s own ledger and spend rows left out (its purge drops them after this, or keeps one on another run's
+ *  account naming no revision, dropLedger): a ledger row names it
  *  (a run it served), a spend row names it (a compile turn, a check's replay, an audit's shadow), or, for an unpurged run
  *  with no ledger row (`unledgered`: one that ended before the ledger, whose reader records it from its metrics), its
  *  metrics name it. */

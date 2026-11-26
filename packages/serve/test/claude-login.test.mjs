@@ -917,7 +917,7 @@ async function loginRig(t) {
       const ended = new Promise((resolve) => { end = resolve; });
       return { ended, stop: () => { one.stopped = true; end({ end: "stopped" }); } };
     },
-    claudeLogout: async () => true,
+    claudeLogout: async () => ({ signedOut: true, leftoverGone: true }),
   };
   const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
   const stale = (keeps) => started.filter((one) => !one.stopped && one.dir !== keeps);

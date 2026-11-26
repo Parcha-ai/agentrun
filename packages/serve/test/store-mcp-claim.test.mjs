@@ -22,6 +22,7 @@ const { mcpClaim, McpClaimRefused } = await import("../dist/runner/mcp-claim.js"
 const { sealMcpCredential } = await import("../dist/store/index.js");
 const { Fenced, MCP_REFRESH_LEASE_MS } = await import("../dist/store/store.js");
 const { mcpGateway } = await import("../dist/mcp-gateway.js");
+const { keepText } = await import("../dist/runner/redact.js");
 const { META_REASON } = await import("../dist/mcp-meta.js");
 const { UNUSABLE } = await import("../dist/mcp-probe.js");
 
@@ -117,7 +118,7 @@ test("M5: the claim and its gateway's call write no byte of the credential: not 
   assert.ok(step.pin?.fake && step.credentials.fake?.headers, "the claim pinned the server and opened its credential");
   const work = mkdtempSync(join(tmpdir(), "mcp-work-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
-  const gateway = mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work });
+  const gateway = mcpGateway({ redact: keepText, pin: step.pin, credentials: step.credentials, work: () => work });
   const answer = await gateway.call("fake", "add", { a: 2, b: 3 }, { signal: new AbortController().signal, callId: "call-1" });
   assert.equal(answer.isError, undefined, JSON.stringify(answer));
   assert.equal(calls(fake).at(-1)?.authorization, true, "the call went with its credential");
@@ -197,7 +198,7 @@ test("M7: an expired token is refreshed once before the loop, its new token used
   const work = mkdtempSync(join(tmpdir(), "mcp-work-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const before = calls(fake).length;
-  const refused = await mcpGateway({ pin: silent.pin, credentials: silent.credentials, work: () => work }).call("fake", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
+  const refused = await mcpGateway({ redact: keepText, pin: silent.pin, credentials: silent.credentials, work: () => work }).call("fake", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
   assert.equal(refused.content[0].text, `The MCP server fake's credential can't be used right now: ${UNUSABLE.silent}.`);
   assert.equal(calls(fake).length, before, "nothing was sent");
   silent.release();
@@ -343,7 +344,7 @@ test("M14: a token refreshed behind the claim reaches the gateway already built 
   const work = mkdtempSync(join(tmpdir(), "mcp-work-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   // As the runner builds it from the claim step: reading the step's credentials live.
-  const gateway = mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work });
+  const gateway = mcpGateway({ redact: keepText, pin: step.pin, credentials: step.credentials, work: () => work });
   const call = () => gateway.call("fake", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
   assert.deepEqual(await call(), { content: [{ type: "text", text: "2" }] }, "the first call goes, its client connected");
   assert.equal((await kept).kept, true, "the refresh behind the claim is kept");
@@ -364,7 +365,7 @@ test("M15: a pinned server removed since an earlier open is dropped from the ste
   assert.equal(step.credentials.fake, undefined, "its URL and headers are no longer held");
   const work = mkdtempSync(join(tmpdir(), "mcp-work-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
-  const refused = await mcpGateway({ pin: step.pin, credentials: step.credentials, work: () => work }).call("fake", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
+  const refused = await mcpGateway({ redact: keepText, pin: step.pin, credentials: step.credentials, work: () => work }).call("fake", "add", { a: 1, b: 1 }, { signal: new AbortController().signal });
   assert.equal(refused.content[0].text, "The MCP server fake is no longer saved on this server; nothing was sent.");
   assert.deepEqual(calls(fake), [], "the removed server received nothing");
   step.release();

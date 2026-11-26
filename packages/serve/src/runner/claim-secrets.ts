@@ -11,6 +11,7 @@ import type { LearnedWorkflow } from "../learning.js";
 import { FAUX_ENV, FAUX_PROVIDER, GATEWAY_KEY_ENV, hostModel, modelKeys, PROVIDER_KEYS, type Tier, tierModelOf, TIERS, workflowNodes } from "../model.js";
 import type { RunLaunch } from "../run-launch.js";
 import { keysFor, needsOf, RUN_SECRETS, type RunNeeds } from "../run-secrets.js";
+import { BUILTIN_OWN_KEYS } from "../harness-table.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
 import { PLAN_PROVIDER, planOf, planReaderOf, withPlan } from "../chatgpt-plan.js";
@@ -54,7 +55,9 @@ type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8
  *  redactor, which the run's own tool keys are carried into before they are laid, so its journal is cut of them as it is
  *  written (no one holds them after the turn); a plain JS caller that passes none lays no run key, and throws. A run whose
  *  model sends no key (sendsNoModelKey: a held run its model kept from running, any run on a --faux runner, a faux-pinned
- *  one) is laid no model key and no plan sign-in. Its tools' keys, its decision keys and its own tool keys are laid as any run's. The one tool key row that names
+ *  one) is laid no model key and no plan sign-in. A held run its model kept from running at its create (hold.refused) is
+ *  laid no built-in harness's own key either (harness-table.ts BUILTIN_OWN_KEYS: Cursor's): its agent never starts. Its
+ *  tools' keys, its decision keys and its own tool keys are laid as any run's. The one tool key row that names
  *  a model key's name, TypeSafe's (key-words.ts; model.ts PROVIDER_KEYS typesafe), is a decision key (secrets.ts
  *  DECISION_KEYS): keysFor never names one, so the model key filter below never sees it, and decisionKeysFor lays it
  *  apart, as it lays OpenRouter's for a decision node that runs on it. */
@@ -62,11 +65,14 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   const base = withoutSecrets(deps.env ?? {});
   const needs = await needsOf(revision);
   const keyless = sendsNoModelKey(launch, deps.env ?? {});
+  const modelRefused = launch.hold?.refused !== undefined;
   // A run that sends no model key (sendsNoModelKey) lays none, so its claim opens none: a key it never lays is never
   // decrypted. A run with decision nodes still reads each name its decision keys come from (DECISION_KEY_SOURCES: Jev's
   // TypeSafe key, OpenRouter's, an OpenRouter gateway's), which decisionKeysFor lays as decision keys alone; the model key
-  // filter below lays none of them as a model key. Parallel's is no model key's name, so it is never left unread.
-  const unread = keyless ? MODEL_KEY_NAMES.filter((name) => !(needs.decisionProviders.length > 0 && DECISION_KEY_SOURCES.has(name))) : [];
+  // filter below lays none of them as a model key. Parallel's is no model key's name, so it is never left unread. A held
+  // run its model kept from running (hold.refused) lays no built-in harness's own key either (its agent never starts), so
+  // it opens none of those.
+  const unread = [...(keyless ? MODEL_KEY_NAMES.filter((name) => !(needs.decisionProviders.length > 0 && DECISION_KEY_SOURCES.has(name))) : []), ...(modelRefused ? BUILTIN_OWN_KEYS : [])];
   const working = await workingEnv(deps, unread);
   // An agentic run's model keys are its PINNED model's (the launch's, chosen at its start), the one its route sends, never
   // the host's default now: a key saved since the run started (another provider's, now first) would otherwise be opened
@@ -78,7 +84,7 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   const savedGateway = savedGatewayIn(deps.env ?? {});
   // A model key is never enumerable, as withModelKeys lays a route's, but unlike a route's it stays writable and deletable
   // (withoutModelKeys drops it); a tool key is a plain value, which its tools read and hand on.
-  for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV) && !(keyless && MODEL_KEY_NAMES.includes(name))) Object.defineProperty(env, name, { value: working[name], enumerable: !MODEL_KEY_NAMES.includes(name), writable: true, configurable: true });
+  for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV) && !(keyless && MODEL_KEY_NAMES.includes(name)) && !(modelRefused && BUILTIN_OWN_KEYS.includes(name))) Object.defineProperty(env, name, { value: working[name], enumerable: !MODEL_KEY_NAMES.includes(name), writable: true, configurable: true });
   // TypeSafe's key is a model key: a run whose model sends none (keyless) is not handed it for Jev's web ranking either,
   // and its web tools answer unranked.
   const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false, jevWeb: launch.plane && !keyless ? handsJevWeb(launch.plane, working, needs.harness) : false });
@@ -374,16 +380,22 @@ export async function serverKeyless(deps: ClaimSecretsDeps): Promise<boolean> {
 }
 
 /** Why the claim's model spend after the run's turn, or beside it on runs the runner starts (a shadow audit, a replay
- *  check), is skipped: `what` the work, asked when that spend would start. A run that brought
- *  its own key, at its start or with a message since (everHeld): that key is erased with its turn's end and the server's
- *  never pays for it (runKeyEndedFor). Else, a server that holds no gateway key (the runner's environment or
- *  Settings → Model keys) has none to spend (noServerKeyWords). Undefined where it runs. */
+ *  check), is skipped: `what` the work, asked when that spend would start. A claim that holds the run's own key now runs
+ *  it on that key (the runs it starts take a sealed copy of it, store/seal.ts sealHandedLaunch), whatever the server
+ *  holds. A run that brought its own key, at its start or with a message since (everHeld), and holds none now: that key
+ *  was erased with its turn's end and the server's never pays for it (runKeyEndedFor). Else, a server that holds no
+ *  gateway key (the runner's environment or Settings → Model keys) has none to spend (noServerKeyWords). Undefined where
+ *  it runs. */
 export async function claimSpendOff(deps: ClaimSecretsDeps, runKey: ClaimModelKey | undefined): Promise<(what: string) => string | undefined> {
   // A run's own process holds no seal key, nor every saved key: its runner says whether the server holds a gateway key.
   const at = deps.sealKey ? undefined : held();
   const keyless = at ? await at.serverKeyless() : await serverKeyless(deps);
-  return (what) => (runKey?.everHeld() ? runKeyEndedFor(what) : keyless ? noServerKeyWords(what) : undefined);
+  return (what) => (runKey?.key() !== undefined ? undefined : runKey?.everHeld() ? runKeyEndedFor(what) : keyless ? noServerKeyWords(what) : undefined);
 }
+
+/** Whether the claim holds the run's own model key now: the learning work it starts then spends on that key, out of what
+ *  the run's cap leaves (learning-work.ts). Read when that work starts, never cached. */
+export const keyedNow = (runKey: ClaimModelKey | undefined): (() => boolean) => () => runKey?.key() !== undefined;
 
 /** The env a claimed run's model routes read: the run's own key alone where the claim opened one (withRunModelKey); else
  *  the runner's environment with the keys `opened` for it, each name from the first source that holds it (withModelKeys),

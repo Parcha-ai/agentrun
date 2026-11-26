@@ -1,8 +1,9 @@
 // readPage on a page too big to convert in one pass. The host's tools run in the run's own process, so a conversion that
 // holds the event loop holds the run's heartbeat too, and the run is fenced: go.dev/dl, 3.15 MB of tables, held it past
 // 240 s. Each big read here runs in a child process, so a read that holds its own loop cannot hold this runner's; the
-// child reports its wall time and the longest its event loop was held (perf_hooks' monitorEventLoopDelay), and one
-// that does not answer within GUARD_MS is killed.
+// child counts the read's yields to the loop and the CPU time its thread spent between them, and one that does not
+// answer within GUARD_MS is killed. Nothing here bounds wall time: a loaded machine stretches it without the read
+// holding anything.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import test from "node:test";
@@ -13,39 +14,74 @@ import { downloadsPage } from "./fixtures/downloads-page.mjs";
 const GUARD_MS = 30_000;
 const URL_ = "https://downloads.example/dl/";
 const CHILD = `
-import { monitorEventLoopDelay } from "node:perf_hooks";
-const [dist, fixture, chars, which, options, shape] = process.argv.slice(1);
+import { createRequire, syncBuiltinESMExports } from "node:module";
+const [dist, fixture, chars, which, options, shape, stopAt] = process.argv.slice(1);
+// The read yields the loop through timers/promises' setImmediate, between steps: each yield is counted, and each step's
+// work is the CPU time this thread spent since the last yield came back (threadCpuUsage: the worker's is its own, and
+// a process the machine stops spends none). At the stopAt-th yield the process stops itself, inside the step that ends
+// there, as a loaded machine stops a process mid-step, until the parent continues it; it says so once it runs again.
+const timers = createRequire(import.meta.url)("node:timers/promises");
+const yieldToLoop = timers.setImmediate;
+const cpuMs = () => { const { user, system } = process.threadCpuUsage(); return (user + system) / 1000; };
+let steps = 0;
+let heaviestMs = 0;
+let since = 0;
+let abortedAt = null;
+const stepEnds = () => { heaviestMs = Math.max(heaviestMs, cpuMs() - since); };
+timers.setImmediate = (...args) => {
+  if (++steps === Number(stopAt)) { process.stderr.write("stopping\\n"); process.kill(process.pid, "SIGSTOP"); process.stderr.write("resumed\\n"); }
+  stepEnds();
+  return yieldToLoop(...args).then((value) => { since = cpuMs(); return value; });
+};
+syncBuiltinESMExports();
 const { publicFetch, readPage } = await import(dist);
 const { downloadsPage, shapedPage } = await import(fixture);
 const { html, first, last } = shape ? shapedPage(shape, Number(chars)) : downloadsPage(Number(chars));
-const held = monitorEventLoopDelay({ resolution: 10 });
-held.enable();
-const started = performance.now();
+const started = cpuMs();
+since = started;
 let page = null;
 let error = null;
 try {
   if (which === "readPage") page = await readPage(html, ${JSON.stringify(URL_)}, JSON.parse(options));
-  else if (which === "abort") await readPage(html, ${JSON.stringify(URL_)}, { signal: AbortSignal.timeout(200) });
+  else if (which === "abort") {
+    const signal = AbortSignal.timeout(200);
+    signal.addEventListener("abort", () => { abortedAt = steps; });
+    await readPage(html, ${JSON.stringify(URL_)}, { signal });
+  }
   else { const answer = await publicFetch(${JSON.stringify(URL_)}, { lookup: async () => ["93.184.216.34"], fetchImpl: async () => new Response(html, { status: 200, headers: { "content-type": "text/html; charset=utf-8" } }) }); page = await readPage(answer.body, answer.url); }
 } catch (thrown) { error = { name: thrown?.name, message: String(thrown?.message ?? thrown) }; }
-const wallMs = performance.now() - started;
-held.disable();
-process.stdout.write(JSON.stringify({ wallMs, heldMs: held.max / 1e6, htmlChars: html.length, first, last, page, error }));
+stepEnds();
+const workMs = cpuMs() - started;
+const stepsAfterAbort = abortedAt === null ? null : steps - abortedAt;
+process.stdout.write(JSON.stringify({ workMs, steps, heaviestMs, stepsAfterAbort, htmlChars: html.length, first, last, page, error }));
 `;
 
 /** `which` ("readPage", "abort" or "publicFetch") on a generated page of `chars` characters (downloadsPage's, or
- *  shapedPage's `shape`), in a child process: `{ hung: true }` when it does not answer within GUARD_MS. */
-function inChild(which, chars, options = {}, shape = "") {
+ *  shapedPage's `shape`), in a child process: `{ hung: true }` when it does not answer within GUARD_MS. `stop`: the
+ *  child stops itself at the read's `at`-th yield, mid-step, and is continued `ms` later, as a loaded machine stops it:
+ *  continued again every 50 ms until it says it runs, since a continue that comes before its stop is lost. */
+function inChild(which, chars, options = {}, shape = "", stop = { at: 0, ms: 0 }) {
   return new Promise((resolve, reject) => {
-    const args = [new URL("../dist/index.js", import.meta.url).href, new URL("./fixtures/downloads-page.mjs", import.meta.url).href, String(chars), which, JSON.stringify(options), shape];
+    const args = [new URL("../dist/index.js", import.meta.url).href, new URL("./fixtures/downloads-page.mjs", import.meta.url).href, String(chars), which, JSON.stringify(options), shape, String(stop.at)];
     const child = spawn(process.execPath, ["--input-type=module", "-e", CHILD, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
+    let continuing;
     child.stdout.setEncoding("utf8").on("data", (chunk) => { out += chunk; });
-    child.stderr.setEncoding("utf8").on("data", (chunk) => { err += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => {
+      err += chunk;
+      if (stop.at && err.includes("stopping\n") && continuing === undefined) {
+        continuing = setTimeout(() => {
+          child.kill("SIGCONT");
+          continuing = setInterval(() => child.kill("SIGCONT"), 50);
+        }, stop.ms);
+      }
+      if (err.includes("resumed\n")) clearInterval(continuing);
+    });
     const guard = setTimeout(() => child.kill("SIGKILL"), GUARD_MS);
     child.on("close", (code, signal) => {
       clearTimeout(guard);
+      clearInterval(continuing);
       if (signal === "SIGKILL") resolve({ hung: true });
       else if (code !== 0) reject(new Error(`the child exited ${code ?? signal}: ${err.slice(0, 2000)}`));
       else resolve(JSON.parse(out));
@@ -56,14 +92,26 @@ function inChild(which, chars, options = {}, shape = "") {
 /** A file's row in the markdown table: a table pads each column to its widest cell. */
 const row = (name) => new RegExp(`\\| \\[${name.replaceAll(".", "\\.")}\\]\\(/dl/${name.replaceAll(".", "\\.")}\\) +\\| Archive +\\|`);
 
-/** The run answered within GUARD_MS and within `wallMs`, its event loop never held 100 ms. */
-function quick(run, wallMs) {
+/** Characters a whole read may take between two yields, at most: the read steps 32,768 at a time, so this is 8 steps'. */
+const CHARS_PER_YIELD = 262_144;
+/** CPU time one step may take, at most: a step measures about 10 ms, 50 ms on a loaded machine; one pass over a 3 MB
+ *  page takes seconds. */
+const STEP_MS = 250;
+
+/** The run answered within GUARD_MS, its read took under `workMs` of this thread's CPU and no step took STEP_MS of it,
+ *  and, when it read the page `whole`, it yielded at least once per CHARS_PER_YIELD characters. Time the machine gave
+ *  other processes, or stopped this one for, is none of these. */
+function quick(run, workMs, { whole = true } = {}) {
   assert.ok(!run.hung, `no answer within ${GUARD_MS / 1000} s`);
-  assert.ok(run.wallMs < wallMs, `${Math.round(run.wallMs)} ms, over ${wallMs} ms`);
-  assert.ok(run.heldMs < 100, `the event loop was held ${run.heldMs.toFixed(1)} ms`);
+  assert.ok(run.workMs < workMs, `${Math.round(run.workMs)} ms of CPU, over ${workMs} ms`);
+  assert.ok(run.heaviestMs < STEP_MS, `a step took ${run.heaviestMs.toFixed(1)} ms of CPU`);
+  if (whole) {
+    const least = Math.ceil(run.htmlChars / CHARS_PER_YIELD);
+    assert.ok(run.steps >= least, `${run.steps} yields over ${run.htmlChars} characters, under ${least}`);
+  }
 }
 
-test("a 3 MB page of tables is read within 10 s, its event loop never held 100 ms: markdown, cut, with the page's whole length", async () => {
+test("a 3 MB page of tables is read in steps, never holding its event loop: markdown, cut, with the page's whole length", async () => {
   const run = await inChild("readPage", 3_000_000);
   quick(run, 10_000);
   const { page, first, last, htmlChars } = run;
@@ -93,11 +141,12 @@ test("a conversion past its deadline gives way to the page's plain text, still w
 
 test("a read whose signal ends mid-conversion stops at once, with the signal's reason", async () => {
   const run = await inChild("abort", 3_000_000);
-  quick(run, 2_000);
+  quick(run, 2_000, { whole: false });
+  assert.ok(run.stepsAfterAbort !== null && run.stepsAfterAbort <= 2, `${run.stepsAfterAbort} steps after the signal ended`);
   assert.equal(run.error?.name, "TimeoutError");
 });
 
-test("a 3 MB page fetched through the public-host guard and read is done within 10 s without holding the event loop", async () => {
+test("a 3 MB page fetched through the public-host guard and read is read in steps, without holding the event loop", async () => {
   const run = await inChild("publicFetch", 3_000_000);
   quick(run, 10_000);
   assert.match(run.page.text, row(run.first));
@@ -127,7 +176,7 @@ test("a page converted in pieces reads as one pass over it would, but for the sp
   assert.equal(lines(page.text), lines(NodeHtmlMarkdown.translate(html, { keepDataImages: false }).trim()));
 });
 
-test("50,000 svg start tags never closed, then a style and a script never closed, on a 5 MB page: read within 10 s, the event loop never held 100 ms", async () => {
+test("50,000 svg start tags never closed, then a style and a script never closed, on a 5 MB page: read in steps, never holding the event loop", async () => {
   const run = await inChild("readPage", 5_000_000, {}, "unclosed");
   quick(run, 10_000);
   const { page } = run;
@@ -151,7 +200,7 @@ test("a quoted attribute value is part of its tag: a \"<script>\" in one drops n
   }
 });
 
-test("a quote no quote closes, opened in 40,000 tags on a 2 MB page: each tag ends at its \">\", read within 10 s without holding the event loop", async () => {
+test("a quote no quote closes, opened in 40,000 tags on a 2 MB page: each tag ends at its \">\", read in steps without holding the event loop", async () => {
   const run = await inChild("readPage", 2_000_000, {}, "unquoted");
   quick(run, 10_000);
   assert.ok(run.page.text.includes("para 0 of the page, kept"), "the page is not eaten by the open quote");
@@ -188,10 +237,11 @@ test("decodeEntities reads a numeric reference's whole digit run, in one linear 
   assert.equal(decodeEntities("&#1114112;&#x110000;&#xDFFF;&#55296;&#0;&#x00000;&#99999999999999999999999;&#xFFFFFFFFFFFFFFFFFFFF;"), "�".repeat(8));
   assert.equal(decodeEntities("&#128;&#x81;&#x8D;&#146;&#x96;&#159;"), "€\u0081\u008D’–Ÿ");
   assert.equal(decodeEntities("&#; &#x; &#xG; &# 65;"), "&#; &#x; &#xG; &# 65;", "no digit: left as written");
-  const started = performance.now();
+  const cpuMs = () => { const { user, system } = process.threadCpuUsage(); return (user + system) / 1000; };
+  const started = cpuMs();
   assert.equal(decodeEntities(`&#${"0".repeat(2_000_000)}65; and &#x${"0".repeat(2_000_000)}42;`), "A and B");
   assert.equal(decodeEntities("&#0000065;".repeat(200_000)), "A".repeat(200_000));
-  assert.ok(performance.now() - started < 2_000, "linear in the text");
+  assert.ok(cpuMs() - started < 2_000, "linear in the text: under 2 s of CPU");
 });
 
 test("a template's content is dropped whole however templates nest: a template inside it does not end it, nor does a \"</template>\" in its script or its comment, as markdown and as plain text", async () => {
@@ -210,7 +260,7 @@ test("a template's content is dropped whole however templates nest: a template i
   }
 });
 
-test("a template holding a template, hidden words and a \"</template>\" in a script, before each of a 3 MB page's paragraphs: each dropped whole, read within 10 s, the event loop never held 100 ms", async () => {
+test("a template holding a template, hidden words and a \"</template>\" in a script, before each of a 3 MB page's paragraphs: each dropped whole, read in steps, never holding the event loop", async () => {
   const run = await inChild("readPage", 3_000_000, {}, "templates");
   quick(run, 10_000);
   assert.ok(run.page.text.includes("para 0 of the page, kept"), "the text after a template is kept");
@@ -218,7 +268,15 @@ test("a template holding a template, hidden words and a \"</template>\" in a scr
   assert.doesNotMatch(run.page.text, /hidden|inner|var s/, "nothing inside a template reaches the page");
 });
 
-test("one template holding a 3 MB page of short tags, closed at its end: dropped whole, the paragraph after it kept, the event loop never held 100 ms", async () => {
+test("a read the machine stops for 300 ms mid-step is not held by it: the stop is no work of the read's", async () => {
+  // A shared runner can stop a process mid-step for longer than any step takes (the event loop "held 191.5 ms" in CI):
+  // that time is the machine's, not the read's.
+  const run = await inChild("readPage", 3_000_000, {}, "templates", { at: 10, ms: 300 });
+  quick(run, 10_000);
+  assert.ok(run.page.text.includes("para 0 of the page, kept"));
+});
+
+test("one template holding a 3 MB page of short tags, closed at its end: dropped whole, the paragraph after it kept, never holding the event loop", async () => {
   const run = await inChild("readPage", 3_000_000, {}, "bigtemplate");
   quick(run, 10_000);
   assert.match(run.page.text, /^# Start\n\nafter the template, kept$/);

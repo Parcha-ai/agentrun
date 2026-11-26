@@ -46,6 +46,7 @@ import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../
 import type { SignInReader } from "../run-view.js";
 import { type AlsoRow, FINAL_STATES, type LearningProposal, type McpServerRow, type Store } from "../store/store.js";
 import { shadowRunId } from "../learn/audit.js";
+import { keyedBesideOf, noteLearningDeadline } from "../learning-work.js";
 import { getMcpServer } from "../mcp-store.js";
 import { readApprovers } from "../server-approvers.js";
 import { isCliRecord, runEntries, runTimeline, withoutFeedbackRounds } from "../store-reads/journal.js";
@@ -135,6 +136,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     ...(start.noWorkflows ? {} : {
       compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => compileAskOf(deps, { ...input, input: launch.input, ...(launch.sdk ? { sdkTask: sdkInputText(launch) } : {}), seedWorkflows: start.workflows?.length ?? 0, corrections: start.section }),
       compileFailed: (input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }) => recordDraftFailed(deps, input),
+      compileStarts: ({ runId, until }: { runId: string; until: number }) => noteLearningDeadline(deps.store.settings, runId, until),
     }),
     // The run's secrets, what the claim handed it, every secret the server keeps sealed, and the sign-in pointers it was
     // handed (each at least MIN_SECRET long, as every cut takes them); `unreadable` when those can't be read back, or the
@@ -191,12 +193,22 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   };
 }
 
-/** What every cap gate of run `runId` reads as spent beside it on its behalf (adapter-loop.ts RunCapConfig.beside): its
- *  audit's shadow run (shadowBesideOf), for a capped run with a learning start, the only run whose end may start one;
- *  none for any other, whose gates read only its own sessions. */
-export function spentBesideOf(launch: RunLaunch, store: Pick<Store, "runs">, runId: string): (() => Promise<number | null>) | undefined {
+/** What every cap gate of run `runId` reads as spent beside it on its behalf (adapter-loop.ts RunCapConfig.beside): the
+ *  learning work it started (childrenBesideOf), for a capped run with a learning start, the only run whose claims may
+ *  start any; none for any other, whose gates read only its own sessions. */
+export function spentBesideOf(launch: RunLaunch, store: Pick<Store, "runs" | "settings">, runId: string): (() => Promise<number | null>) | undefined {
   if (launch.maxCostUsd === undefined || !learningStartOf(launch)) return undefined;
-  return () => shadowBesideOf(store, runId);
+  return () => childrenBesideOf(store, runId);
+}
+
+/** What run `runId`'s learning work took beside it under its cap: its audit's shadow run (shadowBesideOf) and the replay
+ *  runs of a check on its own key (learning-work.ts keyedBesideOf; in a run's own process, its runner's read of them,
+ *  Held.keyedBeside, as the process's store reads no other run's row). Null when either is unknown. */
+export async function childrenBesideOf(store: Pick<Store, "runs" | "settings">, runId: string): Promise<number | null> {
+  const shadow = await shadowBesideOf(store, runId);
+  const runner = held();
+  const keyed = shadow === null ? null : runner ? await runner.keyedBeside() : await keyedBesideOf(store, runId);
+  return shadow === null || keyed === null ? null : shadow + keyed;
 }
 
 /** What run `runId`'s audit's shadow run took beside it (runner/audit.ts, started at its end with what its cap left): at
@@ -215,15 +227,21 @@ export async function shadowBesideOf(store: Pick<Store, "runs">, runId: string):
 /** What run `runId`'s cap leaves its audit's shadow run at its end (runner/audit.ts startAudit): the cap it is held to now
  *  (capNowOf: its newest raise's, else `launchCapUsd`), less what it spent under it (capSpendOf over `entries`, its
  *  journal: its job, its follow-ups, its compile turns). Null when that spend is unknown. */
-export async function auditRoomOf(store: Pick<Store, "runs">, runId: string, launchCapUsd: number, entries: readonly EntryLike[]): Promise<number | null> {
+export async function auditRoomOf(store: Pick<Store, "runs" | "settings">, runId: string, launchCapUsd: number, entries: readonly EntryLike[]): Promise<number | null> {
   const capUsd = capNowOf(launchCapUsd, entries)!;
   const spent = await capSpendOf(store, runId, entries);
   return spent === null ? null : capUsd - spent;
 }
 
+/** What run `runId`'s cap leaves at its end (auditRoomOf over its journal read now): what a check on its own key shares
+ *  among its replay runs (runner/promotion.ts keyedCapOf). Null when its spend is unknown. */
+export async function roomAtEndOf(store: Store, runId: string, launchCapUsd: number): Promise<number | null> {
+  return auditRoomOf(store, runId, launchCapUsd, await runEntries(store, runId, BACKGROUND_CONTEXT));
+}
+
 /** What capped run `runId` has spent under its cap, as every gate of the run reads it: its sessions' booking as the kernel
- *  cap counts it (metrics.ts bookedCapSpend over `entries`, its journal) and what its audit's shadow took beside it
- *  (shadowBesideOf). Null when either is unknown.
+ *  cap counts it (metrics.ts bookedCapSpend over `entries`, its journal) and what its learning work took beside it
+ *  (childrenBesideOf). Null when either is unknown.
  *
  *  The rule for a cost no one knows (a request answered with no price of its own, one cut short or lost): under a cap it
  *  counts at the figure the cap held it at when it was admitted (its worst case at the model's price, and a lost one's
@@ -232,10 +250,10 @@ export async function auditRoomOf(store: Pick<Store, "runs">, runId: string, lau
  *  unknown (a held figure is the cap's, never a charge). Only a request held at no figure (none is, under a cap) leaves
  *  the spend itself unknown: then nothing more is sent under the cap, and the words say the spend is unknown, as the
  *  kernel's unknownSpend refusal does, never "no room". */
-export async function capSpendOf(store: Pick<Store, "runs">, runId: string, entries: readonly EntryLike[]): Promise<number | null> {
+export async function capSpendOf(store: Pick<Store, "runs" | "settings">, runId: string, entries: readonly EntryLike[]): Promise<number | null> {
   const spent = bookedCapSpend(entries);
   if (spent === null) return null;
-  const beside = await shadowBesideOf(store, runId);
+  const beside = await childrenBesideOf(store, runId);
   return beside === null ? null : spent + beside;
 }
 

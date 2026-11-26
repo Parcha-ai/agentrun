@@ -29,20 +29,20 @@ import { openAccount } from "../email/account.js";
 import { harnessOf, planRecipeOf, recipeHarness } from "../harness-table.js";
 import { openHarnessKeys } from "../harness-keys.js";
 import { installDirOf, installForClaim, shareInstall } from "../harness-install.js";
-import { loadArchilSettings } from "../archil-settings.js";
+import { loadArchilSettings, noExecRegionOf } from "../archil-settings.js";
 import { planOf } from "../chatgpt-plan.js";
 import { forgottenSignIns, handedSignInReadsBack, peekSignIn, runSignIn, signInReads, verifyRunSignIn } from "../sign-ins-store.js";
 import { vendorsOver } from "../sign-ins.js";
 import { decisionProvidersIn, fauxFetch } from "../decisions.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { cutDeep, type HeldRedact, type Redact, runnerSecrets } from "./redact.js";
+import { cutDeep, type HeldRedact, mustHold, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
 import { withinCarried } from "../paid-calls.js";
-import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
+import { sealHandedLaunch } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { agreeOnOf } from "../learning-setting.js";
@@ -53,7 +53,8 @@ import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
 import { waitEndedKey } from "../browser-wait-ended.js";
 import { browserHoldKey } from "../browser-hold.js";
-import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, sendsNoModelKey, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, keyedNow, learnedDecisionKeys, openRunModelKey, savedModelKeys, sendsNoModelKey, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { atRunEnd, keyedBesideOf } from "../learning-work.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
 import { githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
@@ -70,7 +71,7 @@ import { workflowsAt } from "./learning-seed.js";
 import { claimMetering, heldMcpOf, mcpForClaim } from "./mcp-run.js";
 import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
-import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
+import { refuseRecipeTriggerRun, resolveRunnerLoop, underServerCeilings, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { loginForRun } from "../claude-login.js";
@@ -484,8 +485,9 @@ const writableSetting: Check = ([key, value], bound) => {
 /** The store's methods a run's loop calls, each with what binds it to the claim. A method not here is refused, and the
  *  refusal is said on the runner's log. Reads of the claim's run, its launch, its commands and its agent's revisions;
  *  of what was spent beside it (its learning grades, its own audit's shadow run's row and launch, which its cap gates
- *  read); of the agent's own runs (its learning reads its past runs); the server's settings its tools read and the
- *  claim's own rows (settingReadable). Writes only under the claim. */
+ *  read; the replays it started on its own key are summed by its runner, Held.keyedBeside); of the agent's own runs (its
+ *  learning reads its past runs); the server's settings its tools read and the claim's own rows (settingReadable).
+ *  Writes only under the claim. */
 const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["flush", always],
   ["runs.get", ownRunOrShadow],
@@ -655,9 +657,10 @@ interface ClaimReads {
 /** The email tools a revision may grant. */
 const grantsEmail = (granted: readonly string[]): boolean => granted.some((tool) => tool.startsWith("email_"));
 
-/** The runner's redactor as the host side of a run's process holds it (LoopDeps.redact): its cut, and the carry of a
- *  value into what it cuts from the run's journal, which a token the runner hands the run needs (claudeLogin). */
-export type RunnerCut = Redact & Partial<Pick<HeldRedact, "carry">>;
+/** The runner's redactor as the host side of a run's process holds it (LoopDeps.redact): its cut, the carry of a value
+ *  into what it cuts from the run's journal, which a token the runner hands the run needs (claudeLogin), and the hold of
+ *  each credential the claim opens, refreshes or mints for the run, which its MCP will not start without (mustHold). */
+export type RunnerCut = HeldRedact;
 
 /** Held (held.ts) for one claim, on the runner: each answer the claim's own, read with the runner's seal key from the
  *  runner's own reads of the claim; every argument from the run's process is checked or ignored. `bigs`: the run's pieced
@@ -676,7 +679,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   const projectStop = new AbortController();
   const projectSignal = reads.signal ? AbortSignal.any([reads.signal, projectStop.signal]) : projectStop.signal;
   let projectIO: Promise<SourceIOReceipt> | undefined, projectCapture: Promise<ProjectCheckpoint> | undefined;
-  let projectComputer: ClaimComputer | undefined, projectWorkspace: Workspace | undefined, projectMode: 1 | 2 = 1;
+  let projectComputer: ClaimComputer | undefined, projectWorkspace: Workspace | undefined, projectMode: 1 | 2 = 1, projectNoExec: string | undefined;
   let projectFailed = false, projectReleased = false, projectClosing = false, projectCaptureDone = false;
   let projectRelease: Promise<void> | undefined;
   let projectCleanup: Promise<unknown> | undefined;
@@ -710,7 +713,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     return pending;
   };
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
-  const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
+  // Each credential the claim opens, refreshes or mints here (its MCP's, its GitHub App tokens) joins the runner's redactor.
+  const hold = (values: string[]) => cut.hold(values);
+  const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   /** The run's folder as the computer this claim made mounts it (Mode 2), where the claim's MCP files once it is made. */
   let mountedFolder: Workspace | undefined;
   /** Mode 2's Archil claim, made once for the claim on the runner, its folder the run's. */
@@ -743,6 +748,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   let learnedFlows: readonly LearnedWorkflow[] = [];
   /** The claim's one learned first choice: its promotion's writes are made once, however often the process asks. */
   let chosen: Promise<LearnedFirst> | undefined;
+  /** What the claim's learned first choice queued for its run's end (a check on its own key), run by its end-of-run step. */
+  const atEnd = atRunEnd(log);
   const held: Held = {
     projectCheckpoint: (...args: [AbortSignal?]) => {
       if (args.length > 1 || args[0] !== undefined && !(args[0] instanceof AbortSignal)) throw new ClaimRefused("A project checkpoint accepts only its cancellation signal.");
@@ -765,7 +772,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           if (!projectComputer || !projectWorkspace) throw new ClaimRefused("The project's held execution resources are unavailable.");
           checkpoint = runProjectCheckpoint({ store, agentId: run.agentId, claim, launch, computer: projectComputer, ioHeld: true,
             tools: { get workspace() { if (!tools) throw new ClaimRefused("Project settlement has not opened its workspace."); return tools.workspace; },
-              settleProject: async () => { tools = await runTools(projectWorkspace!, projectComputer!.computer, { mode: projectMode, context: BACKGROUND_CONTEXT }); return tools.settleProject(); } },
+              settleProject: async () => { tools = await runTools(projectWorkspace!, projectComputer!.computer, { mode: projectMode, noExec: projectNoExec, context: BACKGROUND_CONTEXT }); return tools.settleProject(); } },
             workspace: { data: deps.data, sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },
             secrets: async () => runnerSecrets(deps.env, [...runnerSecrets(claimed), ...await storeSecrets(store, sealKey, deps.data)]),
           });
@@ -794,9 +801,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // (redact.ts carry) before it is handed, a renewed one too: model text that repeats it is cut from the run's journal as
     // the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
     // This answer is the one decision whether the run goes on the login: none, it does not. A run that sends no model key
-    // (keyless: a held run, any run on a --faux runner, a faux-pinned one) gets none, whatever its claim read: the login is
-    // a model credential like any key. Any other claim read the setting (staysInRunner): one that read it off is never put
-    // on it, whatever the setting says now; one that read it on has it read again here, at the start, with the claim's
+    // (keyless: a held run, any run on a --faux runner, a faux-pinned one) gets none, whatever its claim read, and no read
+    // of the claim's login or the setting for it: the login is a model credential like any key. Any other claim read the
+    // setting (staysInRunner): one that read it off is never put on it, whatever the setting says now; one that read it on
+    // has it read again here, at the start, with the claim's
     // settings, data folder, harness and place. That read's environment is the claim's (the process's, when the runner was
     // given none) with a saved gateway laid over it (withSavedGatewayDeps), not always the very one the claim read with;
     // the difference can only refuse the start, never hand another folder, since the login is handed only when both reads
@@ -850,7 +858,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       const disk = await archilOf();
       const overTheDisk = disk === undefined ? undefined : openedAtUse(() => openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: disk, sweep: false, log }));
       if (overTheDisk) releases.push(() => overTheDisk.end());
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, toolSettings: revision.body.toolSettings, work: () => (overTheDisk === undefined ? runFolder(deps.data, run.agentId, claim.runId) : mountedFolder ?? overTheDisk.workspace()), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, toolSettings: revision.body.toolSettings, work: () => (overTheDisk === undefined ? runFolder(deps.data, run.agentId, claim.runId) : mountedFolder ?? overTheDisk.workspace()), launchInput: launch.input, hold, redact: cut, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
       if (!made) return undefined;
       releases.push(() => made.release());
       const exposed = heldMcpOf(made, cut);
@@ -934,12 +942,13 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),
     // The claim's own run, whatever the process names: its view on this runner hears the change.
     computerHold: async (change) => heardComputerHold(claim.runId, change, cut),
-    handOn: async (from, id) => {
+    handOn: async (from, id, keyed) => {
       if (from !== claim.runId || typeof id !== "string") return undefined;
       const sealed = await store.runs.launch(from).then((one) => one.sealed ?? null, () => null);
-      const handed = sealed === null ? undefined : openRunMcpAuth(sealKey, from, sealed);
-      return handed && Object.keys(handed).length ? sealRunMcpAuth(sealKey, id, handed) : undefined;
+      return sealed === null ? undefined : sealHandedLaunch(sealKey, from, sealed, id, keyed === true);
     },
+    // The claim's own run's, whatever the process names: its learning_work row and the replays it names are read here.
+    keyedBeside: () => keyedBesideOf(store, claim.runId),
     signInPeek: (resolution) => peekSignIn(store, sealKey, run.agentId, String(resolution)),
     signInForgotten: (resolution) => forgottenSignIns(store, sealKey, run.agentId, String(resolution)),
     emailAccount: async () => (grantsEmail(granted) ? openAccount(store, sealKey) : undefined),
@@ -957,6 +966,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     computer: (ask: HeldComputerAsk) => projectCall(async () => {
       const made = await archilOf();
       const mode: 1 | 2 = made === undefined ? 1 : 2;
+      const noExec = noExecRegionOf(made);
       const ws = made === undefined
         ? await openRunWorkspace({ mode: 1, agentId: run.agentId, runId: claim.runId, data: deps.data, log })
         : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
@@ -965,7 +975,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         { runId: claim.runId, epoch: claim.epoch, claim, agentId: run.agentId, revisionId: run.revisionId, place: launch.place, ...(reads.incarnation ? { holder: { runner: claim.runner, incarnation: reads.incarnation } } : {}) } as never,
         store,
         {
-          ...deps.computerDeps, mode, workspace: ws.workspace, sealKey,
+          ...deps.computerDeps, mode, noExec, workspace: ws.workspace, sealKey,
           recordings: { folder: recordingsFolder(deps.data, run.agentId, claim.runId), say: (words: string) => say?.(cut(words)) },
           hadComputer: async () => (await ask.hadComputer()) === true,
           ...(typeof ask.turnedOff === "string" ? { turnedOff: ask.turnedOff } : {}),
@@ -990,7 +1000,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       const claimed = got as { release?: (why?: "ended") => Promise<void> } | undefined;
       if (typeof claimed?.release === "function") releases.push(() => claimed.release!("ended"));
       if (projectGate) {
-        projectComputer = got as ClaimComputer; projectWorkspace = ws.workspace; projectMode = mode;
+        projectComputer = got as ClaimComputer; projectWorkspace = ws.workspace; projectMode = mode; projectNoExec = noExec;
         const { syncProject: _sync, ...exposed } = got as ClaimComputer;
         return { ...exposed, ...(exposed.computer ? { computer: projectGate.capability(exposed.computer) } : {}),
           release: (...args: Parameters<ClaimComputer["release"]>) => cleanProject(() => exposed.release(...args)),
@@ -1029,9 +1039,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         return rows?.compared ? { also: [], compared: dataOnly(rows.compared) as Compared } : undefined;
       }
       // The audit's spend, skipped as the run's spec skips it (claim-secrets.ts claimSpendOff): over the claim's own key.
-      const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
+      const runKey = await claimModelKey(keys, claim.runId);
+      const spendOff = await claimSpendOff(keys, runKey);
       // The audit's start after the step (audit.ts withAudit) is this runner's too: it reads the run's journal and writes
-      // the ledger and a run.
+      // the ledger and a run, and starts what the claim queued for the run's end first.
       const step = withAudit(learningEndOfRun(launch, {
         store,
         data: deps.data,
@@ -1041,7 +1052,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         stored: () => storeSecrets(store, sealKey, deps.data),
         log,
         decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys(keys, DECISION_PROVIDER_KEYS)) }),
-      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, shown, log, sealKey, spendOff, launch, redact: cut, admitAuxiliary });
+      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, shown, log, sealKey, spendOff, keyed: keyedNow(runKey), atEnd, launch, redact: cut, admitAuxiliary });
       if (!step) return undefined;
       // keptOf is the run's process's, asked over the channel: read once, for the round learningEndOfRun reads (the
       // round after the newest the run kept), before the step reads it at once.
@@ -1069,9 +1080,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // workflows).
       const start = learningStartOf(launch);
       const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ? await workflowsAt({ store, agentId: run.agentId, shown }, start.seed).catch(() => []) : [];
-      const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
+      const runKey = await claimModelKey(keys, claim.runId);
+      const spendOff = await claimSpendOff(keys, runKey);
       const outputSchema = (revision.body as { outputSchema?: unknown }).outputSchema;
-      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, shown, spendOff, admitAuxiliary }, laid);
+      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, shown, spendOff, keyed: keyedNow(runKey), atEnd, admitAuxiliary }, laid);
       learnedFlows = got.workflows;
       return cutDeep(dataOnly(got) as LearnedFirst, cut);
     })()),
@@ -1183,7 +1195,8 @@ export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data"
     if (revision && isWorkflowRevision(revision)) return STAYS;
   }
   // A run that sends no model key (claim-secrets.ts sendsNoModelKey) is handed no login (heldFor claudeLogin), so its claim
-  // reads none: it is never refused for a login it would never be handed.
+  // reads none: it is never refused for a login it would never be handed. A held run its model kept from running holds its
+  // computer so, whatever login this machine has on.
   if (sendsNoModelKey(launch, deps.env ?? {})) return OFF_LOGIN;
   const login = await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place);
   if (login === undefined) return OFF_LOGIN;
@@ -1247,9 +1260,9 @@ export function runChannel(socket: Duplex, onClose: (why: Error) => void, gate: 
 }
 
 /** `login`: the Claude login this run's claim read (staysInRunner), the one its runner hands the run (ClaimReads). */
-function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps, login: ClaudeAgentLogin | undefined): Loop {
+export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps, login: ClaudeAgentLogin | undefined): Loop {
+  const cut: RunnerCut = mustHold(loopDeps.redact, "A run's own process's loop");
   const { deps, isolation } = options;
-  const cut: RunnerCut = loopDeps.redact;
   const log = (line: string) => options.log(cut(line));
   let channel: Channel | undefined;
   let child: ChildProcess | undefined;
@@ -1322,7 +1335,10 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // host's default's now, where its revision names no model and a key saved since moved that default. On a --faux
         // runner, or pinned to the faux model, a run sends no model key (claim-secrets.ts sendsNoModelKey): its process is
         // handed none, not even its revision's model's.
-        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
+        // Its keys are its capped plane's (harness-loops.ts underServerCeilings), as the run's own loop reads that plane: a
+        // run kept on Parallel and claimed after the server set kernel or native is handed no Parallel key.
+        const capped = await underServerCeilings(claimDeps, launch, revisionRow as never);
+        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, capped, claim.runId);
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
@@ -1440,6 +1456,11 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           const reach = await mcpReachOf(deps);
           const init = {
             claim, data: deps.data, signal: loopDeps.signal, where: deps.store.where, ...(traced ? { traced: true } : {}),
+            // A learning child's deadline, its abort posted across (run-channel.ts) to the process's request gate.
+            ...(loopDeps.pastDeadline ? { pastDeadline: loopDeps.pastDeadline } : {}),
+            // The plane its keys were chosen by (`capped`): the process runs its tools on it, never on a later read of the
+            // server's settings, which may have moved since.
+            ...(capped.plane ? { plane: capped.plane } : {}),
             ...(reach.loopback ? { mcpLoopback: true, mcpOwn: reach.own ?? [] } : {}),
             ...(deps.githubApi ? { githubApi: deps.githubApi } : {}),
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),

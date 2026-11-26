@@ -637,6 +637,9 @@ __all__ = [
     "GetWorkspaceArchilResponse",
     "GetWorkspaceArchilResponseSecret",
     "GetWrappedResponse",
+    "GetWrappedResponseCache",
+    "GetWrappedResponseCacheBreaks",
+    "GetWrappedResponseCacheExtraCostUsd",
     "GetWrappedResponseDaysItem",
     "GetWrappedResponseHarnessesItem",
     "GetWrappedResponseImportedItem",
@@ -1065,6 +1068,7 @@ __all__ = [
     "RunFileList",
     "RunImportedFrom",
     "RunLearning",
+    "RunLearningWork",
     "RunLearningWorkflowsItem",
     "RunList",
     "RunNative",
@@ -1629,7 +1633,7 @@ class DefinitionPlace1(TypedDict):
 
 class DefinitionPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _DefinitionComputerRequired(TypedDict):
@@ -1906,6 +1910,7 @@ class AgentToolsItem(_AgentToolsItemRequired, total=False):
     provider_from: Literal["agent", "server", "default"]
     default_provider: str
     resolved: str
+    ceiling: str
 
 
 class AgentLearning(TypedDict):
@@ -2135,7 +2140,7 @@ class DefinitionInputPlace1(TypedDict):
 
 class DefinitionInputPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _DefinitionInputComputerRequired(TypedDict):
@@ -2543,6 +2548,7 @@ class GetAgentResponseToolsItem(_GetAgentResponseToolsItemRequired, total=False)
     provider_from: Literal["agent", "server", "default"]
     default_provider: str
     resolved: str
+    ceiling: str
 
 
 class GetAgentResponseLearning(TypedDict):
@@ -3529,6 +3535,7 @@ class Cost(_CostRequired, total=False):
     compile_usd: float | None
     followup_usd: float | None
     shadow_usd: float | None
+    check_usd: float | None
     share_usd: float | None
     plan: CostPlan
 
@@ -4701,6 +4708,7 @@ class GetLearningCostResponseRunsItem(_GetLearningCostResponseRunsItemRequired, 
     compile_usd: float | None
     followup_usd: float | None
     shadow_usd: float | None
+    check_usd: float | None
     share_usd: float | None
     not_served: Literal["cost_stop", "cut"] | None
 
@@ -5899,6 +5907,7 @@ class _RunRequired(TypedDict):
     kind: Literal["agentic", "workflow"]
     archived_at: str | None
     place: RunPlace1 | RunPlace2
+    learning_work: RunLearningWork
 
 
 class Run(_RunRequired, total=False):
@@ -6094,7 +6103,7 @@ class RunPlace1(TypedDict):
 
 class RunPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _RunComputerRequired(TypedDict):
@@ -6212,6 +6221,13 @@ class RunImportedFrom(TypedDict):
 class RunTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunLearningWork(TypedDict):
+    state: Literal["none", "running", "ended"]
+    runs: list[str]
+    ended_at: str | None
+    deadline_at: str | None
 
 
 class RunWorkflow(TypedDict):
@@ -9066,7 +9082,7 @@ class CapabilitiesPlaces(_CapabilitiesPlacesRequired, total=False):
 
 
 class _CapabilitiesPlacesBoxesItemRequired(TypedDict):
-    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
     available: bool
     state: Literal["ready", "unavailable"]
 
@@ -9084,7 +9100,7 @@ class CapabilitiesPlacesDefaultPlace1(TypedDict):
 
 class CapabilitiesPlacesDefaultPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
@@ -12165,6 +12181,7 @@ class GetWrappedResponse(TypedDict):
     sources: list[GetWrappedResponseSourcesItem]
     imported: list[GetWrappedResponseImportedItem]
     unread_files: int
+    cache: GetWrappedResponseCache | None
 
 
 class GetWrappedResponseTokens(TypedDict):
@@ -12205,6 +12222,32 @@ class GetWrappedResponseSourcesItem(TypedDict):
 class GetWrappedResponseImportedItem(TypedDict):
     source: str
     runs: int
+
+
+class GetWrappedResponseCache(TypedDict):
+    runs: int
+    hit_rate: float | None
+    breaks: GetWrappedResponseCacheBreaks
+    extra_cost_usd: GetWrappedResponseCacheExtraCostUsd
+    unpriced_breaks: int
+
+
+class GetWrappedResponseCacheBreaks(TypedDict):
+    model: int
+    idle: int
+    compaction: int
+    edited: int
+    sidechain: int
+    unknown: int
+
+
+class GetWrappedResponseCacheExtraCostUsd(TypedDict):
+    model: float
+    idle: float
+    compaction: float
+    edited: float
+    sidechain: float
+    unknown: float
 
 
 # Each operation as the runtime sends it, by operationId.

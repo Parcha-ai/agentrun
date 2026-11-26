@@ -108,7 +108,7 @@ describe("existing agent observation", () => {
       agents: 1, runs: { total: 7, active: 0, needsInput: 0, failed: 0, statusUnknown: 0, needsReview: 0 },
       perAgent: [{ agentId: "registered-agent", name: "Registered agent", runs: 7 }],
       cost: { usd: null, basis: null, unknownRuns: 7 },
-      recent: [{ run_id: "registered-run", agent_id: "registered-agent", agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: "Registered result", created_at: "2026-11-12T11:00:00Z", updated_at: "2026-11-12T11:01:00Z", ended_at: "2026-11-12T11:01:00Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, sha: null, poll_after_ms: 0, place: { mode: "runner" } }],
+      recent: [{ run_id: "registered-run", agent_id: "registered-agent", agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: "Registered result", created_at: "2026-11-12T11:00:00Z", updated_at: "2026-11-12T11:01:00Z", ended_at: "2026-11-12T11:01:00Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, sha: null, poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null } }],
       analytics: { filter: { from: null, to: null, agent: null },
         totals: { ...group, input: 1000, cache_read: 0, cache_write: 0, output: 234, requests: 7, unmetered: 0 },
         time: { ended_runs: 7, wall_ms: 420000, active_runs: 0, active_ms: 0 },

@@ -59,6 +59,10 @@ export const isTableTool = (name: string): boolean => rowOf(name)?.table === tru
 export const isAskable = (name: string): boolean => rowOf(name)?.askable === true;
 /** Whether a host runs `name` on a harness other than pi: it has a replay class. */
 export const isHostTool = (name: string): boolean => rowOf(name)?.replay !== undefined;
+/** Whether a harness other than pi may be granted `name`: a host tool, or the browser, which has no host row (a call a crash
+ *  cut off is its custody's to reconcile, never replayed) and binds through its own binding (runner/adapter-run-spec.ts
+ *  browserHostTools). */
+export const adapterBinds = (name: string): boolean => isHostTool(name) || name === "browser";
 /** `name`'s replay class as a host runs it, or none. */
 export const replayOf = (name: string): "safe" | "never" | undefined => rowOf(name)?.replay;
 /** The tools a host runs on a harness other than pi, by name. */

@@ -130,7 +130,7 @@ export function dockerVolumeOf(paths: DockerPaths): DockerComputerOptions | unde
 }
 
 /** The deps computerForClaim takes once per process: all but the claim's own. */
-export type ComputerDeps = Omit<ComputerForClaimDeps, "mode" | "workspace" | "sealKey" | "revokeMount" | "signal">;
+export type ComputerDeps = Omit<ComputerForClaimDeps, "mode" | "noExec" | "workspace" | "sealKey" | "revokeMount" | "signal">;
 
 export interface ComputerDepsOptions {
   /** The server's environment: a provider key named here wins over its saved one; AGENTRUN_DOCKER_IMAGE names Docker's

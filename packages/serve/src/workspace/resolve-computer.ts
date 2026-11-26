@@ -16,9 +16,11 @@
 // provider takes more than one), in the computer package's checkGpu words, and go into the computer's spec.
 //
 // Where the run's shell is follows the mount (shellPlaceOf): in the computer that mounts the folder; with none, Archil's
-// serverless exec in Mode 2 (bash only); in Mode 1 none at all, since the folder is one of this server's own and a
-// command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
-// plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
+// serverless exec in Mode 2 (bash only), where the server's Archil region has it; in Mode 1 none at all, since the folder
+// is one of this server's own and a command there would run on the server itself, and none in Mode 2 on a region with no
+// serverless exec. runShellOf reads it off a setting before anything starts (the tool plane shows bash unavailable by
+// it), and the claim's runTools takes the same rule over the computer it started.
+import { noExecWords } from "../archil-settings.js";
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { type BrowserFeatures, type BrowserFile, type BrowserSessionUsage, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, type SettingKindSpec, syncingClient } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
@@ -319,10 +321,12 @@ const nothing = async (): Promise<void> => {};
  *   container holding the run's folder alone, never a process of this server; bash only;
  * - "none": none does, in Mode 1: the folder is one of this server's own, and a command there would run on the server
  *   itself, able to read its data and its keys; no bash family at all, the file tools alone (confined to the folder).
+ *   Nor in Mode 2 where the server's Archil region has no serverless exec (`noExec`, that region: archil-settings.ts
+ *   noExecRegionOf), whose every exec answers "Exec is not enabled".
  */
-export function shellPlaceOf(mounts: boolean, mode: 1 | 2): ShellPlace {
+export function shellPlaceOf(mounts: boolean, mode: 1 | 2, noExec: string | undefined): ShellPlace {
   if (mounts) return "computer";
-  return mode === 2 ? "local" : "none";
+  return mode === 2 && noExec === undefined ? "local" : "none";
 }
 
 /** The kind of the run's folder a computer of `kind` on `entry` holds in `mode` (folderKindOf), or undefined for none:
@@ -370,17 +374,18 @@ export function runFolderOf(setting: ComputerSetting, mode: 1 | 2, registry: Pic
  * kind registry before anything starts: what the claim's runTools gives the run once its computer is started. "computer"
  * for a sandbox, or a desktop whose provider mounts the folder and offers files and exec; for kind none, a phone, a
  * browser or a desktop that does not mount, Archil's exec in Mode 2 ("local", bash only) and no shell at all in Mode 1
- * ("none"). A setting this server refuses (an unknown kind or provider, a sandbox that cannot mount the mode's folder)
- * runs nothing: "none". The setting is the agent's as saved; where it has none, the caller gives the server's default.
+ * or on a Mode 2 region with no exec (`noExec`, shellPlaceOf) ("none"). A setting this server refuses (an unknown kind
+ * or provider, a sandbox that cannot mount the mode's folder) runs nothing: "none". The setting is the agent's as
+ * saved; where it has none, the caller gives the server's default.
  */
-export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): ShellPlace {
-  if (setting.kind === "none") return shellPlaceOf(false, mode);
+export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">, noExec: string | undefined): ShellPlace {
+  if (setting.kind === "none") return shellPlaceOf(false, mode, noExec);
   const selected = selectedFor(setting, registry);
   // An agent whose computer runs no programs of its own has no shell anywhere: not its computer's, not Archil's exec.
   if (!selected || noPrograms(setting)) return "none";
   const mounts = folderOf(selected.kind, selected.entry, [selected.configuration], mode) !== undefined;
   if (selected.kind === "sandbox" && !mounts) return "none";
-  return shellPlaceOf(mounts, mode);
+  return shellPlaceOf(mounts, mode, noExec);
 }
 
 /** What a choice of no computer leaves out of the shell, in plain words: shown beside it (GET /v2/computers shell_note).
@@ -401,11 +406,17 @@ export const APART_SHELL_NOTES: Readonly<Record<Exclude<ShellPlace, "computer">,
  *  second one: the file tools always, bash with a shell, the five background tools on a computer. */
 export const hostToolsOf = (shell: ShellPlace): string[] => hostToolDefs({ maxExecS: 600, shell }).map((def) => def.name);
 
+/** The choice of no computer on a Mode 2 server whose Archil region `region` has no serverless exec (shellPlaceOf's
+ *  `noExec`): no shell, why, and the fix, in place of SHELL_NOTES.none. */
+export const noExecShellNote = (region: string): string =>
+  `No computer on this server: the agent gets the file tools only, no shell, since ${noExecWords(region)}. Give it a sandbox computer (a box) to run bash, or leave bash out of its tools.`;
+
 /** A computer choice as an agent's settings show it: where its runs have their shell (runShellOf), the host tools that
  *  gives, and what it leaves out, in words (none for a computer that mounts the folder). */
-export function shellChoiceOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): { shell: ShellPlace; host_tools: string[]; shell_note?: string } {
-  const shell = runShellOf(setting, mode, registry);
-  return { shell, host_tools: hostToolsOf(shell), ...(shell === "computer" ? {} : { shell_note: (setting.kind === "none" ? SHELL_NOTES : APART_SHELL_NOTES)[shell] }) };
+export function shellChoiceOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">, noExec: string | undefined): { shell: ShellPlace; host_tools: string[]; shell_note?: string } {
+  const shell = runShellOf(setting, mode, registry, noExec);
+  const note = (): string => (setting.kind !== "none" ? APART_SHELL_NOTES[shell as Exclude<ShellPlace, "computer">] : shell === "none" && mode === 2 && noExec !== undefined ? noExecShellNote(noExec) : SHELL_NOTES[shell as Exclude<ShellPlace, "computer">]);
+  return { shell, host_tools: hostToolsOf(shell), ...(shell === "computer" ? {} : { shell_note: note() }) };
 }
 
 /** The server's default where an agent has no computer setting: in Mode 1 a sandbox on the first provider that binds a

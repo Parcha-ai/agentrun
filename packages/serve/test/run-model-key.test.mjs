@@ -9,6 +9,7 @@ import { gatewayKeyNames, gatewayOnThisMachine, modelKeyMisfit, modelKeyRequired
 import { claimModelEnv, claimModelKey, claimSpendOff } from "../dist/runner/claim-secrets.js";
 import { providerFor } from "../dist/provider.js";
 import { openRunLaunch, openRunMcpAuth, sealRunLaunch, sealRunMcpAuth } from "../dist/store/index.js";
+const { sealHandedLaunch } = await import("../dist/store/seal.js");
 
 const GW = "https://gateway.example";
 const RUN_KEY = `not-a-secret-${"run-key"}-1a2b3c`;
@@ -102,17 +103,39 @@ test("claude-agent on Anthropic's wire with ANTHROPIC_BASE_URL on the gateway's 
   assert.throws(() => providerFor("anthropic-messages", { ...gateway, ANTHROPIC_BASE_URL: "https://elsewhere.example" }, { provider: "anthropic", modelId: "claude-sonnet-5-5" }, "claude-agent"), /needs ANTHROPIC_API_KEY/, "an endpoint elsewhere still needs its own key");
 });
 
-test("spend beside a claimed run (a shadow audit, a replay check, its learning grade) is skipped for a run that brought its own key, and on a server with no gateway key; it runs on a server's key for a run that brought none", async () => {
+test("claimSpendOff's three cases: a claim still holding the run's key runs its learning work (on a keyless server too); a run that held a key and holds none now skips it; a server with no gateway key skips work tied to no run's key; a server's key runs a run that brought none", async () => {
   const sealedKeys = { get: async () => undefined, put: async () => {}, replaceIf: async () => true, removeIf: async () => true, clock: async () => Date.now() };
   const deps = (env) => ({ store: { sealedKeys }, sealKey: randomBytes(32), env });
-  const keyed = await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), { origin: GW, key: () => RUN_KEY, everHeld: () => true });
-  assert.match(keyed("A shadow audit"), /^A shadow audit is skipped: this run spent on its own model key/);
-  const keyless = await claimSpendOff(deps(gateway), undefined);
-  const later = await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), { origin: GW, key: () => undefined, everHeld: () => true });
-  assert.match(later("A shadow audit"), /spent on its own model key/, "a key a message handed mid-run counts: the server's key never pays after it");
-  assert.match(keyless("A shadow audit"), /holds none of its own/);
-  const served = await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), undefined);
-  assert.equal(served("A shadow audit"), undefined);
+  // (1) Holds the run's key now: the check and the audit start, whatever the server holds.
+  const holding = { origin: GW, key: () => RUN_KEY, everHeld: () => true };
+  assert.equal((await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), holding))("A shadow audit"), undefined, "a keyed claim on a server with a key");
+  assert.equal((await claimSpendOff(deps(gateway), holding))("A learned workflow's replay check"), undefined, "a keyed claim on a keyless server");
+  // (2) Held one, holds none now (erased with its turn's end): skipped, never the server's key.
+  const erased = await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), { origin: GW, key: () => undefined, everHeld: () => true });
+  assert.match(erased("A shadow audit"), /^A shadow audit is skipped: this run spent on its own model key/, "the server's key never pays after a run's own");
+  // A key read live: a claim whose key is gone by the time the work starts skips it.
+  let now = RUN_KEY;
+  const live = await claimSpendOff(deps(gateway), { origin: GW, key: () => now, everHeld: () => true });
+  assert.equal(live("A shadow audit"), undefined);
+  now = undefined;
+  assert.match(live("A shadow audit"), /spent on its own model key/);
+  // (3) Never held one, and the server holds none: skipped in words.
+  assert.match((await claimSpendOff(deps(gateway), undefined))("A shadow audit"), /holds none of its own/);
+  assert.match((await claimSpendOff(deps(gateway), { origin: GW, key: () => undefined, everHeld: () => false }))("A shadow audit"), /holds none of its own/);
+  // A server's key runs a run that brought none.
+  assert.equal((await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), undefined))("A shadow audit"), undefined);
+});
+
+test("a child run's handed seal (sealHandedLaunch): its MCP credentials always, the run's model key with its origin only when keyed, sealed for the child alone; never tool keys or retired values; none for nothing", () => {
+  const sealKey = randomBytes(32);
+  const mcp = { gw: { headers: { authorization: "Bearer x-mcp-123" }, origin: "https://mcp.example" } };
+  const parent = sealRunLaunch(sealKey, "run-1", { mcp, model: { key: RUN_KEY, origin: GW }, keys: { PARALLEL_API_KEY: `not-a-secret-${"tool"}-9z8y` }, retired: [`${RUN_KEY}-old`] });
+  const keyed = sealHandedLaunch(sealKey, "run-1", parent, "replay-1", true);
+  assert.deepEqual(openRunLaunch(sealKey, "replay-1", keyed), { mcp, model: { key: RUN_KEY, origin: GW } }, "MCP and the model key bound to its origin; no tool key, no retired value");
+  assert.equal(openRunLaunch(sealKey, "run-1", keyed), undefined, "sealed for the child alone");
+  assert.deepEqual(openRunLaunch(sealKey, "replay-1", sealHandedLaunch(sealKey, "run-1", parent, "replay-1", false)), { mcp }, "not keyed: no model key");
+  assert.equal(sealHandedLaunch(sealKey, "run-1", sealRunLaunch(sealKey, "run-1", { keys: { PARALLEL_API_KEY: `not-a-secret-${"tool"}-9z8y` } }), "replay-1", true), undefined, "nothing it takes: none");
+  assert.equal(sealHandedLaunch(sealKey, "run-2", parent, "replay-1", true), undefined, "bytes sealed for another run do not open");
 });
 
 // A service that reached Ollama as a gateway with AGENT_MODEL_API_KEY=none gets model_key_required once that key is gone:
