@@ -520,3 +520,92 @@ test("a refused raise leaves the run's budget entries as they were: one pause, p
   assert.equal(followUpsSent(w.sent, pause.pending.suggested_cap_usd), 1, `one follow-up, at the covering cap: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
   assert.deepEqual(await rootEntries(w.store, "agentrun.budget"), [pause], "one pause in the run's life");
 });
+
+test("a retry of the raise that resumed a run, sent once it parked again, takes its row and leaves the new pause standing: no third budget entry, and a covering raise resumes it", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }]);
+  await w.settled("parked");
+  const [first] = await rootEntries(w.store, "agentrun.budget");
+  const short = Number(((CAP + first.pending.least_cap_usd) / 2).toFixed(6));
+  const raised = await w.raise(short);
+  await until(async () => (await commandOf(w.server, raised.id))?.takenAt != null, "the short raise taken");
+  await w.settled("parked");
+  const budgets = await rootEntries(w.store, "agentrun.budget");
+  assert.equal(budgets.length, 2, `parked again at the raised cap: ${JSON.stringify(budgets)}`);
+  const second = budgets[1];
+  // The same raise again (as a client's retry that reached the store): the cap's rule calls it a retry.
+  assert.ok("retry" in cap.checkRaise({ capUsd: short, lastRaise: { to: short } }, short), "the cap's rule reads it as a retry");
+  const retry = await w.raise(short);
+  await until(async () => (await commandOf(w.server, retry.id))?.takenAt != null, "the retry answered");
+  const again = await w.settled("parked");
+  assert.deepEqual(await rootEntries(w.store, "agentrun.budget"), budgets, "the retry wrote no budget entry");
+  assert.equal(again.summary, second.words, "parked in the second pause's words");
+  const covering = await w.raise(second.pending.suggested_cap_usd);
+  await until(async () => (await commandOf(w.server, covering.id))?.takenAt != null, "the covering raise taken");
+  await w.settled("ended");
+  assert.equal(followUpsSent(w.sent, second.pending.suggested_cap_usd), 1, "resumed once, with one follow-up");
+  assert.deepEqual(await rootEntries(w.store, "agentrun.budget"), budgets, "two pauses in the run's life");
+});
+
+test("a covering raise that reaches a claim parking the run again (a refused raise woke it) waits for the run's next claim, which resumes it: never taken by the claim that parks", async (t) => {
+  // From the refused raise's refusal on, the claim's journal reads wait until the covering raise is answered: the claim is
+  // between that refusal and its park, where a slow park (a computer kept) leaves it.
+  let armed = false;
+  let held = () => {};
+  const holding = new Promise((resolve) => (held = resolve));
+  let open = () => {};
+  const opened = new Promise((resolve) => (open = resolve));
+  let answer = () => {};
+  const answered = new Promise((resolve) => (answer = resolve));
+  let covers;
+  const bound = (target, value) => (typeof value === "function" ? value.bind(target) : value);
+  const storeOf = (store) => new Proxy(store, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key !== "take") return bound(target, value);
+      return async (claim, id, outcome, ...rest) => {
+        const out = await value.call(target, claim, id, outcome, ...rest);
+        if (outcome === "refused") armed = true;
+        return out;
+      };
+    },
+  });
+  const journalOf = (journal) => new Proxy(journal, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key !== "scanEntries") return bound(target, value);
+      return async (...args) => {
+        if (armed) {
+          held();
+          await opened;
+        }
+        return value.apply(target, args);
+      };
+    },
+  });
+  const loopOf = (loop) => new Proxy(loop, {
+    get(target, key) {
+      const value = Reflect.get(target, key, target);
+      if (key !== "command") return bound(target, value);
+      return async (command) => {
+        const out = await value.call(target, command);
+        if (command.kind === "raise" && command.body?.capUsd === covers) answer(out);
+        return out;
+      };
+    },
+  });
+  const w = await cappedRun(t, [{ say: "done" }], { storeOf, journalOf, loopOf, release: () => open() });
+  await w.settled("parked");
+  const [pause] = await rootEntries(w.store, "agentrun.budget");
+  covers = pause.pending.suggested_cap_usd;
+  await w.raise(CAP);
+  await holding;
+  const covering = await w.raise(covers);
+  const outcome = await answered;
+  armed = false;
+  open();
+  assert.ok("later" in outcome, `the covering raise waits for the run's next claim: ${JSON.stringify(outcome)}`);
+  await until(async () => (await commandOf(w.server, covering.id))?.takenAt != null, "the covering raise taken by the next claim");
+  await w.settled("ended");
+  assert.equal(followUpsSent(w.sent, covers), 1, "resumed once, with one follow-up");
+  assert.deepEqual(await rootEntries(w.store, "agentrun.budget"), [pause], "one pause in the run's life");
+});
