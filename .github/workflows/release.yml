@@ -228,7 +228,9 @@ jobs:
       - name: Is this version on PyPI already?
         id: pypi
         run: node scripts/python-release.mjs --on-pypi "$RUNNER_TEMP/python-dist" --python python
-      # A failed upload is tried once more, a minute later, with the same archives; that second failure fails the job.
+      # A failed upload is tried once more, a minute later, with the same archives; that second failure fails the job. The
+      # action writes <archive>.publish.attestation beside each archive before it uploads and refuses a directory that
+      # already holds one, so the first try's attestations go before the second.
       - name: Upload to PyPI
         id: upload
         if: steps.pypi.outputs.publish == 'true'
@@ -236,9 +238,11 @@ jobs:
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: ${{ runner.temp }}/python-dist
-      - name: Wait a minute before the second upload
+      - name: Clear the first try's attestations and wait a minute
         if: steps.pypi.outputs.publish == 'true' && steps.upload.outcome == 'failure'
-        run: sleep 60
+        run: |
+          rm -f -- "$RUNNER_TEMP"/python-dist/*.publish.attestation
+          sleep 60
       - name: Upload to PyPI, second try
         if: steps.pypi.outputs.publish == 'true' && steps.upload.outcome == 'failure'
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
@@ -256,53 +260,72 @@ jobs:
           if-no-files-found: ignore
           include-hidden-files: true
 
-  # A pypi job no runner picks up stays queued and holds the release open until it times out. The watchdog starts with it,
-  # reads this run's jobs every 30 seconds, and is done as soon as pypi has started. It cancels the run only when pypi has
-  # been queued for 15 minutes in a row while it watched AND every job that writes to npm (NPM_JOBS) has completed with
-  # success: a cancel while npm publishes would leave half a release. release-retry.yml then re-runs the cancelled jobs
-  # once. In any other state it cancels nothing and keeps reading until its time is up, then says so and exits 0. A pypi
-  # job waiting for the npm-release approval is not queued, so a slow approval cancels nothing. No job waits for this one.
+  # A pypi job no runner picks up stays queued and holds the release open. The watchdog starts once publish has passed, so
+  # the npm-release approval is behind both, reads this run's jobs every 30 seconds, and is done as soon as pypi has
+  # started. pypi's time in the queue comes from the jobs API: since the latest of its created_at, its started_at and the
+  # npm jobs' started_at, so the wait for the approval never counts. It cancels the run only when all of these hold:
+  # pypi has been queued for 15 minutes; every job that writes to npm (NPM_JOBS) has completed with success, since a
+  # cancel while npm publishes would leave half a release; and every other job (OTHER_JOBS: all but pypi, this one and
+  # the jobs that wait for pypi) has finished, since GitHub cancels a whole run, never one job, and pypi must be all a
+  # cancel stops. The watch step decides and the next step cancels; release-retry.yml re-runs a cancelled release only
+  # when that step ran. In any other state it cancels nothing and keeps reading until its time is up, then says so and
+  # exits 0. A pypi job waiting for the approval is not queued. No job waits for this one.
   pypi-watchdog:
-    needs: gate
+    needs: publish
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
       actions: write
     steps:
-      - name: Cancel the run if pypi stays queued after npm has published
+      - name: Watch pypi until it starts
+        id: watch
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           NPM_JOBS: publish
+          OTHER_JOBS: gate publish box image image-release chart chart-public
           POLL_SECONDS: 30
           QUEUED_LIMIT_SECONDS: 900
           WATCH_SECONDS: 1380
         run: |
-          start=$(date +%s); queued_since=
+          start=$(date +%s)
           while [ $(( $(date +%s) - start )) -lt "$WATCH_SECONDS" ]; do
             jobs=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100") || jobs='{}'
             status=$(jq -r '[.jobs[]? | select(.name == "pypi") | .status][0] // ""' <<<"$jobs") || status=
+            queued_for=$(jq -r --arg names "$NPM_JOBS" '($names | split(" ")) as $n | [(.jobs[]? | select(.name == "pypi") | .created_at, .started_at), (.jobs[]? | select(.name | IN($n[])) | .started_at)] | map(select(. != null) | fromdateiso8601) | if length == 0 then "" else now - max | floor end' <<<"$jobs") || queued_for=
             npm=$(jq -r --arg names "$NPM_JOBS" '($names | split(" ")) as $n | [.jobs[]? | select(.name | IN($n[]))] | "\(length == ($n | length) and all(.status == "completed" and .conclusion == "success")) \(map("\(.name)=\(.status)/\(.conclusion // "none")") | join(","))"' <<<"$jobs") || npm='false unreadable'
             npm_done=${npm%% *}
-            echo "pypi: ${status:-not listed yet}; npm jobs: ${npm#* }"
+            # A matrix job is listed as "name (its matrix values)". A job not listed yet has not finished.
+            others=$(jq -r --arg names "$OTHER_JOBS" '($names | split(" ")) as $n | [.jobs[]?] as $all | def of($w): [$all[] | select(.name == $w or (.name | startswith($w + " (")))]; [$n[] | . as $w | if (of($w) | length) == 0 then "\($w)=not listed" else (of($w)[] | select(.status != "completed") | "\(.name)=\(.status)") end] | "\(length == 0) \(if length == 0 then "all finished" else join(",") end)"' <<<"$jobs") || others='false unreadable'
+            others_done=${others%% *}
+            echo "pypi: ${status:-not listed yet}${queued_for:+, queued ${queued_for}s}; npm jobs: ${npm#* }; other jobs: ${others#* }"
             case "$status" in
               in_progress|completed) exit 0 ;;
-              queued) queued_since=${queued_since:-$(date +%s)} ;;
-              *) queued_since= ;;
             esac
-            if [ -n "$queued_since" ] && [ $(( $(date +%s) - queued_since )) -ge "$QUEUED_LIMIT_SECONDS" ]; then
+            if [ "$status" = queued ] && [ "${queued_for:-0}" -ge "$QUEUED_LIMIT_SECONDS" ]; then
               if [ "$npm_done" = true ]; then
-                echo "::warning::pypi has been queued for 15 minutes and npm has published; cancelling the run so release-retry re-runs it"
-                gh run cancel "$RUN_ID"; exit 0
+                if [ "$others_done" = true ]; then
+                  echo "::warning::pypi has been queued for ${queued_for}s, npm has published and every other job has finished; cancelling the run, which stops pypi alone, so release-retry re-runs it"
+                  echo cancel=true >> "$GITHUB_OUTPUT"; exit 0
+                fi
+                echo "pypi has been queued for 15 minutes, but other jobs have not finished (${others#* }); no cancel: GitHub cancels the whole run, not one job"
+              else
+                echo "pypi has been queued for 15 minutes, but not every npm job has completed with success; no cancel while npm may publish"
               fi
-              echo "pypi has been queued for 15 minutes, but not every npm job has completed with success; no cancel while npm may publish"
             fi
             sleep "$POLL_SECONDS"
           done
-          echo "::notice::pypi-watchdog cancelled nothing: pypi did not start while it watched (last status: ${status:-not listed}; npm jobs: ${npm#* })"
+          echo "::notice::pypi-watchdog cancelled nothing: pypi did not start while it watched, or a cancel would have stopped more than pypi (last status: ${status:-not listed}; npm jobs: ${npm#* }; other jobs: ${others#* })"
+      - name: Cancel the run, pypi alone left in it
+        if: steps.watch.outputs.cancel == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: gh run cancel "$RUN_ID"
 
   # AgentRun Server's container image, built from the same reviewed tag (packages/serve/docker/Dockerfile) for linux/amd64 and
   # linux/arm64, each on its own native runner: under QEMU the arm64 build took over half an hour. The image builds from the
