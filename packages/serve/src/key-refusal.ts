@@ -7,7 +7,7 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, foldsHeld, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import { entityAt, jsonEscapeAt, privateKeyEnd, pythonEscapeAt, scanned, squeeze, type Span } from "./redact/match.js";
+import { entityAt, jsonEscapeAt, privateKeyEnd, pythonEscapeAt, scanned, sequenceAt, type SequenceUnits, squeeze, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -366,102 +366,66 @@ function counted(found: number, chars: string, fold: boolean): number {
 }
 /** Whether `char` opens a terminal sequence (ESC, the 8-bit CSI or OSC): the views read one as a terminal shows it. */
 const opensSequence = (char: string | undefined): boolean => char === "\u001b" || char === "\u009b" || char === "\u009d";
-/** Where the terminal sequence `intro` opens, read on from text[at], ends, as the views read it (match.ts readingsOf:
- *  a CSI, an OSC, or an escape with a final byte, or a CAN or SUB that aborts it), each of its characters as charAt or
- *  percentAt reads it, and what a terminal passes over inside a sequence passed over (whitespace, a NUL, a DEL, any
- *  other control but ESC, CAN, SUB, the 8-bit CSI, ST and OSC, a BEL but where it ends an OSC, and a character the
- *  views drop); or `at` where it opens none (the views then read on from there). It counts as nothing, and a backspace
- *  inside it, which still moves back, as one would outside it: `found` comes back with it taken off (counted). Read no
- *  further than a piece of text. */
+/** Where the terminal sequence `intro` opens, read on from text[at], ends, read by the matcher's own reader (match.ts
+ *  sequenceAt), each unit as charAt or percentAt reads it; or `at` where it opens none (the views then read on from
+ *  there). It counts as nothing, and a backspace inside it, which still moves back, as one would outside it: `found`
+ *  comes back with it taken off (counted). It is read twice, as it stands and with what the join views drop passed over
+ *  (whitespace, a no-break space among it, and JSON's punctuation: a ":" or a blank they drop can make a whole escape
+ *  of the rest), and the read that ends further is taken. Read no further than a piece of text.
+ *
+ *  The invariant every count here keeps is one-sided: this read may count fewer characters than the views show
+ *  (it then reads further), never more, so no padding the views read past pushes a held value's other half out of
+ *  the read. */
 function sequenceEnd(text: string, at: number, to: number, intro: string, found: number): [number, number] {
-  let k = at;
-  let struck = found;
-  const structural = (code: number, osc: boolean): boolean =>
-    code === 0x18 || code === 0x1a || code === 0x1b || code === 0x9b || code === 0x9c || code === 0x9d || (osc && code === 0x07);
-  const next = (osc = false): { code: number; end: number } | undefined => {
-    while (k < to && k - at <= ANSWER_PIECE) {
-      const read = percentAt(text, k, to) ?? charAt(text, k);
-      const code = read.char.charCodeAt(0);
-      if (!structural(code, osc) && (/\s/.test(read.char) || code < 0x20 || squeeze(read.char) === "")) {
-        if (code === 0x08) struck = counted(struck, "\b", false);
-        k = read.end;
-        continue;
-      }
-      return { code, end: read.end };
-    }
-    return undefined;
+  let place = -1;
+  let read: { char: string; end: number } = { char: "", end: at };
+  const unit = (k: number) => {
+    if (k !== place) [place, read] = [k, percentAt(text, k, to) ?? charAt(text, k)];
+    return read;
   };
-  const aborts = (unit: { code: number } | undefined): boolean => unit !== undefined && (unit.code === 0x18 || unit.code === 0x1a);
-  const done = (end: number): [number, number] => {
-    scanned.chars += Math.max(k, end) - at;
-    return [end, end === at ? found : struck];
+  const units: SequenceUnits = {
+    end: Math.min(to, at + ANSWER_PIECE + 1),
+    code: (k) => unit(k).char.charCodeAt(0),
+    char: (k) => unit(k).char,
+    next: (k) => unit(k).end,
   };
-  let kind = intro === "\u009b" ? "csi" : intro === "\u009d" ? "osc" : "";
-  if (!kind) {
-    const first = next();
-    if (!first) return done(at);
-    if (first.code === 0x5b || first.code === 0x5d) {
-      kind = first.code === 0x5b ? "csi" : "osc";
-      k = first.end;
-    } else {
-      let unit: { code: number; end: number } | undefined = first;
-      while (unit && unit.code >= 0x20 && unit.code <= 0x2f) {
-        k = unit.end;
-        unit = next();
-      }
-      return done((unit && unit.code >= 0x30 && unit.code <= 0x7e) || aborts(unit) ? unit!.end : at);
-    }
-  }
-  if (kind === "csi") {
-    let unit = next();
-    while (unit && unit.code >= 0x30 && unit.code <= 0x3f) {
-      k = unit.end;
-      unit = next();
-    }
-    while (unit && unit.code >= 0x20 && unit.code <= 0x2f) {
-      k = unit.end;
-      unit = next();
-    }
-    // A printable character past ASCII: the rest is read to the final byte, as readingsOf reads it (csi_ignore).
-    if (unit && unit.code >= 0xa0)
-      while (unit && (unit.code >= 0xa0 || (unit.code >= 0x20 && unit.code <= 0x3f))) {
-        k = unit.end;
-        unit = next();
-      }
-    return done((unit && unit.code >= 0x40 && unit.code <= 0x7e) || aborts(unit) ? unit!.end : at);
-  }
-  for (let unit = next(true); unit; unit = next(true)) {
-    if (unit.code === 0x07 || unit.code === 0x9c || aborts(unit)) return done(unit.end);
-    if (unit.code === 0x9b || unit.code === 0x9d) return done(at);
-    k = unit.end;
-    if (unit.code === 0x1b) {
-      const after = next(true);
-      return done(after && after.code === 0x5c ? after.end : at);
-    }
-  }
-  return done(at);
+  const code = intro.charCodeAt(0);
+  const joined = (unit: number): boolean => JOIN_DROPS.has(String.fromCharCode(unit)) || /\s/.test(String.fromCharCode(unit));
+  const reads = [sequenceAt(units, code, at), sequenceAt(units, code, at, joined)];
+  const sequence = reads.reduce((far, one) => (one && (!far || one.end > far.end) ? one : far), undefined);
+  if (!sequence) return [at, found];
+  let count = found;
+  for (let n = 0; n < sequence.backspaces; n++) count = counted(count, "\b", false);
+  return [sequence.end, count];
 }
 /** The byte text[at] percent-encodes ("%" and two hex digits before `to`), or -1. */
 function percentByte(text: string, at: number, to: number): number {
   return at + 3 <= to && text[at] === "%" && HEX_PAIR.test(text.slice(at + 1, at + 3)) ? Number.parseInt(text.slice(at + 1, at + 3), 16) : -1;
 }
 /** The character percent-encoded bytes at text[at] decode to inside a terminal sequence, as the percent views decode
- *  them: an ASCII byte, or one whole UTF-8 sequence of two to four bytes (U+0080-009F among them); undefined for
- *  anything else. */
+ *  them: an ASCII byte, one whole UTF-8 sequence of two to four bytes (U+0080-009F and U+FFFD among them), or, for a
+ *  byte that starts none, U+FFFD (as Buffer decodes it there); undefined where text[at] is no percent-encoded byte. */
 function percentAt(text: string, at: number, to: number): { char: string; end: number } | undefined {
   const lead = percentByte(text, at, to);
-  if (lead >= 0 && lead < 0x80) return { char: String.fromCharCode(lead), end: at + 3 };
+  if (lead < 0) return undefined;
+  if (lead < 0x80) return { char: String.fromCharCode(lead), end: at + 3 };
   const size = lead >= 0xc2 && lead <= 0xdf ? 2 : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf4 ? 4 : 0;
-  if (!size) return undefined;
   const bytes = [lead];
   for (let i = 1; i < size; i++) {
     const next = percentByte(text, at + 3 * i, to);
-    if (next < 0x80 || next > 0xbf) return undefined;
+    if (next < 0x80 || next > 0xbf) break;
     bytes.push(next);
   }
-  const char = Buffer.from(bytes).toString("utf8");
-  return char.includes("\ufffd") ? undefined : { char, end: at + 3 * size };
+  if (size && bytes.length === size) {
+    try {
+      return { char: UTF8.decode(Uint8Array.from(bytes)), end: at + 3 * size };
+    } catch {
+      // An overlong or surrogate encoding: no UTF-8, read as below.
+    }
+  }
+  return { char: "\ufffd", end: at + 3 };
 }
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
 /** What every view drops between a text's strings: a quote, an apostrophe (the join of single-quoted strings) and JSON's
