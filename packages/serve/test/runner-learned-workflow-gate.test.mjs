@@ -141,3 +141,29 @@ test("pi: a learned workflow's call node whose path is in a filed folder is refu
   assert.doesNotMatch(outside.text, /can't be called/, outside.text);
   assert.match(outside.text, /pdf_pages/, outside.text);
 });
+
+// The gate holds a pdf_pages path as pdf_pages opens it (posix.normalize, then the Workspace's relative path), not as the
+// agent's file tools read one: a `~` or `file:` prefix that normalizes away opens the filed folder, so it is refused; one
+// that stays is a folder of that name, and `@` is no prefix to pdf_pages, so those run; an absolute path is pdf_pages' own
+// refusal.
+test("pi: a learned pdf_pages call node's path is held as pdf_pages opens it: a ~ or file: prefix that normalizes into the filed folder is refused", async (t) => {
+  const { spec } = await piSpec(t, { toolSettings: FILED, flows: [{ name: "pages-one", description: "Draws a PDF's pages", workflow: PAGES }], granted: ["read", "pdf_pages"] });
+  const tool = spec.session.tools.find((one) => one.name === LEARNED_WORKFLOW_TOOL);
+  const call = (path, id) => tool.call({ name: "pages-one", input: { path } }, { callId: id, signal: new AbortController().signal });
+  const refused = ["~skip/../stripe/pages/a.pdf", "file:skip/../stripe/pages/a.pdf", "~/../stripe/pages/a.pdf", "file:/../stripe/pages/a.pdf", "~skip/../Stripe/Pages/a.pdf"];
+  for (const [i, path] of refused.entries()) {
+    const out = await call(path, `p-${i}`);
+    assert.equal(out.isError, true, out.text);
+    assert.match(out.text, new RegExp(`pdf_pages can't be called: ${path.replace(/[.~]/g, "\\$&")} is in stripe/pages/, the folder this agent's setting for ${FILED_KEY} files that tool's answers in \\(its file setting\\)`), out.text);
+  }
+  // pdf_pages opens these outside the folder: it runs, and finds no such PDF here, in its own words.
+  for (const [i, path] of ["~skip/stripe/pages/a.pdf", "file:x/stripe/pages/a.pdf", "@stripe/pages/a.pdf"].entries()) {
+    const out = await call(path, `r-${i}`);
+    assert.equal(out.isError, true, out.text);
+    assert.doesNotMatch(out.text, /can't be called/, out.text);
+    assert.match(out.text, /pdf_pages: no file/, out.text);
+  }
+  // An absolute path pdf_pages never opens: it is refused.
+  const absolute = await call("/workspace/stripe/pages/a.pdf", "a-1");
+  assert.equal(absolute.isError, true, absolute.text);
+});
