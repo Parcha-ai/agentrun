@@ -246,8 +246,8 @@ export interface McpGatewayOptions {
   /** The run's redactor (the runner's one, holding every key the run opened: its own model and tool keys, the other
    *  servers' credentials), after each call's own scrub on every text the gateway answers or files: the model's answer,
    *  a filed answer, a long answer's filed rest, a server's results and an error's words; its values (heldValues) read
-   *  in a binary payload filed whole (filedJson). Every claim's MCP gives it (mcp-run.ts); a caller the types don't reach
-   *  that gives none gets the call's scrub alone. */
+   *  in a binary payload filed whole (filedJson). Every claim's MCP gives it (mcp-run.ts); a gateway given none does not
+   *  start. */
   redact: ((text: string) => string) & { readonly heldValues?: () => readonly string[] };
 }
 
@@ -282,6 +282,8 @@ export type McpGateway = {
 };
 
 export function mcpGateway(options: McpGatewayOptions): McpGateway {
+  if (typeof options.redact !== "function") throw new TypeError("An MCP gateway was given no redactor (the run's), so it does not start: an answer would reach the model and the run's files cut of its own server's credentials alone");
+  const runCut = options.redact;
   type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown>; request(params: unknown, options: unknown): Promise<unknown> };
   /** Each server's client, with the account query it was connected with (`query`, JSON): a message that binds the run to
    *  another account connects again, so no session made as one account carries another's calls. */
@@ -508,10 +510,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // read as the agent's own, then cut by the run's redactor: a value the run holds that the server echoed reaches
     // neither. The one place each of those texts passes.
     const own = back ? (text: string) => back(scrubbed(text)) : scrubbed;
-    const runCut = options.redact as typeof options.redact | undefined;
-    const clean = runCut ? (text: string) => runCut(own(text)) : own;
-    const heldOf = !runCut ? () => [] : (runCut.heldValues ?? (() => undefined));
-    const filedAs = (whole: Record<string, unknown>) => filedJson(whole, clean, own, heldOf());
+    const clean = (text: string) => runCut(own(text));
+    const filedAs = (whole: Record<string, unknown>) => filedJson(whole, clean, own, runCut.heldValues?.());
     hold(server, queryOf(server));
     try {
       const upstream = await until(connect(server, url, headers), boundedSignal);
