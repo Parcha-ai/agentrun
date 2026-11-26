@@ -43,7 +43,7 @@ import { formatToolName, isCatalogName, mcpNameOf, mcpToolName, monidNameOf } fr
 import { filedFolders } from "./filed-tool.js";
 import { foldName } from "./home-path.js";
 import { savePath, WEB_SAVE_TOOL } from "./web-save-path.js";
-import { PDF_PAGES_TOOL } from "./pdf-pages-name.js";
+import { PDF_PAGES_TOOL, pdfWorkPath } from "./pdf-pages-path.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -148,18 +148,25 @@ const FILE_KEYS: ReadonlySet<string> = new Set(["read", "write", "edit"]);
 const PATH_ARGS = ["path", "file_path", "notebook_path"] as const;
 /** The browser's registration that reads a file of the run's files (its `path`) into a page's file input. */
 const BROWSER_UPLOAD = "browser_upload";
-/** The run-file paths the call `name` (held to `key`) with `args` names, which filedRefusal holds, with the tool its
- *  refusal names: the agent's own read, write and edit (by key; every PATH_ARGS it gives, as given), web_save's `path` as
- *  where it saves (savePath: a bare name under media/), browser_upload's `path`. Undefined for any other call, and for
- *  read_skill_file, which reads the agent's skill, not the run's files. */
-function runFilePaths(key: string, name: string, args: unknown): { tool: string; paths: string[] } | undefined {
+/** The run-file paths a call names, with the tool its refusal names, and, for a tool that opens a path by a rule of its
+ *  own, that rule: each path as the run file the tool opens (relative to the run's folder; none for a path it opens none
+ *  at). Without one, a path is read as the agent's file tools read it (inRunFolder). */
+type NamedFiles = { tool: string; paths: string[]; opens?: (given: string) => string[] };
+/** The run-file paths the call `name` (held to `key`) with `args` names, which filedRefusal holds: the agent's own read,
+ *  write and edit (by key; every PATH_ARGS it gives, as given), web_save's `path` as where it saves (savePath: a bare name
+ *  under media/), browser_upload's `path`, and a workflow call node's pdf_pages `path` as pdf_pages opens it
+ *  (pdfWorkPath). Undefined for any other call, and for read_skill_file, which reads the agent's skill, not the run's
+ *  files. */
+function runFilePaths(key: string, name: string, args: unknown): NamedFiles | undefined {
   if (args === null || typeof args !== "object") return undefined;
   const given = args as Record<string, unknown>;
   if (FILE_KEYS.has(key)) return name === READ_SKILL_FILE ? undefined : { tool: key, paths: PATH_ARGS.flatMap((arg) => (typeof given[arg] === "string" ? [given[arg]] : [])) };
   if (key === WEB_SAVE_TOOL) return typeof given.path === "string" && given.path !== "" ? { tool: key, paths: [savePath(given.path)] } : undefined;
   if (name === BROWSER_UPLOAD) return typeof given.path === "string" ? { tool: name, paths: [given.path] } : undefined;
-  // A workflow call node's pdf_pages (callOnly: never the agent's own call), which opens a run file at its path.
-  if (key === PDF_PAGES_TOOL) return typeof given.path === "string" ? { tool: key, paths: [given.path] } : undefined;
+  // A workflow call node's pdf_pages (callOnly: never the agent's own call), which opens a run file at its path by its
+  // own rule: held as that rule opens it, the one function pdf_pages calls, so the gate and the tool never read one path
+  // two ways. A path it opens no run file at (absolute, one that would leave the folder) is its own refusal.
+  if (key === PDF_PAGES_TOOL) return typeof given.path === "string" ? { tool: key, paths: [given.path], opens: (path) => { const rel = pdfWorkPath(path); return rel === undefined ? [] : [rel]; } } : undefined;
   return undefined;
 }
 /** `given` as a path in the run's folder (`names`: its names, this machine's path, the computer's and each alias its file
@@ -756,11 +763,12 @@ export class RunGate {
    *  call: a run's revision does not change under it. */
   private filed?: readonly { key: string; folder: string }[];
   /** Why the call `name` (held to `key`) with `args` is refused for a filed folder, or undefined: a call that names a
-   *  run-file path (runFilePaths: the agent's own read, write and edit, web_save, browser_upload) at or under a folder the
-   *  revision's own `mcp:` setting files answers in, by its words against the run's folder by every name of it (`work`,
-   *  the computer's root and the names its file tools take: RunTools.names, a CLI's scratch folder among them; `..` and
-   *  ./ resolved), as given and as pi's file tools take it (a leading `@` dropped), each segment folded as a disk that
-   *  folds names takes it. An ancestor, a sibling and a path outside the run's folder are not refused; bash is not gated
+   *  run-file path (runFilePaths: the agent's own read, write and edit, web_save, browser_upload, a call node's
+   *  pdf_pages) at or under a folder the revision's own `mcp:` setting files answers in, by its words against the run's
+   *  folder by every name of it (`work`, the computer's root and the names its file tools take: RunTools.names, a CLI's
+   *  scratch folder among them; `..` and ./ resolved), as given and as pi's file tools take it (a leading `@` dropped), or,
+   *  for a tool with a rule of its own (pdf_pages), as that rule opens it, each segment folded as a disk that folds names
+   *  takes it. An ancestor, a sibling and a path outside the run's folder are not refused; bash is not gated
    *  by path. */
   private filedRefusal(key: string, name: string, args: unknown, ran: "no" | "unknown"): string | undefined {
     const named = runFilePaths(key, name, args);
@@ -769,7 +777,7 @@ export class RunGate {
     if (!folders.length) return undefined;
     const names = [this.where.work, COMPUTER_ROOT, ...(this.where.names ?? [])];
     for (const given of named.paths) {
-      const rels = inRunFolder(names, given);
+      const rels = named.opens ? named.opens(given) : inRunFolder(names, given);
       const hit = folders.find(({ folder }) => rels.some((rel) => inFolder(rel, folder)));
       if (hit) return `${named.tool}${CANT_BE_CALLED}${given} is in ${hit.folder}/, the folder this agent's setting for ${hit.key} files that tool's answers in (its file setting), so the agent's own file tools are refused there. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
     }

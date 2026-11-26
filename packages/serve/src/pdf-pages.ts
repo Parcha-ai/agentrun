@@ -14,9 +14,10 @@ import { tmpdir } from "node:os";
 import { basename, extname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { helperEnv } from "./helper-env.js";
-import { isWorkspaceError, READ_MAX, relativePath, type Workspace, workspaceAt } from "./workspace/index.js";
+import { pdfWorkPath } from "./pdf-pages-path.js";
+import { isWorkspaceError, READ_MAX, type Workspace, workspaceAt } from "./workspace/index.js";
 
-export { PDF_PAGES_TOOL } from "./pdf-pages-name.js";
+export { PDF_PAGES_TOOL } from "./pdf-pages-path.js";
 /** The read-only directory a run's documents are read from: the server's `--documents`. */
 export const DOCUMENTS_ENV = "AGENTRUN_SERVE_DOCUMENTS";
 const TEXT_CAP = 20_000;
@@ -52,16 +53,6 @@ async function confined(base: string, path: string): Promise<string | undefined>
  *  server (the documents' own file, or a scratch copy of the run's). */
 type Located = { base: "documents" | "work"; rel: string; name: string; file: string };
 
-/** `path` as the run's Workspace names it, or undefined for one that would leave the work directory. */
-function workPath(path: string): string | undefined {
-  try {
-    const rel = relativePath(posix.normalize(path));
-    return rel === "" ? undefined : rel;
-  } catch {
-    return undefined;
-  }
-}
-
 /** Where a document named `path` is, the documents directory first (links resolved, never outside it), then the run's
  *  work directory through its Workspace (no link followed), copied into `scratch` to be drawn from. */
 async function locate(path: unknown, where: PdfWhere, scratch: string): Promise<Located> {
@@ -71,7 +62,7 @@ async function locate(path: unknown, where: PdfWhere, scratch: string): Promise<
     const found = await confined(where.documents, path);
     if (found) return { base: "documents", rel: relative(await realpath(where.documents), found).split(sep).join("/"), name: basename(found), file: found };
   }
-  const rel = workPath(path);
+  const rel = pdfWorkPath(path);
   const bytes = rel === undefined ? undefined : await where.work.read(rel).catch((error: unknown) => {
     if (isWorkspaceError(error, "TOO_LARGE")) throw new Error(`pdf_pages: ${path} is over ${READ_MAX} bytes`);
     if (isWorkspaceError(error) && error.code !== "UNAVAILABLE" && error.code !== "TIMEOUT") return undefined;
@@ -169,7 +160,7 @@ export const imageLoader = (given: Workspace | string) => async (ref: string): P
   const work = workspaceAt(given);
   const mime = IMAGE_TYPES[extname(String(ref)).toLowerCase()];
   if (!mime) throw new Error(`the image ${ref} is not a PNG, JPEG, WebP or GIF file`);
-  const rel = typeof ref === "string" && !isAbsolute(ref) ? workPath(ref) : undefined;
+  const rel = typeof ref === "string" && !isAbsolute(ref) ? pdfWorkPath(ref) : undefined;
   if (rel === undefined) throw new Error(`the image ${ref} is not a path under the run's work directory`);
   // One byte past the cap tells a file over it from one at it.
   const bytes = await work.read(rel, { length: MAX_IMAGE_BYTES + 1 }).catch((error: unknown) => {

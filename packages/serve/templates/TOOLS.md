@@ -170,7 +170,8 @@ The setting keeps the answer out of the tool's result, and the tool gate keeps t
 agent's own `read`, `write` and `edit` (claude-agent's `Read`, `Write` and `Edit`, a computer script's file ops, a
 screenshot's `save_as`), `web_save`, `browser_upload`, and a learned workflow's call node that opens a run file
 (`pdf_pages`). A call of one of them whose path is in the folder or under it is refused, with an error naming the setting. The check reads the path as given and as pi's file tools take it (one
-leading `@` dropped), resolving `./`, `..` and every name of the run's folder, and compares each segment as a disk that
+leading `@` dropped), resolving `./`, `..` and every name of the run's folder; a `pdf_pages` path it reads as
+`pdf_pages` opens it, so `~x/../stripe/pages/a.pdf` is in `stripe/pages/` there. It compares each segment as a disk that
 folds names would, so `Stripe/Pages/` and a fullwidth spelling count as `stripe/pages/`, and a zero-width or other
 ignorable character in a name doesn't count. It reads no file, so it doesn't follow links.
 
