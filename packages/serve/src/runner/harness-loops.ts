@@ -95,6 +95,8 @@ export function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | un
  *  opens those later), and with the saved keys' names (savedNamesOver) for the route its model requests take. */
 export async function underServerCeilings(deps: AdapterSpecDeps, launch: RunLaunch, revision: Revision): Promise<RunLaunch> {
   if (!launch.plane) return launch;
+  // A run's own process takes the plane its runner capped, the one its keys were chosen by (AdapterSpecDeps.claimedPlane).
+  if (deps.claimedPlane) return { ...launch, plane: deps.claimedPlane };
   const { settings, unreadable } = await storeSettings(deps.store);
   const unread = unreadable === true;
   const tooling = await toolingOf(revision);

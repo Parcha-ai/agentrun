@@ -21,6 +21,7 @@ import { type Ended, isConnectCode, isGatewayTimeout, rejectionCode } from "../b
 import { SPEND_CAP_REACHED } from "../kernel/cap/words.js";
 import type { BilledRequest } from "./overhead.js";
 import { onOpenRouter, openRouterAttribution } from "./openrouter-attribution.js";
+import { toolCallsIn, toolCallsInBody, type TurnBudget, type TurnSpan } from "../process/turn-budget.js";
 
 /** Whether a request's admission refused it for the run's spend cap, read from the error's fields alone: the cap's own
  *  error (CapRefused, its `code`), or the runner's stop for the cap's verdict (HarnessRunError, its `refusal`: the
@@ -637,6 +638,11 @@ export interface ModelProxyHooks {
 export interface ModelProxyOptions {
   policy: ProviderPolicy;
   hooks: ModelProxyHooks;
+  /** The session's turn budget (the harness's ResultBudget.turn): each answer of the turn's (ProviderPolicy.answers, the
+   *  harness's own, never the host's) opens it with its facts, the input tokens its request held (the provider's usage,
+   *  cached input included, else the request's input bound), its output, and the client tool calls it made, read from its
+   *  stream. A tool call waits while an answer is read (TurnBudget.ready), so its result is never bound on the turn before. */
+  turn?: TurnBudget;
   /** The session's model, as the runner names it to `beforeRequest`. The policy fixes the body's model. */
   model: string;
   /** This proxy's route among the session's, told to `beforeRequest` with each request (ModelRequest.route) so the host
@@ -1563,7 +1569,11 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     let filteredTold = false;
     /** Called once the request is booked, when its answer was read on after its stop (the proxy's close waits for it). */
     let drained: (() => void) | undefined;
+    /** The turn this answer opens (ModelProxyOptions.turn), while it is read; and the client tool calls its stream started. */
+    let turnSpan: TurnSpan | undefined;
+    let toolCalls = 0;
     const settled = (): void => {
+      turnSpan?.end();
       if (!drained) return;
       draining.delete(controller);
       drained();
@@ -1655,6 +1665,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
     };
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
+      // The turn's answer is read from here: a tool call the client makes on it waits for its facts.
+      if (answering && host === undefined && !route.free && options.turn) turnSpan = options.turn.begin();
       let upstream = await forward(`${origin}${route.path}${query ? `?${query}` : ""}`, { method: route.method, headers, body: sent, signal: controller.signal });
       // The provider answered (and a paid request was paid): a host callback that throws must not lose the answer or
       // its booking.
@@ -1785,6 +1797,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
             lineLength += part.length;
             line = lineLength <= USAGE_WINDOW ? line + part : "";
             if (at < lines.length - 1) {
+              if (turnSpan && upstream.ok && lineLength <= USAGE_WINDOW) toolCalls += toolCallsIn(line);
               starts.push(lineStart);
               if (starts.length > LINE_STARTS) starts.shift();
               if (upstream.ok && lineLength > 0) tellStops(lineLength > USAGE_WINDOW ? lastOf(tail + text) : line);
@@ -1921,6 +1934,13 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       // An answer of the client's own that reached it whole and reported its usage: what its whole input billed, kept
       // with the body it was sent with, for the session's next request on its model (policy.inputAfter).
       const billedInput = usage.input + usage.cacheRead + (usage.cacheWrite ?? 0);
+      // The turn's facts, from an answer that reached its client whole: its input as billed (else the request's bound, the
+      // provider's or the local count), its output, and its calls (a whole JSON body's read from it whole).
+      if (turnSpan && answered?.ok && failed === undefined && translated === undefined && refusedIn === undefined) {
+        const calls = wholeBody ? (length <= USAGE_WINDOW ? toolCallsInBody(tail) : undefined) : toolCalls;
+        const read = !unread && Number.isSafeInteger(billedInput) && billedInput > 0;
+        turnSpan.open({ ...(read ? { inputTokens: billedInput, outputTokens: usage.output } : inputTokensMax === undefined ? {} : { inputTokens: inputTokensMax }), ...(calls === undefined ? {} : { calls }) });
+      }
       if (answered?.ok && !stoppedByClient && !unread && failed === undefined && translated === undefined && refusedIn === undefined && host === undefined && Number.isSafeInteger(billedInput) && billedInput > 0) billed.set(asked, { body, inputTokens: billedInput });
       // The reasoning an answer of the session's model reported: the most one answer reasoned is what a later request's
       // least output is read from.

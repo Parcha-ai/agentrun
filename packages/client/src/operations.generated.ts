@@ -65,6 +65,7 @@ export type Agent = {
     provider_from?: "agent" | "server" | "default";
     default_provider?: string;
     resolved?: string;
+    ceiling?: string;
     permission: "allow" | "ask" | "deny";
     permission_from: "agent" | "server" | "default" | "unattended";
     default_permission: "allow" | "ask" | "deny";
@@ -1693,6 +1694,7 @@ export type GetAgentResponse = Agent & ({
     provider_from?: "agent" | "server" | "default";
     default_provider?: string;
     resolved?: string;
+    ceiling?: string;
     permission: "allow" | "ask" | "deny";
     permission_from: "agent" | "server" | "default" | "unattended";
     default_permission: "allow" | "ask" | "deny";

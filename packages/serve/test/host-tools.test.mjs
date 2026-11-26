@@ -229,3 +229,38 @@ test("a row's file path is named as a whole path: in the run's directory relativ
 test("the largest image the runner's read answers (pi-env READ_IMAGE_MAX_BYTES) is still one the claude-agent adapter sends: its base64 within the adapter's cap", () => {
   assert.ok(Math.ceil(READ_IMAGE_MAX_BYTES / 3) * 4 <= CLAUDE_AGENT_MAX_IMAGE_BYTES, `${READ_IMAGE_MAX_BYTES} bytes is over ${CLAUDE_AGENT_MAX_IMAGE_BYTES} as base64`);
 });
+
+/** A browser registration in pi's tool shape whose call reads its memo, stores `args.tag` and another value, and reads
+ *  it again, answering what each read gave. */
+const memoProbe = () => ({
+  name: "snapshot", description: "d", parameters: { type: "object" },
+  async execute(args, api) {
+    const before = await api.memo("ran", ctx);
+    const first = await api.memo("ran", args.tag, ctx);
+    const second = await api.memo("ran", "another", ctx);
+    api.output(JSON.stringify({ before: before ?? null, first, second, after: await api.memo("ran", ctx) }));
+    return {};
+  },
+});
+const probeCall = (host) => async (tag, callId) => JSON.parse((await host.call({ tag }, { callId, signal: new AbortController().signal })).text);
+
+test("a tool its binding runs once (RUNS_ONCE) has no host row, never runs again after a crash, and its api's memo is the call's own: the first value stored wins", async () => {
+  const { hostToolOf, RUNS_ONCE } = await import("../dist/host-tools.js");
+  const hostCtx = { context: ctx, results: new Map(), env: async () => ({}) };
+  assert.equal(hostToolOf("browser", memoProbe(), hostCtx), undefined, "the browser has no host row: a host binds it only by its own binding");
+  const host = hostToolOf("browser", memoProbe(), hostCtx, RUNS_ONCE);
+  assert.equal(host.replay, "never", "a call a crash cut off is never run again");
+  assert.deepEqual(await probeCall(host)("ar-1", "c1"), { before: null, first: "ar-1", second: "ar-1", after: "ar-1" }, "the first value stored is the one every later read and store answers");
+});
+
+test("the second browser call in a run does not see the first call's memo: one binding of the run, two calls, each call's memo empty at its start", async () => {
+  const { hostToolOf, RUNS_ONCE } = await import("../dist/host-tools.js");
+  // One run's binding: one HostTool, as browserHostTools hands the run's session once, called twice.
+  const host = hostToolOf("browser", memoProbe(), { context: ctx, results: new Map(), env: async () => ({}) }, RUNS_ONCE);
+  const call = probeCall(host);
+  assert.deepEqual(await call("session-of-call-1", "c1"), { before: null, first: "session-of-call-1", second: "session-of-call-1", after: "session-of-call-1" });
+  assert.deepEqual(await call("session-of-call-2", "c2"), { before: null, first: "session-of-call-2", second: "session-of-call-2", after: "session-of-call-2" }, "the second call reads no memo of the first's, and stores its own");
+  // Two calls at once each hold their own.
+  const [a, b] = await Promise.all([call("a", "c3"), call("b", "c4")]);
+  assert.deepEqual([a.before, a.after, b.before, b.after], [null, "a", null, "b"], "calls in flight together share no memo either");
+});

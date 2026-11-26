@@ -323,7 +323,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     turnOffClaudeLogin: () => call<ClaudeLoginView>("DELETE", "/settings/claude-login"),
     /** Starts the CLI's own sign-in on the server's machine, which opens a browser there. */
     startClaudeLogin: () => call<ClaudeLoginView>("POST", "/settings/claude-login/login"),
-    /** Signs out of AgentRun's own login and turns the mode off: whether the CLI confirmed its own sign-out, and the view. */
+    /** Signs out of AgentRun's own login and turns the mode off: whether all of the login is gone (ClaudeLoginSignOut), and
+     *  the view. */
     signOutClaudeLogin: () => call<ClaudeLoginSignOut>("POST", "/settings/claude-login/sign-out"),
     /** The model gateway in force: the environment's, the one saved here, or none. Never its key. */
     modelGateway: () => call<ModelGateway>("GET", "/settings/model-gateway"),
