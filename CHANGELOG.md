@@ -130,7 +130,13 @@ Install and docs
 
 Internals
 
-- A server start that fails clears the timers it set before it closes the store (#3895), and a listing's secret set is digested as JSON, so no two sets share a digest (#3900). Tests: the second-run Codex test, the secret-scrub growth check, planted-run-reads and the computer's docker-logs test no longer flake (#3889, #3893, #3891, #3894); the cap tests' stop waits for the run's first request to be out (#3846), and the browser-cost page tests import their pages up front (#3912), and a live server's store is written in tests through `raw()` alone, which a guard keeps (#3911).
+- A server start that fails clears the timers it set before it closes the store (#3895), and a listing's secret set is digested as JSON, so no two sets share a digest (#3900). Tests: the second-run Codex test, the secret-scrub growth check, planted-run-reads and the computer's docker-logs test no longer flake (#3889, #3893, #3891, #3894); the cap tests' stop waits for the run's first request to be out (#3846), the browser-cost page tests import their pages up front (#3912), and a live server's store is written in tests through `raw()` alone, which a guard keeps (#3911).
+
+Also in this tag (merged after the cut)
+
+- Orgo, Browserbase, Kernel and the local browser make one computer per create request id: a create retried with the same `requestId` answers the computer the first made (#3901). Its full entry is the last on this page.
+- A run's purge empties an SDK start pinned before the learning-rows upgrade only when that start belongs to the purged run's agent. Before, it emptied every such inbox on the server; those receipts already answered `409 not_continuable`, so nothing was disclosed (#3924).
+- Tests: a refused grade changes nothing, read back whole (#3922).
 
 ## 0.1.0-beta.59 (2026-11-25)
 
