@@ -246,3 +246,45 @@ test("a call that arrives while the proxy is still reading the answer waits for 
   assert.ok(total <= WINDOW - Math.floor(WINDOW * processExports.ANSWER_RESERVE_SHARE), `${total} tokens after the results, past what the turn has (${results.map((r) => r.text.length)} characters)`);
   for (const r of results) assertCut(r, 10_000);
 });
+
+test("a result handed longer than its claim (whole under the always-whole floor) holds what it took: the calls after it split what is left", () => {
+  // MUTATION: a settle that records the claim, not the length handed, leaves the next calls 80 characters the turn no longer has.
+  // 300 tokens of room, three calls: 300 characters each. The first result, 380 characters, is handed whole (at most
+  // RESULT_ALWAYS_WHOLE_CHARS is whole under any bound).
+  const turn = new TurnBudget();
+  const records = [];
+  turn.journal((record) => void records.push(record));
+  turn.open({ inputTokens: WINDOW - 300 - processExports.answerReserve(WINDOW), outputTokens: 0, calls: 3 });
+  assert.equal(turn.claim('c1', WINDOW), 300);
+  turn.settle('c1', 380);
+  assert.equal(turn.claim('c2', WINDOW), Math.floor((900 - 380) / 2), 'the rest split over the two calls left');
+  assert.deepEqual(records.at(-1), { settled: { callId: 'c1', chars: 380 } }, 'journaled at the length handed');
+});
+
+test("a failed call's long error under the least a cut keeps: refused in words, its first line kept, so the model reads what went wrong", async () => {
+  // MUTATION: an error refused like a result shows only that something too long was not shown; the model cannot tell the call failed, or why.
+  const turn = new TurnBudget();
+  const failing = { name: 'open', description: 'Opens.', inputSchema: { type: 'object' }, replay: 'safe', execute: async () => { throw new Error(`ENOENT: no such file or directory, open '/work/report.csv'\n${'    at a frame of the stack\n'.repeat(200)}`); } };
+  const bridge = toolBridge(await driveOf('error-floor'), [failing], { budget: { contextWindow: WINDOW, turn } });
+  turn.open({ inputTokens: 16_000, outputTokens: 50, calls: 1 });
+  const result = await bridge.call('open', {}, 'call-1');
+  assert.equal(result.isError, true);
+  assert.equal(result.truncated, true);
+  assert.match(result.text, /^ENOENT: no such file or directory, open '\/work\/report\.csv'\n/, `its first line first: ${result.text.slice(0, 200)}`);
+  assert.ok(!result.text.includes('a frame of the stack'), 'none of the rest');
+  assert.match(result.text, /context window/);
+});
+
+test("a failed call's error whose first line is long, refused: within the length a result always keeps whole, so bounding it again (pi's afterTool) changes nothing", () => {
+  // MUTATION: a first line kept up to 300 characters plus the note runs past RESULT_ALWAYS_WHOLE_CHARS: the second bound
+  // refuses the refusal, naming its length instead of the error's, and the host's record differs from what the model reads.
+  const { boundTo, RESULT_ALWAYS_WHOLE_CHARS } = processExports;
+  const error = `TypeError: ${'x'.repeat(1_000)}\n${'    at a frame of the stack\n'.repeat(200)}`;
+  const max = 100;
+  const once = boundTo(error, max, { error: true });
+  assert.equal(once.truncated, true);
+  assert.ok(once.text.startsWith('TypeError: xxx'), `its first line first: ${once.text.slice(0, 80)}`);
+  assert.match(once.text, new RegExp(`\\(${error.length} characters in all\\)`), "it names the error's own length");
+  assert.ok(once.text.length <= RESULT_ALWAYS_WHOLE_CHARS, `${once.text.length} characters, within ${RESULT_ALWAYS_WHOLE_CHARS}`);
+  assert.equal(boundTo(once.text, max, { error: true }).text, once.text, 'bound again: unchanged');
+});
