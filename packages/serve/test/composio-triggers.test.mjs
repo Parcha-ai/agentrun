@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { createHmac, randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { ComposioTriggers } from "../dist/composio-triggers.js";
-import { startFakeComposio } from "./fixtures/fake-composio.mjs";
+import { ISSUE_ADDED, STAR_ADDED, startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { secretWritePath, serve } from "./support.mjs";
 import { firings, made, until } from "./trigger-support.mjs";
@@ -350,6 +350,25 @@ test("a failure after the subscription undoes it: nothing is left on Composio or
   assert.equal(bad.status, 422, JSON.stringify(bad.body));
   assert.ok(bad.body.error.fields.some((f) => f.field === "source.config" && /repo/.test(f.message)), JSON.stringify(bad.body.error.fields));
   assert.equal(s2.composio.subscriptions.length, 0);
+});
+
+/** A webhook event whose config schema needs no field, as a new-channel event's is. */
+const PUSHED = { ...ISSUE_ADDED, slug: "GITHUB_PUSH_EVENT", name: "Push Event", description: "Triggered when commits are pushed.", config: { type: "object", title: "WebhookConfigSchema", properties: {} } };
+
+test("a composio trigger's config is the event's: {} for an event that needs no field is made with it; one left out is refused, saying to send {}; one Composio needs fields in is refused in its words, naming them", async (t) => {
+  const s = await setup(t, { composio: { triggerTypes: { github: [ISSUE_ADDED, STAR_ADDED, PUSHED] } } });
+  const pushed = await s.api("POST", "/triggers", issueTrigger({}, {}, { event: "GITHUB_PUSH_EVENT" }));
+  assert.equal(pushed.status, 201, JSON.stringify(pushed.body));
+  assert.deepEqual((await s.api("GET", `/triggers/${pushed.body.id}`)).body.source.config, {});
+  assert.deepEqual([...s.composio.instances.values()].map((i) => [i.trigger_name, i.trigger_config]), [["GITHUB_PUSH_EVENT", {}]]);
+  const { config: _left, ...unconfigured } = issueTrigger().source;
+  const left = await s.api("POST", "/triggers", { ...issueTrigger(), source: { ...unconfigured, event: "GITHUB_PUSH_EVENT" } });
+  assert.equal(left.status, 422, JSON.stringify(left.body));
+  assert.ok(left.body.error.fields.some((f) => f.field === "source.config" && f.reason === "missing" && f.message.includes("{} for an event whose schema needs no field")), JSON.stringify(left.body.error.fields));
+  const issues = await s.api("POST", "/triggers", issueTrigger({}));
+  assert.equal(issues.status, 422, JSON.stringify(issues.body));
+  assert.ok(issues.body.error.fields.some((f) => f.field === "source.config" && /owner/.test(f.message) && /repo/.test(f.message)), JSON.stringify(issues.body.error.fields));
+  assert.equal(s.composio.instances.size, 1, "no instance made for a refused one");
 });
 
 test("a delivery starts only its own trigger, matched by instance id; two triggers on two repositories never cross", async (t) => {
