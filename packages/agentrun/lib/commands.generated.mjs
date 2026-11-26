@@ -3578,7 +3578,7 @@ export const COMMANDS = [
         "name": "said",
         "type": "string",
         "required": false,
-        "description": "The person's own words, when `content` is a host's text around them (a preamble, an earlier report, turn instructions): what the run's learning keeps of this message (the one line it appends to the agent's corrections.md, and the follow-up in its compile turn's traces), in place of `content`. The model gets `content` only, never `said`; `said` need not appear inside it. Absent, learning keeps `content`, as before. 422 `input_invalid` at `said`, nothing written: reason `wrong_type` when it is not a string, `empty` when it is empty after trimming, `too_long` past 4000 characters. Text shaped like a secret is not refused here: the learning's checks refuse its line, as any correction's. Offered where `features.messages.said` is true."
+        "description": "The person's own words, when `content` is a host's text around them (a preamble, an earlier report, turn instructions): what the run's learning keeps of this message (the one line it appends to the agent's corrections.md, and the follow-up in its compile turn's traces), in place of `content`. The model gets `content` only, never `said`; `said` need not appear inside it. Absent, learning keeps `content`, as before. 422 `input_invalid` at `said`, nothing written: reason `wrong_type` when it is not a string, `empty` when it is empty after trimming, `too_long` past 4000 characters, counted in Unicode code points (an emoji is one). Text shaped like a secret is not refused here: the learning's checks refuse its line, as any correction's. Offered where `features.messages.said` is true."
       },
       {
         "name": "model_key",

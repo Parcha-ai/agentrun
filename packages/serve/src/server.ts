@@ -5880,7 +5880,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const words = body.said;
           if (words !== undefined && typeof words !== "string") throw invalid([{ field: "said", reason: "wrong_type", message: "said is a string when sent: the person's own words" }]);
           if (typeof words === "string" && !words.trim()) throw invalid([{ field: "said", reason: "empty", message: "said is not empty when sent: the person's own words" }]);
-          if (typeof words === "string" && words.length > SAID_MAX) throw invalid([{ field: "said", reason: "too_long", message: `said is at most ${SAID_MAX} characters` }]);
+          // Counted in code points, as its schema's maxLength and a host's len() count it: an emoji is one, not two.
+          if (typeof words === "string" && [...words].length > SAID_MAX) throw invalid([{ field: "said", reason: "too_long", message: `said is at most ${SAID_MAX} characters (code points)` }]);
           // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
           // In its agent's delete turn (runWrite): a message that may open the run again never lands under its purge.
           // Its text is cut of what it hands and of what the run holds, read in that turn (cutHeld).
