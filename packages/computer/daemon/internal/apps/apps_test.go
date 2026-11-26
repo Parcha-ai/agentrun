@@ -36,6 +36,11 @@ const helperWindow = "apps-test-window"
 // later ("late") and ends at once, exit code 0, leaving it behind.
 const helperSingle = "apps-test-single"
 
+// helperFlagged makes this test binary an app that takes a flag as Chromium does: apps-test-flagged [url]. A url that
+// is --renderer-cmd-prefix=<command> runs the command (Chromium runs its renderers under it); then the app shows a
+// window, WM_CLASS Flagged.
+const helperFlagged = "apps-test-flagged"
+
 // TestMain runs the guard when process.start starts this binary as one, as computerd does, and the test apps.
 func TestMain(m *testing.M) {
 	if len(os.Args) == 2 && os.Args[1] == execrun.GuardCommand {
@@ -47,7 +52,22 @@ func TestMain(m *testing.M) {
 	if len(os.Args) >= 5 && os.Args[1] == helperSingle {
 		os.Exit(single(os.Args[2], os.Args[3], os.Args[4], os.Args[5:]))
 	}
+	if len(os.Args) >= 2 && os.Args[1] == helperFlagged {
+		os.Exit(flagged(os.Args[2:]))
+	}
 	os.Exit(m.Run())
+}
+
+// flagged is the app helperFlagged names.
+func flagged(args []string) int {
+	for _, arg := range args {
+		if command, ok := strings.CutPrefix(arg, "--renderer-cmd-prefix="); ok {
+			if err := exec.Command("sh", "-c", command).Run(); err != nil {
+				return exit(err)
+			}
+		}
+	}
+	return exit(showWindow("flagged", "Flagged", false))
 }
 
 func exit(err error) int {
@@ -194,6 +214,7 @@ func setup(t *testing.T, window time.Duration) *world {
 	}
 	write(t, filepath.Join(dir, "test.window.desktop"), fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Test Window\nExec=%q %s test TestWindow\nStartupWMClass=TestWindow\n", self, helperWindow))
 	write(t, filepath.Join(dir, "quiet.desktop"), "[Desktop Entry]\nType=Application\nName=Quiet\nExec=sleep 60\n")
+	write(t, filepath.Join(dir, "flagged.desktop"), fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Flagged\nExec=%q %s %%u\nStartupWMClass=Flagged\n", self, helperFlagged))
 	// Apps that run once (helperSingle), each with a folder of its own for its lock: one that hands a later launch's url
 	// to the instance that runs, one that shows a dialog instead, one whose dialog is a stubborn process it started, one
 	// whose dialog is a process it started and left.
@@ -228,7 +249,7 @@ func setup(t *testing.T, window time.Duration) *world {
 	}
 	// Whatever a test left running ends with it.
 	t.Cleanup(func() {
-		for _, id := range []string{"test.window", "quiet", "single.hand", "single.dialog", "single.spawn", "single.leave"} {
+		for _, id := range []string{"test.window", "quiet", "flagged", "single.hand", "single.dialog", "single.spawn", "single.leave"} {
 			_, _ = w.call("apps.terminate", map[string]any{"id": id})
 		}
 	})
@@ -517,7 +538,8 @@ func TestAppsLaunchRefusesInWords(t *testing.T) {
 }
 
 // A url that is a flag or a relative path is refused before anything starts: no launch is in the process table, and the
-// command a flag would have run never ran.
+// command a flag would have run never ran. The app runs a --renderer-cmd-prefix flag's command as Chromium does, so a
+// flag that reached it would have run its command.
 func TestAppsLaunchRefusesAFlagOrARelativePathAndStartsNothing(t *testing.T) {
 	w := setup(t, time.Second)
 	ran := filepath.Join(t.TempDir(), "ran")
@@ -527,9 +549,9 @@ func TestAppsLaunchRefusesAFlagOrARelativePathAndStartsNothing(t *testing.T) {
 		{"notes.txt", "is neither an absolute URL with a scheme"},
 		{"../etc/passwd", "is neither an absolute URL with a scheme"},
 	} {
-		_, err := w.call("apps.launch", map[string]any{"id": "single.hand", "url": c.url})
+		_, err := w.call("apps.launch", map[string]any{"id": "flagged", "url": c.url})
 		if kindOf(err) != rpc.KindInvalid || !strings.Contains(fmt.Sprint(err), c.says) {
-			t.Errorf("apps.launch single.hand with url %q: %v (%q), want invalid saying %q", c.url, err, kindOf(err), c.says)
+			t.Errorf("apps.launch flagged with url %q: %v (%q), want invalid saying %q", c.url, err, kindOf(err), c.says)
 		}
 	}
 	listed, err := w.table.List(process.ListParams{})
@@ -541,6 +563,73 @@ func TestAppsLaunchRefusesAFlagOrARelativePathAndStartsNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the flag's command ran: %v", err)
+	}
+}
+
+// An app runs its desktop file's Exec, so one whose desktop file computerd's own user could change runs whatever that
+// user writes there: an agent given the files group's write, with exec off, would have a shell. Such an app is left out
+// of apps.list, and apps.launch refuses it denied, naming the file, by its id or its name, and starts nothing. That
+// holds for a desktop file the user wrote, and for one the user made read-only in a read-only folder (a tar pushed with
+// those modes): the user still owns both, so it may make them writable again.
+func TestAppsLeavesOutAnAppItsUserCouldChange(t *testing.T) {
+	display := xvfbtest.Start(t, 640, 480)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	written := filepath.Join(dir, "written.desktop")
+	write(t, written, fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Written\nExec=%q %s written Written\n", self, helperWindow))
+	locked := filepath.Join(dir, "locked", "app.desktop")
+	write(t, locked, fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Locked\nExec=%q %s locked Locked\n", self, helperWindow))
+	if err := os.Chmod(locked, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Dir(locked), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(locked), 0o755) })
+	d := desktop.New(display)
+	t.Cleanup(d.Close)
+	table := process.NewTable(process.Options{})
+	handlers := Handlers(d, table, Options{Dirs: []string{dir}, Window: time.Second})
+	call := func(method string, params any) (any, error) {
+		raw, err := json.Marshal(params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return handlers[method](ctx, raw)
+	}
+	t.Cleanup(func() {
+		for _, id := range []string{"written", "locked-app"} {
+			_, _ = call("apps.terminate", map[string]any{"id": id})
+		}
+	})
+	listed, err := call("apps.list", map[string]any{})
+	if err != nil {
+		t.Fatalf("apps.list: %v", err)
+	}
+	if apps := listed.(ListResult).Apps; len(apps) != 0 {
+		t.Errorf("apps.list gave apps whose desktop files computerd's user could change: %+v", apps)
+	}
+	for _, c := range []struct{ id, file string }{
+		{"written", written},
+		{"Written", written},
+		{"locked-app", locked},
+	} {
+		_, err := call("apps.launch", map[string]any{"id": c.id})
+		if kindOf(err) != rpc.KindDenied || !strings.Contains(fmt.Sprint(err), c.file) {
+			t.Errorf("apps.launch %s: %v (%q), want denied naming %s", c.id, err, kindOf(err), c.file)
+		}
+	}
+	processes, err := table.List(process.ListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(processes.Processes) != 0 {
+		t.Errorf("refused launches started %d processes: %+v", len(processes.Processes), processes.Processes)
 	}
 }
 
