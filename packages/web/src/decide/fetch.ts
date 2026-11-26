@@ -1,7 +1,7 @@
 // The fetch step: a part judged in passages, or the chunks of a page its objective asks for, with the page guard beside.
 import type { Fee, Pay } from "../fees.js";
 import type { WebPage, WebRead, WebUnread } from "../fetch.js";
-import { clip, type Page } from "../page.js";
+import { clip, type Page, type Part } from "../page.js";
 import { QUERY_MAX } from "../search.js";
 import type { Verdict, WebDecider } from "./decider.js";
 import type { PageGuard, Warned } from "./page-guard.js";
@@ -83,14 +83,16 @@ export async function findInPage(decider: WebDecider, url: string, read: WebRead
 
 /** A fetch's answer: the part (judged or not), or what its objective found; with the guard's warning when it gave one. */
 export type FetchAnswer = (((WebPage | Page) & Sift) | FoundPage) & Warned;
-/** How a fetch is decided: the call's `task` and `objective`, the step's bounds, `pay` and the call's fee `lines`, and
- *  `guard`, the run's page guard for this read (absent when it is off). */
-export type FetchStep = Pick<StepOptions, "task" | "signal" | "ms"> & { objective?: unknown; pay: Pay; lines: Fee[]; guard?: ((options: StepOptions) => Promise<PageGuard>) | undefined };
+/** How a fetch is decided: the call's `task` and `objective`, the part it asked for (`offset`, `maxChars`, as given), the
+ *  step's bounds, `pay` and the call's fee `lines`, and `guard`, the run's page guard for this read (absent when it is
+ *  off). */
+export type FetchStep = Pick<StepOptions, "task" | "signal" | "ms"> & Part & { objective?: unknown; pay: Pay; lines: Fee[]; guard?: ((options: StepOptions) => Promise<PageGuard>) | undefined };
 
-/** A fetch decided: with an `objective` and a decider, what findInPage finds in the whole page (or the part, saying the
- *  objective was not applied, where the step fails); else the part judged against `task`; and the page guard asked
- *  beside either, its warning added and its fee lines put after the step's once both have settled. With no decider the
- *  part is the answer, an objective or none. */
+/** A fetch decided: with an `objective` and a decider, what findInPage finds in the whole page, its sift line naming an
+ *  offset past 0 or a max_chars the call gave as ignored (or the part, saying the objective was not applied, where the
+ *  step fails); else the part judged against `task`; and the page guard asked beside either, its warning added and its
+ *  fee lines put after the step's once both have settled. With no decider the part is the answer, its sift line saying
+ *  an objective given was not applied. */
 export async function decideFetch(decider: WebDecider | undefined, url: string, whole: WebRead | WebUnread, part: WebPage, options: FetchStep): Promise<{ answer: FetchAnswer; classifier: DecisionRecord | "off"; guard?: PageGuard }> {
   const step: StepOptions = { signal: options.signal, ms: options.ms, pay: decisionPay(options.pay, options.lines) };
   const guardLines: Fee[] = [];
@@ -101,9 +103,13 @@ export async function decideFetch(decider: WebDecider | undefined, url: string, 
   let classifier: DecisionRecord | "off" = "off";
   if (need && whole.ok && whole.text && decider) {
     const found = await findInPage(decider, url, whole, need, step);
-    answer = found.answer ?? notApplied(found.classifier.error!.code);
+    // What it found is the whole page's, whatever part the call named: the sift line says which of the call's bounds
+    // that leaves aside, so a call reading on with an objective is not handed the same chunks as if they were new.
+    const ignored = [...(options.offset ? ["offset"] : []), ...(options.maxChars === undefined ? [] : ["max_chars"])];
+    answer = !found.answer ? notApplied(found.classifier.error!.code) : ignored.length ? { ...found.answer, sift: `${found.answer.sift}; ${ignored.join(" and ")} ignored: found chunks come from the whole page, each with its offset` } : found.answer;
     classifier = found.classifier;
   } else if (decider) ({ answer, classifier } = await judgePart(decider, url, part, { task: options.task, ...step }));
+  else if (need && whole.ok && whole.text) answer = notApplied("no classifier in this run");
   const guard = await guarding;
   options.lines.push(...guardLines);
   if (guard?.warning) answer = { ...answer, warning: guard.warning };

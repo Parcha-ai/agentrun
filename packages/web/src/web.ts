@@ -294,7 +294,7 @@ export function createWeb(config: WebConfig): Web {
       const provider = part.ok && part.via !== "stopped" && part.via !== "none" ? part.via : null;
       const decider = held;
       const guard = config.pageGuard && decider && whole.ok ? (options: StepOptions) => guardOf(decider, asked, whole, options) : undefined;
-      const decided = await decideFetch(decider, asked, whole, part, { task, objective: typeof objective === "string" && objective.trim() ? objective : lookingFor, signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
+      const decided = await decideFetch(decider, asked, whole, part, { task, objective: typeof objective === "string" && objective.trim() ? objective : lookingFor, ...(offset === undefined ? {} : { offset }), ...(maxChars === undefined ? {} : { maxChars }), signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
       // What the objective found names each provider asked ahead that gave no page, as the part does.
       const answer: FetchAnswer = "found" in decided.answer ? { ...decided.answer, ...missesOf(whole) } : decided.answer;
       const { classifier, guard: verdicts } = decided;

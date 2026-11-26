@@ -149,17 +149,31 @@ export function linksWithin(links: Iterable<string>): Pick<Page, "links" | "link
 }
 
 /** A page read once, before any part of it is taken: its final url, status and title, its Text, the links its first part
- *  holds (linksWithin), and readPage's `html_chars` and `converted` where it gave them. */
-export type Read = { ok: true; url: string; status: number; title: string; links: string[]; links_omitted?: number; html_chars?: number; converted?: "text" } & Text;
+ *  holds (linksWithin), and readPage's `html_chars` and `converted` where it gave them. `inline` where its text writes
+ *  every link it holds (a reading service's markdown, writtenRead): its first part then lists only the links its own text
+ *  does not write (partOfRead). */
+export type Read = { ok: true; url: string; status: number; title: string; links: string[]; links_omitted?: number; html_chars?: number; converted?: "text"; inline?: true } & Text;
 /** A Page that was not read, saying why. */
 export type Unread = Page & { ok: false };
 
-/** The part `part` names of a page read once, as a Page: the links with its first part only. */
-export function partOfRead({ text, beyond, length, links, links_omitted, html_chars, converted, ...page }: Read, part: Part = {}): Page {
+/** The part `part` names of a page read once, as a Page: the links with its first part only. An `inline` read's first
+ *  part lists those of its text's links that the part's own text does not write, within the caps (linksWithin), and
+ *  counts those the caps left out: a link the model reads in the text is never listed again beside it. */
+export function partOfRead({ text, beyond, length, links, links_omitted, html_chars, converted, inline, ...page }: Read, part: Part = {}): Page {
   const first = partOf(part).offset === 0;
-  return { ...page, ...pageText({ text, beyond, length }, part), ...(html_chars === undefined ? {} : { html_chars }), ...(converted ? { converted } : {}), links: first ? links : [], ...(first && links_omitted ? { links_omitted } : {}) };
+  const held = pageText({ text, beyond, length }, part);
+  let listed: Pick<Page, "links" | "links_omitted"> = { links: [] };
+  if (first && inline) {
+    const written = new Set(linksOf(held.text));
+    listed = linksWithin([...linksOf(text)].filter((link) => !written.has(link)));
+  } else if (first) listed = { links, ...(links_omitted ? { links_omitted } : {}) };
+  return { ...page, ...held, ...(html_chars === undefined ? {} : { html_chars }), ...(converted ? { converted } : {}), ...listed };
 }
 
+/** A page's text as a reading service gives it, as a Read's: textOf, the links it writes (linksWithin), and `inline`. */
+export const writtenRead = (text: string, whole: boolean): Pick<Read, "links" | "links_omitted" | "inline"> & Text => ({ ...textOf(text, whole), ...linksWithin(linksOf(text)), inline: true });
+
 /** A page a provider read for us as markdown (Parallel's extract, keyless Firecrawl's scrape), as a Read: its url,
- *  title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it holds. */
-export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(withoutCredentials(url), URL_MAX), status, title: clip(title, TITLE_CAP), ...textOf(text, whole), ...linksWithin(linksOf(text)) });
+ *  title and status, the text (`whole`: all of the page's, so its length is the page's) and the links it holds, each
+ *  written in its text (writtenRead). */
+export const markdownRead = (url: string, title: string, text: string, whole: boolean, status = 200): Read => ({ ok: true, url: clip(withoutCredentials(url), URL_MAX), status, title: clip(title, TITLE_CAP), ...writtenRead(text, whole) });
