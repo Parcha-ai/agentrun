@@ -764,11 +764,12 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
 // A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
 // read split at & alone keeps the whole value, a %2C in it too, and read split at an & or a space written %26 or %20 too,
 // it keeps that value as written before one, and read split at a %26 alone, one with a %20 in it; a value read on past
-// a %20 is also kept up to each %20 in it, at 8 characters or more, so a key with a %20 in it before a %20 is kept; a
-// value in quotes written %22 or %27 is kept out of them as written too, and a piece of it that opens with a quote and
-// has no closing one (cut at a %2C) is kept without that quote too; read split at & and %2C, it keeps the value of a
-// pair in a list joined by %2C, and read split at & and %3B, the value of a pair in a list joined by %3B, a %20, quotes
-// or a %26 in it too; read split at ; too, it keeps each pair after a ;. Every reading is held. A value whose part
+// a %20 is also kept up to each %20 in it that a name= follows, at 8 characters or more, so a key with a %20 in it
+// before a %20 pair is kept; a value in quotes written %22 or %27 is kept out of them as written too, and a piece of it
+// that opens with a quote and has no closing one (cut at a %2C) is kept without that quote too; read split at & and
+// %2C, it keeps the value of a pair in a list joined by %2C, and read split at & and %3B, the value of a pair in a list
+// joined by %3B, a %20, quotes or a %26 in it too; read split at ; too, it keeps each pair after a ;. Every reading is
+// held. A value whose part
 // before its first ; is empty is held after it, whole and as its first piece of 8 characters or more, unless that is a
 // pair named like no credential; a value of only ;, =, quotes, commas or spaces, as written or decoded, is not held and
 // not cut.

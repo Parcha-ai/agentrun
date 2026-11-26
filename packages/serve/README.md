@@ -299,8 +299,8 @@ whole key; and at those or their `%26` and `%20`, so that key is held as written
 and at those or `%26` alone, so a key with a `%20` in it is held before a `%26`; and at `&`, spaces and `%3B`, so a
 key in a list joined by an encoded `;` (`session=<token>%3Btheme=dark`) is held, a `%20`, quotes or a `%26` in it
 too (all are held, since a redactor matches each held value exactly and the longer reading never covers the key
-alone); a value is also held up to each `%20` in it, 8 characters or more, so `api_key=<key%20rest>%20region=us`
-holds the key and never `region=us` alone; a value whose part before its first `;` is empty, `token=;<key>` or
+alone); a value is also held up to each `%20` in it that a `name=` follows, 8 characters or more, 4,096 characters of
+those at most, so `api_key=<key%20rest>%20region=us` holds the key and never `region=us` alone; a value whose part before its first `;` is empty, `token=;<key>` or
 `token=%3B<key>`, is held after that `;` too, whole and as its first piece of 8 characters or more, but not when that
 is a pair named like no credential (`token=;theme=dark`); a value in quotes, raw or written `%22` or `%27`, is held
 without them, and one with an opening quote and no closing one (a quoted key cut at its `%2C`) without that quote
