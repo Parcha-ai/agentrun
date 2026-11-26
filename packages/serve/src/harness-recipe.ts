@@ -105,9 +105,9 @@ export interface Recipe {
    *  another tool is the agent's own; absent, calls are matched to MCP calls by their arguments alone (AcpAnnounces). */
   readonly announces?: { readonly tool: string; readonly server?: string; readonly prefix?: string; readonly args?: string; readonly extras?: readonly string[] };
   readonly state: readonly string[];
-  /** MCP config files the agent reads, each JSON with an `mcpServers` object: `~/<path>` in the private HOME, any other
-   *  a path in the work directory. One that declares a server under the run's own name for ours has it refused at a
-   *  start (the adapter's mcpConfigs). */
+  /** MCP config files the agent reads, each JSON with an `mcpServers` object: `~/<path>` or `$HOME/<path>` in the
+   *  private HOME, any other a path in the work directory. Under a per-start name for ours, listing one has the run keep
+   *  one name, and one that declares a server under it has it refused at a start (the adapter's mcpConfigs). */
   readonly mcpConfigs?: readonly string[];
   readonly declares: { readonly load: boolean; readonly mcp: "http" | "stdio" };
   /** `permissionTie: "title"`: the adapter answers the agent's permission request for one of our announced calls

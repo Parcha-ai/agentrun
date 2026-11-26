@@ -661,13 +661,15 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     mkdirSync(root, { recursive: true, mode: 0o700 });
     const records = (await journal.read<StateRecord>(STATE_STREAM)).map((r) => r.data);
     restoreState(home, records);
-    // Our server's name (server-name.ts): under a per-start name, the one the run kept, unless a config the agent reads
-    // declares a server under it; then a fresh one, kept from now on, and the run is told once. The fixed name, as it is.
+    // Our server's name (server-name.ts): under a per-start name and a recipe that lists the configs its agent reads
+    // (mcpConfigs), the one the run kept, unless one of them declares a server under it; then a fresh one, kept from now
+    // on, and the run is told once. Under a per-start name and no list, nothing could check a config the agent wrote
+    // against a kept name, so each start's own. The fixed name, as it is.
     const minted = mcpServerName(recipe.announces, recipe.quirks?.permissionTie);
     let serverName = minted;
-    if (minted !== MCP_SERVER) {
+    if (minted !== MCP_SERVER && recipe.mcpConfigs?.length) {
       const kept = journal.records<ServerRecord>(SERVER_STREAM).map((r) => r.data?.name).filter((name): name is string => typeof name === "string" && KEPT_SERVER.test(name)).at(-1);
-      const refusal = kept === undefined ? undefined : configDeclaring(kept, recipe.mcpConfigs ?? [], home, root, log);
+      const refusal = kept === undefined ? undefined : configDeclaring(kept, recipe.mcpConfigs, home, root, log);
       if (kept !== undefined && refusal === undefined) serverName = kept;
       else {
         journal.append(SERVER_STREAM, { name: minted, ...(refusal !== undefined ? { refused: kept, file: refusal.file, how: refusal.how } : {}) } satisfies ServerRecord);

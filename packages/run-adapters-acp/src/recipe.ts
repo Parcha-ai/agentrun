@@ -109,10 +109,11 @@ export interface AcpRecipe {
   /** Where in HOME the agent keeps its own sessions: mirrored into the session's records, so another runner's agent
    *  loads them (session/load). Credential files under them are never mirrored. */
   readonly state?: readonly string[];
-  /** The MCP config files the agent reads, each JSON with an `mcpServers` object: `~/<path>` in its private HOME, else a
-   *  path in the work directory (Cursor 2026.11.13: `~/.cursor/mcp.json` and `.cursor/mcp.json`). Under a per-start
-   *  server name the run keeps one name across its starts; one of these that declares a server under it has it refused
-   *  for that start (a fresh name, the run told which file), and the file is never edited. */
+  /** The MCP config files the agent reads, each JSON with an `mcpServers` object: `~/<path>` or `$HOME/<path>` in its
+   *  private HOME, else a path in the work directory (Cursor 2026.11.13: `~/.cursor/mcp.json` and `.cursor/mcp.json`).
+   *  Under a per-start server name and at least one of these, the run keeps one name across its starts; one of these
+   *  that declares a server under it has it refused for that start (a fresh name, the run told which file), and the file
+   *  is never edited. Without any, each start names the server afresh. */
   readonly mcpConfigs?: readonly string[];
   /** What the agent is expected to advertise at initialize: a mismatch refuses with ACP_CODES.capabilityMismatch.
    *  `load`: it resumes a session with session/load. `mcp`: the transport our tools go over. */
@@ -130,16 +131,16 @@ export interface AcpRecipe {
   };
 }
 
-/** `path` in HOME, normalized, or undefined when it leaves HOME (absolute, `..`, or a `$HOME/` prefix spelled out). */
-/** Where an mcpConfigs entry is: `home` (a `~/` path, made relative to HOME) or `work` (relative to the work directory);
- *  undefined when it leaves either or is no path. */
+/** Where an mcpConfigs entry is: `home` (a `~/` or `$HOME/` path, as `files` spells one, made relative to HOME) or
+ *  `work` (relative to the work directory); undefined when it leaves either or is no path. */
 export function mcpConfigPath(path: unknown): { readonly in: "home" | "work"; readonly path: string } | undefined {
   if (typeof path !== "string") return undefined;
-  const inHome = path.startsWith("~/");
-  const clean = homePath(inHome ? path.slice(2) : path);
+  const inHome = path.startsWith("~/") || path.startsWith("$HOME/");
+  const clean = homePath(path.startsWith("~/") ? path.slice(2) : path);
   return clean ? { in: inHome ? "home" : "work", path: clean } : undefined;
 }
 
+/** `path` in HOME, normalized, or undefined when it leaves HOME (absolute, `..`, or a `$HOME/` prefix spelled out). */
 export function homePath(path: string): string | undefined {
   const bare = path.startsWith("$HOME/") ? path.slice("$HOME/".length) : path;
   if (!bare || isAbsolute(bare)) return undefined;
