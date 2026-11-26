@@ -938,3 +938,105 @@ test('a client change merged in an earlier pull request is still stale at the re
   await commitAll(git, 'pull request 3: the change undone');
   assert.equal(await stalePython(root, merged), false, 'the same files as the last release: nothing new to publish');
 }));
+
+// A fragment a release folded, back in changes/: a merge of main whose merge base predates the squash that deleted it nets main's
+// add-then-delete to nothing, and the branch's add wins. The next fold would write its bullet a second time.
+const keychain = 'claude-keychain-drop-backoff.md';
+const keychainText = 'On macOS, a hung delete of the Keychain item a sign-in left no longer holds up each signed-in status check.';
+const keychainMarker = `<!-- changes/${keychain} -->`;
+const releasedKernelLog = entry => `# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.61 (2026-11-20)\n\n${entry}\n\n## 0.1.0-beta.60 (2026-11-18)\n\n- Older.\n`;
+/** `node scripts/changes.mjs --check [--base <base>]` run on the fixture, the script copied beside it so it reads this repository. */
+const checkAt = async (root, base) => {
+  await mkdir(join(root, 'scripts'), { recursive: true });
+  await copyScript(root);
+  return spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', ...(base ? ['--base', base] : [])], { cwd: root, encoding: 'utf8' });
+};
+/** The kernel changelog `log` committed (the release that folded it), then the fragment re-added: what `--check` says, with and without a base. */
+const reAdded = async (root, git, log, body = keychainText) => {
+  await writeFile(join(root, 'packages/run-adapters/CHANGELOG.md'), log);
+  await commitAll(git, 'the release folded the fragment and deleted it');
+  const base = (await git('rev-parse', 'HEAD')).stdout.trim();
+  await writeFile(join(root, 'changes', keychain), fragment('@parcha/agentrun-kernel', 'fix', body));
+  return [await checkAt(root, base), await checkAt(root)];
+};
+const refusal = version => new RegExp(`changes/claude-keychain-drop-backoff\\.md: packages/run-adapters/CHANGELOG\\.md has it in its ${version.replace(/\./g, '\\.')} section \\(its (marker|bullet)\\); this fragment was released in ${version.replace(/\./g, '\\.')}; delete it \\(git rm changes/claude-keychain-drop-backoff\\.md\\)`);
+
+test("--check refuses a fragment whose marker a released section carries, in the fold's words or curated ones, and names the changelog, the version and what to do", async () => {
+  for (const entry of [`- ${keychainText} ${keychainMarker}`, `- The hung Keychain delete, told by hand. ${keychainMarker}`]) {
+    await repo(async (root, git) => {
+      for (const run of await reAdded(root, git, releasedKernelLog(entry))) {
+        assert.equal(run.status, 1, run.stdout);
+        assert.match(run.stderr, refusal('0.1.0-beta.61'));
+        assert.match(run.stderr, /\(its marker\)/);
+      }
+    });
+  }
+});
+
+test('--check refuses a fragment whose exact bullet a released section holds with its marker dropped by hand', () => repo(async (root, git) => {
+  for (const run of await reAdded(root, git, releasedKernelLog(`- ${keychainText}`), `${keychainText}\n\nA paragraph the bullet carries under it.`)) {
+    assert.equal(run.status, 1, run.stdout);
+    assert.match(run.stderr, refusal('0.1.0-beta.61'));
+    assert.match(run.stderr, /\(its bullet\)/);
+  }
+}));
+
+test('--check passes a fragment whose marker or bullet sits only under Unreleased, or nowhere', async () => {
+  const underUnreleased = `# Changelog\n\n## Unreleased\n\n- ${keychainText} ${keychainMarker}\n\n## 0.1.0-beta.60 (2026-11-18)\n\n- Older.\n`;
+  for (const log of [underUnreleased, releasedKernelLog('- Something else.')]) {
+    await repo(async (root, git) => {
+      for (const run of await reAdded(root, git, log)) {
+        assert.equal(run.status, 0, run.stderr);
+        assert.match(run.stdout, /1 fragment\(s\) valid/);
+      }
+    });
+  }
+});
+
+test("--check passes a late fragment the previous release's tag carried while that release's section carries its marker by hand; a fragment its release pull request folded, re-added, is refused", () => repo(async (root, git) => {
+  await taggedWithLateFragments(root, git);
+  const tag = (await git('rev-parse', 'HEAD')).stdout.trim();
+  // A pull request curates the tagged release's root section by hand, keeping the late fragment's marker, before the next fold.
+  const curated = (await readFile(join(root, 'CHANGELOG.md'), 'utf8')).replace(/^(- Early\. <!-- changes\/early\.md -->\n)/m, '$1- The late fix, told by hand. <!-- changes/a-late.md -->\n');
+  await writeFile(join(root, 'CHANGELOG.md'), curated);
+  await commitAll(git, 'the release section curated by hand, the late fragments still in changes/');
+  const late = await checkAt(root, tag);
+  assert.equal(late.status, 0, late.stderr);
+  assert.match(late.stdout, /2 fragment\(s\) valid/);
+  // early.md was folded by the release pull request, so the tag never carried it: back in changes/, it would be written twice.
+  await writeFile(join(root, 'changes/early.md'), fragment('repo', 'feature', 'Early.'));
+  const early = await checkAt(root, tag);
+  assert.equal(early.status, 1, early.stdout);
+  assert.match(early.stderr, /changes\/early\.md: CHANGELOG\.md has it in its 0\.1\.0-beta\.13 section \(its marker\); this fragment was released in 0\.1\.0-beta\.13; delete it \(git rm changes\/early\.md\)/);
+  assert.doesNotMatch(early.stderr, /a-late\.md/);
+  // The window is the fold's own: the next fold finds the marker and writes the late fragment's bullet nowhere a second time.
+  await rm(join(root, 'changes/early.md'));
+  await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.equal((await readFile(join(root, 'CHANGELOG.md'), 'utf8')).match(/<!-- changes\/a-late\.md -->/g).length, 1);
+}));
+
+test("--check passes a late fragment the tag carried only where that release's section carries its marker, on any line of the entry: its exact bullet copied in without the marker is refused, as the next fold would write it again", async () => {
+  const rows = [
+    { entry: '- Late.\n  <!-- changes/a-late.md -->\n', status: 0, lates: 1 },
+    { entry: '- Late.\n', status: 1, lates: 2 },
+  ];
+  for (const { entry, status, lates } of rows) {
+    await repo(async (root, git) => {
+      await taggedWithLateFragments(root, git);
+      const tag = (await git('rev-parse', 'HEAD')).stdout.trim();
+      const curated = (await readFile(join(root, 'CHANGELOG.md'), 'utf8')).replace(/^(- Early\. <!-- changes\/early\.md -->\n)/m, `$1${entry}`);
+      await writeFile(join(root, 'CHANGELOG.md'), curated);
+      await commitAll(git, 'the release section curated by hand, the late fragments still in changes/');
+      const run = await checkAt(root, tag);
+      assert.equal(run.status, status, `${JSON.stringify(entry)}\n${run.stdout}${run.stderr}`);
+      if (status) {
+        assert.match(run.stderr, /^changes\/a-late\.md: CHANGELOG\.md has it in its 0\.1\.0-beta\.13 section \(its bullet\); this fragment was released in 0\.1\.0-beta\.13; delete it \(git rm changes\/a-late\.md\)$/m);
+        assert.doesNotMatch(run.stderr, /b-late-vision\.md/);
+      } else assert.match(run.stdout, /2 fragment\(s\) valid/);
+      // What the check stands for: the next fold skips the late fragment only where the section carries its marker.
+      await fold(root, '0.1.0-beta.14', '2026-10-25');
+      const section = sectionOf(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), '0.1.0-beta.13');
+      assert.equal(section.split('\n').filter(line => line.replace(/ <!-- changes\/[a-z0-9-]+\.md -->/g, '') === '- Late.').length, lates, section);
+    });
+  }
+});

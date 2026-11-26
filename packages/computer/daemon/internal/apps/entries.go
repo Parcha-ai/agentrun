@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 )
@@ -140,8 +141,14 @@ func unescape(value string) string {
 }
 
 // Argv is the program and arguments that open the app (the Exec key's rules), with url in place of its %u, %U, %f or
-// %F. A url for an app whose Exec has none of those is refused: the app would open without it.
+// %F. A url for an app whose Exec has none of those is refused: the app would open without it. So is one that is not
+// a url (checkURL).
 func (e Entry) Argv(url string) ([]string, error) {
+	if url != "" {
+		if err := checkURL(url); err != nil {
+			return nil, err
+		}
+	}
 	words, err := split(e.Exec)
 	if err != nil {
 		return nil, fmt.Errorf("%s's Exec %q: %v", e.ID, e.Exec, err)
@@ -168,6 +175,25 @@ func (e Entry) Argv(url string) ([]string, error) {
 		return nil, fmt.Errorf("%s opens no url or file: its Exec %q has no %%u or %%f", e.ID, e.Exec)
 	}
 	return argv, nil
+}
+
+// scheme is an absolute URL's start (RFC 3986): a letter, then letters, digits, "+", "-" or ".", then ":", and
+// something after it.
+var scheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:.`)
+
+// checkURL refuses a url that is neither an absolute URL with a scheme nor an absolute path. The url is one word of the
+// app's argv, so one starting with "-" would be a flag (Chromium's --renderer-cmd-prefix runs a command, whatever exec
+// allows), and a relative path a file found from the daemon's own folder. Leading whitespace is no URL either, and is
+// passed over only to say when a dash follows it.
+func checkURL(url string) error {
+	const is = "url is an absolute URL with a scheme (https://…, file:///…) or an absolute path (/…)"
+	if strings.HasPrefix(strings.TrimLeft(url, " \t\r\n\v\f"), "-") {
+		return fmt.Errorf("url %q starts with \"-\": the app would take it as a flag, not a url; %s", url, is)
+	}
+	if !scheme.MatchString(url) && !strings.HasPrefix(url, "/") {
+		return fmt.Errorf("url %q is neither an absolute URL with a scheme nor an absolute path; %s", url, is)
+	}
+	return nil
 }
 
 // split is an Exec value's words: separated by spaces, a word in double quotes with \", \`, \$ and \\ inside it.

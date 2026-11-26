@@ -496,6 +496,20 @@ test("LVI: a read of an unrelated file, or a command that is no read or dump, is
   }
 });
 
+test("LVI (11-26): a title made of a transcript is cut as one: its env command's output is an env-dump cut at /run/title", async () => {
+  // A run's title is its first message flattened onto one line and clipped: the input's multi-line dump reads as
+  // "$ printenv NAME=value NAME=value" there, and the title is cut with that context (flattened), its other fields without.
+  const title = `Say: Here is what I ran. $ printenv HOME=/root SYNTH_UNHELD=${PLANTED.envValue} SHELL=/bin/sh $ ls…`;
+  const { doc, body } = await build({ view: { ...viewOf(), title } });
+  assert.equal(doc.run.title, "Say: Here is what I ran. $ printenv [redacted:env-dump 1 lines] $ ls…");
+  assert.deepEqual(doc.cuts.filter((cut) => cut.at === "/run/title").map((cut) => [cut.rule, cut.kind, cut.restorable]), [["env-dump", "dump", false]]);
+  assert.ok(!body.includes(PLANTED.envValue));
+  // The same words in a row are a message, not a title: no prompt there is read mid-line.
+  const said = `Run $ env SYNTH_MODE=dev node app.js`;
+  const { doc: row } = await build({ rows: [{ id: "row_1", timestamp: "2026-11-23T10:00:01.000Z", created_at: "2026-11-23T10:00:01.000Z", kind: "message", summary: said, text: said }] });
+  assert.equal(row.rows[0].text, said);
+});
+
 test("LVI: the rows read with their calls' arguments name each call's context and nothing else: none of their strings is carried", async () => {
   const marker = `callsonly${hex("calls-only", 16)}`;
   const { rows, calls } = callRows("Read", { file_path: "~/.pgpass" }, CTX_PGPASS);

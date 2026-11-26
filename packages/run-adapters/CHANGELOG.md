@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.62 (2026-11-26)
+
+**Breaking:**
+
+- A script's file ops on a desktop or a phone need their tool among the agent's tools: `computer.files.read`, `files.list` and `files.stat` need `read`, and `files.write` needs `write`, as before. Naming a desktop no longer grants them: an agent that read files through `computer` without `read` in its `tools` is now refused in words (`computer_op files.read needs read among this agent's tools…`), whatever `read`'s setting says, on every desktop, mounted or not. Add `read` to the agent's `tools` to keep them. `computer_op`'s op list and a script's `computer` declarations offer only the ops the gate would let through: not one whose tool the agent is not given, nor one held to a tool set to deny, nor one held to a tool set to ask where no one can approve, nor one `bash`'s policy refuses whatever its command (`bash` set to deny drops `shell.run` and `processes.start`; the read-only policy drops `processes.start`). Both say that input ops on a computer with a terminal app or a GUI file manager, and `apps.open` with a `file://` URL, can do what a shell or the file ops do, whatever `bash`'s, `read`'s or `write`'s setting. `shell.run` and `processes.start` still follow `bash`'s setting, not a grant, so leaving `read` out keeps no file from an agent that has the shell, paired machines included: on a desktop with exec on, `computer.shell.run` reads and writes any file under `bash`'s setting, which allows by default. `computerDeclarations` takes the ops to leave out, and the kernel exports `withoutOps` for computer_op's definition and `GUI_REACH` for the words. <!-- changes/desktop-file-ops-need-grants.md -->
+
+**Changes:**
+
+- The parent-watch shim (`parentWatched`'s `shim` watch, used where `setpriv --pdeathsig` is not) takes TERM, INT and HUP before it starts its child. Before, a TERM that reached it in the moment after the child started ended the shim alone and left the child running with nothing watching it: a Claude sign-in stopped as it opened kept its CLI. <!-- changes/kernel-shim-signals-first.md -->
+- A learned workflow call in a run's `workflow_calls` whose rerun was refused now reads `refused` only while every attempt the gate let go was closed by a refusal. One with an attempt left open (a crash cut it before it kept a record, or its record says it ran) reads `failed`, even when a sibling call ran beside it, so its model nodes' spend can't be told for its own: its `usd` is null there, and null for an attempt cut after the refused record. Before, it read `refused` at $0. A CLI's own side request on another model (its title or summary helper) inside a refused call's window no longer flips the call to `failed`. A tool that nests calls, issued again after an earlier attempt fixed a value or nested a call, is now asked at the gate as `replayed`. <!-- changes/workflow-calls-window.md -->
+
 ## 0.1.0-beta.59 (2026-11-25)
 
 **Breaking:**

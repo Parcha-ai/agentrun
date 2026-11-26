@@ -207,8 +207,10 @@ export type PriceTable = { sessionUsdPerHour: number | null; sessionMinimumS: nu
 
 /** One charge of a session's time, as its record bills it: `seconds` and `usd` since the session's last charge, through `at`,
  *  or, `final`, at its release, topped up to the provider's minimum. `state` says whether `usd` is a price (`priced`) or
- *  the time went unpriced (`unpriced`, `invalid`: `usd` is 0 and is no charge). */
-export type SessionCharge = { conversationId: number; tag: string; provider: string; at: string; seconds: number; usd: number; final: boolean; state: PriceState };
+ *  the time went unpriced (`unpriced`, `invalid`: `usd` is 0 and is no charge). `overbookedS`: an earlier charge billed
+ *  the session through a later time than this one's `at` (a charge taken while its release was under way, the release
+ *  confirmed before it), by that many seconds; this one bills none of it again. Absent: none. */
+export type SessionCharge = { conversationId: number; tag: string; provider: string; at: string; seconds: number; usd: number; final: boolean; state: PriceState; overbookedS?: number };
 
 /** Browserbase list prices as of 2026-10-06: the Developer overage rate, one-minute minimum. */
 export const LIST_PRICES: PriceTable = Object.freeze({ sessionUsdPerHour: 0.12, sessionMinimumS: 60, fetchUsd: 0.001, fetchProxiedUsd: 0.004, searchUsd: 0.007 });

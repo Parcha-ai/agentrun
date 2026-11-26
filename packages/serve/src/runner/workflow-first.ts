@@ -486,15 +486,16 @@ export function pathMetrics(launch: RunLaunch, classified: { path: RunPath; work
   const chose = choice ? { first_choice: choice } : {};
   if (launch.replay) {
     // A replay run (runner/promotion.ts): path `replay`, whatever its workflow did, so the money rule and the agent's
-    // by-hand cost never read it; how its workflow ended, for the replay's score (learn/promote.ts ReplayRow).
-    const { of, workflow: name, digest: at } = launch.replay;
+    // by-hand cost never read it; how its workflow ended, for the replay's score (learn/promote.ts ReplayRow); and the run
+    // whose own key it spent on (`paid_by`), whose learning its cost is (learn/ledger.ts record).
+    const { of, workflow: name, digest: at, paidBy } = launch.replay;
     // Handed back when the workflow ended escalated (an escalate node: the workflow knowing its limits), however
     // many of its nodes failed on the way and were recovered (a map's collected item); a workflow that itself ended failed
     // (a credential or tool the replay ran without, a step's output off its schema), or was refused, is failed: no
     // evidence. Skipped when a write it needed is not in the graded run's recording (learn/replay-calls.ts): never run.
     const skipped = replaySkippedIn(entries);
     const outcome = skipped ? "skipped_write" : path === "workflow" && workflow === name ? "answered" : path === "handed_back" && workflow === name && endedIn(entries, name) === "escalated" ? "handed_back" : "failed";
-    return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...rows, ...chose, replay: { of, outcome, ...(skipped ? { skipped } : {}), ...verdict } };
+    return { path: "replay", ...(launch.learning.seed ? { learned_revision: launch.learning.seed } : {}), workflow: name, workflow_digest: at, ...rows, ...chose, replay: { of, ...(paidBy ? { paid_by: paidBy } : {}), outcome, ...(skipped ? { skipped } : {}), ...verdict } };
   }
   // A served run a trigger started (learn/audit.ts auditableLaunch) is never audited: counted on the promotions read.
   const notAuditable = SERVED_PATHS.includes(path) && !auditableLaunch(launch);

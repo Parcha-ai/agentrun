@@ -37,6 +37,8 @@ interface ChildInit {
   readonly claim: Claim;
   readonly data: string;
   readonly signal: AbortSignal;
+  /** A learning child's deadline (LoopDeps.pastDeadline), aborted by its runner. */
+  readonly pastDeadline?: AbortSignal;
   readonly where?: unknown;
   readonly mcpLoopback?: true;
   readonly mcpOwn?: readonly string[];
@@ -46,6 +48,8 @@ interface ChildInit {
   readonly composioMcpOrigin?: string;
   /** The runner traces its runs: this run's trace is posted to it (tracer.ts postedTracing). */
   readonly traced?: true;
+  /** The plane the runner capped and chose this process's keys by (run-child-host.ts): the claim's, as it is. */
+  readonly plane?: AdapterSpecDeps["claimedPlane"];
 }
 
 registerRunErrors();
@@ -214,6 +218,7 @@ function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held):
     installForClaim: heldInstall as AdapterSpecDeps["installForClaim"],
     // web_save's download slots are the runner's, shared by all its runs (save-slots.ts).
     saveSlots: remoteSaveSlots(channel),
+    ...(init.plane ? { claimedPlane: init.plane } : {}),
     ...(init.githubApi ? { githubApi: init.githubApi } : {}),
     ...(init.githubWeb ? { githubWeb: init.githubWeb } : {}),
     ...(init.githubMcpOrigin ? { githubMcpOrigin: init.githubMcpOrigin } : {}),
@@ -247,6 +252,7 @@ channel.expose("loop", async (method, args) => {
         journal: () => journal,
         flush: () => channel.call("runner", "flush", []) as Promise<void>,
         signal: init.signal,
+        ...(init.pastDeadline ? { pastDeadline: init.pastDeadline } : {}),
         delivered: (channel.call("runner", "delivered", []) as Promise<void>).catch(() => undefined),
         deliverNow: () => channel.call("runner", "deliverNow", []) as Promise<void>,
         live: (reader) => void (read = reader),

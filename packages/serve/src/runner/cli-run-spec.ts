@@ -49,20 +49,21 @@ import { withoutKindSkill } from "../workspace/kind-skills.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
 import { archilWhereHeld, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
-import { loadArchilSettings } from "../archil-settings.js";
+import { loadArchilSettings, noExecRegionOf } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
 import { computerFilesNote, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import { computerTurnedOff, hadComputer, recordComputerOff } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, heldModelOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, seedEvalFiles, webHostTools } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, BROWSER_TOOL, browserHostTools, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, heldModelOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, seedEvalFiles, webHostTools } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
 import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
 import { isWebHostTool } from "../tool-list.js";
 import { hostToolOf } from "../host-tools.js";
-import { ASK_TOOL, askPerson } from "../tools.js";
+import { ASK_TOOL, askPerson, type ToolHost } from "../tools.js";
 import { fakedPlane } from "../web-fake.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, keyedNow, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { atRunEnd } from "../learning-work.js";
 import { claimMetering, mcpWhereHeld } from "./mcp-run.js";
 import { held as runnerSeam, heldSignInReads } from "./held.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
@@ -102,10 +103,6 @@ export type { ClaimComputer, ClaimDeps, ClaimLaunch, ComputerForClaim } from "./
 /** What the runner hands the CLI spec builder: the same deps the pi spec takes (computerForClaim, computerDeps and
  *  makeArchilDisk are on AdapterSpecDeps, shared by both). One per runner. */
 export type CliSpecDeps = AdapterSpecDeps;
-
-/** What a CLI harness refuses of an agent's computer, in words: a browser, which only pi's browser tool drives. */
-export const cliRefusesKind = (kind: string): string | undefined =>
-  kind === "browser" ? "This agent's computer is a browser, which only the pi harness drives here: pick pi for this agent, or another kind of computer in Settings → Computers." : undefined;
 
 /** The revision's body, as the store keeps it (agent-body.ts). */
 type RevisionBody = Readonly<Partial<AgenticBody>>;
@@ -172,6 +169,15 @@ function chosenCapModel(entry: HarnessEntry, env: NodeJS.ProcessEnv, chosen: Awa
   // A model of this machine's own Ollama (the route's translation, provider.ts routedProvider): its requests never count
   // toward the run's free-model limit, as pi's on the same route do (model-route.ts ModelRoute.local).
   return priced.provider === OLLAMA_PROVIDER ? { ...capped, local: true } : capped;
+}
+
+/** The context window of the run's model (modelsOf), in tokens, from its catalog entry, or the entry that bills it (its
+ *  entry's priceModel) where the chosen one is not listed: the session's window (SessionSpec.contextWindow), which the
+ *  kernel's tool bridge holds each result to its share of. Undefined where neither names one: the host's bound alone. */
+function chosenWindow(entry: HarnessEntry, env: NodeJS.ProcessEnv, chosen: Awaited<ReturnType<typeof modelsOf>>): number | undefined {
+  const windowOf = (ref: ModelRef) => (chosen.models.getModel(ref.provider, ref.modelId) as { contextWindow?: unknown } | undefined)?.contextWindow;
+  const window = windowOf(chosen.model) ?? windowOf(entry.priceModel(env, chosen.model));
+  return typeof window === "number" && Number.isFinite(window) && window > 0 ? window : undefined;
 }
 
 /** The model a run of the CLI harness `entry` on `ref` (a revision's model; none, this host's default for it) is capped
@@ -388,6 +394,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // this claim's memory only, dropped at the release); else Mode 1, the run's local folder.
   const archilSettings = await loadArchilSettings(deps.store, deps.env);
   const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
+  // Its region with no serverless exec, where it has none: a run with no computer that mounts its folder has no shell.
+  const noExec = noExecRegionOf(archilSettings);
   const archil = archilSettings === undefined
     ? undefined
     // The run's mount credential, minted per run (account key from the server's environment first, then the sealed row),
@@ -460,14 +468,13 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
     // run's end revokes it too, so it goes on every outcome even with no computer. Idempotent. As the pi spec does, with
     // what became of the agent's own computer said on the run's timeline.
-    // A browser computer is driven by the browser tool, which runs on pi's native route alone: a CLI's run of an agent
-    // whose computer is a browser is refused in words at its claim, before anything is made.
+    // A browser computer is driven by the browser tool, bound below as host tools (browserHostTools) on that computer.
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
     // Whether an earlier claim made the run a computer of its own is the run's journal's to say (hadComputer), as the pi
     // spec asks it. The computer a park kept, attached again, brings its mount credential with it (inheritMount); a park's
     // row names the disk that credential is on (mountDisk). Its screen's recording (computer.record) goes in the run's
     // recordings folder, as the pi spec's does.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, refuseKind: cliRefusesKind, ...(offAlready ? { turnedOff: offAlready } : {}), recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit(), mountDisk: () => archil.disk.id } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    { ...deps.computerDeps, mode, noExec, workspace: ws.workspace, sealKey: deps.sealKey, ...(offAlready ? { turnedOff: offAlready } : {}), recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit(), mountDisk: () => archil.disk.id } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
   holds.hold({ computer });
   const loopComputer = loopComputerOf(computer.computer, computer.held, computer.made);
@@ -492,7 +499,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // Under the agent's bash policy, its shell's environment is the policy's too (bash-read-only.ts policyEnv), as the pi spec does.
   const bashPolicy = bashPolicyOf(body.toolSettings);
   // A computer that replaced an earlier claim's holds its acts to what it showed, as the pi spec's does.
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
+  const tools = await runTools(ws.workspace, computer.computer, { mode, noExec, context, aliases: [scratch], ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
   filedIn = tools.workspace;
   let remoteProjectCapture = false;
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
@@ -566,6 +573,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // no key saved for its harness, above) and takes no learning step (below), so it holds the computer on a host with no
   // key for its model, and a key saved since runs a new run, never this one.
   const chosen = heldRefusal !== undefined ? heldChoice(body.model) : await modelsOf(entry, env, modelAskOf(launch.model, body.model));
+  // A held run starts no model, so it has no window to hold results to.
+  const window = heldRefusal === undefined ? chosenWindow(entry, env, chosen) : undefined;
   if (heldRefusal === undefined) {
     await planBeforeRun(env, chosen.model);
     if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
@@ -682,8 +691,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // session's proxied models (learnedWorkflowHostTool), each node a request on the run's one route labelled
   // learned_workflow, booked on the run's one ledger. The web tools and the learned workflow's call nodes run on the run's
   // scoped keys (claim-secrets.ts), the run's plane threaded for the web tools. Each call goes through the run's gate
-  // (spec.gate), and a web tool books its paid requests on the run's one ledger itself (bookedIn). The browser is pi's
-  // only (its native route): a CLI harness is not handed it.
+  // (spec.gate), and a web tool books its paid requests on the run's one ledger itself (bookedIn). The browser, granted or
+  // the agent's computer, is bound on the same ToolHost (browserHostTools): its registrations are host tools, its money on
+  // the run's one ledger.
   const results: ToolResults = new Map();
   const ctx = hostToolCtxOf(run, context, results, root);
   // The runner's one redactor (the loop's), else this spec's log cut: the claim's keys join it, and the answers of the tools
@@ -697,8 +707,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // live search) is not handed the host's web_search beside it.
   const webGranted = ownSearchRuns(ownerFacts, launch.plane) ? granted.filter((name) => name !== "web_search") : granted;
   const webNames = webGranted.filter(isWebHostTool);
+  // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
+  const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
+  const browsing = granted.includes(BROWSER_TOOL) || claimBrowser !== undefined;
   let learnedTool: Awaited<ReturnType<typeof learnedWorkflowHostTool>>;
   let webTools: HostTool[] = [];
+  let browserTools: HostTool[] = [];
   let life: ReturnType<typeof hostLifecycle> | undefined;
   // The claim's computers' time booked up to now before the run's end or park is written (compute-cost.ts), so the end's
   // cost holds it: the release that deletes them comes after the end.
@@ -718,7 +732,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
   const admitAuxiliary = runnerSeam() ? undefined : sourceAuxiliaryAdmitter(deps.store, { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   // None for a held run, so its claim reads no saved key for spend beside it (claimSpendOff).
-  const audits = heldRefusal === undefined ? { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, shown, sealKey: deps.sealKey, spendOff: await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey), admitAuxiliary } : undefined;
+  // A claim on the run's own key runs its learning work on that key (keyed), its check at the run's end (atEnd).
+  const audits = heldRefusal === undefined ? { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, shown, sealKey: deps.sealKey, spendOff: await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey), keyed: keyedNow(runKey), atEnd: atRunEnd(log), admitAuxiliary } : undefined;
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a proxy of its own beside the CLI session's, as pi's
   // is (adapter-run-spec.ts graderRouteOf), reached through the session's port while it is up. None: compared whole.
   // None for a held run its model kept from running, whose model runs nowhere.
@@ -728,7 +743,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself. A held run its model kept from
   // running takes none of them, as on pi: it settles no audit and starts no replay run, starts on no workflow, and its
   // tool runs none (so no learned tier is routed, below).
-  const learned: LearnedFirst = audits ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, shown, spendOff: audits.spendOff, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: { reason: "held" }, workflows: [] };
+  const learned: LearnedFirst = audits ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, shown, spendOff: audits.spendOff, keyed: audits.keyed, atEnd: audits.atEnd, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: { reason: "held" }, workflows: [] };
   const firstChoice = learned.choice;
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsOver, learn/replay-calls.ts).
@@ -737,7 +752,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The tool runs what serves, never a revision not promoted (runner/promotion.ts toolFlowsFor).
   const workflows = learned.workflows;
   const learns = learnsWorkflows(revision.kind, workflows);
-  if (webNames.length || learns) {
+  if (webNames.length || browsing || learns) {
     // The claim's keys (above, already held by the redactors), a copy of its own for the tools' plane below: its tool and
     // decision keys alone, since its model keys are not enumerable (claimSecrets), so no spread or spawn of it carries one.
     const toolEnv: NodeJS.ProcessEnv = { ...claimed };
@@ -754,12 +769,13 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The run's resolved tool plane (its web tools' providers), as the pi spec hands it its web tools.
     delete toolEnv[TOOL_PLANE_ENV];
     if (launch.plane && Object.keys(launch.plane).length) toolEnv[TOOL_PLANE_ENV] = JSON.stringify(launch.plane);
-    if (webNames.length) {
+    if (webNames.length || browsing) {
       life ??= hostLifecycle();
       const liveAt = await claimLiveAt(deps, claim.runId);
-      const host = buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}), ...(deps.saveSlots ? { saveSlots: deps.saveSlots } : {}) });
+      const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: held, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}), ...(deps.saveSlots ? { saveSlots: deps.saveSlots } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
       gate.askedOn(host);
       webTools = await webHostTools(host, webGranted, ctx);
+      browserTools = await browserHostTools(host, granted, launch.plane, ctx);
     }
     if (learns) {
       // A tier the learned workflows name that the host has a model of, routed as pi's are (learnedTierRoutes: the run's
@@ -794,9 +810,12 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     system: [environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do. Listed in the order the agent grants them, as main lists a CLI run's tools.
-    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), { results, writes: gate.writes(), opsNotGiven: gate.opsNotGiven() }),...[...webTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
+    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), { results, writes: gate.writes(), opsRefused: gate.opsRefused() }),...[...webTools, ...browserTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
     context: "fresh",
     ...(thinking ? { thinking } : {}),
+    // The run's model's window, from its catalog: the CLI adapter holds each tool result to its share (and Codex and
+    // OpenCode are told it in place of their 272,000 guess).
+    ...(window ? { contextWindow: window } : {}),
   };
 
   // A typed input's other fields follow its content as one json block (inputMessage).
@@ -850,7 +869,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(start ? { learningLaid: laidOf(seedLaid) } : {}),
     ...(workflowFirst ? { workflowFirst } : {}),
     ...(workflowRevise ? { workflowRevise } : {}),
-    // The web tools' install lifecycle, run by the adapter loop, as the pi spec's (they register none today).
+    // The tool host's install lifecycle, run by the adapter loop, as the pi spec's: the browser's reconcile, release and
+    // drain hang off it (the web tools register none).
     ...(life ? { lifecycle: life } : {}),
     agentId: runRow.agentId,
     // An audit's shadow run waits on no one, as the pi spec's (runner/audit.ts AUDIT_PARKED).
@@ -860,8 +880,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     // The run's computer and the person's hold on a desktop or phone, as the claim made them (as the pi spec gives them).
     ...(loopComputer ? { computer: loopComputer } : {}),
     // A desktop or a phone as a codemode script gets it: the script's `computer`, over the run's computer tools, its
-    // declarations without the ops the gate refuses for a tool the agent is not given.
-    ...(tools.computer ? { scriptComputer: { ...tools.computer, opsNotGiven: gate.opsNotGiven() } } : {}),
+    // declarations without the ops the gate refuses whatever their arguments.
+    ...(tools.computer ? { scriptComputer: { ...tools.computer, opsRefused: gate.opsRefused() } } : {}),
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, where

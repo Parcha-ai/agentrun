@@ -337,5 +337,30 @@ test("ollamaPull: a stream that moves is let run past the stall deadline; one th
   await assert.rejects(ollamaPull(env, QWEN3_DEFAULT, () => {}, { fetch: (_url, init) => new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))), stallMs: 200 }), /Ollama sent nothing for 0 s, so the pull stopped/);
   // A stream with no newline grows no buffer past the cap.
   const long = Array.from({ length: 5 }, () => "x".repeat(PULL_LINE_MAX / 4));
-  await assert.rejects(ollamaPull(env, QWEN3_DEFAULT, () => {}, { fetch: async () => streamOf(long, 1), stallMs: 5_000 }), new RegExp(`longer than ${PULL_LINE_MAX} bytes`));
+  await assert.rejects(ollamaPull(env, QWEN3_DEFAULT, () => {}, { fetch: async () => streamOf(long, 1), stallMs: 5_000 }), new RegExp(`longer than ${PULL_LINE_MAX} characters`));
+});
+
+// After the download Ollama says `verifying sha256 digest` once, then hashes every blob with nothing more: on a slow disk
+// that silence passes the stall deadline, and a pull stopped there would only check the same digest again.
+test("ollamaPull: after `verifying sha256 digest` the pull waits out its own, longer silence; one past that still stops", { timeout: 60_000 }, async () => {
+  const env = { OLLAMA_HOST: "http://127.0.0.1:9" };
+  const line = (status) => `${JSON.stringify({ status })}\n`;
+  /** Each part after its own gap, in ms; errored on `signal`'s abort, as a fetch's body is. */
+  const streamWith = (parts, signal) => new Response(new ReadableStream({
+    async start(controller) {
+      let gone = false;
+      signal?.addEventListener("abort", () => { gone = true; controller.error(signal.reason); });
+      for (const [gapMs, part] of parts) {
+        await new Promise((resolve) => setTimeout(resolve, gapMs));
+        if (gone) return;
+        controller.enqueue(new TextEncoder().encode(part));
+      }
+      controller.close();
+    },
+  }), { status: 200 });
+  const verifying = (silenceMs) => [[10, line("pulling x")], [10, line("verifying sha256 digest")], [silenceMs, line("writing manifest")], [10, line("success")]];
+  const seen = [];
+  await ollamaPull(env, QWEN3_DEFAULT, (l) => seen.push(l.status), { fetch: async (_url, init) => streamWith(verifying(700), init.signal), stallMs: 300, verifyStallMs: 3_000 });
+  assert.deepEqual(seen, ["pulling x", "verifying sha256 digest", "writing manifest", "success"], "a 700 ms hash under a 300 ms stall deadline");
+  await assert.rejects(ollamaPull(env, QWEN3_DEFAULT, () => {}, { fetch: async (_url, init) => streamWith(verifying(5_000), init.signal), stallMs: 300, verifyStallMs: 800 }), /Ollama sent nothing for 1 s, so the pull stopped/, "a hash past its own deadline still stops");
 });

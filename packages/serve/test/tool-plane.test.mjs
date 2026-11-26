@@ -378,6 +378,17 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   const coded = await api("POST", "/agents", agent("coder", { harness: "codex", tools: ["web_search"] }));
   assert.equal(coded.status, 201, JSON.stringify(coded.body));
   assert.deepEqual((await api("GET", "/agents/coder")).body.tools, [{ name: "web_search", blurb: "Search the web", ...allowed(), provider: "exa-keyless", provider_from: "server", default_provider: "exa-keyless", resolved: "exa-keyless" }], "the server's pick where the agent has none, on its harness");
+  // Under a server ceiling the agent's own pick stays its pick (the editor reads `provider` as the agent's override),
+  // `resolved` is what runs, and `ceiling` names the server's setting that capped it; with no ceiling there is none.
+  const fetcher = await api("POST", "/agents", agent("fetcher", { tools: ["web_fetch"], tool_settings: { web_fetch: { provider: "firecrawl-keyless" } } }));
+  assert.equal(fetcher.status, 201, JSON.stringify(fetcher.body));
+  const fetchView = async () => (await api("GET", "/agents/fetcher")).body;
+  assert.deepEqual((await fetchView()).tools, [{ name: "web_fetch", blurb: "Read a public web page", ...allowed(), provider: "firecrawl-keyless", provider_from: "agent", default_provider: "auto", resolved: "firecrawl-keyless" }], "no ceiling: no ceiling field");
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "kernel" } })).status, 200);
+  const capped = await fetchView();
+  meets("/agents/{agent_id}", "get", capped);
+  assert.deepEqual(capped.tools, [{ name: "web_fetch", blurb: "Read a public web page", ...allowed(), provider: "firecrawl-keyless", provider_from: "agent", default_provider: "kernel", resolved: "kernel", ceiling: "kernel" }], "the server's kernel caps the agent's Firecrawl: it runs kernel, and says why");
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "exa-keyless" } })).status, 200);
   for (const [tool_settings, field, reason] of [[{ web_search: { permission: "maybe" } }, "definition.tool_settings.web_search.permission", "not_an_option"], [{ web_fetch: { provider: "exa-keyless" } }, "definition.tool_settings.web_fetch.provider", "not_an_option"], [{ ask_person: { provider: "native" } }, "definition.tool_settings.ask_person.provider", "not_allowed"]]) {
     const refused = await api("POST", "/agents", agent("refused", { tools: ["web_search"], tool_settings }));
     assert.deepEqual([refused.status, refused.body.error.fields.map((f) => [f.field, f.reason])], [422, [[field, reason]]], JSON.stringify(tool_settings));

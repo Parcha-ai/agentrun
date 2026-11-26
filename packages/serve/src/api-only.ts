@@ -20,6 +20,10 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *  - a backend reads what its agents learned (loop, promotions, audits, cost per run, a run's learning), cut as the
  *    console's, and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
  *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
+ *  - a backend shares a run it ran (getRunExport, run-export.ts): an ended run's agentrun.share/1 bundle, every string
+ *    cut by the scrubber as on the full server, its ?restore= a stateless re-export of cuts a preview may restore. A
+ *    workflow run's bundle carries its graph, cut, though getRunGraph stays refused here; the share page (/share/{run})
+ *    is the console's, refused with the rest of it;
  *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
  *  - a backend reads the saved MCP servers' names (listMcpServerNames), never a URL or a credential;
  *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
@@ -55,7 +59,7 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "getLearningLoop", "listLearningPromotions", "listLearningAudits", "getLearningCost", "getRunLearning",
   "getRun", "getRunUsage", "listRuns", "listAllRuns", "getTimeline",
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
-  "listRunFiles", "readRunFile",
+  "listRunFiles", "readRunFile", "getRunExport",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames",
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",

@@ -1157,6 +1157,11 @@ export interface Runs {
   /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
+  /** The learning deadlines (ms) of those of `runIds` that are learning children (a check's replay run, an audit's shadow
+   *  run): its launch's replay or audit `deadline_at` (run-launch.ts Replay.deadlineAt). One read for every id, projecting
+   *  that member alone: what a runner reads for a whole batch of claims before any loop starts on them. A run that is no
+   *  learning child, or has no launch row, is absent. */
+  learningDeadlines(runIds: readonly string[]): Promise<Map<string, number>>;
   /** Only the immutable CLI accounting identity/turn and (when requested) SDK completion usage. Projects these JSON
    *  members in the database: no launch input, policy, sealed bytes, completion answer or replay events are returned.
    *  Undefined for an absent run; absent members stay undefined. Historical identity may be read without completion.
