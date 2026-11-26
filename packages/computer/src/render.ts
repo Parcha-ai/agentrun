@@ -579,9 +579,10 @@ class RenderHost implements MachineHost {
 	/**
 	 * GET /v1/sandboxes?ownerId (S, list-sandboxes: terminated ones left out unless asked), every page by its last item's
 	 * cursor while a page is full. Render filters by an exact name alone, and a sandbox's name carries its run and epoch
-	 * beside the adapter's: a listing that asks all three (wholeName, as a create's sweeps for the sandbox it made do) asks
-	 * Render for that name, and the name's labels hold all three, so no file is read; any other is matched here, over
-	 * every page (MAX_PAGES at most, then it fails). Only sandboxes named as computers whose name may carry the
+	 * beside the adapter's: a listing that asks all three (wholeName, as a create's sweeps for the sandbox it made and its
+	 * first look after its POST do) asks Render for that name, and the name's labels hold all three, so no file is read;
+	 * any other is matched here, over every page (MAX_PAGES at most, then it fails): a create's first check and the
+	 * convergence that settles it, so a create reads the workspace's pages twice. Only sandboxes named as computers whose name may carry the
 	 * labels asked (mayCarry: the adapter's name, the run's hash and the epoch); a label asked that is not the name's is
 	 * read from each running one's labels file (#labelsOf), LABEL_READS at once, all within this call's own bound, and only
 	 * those that carry every label asked are answered. A file that can't be read by then fails the listing closed, once
