@@ -662,10 +662,11 @@ export function shapeKinds(text: string, shapes: readonly Shape[]): string[] {
  *    two, and cut in place;
  *  - `plain`: what the whole-text check looks for in each squeezed view (with `hexes` in it lowered, `folds` in it
  *    folded);
- *  - `joined`: a held value that holds a ",", a ":" or a "+", squeezed, with them gone: what the whole-text check also
- *    looks for in the join view alone, which drops JSON's punctuation between strings and code's "+" between two
- *    (partsOf `joins`), so a value split there ({"alice":"<rest>"}, two strings of an array, `"<head>" + "<rest>"` for
- *    a value whose own "+" stood there) reads as itself. */
+ *  - `joined`: a held value that holds a ",", a ":" or a "+", squeezed, with them gone, and each `plain` needle that
+ *    holds a "+" with only its "+" gone: what the whole-text check also looks for in the join view alone, which drops
+ *    JSON's punctuation between strings and code's "+" between two (partsOf `joins`), and whose values read every "+"
+ *    as nothing (joinOf), so a value split there ({"alice":"<rest>"}, two strings of an array, `"<head>" + "<rest>"`
+ *    for a value whose own "+" stood there, its base64 across two fields) reads as itself. */
 export type Needles = {
   readonly forms: readonly string[];
   readonly hexes: readonly string[];
@@ -1059,9 +1060,12 @@ const WORDY = /^[\p{L}\p{N}]$/u;
 /** A character of a word: a letter or a digit, of any script, or "_". */
 const WORD_CHAR = /^[\p{L}\p{N}_]$/u;
 
-/** Python's string prefixes, lower case: a word that is exactly one before an apostrophe (r'...', Rb'...') makes it
- *  open a string, whatever follows. */
-const STRING_PREFIXES: ReadonlySet<string> = new Set(["r", "u", "b", "f", "br", "rb", "fr", "rf"]);
+/** The prefixes code writes before a quote: a word that is exactly one before an apostrophe makes it open a string,
+ *  whatever follows. Python's, in any case (r'...', Rb'...', Python 2's ur'...'), held lower case here; and in the case
+ *  written, SQL's (N'...', E'...', X'...', B'...'), C's (L'x', u'x', U'x', u8'x') and Rust's (b'x'). A Delphi control
+ *  character, "#" and digits (#13'...'), is one too (partsOf). */
+const STRING_PREFIXES: ReadonlySet<string> = new Set(["r", "u", "b", "f", "br", "rb", "fr", "rf", "ur"]);
+const CASED_PREFIXES: ReadonlySet<string> = new Set(["N", "E", "X", "B", "L", "u", "U", "u8", "b"]);
 
 /** JSON's punctuation between its values. */
 const STRUCTURE = only("{}[],:");
@@ -1093,8 +1097,8 @@ function unitAt(text: string, at: number, to: number, level: 0 | 1): { char: str
  *  `quoted`, an apostrophe opens a string too, closed by the next apostrophe or a line break, as a single-quoted literal
  *  of Python or JavaScript is (a quote inside it is text, as an apostrophe inside a "..." string is), except one with a
  *  letter or a digit on each side, prose's ("Here's"), which opens none: so an odd number of them before code does not
- *  turn its literals the wrong way round. One after a word that is exactly a Python string prefix (r'...', fR'...') opens
- *  a string all the same. At level 0, with `written`, the span of each value written in quotes is added
+ *  turn its literals the wrong way round. One after a word that is exactly a string prefix (STRING_PREFIXES: r'...', N'...',
+ *  u8'x', #13'...') opens a string all the same. At level 0, with `written`, the span of each value written in quotes is added
  *  to it (the again join reads it one level down). Each character is read at most three times (at level 0, at level 1,
  *  and in the whitespace after a string looking for a ":"). */
 function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], kind: JoinKind = "nested", written?: Span[]): void {
@@ -1105,10 +1109,12 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
   let lone = "";
   let string = false;
   let operators: Part[] = [];
-  // The character before this one at this level (after a string, its quote), and the word that ends there, lower case
-  // (its first three characters; "" when no word ends there).
+  // The character before this one at this level (after a string, its quote); the word that ends there (its first three
+  // characters; "" when no word ends there), whether it is all digits, and the character before it.
   let last = "";
   let word = "";
+  let digits = false;
+  let beforeWord = "";
   let plus = false;
   const endBare = (end: number) => {
     if (bare >= 0) {
@@ -1126,10 +1132,15 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
     if (kind === "quoted" && char === "'") {
       // The character after it as it stands (an escape there is no letter).
       if (end < to) scanned.chars++;
-      quote = STRING_PREFIXES.has(word) || !(WORDY.test(last) && end < to && WORDY.test(text[end]!));
+      const prefix = (word.length > 0 && word.length < 3 && (STRING_PREFIXES.has(word.toLowerCase()) || CASED_PREFIXES.has(word))) || (word.length > 0 && digits && beforeWord === "#");
+      quote = prefix || !(WORDY.test(last) && end < to && WORDY.test(text[end]!));
     }
+    if (WORD_CHAR.test(char)) {
+      if (word === "") [beforeWord, digits] = [last, true];
+      if (word.length < 3) word += char;
+      digits &&= char >= "0" && char <= "9";
+    } else word = "";
     last = char;
-    word = WORD_CHAR.test(char) ? (word.length < 3 ? word + char.toLowerCase() : word) : "";
     if (!quote) {
       if (isSpace(code)) endBare(at);
       else if (STRUCTURE(code)) {

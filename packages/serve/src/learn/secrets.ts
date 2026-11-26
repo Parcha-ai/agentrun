@@ -108,6 +108,7 @@ function derivedOf(values: readonly string[]): Needles {
   // A held JSON value's own lines are no parts of it (a pretty-printed one has its public strings on lines of their
   // own); the strings heldFields holds of it have theirs.
   const parts = [...new Set([...held.filter((_, at) => fields[at] === undefined), ...strings].flatMap(partsOf))];
+  const plain = [...new Set([...[...needles.values()].flatMap((of) => of.plain), ...parts.map(squeeze)])];
   const derived: Needles = {
     forms: [...new Set([...given.flatMap((v) => {
       const of = needles.get(v);
@@ -115,8 +116,11 @@ function derivedOf(values: readonly string[]): Needles {
     }), ...parts].filter((form) => form.length > 0))],
     hexes: [...needles.values()].map((of) => of.hex),
     folds: [...needles.values()].flatMap((of) => of.folded),
-    plain: [...new Set([...[...needles.values()].flatMap((of) => of.plain), ...parts.map(squeeze)])],
-    joined: [...new Set([...needles.keys()].filter((v) => JOIN_DROPS.test(v)).map((v) => squeeze(v).replace(JOIN_DROPPED, "")).filter(longEnough))],
+    plain,
+    joined: [...new Set([
+      ...[...needles.keys()].filter((v) => JOIN_DROPS.test(v)).map((v) => squeeze(v).replace(JOIN_DROPPED, "")).filter(longEnough),
+      ...plain.filter((form) => form.includes("+") && longEnough(form)).map((form) => form.replaceAll("+", "")).filter(plusless),
+    ])],
   };
   DERIVED.set(values, { values: [...values], derived });
   return derived;
@@ -242,6 +246,11 @@ const longEnough = (value: string) => [...value].length >= MIN_SECRET;
  *  pass leaves out such an operator). Gone from that needle only, so it never reads past a value's own length. */
 const JOIN_DROPS = /[,:+]/;
 const JOIN_DROPPED = /[,:+]/g;
+
+/** A plain needle holding a "+" read with only its "+" gone, as the join view's values read every "+" (redact/match.ts
+ *  joinOf): its base64 forms, a key's lines, its JSON form and the value itself, each kept for a source of MIN_SECRET
+ *  characters or more while at most one character under it, so a value of 8 with one "+" is still found there. */
+const plusless = (form: string) => [...form].length >= MIN_SECRET - 1;
 
 /** The fewest characters a line of a held value must have to be held as a part of it: a key's base64 line (64) is, a
  *  short line any text may hold ("-----END …-----", "}", a JSON field's name and a word) is not. */
