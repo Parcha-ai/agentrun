@@ -316,6 +316,63 @@ test("an approve for a parked call, buffered on a resume claim whose loop closes
   assert.deepEqual(unhandled, []);
 });
 
+test("a take-over of a parked run's computer, buffered on a resume claim whose loop throws before it is ready (its computer cannot be reached again), is never written refused: it stays untaken with one try counted, and the run is released parked with a backoff", { timeout: 90_000 }, async (t) => {
+  const opened = await stores({ runners: 1 });
+  await opened.server.settings.put("tool-settings", { web_fetch: { permission: "ask" } });
+  await queue(opened.server, "run-1");
+  const tools = { web_fetch: { name: "web_fetch", replaySafe: false, ask: false, run: async () => "fetched it" } };
+  const script = [{ call: "web_fetch", args: { url: "https://example.com/" } }, { say: "finished" }];
+  const base = piAdapterSpec({ script, tools, hooks: quiet }, { fetch: scriptedOrigin(script, []) });
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-buffered-take-over-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = opened.runners[0];
+  // Every resume throws before its loop is ready, as one whose computer cannot be reached again does.
+  let resumes = 0;
+  const adapter = createAdapterLoop(async (claim, run) => {
+    const gate = await adapterRunGate(store, claim, { kind: "agentic", body: { approvals: "ask" } }, root, undefined, { facts: undefined });
+    const given = await base(claim, run);
+    if (claim.from !== "parked") return { ...given, gate };
+    resumes += 1;
+    return { ...given, gate, adapter: { ...given.adapter, open: async () => { throw new Error("the run's desktop could not be reached again"); } } };
+  }, { restartLimit: MAX_RESTARTS });
+  // The dispatch, as the runner holds it: on a resume claim its launch read waits until the runner has handed it the
+  // take-over, so the row is buffered before the loop is chosen and reaches the loop through the dispatch's replay.
+  const createLoop = (deps) => {
+    let handed;
+    const commandHanded = new Promise((resolve) => (handed = resolve));
+    let claimed;
+    const dispatch = createDispatchLoop({
+      launchOf: async () => {
+        if (claimed?.from === "parked") await commandHanded;
+        return { body: { place: { mode: "runner" }, harness: "pi" } };
+      },
+      resolve: () => adapter,
+    })(deps);
+    return {
+      start: (claim) => ((claimed = claim), dispatch.start(claim)),
+      command: async (command) => {
+        const outcome = await dispatch.command(command);
+        handed();
+        return outcome;
+      },
+      stop: (reason) => dispatch.stop(reason),
+    };
+  };
+  const refusedEvents = [];
+  const runner = startRunner({ store, createLoop, name: "runner-a", leaseMs: 30_000, renewEveryMs: 150, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30, resumeBackoffMs: 30_000, onEvent: (event) => void (event.type === "refused" && refusedEvents.push(event)) });
+  t.after(() => runner.close());
+  const rowOf = () => opened.server.runs.get("run-1");
+  await until(async () => { const row = await rowOf(); return row.state === "parked" && row.runner === null; }, "the run parked on its call", 20_000);
+  const { id: takeOverId } = await sendCommand(opened.server, "run-1", { kind: "computer_take_over", body: { at: Date.now() } });
+  await until(async () => resumes === 1 && (await rowOf()).runner === null, "the failed resume let go of the run", 20_000);
+  const row = (await opened.server.commands("run-1", 0)).find((c) => c.id === takeOverId);
+  assert.deepEqual([row.takenAt, row.refused, row.tries], [null, null, 1], `the take-over is left for the next try, one try counted, never refused: ${JSON.stringify(row)}`);
+  assert.deepEqual(refusedEvents, [], "nothing said refused");
+  const run = await rowOf();
+  assert.equal(run.state, "parked", JSON.stringify(run));
+  assert.ok(run.backoffUntil > opened.now(), `released parked with a backoff before its next try: ${JSON.stringify(run)}`);
+});
+
 test("the runner process's last resort says what went wrong in the runner's name with its stack, then exits 1", async () => {
   // Imported here, so a runner main with no last resort fails this case alone.
   const { lastResort } = await import("../dist/runner/main.js");
