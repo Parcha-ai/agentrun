@@ -68,7 +68,7 @@ describe("wrappedCards", () => {
     const revoked = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     const saved: { href: string; download: string }[] = [];
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) { saved.push({ href: this.href, download: this.download }); });
-    mount(createElement("div", null, wrappedCards(split, YEAR)));
+    mount(createElement("div", null, wrappedCards(split, YEAR, false)));
     const button = document.querySelector("button")!;
     expect(button.textContent).toBe("Download PNG");
     expect(button.getAttribute("aria-label")).toBe("Download the Harnesses and models card as a PNG");
@@ -84,7 +84,7 @@ describe("wrappedCards", () => {
   it("a card the browser cannot draw as a PNG says so beside its button, and nothing is saved", async () => {
     vi.mocked(toPng).mockRejectedValue(new Error("this browser draws no canvas"));
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    mount(createElement("div", null, wrappedCards(WRAPPED_CARDS.find((c) => c.id === "cover")!, YEAR)));
+    mount(createElement("div", null, wrappedCards(WRAPPED_CARDS.find((c) => c.id === "cover")!, YEAR, false)));
     await act(async () => document.querySelector("button")!.click());
     expect(document.querySelector('[role="status"]')?.textContent).toBe("This card could not be saved as a PNG: this browser draws no canvas.");
     expect(click).not.toHaveBeenCalled();
