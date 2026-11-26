@@ -182,19 +182,19 @@ async function raced(t, { harness = "claude-agent", split = false, waitMs } = {}
   if (waitMs === 0) {
     // A runner that waits on no round: the next run starts at once from the learning as it is, the round still held, and
     // its start says its wait timed out. It is never refused.
-    // Its own answer only (its round may queue behind the held one): read before the held round is let go.
+    // Its own answer, while the round is still held (its own round may queue behind that one, so its learning read waits).
     let done;
     for (let i = 0; i < 1800; i++) {
       done = (await api("GET", `/runs/${next.body.run_id}`)).body;
       if (done.status === "completed" || done.status === "failed") break;
       await sleep(50);
     }
-    const read = (await api("GET", `/runs/${next.body.run_id}/learning`)).body;
     release();
     assert.equal(done.status, "completed", JSON.stringify(done));
-    assert.deepEqual([read.seed_waited, read.seed_failed], ["timed_out", null], JSON.stringify(read));
     await ended(api, runId);
     await ended(api, next.body.run_id);
+    const read = (await api("GET", `/runs/${next.body.run_id}/learning`)).body;
+    assert.deepEqual([read?.seed_waited, read?.seed_failed], ["timed_out", null], JSON.stringify(read));
     return;
   }
   release();
