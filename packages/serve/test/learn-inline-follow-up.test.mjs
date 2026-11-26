@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { ended } from "./learn-support.mjs";
+import { askedForCompile } from "../dist/learn/compile.js";
+import { ended, sleep } from "./learn-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
 const MODEL = "claude-haiku-5-5";
@@ -111,3 +112,83 @@ for (const newVersion of [false, true]) {
   test(`claude-agent: the same on ${version}, split, keyed, with the host's no-computer tools`, SKIP, (t) => harbor(t, { newVersion, split: true, keyed: true, tools: HOST_TOOLS }));
   test(`claude-agent: the same on ${version}, split and keyed, no tools`, SKIP, (t) => harbor(t, { newVersion, split: true, keyed: true }));
 }
+
+/** The host launches the next run as soon as the corrected one reads completed: the follow-up's answer is in (its job's
+ *  end is kept, so the run reads completed) while its learning round still runs (here its compile turn, held open by the
+ *  fake until the next run's POST has answered). The next run still starts from the correction once that round merges. */
+async function raced(t, { harness = "claude-agent", split = false } = {}) {
+  const asks = [];
+  let armed = false;
+  let roundAsked;
+  const asked = new Promise((resolve) => (roundAsked = resolve));
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  const fake = await fakeAnthropic({
+    reply: async (request) => {
+      if (request.path !== "/v1/messages") return { text: "" };
+      // A compile ask (or its re-ask) is the request's last user message; earlier turns of the session stay in its history.
+      const compile = askedForCompile(textOf((request.body.messages ?? []).findLast((m) => m.role === "user")?.content));
+      asks.push({ system: systemOf(request), compile: Boolean(compile) });
+      if (compile) {
+        // The follow-up round's compile turn (its first ask): held until the next run was launched. Every compile answer
+        // drafts nothing the checks take, so no learned workflow ever answers the next run in its model's stead.
+        if (armed && compile === true) {
+          armed = false;
+          roundAsked();
+          await held;
+        }
+        return { text: "No workflow for this job." };
+      }
+      return { text: corrects(request) ? `The harbor code is ${CODE}.` : "UNKNOWN" };
+    },
+  });
+  t.after(() => fake.close());
+  withEnv(t, { ANTHROPIC_API_KEY: "fake-test-key", ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${MODEL}` }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_STRONG"]);
+  const { api } = await serve(t, { learning: "on", faux: undefined, ...(split ? { childRuns: {} } : {}) });
+  const prompt = "You are the harbor expert. Answer the user's question.";
+  // compile_after 1: each round of the corrected run asks a compile turn (its first fails its checks, so the follow-up
+  // round's is the one more a failed first compile gets).
+  const body = () => {
+    const one = inline({ harness, version: "1.aaaaaaaaaaaaaaaa", prompt, tools: [] });
+    return { ...one, definition: { ...one.definition, learning: { compile_after: 1 } } };
+  };
+
+  const first = await api("POST", "/runs", body());
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  const runId = first.body.run_id;
+  const agentId = first.body.agent_id;
+  await ended(api, runId);
+  armed = true;
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: FOLLOW_UP });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  let bound;
+  await Promise.race([asked, new Promise((_, reject) => (bound = setTimeout(() => reject(new Error("the follow-up round asked no compile turn")), 90_000)))]).finally(() => clearTimeout(bound));
+  // The follow-up's answer is in and its round is under way: the run reads completed, its learning not yet merged.
+  let view;
+  for (let i = 0; i < 600; i++) {
+    view = (await api("GET", `/runs/${runId}`)).body;
+    if (view.status === "completed") break;
+    await sleep(50);
+  }
+  assert.equal(view.status, "completed", JSON.stringify({ status: view.status, learning: view.learning }));
+  assert.equal(view.learning?.state, "reflecting", JSON.stringify(view.learning));
+
+  const before = asks.length;
+  const next = await api("POST", "/runs", body());
+  assert.equal(next.status, 202, JSON.stringify(next.body));
+  assert.equal(next.body.agent_id, agentId, "the same agent");
+  release();
+
+  await ended(api, runId);
+  const learning = (await api("GET", `/runs/${runId}/learning`)).body;
+  assert.equal(learning?.state, "merged", `the follow-up round kept the correction: ${JSON.stringify(learning)}`);
+  const { view: done } = await ended(api, next.body.run_id);
+  // The next run's own turns: after its launch, every ask but a compile turn's (the corrected run asks only those then).
+  const laid = asks.slice(before).filter((one) => !one.compile).map((one) => one.system);
+  assert.ok(laid.length, "the next run asked its model");
+  assert.ok(laid.every((system) => system.includes("# Learned") && system.includes(CODE)), `the next run, launched while the corrected run's round ran, starts from the correction it merged: ${JSON.stringify({ learning: done.learning, system: laid[0]?.slice(-800) })}`);
+}
+
+for (const harness of ["claude-agent", "pi"]) test(`${harness}: an inline run launched while the corrected run's follow-up round runs starts from its correction`, SKIP, (t) => raced(t, { harness }));
+test("claude-agent: the same, each run in a process of its own", SKIP, (t) => raced(t, { split: true }));
