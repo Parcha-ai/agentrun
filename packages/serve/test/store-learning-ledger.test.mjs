@@ -41,16 +41,16 @@ const KEPT = { meters: { tools: 0, tokens: 0.1, browser: { usd: 0, seconds: 0 },
 const kept = (n, job, look, extra = {}) => ({ table: "learning_proposals", row: { round: n, turn: {}, proposal: { state: "dropped", reason: "empty", detail: "d", answered_at: AT, job_cost_usd: job, look_back_usd: look, ...extra } } });
 
 /** A store with agent-1 and its revision, and `end`: run `id` made and ended at the clock's next second, its row's cost
- *  `costUsd` and its metrics, with `also`'s rows; on a named disk with `disk`; an audit's shadow with `audit`; a launch
- *  that learns with `learns`. */
+ *  `costUsd` and its metrics, with `also`'s rows; on a named disk with `disk`; an audit's shadow with `audit`; a check's
+ *  replay with `replay`; a launch that learns with `learns`. */
 async function ledgerStore(t) {
   const clock = { now: T0 };
   const { store, file } = await storeOn(t, { clock });
   await agentWithRevision(store, "agent-1", "rev-1");
-  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit, learns, revisionId = "rev-1" } = {}) => {
+  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit, replay, learns, revisionId = "rev-1" } = {}) => {
     clock.now += 1_000;
     const learning = learns ? { learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } } : {};
-    await store.runs.create({ id, agentId: "agent-1", revisionId }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}), ...learning } });
+    await store.runs.create({ id, agentId: "agent-1", revisionId }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}), ...(replay ? { replay } : {}), ...learning } });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     clock.now += 1_000;
     await store.runs.update(claim, { state: "ended", costUsd, metrics }, also.length ? { also } : undefined);
@@ -258,6 +258,20 @@ test("one by-hand rule in the window and before it: a run of a workflow revision
   const past = await pastRunsOverStore(store, "agent-1");
   assert.deepEqual(past.by_hand, { runs: 10, mean_usd: 1 }, "before the window: the same 10, as the window would read them; the workflow's runs left out");
   assert.deepEqual(workflowCostsOf(past).map((one) => one.state), ["needs_revision"], "$2 served against $1 by hand, never against a mean the workflow's $5 runs raise");
+});
+
+test("a run's view priced other than its row reads it as its end records it, from its launch as the end does: a check's replay whose end named no path is that replay at any figure, carrying no learning and no all-in", async (t) => {
+  const { store, end } = await ledgerStore(t);
+  await end("p1", 0.4, {});
+  await end("r1", 0.2, {}, { replay: { of: "s0", workflow: "answer", digest: C, paid_by: "p1" } });
+  const rows = new Map((await store.learning.ledger("agent-1")).rows.map((row) => [row.runId, row.path]));
+  assert.equal(rows.get("r1"), "replay", "its end's row reads it from its launch");
+  // At its row's cost, and at another (an imported run's estimate, a booking where its end stored none): a replay's spend
+  // is the run it checks for, so it carries none of its own either way.
+  for (const priced of [undefined, 0.25]) {
+    const cost = await runAllInOverStore(store, "r1", priced);
+    assert.deepEqual([cost.learning_usd, cost.all_in_usd, cost.share_usd], [0, 0, 0], `priced at ${priced ?? "its row"}: ${JSON.stringify(cost)}`);
+  }
 });
 
 test("a shadow that failed before its end wrote its metrics books its cost at its end, on the run its launch audits", async (t) => {
