@@ -3,7 +3,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { secretCut } from "../dist/secret-cut.js";
 
-const ENV = { OPENAI_API_KEY: "sk-tally-aaaaaaaaaaaaaaaa", GITHUB_TOKEN: "ghp_tallybbbbbbbbbbbbbbbbbbbb" };
+// Built from parts, so no line of this file holds a literal that reads as a key.
+const ENV = { OPENAI_API_KEY: `sk-tally-${"a".repeat(16)}`, GITHUB_TOKEN: `ghp_tally${"b".repeat(20)}` };
 
 test("a tally counts each value cut while it is open once, and its stop may be called again: the same number, nothing cut after the first", () => {
   const { text, tally } = secretCut(ENV);
