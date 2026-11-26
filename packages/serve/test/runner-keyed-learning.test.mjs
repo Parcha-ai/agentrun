@@ -119,13 +119,15 @@ async function holdingFront(t, origin, held) {
  *  learning (`promoted`: as its check's record promotes it, so it serves first). The runner's env names the
  *  gateway and holds no key of its own; its route reads the key the claim's model env holds. `hold`: requests whose body
  *  it matches wait until `front.release()`. `learningClock`: the runner's clock for its learning children's deadlines.
- *  `usage`: what the gateway says each request used. `pollMs`: the runner's poll, when not TIMING's. */
-async function world(t, { learning = true, prior = 0, promoted = false, hold, learningClock, usage, pollMs } = {}) {
+ *  `usage`: what the gateway says each request used. `pollMs`: the runner's poll, when not TIMING's. `lease`: the
+ *  runner's lease timings, when not TIMING's. `call`: the gateway's tool call, when not the right submit. `restart(clock)` kills the runner (a crash: it writes nothing more, its
+ *  claims lapse at their lease) and starts another on the same store, `clock` its learning clock. */
+async function world(t, { learning = true, prior = 0, promoted = false, hold, learningClock, usage, pollMs, lease, call } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-keyed-learning-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const gw = await startFauxGateway({
-    call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: 42, sure: true } } } : undefined),
+    call: call ?? (({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: 42, sure: true } } } : undefined)),
     text: ({ body }) => (offers(body, "submit") ? "submitted" : AGENT_SAYS),
     ...(usage ? { usage } : {}),
   });
@@ -147,7 +149,12 @@ async function world(t, { learning = true, prior = 0, promoted = false, hold, le
   const logs = [];
   const deps = { env: { AGENT_MODEL_BASE_URL: origin }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
-  runner = startRunner({ store, name: "runner-a", ...TIMING, ...(pollMs ? { pollMs } : {}), ...(learningClock ? { learningClock } : {}), createLoop: createAdapterLoop(specOf) });
+  const startOne = (name, clock) => startRunner({ store, name, ...TIMING, ...lease, ...(pollMs ? { pollMs } : {}), ...(clock ? { learningClock: clock } : {}), createLoop: createAdapterLoop(specOf) });
+  runner = startOne("runner-a", learningClock);
+  const restart = (clock) => {
+    runner.kill();
+    runner = startOne("runner-b", clock);
+  };
   const ended = (id) => until(async () => {
     const row = await server.runs.get(id);
     return FINAL.includes(row?.state) && row.runner === null && row;
@@ -171,7 +178,7 @@ async function world(t, { learning = true, prior = 0, promoted = false, hold, le
     return out;
   };
   const view = async (id) => viewOverStore(server, id, { origin: "", serverSecrets: () => [], sealKey: SEAL_KEY });
-  return { dir, server, gw, front, logs, ended, keyed, children, view };
+  return { dir, server, gw, front, logs, ended, keyed, children, view, restart };
 }
 
 /** The key nowhere in the clear: no log line, none of the store's bytes. */
@@ -337,6 +344,42 @@ test("a learning child claimed already past its deadline (queued past it, on the
     return one.state !== "running" && one;
   }, "the run's learning work settles");
   assert.deepEqual([work.state, work.runs, work.deadline_at], ["ended", [], null], JSON.stringify(work));
+  await assertNowhere(w);
+});
+
+test("a replay that booked spend and lost its runner, claimed again past its deadline, ends cancelled with what it booked: its cost and its check on the run's key stay the run's learning", { timeout: 240_000 }, async (t) => {
+  // Each replay's node: its first request answered (a submit its schema refuses) and booked, its second (after that
+  // refusal, the tool's result) held at the front, so each has spent when its runner dies. The agent's own runs are
+  // answered right at once (no tool result yet).
+  const refused = ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: "not a number", sure: true } } } : undefined);
+  const w = await world(t, { prior: 6, call: refused, hold: (body) => body.includes('"name":"submit"') && body.includes('"tool_result"'), lease: { leaseMs: 8_000, renewEveryMs: 500, stopMarginMs: 2_000 } });
+  await w.keyed("run-1", "What is six times seven", 5);
+  await w.ended("run-1");
+  const replays = await until(async () => {
+    const rows = await w.children("replay");
+    return rows.length === 6 && w.front.waiting.size === 6 && rows;
+  }, "six replay runs, each held at its node's second request");
+  const ids = replays.map((row) => row.id);
+  // The runner dies with every replay at work; the next starts past each replay's deadline on its learning clock.
+  w.restart(() => Date.now() + LEARNING_CHILD_MS + 60_000);
+  for (const id of ids) {
+    const row = await w.ended(id);
+    assert.deepEqual([row.state, row.outcome], ["stopped", "cancelled"], `replay ${id} cancelled at its claim past its deadline: ${JSON.stringify([row.state, row.outcome, row.summary])}`);
+  }
+  const spent = (await Promise.all(ids.map((id) => w.server.runs.get(id)))).map((row) => row.costUsd);
+  assert.ok(spent.every((usd) => typeof usd === "number" && usd > 0), `each replay ends with what it booked before its runner died: ${spent}`);
+  const micro = (usd) => Math.round(usd * 1e6);
+  const near = (a, b) => Math.abs(a - b) <= ids.length;
+  const total = spent.reduce((sum, usd) => sum + micro(usd), 0);
+  const work = await until(async () => {
+    const one = (await w.view("run-1")).learning_work;
+    return one.state !== "running" && one;
+  }, "the run's learning work settles");
+  assert.equal(work.state, "ended", JSON.stringify(work));
+  const cost = await runAllInOverStore(w.server, "run-1");
+  assert.ok(near(micro(cost.check_usd ?? 0), total), `the run's check_usd is what its replays booked (${spent}): ${JSON.stringify(cost)}`);
+  const agent = (await agentCostOverStore(w.server, "agent-1")).runs.find((run) => run.run_id === "run-1");
+  assert.ok(near(micro(agent?.check_usd ?? 0), total), `and the agent's ledger reads it so: ${JSON.stringify(agent)}`);
   await assertNowhere(w);
 });
 
