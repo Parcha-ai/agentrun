@@ -1364,35 +1364,22 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
   return { text: out.join(""), covered, marked: recorded };
 }
 
-/** Where the CSI whose parameters start at view[at] ends (its final byte), or -1: parameter bytes (0x30-0x3F), then
- *  intermediate bytes (0x20-0x2F), then a final byte (0x40-0x7E). The read stops at the first byte that fits none, so
- *  each character is read by at most one CSI. */
-function csiEnd(text: string, at: number): number {
-  let k = at;
-  while (k < text.length && text.charCodeAt(k) >= 0x30 && text.charCodeAt(k) <= 0x3f) k++;
-  while (k < text.length && text.charCodeAt(k) >= 0x20 && text.charCodeAt(k) <= 0x2f) k++;
-  scanned.chars += k - at + 1;
-  return k < text.length && text.charCodeAt(k) >= 0x40 && text.charCodeAt(k) <= 0x7e ? k : -1;
-}
-
-/** Where the OSC whose body starts at view[at] ends (its BEL, its U+009C, or the backslash of its ESC and backslash),
- *  or -1 where another ESC, an 8-bit CSI or OSC, or the view's end comes first: an OSC never ended there is no OSC. The
- *  read stops at the next ESC, so each character is read by at most one OSC. */
-function oscEnd(text: string, at: number): number {
-  for (let k = at; k < text.length; k++) {
-    const code = text.charCodeAt(k);
-    if (code === 0x07 || code === 0x9c) return (scanned.chars += k - at + 1), k;
-    if (code === 0x1b || code === 0x9b || code === 0x9d) {
-      scanned.chars += k - at + 2;
-      return code === 0x1b && text.charCodeAt(k + 1) === 0x5c ? k + 1 : -1;
-    }
-  }
-  scanned.chars += text.length - at;
-  return -1;
-}
-
 const isHigh = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
 const isLow = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
+/** One character IGNORABLE matches. */
+const IGNORABLE_ONE = new RegExp(`^${IGNORABLE.source.slice(0, -1)}$`, "u");
+/** Whether a unit takes no place on screen, as the views drop it: a control character, whitespace from tab to
+ *  carriage return, or a character IGNORABLE holds (not half of a surrogate pair, which stays). A backspace after it
+ *  strikes out the character before it. */
+const placeless = (code: number, char: string): boolean =>
+  (isControl(code) && !isTerminal(code)) || (code >= 0x09 && code <= 0x0d) || code === 0x20 || (code >= 0xa0 && !isHigh(code) && !isLow(code) && IGNORABLE_ONE.test(char));
+/** Whether a terminal passes over a unit inside a sequence without ending it: a NUL or a DEL (ignored), any other C0
+ *  control but ESC, CAN and SUB (run: a backspace moves back), a BEL but where it ends an OSC, a C1 control but the
+ *  8-bit CSI, ST and OSC, and a character that shows as nothing, a box or a blank (placeless). */
+const passedIn = (code: number, char: string, osc: boolean): boolean =>
+  code === 0x18 || code === 0x1a || code === 0x1b || code === 0x9b || code === 0x9c || code === 0x9d || code === 0x20 || (osc && code === 0x07)
+    ? false
+    : code < 0x20 || placeless(code, char);
 
 /** The readings of a text through `spec`: its view, or, where a terminal control is in it (`marked`), that view (the
  *  terminal controls dropped, as any control is: an ESC and the letter after it read as text) and the view of the text
@@ -1400,45 +1387,87 @@ const isLow = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
  *  "]" or U+009D to a BEL, ESC and a backslash, or U+009C) and each other escape (ESC, any intermediate bytes, and a
  *  final byte from 0x30 to 0x7E) gone whole; a backspace gone with the character before it (a whole character: both
  *  halves of one past U+FFFF; the next one takes its place on screen); and an ESC that opens none of them, a BEL and a
- *  U+009C gone alone. That view is built again from the text with the units a terminal hides skipped, so the squeeze
+ *  U+009C gone alone. Inside a sequence a terminal ignores a NUL or a DEL and runs any other C0 control without ending
+ *  it (a backspace there still strikes out the character before the sequence), and CAN or SUB aborts it (gone whole);
+ *  each control or character the views drop is passed over there, and takes no place a backspace strikes out
+ *  (placeless). That view is built again from the text with the units a terminal hides skipped, so the squeeze
  *  reads the characters either side of what it hides as one stretch, as a reader does. A held value either reading
- *  shows is held. Each read is linear: a sequence read stops at the first byte it cannot hold. */
+ *  shows is held. Each read is linear: a sequence read stops at the first unit it cannot hold, and one not ended is read
+ *  again once, from the unit after its opener. */
 function readingsOf(text: string, spec: ViewSpec, cuts: readonly Span[] | undefined, separates: boolean): View[] {
   const view = viewOf(text, spec, cuts, separates);
   if (!view.marked) return [view];
   const recorded = view.marked;
   const units = recorded.length;
   const shown = new Uint8Array(units);
+  // The shown units a backspace can strike out, in order.
   const stack: number[] = [];
+  // A backspace strikes out a whole character: one past U+FFFF goes with both its halves.
+  const strike = () => {
+    const last = stack.pop();
+    if (last === undefined) return;
+    shown[last] = 0;
+    if (isLow(recorded.charCodeAt(last)) && stack.at(-1) === last - 1 && isHigh(recorded.charCodeAt(last - 1))) shown[stack.pop()!] = 0;
+  };
+  // A sequence's reader: `k` is where it is, `byte` the next unit at k or after it that the terminal does not pass over
+  // inside a sequence (passedIn), k moved to it, or -1 at the end.
+  let k = 0;
+  const byte = (osc: boolean): number => {
+    while (k < units && passedIn(recorded.charCodeAt(k), recorded[k]!, osc)) k++;
+    return k < units ? recorded.charCodeAt(k) : -1;
+  };
+  const aborts = (code: number): boolean => code === 0x18 || code === 0x1a;
+  // Where a CSI whose parameters start at k ends (its final byte, or the CAN or SUB that aborts it), or -1: parameter
+  // bytes (0x30-0x3F), then intermediate bytes (0x20-0x2F), then a final byte (0x40-0x7E).
+  const csi = (): number => {
+    let code = byte(false);
+    while (code >= 0x30 && code <= 0x3f) (k++, (code = byte(false)));
+    while (code >= 0x20 && code <= 0x2f) (k++, (code = byte(false)));
+    return (code >= 0x40 && code <= 0x7e) || aborts(code) ? k : -1;
+  };
+  // Where an OSC whose body starts at k ends (its BEL, its U+009C, the backslash of its ESC and backslash, or the CAN or
+  // SUB that aborts it), or -1 where an 8-bit CSI or OSC, an ESC and no backslash, or the end comes first: an OSC never
+  // ended there is no OSC.
+  const osc = (): number => {
+    for (let code = byte(true); code >= 0; code = byte(true)) {
+      if (code === 0x07 || code === 0x9c || aborts(code)) return k;
+      if (code === 0x9b || code === 0x9d) return -1;
+      k++;
+      if (code === 0x1b) return byte(true) === 0x5c ? k : -1;
+    }
+    return -1;
+  };
   for (let i = 0; i < units; ) {
     const code = recorded.charCodeAt(i);
     if (!isTerminal(code)) {
       shown[i] = 1;
-      stack.push(i);
+      if (!placeless(code, recorded[i]!)) stack.push(i);
       i++;
       continue;
     }
-    let end = i;
-    if (code === 0x08) {
-      // A backspace strikes out a whole character: one past U+FFFF goes with both its halves.
-      const last = stack.pop();
-      if (last !== undefined) {
-        shown[last] = 0;
-        if (isLow(recorded.charCodeAt(last)) && stack.at(-1) === last - 1 && isHigh(recorded.charCodeAt(last - 1))) shown[stack.pop()!] = 0;
-      }
-    } else if (code === 0x9b) end = Math.max(i, csiEnd(recorded, i + 1));
-    else if (code === 0x9d) end = Math.max(i, oscEnd(recorded, i + 1));
-    else if (code === 0x1b && i + 1 < recorded.length) {
-      const next = recorded.charCodeAt(i + 1);
-      if (next === 0x5b) end = Math.max(i, csiEnd(recorded, i + 2));
-      else if (next === 0x5d) end = Math.max(i, oscEnd(recorded, i + 2));
+    let end = -1;
+    k = i + 1;
+    if (code === 0x08) strike();
+    else if (code === 0x9b) end = csi();
+    else if (code === 0x9d) end = osc();
+    else if (code === 0x1b) {
+      const next = byte(false);
+      if (next === 0x5b) (k++, (end = csi()));
+      else if (next === 0x5d) (k++, (end = osc()));
       else {
-        let k = i + 1;
-        while (k < recorded.length && recorded.charCodeAt(k) >= 0x20 && recorded.charCodeAt(k) <= 0x2f) k++;
-        scanned.chars += k - i;
-        if (k < recorded.length && recorded.charCodeAt(k) >= 0x30 && recorded.charCodeAt(k) <= 0x7e) end = k;
+        let unit = next;
+        while (unit >= 0x20 && unit <= 0x2f) (k++, (unit = byte(false)));
+        if ((unit >= 0x30 && unit <= 0x7e) || aborts(unit)) end = k;
       }
     }
+    // Each sequence read stops at the first unit it cannot hold; one not ended is read again from i + 1.
+    scanned.chars += Math.min(k, units) - i + 1;
+    if (end < 0) {
+      i++;
+      continue;
+    }
+    // A backspace inside the sequence still moves back: the character before the sequence is struck out.
+    for (let at = i + 1; at <= end; at++) if (recorded.charCodeAt(at) === 0x08) strike();
     i = end + 1;
   }
   const hiddenBefore = new Int32Array(units + 1);
