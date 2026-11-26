@@ -397,3 +397,55 @@ test("a polled call held at its cap and resumed by a raise while its window stil
 
 // A decision's booking lost by a crash while its receipt names its charge does not happen on the runner: its settle commits
 // before its receipt. workflow-decision-money.test.mjs crashes a runner at each of the two commits.
+
+/** The run's `agentrun.budget` entries (its pauses at the cap), oldest first. */
+async function budgetsOnStore(store, runId) {
+  const { entries } = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
+  return entries.filter((entry) => entry.kind === "agentrun.budget").map((entry) => entry.data);
+}
+
+test("a capped workflow paused at its cap that a refused raise wakes parks again on its pause: no second budget entry, nothing sent, and a later raise resumes it", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, KEYS);
+  const { sendCommand } = await import("../dist/runner/commands.js");
+  const { api, data, store } = await serve(t, { faux: PRICED });
+  assert.equal((await api("POST", "/agents", flowAgent("twice", twoNodes()))).status, 201);
+  const started = await api("POST", "/agents/twice/runs", { input: { question: "What is six times seven?" }, max_cost_usd: 0.12 });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, SETTLED, { deadlineMs: 60_000 });
+  const parkedEpoch = (await releasedOnStore(store, runId)).epoch;
+  const parked = await view(api, runId);
+  assert.deepEqual([parked.status, parked.pending?.kind, parked.pending?.node], ["input_required", "budget", "second"]);
+  const [pause, ...more] = await budgetsOnStore(store, runId);
+  assert.deepEqual(more, [], "one pause");
+  const words = storeRun(data, runId).summary;
+  assert.equal(words, pause.words, "parked in the pause's words");
+  // A raise not above the cap, as a race of two raises or a retry leaves one for the run's next claim (the API refuses
+  // such a raise itself): the row as the server writes it.
+  const refused = await sendCommand(store, runId, { kind: "raise", body: { capUsd: 0.12 } });
+  for (let i = 0; ; i++) {
+    const row = (await store.commands(runId, refused.id - 1)).find((r) => r.id === refused.id);
+    if (row?.takenAt != null || row?.refused != null) break;
+    assert.ok(i < 300, `the refused raise was never answered: ${JSON.stringify(row)}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const answered = (await store.commands(runId, refused.id - 1)).find((r) => r.id === refused.id);
+  assert.match(answered.refused ?? "", /only raised/, "the raise refused in the cap's words");
+  // One claim for the one row that woke it (a claim and its release each step the epoch), and none after: the row
+  // answered, nothing is left to wake the run.
+  const woken = (await releasedOnStore(store, runId)).epoch;
+  assert.equal(woken, parkedEpoch + 2, "claimed once for the refused raise");
+  const again = await view(api, runId);
+  assert.deepEqual([again.status, again.pending?.kind, again.pending?.node, again.pending?.cap_usd], ["input_required", "budget", "second", 0.12], JSON.stringify(again));
+  assert.deepEqual(await budgetsOnStore(store, runId), [pause], "the refused raise wrote no budget entry");
+  assert.equal(storeRun(data, runId).summary, words, "parked again in the pause's words");
+  assert.equal(await answeredOnStore(store, runId), 1, "the second node's request never sent");
+  assert.equal((await store.runs.get(runId)).epoch, woken, "not claimed again before the covering raise");
+  const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 });
+  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
+  await follow(api, runId, ENDED, { deadlineMs: 60_000 });
+  const run = await view(api, runId);
+  assert.deepEqual([run.status, run.result?.output], ["completed", { answer: 42 }], JSON.stringify(run));
+  assert.deepEqual(await budgetsOnStore(store, runId), [pause], "one pause in the run's life");
+  assert.equal(await answeredOnStore(store, runId), 2);
+});
