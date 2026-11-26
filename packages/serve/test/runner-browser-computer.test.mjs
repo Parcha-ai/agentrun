@@ -188,13 +188,14 @@ const CLI = Object.keys(CLI_HARNESSES);
  *  tools `tools`, on run-adapters' faux harness (fauxTable) whose model is a faux gateway: `start(name, timing)` starts a runner on
  *  it through the runner's dispatch, `rested()` waits for the run's row to rest and reads its timeline and the tool lists
  *  its harness was handed. `options`: `runner`, more of the runner's options; `computer: null`, an agent with no
- *  computer; `plane`, the launch's tool plane; `env`, more of the runner's env; `keys`, more keys saved sealed. */
+ *  computer; `plane`, the launch's tool plane; `env`, more of the runner's env; `keys`, more keys saved sealed; `body`,
+ *  more of the agent's body. */
 async function cliClaim(t, harness, cdpUrl, record, tools, instructions = "Snapshot the browser and click its Add button.", table = fauxTable(FAUX_HARNESS), options = {}) {
   const gw = await startFauxGateway();
   t.after(() => gw.close());
   const { model, env: gatewayEnv } = CLI_HARNESSES[harness];
   const computer = options.computer === null ? {} : { computer: options.computer ?? BROWSER_COMPUTER };
-  const opened = await storeWith(t, { harness, instructions, tools, ...computer }, { ...PI_LAUNCH, harness, model, ...(options.plane ? { plane: options.plane } : {}) }, options.keys);
+  const opened = await storeWith(t, { harness, instructions, tools, ...computer, ...options.body }, { ...PI_LAUNCH, harness, model, ...(options.plane ? { plane: options.plane } : {}) }, options.keys);
   const handed = join(opened.dir, "handed.jsonl");
   const env = { ...gatewayEnv(gw.url), AGENTRUN_HARNESS_TABLE: table, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1", AGENTRUN_TEST_FAUX_HARNESS_OPENED: handed, ...options.env };
   const prior = process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED;
@@ -322,6 +323,36 @@ for (const [harness, on, table] of RUNS_ON) for (const [how, tools] of [["grante
     assert.ok(!JSON.stringify(timeline).includes("SECRET-signed-url-token"), "the signed URL reaches no row of the run's");
     await until(() => record.released.length > 0, "the session is released");
     assert.deepEqual(record.released, [["bb-1", "delete"]], "the session was released once, when the tool let it go at the run's end");
+  });
+}
+
+// A permission request for a tool the agent is not given (Goose and Cursor ask before an MCP call of a tool their own
+// listing does not allow): no grant to ask a person for, so the adapter refuses it at once, the run's timeline says
+// which tool, and the run goes on to its end, never parked on a question.
+for (const harness of ["goose", "cursor"]) {
+  test(`${harness} on its own ACP adapter (the fake ACP agent as its binary): asked to call a tool it is not given, the agent is refused at once, no person is asked, the timeline names the tool, and the run ends`, { timeout: 120_000 }, async (t) => {
+    const record = { created: [], released: [], connects: 0 };
+    const claim = await cliClaim(t, harness, "http://127.0.0.1:9/", record, ["read"], "Call the tool write, which you are not given.", acpFakeTable(FAUX_HARNESS), { computer: null });
+    claim.start("runner-a");
+    const { row, timeline, lists } = await claim.rested({ calls: [] });
+    assert.ok(lists.length > 0 && lists.every((list) => !list.includes("write")), `write is not among the tools handed: ${JSON.stringify(lists)}`);
+    assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+    assert.deepEqual(timeline.filter((one) => one.kind === "tool_approval_requested"), [], "no person was asked");
+    const said = timeline.filter((one) => one.kind === "phase").map((one) => one.summary);
+    assert.ok(said.some((one) => /tool "write" isn't granted to this agent/.test(one ?? "")), `the timeline names the tool: ${JSON.stringify(said)}`);
+    assert.ok(timeline.some((one) => ["text_block", "final_answer"].includes(one.kind) && /Went on without it\./.test(JSON.stringify(one))), `the agent went on: ${JSON.stringify(timeline.map((one) => one.kind))}`);
+    assert.equal(record.created.length, 0, "no browser was made");
+  });
+
+  test(`${harness} on its own ACP adapter (the fake ACP agent as its binary): a tool the agent is given whose setting asks (write) still asks a person, and the run parks on it`, { timeout: 120_000 }, async (t) => {
+    const record = { created: [], released: [], connects: 0 };
+    const claim = await cliClaim(t, harness, "http://127.0.0.1:9/", record, ["read", "write"], "Call the tool write, which asks a person first.", acpFakeTable(FAUX_HARNESS), { computer: null, body: { toolSettings: { write: { permission: "ask" } } } });
+    claim.start("runner-a");
+    const { row, timeline } = await claim.rested({ calls: [] });
+    assert.equal(row.state, "parked", JSON.stringify({ state: row.state, summary: row.summary }));
+    const write = answerOf(timeline, "write");
+    assert.ok(write.use !== undefined && write.result === undefined, `the call of write waits for the person: ${JSON.stringify(timeline.map((one) => one.kind))}`);
+    assert.equal(timeline.some((one) => one.kind === "phase" && /isn't granted/.test(one.summary ?? "")), false, "never refused as not given");
   });
 }
 

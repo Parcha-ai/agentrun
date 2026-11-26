@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, mcpServerName, nameCall, namesTooLong, ourTool, permissionCallId, toolsLeftOut, type AcpAnnounces } from "./calls.js";
+import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, mcpServerName, nameCall, namesTooLong, ourTool, permissionCallId, toolNotGranted, toolsLeftOut, ungrantedTool, type AcpAnnounces } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { allowFileText, homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -475,6 +475,14 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     if (recipe.quirks?.permissionTie === "title") {
       const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names, rt.server);
       if (mine && rt.calls.announced(request.toolCall.toolCallId) === mine) return choose("allow_once");
+    }
+    // A tool of our server the agent is not given (ungrantedTool): no grant to ask a person for, so it is refused at
+    // once, before anything is journaled (a resume has nothing to ask again), and the run is told which tool.
+    const ungranted = ungrantedTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names, rt.server);
+    if (ungranted !== undefined) {
+      log("acp: refused a permission request for a tool the agent is not given", { toolCallId: request.toolCall.toolCallId, tool: ungranted.slice(0, 80) });
+      cur.ctx.live({ type: "notice", text: toolNotGranted(recipe.label ?? recipe.id, ungranted) });
+      return choose("reject_once");
     }
     const call = request.toolCall;
     const kind = typeof call.kind === "string" && call.kind ? call.kind : "other";

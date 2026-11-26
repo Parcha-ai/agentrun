@@ -53,6 +53,31 @@ export function ourTool(update: { title?: string | null; name?: string | null; k
   return candidates.find((name) => tools.has(name));
 }
 
+/** The tool of our MCP server a permission request names that `tools` does not hold, as the request names it: by any
+ *  form ourTool reads, or Goose 1.59's title (`<server>: <tool, its underscores as spaces>`, a summary after ` · `), which
+ *  is matched to a tool of `tools` with its underscores as spaces. Undefined when the request names no tool of our
+ *  server, names one `tools` holds, or is of a kind with effects of its own (a native call, the gate's whatever its
+ *  title). The agent could never call such a tool: our server does not list it, so the request is refused at once
+ *  (harness.ts onPermission), never asked of a person. A title is the agent's text, so this only ever refuses. */
+export function ungrantedTool(update: { title?: string | null; name?: string | null; kind?: string | null }, tools: ReadonlySet<string>, server: string = MCP_SERVER): string | undefined {
+  if (typeof update.kind === "string" && NATIVE_EFFECT_KINDS.has(update.kind)) return undefined;
+  const named: string[] = [];
+  const spaced: string[] = [];
+  for (const said of [update.name, update.title]) {
+    if (typeof said !== "string") continue;
+    for (const form of [new RegExp(`^${server}__(.+)$`), new RegExp(`^${server}-[^:]*: (.+)$`), new RegExp(`^(?:Run )?mcp_${server}_(.+)$`)]) {
+      const hit = form.exec(said);
+      if (hit) named.push(hit[1]!.trim());
+    }
+    const goose = new RegExp(`^${server}: (.+?)(?: · .*)?$`).exec(said);
+    if (goose) spaced.push(goose[1]!.trim());
+  }
+  if (named.some((name) => tools.has(name))) return undefined;
+  const given = new Set([...tools].map((tool) => tool.replace(/_/g, " ")));
+  if (spaced.some((name) => given.has(name))) return undefined;
+  return named[0] ?? spaced[0];
+}
+
 /** Whether a recipe's announces names our server by a prefix that joins it to a tool's name with one `_` or `-` (agy's
  *  `mcp_agentrun_`): a join another server's own name may hold, so a server `agentrun_look` with a tool `up`
  *  (`mcp_agentrun_look_up`) would spell our `look_up`. Not Goose's default `agentrun__`, nor a recipe that reads the
@@ -86,6 +111,12 @@ export function namesTooLong(announces: AcpAnnounces | undefined, tools: Iterabl
 export function toolsLeftOut(label: string, prefix: string, tools: readonly string[]): string {
   const one = tools.length === 1;
   return `${label} names each of our tools ${prefix}<tool>, at most ${TOOL_NAME_CAP} characters in all, so a tool's own name may be at most ${TOOL_NAME_CAP - prefix.length}; ${tools.map((tool) => JSON.stringify(tool)).join(", ")} ${one ? "is" : "are"} longer, so ${one ? "it is" : "they are"} left out of the tools it is given at this start`;
+}
+
+/** The run's notice for a permission request `label` (the agent) made for `tool`, a tool of our server it is not given
+ *  (ungrantedTool): refused at once, no person asked. */
+export function toolNotGranted(label: string, tool: string): string {
+  return `tool ${JSON.stringify(tool.slice(0, 80))} isn't granted to this agent: ${label} asked to run it and was refused at once, with no person asked, and the run goes on`;
 }
 
 /** The recipe's `announces` as one start reads them, our MCP server given to the agent as `server` (mcpServerName): its

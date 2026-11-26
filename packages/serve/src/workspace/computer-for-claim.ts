@@ -205,9 +205,6 @@ export interface ComputerForClaimDeps {
   /** The paired computers (attached-computers.ts): each one more provider of `kinds` for this claim, claimed through the
    *  hub of this process. Absent: none is. */
   readonly attached?: AttachedComputers;
-  /** Why this run's harness takes no computer of `kind`, in words (a CLI harness's of a browser), or undefined: a kind
-   *  it refuses is refused with code computer_unavailable before anything is made. Absent: every kind. */
-  readonly refuseKind?: (kind: Exclude<ComputerSettingKind, "none">) => string | undefined;
   /** Told what became of the agent's own computer at the claim (a persistent setting): made, attached from an earlier
    *  run, or made again because the one this server kept is gone; and when a sandbox the claim made was lost mid-run and
    *  a new one started in its place (computer-lost.ts lostRecreatedWords). The run's caller says it on the run's
@@ -1342,8 +1339,6 @@ export async function computerForClaim(
   const resolved = await resolveComputer(setting, deps.mode, kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
-  const refusedKind = deps.refuseKind?.(resolved.kind);
-  if (refusedKind) throw unavailable(refusedKind);
   // The program its provider runs on this machine (the phone's adb) is checked before anything is rented.
   const hostRefusal = resolved.provider ? deps.hostWhy?.(resolved.provider) : undefined;
   if (hostRefusal) throw unavailable(`This agent's computer is a ${resolved.kind} on ${resolved.provider}, and this runner cannot run it: ${hostRefusal.replace(/[.!?]+$/, "")}.`);
