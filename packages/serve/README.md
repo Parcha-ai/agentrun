@@ -306,11 +306,12 @@ at most, but the last such pair's whole rest. Past that budget a pair still hold
 pairs at some kinds of separator reads it (a raw `&` and a `%26` are two kinds, every whitespace one): up to the next
 separator of each kind, until it has passed one of each kind of separator since the last `=` before its name, since a
 reader that splits at any of those finds the pair (`; session=` by one that splits at `;` and one that splits at
-spaces, `&flag;api_key=` by one that splits at `&`). So a key of any length is held alone, and these take a fixed
-multiple of the header value's length at most, never its square. A prefix past the first that opens or ends with a raw
-`&` or space is held only at 8 characters or more. Not covered: a `+` read as a space, spaces around a pair's `=`, a
-URL inside a pair's value whose query holds `%3B` or `%26` (the key decoded is held, not as written), and a raw comma
-inside a quoted value, which splits the variable itself (write it `%2C`).
+spaces, `&flag;api_key=` by one that splits at `&`), and its whole rest when one of those kinds never comes again, as
+a reader of that kind reads it to the end (`&token=<a>;<b>;secret=<c>`). So a key of any length is held alone, and
+these take a fixed multiple of the header value's length at most, never its square. A prefix past the first that opens
+or ends with a raw `&` or space is held only at 8 characters or more. Not covered: a `+` read as a space, spaces
+around a pair's `=`, a URL inside a pair's value whose query holds `%3B` or `%26` (the key decoded is held, not as
+written), and a raw comma inside a quoted value, which splits the variable itself (write it `%2C`).
 `theme=dark` is not held, nor is a value of only `=`, `;`, `&`, quotes, commas or spaces, as written or decoded, so
 `api_key=%2C` cuts no comma from the `[otel]` lines. Inside a URL that is a pair's value, a pair after a `?`, `#` or
 `/` is read up to the next of those, a `;`, `&`, comma, space or `%2C`. Also held are the user, password and
