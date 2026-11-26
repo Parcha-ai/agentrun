@@ -59,6 +59,38 @@ func TestWriterChangesAFileItOwnsInAStickyFolderItDoesNot(t *testing.T) {
 	}
 }
 
+// The mode bits are not all of what lets a user write: an ACL's entry for it, or a FUSE file system's own rule, shows in
+// none of the bits read. So computerd's own user (Self) asks the kernel too, for each folder on the way and for the file,
+// and a folder or a file the kernel says it may write is in its reach, whatever the mode bits say. (An ACL entry for the
+// test's user on a file it does not own needs another user to set it, so the kernel's answer is given by hand here, and
+// asked for the test's own user, whose folders the stranger's bits keep it from.)
+func TestWriterAsksTheKernelWhetherItMayWrite(t *testing.T) {
+	if Self().kernel == nil {
+		t.Fatal("Self asks the kernel nothing: an ACL entry letting computerd's user write a desktop file would go unseen")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "apps", "a.desktop")
+	write(t, path, "x")
+	if got := stranger.Changes(path); got != "" {
+		t.Fatalf("Changes(%s) = %q by mode bits alone, want \"\": the stranger's bits let it write nothing here", path, got)
+	}
+	for _, named := range []string{filepath.Dir(path), path} {
+		w := stranger
+		w.kernel = func(p string) bool { return p == named }
+		if got := w.Changes(path); !strings.Contains(got, "may write "+named) {
+			t.Errorf("Changes(%s), the kernel saying the user may write %s = %q, want it saying so", path, named, got)
+		}
+	}
+	w := stranger
+	w.kernel = kernelMayWrite
+	if got := w.Changes(path); !strings.Contains(got, "may write") {
+		t.Errorf("Changes(%s), asking the kernel for the test's own user = %q, want it saying the user may write a folder on the way", path, got)
+	}
+	if !kernelMayWrite(path) || (os.Geteuid() != 0 && kernelMayWrite("/")) {
+		t.Errorf("kernelMayWrite: %s %v, / %v; want true, and false for a user that is not root", path, kernelMayWrite(path), kernelMayWrite("/"))
+	}
+}
+
 // A desktop file is out of a user's reach when the user owns neither it nor a folder above it, and the mode bits let
 // it write none of them; a sticky folder lets it move aside only its own.
 func TestWriterChangesADesktopFileItOwnsOrMayWriteOrMoveAside(t *testing.T) {
