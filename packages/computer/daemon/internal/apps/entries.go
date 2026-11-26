@@ -49,13 +49,20 @@ func ApplicationDirs() []string {
 // not it is an app. An app is a desktop file of type Application with a name and an Exec, not hidden (deleted), not
 // NoDisplay (not for a menu), and whose TryExec, when it has one, is a program there is.
 func Entries(dirs []string) []Entry {
-	return entriesOpened(dirs, os.Open)
+	entries, _ := entriesOpened(dirs, os.Open)
+	return entries
 }
 
-// entriesOpened is Entries with each desktop file read from what open gives for its path; one open refuses is no app,
-// though it still hides the later ones of its id.
-func entriesOpened(dirs []string, open func(path string) (*os.File, error)) []Entry {
+// refusal is a desktop file whose open refused it: its path, and why in words.
+type refusal struct {
+	path, why string
+}
+
+// entriesOpened is Entries with each desktop file read from what open gives for its path. One open refuses is no app,
+// though it still hides the later ones of its id: it is in refused by its id, with open's words, and never read.
+func entriesOpened(dirs []string, open func(path string) (*os.File, error)) ([]Entry, map[string]refusal) {
 	seen := map[string]bool{}
+	refused := map[string]refusal{}
 	var out []Entry
 	for _, dir := range dirs {
 		_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
@@ -73,6 +80,7 @@ func entriesOpened(dirs []string, open func(path string) (*os.File, error)) []En
 			seen[id] = true
 			f, err := open(path)
 			if err != nil {
+				refused[id] = refusal{path: path, why: err.Error()}
 				return nil
 			}
 			defer f.Close()
@@ -84,7 +92,7 @@ func entriesOpened(dirs []string, open func(path string) (*os.File, error)) []En
 		})
 	}
 	slices.SortFunc(out, func(a, b Entry) int { return strings.Compare(a.ID, b.ID) })
-	return out
+	return out, refused
 }
 
 // readEntry reads a desktop file's [Desktop Entry] group from f, and whether it is an app.

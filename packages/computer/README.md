@@ -616,11 +616,13 @@ by its rectangle), so a longer one ends the connection before anything is alloca
   `/usr/local/share` and `/usr/share`), as the Desktop Entry spec says: the apps there are, by their desktop file ids
   (`org.xfce.mousepad`), with their names; hidden and `NoDisplay` entries, and a `TryExec` that is not there, are left
   out. So is an app whose desktop file computerd's own user could change: on the way to it from `/`, every symbolic
-  link followed, the user owns a folder, a link or the file, or the mode bits let it write the file or a folder holding
-  one of them (a sticky folder only where it owns what is in it), or computerd runs as root. The entry is read from the
-  file that walk checked, opened without following a link and refused if another took its place, and read again for
-  each launch. An app runs what its desktop file says, so such a file, written through `files`, would run any command
-  with exec off: `apps.launch` and `apps.terminate` refuse such an app as `denied`, naming the file and why. Its `foreground` is the
+  link followed, the user owns a folder, a link or the file, or the mode bits or the kernel (`faccessat2`, which reads
+  ACLs) let it write the file or a folder holding one of them (a sticky folder only where it owns what is in it), or
+  computerd runs as root. The entry is read from the file that walk checked, opened without following a link and
+  refused if another took its place, and read again for each launch. An app runs what its desktop file says, so such a
+  file, written through `files`, would run any command with exec off: `apps.launch` and `apps.terminate` refuse such an
+  app by its id as `denied`, naming the file and why (a refused file is not read, so its name finds nothing), though
+  `apps.terminate` still ends one this computerd launched before its file was refused. Its `foreground` is the
   app of the window manager's active window, else of the top window. `apps.launch({ id, url? })` takes an id, a name
   (`Mousepad`) or a program (`mousepad`), starts the entry's `Exec` (`url` in its `%u`/`%f` field; an entry with none
   refuses a `url` as `invalid`; a `url` is an absolute URL with a scheme, `https://…` or `file:///…`, or an absolute
