@@ -31,7 +31,7 @@ import { saveOnce } from "./save-once.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
-import { secretShapes, valueLeft } from "./learn/secrets.js";
+import { MIN_SECRET, secretShapes, valueLeft } from "./learn/secrets.js";
 import { capped, mcpClient, scrub } from "./mcp-wire.js";
 import { resourceResult, resourceToolOperation, resourceToolProblem } from "./mcp-resources.js";
 import { mcpNameOf, mcpToolName } from "./tool-names.js";
@@ -256,7 +256,7 @@ export type McpCommit = <T>(change: (tx: unknown) => Promise<T>) => Promise<T>;
 
 /** A binary payload of an answer filed whole (an image's or an audio's data, a resource's blob), as it is filed: scrubbed
  *  of the call's own credentials (`own`) and kept whole, unless it holds one of `values` (what the run's redactor holds),
- *  as written, in any form the matcher finds, or in the bytes it decodes to, or those bytes hold a secret's shape (a JWT,
+ *  as written, in any form the matcher finds, or in the text of the bytes it decodes to, or that text holds a secret's shape (a JWT,
  *  a private key: SECRET_SHAPES, which the run's redactor cuts in text). Then it is "[redacted]" whole: a cut inside it
  *  would leave no payload a reader could open either. Its base64 text is not read for a shape: the MCP client takes no
  *  payload that is not base64, and in base64 a shape stands only by chance (a Google API key's run, about once in 50 MiB)
@@ -265,11 +265,16 @@ export type McpCommit = <T>(change: (tx: unknown) => Promise<T>) => Promise<T>;
 export function binaryKept(payload: string, clean: (text: string) => string, own: (text: string) => string, values: readonly string[] | undefined): string {
   if (!values) return clean(payload);
   const scrubbed = own(payload);
-  const bytes = Buffer.from(scrubbed, "base64").toString("latin1");
-  if (secretShapes(bytes).length > 0) return "[redacted]";
+  const text = (Buffer.from(scrubbed, "base64").toString("latin1").match(TEXT_RUN) ?? []).join("\n");
+  if (secretShapes(text).length > 0) return "[redacted]";
   if (!values.length) return scrubbed;
-  return valueLeft(scrubbed, values, []) || valueLeft(bytes, values, []) ? "[redacted]" : scrubbed;
+  return valueLeft(scrubbed, values, []) || valueLeft(text, values, []) ? "[redacted]" : scrubbed;
 }
+
+/** A run of text in a payload's bytes: MIN_SECRET or more printable ASCII characters, tabs and line breaks among them.
+ *  Only these are read: a value or a shape the bytes carry is text, and every view read over binary bytes cost about
+ *  25 s a MiB. */
+const TEXT_RUN = new RegExp(`[\\t\\n\\r\\x20-\\x7e]{${MIN_SECRET},}`, "g");
 
 /** The gateway: a session's servers, and their calls. `credentials` is read at every call and every request, never
  *  copied: a change the claim step makes after (a token refreshed behind the claim, a server removed) reaches it, even
