@@ -36,7 +36,7 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly } from "./api-only.js";
-import { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
+import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
@@ -118,6 +118,7 @@ import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelO
 import { exportReadsOverStore } from "./run-export-store.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { type CutScrub, ExportFailed, restoreIdsOf, runExport } from "./run-export.js";
+import { shareHost } from "./share-host.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
@@ -383,6 +384,11 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
+  /** The share host (`--share-host`, AGENTRUN_SHARE_HOST=1, share-host.ts): serve shares under /r/ alone (a share's page,
+   *  its stored bundle, the page's assets, /r/v2/shares and /r/v2/health) and refuse every other address with a 404
+   *  before anything reads the request. No runner beside it, no owner (accounts and open setup are off), and its share
+   *  URLs on `publicUrl` (AGENTRUN_PUBLIC_URL): a start on an address other than loopback without one is refused. */
+  shareHost?: boolean;
   /** AGENTRUN_API_ONLY_MCP_ORIGINS, read as the environment's is (the serve README's API-only section); only with apiOnly. */
   apiOnlyMcpOrigins?: readonly string[];
   /** The launch hook (AGENTRUN_LAUNCH_HOOK_URL and _SECRET, trigger-launch-hook.ts): each trigger firing that would start
@@ -548,7 +554,8 @@ export type ServeOptions = {
    *  command row is written, with the run's id and the message's text, so a test can hold a message at the run's door while
    *  the run's state changes under it (runs-over-store.ts message). */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
-  /** A test's seam: the scrubber GET /runs/{id}/export cuts with (run-export.ts), in place of secret-cut.ts scrub. */
+  /** A test's seam: the scrubber GET /runs/{id}/export cuts with (run-export.ts), and a share host scrubs an upload with
+   *  (share-host.ts), in place of secret-cut.ts scrub. */
   shareScrub?: CutScrub;
   /** A test's seam: step 2 of DELETE /agents/{id} (agent-delete.ts) in place of the learning module's deleteLearning over
    *  the agent's learning (learn/delete.ts), the server's own. */
@@ -1317,6 +1324,12 @@ export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publi
 export async function startServe(options: ServeOptions): Promise<Serve> {
   // API-only: no console, so no owner to sign in to it (and no setup code printed for a page that is refused).
   if (options.apiOnly) options = { ...options, accounts: false, openSetup: false };
+  // The share host: no console, owner or runner either, and its share URLs on its public address alone.
+  if (options.shareHost) {
+    if (options.apiOnly) throw new Error(`a server is a share host (--share-host) or API-only (${API_ONLY_ENV}=1), not both`);
+    if (!options.publicUrl && !isLoopback(options.host ?? DEFAULT_HOST)) throw new Error("a share host on an address other than loopback names its shares' address in AGENTRUN_PUBLIC_URL (the origin people open its /r/ links at): a request's Host header never names it");
+    options = { ...options, accounts: false, openSetup: false, runnerApart: true };
+  }
   // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
   // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
   delete process.env[HARNESS_TABLE_ENV];
@@ -2250,7 +2263,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   });
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   stops.push(() => webhooks.close());
-  await webhooks.load();
+  // A share host sends no message: a data folder it reuses may hold a webhook, a Slack URL and messages left queued, about
+  // runs it neither runs nor answers for. Its outboxes are never read, so nothing is resumed or sent; their saved secrets
+  // are, so they stay held values its uploads are scrubbed with.
+  await (options.shareHost ? webhooks.readSecrets() : webhooks.load());
   // Where an earlier version kept the webhook: no longer read.
   if (existsSync(join(data, WEBHOOK_FILE))) log?.(logLine("webhook", { condition: "webhook_left_over", file: join(data, WEBHOOK_FILE), effect: "not read: the webhook is kept in the store now; set it again with PUT /v2/settings/webhook" }));
   secretStores.add("webhook", () => webhooks.signingSecrets());
@@ -2265,7 +2281,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     serverSecrets: () => serverSecrets(),
   });
   stops.push(() => slack.close());
-  await slack.load();
+  await (options.shareHost ? slack.readSecrets() : slack.load());
   secretStores.add("slack", () => slack.urlForms());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
@@ -2420,8 +2436,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }).finally(() => { localSourceBusy = false; });
     return localSourceSweep;
   };
-  const localSourceTimer = setInterval(() => void sweepLocalSources(), 30_000);
-  localSourceTimer.unref();
+  // A share host publishes no agent's sources: a reused folder's agent with source sync on would get new revisions there,
+  // and the host answers none of the routes that show or stop that sync.
+  const localSourceTimer = options.shareHost ? undefined : setInterval(() => void sweepLocalSources(), 30_000);
+  localSourceTimer?.unref();
   // As close() does: aborted first, so a sync in flight stops instead of being waited out.
   stops.unshift(async () => {
     stopping.abort();
@@ -2610,6 +2628,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (key !== undefined && req) keyUsed.set(req, key);
     return started || key !== undefined;
   };
+  // The share host's routes (share-host.ts), with its own store under DIR/shares: a token's id owns each share, and the
+  // values it holds (its keys, its tokens) refuse an upload that carries one.
+  const shareRoute = options.shareHost ? shareHost({
+    data,
+    who: (req) => (bearer(req.headers.authorization, req) ? tokenUsed.get(req) : undefined),
+    authFailed,
+    held: () => [...serverSecrets(), ...tokens.map((entry) => entry.token)],
+    // AGENTRUN_PUBLIC_URL, else (a loopback start alone, as the start checked) the address this server listens at.
+    origin: () => options.publicUrl ?? urlOf(server, host),
+    console: options.console,
+    version: VERSION,
+    ...(options.shareScrub ? { scrub: options.shareScrub } : {}),
+  }) : undefined;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   // A key's fingerprint is an HMAC of its request's body (stable JSON) under a key derived from the server's seal key:
@@ -2939,10 +2970,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   stops.push(async () => triggers.close());
   // The firing loop runs against the server's own opened store: due firings start their runs through the run write half,
   // times missed while it was down are recorded, and the timer is armed for the next. (A test may inject its own store.)
-  void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
-  // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down. It
-  // never rejects, and close (or a start that fails) aborts it and waits for it before it closes.
-  void githubConnect.reconcile((detail) => triggers.turnOff("github", detail), { force: true });
+  // A share host runs none of them: a data folder it reuses may hold enabled schedules and feeds, whose runs it can
+  // neither run nor answer for, and it reads no GitHub installation.
+  if (!options.shareHost) {
+    void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
+    // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down.
+    // It never rejects, and close (or a start that fails) aborts it and waits for it before it closes.
+    void githubConnect.reconcile((detail) => triggers.turnOff("github", detail), { force: true });
+  }
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
@@ -7004,6 +7039,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
+    // The share host (share-host.ts): /r/ alone, before the page, the owner's routes, the MCP endpoint, the token-less
+    // hooks or the token check read anything of the request; every other address is its 404.
+    if (shareRoute) return void shareRoute(req, res, raw).catch(fail);
     // API-only (api-only.ts): any address but the run routes is refused here, before the page, the owner's routes, the
     // MCP endpoint, the token-less hooks or the token check read anything of the request.
     if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, apiOnlyMcpOrigins.length > 0)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
@@ -7035,6 +7073,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
     // away. Its name alone, on any port, as the HTTP routes check it.
     if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
+    // A share host takes no upgrade: it has no live view, computer or paired machine.
+    if (options.shareHost) return deny("404 Not Found");
     // API-only: paired computers are the console's (Settings), and refused with it, whose tokens the attach socket takes as
     // unknown there (machinesOnly). A run's hosted machine that dials still reaches it, and a run's computer live view takes
     // its viewer credential (below); a browser's live view stays the console's.
@@ -7377,7 +7417,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A run that stands at a person's stop waits too (tellWait reads its view: one its stop ended reads no wait).
     for (const row of rows) if (!closing && (letGo(row) || stopRow(row)) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
   };
-  followChanges();
+  // Nor does a share host follow the runs' changes: it tells no one of a run's end or wait.
+  if (!options.shareHost) followChanges();
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;
