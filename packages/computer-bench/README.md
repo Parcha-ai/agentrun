@@ -25,7 +25,7 @@ check ids are unique, regexes compile, `exit` only on `exec.run`, a task whose c
 | field | what it is |
 | --- | --- |
 | `id`, `version`, `title`, `split` | `split` is `dev` (tune on it) or `heldout` (report on it, never tune on it) |
-| `needs` | `os`, `kind` (`desktop`, `phone`, `sandbox`, `browser`: serve's kinds), `osVersion` (a prefix of hello's), `groups` the computer must have only when the task can't be done without them (a drag needs `input.pointer`), `apps` and `capabilities` (below). A task never says which tools the agent uses: the agent is given what the computer offers, so one suite compares code-mode, tools and vendor computer-tool agents |
+| `needs` | `os`, `kind` (`desktop`, `phone`, `sandbox`, `browser`: serve's kinds), `osVersion` (a prefix of hello's), `groups` the computer must have only when the task can't be done without them (a drag needs `input.pointer`), `apps` and `capabilities` (below). A task never says which tools the agent uses: the agent is given what the computer offers (its file ops through `read` and `write` among the agent's tools, [Arms](#arms)), so one suite compares code-mode, tools and vendor computer-tool agents |
 | `needs.apps` | the apps the task can't be done without, by bundle id or package. Each entry is required; an entry that is a list is alternatives, any one of which will do (`[["com.google.android.deskclock", "com.android.deskclock", "com.sec.android.app.clockpackage"]]`: one clock, whoever made the phone). Read through `apps.list`, which lists the apps a person can open, so never a system service such as `com.android.systemui` |
 | `needs.capabilities` | probes, each written as a check (not `answer`) whose `id` names what it proves the computer can do (`camera`): `take-selfie`'s reads `dumpsys media.camera` for a camera device. Same for every seed, so no placeholders |
 | `exec` | `allow` (default) or `deny`: the task is done through the UI, so the agent is given no exec or processes group, and the oracle may use only `ui`, `input`, `screen` and `apps` (not `apps.install`), the path the agent must take. `loadTask` names the oracle call that breaks this |
@@ -208,8 +208,10 @@ Each suite's README says which tasks are proven only on the fake and which wait 
 first is the baseline. On serve, the arm is an agent definition: `harness` and `model` as they are, `effort` as its
 `thinking` level, `computer: {kind, provider?, surface, exec?}` (`kind` from the task, `provider` from
 `options.provider`, `surface` the arm's: "code", the harness's script tool alone; "tools", the per-step computer tools
-alone; and `exec: false` for a task that denies exec), and `options.definition` any other field of the definition as it
-is. Its `computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec: its id is
+alone; and `exec: false` for a task that denies exec), `tools: ["read", "write"]`, which the computer's file ops
+(`computer.files`) need among the agent's tools (serve offers none of them without; the run's own `read` and `write`
+come with them), and `options.definition` any other field of the definition as it is, its `tools` included. Its
+`computer` may pin more (a provider, say) but never `kind`, `surface` or `exec`: the bench sets those. One agent per bench run, arm, kind and exec: its id is
 `<bench>-<arm>-<kind>-<surface>[-ui]`, `-ui` where exec is denied.
 
 ```json
