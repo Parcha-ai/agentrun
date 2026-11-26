@@ -284,6 +284,12 @@ test("started by its launcher, no process of its user holds a secret in its envi
  *  computer descriptor declares that is named like a key (not DAYTONA_API_URL or ORGO_WORKSPACE_ID), and Archil's. */
 const ACCOUNT_KEYS = [...new Set([...COMPUTER_PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)).filter(keyShaped), ARCHIL_API_KEY_ENV])];
 
+// The boxes' keys are read from the descriptors, so a change to which providers are boxes could shrink them unseen:
+// Daytona's and Modal's, the boxes the hand list named before, stay among them.
+test("the boxes' keys read from the descriptors hold Daytona's and both of Modal's", () => {
+  for (const name of ["DAYTONA_API_KEY", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET"]) assert.ok(BOX_KEYS.includes(name), `${name} is a box's key: ${BOX_KEYS.join(", ")}`);
+});
+
 // A key the launcher does not name stays in the server's environment, where any process of its user reads it and any
 // child spawned with process.env inherits it: every account key serve reads is on the list, and only the server's and the
 // runner's own code reads one, so no run is handed one but a key a run's `browser` tool takes (Browserbase's, Kernel's).
