@@ -171,6 +171,11 @@ export interface LoopDeps {
    *  end goes through it, so no secret the runner holds is stored, its values cut the run's live view (live-ticker.ts),
    *  and a claim carries the run's own tool keys into it (claim-secrets.ts). */
   redact: HeldRedact;
+  /** Hands the run back to resume on the next start, never failed: told when a request the run needs can't be served
+   *  because the runner is closing (a ChatGPT renewal refused as PlanStopping, after RUNNER_RENEWALS_SERVED_MS). A closing
+   *  runner stops the loop for a shutdown and aborts `signal`, as the drain's end does; else it does nothing. Absent:
+   *  the request fails as it would. */
+  handBack?: () => void;
   /** The incarnation of the runner's word in the store (runner/presence.ts), the claim's runner being the claim's own
    *  `runner`: a park that keeps a computer only this runner can reach again pins it to both (workspace/computer-kept.ts
    *  pinnedOf), so the claim rule gives the run back to this runner while it is there. Absent: nothing is pinned. */

@@ -345,6 +345,28 @@ test("the runner says ready only once its stop signals are handled: a SIGTERM se
   assert.equal(process.listenerCount("SIGWINCH"), before, "and its handler is gone");
 });
 
+// A second docker stop, or a double Ctrl-C, while the runner closes: with no handler left Node's default action would end
+// it at once, mid-renewal, before renewal_drain_cut could say so.
+test("a stop signal again while the runner closes neither ends it nor closes it twice: it is said once, and its handlers go with the close", async () => {
+  const before = process.listenerCount("SIGWINCH");
+  let finish;
+  let closes = 0;
+  const said = [];
+  const running = main.runUntilSignalled({ close: () => ((closes += 1), new Promise((resolve) => (finish = resolve))) }, ["SIGWINCH"], () => {}, () => {}, (line) => said.push(line));
+  process.emit("SIGWINCH");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(closes, 1, "the first signal closes it");
+  assert.equal(process.listenerCount("SIGWINCH") - before, 1, "still handled while it closes");
+  process.emit("SIGWINCH");
+  process.emit("SIGWINCH");
+  assert.equal(closes, 1, "never closed twice");
+  assert.equal(said.length, 1, `said once: ${JSON.stringify(said)}`);
+  assert.match(said[0], /already stopping/);
+  finish();
+  await running;
+  assert.equal(process.listenerCount("SIGWINCH"), before, "and its handlers are gone once it closed");
+});
+
 test("the heartbeat check, on an injected clock and file times: younger than twice the renew interval passes, older fails in words", (t) => {
   const dir = scratch(t, "agentrun-runner-beat-");
   const check = (now) => main.checkRunner({ dataDir: dir, name: "runner-x", now: () => now });

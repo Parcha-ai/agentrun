@@ -1973,6 +1973,36 @@ test("a stop waits for a renewal already spent at OpenAI to save its pair before
   assert.equal(openai.refreshes, 1);
 });
 
+test("while its store stops, a token that outlives the stop's remaining drain plus RENEWAL_DRAIN_MS is sent as it is, with no refresh; one that would not, or one OpenAI refused, is refused with PlanStopping; nothing is sent to OpenAI either way", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan, PlanStopping, RENEWAL_DRAIN_MS, stopRenewals } = await import("../dist/chatgpt-plan.js");
+  const sealKey = randomBytes(32);
+  const drain = 10_000;
+  // Inside the 5-minute refresh margin either way: without a stop, this token is renewed before it is sent.
+  const outlives = drain + RENEWAL_DRAIN_MS + 60_000;
+  const short = drain + RENEWAL_DRAIN_MS - 5_000;
+  const running = mapStore();
+  const before = await seatRow(running, sealKey, outlives);
+  assert.notEqual(await new ChatGPTPlan({ store: running, sealKey }).token(), before.access, "no stop: a token inside the margin is renewed");
+  assert.equal(openai.refreshes, 1);
+  // Its store stopping with `drain` left: one that outlives drain + RENEWAL_DRAIN_MS goes out as it is.
+  const kept = mapStore();
+  const long = await seatRow(kept, sealKey, outlives);
+  await stopRenewals(kept, drain);
+  const plan = new ChatGPTPlan({ store: kept, sealKey });
+  assert.equal(await plan.token(), long.access, "a token that outlives the stop is sent as it is");
+  assert.equal(openai.refreshes, 1, "with no refresh");
+  // One that ends inside drain + RENEWAL_DRAIN_MS, though it has more than RENEWAL_DRAIN_MS left: the remaining drain counts.
+  const ending = mapStore();
+  await seatRow(ending, sealKey, short);
+  await stopRenewals(ending, drain);
+  await assert.rejects(new ChatGPTPlan({ store: ending, sealKey }).token(), (error) => error instanceof PlanStopping, "a token that would need a refresh before the stop ends is refused");
+  // A token OpenAI refused is never sent again, however long it has left.
+  await plan.refused(long.access);
+  await assert.rejects(plan.token(), (error) => error instanceof PlanStopping, "a refused token is not sent as it is");
+  assert.equal(openai.refreshes, 1, "and OpenAI is sent nothing");
+});
+
 test("a stop whose drain bound runs out with a renewal still out says so, and a write-back the closed store then refuses says the pair goes unsaved before it is revoked, with no token in the log", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
   const { ChatGPTPlan, stopRenewals } = await import("../dist/chatgpt-plan.js");
@@ -2294,4 +2324,100 @@ test("a run a runner's stop drains renews the plan's token when it needs to: its
     assert.equal(openai.responses.at(-1).authorization, `Bearer ${openai.issued.at(-1).access}`, `${where}: and was sent with the renewed token`);
     await server.stop();
   }
+});
+
+// A runner serves renewals RUNNER_RENEWALS_SERVED_MS into its stop (so a renewal ends inside every shipped grace). A run
+// its drain lets go on that needs one later is handed back to resume on the next start, never failed: its refresh token
+// is unspent and the sign-in stays saved.
+test("a run a runner's stop drains that needs the plan's token renewed after the runner stops serving renewals is handed back, never failed, and the next start resumes it to completed, beside the server or in a process of its own", { timeout: 240_000 }, async (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  const openai = fakeOpenAI(t);
+  const { runnerBeside } = await import("../dist/runner/beside.js");
+  const { startRunnerProcess } = await import("../dist/runner/main.js");
+  const { RUNNER_RENEWALS_SERVED_MS } = await import("../dist/runner/runner.js");
+  const starts = [["beside", (data) => runnerBeside(data, { drainMs: 30_000 })], ["own-process", (data) => startRunnerProcess({ dataDir: data, drainMs: 30_000, warn: () => {} })]];
+  for (const [where, start] of starts) {
+    const server = await serve(t, { faux: undefined, runner: false, harnesses: false });
+    await signedIn(server.api);
+    const runner = await start(server.data);
+    let closing;
+    const close = () => (closing ??= runner.close());
+    t.after(close);
+    let release;
+    openai.holdResponse = new Promise((resolve) => (release = resolve));
+    t.after(() => release());
+    openai.callOnce = "no_such_tool";
+    const sent = openai.responses.length;
+    assert.equal((await server.api("POST", "/agents", agent(`late-${where}`))).status, 201);
+    const started = await server.api("POST", `/agents/late-${where}/runs`, { input: { content: "What is six times seven?" } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    await until(() => openai.responses.length > sent, `${where}: the run's first request is out`);
+    // Signed in again with 200 s from OpenAI, sealed as 20 s (pi-ai takes 3 minutes off expires_in): at the run's next
+    // request, 4.5 s into the stop, it would not outlive the drain plus RENEWAL_DRAIN_MS, so it needs a renewal (asItIs).
+    // Sent as it is instead, the run would end completed in the drain, which the hand-back asserts below refuse.
+    openai.expiresIn = 200;
+    await signedIn(server.api);
+    openai.expiresIn = 3600;
+    const refreshes = openai.refreshes;
+    // The run's next request comes once the runner has stopped serving renewals.
+    const startedAt = Date.now();
+    const stopped = close();
+    await new Promise((resolve) => setTimeout(resolve, RUNNER_RENEWALS_SERVED_MS + 500));
+    openai.holdResponse = undefined;
+    release();
+    await stopped;
+    assert.ok(Date.now() - startedAt < 20_000, `${where}: handed back at once, not at the drain's end: ${Date.now() - startedAt} ms`);
+    assert.equal(openai.refreshes, refreshes, `${where}: nothing renewed after the runner stopped serving renewals`);
+    const after = await server.api("GET", `/runs/${started.body.run_id}`);
+    assert.ok(!["failed", "completed"].includes(after.body.status), `${where}: the run was handed back, not ended: ${JSON.stringify({ status: after.body.status, error: after.body.error })}`);
+    // The next start resumes it: its request renews the token and the run ends completed.
+    const again = await start(server.data);
+    t.after(() => again.close());
+    const { last } = await follow(server.api, started.body.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
+    assert.equal(last.status, "completed", `${where}: resumed to its end: ${JSON.stringify(last)}`);
+    assert.equal(openai.refreshes, refreshes + 1, `${where}: the resume renewed the token once`);
+    await again.close();
+    await server.stop();
+  }
+});
+
+// A learned node's or a subagent's tier on the plan reads the sign-in through a reader of its own (claim-secrets.ts
+// tierModelKeys, subagentTierKeys), beside the claim's: a stop refusal there hands the run back too, never fails its node.
+test("a learned or subagent tier's plan reader (tierModelKeys, subagentTierKeys) hands its run back on a stop refusal, as the claim's reader does, and OpenAI is sent nothing", async (t) => {
+  const openai = fakeOpenAI(t);
+  const { planOf, stopRenewals } = await import("../dist/chatgpt-plan.js");
+  const { subagentTierKeys, tierModelKeys } = await import("../dist/runner/claim-secrets.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  await seatRow(store, sealKey, -1_000);
+  await stopRenewals(store);
+  const env = { AGENT_MODEL_FAST: "chatgpt/gpt-6-luna" };
+  const readers = [
+    ["tierModelKeys", (back) => tierModelKeys({ store, sealKey, env, ...back }, ["fast"])],
+    ["subagentTierKeys", (back) => subagentTierKeys({ store, sealKey, env, ...back }, ["fast"], {})],
+  ];
+  for (const [name, read] of readers) {
+    let handed = 0;
+    const abort = new AbortController();
+    const reason = new Error("the runner is closing");
+    const plan = planOf(await read({ handBack: () => (handed++, abort.abort(reason)), signal: abort.signal }));
+    assert.ok(plan, `${name}: the fast tier's model is on the plan, so its keys carry the sign-in`);
+    await assert.rejects(plan.token(), (error) => error === reason, `${name}: a stop refusal ends the node with the run's abort, handed back`);
+    assert.equal(handed, 1, `${name}: the run is handed back once`);
+  }
+  assert.equal(openai.refreshes, 0);
+});
+
+// A runner's close tail (runner/main.ts, runner/beside.ts): whatever its steps throw, the renewals' drain and the store's
+// close still run, in that order, so a renewal OpenAI is answering saves its pair; the steps' error is still the close's.
+test("closeStoreAfter drains renewals and closes the store after its work, even when the work throws, and throws the work's error", async () => {
+  const { closeStoreAfter } = await import("../dist/chatgpt-plan.js");
+  const done = [];
+  const store = { close: async () => void done.push("store closed") };
+  const drain = async () => void done.push("renewals drained");
+  await closeStoreAfter(async () => void done.push("work"), drain, store);
+  assert.deepEqual(done, ["work", "renewals drained", "store closed"]);
+  done.length = 0;
+  await assert.rejects(closeStoreAfter(async () => { throw new Error("a relay's close failed"); }, drain, store), /a relay's close failed/);
+  assert.deepEqual(done, ["renewals drained", "store closed"], "after a throw too");
 });
