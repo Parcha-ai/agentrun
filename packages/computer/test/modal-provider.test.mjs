@@ -21,7 +21,7 @@ import { refusesHttp } from "./https-refusal.mjs";
 const modal = await import("../dist/modal.js");
 const { MODAL } = await import("../dist/descriptors/modal.js");
 /** A sandbox's tags as the labels they pack (Modal keeps its tags packed, facts.labels.packed). */
-const { unpackLabels: labelsIn } = await import("../dist/hosted/values.js");
+const { unpackLabels: labelsIn, packLabels } = await import("../dist/hosted/values.js");
 const { ModalProvider } = modal;
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -584,7 +584,7 @@ function upgradeModal({ rawId, packedId, name }) {
 			},
 		},
 	};
-	return { sdk, calls, raw, sandboxes };
+	return { sdk, calls, raw, sandboxes, sandbox };
 }
 
 test("across the upgrade, a request's raw sandbox (an older server's) and its packed one (this server's) converge on one: the oldest by Modal's id is kept and the other deleted, whichever form each is", async () => {
@@ -616,6 +616,29 @@ test("across the upgrade, a request's raw sandbox (an older server's) and its pa
 		assert.ok(!order.includes("exec sb-9-raw"), "nothing runs in the deleted one");
 		assert.doesNotMatch(created.error?.message ?? "", /machines carry the name/, "never refused as two of one name");
 	}
+});
+
+test("across the upgrade, a create that finds a request's raw sandbox and its packed one both there before it starts refuses as exists, naming both, and makes, deletes and runs nothing: only racing creates converge", async () => {
+	const requestId = "req-modal-twin-before";
+	const name = computerNameFor(requestId);
+	const modal = upgradeModal({ rawId: "sb-0-raw", packedId: "sb-1-packed", name });
+	// An older server's retry made the raw one beside a newer server's packed one: both are there before this create.
+	const packed = packLabels(modal.raw.tags, name);
+	assert.ok("labels" in packed, JSON.stringify(packed));
+	modal.sandboxes.set(modal.raw.sandboxId, modal.raw);
+	modal.sandboxes.set("sb-1-packed", modal.sandbox("sb-1-packed", packed.labels));
+	const provider = new ModalProvider({ sdk: modal.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const created = await provider.create(SPEC, { requestId });
+	assert.equal(created.ok, false, JSON.stringify(created));
+	assert.equal(created.error.code, "exists", JSON.stringify(created.error));
+	assert.match(created.error.message, /2 machines carry the name/);
+	assert.match(created.error.message, /sb-0-raw/, "names the raw one");
+	assert.match(created.error.message, /sb-1-packed/, "names the packed one");
+	const did = modal.calls.map(([what]) => what);
+	assert.ok(!did.includes("sandboxes.create"), `no sandbox made: ${JSON.stringify(did)}`);
+	assert.ok(!did.includes("terminate"), `neither deleted, both kept: ${JSON.stringify(did)}`);
+	assert.ok(!did.includes("exec"), `nothing runs in either: ${JSON.stringify(did)}`);
+	assert.deepEqual([...modal.sandboxes.values()].filter((box) => box.finished === null).map((box) => box.sandboxId).sort(), ["sb-0-raw", "sb-1-packed"], "both still running");
 });
 
 test('the Modal conformance module: mountFor("archil") gives a fresh run folder on the disk COMPUTER_ARCHIL_* name, read and written outside through the disk\'s object API', async () => {

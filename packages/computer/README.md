@@ -1330,14 +1330,16 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
   them, its own at their longest, and refuses in words with no call where the packed tags pass either bound; create
   refuses the same words first. A sandbox made before the tags were packed carries its labels as tags, and reads as
   them (`labels.packed.unpacked`): a listing by name asks for the labels as given beside the packed name, within the
-  one bound, so a request that made one sandbox of each form across an upgrade has both seen and one kept. The upgrade
-  is one-way: a server from before the change asks for the labels as given alone, so its retry of a create can make a
-  second sandbox beside a packed one, which lasts until a newer server's create of that request keeps the older, or
-  until Modal ends it at its lifetime. A caller's label named `agentrun` or `agentrun-<n>` is refused in words, on
-  every hosted computer: those names hold the packed labels. An Archil
-  computer's mount label records the folder's agent alone, as on every host: the folder's run is the `agentrun.run`
-  label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal
-  still lists after its terminate is polled and left out once `poll()` reads it finished.
+  one bound, so a request that made one sandbox of each form across an upgrade has both seen. The upgrade is one-way: a
+  server from before the change asks for the labels as given alone, so its retry of a create can make a second sandbox
+  beside a packed one. A newer server's create of that request keeps the older of the two only while the two creates
+  race, its own reads of the name after its sandbox is made seeing both; a later create of that request that finds both
+  already there refuses as `exists`, naming both ids, and keeps both. The extra sandbox then lasts until it is deleted
+  or Modal ends it at its lifetime. Upgrade every server that shares a Modal app together to avoid it. A caller's label
+  named `agentrun` or `agentrun-<n>` is refused in words, on every hosted computer: those names hold the packed labels.
+  An Archil computer's mount label records the folder's agent alone, as on every host: the folder's run is the
+  `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only,
+  and one Modal still lists after its terminate is polled and left out once `poll()` reads it finished.
 - **release** `delete` is `terminate()`, and the adapter waits until get answers none (`poll()` reads it finished).
   `stop` is refused as `unsupported`: terminate is a sandbox's only end.
 - **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,
