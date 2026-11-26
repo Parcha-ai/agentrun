@@ -1510,6 +1510,20 @@ class SqliteStore implements Store {
         return row && runOf(row);
       },
       launch: (runId) => readLaunch(db, runId),
+      learningDeadlines: async (runIds) => {
+        const out = new Map<string, number>();
+        if (runIds.length === 0) return out;
+        const body = readableJson(d, "body");
+        const rows = await db.all<{ run_id: string; replay: string | null; audit: string | null }>(
+          `SELECT run_id, ${d.jsonText(body, ["replay", "deadline_at"])} AS replay, ${d.jsonText(body, ["audit", "deadline_at"])} AS audit FROM run_launch WHERE run_id IN (${runIds.map(() => "?").join(", ")})`,
+          ...runIds,
+        );
+        for (const row of rows) {
+          const at = Date.parse(row.replay ?? row.audit ?? "");
+          if (Number.isFinite(at)) out.set(row.run_id, at);
+        }
+        return out;
+      },
       usageMetadata: (runId, options) => readUsageMetadata(db, runId, options),
       projectCheckpoints: (filter) => readProjectCheckpoints(db, filter),
       learningStarts: (agentId) => readLearningStarts(db, agentId, NOT_A_LEARNING_RUN),

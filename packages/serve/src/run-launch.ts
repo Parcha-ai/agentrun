@@ -160,13 +160,6 @@ const readReplay = (value: unknown): Replay | undefined => {
   return { of: value.of, workflow: value.workflow, digest: value.digest, ...(typeof value.paid_by === "string" ? { paidBy: value.paid_by } : {}), ...(Number.isFinite(deadline) ? { deadlineAt: deadline } : {}) };
 };
 
-/** A learning child's deadline (ms) as its launch body keeps it: its replay's or its audit's `deadline_at`; undefined for
- *  any other run, and for a body that is no launch. */
-export function learningDeadlineOf(body: unknown): number | undefined {
-  if (!isObject(body)) return undefined;
-  return readReplay(body.replay)?.deadlineAt ?? readReplay(body.audit)?.deadlineAt;
-}
-
 /** A replay or an audit as a launch body keeps it. */
 const replayBody = (replay: Replay): Record<string, string> => ({ of: replay.of, workflow: replay.workflow, digest: replay.digest, ...(replay.paidBy ? { paid_by: replay.paidBy } : {}), ...(replay.deadlineAt !== undefined ? { deadline_at: new Date(replay.deadlineAt).toISOString() } : {}) });
 

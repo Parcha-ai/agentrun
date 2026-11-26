@@ -3,7 +3,7 @@
 import { Fenced, type Store } from "../store/store.js";
 
 export type RunnerStore = Pick<Store, "leaseClock" | "claim" | "renew" | "renewMany" | "release" | "journal" | "flush" | "commands" | "commandsOf" | "take" | "retry" | "watchCommands"> & {
-  readonly runs: Pick<Store["runs"], "claimMany" | "claimable" | "claimsOf" | "update"> & Partial<Pick<Store["runs"], "launch" | "get">>;
+  readonly runs: Pick<Store["runs"], "claimMany" | "claimable" | "claimsOf" | "update"> & Partial<Pick<Store["runs"], "launch" | "get" | "learningDeadlines">>;
   /** The revision's kind, read for a run's start line (runner.ts). A store without it (a test's) says no start or end line. */
   readonly agents?: Pick<Store["agents"], "revision">;
   /** Writes a command row: the cancel of a learning child held at its deadline (runner.ts endOverdue). A store without

@@ -13,7 +13,6 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
 import { COMMAND_KINDS, type CommandSink, endedReason, sendCommand } from "./commands.js";
-import { learningDeadlineOf } from "../run-launch.js";
 import { COMPUTER_CALL } from "../computer-channel.js";
 import { COMPUTER_HAND_BACK, COMPUTER_TAKE_OVER } from "../computer-commands.js";
 import { HELD_COMMANDS } from "../computer-held.js";
@@ -27,7 +26,7 @@ import { type BoundTimer, REAL_TIMER } from "./loop.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import { FrameTooLarge } from "./run-channel.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
-import { FINAL_STATES, RunFinal, type RunPatch, type RunState, StoreLaunchMissing } from "../store/store.js";
+import { FINAL_STATES, RunFinal, type RunPatch, type RunState } from "../store/store.js";
 import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
 import { clearBrowserHeld } from "../browser-hold.js";
@@ -189,8 +188,9 @@ export interface RunnerOptions {
   /** For tests: the claim deadline's clock (the deadline a claim not renewed in time is lost at, and the time its claimed
    *  until is reckoned from). Default: the real one. Nothing else in the runner reads it. */
   clock?: BoundTimer & { now(): number };
-  /** For tests: the clock (epoch ms) a held learning child's deadline is read on (its launch's, run-launch.ts
-   *  learningDeadlineOf): one still held at it is cancelled, as a person's cancel is. Default Date.now. */
+  /** For tests: the clock (epoch ms) a held learning child's deadline is read on (its launch's replay or audit
+   *  deadline_at, store.runs.learningDeadlines): one still held at it is cancelled, as a person's cancel is. Default
+   *  Date.now. */
   learningClock?: () => number;
 }
 
@@ -278,7 +278,7 @@ interface Held {
   done?: Promise<void>;
   /** What the run weighs against the memory budget (RunnerOptions.memory), in MiB; 0 without one. */
   mib: number;
-  /** A learning child's deadline (ms), read from its launch once held; undefined for any other run. */
+  /** A learning child's deadline (ms), read from its launch at its claim; undefined for any other run. */
   learningDeadline?: number;
   /** Its cancel at that deadline is written (or being written): never twice. */
   overdue?: boolean;
@@ -987,8 +987,8 @@ export function startRunner(options: RunnerOptions): Runner {
     emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "parked" });
   };
 
-  /** Holds `claim` and starts its loop. `learningDeadline`: a learning child's deadline, read before (learningDeadlineAt),
-   *  at which the runner cancels it if still at work (endOverdue). */
+  /** Holds `claim` and starts its loop. `learningDeadline`: a learning child's deadline, read at its claim
+   *  (learningDeadlinesOf), at which the runner cancels it if still at work (endOverdue). */
   const hold = (claim: Claim, sentAt: number, mib = 0, learningDeadline?: number) => {
     const fence = { lost: false };
     const abort = new AbortController();
@@ -1150,16 +1150,18 @@ export function startRunner(options: RunnerOptions): Runner {
       // One read of those claims' rows, made only when the batch has a queued or a released run.
       const reread = claims.filter((claim) => claim.from === "queued" || claim.from === "running" || claim.from === "parked");
       const rows = reread.length ? await store.commandsOf(reread.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();
+      // The learning children's deadlines among the batch, one read for all of it (learningDeadlinesOf), before any loop
+      // starts on one: a batch whose read failed is given back whole, for a later claim to read again; a child at or past
+      // its deadline on the learning clock only ends, cancelled as a person's cancel ends an unstarted run, so nothing of it
+      // spends past the bound its run's caller was promised (learning_work.deadline_at).
+      const deadlines = await learningDeadlinesOf(claims);
       for (const claim of claims) {
-        // A learning child's deadline, read before any loop starts on it (learningDeadlineAt): one not read is not started,
-        // its claim given back for a later claim to read again; one at or past it on the learning clock only ends,
-        // cancelled as a person's cancel ends an unstarted run, so nothing of it spends past the bound its run's caller
-        // was promised (learning_work.deadline_at).
-        const deadline = await learningDeadlineAt(claim.runId);
-        if (deadline === "unread") {
+        if (!(deadlines instanceof Map)) {
+          emit({ type: "error", runId: claim.runId, step: "learning deadline", message: deadlines.unread });
           await release(claim, {}).then(() => emit({ type: "handed-back", runId: claim.runId, epoch: claim.epoch, cause: "give_back" }), () => {});
           continue;
         }
+        const deadline = deadlines.get(claim.runId);
         const overdue = deadline !== undefined && learningClock() >= deadline;
         let stop = endingRow((rows.get(claim.runId) ?? []).filter((row) => row.takenAt === null));
         if (overdue && stop?.kind !== "cancel") {
@@ -1276,19 +1278,17 @@ export function startRunner(options: RunnerOptions): Runner {
   let claiming: Promise<void> | undefined;
   /** A run was queued while a poll was in flight (claimNow): one more poll follows that poll's end at once. */
   let pollAgain = false;
-  /** A claimed run's learning deadline (its launch's, a check's replay or an audit's shadow: learning-work.ts
-   *  LEARNING_CHILD_MS), read once as it is claimed, before any loop starts on it: undefined for a run that is no
-   *  learning child, and for a store without launches or commands (a test's); "unread" when the read failed, said here,
-   *  and the claim is given back for a later claim to read it again. */
-  const learningDeadlineAt = async (runId: string): Promise<number | undefined | "unread"> => {
-    if (!store.runs.launch || !store.command) return undefined;
+  /** The learning deadlines of the learning children among a poll's `claims` (a check's replay, an audit's shadow: each
+   *  its launch's, learning-work.ts LEARNING_CHILD_MS), in one read for the whole batch (store.runs.learningDeadlines),
+   *  before any loop starts on one: a run that is no learning child is absent, and a store without that read or without
+   *  commands (a test's) has none. `{ unread }` when the read failed: the batch is given back for a later claim to read
+   *  again. */
+  const learningDeadlinesOf = async (claims: readonly Claim[]): Promise<Map<string, number> | { unread: string }> => {
+    if (claims.length === 0 || !store.runs.learningDeadlines || !store.command) return new Map();
     try {
-      return learningDeadlineOf((await store.runs.launch(runId)).body);
+      return await store.runs.learningDeadlines(claims.map((claim) => claim.runId));
     } catch (error) {
-      // A run with no launch row was started by no check or audit (a learning child's launch is written with it).
-      if (error instanceof StoreLaunchMissing) return undefined;
-      emit({ type: "error", runId, step: "learning deadline", message: message(error) });
-      return "unread";
+      return { unread: message(error) };
     }
   };
   /** Each held learning child at its deadline on the learning clock is cancelled as a person's cancel is (a cancel row,
