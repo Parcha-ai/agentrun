@@ -3,7 +3,7 @@
 // and the wiring from the bin. The installer's flags and its refusals.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -506,6 +506,17 @@ test("service install --env refuses any other variable by name, and a pair with 
     ["sk-or-x", /^--env takes KEY=VALUE, and one --env has no =\.$/],
     ["=sk-or-x", /^--env takes KEY=VALUE, and one --env has no name before =\.$/],
     ["AGENT_MODEL=a\nb", /AGENT_MODEL's value has a line break/],
+    // A user or password in the gateway's address is a key: refused, and the address never echoed. (A password-only
+    // address stands for user:password, which the source export's credential check refuses to carry even fake.)
+    ["AGENT_MODEL_BASE_URL=https://:sk-or-x@gateway.example.com/v1", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it: a key goes in the console \(Settings → Model keys\), never in a service file\.$/],
+    ["AGENT_MODEL_BASE_URL=http://sk-or-x@localhost:4000", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it/],
+    ["AGENT_MODEL_BASE_URL= https://:sk-or-x@gateway.example.com/v1", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it/],
+    ["AGENT_MODEL_BASE_URL=\thttps://sk-or-x@gateway.example.com/v1", /^AGENT_MODEL_BASE_URL's value has a line break or another control character\.$/],
+    ["AGENT_MODEL_BASE_URL=sk-or-x@gateway.example.com:4000/v1", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it/],
+    // One slash, or none: a URL parser still reads a user there.
+    ["AGENT_MODEL_BASE_URL=https:/sk-or-x@gateway.example.com/v1", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it/],
+    ["AGENT_MODEL_BASE_URL=https:sk-or-x@gateway.example.com/v1", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it/],
+    ["AGENT_MODEL_BASE_URL=http:\\\\sk-or-x@gateway.example.com/v1", /^AGENT_MODEL_BASE_URL takes the gateway's address with no user name or password in it/],
   ]) {
     // The value is never echoed: it may be a key.
     await assert.rejects(service.install({ env: [pair] }), (error) => error.code === 2 && said.test(error.message) && !error.message.includes("sk-or-x"), pair);
@@ -531,6 +542,45 @@ test("service install --env refuses any other variable by name, and a pair with 
   await assert.rejects(service.install({ tailscale: true, env: ["AGENT_MODEL_BASE_URL=http://localhost:11434/v1", "OLLAMA_HOST=127.0.0.1:11434", "AGENT_MODEL_API_KEY=none"] }), (error) =>
     error.message.includes("remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself.") && !error.message.includes("<host:port>"), "OLLAMA_HOST named");
   assert.equal(existsSync(join(home, ".config", "systemd", "user", UNIT)), false);
+  // An @ past the address (a path or a query) is no user.
+  assert.equal(await service.install({ env: ["AGENT_MODEL_BASE_URL=https://gateway.example.com/v1/a@b?c=d@e"] }), 0);
+  assert.equal(unitEnv(readFileSync(join(home, ".config", "systemd", "user", UNIT), "utf8")).AGENT_MODEL_BASE_URL, "https://gateway.example.com/v1/a@b?c=d@e");
+});
+
+test("a service install whose write fails leaves the service file it had, byte for byte, and no temporary file", { skip: process.getuid?.() === 0 && "root writes past a read-only folder" }, async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ env: ["AGENT_MODEL=qwen3:8b"] }), 0);
+  const before = readFileSync(file);
+  // The folder read-only: the temporary file can't be made, as on a full disk or a crash before the rename.
+  chmodSync(join(file, ".."), 0o500);
+  try {
+    await assert.rejects(service.install({ env: ["DO_NOT_TRACK=1"] }), (error) => error.code === "EACCES");
+    assert.deepEqual(readFileSync(file), before);
+    assert.deepEqual(readdirSync(join(file, "..")).filter((name) => name.endsWith(".tmp")), []);
+  } finally {
+    chmodSync(join(file, ".."), 0o700);
+  }
+});
+
+test("service install writes its file whole and readable by its owner alone (0600), over one that was 0644 and past a stale temporary file", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ env: ["AGENT_MODEL=qwen3:8b"] }), 0);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  // A unit an older install wrote 0644, and a temporary file a crashed one left behind with that mode.
+  chmodSync(file, 0o644);
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, "half a unit", { mode: 0o644 });
+  assert.equal(await service.install({ env: ["DO_NOT_TRACK=1"] }), 0);
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.equal(existsSync(temp), false);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENT_MODEL: "qwen3:8b", DO_NOT_TRACK: "1" });
+  assert.deepEqual(readdirSync(join(file, "..")).filter((name) => name.endsWith(".tmp")), []);
 });
 
 // A service installed before AGENT_MODEL_API_KEY went: a re-install keeps every other variable, drops the key in one

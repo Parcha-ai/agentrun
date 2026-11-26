@@ -58,6 +58,7 @@ import playgroundOperationWidth from "./playground-operation-width.mjs";
 import playgroundAgentWidth from "./playground-agent-width.mjs";
 import devToolsPanelWidth from "./dev-tools-panel-width.mjs";
 import suggestAgents from "./suggest-agents.mjs";
+import pageFrames from "./page-frames.mjs";
 
 export const flows = [
   setupOpen,
@@ -107,4 +108,5 @@ export const flows = [
   devToolsPanelWidth,
   playgroundPaneLines,
   ...suggestAgents,
+  ...pageFrames,
 ];

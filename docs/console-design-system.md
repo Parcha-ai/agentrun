@@ -240,7 +240,14 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
 ## Layout and responsiveness
 
 - **The shell** is a 220px sidebar and a main column. The `roomy:` variant shows the sidebar at 768px wide and 501px tall; smaller or shorter windows use a top bar with a menu.
-  Banners sit above the page, outside its scroller. `main` is the page's only scroller.
+  Banners sit above the page, outside its scroller.
+- **A page's top bar stays in view.** A page with a top bar (`pageToolbarClass`) is `pageClass`, exactly as tall as
+  `main`: the bar first, then the body in `pageBodyClass` (marked `data-page-body`), the box that scrolls. `main` never
+  scrolls such a page, or the bar would go with it. A page made of panes (Mission Control, a run, an agent, the
+  Playground) scrolls each pane in its own box under the bar. A Settings page scrolls in its own `h-full overflow-auto`
+  box under the Settings tabs. A page with no top bar (Build an agent, a trigger's page) scrolls in `main`. A run's page
+  on a `short:` window scrolls as a whole, so its panels are not squeezed to nothing. `e2e/flows/page-frames.mjs`
+  measures every page with a bar.
 - **Breakpoints** are Tailwind's: write mobile first and add `md:` for the desktop layout. `max-sm:` tightens a
   phone. `short:` is for a viewport at most 500px tall (a phone on its side). `roomy:` combines a minimum width of 768px and height of 501px for the desktop shell. Do not add a breakpoint.
 - **A part beside a panel** is laid out by the width of its pane, not the window's: a panel that takes part of the page
