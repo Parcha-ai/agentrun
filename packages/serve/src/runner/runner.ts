@@ -932,8 +932,9 @@ export function startRunner(options: RunnerOptions): Runner {
       // A run let go unfinished says why on its claim's attempt (run_attempts cut): a runner's close drained it, or its
       // loop ended interrupted on its own and the run is tried again. The next claim works its turn again.
       const cut = end.state !== "interrupted" ? undefined : closedItself ? "retry" as const : held.stoppedFor === "shutdown" ? "drain" as const : undefined;
+      const wakeAt = end.state === "parked" ? parkedWake(held, end.wakeAt) : undefined;
       await release(claim, {
-        ...(end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt }
+        ...(wakeAt !== undefined ? { wakeAt }
         : inARow > 0 ? { backoffUntil: now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
         : {}),
         ...(cut ? { cut } : {}),
@@ -954,10 +955,20 @@ export function startRunner(options: RunnerOptions): Runner {
     }
   };
 
+  /** When parked run `held` wakes: its loop's `wakeAt`, or a learning child's deadline when sooner, so a child parked
+   *  (for an approval, a raise) is claimed again at its deadline and ends there (claimMore's overdue claim), never left
+   *  parked past it holding its copy of its run's key, its run's learning_work running. The learning clock is the store's
+   *  but in a test. */
+  const parkedWake = (held: Held, wakeAt: number | undefined): number | undefined =>
+    held.learningDeadline === undefined ? wakeAt : wakeAt === undefined ? held.learningDeadline : Math.min(wakeAt, held.learningDeadline);
+
   /** A parked run's resume that threw: one more try on the row that woke it, released parked with a backoff; after
-   *  `resumeTries`, that row refused with why and the run released parked with nothing to wake it. */
+   *  `resumeTries`, that row refused with why and the run released parked with nothing to wake it but a learning child's
+   *  deadline (parkedWake). */
   const resumeFailed = async (held: Held, why: string) => {
     const { claim } = held;
+    const wake = parkedWake(held, undefined);
+    const wakeAt = wake === undefined ? {} : { wakeAt: wake };
     const untaken = (await store.commands(claim.runId, 0)).filter((row) => row.takenAt === null);
     const stop = endingRow(untaken);
     const woke = untaken[0];
@@ -975,14 +986,14 @@ export function startRunner(options: RunnerOptions): Runner {
         await store.take(claim, woke.id, "refused", reason);
         emit({ type: "refused", runId: claim.runId, commandId: woke.id, reason });
         await store.flush();
-        await release(claim, { state: "parked" });
+        await release(claim, { state: "parked", ...wakeAt });
       } else {
         await store.flush();
-        await release(claim, { state: "parked", backoffUntil: now() + resumeBackoffMs * 2 ** (tries - 1) });
+        await release(claim, { state: "parked", ...wakeAt, backoffUntil: now() + resumeBackoffMs * 2 ** (tries - 1) });
       }
     } else {
       await store.flush();
-      await release(claim, { state: "parked" });
+      await release(claim, { state: "parked", ...wakeAt });
     }
     emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "parked" });
   };
