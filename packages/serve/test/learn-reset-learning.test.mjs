@@ -741,6 +741,9 @@ test("the watermark: runs before the reset never reach a later compile, even pas
 // the clock is past its watermark: whatever its caller does after the answer is after it.
 test("a reset answers only once the clock is past its watermark, so whatever its caller starts after the answer is after the reset", async (t) => {
   const w = await storeWorld(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 3 } });
+  // The reset's bound on the wait (a second of the monotonic clock) out of this test's way: a worker paused past it
+  // would let the reset answer in the window below.
+  w.host.pastWatermarkMs = 600_000;
   const T = Date.now();
   t.mock.timers.enable({ apis: ["Date"], now: T });
   const answered = w.reset();

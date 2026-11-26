@@ -48,6 +48,9 @@ export interface LearningResetHost {
   /** How long step 1 waits for the agent's learning runs to be final, and how often it reads them meanwhile. */
   readonly waitMs: number;
   readonly pollMs: number;
+  /** The longest the reset waits, by the monotonic clock, for the wall clock to pass its watermark before it answers
+   *  (default PAST_WATERMARK_MS). */
+  readonly pastWatermarkMs?: number;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -111,7 +114,7 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
     // can end in the millisecond it began, and a seed read or a run started after its answer must never read as before
     // it (at most a millisecond's wait). A wall clock stepped back past it answers after a second of the monotonic one:
     // the watermark cannot hold then anyway, and the queue is never held for it.
-    const bound = performance.now() + PAST_WATERMARK_MS;
+    const bound = performance.now() + (host.pastWatermarkMs ?? PAST_WATERMARK_MS);
     while (Date.now() <= at && performance.now() < bound) await sleep(1);
   });
 }
