@@ -5237,6 +5237,8 @@ export type GetRunLearningResponse = {
   detail: string | null;
   at: string;
   seed: string | null;
+  seed_failed: "unreadable" | "not_copied" | "other_disk" | null;
+  learned_chars: number;
   merged: string | null;
   workflows: Array<{
     file: string;

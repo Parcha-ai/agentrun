@@ -1834,6 +1834,8 @@ const RUN_LEARNING = {
       run: { type: "string" }, state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON,
       detail: { ...NULL_STRING, maxLength: 300, description: "Run.learning's detail, the same words: at most 300 characters, cut of the host's secrets as they are now before it is cut short." }, at: { type: "string", format: "date-time" },
       seed: { ...NULL_STRING, description: "The commit of main the run started from; null when its seed failed." },
+      seed_failed: { enum: ["unreadable", "not_copied", "other_disk", null], description: "Why the run started with nothing learned, when it did: `unreadable`, its agent's learning could not be read; `not_copied`, what was read could not be made into its start; `other_disk`, it runs on a disk of its own, which learns nothing. null when its seed was read." },
+      learned_chars: { ...COUNT, description: "The length in characters of the # Learned text the run was given (its owner's corrections as its start read them, cut of the host's secrets); 0 when it was given none." },
       merged: { ...NULL_STRING, description: "Its merge commit on main, once merged." },
       workflows: { type: "array", items: MERGED_WORKFLOW, description: "The workflow draft its merge wrote, `pending` while it waits for the owner's OK; empty when none." },
       corrections: { ...COUNT, description: "How many lines of its owner's words its merge added to corrections.md: 1 when a correction was kept, else 0." },

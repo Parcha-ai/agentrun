@@ -1157,6 +1157,10 @@ export interface Runs {
   /** The run's launch row (the runner reads it at its claim; the server for views). StoreLaunchMissing when the run has
    *  none (it was not started with one), never a default. */
   launch(runId: string): Promise<RunLaunchRow>;
+  /** Writes `learning` as run `runId`'s learning start, in place of the one its launch body named (the body's `learning`
+   *  member; nothing else of the launch changes): a claim that read its seed again once its agent's open rounds ended
+   *  (runner/learning-reseed.ts), before the run's spec reads its launch. StoreLaunchMissing when the run has no launch. */
+  reseedLearning(runId: string, learning: unknown): Promise<void>;
   /** The learning deadlines (ms) of those of `runIds` that are learning children (a check's replay run, an audit's shadow
    *  run): its launch's replay or audit `deadline_at` (run-launch.ts Replay.deadlineAt). One read for every id, projecting
    *  that member alone: what a runner reads for a whole batch of claims before any loop starts on them. A run that is no

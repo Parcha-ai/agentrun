@@ -188,6 +188,10 @@ async function raced(t, { harness = "claude-agent", split = false } = {}) {
   const laid = asks.slice(before).filter((one) => !one.compile).map((one) => one.system);
   assert.ok(laid.length, "the next run asked its model");
   assert.ok(laid.every((system) => system.includes("# Learned") && system.includes(CODE)), `the next run, launched while the corrected run's round ran, starts from the correction it merged: ${JSON.stringify({ learning: done.learning, system: laid[0]?.slice(-800) })}`);
+  // Its learning read names the merge it started from, a seed read, and the # Learned text it was given.
+  const read = (await api("GET", `/runs/${next.body.run_id}/learning`)).body;
+  assert.deepEqual([read.seed, read.seed_failed], [learning.merged, null], JSON.stringify(read));
+  assert.ok(read.learned_chars >= CODE.length, JSON.stringify(read));
 }
 
 for (const harness of ["claude-agent", "pi"]) test(`${harness}: an inline run launched while the corrected run's follow-up round runs starts from its correction`, SKIP, (t) => raced(t, { harness }));

@@ -48,6 +48,15 @@ export async function writeLaunchSealed(tx: Pick<SqliteExecutor, "run" | "get">,
   await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", next, runId);
 }
 
+/** Run `runId`'s launch body with its `learning` member replaced by `learning`, read and written inside `tx` (Runs
+ *  reseedLearning). StoreLaunchMissing when the run has no launch row. */
+export async function writeLaunchLearning(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, learning: unknown): Promise<void> {
+  const row = await tx.get<{ body: string }>("SELECT body FROM run_launch WHERE run_id = ?", runId);
+  if (!row) throw new StoreLaunchMissing(runId);
+  const body = JSON.parse(row.body) as Record<string, unknown> | null;
+  await tx.run("UPDATE run_launch SET body = ? WHERE run_id = ?", JSON.stringify({ ...(body ?? {}), learning }), runId);
+}
+
 /** The run's launch row, read by the runner at its claim (and the server for views). StoreLaunchMissing when the run has
  *  none, never a default. */
 export async function readLaunch(executor: Pick<SqliteExecutor, "get">, runId: string): Promise<RunLaunchRow> {

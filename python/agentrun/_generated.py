@@ -8121,6 +8121,8 @@ class _GetRunLearningResponseObjectRequired(TypedDict):
     detail: str | None
     at: str
     seed: str | None
+    seed_failed: Literal["unreadable", "not_copied", "other_disk"] | None
+    learned_chars: int
     merged: str | None
     workflows: list[GetRunLearningResponseObjectWorkflowsItem]
     corrections: int
