@@ -274,7 +274,10 @@ async function unledgeredRevisions(tx: Tx, agentId: string, runId: string): Prom
 /** Agent `agentId`'s reset ledger changed inside the caller's transaction (a run's purge): the revisions `kept` added by
  *  the rule keepResetLedger adds a reset's by (withKept), and the ones `dropped` (by resetRevisionKey: no run is billed
  *  against them after the purge) taken out. Compare and set on the row as read, so a ledger write that lands between
- *  the read and the write (keepResetLedger's own compare and set) is read again, never lost. */
+ *  the read and the write (keepResetLedger's own compare and set) is read again, never lost. The loop is Postgres's: its
+ *  UPDATE waits out a concurrent keepResetLedger and then matches 0 rows, and the next read in this READ COMMITTED
+ *  transaction sees that write. On SQLite the purge's BEGIN IMMEDIATE holds the write lock from its start, so the first
+ *  try always matches. The loop stays in the transaction: the purge's rows and the ledger change commit together. */
 async function changeResetLedger(tx: Tx, agentId: string, kept: ReadonlyMap<string, ResetRevision>, dropped: ReadonlySet<string>, at: number): Promise<void> {
   const key = resetLedgerKey(agentId);
   for (let tries = 0; tries < 20; tries++) {

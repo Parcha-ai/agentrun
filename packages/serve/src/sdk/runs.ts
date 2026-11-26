@@ -173,13 +173,14 @@ export async function sdkInbox(store: Pick<Store, "settings">, runId: string): P
 const unwritten = (inbox: SdkInbox): boolean =>
   inbox.learning_writers === undefined && (inbox.learning_commits !== undefined || !!inbox.learning_workflows?.length || !!inbox.learning_check);
 
-/** What every SDK run's inbox holds of run `runId`'s text, gone (its purge): an inbox whose workflows or check draft it
- *  wrote (`learning_writers` names it) keeps none of them, its writers kept, so its receipt answers 410 purged. An inbox
- *  that names no writers (unwritten) is emptied by any run's purge, since the run may be one of them, its
- *  learning_commits kept, so its receipt is refused still. Run after the run's purge committed, and a start checks its
- *  writers after its inbox is written (start), so one of the two always sees the other: no inbox keeps a purged run's
- *  workflow text. */
-export async function forgetSdkCopies(store: Pick<Store, "settings">, runId: string): Promise<void> {
+/** What every SDK run's inbox holds of run `runId`'s text, gone (its purge; `agentId` the run's agent): an inbox whose
+ *  workflows or check draft it wrote (`learning_writers` names it) keeps none of them, its writers kept, so its receipt
+ *  answers 410 purged. An inbox that names no writers (unwritten) is emptied by the purge of any run of its own agent,
+ *  since the run may be one of them, its learning_commits kept, so its receipt is refused still. A run of another agent
+ *  never wrote that agent's learning, so its purge writes no row of such an inbox. Run after the run's purge committed,
+ *  and a start checks its writers after its inbox is written (start), so one of the two always sees the other: no
+ *  inbox keeps a purged run's workflow text. */
+export async function forgetSdkCopies(store: Pick<Store, "settings" | "runs">, agentId: string, runId: string): Promise<void> {
   for (const row of await store.settings.all({ prefix: keyOf("") })) {
     for (let value = row.value, retry = 0; retry < 20; retry++) {
       if (!isObject(value)) break;
@@ -187,6 +188,7 @@ export async function forgetSdkCopies(store: Pick<Store, "settings">, runId: str
       if (!inbox.learning_workflows?.length && !inbox.learning_check) break;
       const legacy = unwritten(inbox);
       if (!legacy && !inbox.learning_writers?.includes(runId)) break;
+      if (legacy && (await store.runs.get(inbox.run_id))?.agentId !== agentId) break;
       const { learning_check: _check, ...rest } = inbox;
       if (await store.settings.replaceIf(row.key, value, { ...rest, learning_workflows: [], ...(legacy ? { learning_commits: inbox.learning_commits ?? {} } : {}) })) break;
       value = await store.settings.get(row.key);

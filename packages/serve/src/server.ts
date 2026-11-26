@@ -3282,7 +3282,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // got, and the next DELETE does it again.
     forgetCopies: async (agentId, runId) => {
       await forgetRunCopies(store.learning, agentId, runId);
-      await forgetSdkCopies(store, runId);
+      await forgetSdkCopies(store, agentId, runId);
       await notYetWith(() => forgetLegacyRunLearning(data, agentId, runId, store), ["unavailable"], "The agent's old learning folder keeps the run's text until the DELETE is sent again.");
     },
     // /usage's meters and a live read's spend, from its journal, as they read now (store-reads/cap.ts), and how its

@@ -763,7 +763,7 @@ test("an SDK start names every run whose file it delivers: a DELETE of the run t
 
 // A server before learning rows pinned a start's workflows by the save each was read at (`learning_commits`), never by
 // the runs that wrote them, so an inbox it wrote can't say whether a purged run wrote its text.
-test("an SDK start pinned before learning rows (its inbox names no writers) never answers its workflow text: its receipt sent again is 409 not_continuable, and any run's DELETE empties the inbox", async (t) => {
+test("an SDK start pinned before learning rows (its inbox names no writers) never answers its workflow text: its receipt sent again is 409 not_continuable, and a DELETE of any run of its agent empties the inbox; another agent's leaves it", async (t) => {
   const { api, store } = await serve(t, { runner: false });
   const id = "sdk-legacy";
   const mark = "LEGACYMARK";
@@ -791,6 +791,10 @@ test("an SDK start pinned before learning rows (its inbox names no writers) neve
   };
   const refused = { status: 409, code: "not_continuable", marked: false };
   assert.deepEqual(await again(), refused, "the receipt sent again can't check its writers, so it is refused, none of its text in the answer");
+  // A run of another agent (another tenant's, say) never wrote this agent's learning: its DELETE writes no row of this inbox.
+  await endedRuns(api, store, "sdk-elsewhere", ["elsewhere-run"]);
+  assert.equal((await api("DELETE", "/runs/elsewhere-run")).status, 204);
+  assert.match(await inboxes(), new RegExp(mark), "another agent's run's DELETE leaves the inbox as it was");
   assert.equal((await api("DELETE", "/runs/bystander")).status, 204);
   assert.doesNotMatch(await inboxes(), new RegExp(mark), "a DELETE of a run it may not name empties the inbox: one of its unknown writers may be the run");
   assert.deepEqual(await again(), refused, "the emptied inbox's receipt is refused still");
