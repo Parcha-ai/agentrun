@@ -166,12 +166,17 @@ the Retry-After header, or "retry later" for a 429 or 503. With none of these, a
 `Error: no status or retry time given.` The model can also react through a shown field such as `error.code`. If the file can't be written, the model gets an error and none of the answer, never the answer as a
 fallback. An answer that is not JSON is filed the same way, every path showing `null`.
 
-The setting keeps the answer out of the tool's result, and the tool gate keeps the agent's own `read`, `write` and
-`edit` out of the folder: a call whose path is in the folder or under it is refused, with an error naming the setting.
-The check reads the path as written, resolving `./` and `..` and the run folder's full path; it reads no file, so it
-doesn't follow links. `bash`, on the runner or a computer, is not gated by path: a command, a link it makes, or any
-program the run starts can open the folder, and the summary names the file. If the model must not read the answer,
-don't grant `bash`, or run your skill's code where the model can't read its output.
+The setting keeps the answer out of the tool's result, and the tool gate keeps these tools out of the folder: the
+agent's own `read`, `write` and `edit` (claude-agent's `Read`, `Write` and `Edit`, a computer script's file ops, a
+screenshot's `save_as`), `web_save` and `browser_upload`. A call of one of them whose path is in the folder or under it
+is refused, with an error naming the setting. The check reads the path as given and as pi's file tools take it (one
+leading `@` dropped), resolving `./`, `..` and every name of the run's folder, and compares each segment as a disk that
+folds names would, so `Stripe/Pages/` and a fullwidth spelling count as `stripe/pages/`. It reads no file, so it doesn't
+follow links. Anything else that opens the run's files is outside the gate. `bash`, on the runner or a computer, is not
+gated by path: a command, a link it makes, or any program the run starts can open the folder, and the summary names
+the file. A tool that writes into a fixed folder of its own (`browser_downloads` into `downloads/`) isn't gated
+either, so don't name a filed folder after one. If the model must not read the answer, don't grant `bash`, or run your
+skill's code where the model can't read its output.
 
 The setting is per tool. File every tool that returns the same data: a retrieve tool beside a filed list tool returns
 the same objects, unfiled.

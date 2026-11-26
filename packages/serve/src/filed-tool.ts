@@ -5,9 +5,10 @@
 // the answer's shape (keys that read as plain names and types to depth 2, array lengths), never another value; for an
 // error, a last line of what its structure gives (errorLine) (mcp-gateway.ts forward). The answer goes through neither the clip nor evidence/mcp/. So a template whose tool answers
 // hold what the model must not read (a customer's descriptions, say) hands its code the whole answer and its model the
-// values it needs to go on (the next page's cursor). The tool gate refuses the agent's own read, write and edit at or
-// under the folder (tool-gate.ts filedRefusal), by the path's words: bash is not gated by path, and a link bash made, or
-// any program the run starts, can open the folder. A template that must keep the model off the answer grants no bash, or
+// values it needs to go on (the next page's cursor). The tool gate refuses the agent's own read, write and edit, and
+// web_save's and browser_upload's paths, at or under the folder (tool-gate.ts filedRefusal), by the path's words as given
+// and as pi's file tools take them, each segment folded: any other tool that opens the run's files is outside it. bash is
+// not gated by path, and a link bash made, or any program the run starts, can open the folder. A template that must keep the model off the answer grants no bash, or
 // runs its skill's code where the model can't read the output. A show path that names a free-text field shows that text:
 // the option holds only as far as its paths do. A stored setting that no longer reads refuses every call of its tool.
 import type { InputIssue } from "./errors.js";

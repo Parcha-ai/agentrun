@@ -5,7 +5,9 @@
 // lexical, against the run's folder by every name of it (this machine's path, the computer's /workspace, and each other
 // name the run's file tools take, such as a CLI's scratch folder): `..` and `./`
 // spellings that land inside are refused; a sibling, a folder whose name only starts the same, an ancestor, and a skill
-// file (read_skill_file reads the agent's skill, not the run's files) are not. No file is read, so a link is not followed.
+// file (read_skill_file reads the agent's skill, not the run's files) are not. The path is held as given and as pi's file
+// tools take it (one leading @ dropped), each segment folded as a disk that folds names takes it (Stripe/Pages), and
+// web_save's and browser_upload's paths are held alike. No file is read, so a link is not followed.
 // bash is not gated by path (no word check on shell text holds: a glob, cd, a variable or a link gets around one).
 import assert from "node:assert/strict";
 import { test } from "node:test";
