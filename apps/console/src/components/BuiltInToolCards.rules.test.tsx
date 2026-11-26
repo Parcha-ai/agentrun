@@ -26,7 +26,7 @@ const SERVER_ONLY = "Server-only: it runs on the server, and this agent's place 
 function browserTag(harness: string, place: Place) {
   const host = document.body.appendChild(document.createElement("ul"));
   root = createRoot(host);
-  act(() => root!.render(createElement(BuiltInToolCards, { shown: offers, offers, tools: [], harness, place, places: null, onChange: () => {} })));
+  act(() => root!.render(createElement(BuiltInToolCards, { shown: offers, offers, tools: [], harness, place, places: null, runnerShell: new Set<string>(), onChange: () => {} })));
   const tag = host.querySelector('input[value="browser"]')!.closest("li")!.querySelector("[data-tag]");
   const out = { text: tag?.textContent ?? null, why: tag?.getAttribute("title") ?? tag?.textContent ?? null };
   act(() => root?.unmount());

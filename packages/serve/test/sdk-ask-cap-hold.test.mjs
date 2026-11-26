@@ -12,6 +12,7 @@ import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { bookedAsk } from "../dist/runner/sdk-ask.js";
 import { askedForCompile } from "../dist/learn/compile.js";
 import { said } from "../dist/learning-words.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const instructions = "Report release readiness using the existing backend status tool.";
 const tool = {
@@ -88,7 +89,7 @@ async function endUnderCap(t, capUsd, { cost = COST, env = {}, before, definitio
   const { route, requests } = scriptedRoute(cost);
   if (before) await before({ route, requests, run: { journal: () => server.store.journal(claim), flush: () => server.store.flush() } });
   const loop = createSdkLoop(launch, { store: server.store, data: server.data, env, sealKey: Buffer.alloc(32, 7) }, async () => route)({
-    journal: () => server.store.journal(claim), flush: () => server.store.flush(), signal: new AbortController().signal,
+    redact: heldRedactor((text) => text), journal: () => server.store.journal(claim), flush: () => server.store.flush(), signal: new AbortController().signal,
   });
   assert.equal((await loop.start(claim)).state, "ended");
   const run = await server.store.runs.get(runId);

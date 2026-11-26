@@ -21,7 +21,7 @@ import { refusesHttp } from "./https-refusal.mjs";
 const modal = await import("../dist/modal.js");
 const { MODAL } = await import("../dist/descriptors/modal.js");
 /** A sandbox's tags as the labels they pack (Modal keeps its tags packed, facts.labels.packed). */
-const { unpackLabels: labelsIn } = await import("../dist/hosted/values.js");
+const { unpackLabels: labelsIn, packLabels } = await import("../dist/hosted/values.js");
 const { ModalProvider } = modal;
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -260,6 +260,18 @@ test("Modal keeps its tags packed: a computer with more labels than Modal's 10 t
 	assert.equal(made.error?.code, "refused");
 	assert.equal(made.error.message, `labels: ${refusals[0].message}`, "create's words are check's");
 	assert.deepEqual(tight.rec.calls, [], "create refused before any SDK call: no app lookup, no listing, no sandboxes.create");
+});
+
+test("a caller's label under the packed map's keys (agentrun, agentrun-<n>) is refused at check() and at create, in words naming them, before any SDK call: it could pass for a packed map where tags are read as given", async () => {
+	const { provider, rec } = setup();
+	for (const key of ["agentrun", "agentrun-0", "agentrun-3"]) {
+		const spec = { ...SPEC, labels: { [key]: "pforged" } };
+		assert.deepEqual(provider.check(spec).map((r) => r.field), ["labels"], key);
+		const created = await create(provider, spec);
+		assert.equal(created.error?.code, "refused", key);
+		assert.match(created.error.message, new RegExp(`the label ${key} is reserved: agentrun and agentrun-<n>`), key);
+	}
+	assert.deepEqual(rec.names(), [], "no SDK call");
 });
 
 test("the janitor does not sweep Modal computers: Modal ends them at their lifetime", async () => {
@@ -524,6 +536,109 @@ test("a sandbox made before Modal's tags were packed, its labels as tags, is sti
 	const released = await provider.release(byRun.value[0].ref, "delete");
 	assert.equal(released.ok, true, JSON.stringify(released));
 	assert.ok(calls.some(([what]) => what === "terminate"), "the reap ended it");
+});
+
+/**
+ * A Modal whose sandboxes are listed by their stored tags: a create gives a packed sandbox, and an older server's create
+ * of the same request makes a sandbox with its labels as tags, listed from the moment the new one is made. Each
+ * sandbox's id is the one given; Modal answers no createdAt, so the lower id is the older.
+ */
+function upgradeModal({ rawId, packedId, name }) {
+	const calls = [];
+	const sandboxes = new Map();
+	const sandbox = (sandboxId, tags) => {
+		const box = {
+			sandboxId,
+			tags,
+			finished: null,
+			poll: async () => box.finished,
+			getTags: async () => ({ ...tags }),
+			terminate: async () => {
+				calls.push(["terminate", sandboxId]);
+				box.finished = 0;
+			},
+			exec: async () => {
+				calls.push(["exec", sandboxId]);
+				throw Object.assign(new Error("400: refused by the test"), { name: "InvalidError" });
+			},
+		};
+		return box;
+	};
+	const raw = sandbox(rawId, { [COMPUTER]: "1", [NAME]: name, "agentrun.computer.deadline": new Date(Date.now() + 600_000).toISOString(), "agentrun.computer.image": SPEC.image, "agentrun.computer.network": "none" });
+	const sdk = {
+		apps: { fromName: async (app) => ({ appId: `ap-${app}` }) },
+		images: { fromRegistry: (tag) => ({ tag, dockerfileCommands: () => ({ tag }) }), fromId: async (id) => ({ id, dockerfileCommands: () => ({ id }) }) },
+		sandboxes: {
+			create: async (_app, _image, params) => {
+				calls.push(["sandboxes.create"]);
+				sandboxes.set(raw.sandboxId, raw);
+				const made = sandbox(packedId, { ...params.tags });
+				sandboxes.set(packedId, made);
+				return made;
+			},
+			fromId: async (id) => sandboxes.get(id) ?? Promise.reject(Object.assign(new Error("Sandbox not found"), { name: "NotFoundError" })),
+			list: ({ tags }) => {
+				calls.push(["sandboxes.list", tags]);
+				const shown = [...sandboxes.values()].filter((box) => box.finished === null && Object.entries(tags).every(([key, value]) => box.tags[key] === value));
+				return { async *[Symbol.asyncIterator]() { yield* shown; } };
+			},
+		},
+	};
+	return { sdk, calls, raw, sandboxes, sandbox };
+}
+
+test("across the upgrade, a request's raw sandbox (an older server's) and its packed one (this server's) converge on one: the oldest by Modal's id is kept and the other deleted, whichever form each is", async () => {
+	// The raw one is older: this server's packed sandbox is deleted and the create goes on with the raw one.
+	{
+		const requestId = "req-modal-twin-raw";
+		const name = computerNameFor(requestId);
+		const modal = upgradeModal({ rawId: "sb-0-raw", packedId: "sb-1-packed", name });
+		const provider = new ModalProvider({ sdk: modal.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const created = await provider.create(SPEC, { requestId });
+		const terminated = modal.calls.filter(([what]) => what === "terminate").map(([, id]) => id);
+		assert.equal(modal.calls.filter(([what]) => what === "sandboxes.create").length, 1, "one sandbox made by this server");
+		assert.deepEqual(terminated, ["sb-1-packed"], `the packed one, the newer, is deleted and the raw one kept: ${JSON.stringify(created.error)}`);
+		assert.ok(modal.calls.some(([what, id]) => what === "exec" && id === "sb-0-raw"), "the create goes on with the raw one, the one kept");
+		assert.ok(!modal.calls.some(([what, id]) => what === "exec" && id === "sb-1-packed"), "nothing runs in the deleted one");
+		assert.doesNotMatch(created.error?.message ?? "", /machines carry the name/, "never refused as two of one name");
+	}
+	// The packed one is older: the raw one is deleted before this server prepares its own.
+	{
+		const requestId = "req-modal-twin-packed";
+		const name = computerNameFor(requestId);
+		const modal = upgradeModal({ rawId: "sb-9-raw", packedId: "sb-1-packed", name });
+		const provider = new ModalProvider({ sdk: modal.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+		const created = await provider.create(SPEC, { requestId });
+		const order = modal.calls.filter(([what]) => what === "terminate" || what === "exec").map(([what, id]) => `${what} ${id}`);
+		assert.equal(modal.calls.filter(([what]) => what === "sandboxes.create").length, 1, "one sandbox made by this server");
+		assert.equal(order[0], "terminate sb-9-raw", `the raw one, the newer, is deleted first: ${JSON.stringify(order)}`);
+		assert.ok(order.includes("exec sb-1-packed"), "the create goes on with its own packed one, the one kept");
+		assert.ok(!order.includes("exec sb-9-raw"), "nothing runs in the deleted one");
+		assert.doesNotMatch(created.error?.message ?? "", /machines carry the name/, "never refused as two of one name");
+	}
+});
+
+test("across the upgrade, a create that finds a request's raw sandbox and its packed one both there before it starts refuses as exists, naming both, and makes, deletes and runs nothing: only racing creates converge", async () => {
+	const requestId = "req-modal-twin-before";
+	const name = computerNameFor(requestId);
+	const modal = upgradeModal({ rawId: "sb-0-raw", packedId: "sb-1-packed", name });
+	// An older server's retry made the raw one beside a newer server's packed one: both are there before this create.
+	const packed = packLabels(modal.raw.tags, name);
+	assert.ok("labels" in packed, JSON.stringify(packed));
+	modal.sandboxes.set(modal.raw.sandboxId, modal.raw);
+	modal.sandboxes.set("sb-1-packed", modal.sandbox("sb-1-packed", packed.labels));
+	const provider = new ModalProvider({ sdk: modal.sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const created = await provider.create(SPEC, { requestId });
+	assert.equal(created.ok, false, JSON.stringify(created));
+	assert.equal(created.error.code, "exists", JSON.stringify(created.error));
+	assert.match(created.error.message, /2 machines carry the name/);
+	assert.match(created.error.message, /sb-0-raw/, "names the raw one");
+	assert.match(created.error.message, /sb-1-packed/, "names the packed one");
+	const did = modal.calls.map(([what]) => what);
+	assert.ok(!did.includes("sandboxes.create"), `no sandbox made: ${JSON.stringify(did)}`);
+	assert.ok(!did.includes("terminate"), `neither deleted, both kept: ${JSON.stringify(did)}`);
+	assert.ok(!did.includes("exec"), `nothing runs in either: ${JSON.stringify(did)}`);
+	assert.deepEqual([...modal.sandboxes.values()].filter((box) => box.finished === null).map((box) => box.sandboxId).sort(), ["sb-0-raw", "sb-1-packed"], "both still running");
 });
 
 test('the Modal conformance module: mountFor("archil") gives a fresh run folder on the disk COMPUTER_ARCHIL_* name, read and written outside through the disk\'s object API', async () => {

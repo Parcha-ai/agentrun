@@ -19,6 +19,7 @@ import { closeOpenSessions, piAdapterSpec, scriptedOrigin } from "./conformance-
 import { queue, stores, until } from "./runner-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
@@ -64,7 +65,7 @@ test("an answer to an adapter loop whose claim ended before it was ready (its se
     const given = await base(c, run);
     return { ...given, adapter: { ...given.adapter, open: async () => { throw new Error("the session did not open in time"); } } };
   };
-  const loop = createAdapterLoop(spec)({ journal: (c) => store.journal(c), flush: async () => store.flush?.(), signal: new AbortController().signal });
+  const loop = createAdapterLoop(spec)({ redact: heldRedactor((text) => text), journal: (c) => store.journal(c), flush: async () => store.flush?.(), signal: new AbortController().signal });
   await loop.start(claim).catch(() => undefined);
   const { value: outcome, seen } = await noUnhandled(() => loop.command(answer(1, "call-1")));
   assert.deepEqual(seen, [], "nothing rejected unhandled");
@@ -91,7 +92,7 @@ test("the dispatch's replay of a row buffered before its loop was chosen never t
   const dispatch = createDispatchLoop({
     launchOf: async () => (await launched.promise, { body: { place: { mode: "runner" }, harness: "pi" } }),
     resolve: () => (deps) => ((innerDeps = deps), inner),
-  })({ journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
+  })({ redact: heldRedactor((text) => text), journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
   const { value, seen } = await noUnhandled(async () => {
     const run = dispatch.start({ runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" });
     // Handed over before the launch read chose the loop: buffered, and the dispatch says it holds it.
@@ -130,7 +131,7 @@ test("a buffered row whose delivery throws once while its loop keeps running is 
   const dispatch = createDispatchLoop({
     launchOf: async () => (await launched.promise, { body: { place: { mode: "runner" }, harness: "pi" } }),
     resolve: () => () => inner,
-  })({ journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
+  })({ redact: heldRedactor((text) => text), journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
   const { value, seen } = await noUnhandled(async () => {
     const run = dispatch.start({ runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" });
     assert.deepEqual(await dispatch.command(answer(9, "call-1")), { taken: true }, "buffered: the runner moves past its row");
@@ -167,7 +168,7 @@ test("every buffered row is handed to the loop once before its delivered resolve
   const dispatch = createDispatchLoop({
     launchOf: async () => (await launched.promise, { body: { place: { mode: "runner" }, harness: "pi" } }),
     resolve: () => (deps) => ((innerDeps = deps), inner),
-  })({ journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
+  })({ redact: heldRedactor((text) => text), journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
   const { seen } = await noUnhandled(async () => {
     const run = dispatch.start({ runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "parked" });
     await dispatch.command(answer(21, "call-1"));
@@ -214,7 +215,7 @@ test("a buffered row whose delivery always throws is tried REPLAY_TRIES times in
     const dispatch = createDispatchLoop({
       launchOf: async () => (await launched.promise, { body: { place: { mode: "runner" }, harness: "pi" } }),
       resolve: () => () => inner,
-    })({ journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
+    })({ redact: heldRedactor((text) => text), journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
     const { value, seen } = await noUnhandled(async () => {
       const run = dispatch.start({ runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" });
       assert.deepEqual(await dispatch.command(answer(11, "call-1")), { taken: true });
