@@ -1,0 +1,31 @@
+name: Re-run a failed release or main check
+
+# A release run, or the checks of a push to main, that fails or is cancelled on its first attempt has its failed and
+# cancelled jobs re-run once. A runner that never picked a job up, or a registry that answered once with an error, then
+# costs a second attempt rather than a person's re-run. A second attempt is never re-run: it is the one that says the fault
+# is real. Pull requests and the merge queue are not re-run here.
+on:
+  workflow_run:
+    workflows: [Package checks, Publish verified beta]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  rerun:
+    if: >-
+      github.repository == 'Parcha-ai/agentrun' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'cancelled') &&
+      (github.event.workflow_run.path == '.github/workflows/release.yml' ||
+      (github.event.workflow_run.path == '.github/workflows/ci.yml' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - run: gh run rerun "$RUN_ID" --failed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}

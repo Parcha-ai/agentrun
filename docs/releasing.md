@@ -101,6 +101,8 @@ The `beta` dist-tag is kept only for older links that name `@beta`, and the work
 
 An npm publish success can mean the package is still processing. The verifier waits up to 20 minutes in each of three phases: for a version's registry document to appear, for its tarball to download, and for npm to list every release version in both the full and the abbreviated (install) metadata. It polls every 5 seconds at first and backs off to every 30. npm took about 5 minutes to show beta.10 and 16 for beta.11's first package; the job's own limit is 90 minutes, and a rerun on the same tag resumes. Only then does it run its one clean installation. It still fails immediately on authentication errors or mismatched integrity. Do not treat npm's acceptance message as a completed release.
 
+A run whose first attempt fails or is cancelled has its failed and cancelled jobs re-run once, by `release-retry.yml` (the npm-release approval asks again); a second attempt is never re-run. The `pypi-watchdog` job cancels the run when `pypi` stays queued for 15 minutes, so that re-run picks it up, and the `pypi` job tries a failed upload once more a minute later. The same re-run covers `ci.yml` on a push to `main`, never a pull request or the merge queue.
+
 If publication stops partway, resume from the same tag and archive bytes. The workflow verifies an existing version before skipping it. A byte mismatch stops publication; never replace a published version with different bytes.
 
 If the visibility wait expires, check the exact version in the registry before retrying; it may already be published. Resume only after confirming its bytes match the verified archive. Do not change the version or start a separate publication to work around the delay.

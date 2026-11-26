@@ -228,7 +228,19 @@ jobs:
       - name: Is this version on PyPI already?
         id: pypi
         run: node scripts/python-release.mjs --on-pypi "$RUNNER_TEMP/python-dist" --python python
-      - if: steps.pypi.outputs.publish == 'true'
+      # A failed upload is tried once more, a minute later, with the same archives; that second failure fails the job.
+      - name: Upload to PyPI
+        id: upload
+        if: steps.pypi.outputs.publish == 'true'
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: ${{ runner.temp }}/python-dist
+      - name: Wait a minute before the second upload
+        if: steps.pypi.outputs.publish == 'true' && steps.upload.outcome == 'failure'
+        run: sleep 60
+      - name: Upload to PyPI, second try
+        if: steps.pypi.outputs.publish == 'true' && steps.upload.outcome == 'failure'
         uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: ${{ runner.temp }}/python-dist
@@ -243,6 +255,42 @@ jobs:
             .release/python-plan.json
           if-no-files-found: ignore
           include-hidden-files: true
+
+  # A pypi job no runner picks up stays queued and holds the release open until it times out. The watchdog starts with it,
+  # reads this run's jobs every 30 seconds, and is done as soon as pypi has started. A pypi job queued for 15 minutes in a
+  # row while it watched cancels the run, and release-retry.yml re-runs its failed and cancelled jobs once. A pypi job
+  # waiting for the npm-release approval is not queued, so a slow approval cancels nothing. No job waits for this one.
+  pypi-watchdog:
+    needs: gate
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      actions: write
+    steps:
+      - name: Cancel the run if pypi stays queued
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          start=$(date +%s); queued_since=
+          while [ $(( $(date +%s) - start )) -lt 1380 ]; do
+            status=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[] | select(.name == "pypi") | .status' || true)
+            echo "pypi: ${status:-not listed yet}"
+            case "$status" in
+              in_progress|completed) exit 0 ;;
+              queued) queued_since=${queued_since:-$(date +%s)}
+                if [ $(( $(date +%s) - queued_since )) -ge 900 ]; then
+                  echo "::warning::pypi has been queued for 15 minutes; cancelling the run so release-retry re-runs it"
+                  gh run cancel "$RUN_ID"; exit 0
+                fi ;;
+              *) queued_since= ;;
+            esac
+            sleep 30
+          done
+          echo "pypi did not start while the watchdog watched (status: ${status:-not listed}); nothing cancelled"
 
   # AgentRun Server's container image, built from the same reviewed tag (packages/serve/docker/Dockerfile) for linux/amd64 and
   # linux/arm64, each on its own native runner: under QEMU the arm64 build took over half an hour. The image builds from the
