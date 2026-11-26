@@ -10,7 +10,7 @@ import type { Run } from "@/lib/v2";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
-const run = (cap: number | null, status: Run["status"] = "completed"): Run => ({ sha: null, updated_at: "2026-11-11T11:01:00Z", poll_after_ms: 0, place: { mode: "runner" },
+const run = (cap: number | null, status: Run["status"] = "completed"): Run => ({ sha: null, updated_at: "2026-11-11T11:01:00Z", poll_after_ms: 0, place: { mode: "runner" }, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
   run_id: "r1", agent_id: "hello", agent_version: 8, revision: "rv8", kind: "agentic", status, state: status === "working" ? "working" : "idle", title: "Write a.md, then b.md",
   created_at: "2026-11-11T11:01:00Z", ended_at: status === "working" ? null : "2026-11-11T11:02:00Z", result: null, error: null, archived_at: null,
   cost: { usd: 0.0059, basis: "estimate", charge_state: null, cap_usd: cap },

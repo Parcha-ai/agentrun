@@ -209,7 +209,8 @@ test("(a) k = 10 by default: exactly the served runs whose id the draw picks sta
   const shadows = await w.shadows();
   assert.deepEqual(shadows.map(({ launch }) => launch.audit.of).sort(), [...expected].sort(), "a shadow for each drawn run, none other");
   for (const { row, launch } of shadows) {
-    assert.deepEqual(launch.audit, { of: launch.audit.of, workflow: "answer", digest: DIGEST });
+    assert.deepEqual(launch.audit, { of: launch.audit.of, workflow: "answer", digest: DIGEST, deadlineAt: launch.audit.deadlineAt });
+    assert.ok(Number.isFinite(launch.audit.deadlineAt) && launch.audit.deadlineAt > Date.now(), "a learning child's deadline, ahead of now");
     assert.equal(launch.learning, undefined, "the shadow runs with learning off: no seed, no look-back");
     const served = readLaunchBody((await w.server.runs.launch(launch.audit.of)).body);
     assert.deepEqual(launch.input, served.input, "the same input");
@@ -496,7 +497,8 @@ function servedStore(served, learning, digest) {
   const made = [];
   const launches = new Map();
   const store = {
-    settings: { get: async () => undefined },
+    // The settings a shadow's start writes: the served run's learning work names it first (learning-work.ts).
+    settings: { get: async () => undefined, putIfAbsent: async (_key, value) => value, replaceIf: async () => true },
     learning: memoryRecords(),
     agents: { revision: async () => ({ id: "rev-1", body: { instructions: "Answer.", tools: [], learning }, mcpPin: null }) },
     runs: {

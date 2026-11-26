@@ -1575,7 +1575,7 @@ curl -s http://127.0.0.1:7340/v2/agents/support/runs -H "Authorization: Bearer $
 curl -s http://127.0.0.1:7340/v2/runs/$RUN_ID/messages -H "Authorization: Bearer $AGENTRUN_TOKEN" \
   -H 'content-type: application/json' -d "{\"content\": \"And the refund?\", \"model_key\": \"$NEXT_KEY\"}"
 
-# When the run's turn has ended (run.ended), revoke it.
+# When the run is terminal and GET /v2/runs/$RUN_ID reads learning_work.state other than "running", revoke it.
 curl -s https://litellm.example.com/key/delete -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'content-type: application/json' -d "{\"keys\": [\"$KEY\"]}"
 ```
@@ -1595,15 +1595,32 @@ Custody, as for a per_run MCP server's `mcp_auth`:
   keeps failing, the message waits untaken and is delivered again, never run on the key held before it or the
   server's. A stop or cancel sent after it still reaches the run. A message without one keeps the key the run holds.
 
-**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key from the store, and the run
-reports the turn ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
-tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run compile
-turn. So a caller may revoke the key as soon as it sees the turn end, and no request of that run will
-answer 401 for it. Model spend that would run after the turn ends is never sent on the run's key or the server's:
+**The revoke contract: `learning_work`.** The write that ends a run's turn erases its key from the store. Every model
+request tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run
+compile turn. A run that learns also starts learning work on its key at its end: a learned workflow's check (replay
+runs) and its audit (a shadow run). Each of those runs takes a copy of the key sealed for it alone, and the write that
+ends that run (or its purge) erases the copy. They are capped at their share of what the run's cap leaves at its end;
+with too little left they are dropped and spend nothing. GET `/v2/runs/{run_id}` says where that work stands in
+`learning_work`:
+
+- `state`: `none` (the run started none), `running` (its compile turn, or a run in `runs`, is still going) or `ended`
+  (all of it finished or dropped, at `ended_at`). It only moves forward once the run is terminal; a lost or cancelled
+  child counts as ended.
+- Revoke the key once the run is terminal and `learning_work.state` is not `running`. No request of the run or its
+  children answers 401 for it then.
+- `deadline_at`, while `running`: the latest instant that work may still spend on the key. It is the later of the
+  compile turn's start plus its 10 minute timeout and each child's start plus 30 minutes, and it only moves later. The
+  server cancels a child still at work at its 30 minutes, as a person's cancel is, and it then counts as ended. Set
+  the key's expiry no earlier than `deadline_at` as a backstop for a missed read; `state` stays the signal to revoke on.
+- A purge of the run (`DELETE /v2/runs/{run_id}`) while its check's replays still run cancels them and erases their
+  copies first, and answers only once they have ended: after a 204 nothing spends on the key. A live shadow audit
+  refuses the purge (409 `run_not_final`), as any run made from it does.
+- What those runs spend is the run's own learning: its `cost.learning_usd`, with the replays as `cost.check_usd` and
+  the shadow as `cost.shadow_usd`, never a workflow revision's spend.
 
 | Spend | With the run's key | Server holds no key, run brought none |
 | --- | --- | --- |
-| A shadow audit, a learned workflow's replay check | Skipped, logged | Skipped, logged |
+| A shadow audit, a learned workflow's replay check | On a sealed copy of the run's key, at its end, within its cap's room (listed in `learning_work`) | Skipped, logged |
 | A grade's feedback round (`PUT /runs/{id}/grade`) | A new turn with no key: the server's, else not opened | Not opened; the grade is kept |
 | An owner's replay, an SDK run's compile turn | Tied to no run's key | 409 or skipped, in words |
 | A trigger's firing | Starts a run with no key | 422 `model_key_required` for the firing |
