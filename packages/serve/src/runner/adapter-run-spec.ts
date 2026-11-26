@@ -171,6 +171,10 @@ export interface AdapterSpecDeps {
   readonly journal: (claim: Claim) => Journal;
   /** The one store: `runs` and `agents` for the run's revision, and the live-viewer seam for the browser tool. */
   readonly store: Store & LiveViewerStore;
+  /** The plane the claim's runner capped (run-child-host.ts, by underServerCeilings) and chose the run's keys by, handed to
+   *  the run's own process (run-child.ts): taken as it is there, never capped again on settings read later, so the run's
+   *  tools and the keys it was handed are of one reading. Absent: the claim caps its launch itself. */
+  readonly claimedPlane?: RunLaunch["plane"];
   /** The key the store's sealed values are opened under (store/seal.ts): the runner's. Undefined in a run's own process
    *  (run-child.ts), which never holds it: what a claim opens with it is asked of the runner there (held.ts). */
   readonly sealKey: Buffer | undefined;
