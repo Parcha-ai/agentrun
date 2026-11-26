@@ -105,7 +105,10 @@ test("agy joins server and tool with one _: under a start's own server name only
   const at = announcesAt(AGY, server);
   assert.deepEqual(at, { ...AGY, prefix: `mcp_${server}_` });
   assert.equal(announcesAt(AGY, 'agentrun'), AGY, 'the name agentrun reads the recipe as written');
-  assert.equal(announcesAt(GOOSE, server), GOOSE, 'no prefix, nothing to read');
+  // No prefix is the default agentrun__, which reads the start's name too (a recipe with the title tie and Goose's
+  // default: the bundled Goose recipe has no tie, so its server stays agentrun and this is never read).
+  assert.deepEqual(announcesAt(GOOSE, server), { ...GOOSE, prefix: `${server}__` }, 'the default prefix reads the name');
+  assert.equal(announcesAt(GOOSE, 'agentrun'), GOOSE, 'under agentrun, the recipe as written');
   assert.deepEqual(announcesAt({ tool: 'name', prefix: 'agentrun_agentrun_' }, server), { tool: 'name', prefix: `agentrun_${server}_` }, 'the last agentrun is the server');
   const agy = (toolCallId, name, rawInput) => ({ toolCallId, name, title: `Run ${name}`, kind: 'other', rawInput });
   assert.equal(announcedTool(agy('c', `mcp_${server}_look_up`, {}), at, TOOLS), 'look_up');
@@ -654,4 +657,27 @@ test('on a recipe whose announces field names its calls, one it names nothing fo
   calls.announceCall(ids, { toolCallId: 'odd', title: 'x', kind: 'other', rawInput: 'text' }, GOOSE, TOOLS);
   assert.equal(ids.has('odd'), false);
   assert.equal(await ids.take('look_up', { q: 'acme' }, new AbortController().signal, 1), undefined);
+});
+
+test("under any recipe with the title tie our server's name is the start's own, ar and 6 hex digits, the pattern START_SERVER names; without it and with Goose's announces, agentrun", () => {
+  const { mcpServerName, START_SERVER } = calls;
+  const own = new RegExp(`^${START_SERVER}$`);
+  assert.match(mcpServerName(GOOSE, 'title'), own, "the tie, Goose's default prefix");
+  assert.match(mcpServerName({ tool: 'x', prefix: 'mcp_agentrun__' }, 'title'), own, 'the tie, a two-character prefix');
+  assert.match(mcpServerName(CURSOR), own);
+  assert.match(mcpServerName(AGY), own);
+  assert.equal(mcpServerName(GOOSE), 'agentrun');
+  assert.equal(mcpServerName(GOOSE, undefined), 'agentrun');
+});
+
+test("otherServer gives the server a recipe's server field names when it is not ours, clipped; none for ours, none without the field", () => {
+  const { announcesAt, otherServer } = calls;
+  const at = announcesAt(CURSOR, 'ar3f12ab');
+  const said = (providerIdentifier) => ({ toolCallId: 'c', rawInput: { providerIdentifier, toolName: 'look_up', args: {} } });
+  assert.equal(otherServer(said('agentrun'), at), 'agentrun');
+  assert.equal(otherServer(said('ar3f12ab'), at), undefined, 'ours');
+  assert.equal(otherServer(said('x'.repeat(500)), at), 'x'.repeat(calls.ANNOUNCED_FIELD_CHARS));
+  assert.equal(otherServer(said(7), at), undefined);
+  assert.equal(otherServer({ toolCallId: 'c', rawInput: {} }, at), undefined);
+  assert.equal(otherServer(said('agentrun'), announcesAt(GOOSE, 'ar3f12ab')), undefined, 'no server field');
 });
