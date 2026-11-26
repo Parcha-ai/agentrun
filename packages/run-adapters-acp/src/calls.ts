@@ -387,10 +387,15 @@ export class CallIds {
     // every call left the extra out, which of them takes which, by when its MCP call came, may not be the order they
     // were announced in: their inputs are the same, so it changes nothing a call is given. Every rule here reads the
     // live announcements alone; one whose call ended (settle) is taken only once the call is `aged` and no live one
-    // under any of `from` is left: then the oldest whose own arguments are these, else the oldest. Beyond this: an
+    // under any of `from` is left: then the oldest whose own arguments are these, else the oldest. One whose own
+    // arguments are these (a late MCP call of a call a cancel reported failed) also comes before a live one that matches
+    // them less closely, under a later key: one naming no tool, or reporting no input, or neither. Beyond this: an
     // announcement that comes more than the grace after its own MCP call (that call takes the other's), and a call torn
     // until the wait is over, more than ms behind the other's MCP call (it takes the oldest, which may be the other's);
-    // in both the other's MCP call falls back once its wait is over.
+    // in both the other's MCP call falls back once its wait is over. Two calls with the same arguments, one ended, can
+    // swap ids when the ended one's MCP call comes after the other's announcement: their arguments cannot tell them
+    // apart. Once the wait is over, loose may take an ended announcement of the tool with other arguments, as it does a
+    // live one.
     const pick = (from: readonly string[], waiting: number, aged: boolean): string | undefined | typeof TORN => {
       const take = (id: string) => {
         this.unlist(id);
@@ -399,14 +404,20 @@ export class CallIds {
         return id;
       };
       let gone: string | undefined;
+      let own = false;
       for (const at of from) {
         const list = this.seen.get(at);
         if (!list?.length) continue;
         const live = list.filter((each) => !this.ended.has(each));
         if (!live.length) {
-          gone ??= list.find((each) => this.keyOf.get(each)?.[0] === at) ?? list[0]!;
+          if (gone === undefined) {
+            const exact = list.find((each) => this.keyOf.get(each)?.[0] === at);
+            gone = exact ?? list[0]!;
+            own = exact !== undefined && (at === keys[0] || at === keys[1]);
+          }
           continue;
         }
+        if (own) break;
         const id = live.find((each) => this.keyOf.get(each)?.[0] === at) ?? (at === key && (!aged || live.length > waiting) ? TORN : live[0]!);
         return id === TORN ? TORN : take(id);
       }
