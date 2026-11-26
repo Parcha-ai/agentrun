@@ -165,7 +165,7 @@ test("attached: a path that leaves the root is ESCAPE and never reaches the comp
   await refused(workspace.remove(""), "REFUSED");
 });
 
-test("attached: exec is the computer's process.start in /workspace/<cwd>, read as it comes; never exec.run; stdin is refused", async () => {
+test("attached: exec is the computer's process.start in /workspace/<cwd>, read as it comes; never exec.run; stdin goes by process.write, then closed", async () => {
   const { root, computer, workspace } = await attached();
   realProcesses(computer, root);
   mkdirSync(join(root, "src"));
@@ -176,8 +176,40 @@ test("attached: exec is the computer's process.start in /workspace/<cwd>, read a
   assert.deepEqual([Buffer.from(result.stdout).toString(), result.stderr, result.code, result.signal, result.timedOut, result.truncated], [`${join(root, "src")}\n`, "err\n", 3, null, false, false]);
   assert.deepEqual(chunks.sort(), [["stderr", "err\n"], ["stdout", `${join(root, "src")}\n`]]);
   await workspace.exec(["true"], { env: {}, timeoutMs: 1000, onOutput: () => { throw new Error("the caller's bug"); } });
-  await refused(workspace.exec(["cat"], { env: {}, timeoutMs: 1000, stdin: Buffer.from("x") }), "REFUSED", /stdin/);
+  // stdin: the process is started with its stdin open (stdin: true, never the bytes in its argv or environment), the
+  // bytes written, and its stdin closed, so a program that reads to the end ends.
+  computer.clear();
+  const input = Buffer.from(`one\n${"x".repeat(1000)}\n`);
+  const fed = await workspace.exec(["sh", "-c", "IFS= read -r first; printf '%s|' \"$first\"; wc -c"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5000, stdin: input });
+  assert.deepEqual([Buffer.from(fed.stdout).toString().replace(/\s+/g, ""), fed.code], ["one|1001", 0]);
+  assert.deepEqual(computer.calls[0], ["process.start", { argv: ["sh", "-c", "IFS= read -r first; printf '%s|' \"$first\"; wc -c"], cwd: "/workspace", env: { PATH: "/usr/bin:/bin" }, stdin: true }]);
+  const writes = computer.calls.filter(([method]) => method === "process.write");
+  assert.equal(Buffer.concat(writes.map(([, params]) => Buffer.from(params.data ?? "", "base64"))).toString(), input.toString());
+  assert.equal(writes.at(-1)[1].close, true);
+  // A program that ends without reading its input answers as it ended.
+  const unread = await workspace.exec(["sh", "-c", "exit 4"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5000, stdin: Buffer.from("never read\n") });
+  assert.equal(unread.code, 4);
   await refused(workspace.exec(["no-such-program-here"], { env: {}, timeoutMs: 1000 }), "NOT_FOUND");
+});
+
+test("attached: exec's stdin, a write computerd refuses: a program that closed its input (invalid) answers as it ended; any other failure (a write it did not read in time) fails the call at once, naming the cause, and kills the process", async () => {
+  const { root, computer, workspace } = await attached();
+  realProcesses(computer, root);
+  const env = { PATH: "/usr/bin:/bin" };
+  // computerd's answer to a write once the program closed its stdin or ended (process/table.go Write: EPIPE, EIO, a
+  // closed file): kind invalid. The program's own exit is the answer.
+  computer.overrides["process.write"] = { result: { ok: false, error: { code: "invalid", message: "process 1 no longer reads its input: it closed its stdin, or ended (0 of 12 bytes were written)" } } };
+  const closed = await workspace.exec(["sh", "-c", "exit 5"], { env, timeoutMs: 5000, stdin: Buffer.from("never read\n") });
+  assert.equal(closed.code, 5);
+  // computerd's answer to a write the program did not read within its bound (writeTimeout, 10 s): kind timeout. The
+  // program, which reads its input to the end, would wait for the stdin never closed until the call's own deadline; the
+  // call fails now instead, the write's words in it, and the process is killed.
+  computer.clear();
+  computer.overrides["process.write"] = { result: { ok: false, error: { code: "timeout", message: "process 2 did not read its input: 0 of 12 bytes were written in 10s" } } };
+  const started = Date.now();
+  await refused(workspace.exec(["sh", "-c", "cat > /dev/null"], { env, timeoutMs: 30_000, stdin: Buffer.from("never read\n") }), "TIMEOUT", /did not read its input: 0 of 12 bytes were written/);
+  assert.ok(Date.now() - started < 10_000, `failed at once, not at the call's deadline: ${Date.now() - started} ms`);
+  assert.ok(computer.calls.some(([method, params]) => method === "process.signal" && params.signal === "KILL"), "the process was killed");
 });
 
 test("attached: exec streams, gives onOutput every byte of a long output (its end included), keeps the cap's head, and says a signal", async () => {

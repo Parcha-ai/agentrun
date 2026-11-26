@@ -42,7 +42,7 @@ import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
 import { withinCarried } from "../paid-calls.js";
-import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
+import { sealHandedLaunch } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { agreeOnOf } from "../learning-setting.js";
@@ -53,7 +53,8 @@ import type { Workspace } from "../workspace/workspace.js";
 import { keptKeyOf } from "../workspace/computer-kept.js";
 import { waitEndedKey } from "../browser-wait-ended.js";
 import { browserHoldKey } from "../browser-hold.js";
-import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, sendsNoModelKey, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, keyedNow, learnedDecisionKeys, openRunModelKey, savedModelKeys, sendsNoModelKey, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { atRunEnd, keyedBesideOf } from "../learning-work.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
 import { githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
@@ -484,8 +485,9 @@ const writableSetting: Check = ([key, value], bound) => {
 /** The store's methods a run's loop calls, each with what binds it to the claim. A method not here is refused, and the
  *  refusal is said on the runner's log. Reads of the claim's run, its launch, its commands and its agent's revisions;
  *  of what was spent beside it (its learning grades, its own audit's shadow run's row and launch, which its cap gates
- *  read); of the agent's own runs (its learning reads its past runs); the server's settings its tools read and the
- *  claim's own rows (settingReadable). Writes only under the claim. */
+ *  read; the replays it started on its own key are summed by its runner, Held.keyedBeside); of the agent's own runs (its
+ *  learning reads its past runs); the server's settings its tools read and the claim's own rows (settingReadable).
+ *  Writes only under the claim. */
 const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["flush", always],
   ["runs.get", ownRunOrShadow],
@@ -750,6 +752,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   let learnedFlows: readonly LearnedWorkflow[] = [];
   /** The claim's one learned first choice: its promotion's writes are made once, however often the process asks. */
   let chosen: Promise<LearnedFirst> | undefined;
+  /** What the claim's learned first choice queued for its run's end (a check on its own key), run by its end-of-run step. */
+  const atEnd = atRunEnd(log);
   const held: Held = {
     projectCheckpoint: (...args: [AbortSignal?]) => {
       if (args.length > 1 || args[0] !== undefined && !(args[0] instanceof AbortSignal)) throw new ClaimRefused("A project checkpoint accepts only its cancellation signal.");
@@ -942,12 +946,13 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),
     // The claim's own run, whatever the process names: its view on this runner hears the change.
     computerHold: async (change) => heardComputerHold(claim.runId, change, cut),
-    handOn: async (from, id) => {
+    handOn: async (from, id, keyed) => {
       if (from !== claim.runId || typeof id !== "string") return undefined;
       const sealed = await store.runs.launch(from).then((one) => one.sealed ?? null, () => null);
-      const handed = sealed === null ? undefined : openRunMcpAuth(sealKey, from, sealed);
-      return handed && Object.keys(handed).length ? sealRunMcpAuth(sealKey, id, handed) : undefined;
+      return sealed === null ? undefined : sealHandedLaunch(sealKey, from, sealed, id, keyed === true);
     },
+    // The claim's own run's, whatever the process names: its learning_work row and the replays it names are read here.
+    keyedBeside: () => keyedBesideOf(store, claim.runId),
     signInPeek: (resolution) => peekSignIn(store, sealKey, run.agentId, String(resolution)),
     signInForgotten: (resolution) => forgottenSignIns(store, sealKey, run.agentId, String(resolution)),
     emailAccount: async () => (grantsEmail(granted) ? openAccount(store, sealKey) : undefined),
@@ -1038,9 +1043,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         return rows?.compared ? { also: [], compared: dataOnly(rows.compared) as Compared } : undefined;
       }
       // The audit's spend, skipped as the run's spec skips it (claim-secrets.ts claimSpendOff): over the claim's own key.
-      const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
+      const runKey = await claimModelKey(keys, claim.runId);
+      const spendOff = await claimSpendOff(keys, runKey);
       // The audit's start after the step (audit.ts withAudit) is this runner's too: it reads the run's journal and writes
-      // the ledger and a run.
+      // the ledger and a run, and starts what the claim queued for the run's end first.
       const step = withAudit(learningEndOfRun(launch, {
         store,
         data: deps.data,
@@ -1050,7 +1056,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         stored: () => storeSecrets(store, sealKey, deps.data),
         log,
         decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys(keys, DECISION_PROVIDER_KEYS)) }),
-      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, shown, log, sealKey, spendOff, launch, redact: cut, admitAuxiliary });
+      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, shown, log, sealKey, spendOff, keyed: keyedNow(runKey), atEnd, launch, redact: cut, admitAuxiliary });
       if (!step) return undefined;
       // keptOf is the run's process's, asked over the channel: read once, for the round learningEndOfRun reads (the
       // round after the newest the run kept), before the step reads it at once.
@@ -1078,9 +1084,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // workflows).
       const start = learningStartOf(launch);
       const laid = ask?.laid === true && start && !seedFailed(start) && !start.noWorkflows ? await workflowsAt({ store, agentId: run.agentId, shown }, start.seed).catch(() => []) : [];
-      const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
+      const runKey = await claimModelKey(keys, claim.runId);
+      const spendOff = await claimSpendOff(keys, runKey);
       const outputSchema = (revision.body as { outputSchema?: unknown }).outputSchema;
-      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, shown, spendOff, admitAuxiliary }, laid);
+      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, shown, spendOff, keyed: keyedNow(runKey), atEnd, admitAuxiliary }, laid);
       learnedFlows = got.workflows;
       return cutDeep(dataOnly(got) as LearnedFirst, cut);
     })()),
@@ -1453,6 +1460,8 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
           const reach = await mcpReachOf(deps);
           const init = {
             claim, data: deps.data, signal: loopDeps.signal, where: deps.store.where, ...(traced ? { traced: true } : {}),
+            // A learning child's deadline, its abort posted across (run-channel.ts) to the process's request gate.
+            ...(loopDeps.pastDeadline ? { pastDeadline: loopDeps.pastDeadline } : {}),
             // The plane its keys were chosen by (`capped`): the process runs its tools on it, never on a later read of the
             // server's settings, which may have moved since.
             ...(capped.plane ? { plane: capped.plane } : {}),

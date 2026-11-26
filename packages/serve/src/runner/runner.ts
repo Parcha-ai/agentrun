@@ -12,18 +12,21 @@ import { hostname } from "node:os";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, StorageWrite } from "@earendil-works/pi-durable";
-import { COMMAND_KINDS, endedReason } from "./commands.js";
+import { COMMAND_KINDS, type CommandSink, endedReason, sendCommand } from "./commands.js";
 import { COMPUTER_CALL } from "../computer-channel.js";
 import { COMPUTER_HAND_BACK, COMPUTER_TAKE_OVER } from "../computer-commands.js";
 import { HELD_COMMANDS } from "../computer-held.js";
 import { HAND_BACK } from "./hand-back.js";
 import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
+import { cliModelWorked, type EndCost, endCostOf, runCostOf } from "./metrics.js";
+import { inLogOrder, isCliRecord } from "../store-reads/journal.js";
+import { bookCutRequests } from "./book-cut.js";
 import { type BoundTimer, REAL_TIMER } from "./loop.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import { FrameTooLarge } from "./run-channel.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
-import { FINAL_STATES, type RunPatch, type RunState } from "../store/store.js";
+import { FINAL_STATES, RunFinal, type RunPatch, type RunState } from "../store/store.js";
 import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
 import { clearBrowserHeld } from "../browser-hold.js";
@@ -38,6 +41,8 @@ const UNKNOWN_READS = 5;
 /** Passes of the sweep after a claim answered Unanswered: the commit may still be on its way when the first read comes back
  *  empty, so the read is repeated, waiting twice as long each time, before the lease is left to settle it. */
 const UNKNOWN_SWEEPS = 4;
+/** The longest wait one timer takes (a 32-bit signed count of ms): a longer one fires at once. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
 /** A final run's status as its end line says it: the store holds a cancel as state 'stopped' with outcome 'cancelled', so
@@ -193,6 +198,10 @@ export interface RunnerOptions {
   /** For tests: the claim deadline's clock (the deadline a claim not renewed in time is lost at, and the time its claimed
    *  until is reckoned from). Default: the real one. Nothing else in the runner reads it. */
   clock?: BoundTimer & { now(): number };
+  /** For tests: the clock (epoch ms) a held learning child's deadline is read on (its launch's replay or audit
+   *  deadline_at, store.runs.learningDeadlines): one still held at it is cancelled, as a person's cancel is. Default
+   *  Date.now. */
+  learningClock?: () => number;
 }
 
 /** A runner's memory budget and its runs' weights, in MiB (RunnerOptions.memory). `weigh` answers each id it is given; an
@@ -221,6 +230,8 @@ export type RunnerEvent =
   | { type: "refused"; runId: string; commandId: number; reason: string }
   /** The runner stopped claiming (`reason`, its claimGate's words) or claims again (null): said once at each change. */
   | { type: "refusing"; reason: string | null }
+  /** A learning child (a check's replay run, an audit's shadow run) held at its deadline: its cancel is written. */
+  | { type: "learning-deadline"; runId: string }
   | { type: "error"; runId?: string; step: string; message: string };
 
 /** Why a runner handed a run back, still running, for another claim: `drain`, its close stopped the run's loop after the
@@ -281,6 +292,14 @@ interface Held {
   done?: Promise<void>;
   /** What the run weighs against the memory budget (RunnerOptions.memory), in MiB; 0 without one. */
   mib: number;
+  /** A learning child's deadline (ms), read from its launch at its claim; undefined for any other run. */
+  learningDeadline?: number;
+  /** Aborted at that deadline: its loop's request gate sends no model request after it (LoopDeps.pastDeadline). */
+  pastDeadline?: AbortController;
+  /** The timer that cancels it at that deadline (armLearningDeadline). */
+  learningTimer?: NodeJS.Timeout;
+  /** Its cancel at that deadline is written (or being written): never twice. */
+  overdue?: boolean;
 }
 
 /** A claim that only ends its run, with no loop (endRetried): renewed with the held claims until its end lands. */
@@ -317,6 +336,7 @@ export function startRunner(options: RunnerOptions): Runner {
     runEnded,
     redact: given = processSecretRedactor(),
     now = Date.now,
+    learningClock = Date.now,
     onBeat = () => {},
     clock = { now: () => Date.now(), ...REAL_TIMER },
   } = options;
@@ -694,7 +714,7 @@ export function startRunner(options: RunnerOptions): Runner {
    * in its journal, a reopen would find no turn to follow (its next claim would read the run as never started), so it
    * reads as a stop that is over (cancelled), as it read before a stop and a cancel were told apart.
    */
-  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string; outcome?: "stopped" | "cancelled" }, take: readonly number[], withdrawnAs: "withdrawn" | "canceled" = "withdrawn", landed: () => void = () => {}) => {
+  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string; outcome?: "stopped" | "cancelled" }, take: readonly number[], withdrawnAs: "withdrawn" | "canceled" = "withdrawn", landed: () => void = () => {}, cost?: EndCost) => {
     // Why the run ended, as its end and its row say it: cut of every secret the runner holds (an error's text may echo one).
     const data = { ...given, summary: redact(given.summary) };
     // Unknown means it may withdraw: false only once the journal was read and no call of it waits.
@@ -726,14 +746,14 @@ export function startRunner(options: RunnerOptions): Runner {
       }
       const id = (await journal.mintId()) as unknown as EntryId;
       writes.push({ type: "entry", value: { id, conversationId, kind: KINDS.end, data: data as unknown as JsonValue } } as StorageWrite);
-      journal.stage({ run: { state: data.state, summary: data.summary, ...(data.outcome ? { outcome: data.outcome } : {}), ...(neverSent ? { costUsd: 0 } : {}), ...counted }, effect: id as unknown as number, ...(take.length ? { take: take.map((command) => ({ command, effect: id as unknown as number })) } : {}) });
+      journal.stage({ run: { state: data.state, summary: data.summary, ...(data.outcome ? { outcome: data.outcome } : {}), ...(cost ?? (neverSent ? { costUsd: 0 } : {})), ...counted }, effect: id as unknown as number, ...(take.length ? { take: take.map((command) => ({ command, effect: id as unknown as number })) } : {}) });
       const result = await journal.commit([writes], () => {}, BACKGROUND_CONTEXT);
       if (result.stored !== 1) throw result.refused ?? new Error("the run's end was not stored");
       landed();
     } catch (error) {
       if (isFenced(error)) throw error;
       if (mayWithdraw) throw new EndNotWithdrawn(claim.runId, error);
-      await store.runs.update(claim, { state: data.state, summary: data.summary, ...(data.outcome === "cancelled" ? { outcome: data.outcome } : {}), ...counted }, take.length ? { take } : undefined);
+      await store.runs.update(claim, { state: data.state, summary: data.summary, ...(data.outcome === "cancelled" ? { outcome: data.outcome } : {}), ...cost, ...counted }, take.length ? { take } : undefined);
       landed();
     }
     // An ended run's Screen has no ended-while-waiting state to keep (browser-wait-ended.ts): its row goes with the end.
@@ -744,14 +764,14 @@ export function startRunner(options: RunnerOptions): Runner {
 
   /** Ends the run under `claim` stopped on its untaken `stop` (or cancel) row (endRun). False when that end may withdraw a
    *  call and the journal would not take it or could not be read: the refusal is then the run's (endRefused). */
-  const endStopped = async (claim: Claim, stop: Command, landed: () => void): Promise<boolean> => {
+  const endStopped = async (claim: Claim, stop: Command, landed: () => void, cost?: EndCost): Promise<boolean> => {
     try {
       const end = stopEnd(stop.kind === "cancel");
-      await endRun(claim, end, [stop.id], stop.kind === "cancel" ? "canceled" : "withdrawn", landed);
+      await endRun(claim, end, [stop.id], stop.kind === "cancel" ? "canceled" : "withdrawn", landed, cost);
       return true;
     } catch (error) {
       if (!(error instanceof EndNotWithdrawn)) throw error;
-      await endRefused(claim, stop, error, landed);
+      await endRefused(claim, stop, error, landed, cost);
       return false;
     }
   };
@@ -779,14 +799,14 @@ export function startRunner(options: RunnerOptions): Runner {
    * 11 tries at the cap): 6 growing waits (5 s to 160 s, 315 s in all), then 11 of 5 min, so about an hour (3,615 s) of
    * retries, and the 18th refusal gives up.
    */
-  const endRefused = async (claim: Claim, stop: Command, refused: EndNotWithdrawn, landed: () => void) => {
+  const endRefused = async (claim: Claim, stop: Command, refused: EndNotWithdrawn, landed: () => void, cost?: EndCost) => {
     const tries = await store.retry(claim, stop.id);
     const why = message(refused.cause);
     if (tries >= endRetryCapFrom + endRetryAtCap) {
       emit({ type: "error", runId: claim.runId, step: "end", message: `run ${claim.runId} ended without withdrawing: journal unreadable or refusing (after ${tries} tries; the last: ${why})` });
       // On its row alone, so no outcome 'stopped' (endRun): a run whose journal never took its end is never reopened.
       const end = stopEnd(stop.kind === "cancel");
-      await store.runs.update(claim, { state: end.state, summary: redact(end.summary), ...(end.outcome === "cancelled" ? { outcome: end.outcome } : {}), ...(await censusFor(claim.runId)) }, { take: [stop.id] });
+      await store.runs.update(claim, { state: end.state, summary: redact(end.summary), ...(end.outcome === "cancelled" ? { outcome: end.outcome } : {}), ...cost, ...(await censusFor(claim.runId)) }, { take: [stop.id] });
       landed();
       await releaseStopped(claim, stop);
       return;
@@ -829,16 +849,33 @@ export function startRunner(options: RunnerOptions): Runner {
     }
   };
 
+  /** What the run under `claim` booked in its journal, as an end stores its cost (metrics.ts endCostOf, the rule every end
+   *  stores by, over its booking as learning-end.ts reads it): a figure, or a bound when a cut request's hold is counted
+   *  in it. A request an earlier claim left out is booked first, cut at its hold, as a loop's booking books it before it
+   *  sends anything (book-cut.ts). Undefined when the journal cannot be read: the end then stores no cost, as it did. */
+  const bookedOf = async (claim: Claim): Promise<EndCost | undefined> => {
+    try {
+      await bookCutRequests(store.journal(claim), BACKGROUND_CONTEXT, () => store.flush());
+      const entries = inLogOrder(await journalEntries(store.journal(claim), BACKGROUND_CONTEXT));
+      return endCostOf(runCostOf(entries, { unbooked: isCliRecord(entries) && cliModelWorked(entries) }));
+    } catch {
+      return undefined;
+    }
+  };
+
   /** A claim of a run whose stopped end was refused (its untaken stop row has tries): it only ends the run, with no loop,
-   *  so no turn, model request or tool runs on a run that is stopping. */
-  const endRetried = async (claim: Claim, stop: Command) => {
+   *  so no turn, model request or tool runs on a run that is stopping. `booked`: a learning child past its deadline, which
+   *  an earlier claim's loop may have spent on before its runner went (its spend booked in its journal): its end stores
+   *  that booking as its cost (bookedOf), so what it spent stays its run's, never an unknown no read heals. */
+  const endRetried = async (claim: Claim, stop: Command, booked = false) => {
     // Renewed with the held claims (renewAll) until its end lands: its end waits for the run's census too.
     const only: EndOnly = { claim, landed: false, renewing: false };
     endOnly.add(only);
     try {
       // A run stopped before any loop started still has its one start line, ahead of its end.
       await announceStart(claim);
-      if (await endStopped(claim, stop, () => (only.landed = true))) await releaseStopped(claim, stop);
+      const cost = booked ? await bookedOf(claim) : undefined;
+      if (await endStopped(claim, stop, () => (only.landed = true), cost)) await releaseStopped(claim, stop);
     } catch (error) {
       emit({ type: "error", runId: claim.runId, step: isFenced(error) ? "end (fenced)" : "end", message: message(error) });
     } finally {
@@ -851,6 +888,7 @@ export function startRunner(options: RunnerOptions): Runner {
     const stoppedBefore = held.stopping;
     held.ending = true;
     clock.clearTimeout(held.deadline);
+    clearTimeout(held.learningTimer);
     const { claim } = held;
     // The runner's own end of the run, once its write lands: the claim is renewed until then (renewAll), no further.
     const landed = () => {
@@ -913,10 +951,11 @@ export function startRunner(options: RunnerOptions): Runner {
       // A run let go unfinished says why on its claim's attempt (run_attempts cut): a runner's close drained it, or its
       // loop ended interrupted on its own and the run is tried again. The next claim works its turn again.
       const cut = end.state !== "interrupted" ? undefined : closedItself ? "retry" as const : held.stoppedFor === "shutdown" ? "drain" as const : undefined;
+      const wakeAt = end.state === "parked" ? parkedWake(held, end.wakeAt) : undefined;
       await release(claim, {
         // Parked again with nothing written (LoopEnd `again`): the release parks the row, its words left as they stood.
         ...(end.state === "parked" && end.again ? { state: "parked" as const } : {}),
-        ...(end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt }
+        ...(wakeAt !== undefined ? { wakeAt }
         : inARow > 0 ? { backoffUntil: now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
         : {}),
         ...(cut ? { cut } : {}),
@@ -937,10 +976,20 @@ export function startRunner(options: RunnerOptions): Runner {
     }
   };
 
+  /** When parked run `held` wakes: its loop's `wakeAt`, or a learning child's deadline when sooner, so a child parked
+   *  (for an approval, a raise) is claimed again at its deadline and ends there (claimMore's overdue claim), never left
+   *  parked past it holding its copy of its run's key, its run's learning_work running. The learning clock is the store's
+   *  but in a test. */
+  const parkedWake = (held: Held, wakeAt: number | undefined): number | undefined =>
+    held.learningDeadline === undefined ? wakeAt : wakeAt === undefined ? held.learningDeadline : Math.min(wakeAt, held.learningDeadline);
+
   /** A parked run's resume that threw: one more try on the row that woke it, released parked with a backoff; after
-   *  `resumeTries`, that row refused with why and the run released parked with nothing to wake it. */
+   *  `resumeTries`, that row refused with why and the run released parked with nothing to wake it but a learning child's
+   *  deadline (parkedWake). */
   const resumeFailed = async (held: Held, why: string) => {
     const { claim } = held;
+    const wake = parkedWake(held, undefined);
+    const wakeAt = wake === undefined ? {} : { wakeAt: wake };
     const untaken = (await store.commands(claim.runId, 0)).filter((row) => row.takenAt === null);
     const stop = endingRow(untaken);
     const woke = untaken[0];
@@ -958,21 +1007,25 @@ export function startRunner(options: RunnerOptions): Runner {
         await store.take(claim, woke.id, "refused", reason);
         emit({ type: "refused", runId: claim.runId, commandId: woke.id, reason });
         await store.flush();
-        await release(claim, { state: "parked" });
+        await release(claim, { state: "parked", ...wakeAt });
       } else {
         await store.flush();
-        await release(claim, { state: "parked", backoffUntil: now() + resumeBackoffMs * 2 ** (tries - 1) });
+        await release(claim, { state: "parked", ...wakeAt, backoffUntil: now() + resumeBackoffMs * 2 ** (tries - 1) });
       }
     } else {
       await store.flush();
-      await release(claim, { state: "parked" });
+      await release(claim, { state: "parked", ...wakeAt });
     }
     emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: "parked" });
   };
 
-  const hold = (claim: Claim, sentAt: number, mib = 0) => {
+  /** Holds `claim` and starts its loop. `learningDeadline`: a learning child's deadline, read at its claim
+   *  (learningDeadlinesOf), at which its loop sends no model request more and the runner cancels it if still at work
+   *  (cancelOverdue). */
+  const hold = (claim: Claim, sentAt: number, mib = 0, learningDeadline?: number) => {
     const fence = { lost: false };
     const abort = new AbortController();
+    const pastDeadline = learningDeadline === undefined ? undefined : new AbortController();
     let firstDelivered!: () => void;
     const delivered = new Promise<void>((resolve) => (firstDelivered = resolve));
     // Set below, once held is made: the loop's end commit lands only after start(), well after.
@@ -986,6 +1039,7 @@ export function startRunner(options: RunnerOptions): Runner {
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
+      ...(pastDeadline ? { pastDeadline: pastDeadline.signal } : {}),
       delivered,
       // A delivery under way first (its rows are the loop's already), then one more read of the run's new rows.
       deliverNow: async () => {
@@ -1003,16 +1057,18 @@ export function startRunner(options: RunnerOptions): Runner {
         now.abort.abort(new Error("the runner is closing"));
       },
     });
-    const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib };
+    const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib, ...(learningDeadline !== undefined && pastDeadline ? { learningDeadline, pastDeadline } : {}) };
     heldNow = held;
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
     ending = () => {
       held.ending = true;
       held.landed = true;
       clock.clearTimeout(held.deadline);
+      clearTimeout(held.learningTimer);
     };
     runs.set(claim.runId, held);
     armDeadline(held, deadlineOf(claim, sentAt));
+    armLearningDeadline(held);
     emit({ type: "claimed", claim });
     void announceStart(claim);
     held.done = (async () => {
@@ -1139,13 +1195,41 @@ export function startRunner(options: RunnerOptions): Runner {
       // One read of those claims' rows, made only when the batch has a queued or a released run.
       const reread = claims.filter((claim) => claim.from === "queued" || claim.from === "running" || claim.from === "parked");
       const rows = reread.length ? await store.commandsOf(reread.map((claim) => ({ runId: claim.runId, after: 0 }))) : new Map<string, Command[]>();
+      // The learning children's deadlines among the batch, one read for all of it (learningDeadlinesOf), before any loop
+      // starts on one: a batch whose read failed is given back whole, for a later claim to read again; a child at or past
+      // its deadline on the learning clock only ends, cancelled as a person's cancel ends an unstarted run, so nothing of it
+      // spends past the bound its run's caller was promised (learning_work.deadline_at).
+      const deadlines = await learningDeadlinesOf(claims);
       for (const claim of claims) {
-        const stop = endingRow((rows.get(claim.runId) ?? []).filter((row) => row.takenAt === null));
-        const endsOnly = stop !== undefined && (claim.from === "queued" || stop.tries > 0 || (claim.from === "running" && (await neverStarted(claim))) || (claim.from === "parked" && (await keptElsewhere(claim))));
+        if (!(deadlines instanceof Map)) {
+          emit({ type: "error", runId: claim.runId, step: "learning deadline", message: deadlines.unread });
+          await release(claim, {}).then(() => emit({ type: "handed-back", runId: claim.runId, epoch: claim.epoch, cause: "give_back" }), () => {});
+          continue;
+        }
+        const deadline = deadlines.get(claim.runId);
+        const overdue = deadline !== undefined && learningClock() >= deadline;
+        let stop = endingRow((rows.get(claim.runId) ?? []).filter((row) => row.takenAt === null));
+        if (overdue && stop?.kind !== "cancel") {
+          emit({ type: "learning-deadline", runId: claim.runId });
+          const cancelled = await sendCommand(store as CommandSink, claim.runId, { kind: "cancel", body: {} }).then(() => true, (error: unknown) => {
+            emit({ type: "error", runId: claim.runId, step: "learning deadline", message: message(error) });
+            return false;
+          });
+          if (!cancelled) {
+            await release(claim, {}).catch(() => {});
+            continue;
+          }
+          stop = endingRow((await store.commands(claim.runId, 0)).filter((row) => row.takenAt === null));
+          if (!stop) {
+            await release(claim, {}).catch(() => {});
+            continue;
+          }
+        }
+        const endsOnly = stop !== undefined && (overdue || claim.from === "queued" || stop.tries > 0 || (claim.from === "running" && (await neverStarted(claim))) || (claim.from === "parked" && (await keptElsewhere(claim))));
         if (stop && endsOnly && !closed && !killed && !runs.has(claim.runId)) {
           const key = `${claim.runId}:${claim.epoch}`;
           endingClaims.add(key);
-          const ending = endRetried(claim, stop);
+          const ending = endRetried(claim, stop, overdue);
           endings.add(ending);
           void ending.finally(() => {
             endings.delete(ending);
@@ -1166,7 +1250,7 @@ export function startRunner(options: RunnerOptions): Runner {
             replaced.add(before);
             void before.done.finally(() => replaced.delete(before));
           }
-          hold(claim, sentAt, weights.get(claim.runId) ?? 0);
+          hold(claim, sentAt, weights.get(claim.runId) ?? 0, deadline);
         } catch (error) {
           // The loop could not be made: the run fails here, so it is not claimed again and again.
           emit({ type: "error", runId: claim.runId, step: "create loop", message: message(error) });
@@ -1239,11 +1323,66 @@ export function startRunner(options: RunnerOptions): Runner {
   let claiming: Promise<void> | undefined;
   /** A run was queued while a poll was in flight (claimNow): one more poll follows that poll's end at once. */
   let pollAgain = false;
+  /** The learning deadlines of the learning children among a poll's `claims` (a check's replay, an audit's shadow: each
+   *  its launch's, learning-work.ts LEARNING_CHILD_MS), in one read for the whole batch (store.runs.learningDeadlines),
+   *  before any loop starts on one: a run that is no learning child is absent, and a store without that read or without
+   *  commands (a test's) has none. `{ unread }` when the read failed: the batch is given back for a later claim to read
+   *  again. */
+  const learningDeadlinesOf = async (claims: readonly Claim[]): Promise<Map<string, number> | { unread: string }> => {
+    if (claims.length === 0 || !store.runs.learningDeadlines || !store.command) return new Map();
+    try {
+      return await store.runs.learningDeadlines(claims.map((claim) => claim.runId));
+    } catch (error) {
+      return { unread: message(error) };
+    }
+  };
+  /** Held learning child `held` at its deadline on the learning clock: its loop sends no model request more (its
+   *  pastDeadline signal, which its request gate reads before each), and it is cancelled as a person's cancel is (a cancel
+   *  row, its loop's ordinary stop: its spend booked once at its end, its copy of a key erased by that end's write), that
+   *  row handed to its loop at once, never at the next command tick. Serve has no run deadline, so this is what bounds a
+   *  learning child's spend on its run's key (learning_work.deadline_at). A cancel not written is tried again at the next
+   *  poll (endOverdue); its gate stays shut meanwhile. */
+  const cancelOverdue = (held: Held) => {
+    if (held.overdue || held.ending || held.fence.lost) return;
+    held.overdue = true;
+    held.pastDeadline?.abort();
+    emit({ type: "learning-deadline", runId: held.claim.runId });
+    if (!store.command) return;
+    void sendCommand(store as CommandSink, held.claim.runId, { kind: "cancel", body: {} }).then(
+      () => {
+        if (held.sealed || !delivering()) return;
+        if (held.delivering) held.deliverAgain = true;
+        else void deliver(held);
+      },
+      (error: unknown) => {
+        // Final already: it ended on its own.
+        if (error instanceof RunFinal) return;
+        held.overdue = false;
+        emit({ type: "error", runId: held.claim.runId, step: "learning deadline", message: message(error) });
+      },
+    );
+  };
+  /** Held learning child `held`'s deadline, on the learning clock: cancelOverdue at it, by a timer on its own (re-armed
+   *  while the deadline is past a timer's longest wait), so neither waits for a poll. */
+  const armLearningDeadline = (held: Held) => {
+    if (held.learningDeadline === undefined || held.ending || held.sealed) return;
+    const wait = held.learningDeadline - learningClock();
+    if (wait <= 0) return cancelOverdue(held);
+    // Unref'd: a runner killed with the child held (a crash) leaves nothing that keeps its process up.
+    held.learningTimer = setTimeout(() => armLearningDeadline(held), Math.min(wait, MAX_TIMER_MS)).unref();
+  };
+  /** Every held learning child at its deadline on the learning clock (cancelOverdue), swept at each poll: the timer's
+   *  backstop, and a cancel that was not written tried again. */
+  const endOverdue = () => {
+    const at = learningClock();
+    for (const held of runs.values()) if (held.learningDeadline !== undefined && at >= held.learningDeadline) cancelOverdue(held);
+  };
   const poll = () => {
     if (closed || killed) return;
     clearTimeout(pollTimer);
     pollAgain = false;
     beat();
+    endOverdue();
     const claimed = claimMore();
     claiming = claimed;
     void claimed.finally(() => {

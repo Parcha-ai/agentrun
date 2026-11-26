@@ -75,6 +75,8 @@ import { type Command, FINAL_STATES, type KeptListing, type RunListing, type Run
 import { LISTING_HELD, LISTING_KEYED } from "./store/schema.js";
 import { createHash } from "node:crypto";
 import type { RecordingView } from "./run-recordings.js";
+import { learningWorkOf, type OwnLearning } from "./learning-work.js";
+import { COMPILE_TIMEOUT_MS } from "./learn/compile.js";
 import { factoryChildren, factoryGithub, factoryLastActivity, factoryObservation, factoryObserved, factorySource, type FactoryActivity, type FactoryObserved } from "./factory-activity.js";
 
 /** What the store-backed view needs beside the store: where its console lives, every secret it never shows (read now, so
@@ -291,6 +293,8 @@ interface StoreRun {
   /** The run looks back after its job's end (`row` and `runRow` read as that end): nothing of it is settled until the
    *  look-back's own end is in (poll_after_ms 1000, the timeline not final). */
   readonly lookingBack?: true;
+  /** What its view's learning_work reads of the run's own learning (learning-work.ts learningWorkOf), from the reads above. */
+  readonly ownLearning: OwnLearning;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -455,6 +459,18 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // A run looking back after its job's end reads reflecting from that end on, a graded one too (its last end's learning
   // is the earlier round's).
   const shownEnd = lookingBack && started && !started.use ? { state: "reflecting" as const, reason: null, detail: said.reflecting, at: iso(lookingBack.endedAt) } : ended ?? under;
+  // Its own learning, as learning_work reads it: a run that learns (a learning start, and no replay or shadow run), its
+  // compile turn going (it looks back), one begun (its job's end kept for an end-of-run step), and, once its end is in,
+  // when that learning ended (its learning end's time, else its end's). While it looks back, its compile turn's bound as
+  // far as the view knows it: the job's end + the turn's timeout (the turn's own start, later, is kept with its children).
+  const learnedAt = !lookingBack && stored.state !== "running" ? Math.max(stored.endedAt ?? 0, ended ? Date.parse(ended.at) || 0 : 0) : 0;
+  const ownLearning: OwnLearning = {
+    learns: started !== undefined && !launch?.replay && !launch?.audit,
+    compiling: lookingBack !== undefined,
+    compiled: records.entries.some((entry) => entry.kind === KINDS.jobEnd),
+    endedAt: learnedAt > 0 ? learnedAt : null,
+    compileBy: lookingBack ? lookingBack.endedAt + COMPILE_TIMEOUT_MS : null,
+  };
   const turns = new Turns();
   turns.note(recordOf(records.entries), records.submissions ?? [], skip, liveRow?.updatedAt ?? deps.now?.() ?? Date.now());
   const working = !lookingBack && live && turns.open > 0;
@@ -580,7 +596,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
     github: unshown ? null : factoryGithub(launch, (text) => withoutLoopback(redacted(text, values))),
     children: terminal || FINAL_STATES.includes(runRow.state) || unshown ? [] : await factoryChildren(store, runId, records, (text) => withoutLoopback(redacted(text, values))),
   } : undefined;
-  return { ...(factory ? { factory } : {}), ...(cli_learning ? {cli_learning}:{}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, model, windDown, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}) };
+  return { ...(factory ? { factory } : {}), ...(cli_learning ? {cli_learning}:{}), ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, model, windDown, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}), ownLearning };
 }
 
 /** Run read `read` (a run still going, as the store holds it) as the end `ended` keeps (its state, summary and end time:
@@ -852,6 +868,9 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     budget_refused_calls: run.windDown.refusedCalls,
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
+    // The learning work the run started beside its turn (its compile turn, its check's replays, its audit's shadow), what
+    // a caller revokes the run's own key on once the run is terminal and this is not running (learning-work.ts).
+    learning_work: await learningWorkOf(store, runId, run.ownLearning),
     // The path it took and the learned workflow that served it, as its record keeps them: the read the cost per run makes
     // (store-reads/learning.ts pathViewOf).
     ...pathViewOf(runRow, row.kind, launch ? learningStartOf(launch) : undefined),

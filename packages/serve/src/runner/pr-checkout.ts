@@ -2,14 +2,17 @@
 // definition says `checkout: pull_request` (a template's manifest sets it). The agent then starts with the repository at
 // the pull request's head in `repo/` of its folder, its base and their merge base fetched beside it, and never holds a
 // GitHub token: the fetch is the server's own, one exec on the run's Workspace (Mode 1 a process on this machine, Mode 2
-// Archil's serverless exec over the run's folder), never a command of the agent's.
+// Archil's serverless exec over the run's folder), never a command of the agent's. On an Archil region with no serverless
+// exec (archil-settings.ts noExecRegionOf) the disk runs no command: the fetch runs in the run's computer, through its
+// own exec, once it has mounted the run's folder (checkoutWhereNoExec), and a run with no such computer has none.
 //
 // What it reads of the run: its first message's payload tag alone (github.ts githubPullOf), which the server wrote from a
 // signed GitHub delivery: the repository, the pull request's number, its head and its base. Nothing else names a
 // repository to fetch.
 //
 // The credential: an installation token of the server's GitHub App, minted for that one repository with
-// {contents: "read"} alone, handed to the exec on its stdin (Archil's: a spill file deleted on every path), turned there
+// {contents: "read"} alone, handed to the exec on its stdin (Archil's: a spill file deleted on every path; a computer's:
+// process.write to the process's stdin), turned there
 // into an Authorization header in git's environment (GIT_CONFIG_COUNT), scoped to GitHub's site. It is never in argv,
 // .git/config, the remote's URL, the run's folder, an env the agent's commands get, or the log (it joins the run's
 // redactor). No App, or one not installed on the repository: the fetch is anonymous, which a public repository answers.
@@ -22,6 +25,7 @@
 // tools can read the change instead. The checkout is removed when the claim lets go (spec-holds.ts), and made again by
 // the next claim of the same run.
 import { randomUUID } from "node:crypto";
+import { noExecWords } from "../archil-settings.js";
 import { GITHUB_WEB, type GithubPull, githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
 import { COMMAND_MAX_MS } from "../workspace/archil-exec.js";
@@ -225,6 +229,31 @@ export async function prCheckoutForClaim(
   const common = { workspace, input: launch.input, fromGitHub, ...(access ? { mint: access.mint } : {}), ...(access?.revoke ? { revoke: access.revoke } : {}), hold: (secrets: readonly string[]) => redact.hold(secrets), ...(deps.githubWeb ? { web: deps.githubWeb } : {}), ...(signal ? { signal } : {}), ...(held ? { held } : {}) };
   if (kind === "repository") return repoCheckout({ ...common, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   return prCheckout(common);
+}
+
+/** A claim's checkout on a Mode 2 server whose Archil region `region` has no serverless exec (archil-settings.ts
+ *  noExecRegionOf), where the disk runs no command (its every exec answers "Exec is not enabled"): made as
+ *  prCheckoutForClaim makes it, the same script and the token on its stdin, in the run's computer through its own exec,
+ *  once it has mounted the run's folder (`mounted`: the run's Workspace attached to it, run-tools.ts RunTools.workspace
+ *  where the run's shell is the computer's). The mount holds the disk's write delegation, and the fetch writes through
+ *  it. With no computer that mounts the folder, none is made: the run is told why, and `say` puts the fix (a sandbox
+ *  computer) on its timeline. */
+export async function checkoutWhereNoExec(
+  deps: Parameters<typeof prCheckoutForClaim>[0],
+  mounted: Workspace | undefined,
+  region: string,
+  launch: Parameters<typeof prCheckoutForClaim>[2],
+  redact: { hold(values: readonly string[]): void },
+  signal: AbortSignal | undefined,
+  held: (part: { end(): Promise<void> }) => void,
+  kind: Checkout,
+  say?: (words: string) => void,
+): Promise<PrCheckout> {
+  if (mounted) return prCheckoutForClaim(deps, mounted, launch, redact, signal, held, kind);
+  const why = `${noExecWords(region)}, so the server checks a repository out only in a computer that mounts the run's folder`;
+  say?.(`No checkout in repo/: ${why}, and this run has none. Give the agent a sandbox computer (a box) to get its checkout.`);
+  const instead = kind === "pull_request" ? "Read the change through the GitHub tools if you have them." : "Read it through the GitHub tools if you have them, else say that you could not read it.";
+  return noCheckout(`No checkout was made, so there is no ${CHECKOUT_DIR}/ folder: ${why}, and this run has none. ${instead}`);
 }
 
 /** The file in the checkout's .git that lists its files, one path a line (git ls-tree), so an agent with `read` and no

@@ -248,9 +248,12 @@ test("every client reads AGENTRUN_BASE_URL as AgentRun's own clients do: the add
 test("no client follows a redirect: a start or a read answered with one is refused, and the server it names never hears the key", async (t) => {
   const python = spawnSync("python3", ["--version"]).status === 0;
   const elsewhere = [];
+  let probed = 0;
   const other = createServer((req, res) => {
-    // The client's requests alone, by the path the redirect names: a probe of a new loopback listener asks for / alone.
-    if (req.url.startsWith("/elsewhere/")) elsewhere.push(`${req.method} ${req.url} ${req.headers.authorization ?? "no key"}`);
+    // The client's requests alone, by the path the redirect names (its base URL's /v2 after /elsewhere): a probe of a new
+    // loopback listener asks for / alone, and one that follows the redirect it gets reaches /elsewhere/ alone.
+    if (req.url.startsWith("/elsewhere/v2/")) elsewhere.push(`${req.method} ${req.url} ${req.headers.authorization ?? "no key"}`);
+    if (req.url === "/elsewhere/") probed += 1;
     req.resume();
     req.on("end", () => {
       res.setHeader("content-type", "application/json");
@@ -292,6 +295,11 @@ test("no client follows a redirect: a start or a read answered with one is refus
       for (const method of ["POST", "GET"]) {
         redirects = method;
         elsewhere.length = 0;
+        // A probe of every new loopback listener (some machines run one) asks for / and follows the redirect it gets, as
+        // no client may: it reaches /elsewhere/ with no key (when the GET is the call redirected), and is no client's request.
+        probed = 0;
+        await fetch(`http://127.0.0.1:${server.address().port}/`).then((answer) => answer.arrayBuffer());
+        assert.equal(probed, method === "GET" ? 1 : 0, `${name}, ${method} redirected: the probe reached the other server ${probed} times`);
         const ran = promisify(execFile)(command, args, { env: { PATH: process.env.PATH, AGENTRUN_BASE_URL: `http://127.0.0.1:${server.address().port}/v2`, AGENTRUN_API_KEY: "fake-test-key", AGENTRUN_AGENT_TICKET_TRIAGE: "agent_1" } });
         await assert.rejects(ran, (error) => {
           assert.match(error.stderr ?? "", /with a redirect \(HTTP 302\); not followed, so the API key stays with AGENTRUN_BASE_URL/, `${name}, ${method} redirected: ${error.stderr}`);
