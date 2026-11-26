@@ -89,6 +89,16 @@ describe("App, setup's import of this machine's sessions", () => {
     expect(host.textContent).toContain("None chosen: nothing will be imported.");
   });
 
+  it("names the tools the projects' sessions came from, each by its own name, OpenCode too", async () => {
+    server({ offer: [200, counted({ ...ONE, sources: ["opencode", "claude-code"] }, { ...TWO, sources: ["pi"] }, { ...THREE, sources: ["claude-code"] })] });
+    const host = await render();
+    expect(await until(host, () => box(host))).toBeTruthy();
+    expect(host.textContent).toContain("12 sessions in 3 projects, from Claude Code, pi and OpenCode.");
+    expect(host.textContent).toContain("2 sessions · Claude Code, OpenCode");
+    expect(host.textContent).not.toContain("opencode");
+    expect(host.textContent).not.toContain("Codex");
+  });
+
   it("sends no import unless a project is ticked", async () => {
     const { sent } = server({ offer: [200, counted(ONE, TWO)] });
     const host = await render();
@@ -231,7 +241,7 @@ describe("App, setup's import of this machine's sessions", () => {
   it("says at once that it is looking while the server counts, with nothing to tick, and lists the projects when they arrive", async () => {
     server({ offer: [[202, { counting: true }], [202, { counting: true }], [200, counted(ONE, TWO, THREE)]] });
     const host = await render();
-    expect(await until(host, () => /Looking for this machine's Claude Code, Codex and pi sessions/.test(host.textContent ?? ""))).toBe(true);
+    expect(await until(host, () => /Looking for this machine's coding-agent sessions/.test(host.textContent ?? ""))).toBe(true);
     expect(box(host)).toBeNull();
     expect(await until(host, () => /12 sessions in 3 projects/.test(host.textContent ?? ""), 5000)).toBe(true);
     expect(host.textContent).not.toContain("Looking for this machine's");
