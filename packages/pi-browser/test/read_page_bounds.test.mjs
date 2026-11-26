@@ -13,8 +13,19 @@ import { downloadsPage } from "./fixtures/downloads-page.mjs";
 const GUARD_MS = 30_000;
 const URL_ = "https://downloads.example/dl/";
 const CHILD = `
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { monitorEventLoopDelay } from "node:perf_hooks";
-const [dist, fixture, chars, which, options, shape] = process.argv.slice(1);
+const [dist, fixture, chars, which, options, shape, stopAt] = process.argv.slice(1);
+// The read yields the loop through timers/promises' setImmediate: at its stopAt-th yield the process stops itself, as a
+// loaded machine stops a process mid-step, until the parent continues it.
+const timers = createRequire(import.meta.url)("node:timers/promises");
+const yieldToLoop = timers.setImmediate;
+let yields = 0;
+timers.setImmediate = (...args) => {
+  if (++yields === Number(stopAt)) { process.stderr.write("stopping\\n"); process.kill(process.pid, "SIGSTOP"); }
+  return yieldToLoop(...args);
+};
+syncBuiltinESMExports();
 const { publicFetch, readPage } = await import(dist);
 const { downloadsPage, shapedPage } = await import(fixture);
 const { html, first, last } = shape ? shapedPage(shape, Number(chars)) : downloadsPage(Number(chars));
@@ -34,15 +45,22 @@ process.stdout.write(JSON.stringify({ wallMs, heldMs: held.max / 1e6, htmlChars:
 `;
 
 /** `which` ("readPage", "abort" or "publicFetch") on a generated page of `chars` characters (downloadsPage's, or
- *  shapedPage's `shape`), in a child process: `{ hung: true }` when it does not answer within GUARD_MS. */
-function inChild(which, chars, options = {}, shape = "") {
+ *  shapedPage's `shape`), in a child process: `{ hung: true }` when it does not answer within GUARD_MS. `stop`: the
+ *  child stops itself at the read's `at`-th yield, mid-step, and is continued `ms` later, as a loaded machine stops it. */
+function inChild(which, chars, options = {}, shape = "", stop = { at: 0, ms: 0 }) {
   return new Promise((resolve, reject) => {
-    const args = [new URL("../dist/index.js", import.meta.url).href, new URL("./fixtures/downloads-page.mjs", import.meta.url).href, String(chars), which, JSON.stringify(options), shape];
+    const args = [new URL("../dist/index.js", import.meta.url).href, new URL("./fixtures/downloads-page.mjs", import.meta.url).href, String(chars), which, JSON.stringify(options), shape, String(stop.at)];
     const child = spawn(process.execPath, ["--input-type=module", "-e", CHILD, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => { out += chunk; });
-    child.stderr.setEncoding("utf8").on("data", (chunk) => { err += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk) => {
+      err += chunk;
+      if (stop.at && err.includes("stopping\n") && !err.includes("continued\n")) {
+        err += "continued\n";
+        setTimeout(() => child.kill("SIGCONT"), stop.ms);
+      }
+    });
     const guard = setTimeout(() => child.kill("SIGKILL"), GUARD_MS);
     child.on("close", (code, signal) => {
       clearTimeout(guard);
@@ -216,6 +234,14 @@ test("a template holding a template, hidden words and a \"</template>\" in a scr
   assert.ok(run.page.text.includes("para 0 of the page, kept"), "the text after a template is kept");
   assert.ok(run.page.text.includes("para 1 of the page, kept"));
   assert.doesNotMatch(run.page.text, /hidden|inner|var s/, "nothing inside a template reaches the page");
+});
+
+test("a read the machine stops for 300 ms mid-step is not held by it: the stop is no work of the read's", async () => {
+  // A shared runner can stop a process mid-step for longer than any step takes (the event loop "held 191.5 ms" in CI):
+  // that time is the machine's, not the read's.
+  const run = await inChild("readPage", 3_000_000, {}, "templates", { at: 10, ms: 300 });
+  quick(run, 10_000);
+  assert.ok(run.page.text.includes("para 0 of the page, kept"));
 });
 
 test("one template holding a 3 MB page of short tags, closed at its end: dropped whole, the paragraph after it kept, the event loop never held 100 ms", async () => {
