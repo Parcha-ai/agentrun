@@ -299,8 +299,11 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
       span++;
     } else {
       while (end - at <= ANSWER_PIECE && end + 3 <= to && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
-      if (end > at) found += kept(Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8"), fold);
-      else {
+      if (end > at) {
+        const bytes = Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8");
+        found = counted(found, bytes, fold);
+        if (opensSequence(bytes.at(-1))) end = sequenceEnd(text, end, to, bytes.at(-1)!);
+      } else {
         // A character past U+FFFF is read whole, its two UTF-16 units as they are or as two escapes, as the views gather
         // it before they squeeze it: a combining mark past U+FFFF is then dropped as the views drop it, where each of
         // its halves alone would count as one.
@@ -313,7 +316,8 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
             end = low.end;
           }
         }
-        if (!(read.raw && read.char === "+")) found += kept(read.char, fold);
+        if (!(read.raw && read.char === "+")) found = counted(found, read.char, fold);
+        if (opensSequence(read.char)) end = sequenceEnd(text, end, to, read.char);
       }
       parts.push(text.slice(at, end));
       span += end - at;
@@ -339,6 +343,76 @@ function charAt(text: string, at: number): { char: string; end: number; raw: boo
 }
 const HIGH = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xd800 && char.charCodeAt(0) <= 0xdbff;
 const LOW = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xdc00 && char.charCodeAt(0) <= 0xdfff;
+/** `found` with what the views keep of `chars` added (kept), less one for each backspace in them: a terminal shows
+ *  the character after a backspace in place of the one before it. Never below 0: counting fewer only reads further. */
+function counted(found: number, chars: string, fold: boolean): number {
+  let count = found + kept(chars, fold);
+  for (const char of chars) if (char === "\b") count = Math.max(0, count - 1);
+  return count;
+}
+/** Whether `char` opens a terminal sequence (ESC, the 8-bit CSI or OSC): the views read one as a terminal shows it. */
+const opensSequence = (char: string | undefined): boolean => char === "\u001b" || char === "\u009b" || char === "\u009d";
+/** Where the terminal sequence `intro` opens, read on from text[at], ends, as the views read it (match.ts readingsOf:
+ *  a CSI, an OSC, or an escape with a final byte), each of its characters as charAt reads it and whitespace passed over
+ *  (the views drop it); or `at` where it opens none (the views then read on from there). It counts as nothing. Read no
+ *  further than a piece of text. */
+function sequenceEnd(text: string, at: number, to: number, intro: string): number {
+  let k = at;
+  const next = (): { code: number; end: number } | undefined => {
+    while (k < to && k - at <= ANSWER_PIECE) {
+      const read = charAt(text, k);
+      const code = read.char.charCodeAt(0);
+      if (/\s/.test(read.char)) {
+        k = read.end;
+        continue;
+      }
+      return { code, end: read.end };
+    }
+    return undefined;
+  };
+  const done = (end: number): number => {
+    scanned.chars += Math.max(k, end) - at;
+    return end;
+  };
+  let kind = intro === "\u009b" ? "csi" : intro === "\u009d" ? "osc" : "";
+  if (!kind) {
+    const first = next();
+    if (!first) return done(at);
+    if (first.code === 0x5b || first.code === 0x5d) {
+      kind = first.code === 0x5b ? "csi" : "osc";
+      k = first.end;
+    } else {
+      let unit: { code: number; end: number } | undefined = first;
+      while (unit && unit.code >= 0x20 && unit.code <= 0x2f) {
+        k = unit.end;
+        unit = next();
+      }
+      return done(unit && unit.code >= 0x30 && unit.code <= 0x7e ? unit.end : at);
+    }
+  }
+  if (kind === "csi") {
+    let unit = next();
+    while (unit && unit.code >= 0x30 && unit.code <= 0x3f) {
+      k = unit.end;
+      unit = next();
+    }
+    while (unit && unit.code >= 0x20 && unit.code <= 0x2f) {
+      k = unit.end;
+      unit = next();
+    }
+    return done(unit && unit.code >= 0x40 && unit.code <= 0x7e ? unit.end : at);
+  }
+  for (let unit = next(); unit; unit = next()) {
+    if (unit.code === 0x07 || unit.code === 0x9c) return done(unit.end);
+    if (unit.code === 0x9b || unit.code === 0x9d) return done(at);
+    k = unit.end;
+    if (unit.code === 0x1b) {
+      const after = next();
+      return done(after && after.code === 0x5c ? after.end : at);
+    }
+  }
+  return done(at);
+}
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
 /** What every view drops between a text's strings: a quote, an apostrophe (the join of single-quoted strings) and JSON's
