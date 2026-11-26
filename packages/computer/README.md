@@ -2606,7 +2606,11 @@ vendor made with no usable CDP URL) is bounded by the
 provider's `cleanupMs` option (default `RECOVER_MS`, 30 s), never by the caller's signal: one that does not finish in
 time fails the create in words that say the browser may still be running, and a retry is answered as above, never
 stuck behind it. Another create's browser of the same request, even one another process answered, carries another attempt
-label and is left running. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own:
+label and is left running. A lost create's own browser is left running too, for another create's converge and to its
+lifetime, when it is the oldest of the request's that runs and the request's browsers, ended ones included, hold a
+newer one: only another create made that one, and its converge answers the older. Where the lost create's browser is
+the request's only one it is released, even when another process's create answered it by its lookup: nothing on the
+vendor says so. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own:
 `check()` refuses them in a spec, and no list or attach shows them.
 
 The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`

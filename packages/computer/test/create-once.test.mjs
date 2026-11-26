@@ -308,6 +308,56 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		okOf(await one.release(kept, "delete"), "release");
 	});
 
+	test(`${id}: a create whose reply is lost leaves the browser its POST made when it is the request's older one, which another instance's converge answered`, async () => {
+		const fake = vendor.vendor();
+		const requestId = requestOf(`${id}-lost-older`);
+		const gate = () => {
+			let open;
+			const opened = new Promise((resolve) => (open = resolve));
+			return { open, opened };
+		};
+		// A looks for the request's browser first (none), then B's POST makes the older browser, then A's POST the newer;
+		// B's reply is lost, and its recovery runs once A's converge has answered B's browser.
+		const looked = gate();
+		const madeB = gate();
+		const answered = gate();
+		const isPost = (input, init) => (init.method ?? "GET") === "POST" && new URL(String(input)).pathname === cloud.post;
+		const isList = (input, init) => (init.method ?? "GET") === "GET" && new URL(String(input)).pathname === cloud.post;
+		let listsA = 0;
+		const fetchA = async (input, init = {}) => {
+			if (isPost(input, init)) await madeB.opened;
+			const answer = await fake.fetch(input, init);
+			if (isList(input, init) && ++listsA === 1) looked.open();
+			return answer;
+		};
+		const fetchB = async (input, init = {}) => {
+			if (isPost(input, init)) {
+				await looked.opened;
+				await fake.fetch(input, init);
+				madeB.open();
+				await answered.opened;
+				// The vendor made B's browser, and its reply never comes.
+				throw new TypeError("fetch failed");
+			}
+			return fake.fetch(input, init);
+		};
+		const one = await vendor.make({ ...fake, fetch: fetchA });
+		const two = await vendor.make({ ...fake, fetch: fetchB });
+		const first = one.create(vendor.spec(), { requestId }).then((result) => {
+			answered.open();
+			return result;
+		});
+		const [a, b] = await Promise.all([first, two.create(vendor.spec(), { requestId })]);
+		const kept = okOf(a, "A's create");
+		assert.equal(b.ok, false, "B's create, its reply lost");
+		const [older, newer] = cloud.ids(fake);
+		assert.equal(kept.id, older, "A's converge answers B's browser, the older");
+		assert.equal(cloud.live(fake, newer), false, "A's own browser, the newer, is released");
+		assert.equal(cloud.live(fake, older), true, "the browser A answered still runs after B's recovery");
+		assert.match(b.error.message, /left running/);
+		okOf(await one.release(kept, "delete"), "release");
+	});
+
 	test(`${id}: a create whose browser is the newer, the older ended before it is answered, releases its own and is refused exists`, async () => {
 		const fake = vendor.vendor();
 		const requestId = requestOf(`${id}-gone`);
@@ -588,6 +638,19 @@ test("orgo: a create aborted after Orgo's answer whose delete never answers is a
 	assert.equal(retry.result.error.code, "exists", retry.result.error.message);
 	assert.ok(retry.ms < CLEANUP_MARGIN_MS, `the retry answered in ${retry.ms} ms`);
 	assert.equal(VENDORS.orgo.made({ api }), 1, "no second computer");
+});
+
+test("a lost create's browser is left to another create of its request only when it is the oldest that runs and a newer one was made", async () => {
+	const { leftToConverge } = await import("../dist/browser.js");
+	const at = (id, minute, live = true) => ({ id, createdAt: `2026-01-01T00:0${minute}:00.000Z`, labels: {}, live });
+	assert.equal(leftToConverge("b", [at("b", 1)]), false, "the request's only browser is released");
+	assert.equal(leftToConverge("b", [at("b", 1), at("a", 2, false)]), true, "the oldest that runs, a newer one released by its converge: left");
+	assert.equal(leftToConverge("b", [at("b", 1), at("a", 2)]), true, "the oldest that runs, a newer one still running: left");
+	assert.equal(leftToConverge("b", [at("a", 1), at("b", 2)]), false, "an older one runs: released");
+	assert.equal(leftToConverge("b", [at("a", 1), at("b", 2), at("c", 3)]), false, "an older one runs, though a newer was made: released");
+	assert.equal(leftToConverge("b", [at("a", 1, false), at("b", 2), at("c", 3, false)]), true, "the older ended, a newer made: left");
+	assert.equal(leftToConverge("b", [at("b", 1, false), at("a", 2)]), false, "already ended: released");
+	assert.equal(leftToConverge("b", [at("a", 2)]), false, "not listed: released");
 });
 
 test("a create with no request id is refused invalid on each, before any vendor call", async () => {
