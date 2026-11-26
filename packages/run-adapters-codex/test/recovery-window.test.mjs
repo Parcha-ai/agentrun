@@ -76,3 +76,35 @@ test("code mode hands a cut-off exec's recovered output to Codex held to the ses
   assert.match(small, /1\. lookup completed: "START-OF-RESULT r/);
   assert.ok((await recovered()).length > 50_000, 'no budget: the result quoted whole, as before');
 });
+
+test("code mode's recovered outputs claim their room in the turn: two cut-off execs' outputs together fit what the interrupted answer left", async () => {
+  // MUTATION: outputs held only to the per-result bound (12,288 each here) pass the 9,864 the turn has left between them.
+  const { TurnBudget, answerReserve } = await import('@parcha/agentrun-kernel/process');
+  const store = memorySessionStore();
+  const first = await openDrive({ writer: await store.open('code-turn'), signal: new AbortController().signal });
+  await first.submit({ id: 's1', kind: 'prompt', text: 'Look both up.' });
+  await placeSubmissions(first, [first.pending()[0]]);
+  const since = openTurn(first.state()).since;
+  const big = { name: 'lookup', description: 'Looks up.', inputSchema: { type: 'object' }, replay: 'safe', execute: async () => BIG };
+  const bridge = toolBridge(first, [big], { live: false, serial: false });
+  await bridge.call('lookup', {}, 'exec-1');
+  await bridge.call('lookup', {}, 'exec-2');
+  await pause(10);
+  const next = await openDrive({ writer: await store.open('code-turn'), signal: new AbortController().signal });
+  const execs = ['call_exec_1', 'call_exec_2'];
+  const ties = [{ callId: 'exec-1', exec: execs[0], since }, { callId: 'exec-2', exec: execs[1], since }];
+  const journal = { append() {}, flush: async () => {}, read: async (stream) => (stream === NESTED_STREAM ? ties.map((data) => ({ data })) : []) };
+  // The answer that made the two execs held 9,000 tokens: 3,288 tokens are left for its results, 9,864 characters.
+  const held = 9_000;
+  const room = (SMALL.contextWindow - held - answerReserve(SMALL.contextWindow)) * 3;
+  const turn = new TurnBudget();
+  turn.open({ inputTokens: held, outputTokens: 0, calls: 2 });
+  const mode = codeMode({ ctx: next, machine: {}, journal, logged: new Set(), synced: async () => {}, bridge: { get: () => undefined }, log() {}, lines: [], rpc: () => ({ request: async () => ({}) }), guard: (p) => p, threadId: () => 't', tries: 1, budget: { ...SMALL, turn } });
+  const items = execs.map((id) => ({ type: 'custom_tool_call_output', call_id: id, output: '' }));
+  await mode.recoverItems(items, execs.map((callId) => ({ callId, name: 'exec', type: 'custom_tool_call' })), [], since);
+  const lengths = items.map((item) => item.output.length);
+  assert.ok(lengths[0] + lengths[1] <= room, `the two outputs (${lengths.join(', ')}) fit the ${room} the turn left`);
+  for (const [i, item] of items.entries()) assert.match(item.output, /^The exec was cut short after these calls/, `exec ${i + 1} still tells its call`);
+  const later = turn.claim('later', SMALL.contextWindow);
+  assert.ok(later <= room - lengths[0] - lengths[1], `the turn holds what they took: a later call gets what is left (${later})`);
+});
