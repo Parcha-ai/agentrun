@@ -57,10 +57,22 @@ async function nothingOutlives(data) {
 test("the check that nothing outlives a run reads a busy box's whole process list: a ps listing of several MiB, past exec's default buffer", async (t) => {
   // A stand-in ps on PATH: 40,000 lines of another lane's long command lines (about 6 MiB), then a run's process.
   const bin = await scratch(t);
+  const data = `${bin}/runs-data`;
   const filler = `999999 1 node --test-concurrency=8 ${"--some-long-flag=value ".repeat(4)}test/other-lane.test.mjs`;
-  writeFileSync(join(bin, "ps"), `#!/bin/sh\nyes '${filler}' | head -n 40000\necho '4242 1 node ${bin}/runs-data/run.mjs'\n`, { mode: 0o755 });
+  writeFileSync(join(bin, "ps"), `#!/bin/sh\nyes '${filler}' | head -n 40000\necho '4242 1 node ${data}/run.mjs'\n`, { mode: 0o755 });
   withEnv(t, { PATH: `${bin}:${process.env.PATH}` }, ["PATH"]);
-  assert.deepEqual(leftOf(`${bin}/runs-data`), [`4242 node ${bin}/runs-data/run.mjs`]);
+  // leftOf keeps a command line's first 120 characters: the expected line is cut the same way, whatever TMPDIR is.
+  assert.deepEqual(leftOf(data), [`4242 ${`node ${data}/run.mjs`.slice(0, 120)}`]);
+});
+
+test("the check that nothing outlives a run names a process by its command line's first 120 characters, however long its path", async (t) => {
+  const bin = await scratch(t);
+  const data = `${bin}/${"runs-data-".repeat(13)}`;
+  const command = `node ${data}/run.mjs`;
+  assert.ok(command.length > 120, `the path runs past the cut: ${command.length}`);
+  writeFileSync(join(bin, "ps"), `#!/bin/sh\necho '4242 1 ${command}'\n`, { mode: 0o755 });
+  withEnv(t, { PATH: `${bin}:${process.env.PATH}` }, ["PATH"]);
+  assert.deepEqual(leftOf(data), [`4242 ${command.slice(0, 120)}`]);
 });
 
 /** The node's submit when a request offers it and has no tool result yet (the faux gateway's `call`, codex). */
