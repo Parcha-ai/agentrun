@@ -1,5 +1,5 @@
 import { envGatewayInForce, readSavedGateway, savedGatewayIn, savedGatewayMarked, SAVED_GATEWAY_ENV, withSavedGateway } from "../model-gateway.js";
-import { GATEWAY_KEY_ENV } from "../model.js";
+import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { mustHold } from "./redact.js";
 import { envValue } from "../key-meta.js";
 import { createSdkLoop } from "./sdk-loop.js";
@@ -87,6 +87,21 @@ export function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | un
   };
 }
 
+/** The environment an SDK run's compile turn is asked under, on the runner's environment (`deps.env`, else this
+ *  process's) with every model key the server holds laid on it (savedModelKeys: no revision scopes the ask), and `off`,
+ *  why the turn is skipped, when it is. Its requests on serve's gateway name the claim's run, turn and attempt, as every
+ *  other request of a claim does (request-metadata.ts): withModelKeys makes the env this ask's own. It runs after its
+ *  backend reported the run complete, on no run's key: on a server that holds no gateway key it is skipped in words
+ *  (run-model-key.ts noServerKeyFor), nothing sent. */
+export async function sdkCompileEnv(deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env">, claim: Parameters<typeof withRequestMetadata>[1]): Promise<{ readonly env: NodeJS.ProcessEnv; readonly off: string | undefined }> {
+  const base = deps.env ?? process.env;
+  // On a --faux runner the turn's model is the faux model (model.ts chooseModel), which sends no key: none is read, and
+  // the turn is never skipped for want of one.
+  if (base[FAUX_ENV]) return { env: withRequestMetadata(withModelKeys(base, {}), claim), off: undefined };
+  const env = withRequestMetadata(withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base })), claim);
+  return { env, off: noServerKeyFor(env, "An SDK run's compile turn") };
+}
+
 /** `launch` as this claim runs it: its plane, resolved at the run's start, under the server's tool settings now
  *  (tool-plane.ts claimPlane), so a resume, a follow-up or a reclaim after the server set web_fetch to kernel, or
  *  web_search to native or off, sends nothing past that setting, whatever its agent picked. Settings that could not be
@@ -141,13 +156,7 @@ async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch,
   // start's), its key from the runner's environment, else the one saved in Settings → Model keys, read at each ask.
   if (launch.sdk || launch.cli_learning) return createSdkLoop(launch, deps, async (claim) => {
     if (launch.cli_learning) throw new Error("Connected CLI capture has no workflow execution bridge.");
-    const base = deps.env ?? process.env;
-    // Its requests on serve's gateway name the claim's run, turn and attempt, as every other request of a claim does
-    // (request-metadata.ts): withModelKeys makes the env this ask's own.
-    const env = withRequestMetadata(withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base })), claim);
-    // It runs after its backend reported the run complete, on no run's key: on a server that holds no gateway key it is
-    // skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
-    const off = noServerKeyFor(env, "An SDK run's compile turn");
+    const { env, off } = await sdkCompileEnv(deps, claim);
     if (off) {
       deps.log?.(off);
       throw new Error(off);
