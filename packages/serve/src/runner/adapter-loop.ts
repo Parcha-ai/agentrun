@@ -2623,7 +2623,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const traced = specNow?.trace;
               const routed = request.route === undefined ? traced?.model : traced?.routes?.get(request.route)?.model;
               const known = (asked: string) => asked === traced?.model || [...(traced?.routes?.values() ?? [])].some((via) => via.model === asked) || specNow?.runCap.modelOf(asked)?.id === asked;
-              const model = tracedModel(request.model, { known, ...(routed ? { routed } : {}), ...(deps.redact ? { redact: deps.redact } : {}) });
+              const model = tracedModel(request.model, { known, ...(routed ? { routed } : {}), redact: deps.redact });
               chats.set(ticket.turn, trace.request(model, request.route));
             }
             // The conversation that asked, as its client named it (pi's, one of several asking at once): whose answer reads
@@ -2759,10 +2759,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // go is marked first (LEARNED_ALLOWED), committed before the tool runs: a call issued again after a crash cut it may
         // have run nodes and spent on such an attempt, so its refusal is then no proof it ran nothing, and it is kept
         // `failed`, never `refused`, priced from what its call id booked (failedRecord). The newest of the call's marks and
-        // records says which (learned-nodes.ts learnedCallRan): its bridge can't alone (a tool that nests is asked alike on
-        // every attempt: process/tools.ts runNesting), nor can the call's start on the CLI record, which a refusal writes
-        // too. With neither, the bridge's `replayed` stands in: a run begun before the marks existed has none. Whatever is
-        // kept, a refusal reads `failed` once anything was booked under the call id (workflow-calls.ts workflowCallsOf).
+        // records says which (learned-nodes.ts learnedCallRan): its bridge can't alone (a tool that nests is asked as
+        // `replayed` only once an earlier attempt fixed a value or nested a call: process/tools.ts runNesting), nor can the
+        // call's start on the CLI record, which a refusal writes too. With neither, the bridge's `replayed` stands in: a
+        // run begun before the marks existed has none. Whatever is
+        // kept, a refusal reads `failed` once anything was booked under the call id, or while an attempt let go was closed
+        // by no refusal (workflow-calls.ts workflowCallsOf).
         const learnedEntry = async (call: Parameters<typeof gateOf>[0], answer: Awaited<ReturnType<typeof gateOf>>): Promise<void> => {
           const named = call.tool === LEARNED_WORKFLOW_TOOL ? spec.gate?.learnedOf?.(call.args) : undefined;
           const [journalOf, rootOf] = [harness, root];
@@ -2804,7 +2806,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // Every harness's events reach its trace first (its tool calls, a plan harness's turns), with a record or without.
         const recorded = record ? onEvent(record) : undefined;
         const traceAnd = (event: Parameters<PiSessionIO["onEvent"]>[0]) => {
-          trace?.event(tracedEvent(event, { mcp: (name) => mcp?.catalogOf(specNow?.facts?.hostName?.(name) ?? name) !== undefined, ...(deps.redact ? { redact: deps.redact } : {}) }));
+          trace?.event(tracedEvent(event, { mcp: (name) => mcp?.catalogOf(specNow?.facts?.hostName?.(name) ?? name) !== undefined, redact: deps.redact }));
           recorded?.(event);
         };
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: traceAnd, gate: sessionGate, ...(permission ? { permission } : {}), hostTool: hosted, ...(ownCalls ? { ownCalls } : {}), bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };

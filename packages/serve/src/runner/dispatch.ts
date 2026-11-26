@@ -10,6 +10,7 @@
 import { harnessOfBody } from "../harness.js";
 import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import type { Claim, Command, CommandOutcome, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import { mustHold } from "./redact.js";
 
 /** What the dispatch reads of a run at its claim, and how it picks the harness's loop. */
 export interface DispatchDeps {
@@ -55,6 +56,7 @@ export function createDispatchLoop(deps: DispatchDeps): LoopFactory {
 }
 
 function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
+  mustHold(loopDeps.redact, "A dispatch loop");
   /** The harness's loop, once the launch read has chosen it. */
   let inner: Loop | undefined;
   /** Commands handed over before the inner loop was chosen: replayed through it once it is. */

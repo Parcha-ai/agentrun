@@ -21,7 +21,7 @@ import { randomBytes } from "node:crypto";
 import { CodemodeSandbox, type CodemodeHostCall, type CodemodeOutcome, type CodemodeOutputItem, toCodemodeIdentifier } from "@earendil-works/pi-codemode";
 import { computerOver, withoutImageData } from "@parcha/agentrun-computer/surface";
 import type { HostTool, JsonValue, NestedCalls, NestedResult, ToolImage } from "@parcha/agentrun-kernel";
-import { COMPUTER_OP_TOOL, computerDeclarations, STEP_TOOL_OPS } from "@parcha/agentrun-kernel/kernel";
+import { COMPUTER_OP_TOOL, computerDeclarations, INPUT_REACHES_SHELL, STEP_TOOL_OPS } from "@parcha/agentrun-kernel/kernel";
 
 import { CODEMODE, META_TOOLS, TOOLS_CALL, TOOLS_SEARCH } from "../meta-tool-names.js";
 import { NO_PROGRAMS_WORDS } from "../workspace/computer-ports.js";
@@ -118,11 +118,11 @@ function scriptComputer(computer: ScriptComputer, tools: string): string {
 }
 
 /** What codemode's description adds for a run with a computer: the script's `computer`, and the declarations of what its
- *  card offers. */
+ *  card offers, less the ops the run's gate refuses for a tool the agent is not given (opsNotGiven). */
 function computerWords(computer: ScriptComputer): string {
   return [
-    `The script has this run's computer as \`computer\`, typed by the declarations below. Each of its calls is a call of the run's own computer tools, asked about and recorded as that tool's: a command it runs is held to bash's setting, a file it writes to write's, a file it reads, lists or stats to read's.`,
-    computerDeclarations(computer.card.groups),
+    `The script has this run's computer as \`computer\`, typed by the declarations below. Each of its calls is a call of the run's own computer tools, asked about and recorded as that tool's: a command it runs is held to bash's setting; a file it writes needs write among this agent's tools, and a file it reads, lists or stats needs read among this agent's tools, each then held to that tool's setting. ${INPUT_REACHES_SHELL}`,
+    computerDeclarations(computer.card.groups, computer.opsNotGiven),
   ].join("\n");
 }
 

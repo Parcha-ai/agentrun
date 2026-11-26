@@ -423,7 +423,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // as the pi spec makes it: a refusal lets the Workspace and the Archil claim go (holds above).
   let filedIn: Workspace | undefined;
   const hold = (values: string[]) => { for (const redact of [run.redact, cut]) redact.hold(values); };
-  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...(facts.toolsFixedAtStart ? { toolsFixedAtStart: true } : {}), ...claimMetering(deps, web, launch) });
+  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, redact: run.redact, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...(facts.toolsFixedAtStart ? { toolsFixedAtStart: true } : {}), ...claimMetering(deps, web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
   // The pull request's checkout, when the revision asks for one, as the pi spec makes it (pr-checkout.ts).
@@ -793,7 +793,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     system: [environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line)),
     // The web tools and the learned workflow's call nodes run on the claim's keys: their answers pass the runner's one
     // redactor, as pi's do. Listed in the order the agent grants them, as main lists a CLI run's tools.
-    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), { results, writes: gate.writes() }),...[...webTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
+    tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), { results, writes: gate.writes(), opsNotGiven: gate.opsNotGiven() }),...[...webTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
     context: "fresh",
     ...(thinking ? { thinking } : {}),
   };
@@ -858,8 +858,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     ...(personOnly ? { personOnly } : {}),
     // The run's computer and the person's hold on a desktop or phone, as the claim made them (as the pi spec gives them).
     ...(loopComputer ? { computer: loopComputer } : {}),
-    // A desktop or a phone as a codemode script gets it: the script's `computer`, over the run's computer tools.
-    ...(tools.computer ? { scriptComputer: tools.computer } : {}),
+    // A desktop or a phone as a codemode script gets it: the script's `computer`, over the run's computer tools, its
+    // declarations without the ops the gate refuses for a tool the agent is not given.
+    ...(tools.computer ? { scriptComputer: { ...tools.computer, opsNotGiven: gate.opsNotGiven() } } : {}),
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, where

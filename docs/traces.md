@@ -94,6 +94,11 @@ down costs the dropped spans and a log line with that origin and the time, then 
 failed exports since the last; the run is not affected. A run is sampled whole or not at all (`OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG`), so a trace is never
 missing part of its run. `OTEL_SDK_DISABLED=true` turns tracing off even with an endpoint set.
 
+An endpoint with a user, a password, a query or a fragment is refused, since the headers (the backend's key) go to it:
+tracing is off for it, nothing is sent, and the runner says why once as it starts, naming the variable and the
+endpoint's origin alone (`[otel] tracing is off: OTEL_EXPORTER_OTLP_ENDPOINT takes no query or fragment:
+https://collector.example:4318`). The server and its runs carry on. Put the credential in `OTEL_EXPORTER_OTLP_HEADERS`.
+
 [genai]: https://github.com/open-telemetry/semantic-conventions-genai/releases/tag/v0.1.0
 [genai-agent]: https://github.com/open-telemetry/semantic-conventions-genai/blob/d0e74ba6c48bcc4ded473b1828a8212f06b23753/docs/gen-ai/gen-ai-agent-spans.md#L213-L272
 [otlp-env]: https://github.com/open-telemetry/opentelemetry-specification/blob/v1.62.0/specification/protocol/exporter.md

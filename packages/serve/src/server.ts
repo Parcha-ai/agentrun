@@ -2669,6 +2669,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
   await probe("start");
+  // What a stop left in the ChatGPT sign-in's row (a sign-in saved, its models unlisted or the sign-in it replaced not
+  // yet revoked) is settled now, out of the start's way, once the first offers are made: models it lists make them
+  // again (keysChanged). The server's alone: a runner's reader never settles.
+  plan.settleLeft();
   // Under faux, a key the server starts with is checked only against a check's own fake (fauxBrowserbase,
   // fauxMonidCheck, fauxKernel): the fakes the runs use (monid, Parallel, Jev) see the runs' calls alone, and a key with no check fake
   // is not checked.
@@ -4015,13 +4019,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // agent has by its name is left as it is, never removed. One left on still fires, so its skip says so and how to stop it.
     const hooked = options.launchHook !== undefined;
     const hostless = new Map(made.triggers.flatMap((trigger, i) => {
-      const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
+      const apiOnlySkip = options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined;
+      const skip = apiOnlySkip ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
       if (!skip) return [];
       const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
       // Under the run-keys setting the kept one's firings bring no keys. One that starts a run of this revision is refused
       // for the keys it owes, but the kept trigger's target is not checked here: a message_run trigger whose run is pinned
       // to an earlier revision that owes no keys still messages it, and that run may spend. So the warning promises no refusal.
-      const kept = options.apiOnly
+      const kept = apiOnlySkip
         ? `is kept as it was, and still fires: PATCH /v2/triggers/${keptOn?.id} with {"enabled": false} turns it off`
         : `is kept as it was and still fires until you turn it off (PATCH /v2/triggers/${keptOn?.id} with {"enabled": false}): a firing that would start a run of this revision is refused 409 for the keys it owes, but one aimed at a run of an earlier revision that owes none still reaches that run, which may spend`;
       return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name ${kept}.` } : skip] as const];
