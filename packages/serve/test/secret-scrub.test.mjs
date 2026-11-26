@@ -326,7 +326,8 @@ test("amendment 1a: each cut's outStart/outEnd is its replacement's span in the 
   const input = `a ${SK} b PGPASSWORD=s3cretPgPw c\n$ env\nPATH=/a\nHOME=/b\nSHELL=/c\nend`;
   const out = await cutOf(input);
   for (const cut of out.cuts) {
-    const expected = cut.kind === "dump" ? `[redacted:${cut.rule} 3 lines]` : `[redacted:${cut.rule}]`;
+    // `$ env`'s output runs to the next prompt (11-25 r2): its three NAME=value lines and `end`.
+    const expected = cut.kind === "dump" ? `[redacted:${cut.rule} 4 lines]` : `[redacted:${cut.rule}]`;
     assert.equal(out.text.slice(cut.outStart, cut.outEnd), expected);
   }
   const counted = await scrub(input, { mode: "count" });
@@ -1279,7 +1280,9 @@ test("XXVII, XXVIII: a line start under any lead, in any wrapper, opens the conf
           const left = out.ok ? secrets.filter((secret) => out.text.includes(secret)) : ["(failed closed)"];
           if (left.length) misses.push(`${leadName} x ${wrapName} x ${slotName} (${at}): ${left.join(",")}`);
           else if (wrapName !== "raw" && !sameJson(text, out.text)) misses.push(`${leadName} x ${wrapName} x ${slotName} (${at}): the cut output no longer parses as its JSON`);
-          else if (at !== "last line" && at !== "only line" && !out.text.includes("host: db.corp-sample.io")) misses.push(`${leadName} x ${wrapName} x ${slotName} (${at}): cut past its block`);
+          // `$ export -p` is a prompt line whose command prints the environment: its output runs to the next prompt
+          // (11-25 r2), so the line after its block may be cut with it. Pinned exactly in "LVI (11-25 r2): in a transcript".
+          else if (at !== "last line" && at !== "only line" && slotName !== "export -p" && !out.text.includes("host: db.corp-sample.io")) misses.push(`${leadName} x ${wrapName} x ${slotName} (${at}): cut past its block`);
         }
       }
     }
@@ -1797,9 +1800,8 @@ test("LVI (11-25 read): every way a line can run an env command is read so, and 
     const out = await gone(text, [seed, region], { command });
     assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
   }
-  // Still no dump: an env that runs a command, set with options, an env word as an argument, echo of no variable, a
-  // redirection's `&`.
-  for (const command of ["env FOO=1 npm test", "set -e; make", "set -o pipefail; make", "grep env notes.txt", "echo ok", "make 2>&1 | tee build.log", "export APP_REGION=north && npm test", "make; ls"]) {
+  // Still no dump: set with options, echo of no variable, a redirection's `&`, export of an assignment.
+  for (const command of ["set -e; make", "set -o pipefail; make", "echo ok", "make 2>&1 | tee build.log", "export APP_REGION=north && npm test", "make; ls"]) {
     const out = await scrub(text.replace(seed, "gold"), { mode: "count", command });
     assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
   }
@@ -1815,6 +1817,103 @@ test("LVI (11-25 read): a lone env command's output is one dump too: a value's l
   // Exact: the line after printenv's value is cut with it.
   const lone = await gone(`${seed}\nnext step`, [seed], { command: "printenv APP_SEED" });
   assert.equal(lone.text, "[redacted:env-dump 2 lines]");
+});
+
+test("LVI (11-25 r2): a line where any word prints the environment is a dump, at any depth, behind any wrapper or forwarder", async () => {
+  const seed = "Tallow4quarry62";
+  const region = "basin-orchard-41";
+  const text = `APP_REGION=${region}\nAPP_SEED ${seed}`;
+  for (const command of [
+    // A wrapper's flag that takes no value, a long flag with one.
+    "sudo -n env", "sudo -n printenv APP_SEED", "sudo -i env", "sudo -s env", "sudo -k env", "time -p env", "command -p env", "sudo --user deploy env",
+    // env running the command that prints.
+    "env FOO=1 printenv APP_SEED", "env -i HOME=/x bash -c 'echo $APP_SEED'", "env -- printenv APP_SEED", "env -S 'printenv APP_SEED'",
+    // Shells inside shells, past any depth.
+    `bash -c "bash -c 'bash -c env'"`, `sh -c "sh -c \"sh -c 'sh -c printenv'\""`,
+    // The environment read as a file, by ps or systemd, or by an interpreter.
+    "cat /proc/self/environ", "cat /proc/1/environ", "cat /proc/$$/environ", "strings /proc/self/environ", "tr '\\0' '\\n' < /proc/self/env*",
+    "ps e", "ps eww", "ps auxe", "systemctl show-environment",
+    "node -e 'console.log(process.env)'", "node -p process.env", "python -c 'import os;print(os.environ)'", "python3 -c 'import os; print(os.getenv(\"APP_SEED\"))'", "ruby -e 'p ENV'",
+    // Forwarders: the env command runs elsewhere, its output comes back here.
+    "docker exec c env", "docker inspect c", "kubectl exec p -- env", "ssh host env", "su -c env", "xargs printenv < names", "eval env", "watch env",
+    // Spelled past a reader: an escape, quotes inside the word, no blank before a redirection, a long assignment name.
+    "\\env", 'e"n"v', "env>/tmp/e; cat /tmp/e", `${"A".repeat(200)}=1 printenv APP_SEED`, "set 2>&1", "declare -x",
+    // PowerShell and cmd.
+    "Get-ChildItem env:", "Write-Output $env:APP_SEED", "echo %APP_SEED%", "[Environment]::GetEnvironmentVariables()",
+    // A here-string or here-document expands a variable into its output.
+    'cat <<< "$APP_SEED"',
+    // Over-cuts, pinned so: an env word anywhere is read as the command, quoted or an argument.
+    'echo "a; env"', 'git commit -m "read the `env` var"', "env FOO=1 npm test", "grep env notes.txt",
+  ]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
+  }
+  for (const command of ["set -e; make", "set -o pipefail; make", "echo ok", "make 2>&1 | tee build.log", "export APP_REGION=north && npm test", "make; ls", "cat README.md", "ps aux"]) {
+    const out = await scrub(text.replace(seed, "gold"), { mode: "count", command });
+    assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
+  }
+});
+
+test("LVI (11-25 r2): in a transcript, the output under a prompt line that prints the environment is cut to the next prompt", async () => {
+  const seed = "Tallow4quarry62";
+  // A multi-line value no longer ends env's output: C's value is cut too.
+  const multi = await gone(`$ env\nA=1\nB=l1\nl2\nC=${seed}`, [seed]);
+  assert.equal(multi.text, "$ env\n[redacted:env-dump 4 lines]");
+  // The next prompt ends it; what that command printed is kept.
+  const next = await gone(`$ env\nA=1\nB=l1\nl2\nC=${seed}\n$ ls\nREADME.md`, [seed]);
+  assert.equal(next.text, "$ env\n[redacted:env-dump 4 lines]\n$ ls\nREADME.md");
+  // Any line the command reader reads as a dump, in a transcript.
+  const wrapped = await gone(`$ sudo -n env\nAPP_REGION=north\nAPP_SEED ${seed}`, [seed]);
+  assert.equal(wrapped.text, "$ sudo -n env\n[redacted:env-dump 2 lines]");
+  const value = await gone(`$ printenv APP_SEED\nl1\n${seed}`, [seed]);
+  assert.equal(value.text, "$ printenv APP_SEED\n[redacted:env-dump 2 lines]");
+});
+
+test("LVI (11-25 r3): an env name inside a word, after a redirection, or an indirect expansion is read; xtrace is a dump", async () => {
+  const seed = "Tallow4quarry62";
+  const region = "basin-orchard-41";
+  const text = `APP_REGION=${region}\nAPP_SEED ${seed}`;
+  for (const command of [
+    // A redirection written against the path.
+    "tr '\\0' '\\n' </proc/1/environ", "cat</proc/self/environ", "xargs -0 -n1 </proc/self/environ", "sort -z </proc/1/environ | tr '\\0' '\\n'",
+    // An env name joined to other characters.
+    "jq -rn 'env.APP_SEED'", "jq -n '{token: env.API_TOKEN}'", `node -p 'process["env"]["APP_SEED"]'`, `python -c "import os as o; print(o.environ)"`,
+    `python -c "print(__import__('os').environ)"`, "bun -e 'console.log(Bun.env)'", `awk 'BEGIN{s=ENVIRON["APP_SEED"]; print s}'`,
+    `awk -v s="$APP_SEED" 'BEGIN{print s}'`, "node -p 'process.en''v'", "ruby -e 'p E''NV'",
+    // Indirect expansion.
+    "for v in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do echo ${!v}; done", "v=APP_SEED; printf '%s\\n' \"${!v}\"",
+    // xtrace prints every command with its variables expanded.
+    "set -x; curl -H \"Authorization: Bearer $API_TOKEN\" https://api.example", "set -ex; make deploy", "set -o xtrace; make deploy", "bash -x deploy.sh", "sh -xc 'make deploy'",
+    // A dotfile's dot read as a member's: optional chaining, a call's result.
+    "node -p 'process?.env'", `node -p 'require("process").env'`,
+    // Over-cut, pinned so: an env token in a file name that is no dotfile.
+    "ls src/env.ts",
+  ]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
+  }
+  // A dotfile `.env` named in the command is a file, cut whole by env-file (LXII d), not read as the environment.
+  for (const command of ["cp .env.example .env", "cat ./.env", "source .env && make"]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.equal(out.text, "[redacted:env-file 2 lines]", command);
+  }
+  // An output with no secret label and no NAME= shape at all is still the dump.
+  const bare = await gone(seed, [seed], { command: `node -p 'process["env"]["APP_SEED"]'` });
+  assert.equal(bare.text, "[redacted:env-dump 1 lines]");
+  for (const command of ["set -e; make", "set +x; make", "bash deploy.sh", "make 2>&1 | tee build.log", "echo ok", "ps aux", "cat README.md"]) {
+    const out = await scrub(text.replace(seed, "gold"), { mode: "count", command });
+    assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
+  }
+});
+
+test("LVI (11-25 r3): a transcript's cut runs on past `#` and `>` lines, to the next `$`, `%` or `❯` prompt or a marker", async () => {
+  const seed = "Tallow4quarry62";
+  const yaml = await gone(`$ printenv APP_CONFIG\nregion: north\n# seed below\nseed ${seed}`, [seed]);
+  assert.equal(yaml.text, "$ printenv APP_CONFIG\n[redacted:env-dump 3 lines]");
+  const quoted = await gone(`$ env\nA=1\nB=l1\n> quoted\nC=${seed}\n$ ls\nREADME.md`, [seed]);
+  assert.equal(quoted.text, "$ env\n[redacted:env-dump 4 lines]\n$ ls\nREADME.md");
+  const continued = await gone(`$ printenv \\\n> APP_SEED\n${seed}`, [seed]);
+  assert.equal(continued.text, "$ printenv \\\n[redacted:env-dump 2 lines]");
 });
 
 test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {
@@ -2042,7 +2141,9 @@ test("LXII d: a credential file's or a .env's path anywhere in the call's comman
   const pgpass = `db:5432:app:svc:${pw}`;
   for (const [text, command, rule] of [
     [pgpass, "grep app ~/.pgpass", "credential-file"],
-    [pgpass, 'awk -F: "{print}" "$HOME/.pgpass"', "credential-file"],
+    // A print beside a variable is an env dump since 11-25 (an over-cut that fails closed); it holds the same span and
+    // env-dump comes first in the table, so it names the cut.
+    [pgpass, 'awk -F: "{print}" "$HOME/.pgpass"', "env-dump"],
     [pgpass, "cut -d: -f1-5 ~/.pgpass | head -n 3", "credential-file"],
     [`machine h.sample.zz login svc password ${pw}`, "tail -n 1 ~/.netrc", "credential-file"],
     [`{"auths":{"r.io":{"auth":"${pw}"}}}`, "jq . ~/.docker/config.json", "credential-file"],

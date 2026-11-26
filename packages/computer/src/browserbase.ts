@@ -54,6 +54,7 @@ import {
 	type ReleaseConfirm,
 	RECOVER_MS,
 	recoverCreate,
+	leftToConverge,
 	releaseConfirmed,
 	boundedRelease,
 	restBytes,
@@ -101,7 +102,17 @@ export const BROWSERBASE_MAX_LIFETIME_MS = 6 * 60 * 60_000;
 /** Browserbase's shortest session timeout: 60 s. */
 export const BROWSERBASE_MIN_LIFETIME_MS = 60_000;
 /** The statuses of a session that runs (PENDING bills once it starts); any other has ended. */
-const LIVE = new Set(["RUNNING", "PENDING"]);
+type SessionStatus = "RUNNING" | "PENDING" | "COMPLETED" | "ERROR" | "TIMED_OUT";
+const LIVE: ReadonlySet<SessionStatus> = new Set(["RUNNING", "PENDING"]);
+/** Every status a session reads as, ended ones included: a request's whole record (#leftToConverge). */
+const EVER: ReadonlySet<SessionStatus> = new Set([...LIVE, "COMPLETED", "ERROR", "TIMED_OUT"]);
+/**
+ * The order #sessions asks for the statuses, a session's own: it is PENDING, then RUNNING, then ended, and never goes
+ * back. Each group is asked once the one before has answered, so a session that moves on while the read runs is found
+ * by a later group, never missed between two (asked side by side, a session could leave RUNNING after the COMPLETED
+ * answer and before the RUNNING one, and be in neither). The ended statuses are asked together: none moves to another.
+ */
+const LIFECYCLE: ReadonlyArray<ReadonlyArray<SessionStatus>> = [["PENDING"], ["RUNNING"], ["COMPLETED", "ERROR", "TIMED_OUT"]];
 
 /** A label key Browserbase's metadata can carry once its dots are underscores: letters, digits and dots, so the mapping is one to one. */
 const LABEL_KEY = /^[A-Za-z0-9.]+$/;
@@ -175,7 +186,7 @@ export interface BrowserbaseApi {
 	create(body: Record<string, unknown>, signal?: AbortSignal): Promise<BrowserbaseSession>;
 	/** undefined when Browserbase does not know the session (404). */
 	retrieve(id: string, signal?: AbortSignal): Promise<BrowserbaseSession | undefined>;
-	list(query: { status: "RUNNING" | "PENDING"; q?: string }, signal?: AbortSignal): Promise<BrowserbaseSession[]>;
+	list(query: { status: SessionStatus; q?: string }, signal?: AbortSignal): Promise<BrowserbaseSession[]>;
 	/** "gone" when Browserbase does not know the session (404). */
 	release(id: string, signal?: AbortSignal): Promise<"gone" | "asked">;
 	debug(id: string, signal?: AbortSignal): Promise<BrowserbaseDebug>;
@@ -479,11 +490,11 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			// The session may have been made though its answer never came: found by this POST's attempt label and
 			// released, and the request is ended, so it is never made again.
 			this.#requests.end(request);
-			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(attempt)}`, causeOf(failed), "browserbase");
+			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(attempt, request)}`, causeOf(failed), "browserbase");
 		}
 		if (idProblem(made?.id, NAME) !== undefined) {
 			this.#requests.end(request);
-			return vendorFail("browserbase",`Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(attempt)}`);
+			return vendorFail("browserbase",`Browserbase POST /v1/sessions answered with no session id, so there is no session to connect to; ${await this.#recover(attempt, request)}`);
 		}
 		this.#requests.made(request);
 		// Another process's create of this request may have made one too (#converge): the older is answered.
@@ -492,9 +503,9 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		this.#requestOf.set(made.id, request);
 		const unusable = cdpUrlProblem(made.connectUrl, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
-			// The session is made and billed (keepAlive, up to its timeout): released here, not left to a later sweep.
-			const released = await this.release(refOf(made), "delete");
-			return vendorFail("browserbase",`Browserbase POST /v1/sessions made a session with no CDP URL to hand over: ${unusable}; ${released.ok ? "the session was released" : `the session was not released (${released.error.code}), and its labels let a sweep find it`}`);
+			// The session is made and billed (keepAlive, up to its timeout): released here, under the cleanup's own bound.
+			const released = await boundedRelease("session", made.id, this.#cleanupMs, (bound) => this.release(refOf(made), "delete", { signal: bound }));
+			return vendorFail("browserbase",`Browserbase POST /v1/sessions made a session with no CDP URL to hand over: ${unusable}; ${released.ok ? "the session was released" : `the session was not released (${released.error.message}), and its labels let a sweep find it`}`);
 		}
 		this.#urls.set(made.id, made.connectUrl as string);
 		return ok(refOf(made));
@@ -645,12 +656,19 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	 * session, of this request or another, carries an attempt label of its own and is left alone, even one another
 	 * instance has answered.
 	 */
-	#recover(labels: Record<string, string>): Promise<string> {
+	#recover(labels: Record<string, string>, request: string): Promise<string> {
 		const find = async (signal: AbortSignal): Promise<Result<string[]>> => {
 			const found = await this.#sessions(labels, signal);
 			return found.ok ? ok(found.value.map((s) => s.id)) : found;
 		};
-		return recoverCreate("session", find, (id, signal) => this.release({ id, name: id }, "delete", { signal }), this.#sleep, this.#cleanupMs);
+		const leave = (id: string, signal: AbortSignal) => this.#leftToConverge(request, id, signal);
+		return recoverCreate("session", find, (id, signal) => this.release({ id, name: id }, "delete", { signal }), this.#sleep, this.#cleanupMs, leave);
+	}
+
+	/** Whether a lost create's session is left to another create of its request (leftToConverge); a listing that fails releases it. */
+	async #leftToConverge(request: string, id: string, signal: AbortSignal): Promise<boolean> {
+		const made = await this.#sessions({ [CREATE_LABEL]: request }, signal, EVER);
+		return made.ok && leftToConverge(id, made.value.map((s) => ({ ...heldOf(s), live: LIVE.has(s.status as SessionStatus) })));
 	}
 
 	/**
@@ -682,7 +700,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			return vendorFailure("browserbase", NAME, "GET /v1/sessions/{id}", error);
 		}
 		if (found === undefined) return fail("not_found", `no Browserbase session has the id ${id}`);
-		if (!LIVE.has(found.status ?? "")) return fail("gone", `the Browserbase session ${id} has ended (${found.status ?? "no status"}): only a running session is attached or connected to`);
+		if (!LIVE.has(found.status as SessionStatus)) return fail("gone", `the Browserbase session ${id} has ended (${found.status ?? "no status"}): only a running session is attached or connected to`);
 		return ok(found);
 	}
 
@@ -716,22 +734,29 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	/**
 	 * The running and pending sessions with all of these labels. Browserbase is asked by status and by the first label a
 	 * query carries as it is; the match is the provider's own, so a lane that drops the query never hands back another's.
-	 * Both statuses must answer: a release trusts this list.
+	 * Both statuses must answer: a release trusts this list. `statuses` widens it, to the ended ones too (EVER). The
+	 * statuses are asked in a session's own order (LIFECYCLE), so every session there when the read starts is found.
 	 */
-	async #sessions(labels: Record<string, string>, signal?: AbortSignal): Promise<Result<BrowserbaseSession[]>> {
+	async #sessions(labels: Record<string, string>, signal?: AbortSignal, statuses: ReadonlySet<SessionStatus> = LIVE): Promise<Result<BrowserbaseSession[]>> {
 		const problem = browserbaseLabelsProblem(labels);
 		if (problem) return fail("invalid", problem);
 		if (Object.keys(labels).length === 0) return fail("invalid", "list and attach take at least one label: a Browserbase project holds sessions this provider did not make");
 		const first = Object.entries(labels).find(queryable);
 		const q = first === undefined ? undefined : `user_metadata['${metadataKey(first[0])}']:'${first[1]}'`;
-		let pages: BrowserbaseSession[][];
+		const found = new Map<string, BrowserbaseSession>();
 		try {
-			pages = await Promise.all((["RUNNING", "PENDING"] as const).map((status) => this.#api.list({ status, ...(q === undefined ? {} : { q }) }, signal)));
+			for (const group of LIFECYCLE) {
+				const asked = group.filter((status) => statuses.has(status));
+				if (asked.length === 0) continue;
+				const pages = await Promise.all(asked.map((status) => this.#api.list({ status, ...(q === undefined ? {} : { q }) }, signal)));
+				for (const s of pages.flat()) {
+					if (typeof s?.id === "string" && statuses.has(s.status as SessionStatus) && carries(metadataLabels(s.userMetadata), labels) && !found.has(s.id)) found.set(s.id, s);
+				}
+			}
 		} catch (error) {
 			return vendorFailure("browserbase", NAME, "GET /v1/sessions", error);
 		}
-		const seen = new Set<string>();
-		return ok(pages.flat().filter((s) => typeof s?.id === "string" && LIVE.has(s.status ?? "") && carries(metadataLabels(s.userMetadata), labels) && !seen.has(s.id) && seen.add(s.id)));
+		return ok([...found.values()]);
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {

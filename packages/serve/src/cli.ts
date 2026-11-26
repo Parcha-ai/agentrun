@@ -36,7 +36,7 @@ installEnvProxy();
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
-       agentrun-serve install-harness goose|cursor [--data DIR]
+       agentrun-serve install-harness goose|cursor|antigravity [--data DIR]
        agentrun-serve install-harness --recipe FILE [--data DIR]
        agentrun-serve sign-in-harness --recipe FILE [--data DIR]
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
@@ -88,7 +88,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     separated), installed into DIR with agentrun harness install --recipe FILE. Its harness runs once a
                     harness-check of it passed on DIR, through this server's model proxy (a plan-billed one's keys are
                     not saved on a server yet); a recipe the loader refuses, or whose id another harness has, refuses
-                    the start
+                    the start. FILE may be the name of a recipe AgentRun ships (antigravity), unless a file of that
+                    name is in this directory (./NAME names the file)
   --harness-sign-in run a person's runs of a plan-billed recipe with a sign-in on your own sign-in (agentrun harness
                     sign-in), never a schedule's or a trigger's. One owner's own machine alone: the start is refused
                     unless the server listens on loopback with no public address, keeps its store in DIR (no
@@ -246,20 +247,25 @@ if (process.argv[2] === "install-harness") {
     }
   };
   const { values, positionals } = read();
+  if (values.recipe !== undefined && positionals.length) usage("it takes a harness's name or --recipe FILE, not both.");
+  // A recipe AgentRun ships (the ACP package's: Google Antigravity's), by its name, is installed as its file is.
+  const { acpPackage: shipping } = await import("./acp-package.js");
+  const shipped = positionals.length === 1 ? shipping()?.bundledRecipePath?.(positionals[0]!) : undefined;
   // A recipe's harness (harness-recipe.ts): the recipe loaded under its five rules first, so a refused one downloads
-  // nothing; then its release for this platform, as the Goose install does it.
-  if (values.recipe !== undefined) {
-    if (positionals.length) usage("it takes a harness's name or --recipe FILE, not both.");
-    const [{ ArchiveInstallFailed }, { installRecipe, loadRecipe, recipeCheckLine, RecipeRefused }] = await Promise.all([import("./harness-archive.js"), import("./harness-recipe.js")]);
+  // nothing; then its release for this platform, as the Goose install does it. Which recipe resolved is said first.
+  if (values.recipe !== undefined || shipped) {
+    const [{ ArchiveInstallFailed }, { installRecipe, loadRecipe, recipeCheckLine, RecipeRefused, recipeSaid }] = await Promise.all([import("./harness-archive.js"), import("./harness-recipe.js")]);
     const data = resolve(values.data ?? defaultData());
     try {
-      const { recipe, file } = loadRecipe(values.recipe);
+      // A shipped recipe by the name given, never by its path: a file of that name in the directory refuses it (resolveRecipe).
+      const { recipe, file, bundled } = loadRecipe(shipped ? positionals[0]! : values.recipe!);
+      console.error(recipeSaid(recipe.label, file, bundled));
       const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "its files are checked" } as const;
       const { version, installed, binary, pinnedBy } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });
       const held = { recipe: "the recipe's tree pin", "first-seen": "the tree an earlier install recorded", recorded: "their tree recorded now, as the first one; a later binary or file beside it that differs is refused" }[pinnedBy];
       console.log(installed === "already"
         ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned files are there, so nothing was downloaded; held to ${held}).`
-        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary and every file beside it held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
+        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary and every file beside it held to ${held}). Check it with: ${recipeCheckLine(file, data)}${recipe.model.billing === "proxy" ? " --model PROVIDER/MODEL" : ""}`);
       process.exit(0);
     } catch (error) {
       if (!(error instanceof ArchiveInstallFailed) && !(error instanceof RecipeRefused)) throw error;
@@ -269,7 +275,7 @@ if (process.argv[2] === "install-harness") {
   }
   // The owner-installed harnesses (harness-owned.ts), each one's id, label, install and what its install checks.
   const installers = await Promise.all([import("./harness-goose.js").then((m) => m.GOOSE), import("./harness-cursor.js").then((m) => m.CURSOR)]);
-  const names = installers.map((each) => each.id).join(" or ");
+  const names = [...installers.map((each) => each.id), ...(shipping()?.BUNDLED_RECIPES ?? [])].join(" or ");
   if (positionals.length !== 1) usage(`it takes one harness: ${names}.`);
   const chosen = installers.find((each) => each.id === positionals[0]);
   if (!chosen) usage(`it installs ${names}, not ${positionals[0]}: claude-agent and codex install on first use, and pi and opencode come with AgentRun.`);
@@ -587,6 +593,29 @@ if (process.argv[2] === "eval-template") {
   } catch (error) {
     console.error(`agentrun-serve: ${(error as Error).message}`);
     process.exit(2);
+  }
+  // Which recipe each --harness-recipe NAME resolved to, said before the start: one AgentRun ships (resolveRecipe), and a
+  // name a file here also holds refuses the start, saying both.
+  if (harnessRecipesOf(values["harness-recipe"], process.env).length) {
+    const { loadRecipe, RecipeRefused, recipeSaid, resolveRecipe } = await import("./harness-recipe.js");
+    for (const given of harnessRecipesOf(values["harness-recipe"], process.env)) {
+      let resolved: { file: string; bundled: boolean };
+      try {
+        resolved = resolveRecipe(given);
+      } catch (error) {
+        if (!(error instanceof RecipeRefused)) throw error;
+        console.error(`agentrun-serve: --harness-recipe ${given}: ${error.message}`);
+        process.exit(2);
+      }
+      // A refused recipe's words are the start's own, as for a file (the harness table loads each).
+      if (resolved.bundled) {
+        let label = given;
+        try {
+          label = loadRecipe(resolved.file).recipe.label;
+        } catch {}
+        console.error(recipeSaid(label, resolved.file, true));
+      }
+    }
   }
   const accounts = !apiOnly && process.env.AGENTRUN_ACCOUNTS !== "0";
   // The address first (listen-first.ts): the port bound and named before the rest of the server loads, then answering that
