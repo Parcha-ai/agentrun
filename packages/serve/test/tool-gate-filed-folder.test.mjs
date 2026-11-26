@@ -185,6 +185,15 @@ test("on a computer that mounts the run's folder, while a folder is filed, a scr
   }
 });
 
+test("a `..` or `//` spelling that starts at /workspace and leaves it is refused: the path is held as the computer cleans it", async () => {
+  const gate = mountedGate(true);
+  for (const [op, extra] of Object.entries(OPS)) {
+    for (const given of ["/workspace/../proc/self/root/workspace/stripe/pages/x", "/workspace/./../dev/fd/3/x", "//proc/self/root/workspace/x", "/workspace//..//proc/self/cwd/x", "/workspace/stripe/pages/../../../proc/1/root/workspace/stripe/pages/x", "/workspace/../workspace-old/x"]) {
+      assert.equal(await verdictOf(gate, "computer_op", { op, args: { path: given, ...extra } }), outside(op, given), `${op} ${given}`);
+    }
+  }
+});
+
 test("a relative path is refused: the computer is handed the path as given, so only an absolute one is the path the gate checked", async () => {
   const gate = mountedGate(true);
   for (const [op, extra] of Object.entries(OPS)) {
