@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, open, readdir, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -264,10 +265,47 @@ for (const [kind, script] of Object.entries(SCRIPTS)) {
       assert.equal(call.header, network.has(call.command), `the header is in ${call.command}'s environment only if it reaches GitHub: ${call.args}`);
       assert.equal(call.count, network.has(call.command), `GIT_CONFIG_COUNT likewise: ${call.args}`);
       assert.match(` ${call.args} `, / -c core\.hooksPath=\/dev\/null /, `hooks off: ${call.args}`);
+      if (network.has(call.command)) {
+        assert.match(` ${call.args} `, / -c http\.sslVerify=true /, `TLS verified on a call that reaches GitHub: ${call.args}`);
+        assert.match(` ${call.args} `, / -c http\.proxy= /, `no proxy on a call that reaches GitHub: ${call.args}`);
+      }
     }
     const init = calls.find((call) => call.command === "init");
     assert.match(` ${init?.args} `, / --template= /, "git init copies no template");
     assert.ok(!existsSync(marks), `no hook ran: ${existsSync(marks) ? readFileSync(marks, "utf8") : ""}`);
+    await made.end();
+  });
+
+  test(`checkout ${kind}, run: a proxy and sslVerify=false another writer of the folder puts in the checkout's .git/config before its fetch are not used: the fetch goes to GitHub itself`, { timeout: 120_000 }, async (t) => {
+    const dir = await scratch(t);
+    const server = await privateServer(t, dir);
+    const { folder, workspace } = await runFolder(dir);
+    // A proxy that keeps the proxy requests sent to it (an absolute URL, or CONNECT), and answers none. Anything else that
+    // dials a new loopback port is not counted.
+    const reached = [];
+    const proxy = createServer((socket) => {
+      socket.once("data", (chunk) => {
+        const line = chunk.toString("latin1").split("\r\n")[0];
+        if (/^(?:CONNECT \S+|[A-Z]+ https?:\/\/\S+) HTTP\//.test(line)) reached.push(line);
+        socket.destroy();
+      });
+      socket.on("error", () => {});
+    });
+    await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise((resolve) => proxy.close(resolve)));
+    // A git in front of the run's PATH that, once the remote is added, writes the proxy and sslVerify=false into the
+    // checkout's own .git/config, as a writer to the shared folder could between the init and the fetch.
+    const spy = join(dir, "spy");
+    await mkdir(spy);
+    const config = `[http]\\n\\tproxy = http://127.0.0.1:${proxy.address().port}\\n\\tsslVerify = false\\n`;
+    writeFileSync(join(spy, "git"), `#!${system("sh")}\n'${system("git")}' "$@"; code=$?\ncase " $* " in *" remote add origin "*) printf '${config}' >> .git/config ;; esac\nexit $code\n`, { mode: 0o755 });
+    const spied = Object.create(workspace);
+    spied.exec = (argv, options) => workspace.exec(argv, { ...options, env: { ...options.env, PATH: `${spy}:${options.env.PATH}` } });
+    const made = await script.run({ workspace: spied, mint: server.mint }, server);
+    assert.deepEqual(reached, [], `no request went through the proxy: ${made.note}`);
+    assert.match(readFileSync(join(folder, CHECKOUT_DIR, ".git", "config"), "utf8"), /proxy = http:\/\/127\.0\.0\.1:/, "the proxy was written before the fetch");
+    assert.equal(git(join(folder, CHECKOUT_DIR), "rev-parse", "HEAD"), script.at(server.pull), made.note);
+    assert.ok(server.seen.length > 0, "the fetch reached GitHub itself");
     await made.end();
   });
 

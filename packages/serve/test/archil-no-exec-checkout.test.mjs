@@ -187,6 +187,35 @@ test("checkoutWhereNoExec, a computer that mounts the run's folder but that the 
   assert.equal(ran.length, 1, `its fetch ran in the computer: ${fresh.note}`);
 });
 
+test("checkoutWhereNoExec, a computer the claim did not start whose mount still holds a repo/ folder (an earlier claim's checkout whose removal failed): the run is told that folder is not this claim's checkout and may be stale; with none there, or a look that fails, it is told there is no repo/ folder", { timeout: 60_000 }, async (t) => {
+  const deps = { store: { triggerSettings: { get: async () => [] } }, sealKey: Buffer.alloc(32, 1) };
+  const named = pullRepo(join(await scratch(t), "gh"), "acme/widgets");
+  const ran = [];
+  const looked = [];
+  const computer = (stat) => ({ exec: async (argv) => (ran.push(argv), { code: 0, signal: null, stdout: new Uint8Array(), stderr: "", timedOut: false, truncated: false }), stat: async (path) => (looked.push(path), stat(path)) });
+  for (const kind of Object.keys(KINDS)) {
+    const { launch } = KINDS[kind](named);
+    const told = (stat) => checkoutWhereNoExec(deps, { workspace: computer(stat), fresh: false }, GCP, launch, { hold: () => {} }, undefined, () => {}, kind, () => {});
+    const stale = await told((path) => (path === CHECKOUT_DIR ? { kind: "dir", size: 0, mtimeMs: 0 } : undefined));
+    assert.match(stale.note, /^No checkout was made: /, `${kind}: ${stale.note}`);
+    assert.doesNotMatch(stale.note, /there is no repo\/ folder/, `${kind}: never that there is none, with one there`);
+    assert.match(stale.note, /The repo\/ folder in the run's folder is not this claim's checkout: an earlier claim's, whose removal failed, so it may be stale\./, `${kind}: ${stale.note}`);
+    assert.match(stale.note, REUSED_WORDS);
+    for (const [what, stat] of [
+      ["none there", () => undefined],
+      ["a look that fails", () => {
+        throw new Error("computerd went away");
+      }],
+    ]) {
+      const none = await told(stat);
+      assert.match(none.note, /^No checkout was made, so there is no repo\/ folder: /, `${kind}, ${what}: ${none.note}`);
+      assert.doesNotMatch(none.note, /stale/, `${kind}, ${what}`);
+    }
+  }
+  assert.deepEqual([...new Set(looked)], [CHECKOUT_DIR], "it looks for repo/ alone");
+  assert.deepEqual(ran, [], "nothing ran in the computer");
+});
+
 test("a checkout through a computer's exec (an attached Workspace) carries the App's token on the process's stdin alone: never in its argv or the environment it starts with, never in any other call the computer is sent; the checkout lands, the token is revoked, and the run's folder keeps none", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const gh = join(dir, "gh");
