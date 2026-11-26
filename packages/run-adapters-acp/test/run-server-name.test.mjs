@@ -6,6 +6,7 @@
 // run is told once which file declared it, and a call titled under the old name is another server's, asked at the gate.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test as nodeTest } from 'node:test';
@@ -25,8 +26,10 @@ const given = (recipe) => fakeEvents(recipe).filter((e) => e.type === 'new' || e
 const write = (file, text) => (mkdirSync(dirname(file), { recursive: true }), writeFileSync(file, text));
 const declaring = (name) => JSON.stringify({ mcpServers: { [name]: { url: 'http://127.0.0.1:9/mcp' } } });
 
-/** Cursor's shapes on the fake: the title tie, the late-named call, and the name kept with the session. */
-const cursorLike = (dir, script, recipe = {}) => fakeRecipe(dir, { style: 'cursor', announce: 'late', keepsName: true, script }, recipe);
+/** Cursor's shapes on the fake: the title tie, the late-named call, and the name kept with the session; the work
+ *  directory's `.cursor/mcp.json` listed as a config the agent reads, as Cursor's recipe lists it (a run keeps its name
+ *  only under a recipe that lists one). */
+const cursorLike = (dir, script, recipe = {}) => fakeRecipe(dir, { style: 'cursor', announce: 'late', keepsName: true, script }, { mcpConfigs: ['.cursor/mcp.json'], ...recipe });
 
 /** Two starts of one run, on one store, each in a runner of its own (its own sessions folder): turn `a` on the
  *  first, `b` on the second. `between(kept)` runs after the first closes; `look_up` runs `during(kept)` too. */
@@ -69,6 +72,8 @@ test("a session loaded by a later start is given the run's own name again: Curso
 for (const [where, path, file] of [
   ['the work directory', '.cursor/mcp.json', (cwd) => join(cwd, '.cursor/mcp.json')],
   ['HOME (a state path)', '~/.fake-acp/mcp.json', (_cwd, sessionsDir) => join(homeOf(sessionsDir), '.fake-acp/mcp.json')],
+  // `$HOME/` is how `files` spells a HOME path: listed so, the config is HOME's, never the work directory's.
+  ['HOME, listed as $HOME/', '$HOME/.fake-acp/mcp.json', (_cwd, sessionsDir) => join(homeOf(sessionsDir), '.fake-acp/mcp.json')],
 ]) {
   test(`a config in ${where} that declares a server under the run's name has it refused at the next start: a fresh name, said once, and a call titled under the old one asks the gate naming that server`, async (t) => {
     const cwd = scratch();
@@ -94,6 +99,8 @@ for (const [where, path, file] of [
 for (const [what, text, said] of [
   ['larger than MCP_CONFIG_MAX (padded with whitespace)', (name) => declaring(name).replace('{', `{${' '.repeat(1024 * 1024)}`), /could not be read/],
   ['that does not parse as JSON but names it (a comment, JSONC)', (name) => `// ours\n${declaring(name).slice(0, -1)},}`, /does not parse/],
+  // A JSONC reader decodes `\u` escapes in a key: the name spelled with them is not in the text as it is.
+  ['that does not parse as JSON and spells a name with \\u escapes', (name) => `// ours\n${declaring(name).replace(name, [...name].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('')).slice(0, -1)},}`, /does not parse/],
 ]) {
   test(`a config ${what} has the run's name refused at the next start, and says why`, async (t) => {
     const cwd = scratch();
@@ -107,6 +114,42 @@ for (const [what, text, said] of [
     assert.match(notes[0], said);
     assert.match(notes[0], new RegExp(kept));
     assert.deepEqual(asked[1].map((c) => [c.tool, c.args.server]), [['acp_other', kept]], "a call under the old name is another server's");
+  });
+}
+
+// A listed config that is there but no regular file is never read, and cannot be told to declare nothing: a FIFO (a
+// process that outlived the agent's could write a declaration into it after the check) or a folder.
+for (const [what, make] of [
+  ['a FIFO', (file) => (mkdirSync(dirname(file), { recursive: true }), execFileSync('mkfifo', [file]))],
+  ['a folder', (file) => mkdirSync(file, { recursive: true })],
+]) {
+  test(`a listed config that is ${what}, not a regular file, has the run's name refused at the next start, and says it could not be read`, async (t) => {
+    const cwd = scratch();
+    const recipe = cursorLike(scratch(), [{ say: 'one' }, { call: 'look_up', args: { q: 'x' } }, { sayLastResult: true }]);
+    const { kept, second } = await twoStarts(t, recipe, { cwd, between: () => make(join(cwd, '.cursor/mcp.json')) });
+    const [, fresh] = given(recipe);
+    assert.match(fresh ?? '', START);
+    assert.notEqual(fresh, kept, 'the kept name is refused for this start');
+    const notes = notices(second.events);
+    assert.equal(notes.length, 1, JSON.stringify(notes));
+    assert.match(notes[0], /could not be read/);
+  });
+}
+
+// The kept name is safe only as long as each config the agent reads is checked at each start. A tie recipe that lists
+// none (Antigravity's, an owner's own) could have a config the agent wrote in one start claim the name the next start
+// is given, and the tie would answer its calls past our gate: under it each start names our server afresh, as before.
+for (const [what, over] of [['no mcpConfigs', { mcpConfigs: undefined }], ['an empty mcpConfigs', { mcpConfigs: [] }]]) {
+  test(`a tie recipe with ${what} names our server afresh at each start: a config written in one start that declares its name is another server's at the next, and its call asks the gate`, async (t) => {
+    const cwd = scratch();
+    const recipe = cursorLike(scratch(), [{ call: 'look_up', args: { q: 'x' } }, { say: 'one' }, { call: 'look_up', args: { q: 'y' } }, { sayLastResult: true }], over);
+    const { kept, second, asked } = await twoStarts(t, recipe, { cwd, during: (name) => write(join(cwd, '.cursor/mcp.json'), declaring(name)) });
+    assert.match(kept, START);
+    const [, fresh] = given(recipe);
+    assert.match(fresh ?? '', START);
+    assert.notEqual(fresh, kept, 'each start its own name');
+    assert.deepEqual(notices(second.events), [], 'nothing refused: no name was kept');
+    assert.deepEqual(asked[1].map((c) => [c.tool, c.args.server]), [['acp_other', kept]], "a call under the first start's name is another server's");
   });
 }
 
