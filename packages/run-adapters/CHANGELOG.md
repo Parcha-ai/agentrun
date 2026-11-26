@@ -12,6 +12,7 @@
   - A failed call's error refused for a window too small to cut it in keeps its first line (as much as fits beside the note in the 400 characters a result always keeps whole), so the model reads what went wrong.
   - A raise that reaches an agentic run's claim while that claim takes a retry of the raise that resumed the run (a raise covering the run's next park, during the retry's commit) waits for the run's next claim too, as one reaching a claim parking the run again does. Before, the claim could take it and park, the run left with nothing to wake it.
   - The run's view shows the cap park a run stands at as its runner reads it: a raise entry clears only the park it names. A raise that names none (checked against the run while it worked) no longer hides a park journaled before it.
+- `@parcha/agentrun-kernel/kernel` exports `savePathOf(given)`, the function `computer_screenshot` resolves its `save_as` with: a path relative to the run's folder, normalized (posix), inside it, ending `.png`, or a thrown refusal in words. A host's tool gate can then hold a `save_as` at the path the screenshot is saved at, not by a reading of its own. AgentRun's serve does this for a folder an MCP tool's file setting files its answers in. Nothing else changes: the screenshot resolves `save_as` as before. <!-- changes/kernel-save-path-of.md -->
 
 ## 0.1.0-beta.63 (2026-11-26)
 
