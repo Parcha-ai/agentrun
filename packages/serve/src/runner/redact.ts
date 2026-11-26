@@ -64,6 +64,13 @@ export interface HeldRedact extends Redact {
 
 const isHeld = (redact: Redact): redact is HeldRedact => typeof (redact as Partial<HeldRedact>).hold === "function";
 
+/** `redact` when it is a held redactor (heldRedactor), else a throw naming `where` (a loop or a run's spec): one given
+ *  none fails before it opens a key, and never runs with the keys it opens unheld. For a caller the types don't reach. */
+export function mustHold(redact: HeldRedact | undefined, where: string): HeldRedact {
+  if (typeof redact !== "function" || !isHeld(redact)) throw new TypeError(`${where} was given no redactor that holds keys (heldRedactor), so it does not run: a key it opened would reach the run's record uncut`);
+  return redact;
+}
+
 /** `base`, then every value held since (`hold`). One that holds already is itself: wrapped once, the one instance. */
 export function heldRedactor(base: Redact): HeldRedact {
   if (isHeld(base)) return base;

@@ -21,6 +21,7 @@ import { capNowOf, KINDS } from "./journal-kinds.js";
 import { bookedSpend } from "./metrics.js";
 import { stopEnd, type AlsoRow, type Claim, type EndOfRunAnswer, type EndOfRunKept, type LoopFactory, type StopReason } from "./loop-contract.js";
 import { END_PATCH_MS, END_PATCH_UNKNOWN, REAL_TIMER } from "./loop.js";
+import { mustHold } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 
 const ROOT = ROOT_CONVERSATION_ID;
@@ -32,6 +33,7 @@ export function createSdkLoop(
   const execution=launch.cli_learning ?? launch.sdk!;
   const MARK=launch.cli_learning?"agentrun.cli":"agentrun.sdk";
   return (deps) => {
+    mustHold(deps.redact, "An SDK loop");
     let stopped: StopReason | undefined;
     const abort = new AbortController(),
       signal = AbortSignal.any([deps.signal, abort.signal]);
@@ -92,7 +94,7 @@ export function createSdkLoop(
             });
             return (asked?.data as { kept?: EndOfRunKept } | undefined)?.kept;
           };
-          const redacted = (value: string) => deps.redact?.(value) ?? value;
+          const redacted = (value: string) => deps.redact(value);
           let also: readonly AlsoRow[] | undefined;
           const droppedLearning = (cancelled: boolean): readonly AlsoRow[] | undefined =>
             launch.learning && !launch.learning.use ? [{
@@ -427,7 +429,7 @@ export function createSdkLoop(
                 }).filter((turn) => !turn.givenBack && !turn.unsent);
                 const tokens = (key: keyof typeof spend.tokens) =>
                   spend.unmetered || turns.some((turn) => typeof turn.usage?.[key] !== "number") ? null : spend.tokens[key];
-                const path = completeEvidence ? await runPathMetricsOverStore(host.store, claim.runId, launch) : {};
+                const path = completeEvidence ? await runPathMetricsOverStore(host.store, claim.runId, launch, { redact: deps.redact }) : {};
                 return {
                   costUsd: spend.usd,
                   metrics: { ...metrics, input: tokens("input"), output: tokens("output"), cacheRead: tokens("cacheRead"), cacheWrite: tokens("cacheWrite"), ...path },
@@ -450,7 +452,7 @@ export function createSdkLoop(
             also = droppedLearning(cancelled);
             const patch = await patchOf(async () => ({
               costUsd: usage?.cost_usd ?? null,
-              metrics: { ...metrics, ...(completeEvidence ? await runPathMetricsOverStore(host.store, claim.runId, launch) : {}) },
+              metrics: { ...metrics, ...(completeEvidence ? await runPathMetricsOverStore(host.store, claim.runId, launch, { redact: deps.redact }) : {}) },
             }));
             await append(
               [

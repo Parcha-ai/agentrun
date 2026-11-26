@@ -87,7 +87,7 @@ test("--help and -h print the usage to stdout and exit 0; a bad argument is stil
     for (const args of [[flag], ["/nowhere", flag, "--known-answer"]]) {
       const result = run(...args);
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi,opencode,copilot\] \[--threads N\] \[--read-ahead BYTES\[k\|m\|g\]\] --known-answer\n/);
+      assert.match(result.stdout, /^usage: agentrun-import <home> \[--sources claude-code,codex,pi,opencode,copilot\] \[--threads N\] \[--read-ahead BYTES\[k\|m\|g\]\] --known-answer \| --cache\n/);
       assert.equal(result.stderr, "");
     }
   }

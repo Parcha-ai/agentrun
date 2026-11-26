@@ -89,7 +89,7 @@ import { computerTurnedOff, hadComputer, recordComputerOff, type RunComputerHold
 import type { KeptKind, MadeKind, Replaced } from "../workspace/computer-for-claim.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
-import { type HeldRedact, heldRedactor, holdClaimed, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { type HeldRedact, holdClaimed, mustHold, type Redact, runnerSecrets } from "./redact.js";
 import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
@@ -582,13 +582,14 @@ export function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, dep
 }
 
 async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim, holds: SpecHolds, runner: RunnerHarness): Promise<AdapterRunSpec> {
+  mustHold(run.redact, "A pi run's spec");
   const context = BACKGROUND_CONTEXT;
   // What this claim may reach on loopback, read once for its MCP servers and its calendar_events alike (mcpReachOf).
   const reach = await mcpReachOf(deps);
   // The runner's one redactor (the loop's, LoopDeps.redact), for every text a secret could reach: the spec's log lines
-  // (a release, a workspace's end), the model route's translation and the session's model proxy. A spec built with no
-  // runner around it cuts every secret the runner's env holds. It holds the keys the claim opens (below), too.
-  const cut = heldRedactor(run.redact ?? secretRedactor(runnerSecrets(deps.env)));
+  // (a release, a workspace's end), the model route's translation and the session's model proxy. It holds the keys the
+  // claim opens (below), too.
+  const cut = run.redact;
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   holds.logTo(log);
   const runRow = await deps.store.runs.get(claim.runId);
@@ -1023,7 +1024,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
   // A held run (no audits) takes none, and its runner refuses one too (run-child-host.ts heldFor).
-  const endOfRun = audits === undefined ? undefined : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  const endOfRun = audits === undefined ? undefined : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, log, redact: run.redact }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -1036,7 +1037,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     log,
     // A workflow draft's decision nodes are checked against the host's decision providers, on its keys (LS-07).
     decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, DECISION_PROVIDER_KEYS)) }),
-  }), { ...audits, launch, ...(run.redact ? { redact: run.redact } : {}) });
+  }), { ...audits, launch, redact: run.redact });
 
   return {
     adapter,
@@ -1105,7 +1106,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       // The path it took, the learned revision it ran on, its learned workflow calls and why its first choice served or
       // did not, for a run that learns (workflow-first.ts pathMetrics), by the one writer every harness's end calls
       // (runPathMetricsOverStore).
-      const path = await runPathMetricsOverStore(deps.store, claim.runId, launch, { ...(run.redact ? { redact: run.redact } : {}), choice: firstChoice.reason });
+      const path = await runPathMetricsOverStore(deps.store, claim.runId, launch, { redact: run.redact, choice: firstChoice.reason });
       // A run its learned workflow served first: that call is on the loop's record (no pi answer carries its tokens), so its
       // metrics are its booking's, as a CLI harness's run reads them: the workflow's nodes and the agent's own after a handback.
       // An MCP tool called by a hashed wire name is counted under its catalog name, as its timeline names it.

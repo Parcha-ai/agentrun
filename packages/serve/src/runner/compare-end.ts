@@ -27,7 +27,7 @@ const GRADER_MAX_TOKENS = 1_000;
 export type CompareEndDeps = {
   readonly store: Store;
   readonly log: (line: string) => void;
-  readonly redact?: (text: string) => string;
+  readonly redact: (text: string) => string;
 };
 
 /** The job input as the grader reads it: the launch's text, or its typed input as JSON. */
