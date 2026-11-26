@@ -11,11 +11,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { test } from "node:test";
+import { dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 import { scratch, serve } from "./support.mjs";
 
 const { WORKSPACE_ROUTES, servedScoped } = await import("../dist/api-only.js");
 const { ROUTES } = await import("../dist/server.js");
-const { openSqliteStore, migrationsIn, runnerOn } = await import("../dist/store/index.js");
+const { openPostgresStore, openSqliteStore, migrationsIn, runnerOn } = await import("../dist/store/index.js");
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 const { workspaceTokensFrom } = await import("../dist/workspace-scope.js");
 const { backfillMapOf, backfillWorkspaces, workspaceBackfillMain } = await import("../dist/workspace-backfill.js");
@@ -282,6 +283,31 @@ test("on SQLite the server adds the workspace columns to a store an earlier buil
   const server = await openSqliteStore({ file });
   t.after(() => server.close());
   assert.equal((await server.schemaState()).version, SCHEMA_VERSION, "no version step");
+  await workspaceRows(server);
+});
+
+test("on Postgres the store keeps each agent's, run's and imported package's workspace, migrated through 0033", postgresOnly("the Postgres store"), async (t) => {
+  const schema = await freshSchema();
+  t.after(() => dropSchema(schema));
+  const store = await openPostgresStore({ url: PG_URL, schema });
+  try {
+    assert.equal((await store.schemaState()).version, Math.max(...migrationsIn().map((one) => one.version)), "every migration applied, 0033 among them");
+    await store.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+    await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+    await workspaceRows(store);
+    await store.agents.create({ id: "agent-2", name: "Agent two", workspace: W2 }, { id: "rev-2", kind: "agentic", body: { instructions: "Answer." } });
+    assert.equal(await store.agents.workspace("agent-2"), W2);
+    assert.deepEqual((await store.agents.list({ workspace: W2 })).map((a) => a.id), ["agent-2"]);
+    await store.importedTemplates.put({ id: "pkg-1", source: "upload:pkg-1", sha: "a".repeat(40), publisher: "", files: {} }, W1);
+    await store.importedTemplates.put({ id: "pkg-2", source: "upload:pkg-2", sha: "b".repeat(40), publisher: "", files: {} });
+    assert.deepEqual(Object.fromEntries(await store.importedTemplates.workspaces()), { "pkg-1": W1, "pkg-2": null });
+  } finally {
+    await store.close();
+  }
+});
+
+/** `agent-1` (run `run-1`) made unscoped on `store`: its workspace, its runs', the lists' filters and the backfill's adopt. */
+async function workspaceRows(server) {
   assert.equal(await server.agents.workspace("agent-1"), null);
   assert.equal(await server.runs.workspace("run-1"), null);
   assert.equal(await server.agents.workspace("agent-none"), undefined);
@@ -297,7 +323,7 @@ test("on SQLite the server adds the workspace columns to a store an earlier buil
   await server.runs.create({ id: "run-2", agentId: "agent-1", revisionId: "rev-1", workspace: W2 });
   assert.equal(await server.runs.workspace("run-2"), W2);
   assert.deepEqual((await server.runs.listed({ workspace: W2, archived: false, limit: 10, offset: 0 })).rows.map(({ row }) => row.id), ["run-2"]);
-});
+}
 
 test("workspace-backfill sets agents with no workspace, refuses one in another, and writes nothing without --apply", async (t) => {
   const dir = await scratch(t);
