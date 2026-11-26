@@ -709,8 +709,9 @@ export class HostedProvider implements ComputerProvider {
 
 	/** taken: the vendor refused this create's name as one a machine has (exists), so the name's machine is read once more. */
 	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal, taken?: Result<never>): Promise<Result<CreatedComputer>> {
-		const also = nameAsk(this.host, spec);
-		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal, also);
+		// By the request's name alone, never narrowed by this spec's run and epoch (nameAsk): the request's computer made
+		// under another run or epoch is found, and refused as exists by #again, never made twice.
+		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
 		if (!listed.ok) return listed;
 		const found = listed.value.filter((machine) => ours(machine.labels, name));
 		if (found.length === 0) {
@@ -726,7 +727,7 @@ export class HostedProvider implements ComputerProvider {
 		const { ref, made } = launched.value;
 		// From here the machine exists: every step takes the caller's signal, and a failure or an abort deletes it.
 		// Another provider instance's create of this request may have made one too (#converge): the oldest is kept.
-		const first = await this.#converge(name, ref.id, signal, also);
+		const first = await this.#converge(name, ref.id, signal);
 		if (first.ok && first.value !== undefined && first.value.id !== ref.id) return this.#again(spec, name, first.value, signal);
 		const prepared = await this.#prepare(spec, ref, made, signal);
 		const given = this.#given.get(ref.id);
@@ -734,7 +735,7 @@ export class HostedProvider implements ComputerProvider {
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" }, signal);
 		if (!prepared.ok) {
 			// A create of this request on another instance, whose machine is older, deletes this one under it: answer that one.
-			const kept = await this.#converge(name, ref.id, signal, also);
+			const kept = await this.#converge(name, ref.id, signal);
 			if (kept.ok && kept.value !== undefined && kept.value.id !== ref.id) {
 				await this.#kill(ref.id);
 				return this.#again(spec, name, kept.value, signal);
@@ -743,7 +744,7 @@ export class HostedProvider implements ComputerProvider {
 		}
 		// The last read of the name, once this machine is listed: one made by another instance and listed only now is
 		// settled here, the oldest kept and every other deleted.
-		const last = await this.#converge(name, ref.id, signal, also);
+		const last = await this.#converge(name, ref.id, signal);
 		if (!last.ok) return this.#abandon(ref, last.error, signal, true);
 		if (last.value !== undefined && last.value.id !== ref.id) return this.#again(spec, name, last.value, signal);
 		return ok({ ...ref, ...(prepared.value.length > 0 ? { notes: prepared.value } : {}), ...(given === undefined ? {} : { resources: given }) });
@@ -771,10 +772,11 @@ export class HostedProvider implements ComputerProvider {
 	 * more than one machine holds the name, the oldest (createdAt, or the lowest id where any has none) is kept, and every
 	 * other is deleted and read back gone, its Archil folder let go first. Every instance picks the same one from the
 	 * same listing. Its value is the machine kept, or undefined when mine holds the name alone (or nothing is listed yet).
-	 * `also`: the run and epoch the listing asks beside the name (nameAsk).
+	 * The listing is by the name alone, never narrowed (nameAsk): two creates of one request that ask another run or epoch
+	 * must still see each other's machine, so one is kept and the other answered exists.
 	 */
-	async #converge(name: string, mine: string, signal?: AbortSignal, also?: Record<string, string>): Promise<Result<Machine | undefined>> {
-		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal, also);
+	async #converge(name: string, mine: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
+		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
 		if (!listed.ok) return listed;
 		const holders = listed.value.filter((machine) => ours(machine.labels, name) && alive(machine.state));
 		if (!holders.some((machine) => machine.id !== mine)) return ok(undefined);
@@ -984,7 +986,8 @@ export class HostedProvider implements ComputerProvider {
 	 * Every machine carrying a name create gave, deleted and read back gone: for a create that may have made one whose
 	 * id never came (mayHaveMade), never after a refusal, where a machine under the name is another's. The
 	 * listing shows a new machine a moment after the vendor makes it, so it is read for the name until one shows or
-	 * listedMs passes, as create's own wait reads it. Best effort, in words. `also`: as #converge's.
+	 * listedMs passes, as create's own wait reads it. Best effort, in words. `also`: this create's run and epoch
+	 * (nameAsk), which a machine it made carries in its name.
 	 */
 	async #deleteNamed(name: string, also?: Record<string, string>): Promise<string> {
 		const { listedMs, pollMs } = this.#timeouts;
@@ -1813,6 +1816,8 @@ const byName = (name: string): Record<string, string> => ({ [COMPUTER_LABEL]: "1
  * What a listing by a create's name asks beside byName on a host whose names carry the run and epoch (facts.labels.named):
  * the spec's run and epoch, where it has both, so the host can look up the whole name. Only asked, never required: a
  * machine of the name is kept whatever its get says of them (a sandbox before its labels file, read by its name alone).
+ * Only the sweeps for a machine this create made ask it (#waitListed, #deleteNamed): that machine's name is the whole
+ * name. The first check and #converge look for any machine of the request, whatever run or epoch it was made with.
  */
 function nameAsk(host: MachineHost, spec: ComputerSpec): Record<string, string> | undefined {
 	const run = spec.labels?.[RUN_LABEL];

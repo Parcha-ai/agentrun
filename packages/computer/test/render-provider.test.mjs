@@ -617,19 +617,30 @@ test("a labels file its guest rewrote to another run or epoch than its name's is
 	}
 });
 
-test("a create's sweeps by name, its run and epoch known, ask Render for the sandbox's whole name and read no other page: a workspace of more than 100 pages doesn't fail it", async () => {
+test("a create's wait to be listed asks Render for the sandbox's whole name, one page; its first check and convergence read every page by the request's name, so a workspace past 100 pages refuses it before any sandbox is made", async () => {
 	const dial = dialServer();
 	const daemonPath = fileURLToPath(import.meta.url);
-	const render = fakeRender({ start: (sandbox, script) => bootDial({ ...sandbox.env, AGENTRUN_ATTACH_URL: /AGENTRUN_ATTACH_URL='([^']*)'/.exec(script)[1] }, dial, { daemon: readFileSync(daemonPath) }) });
-	// 100 pages of 100 is the most a listing reads (MAX_PAGES): one more sandbox than that.
-	for (let i = 0; i <= 100 * 100; i++) plant(render, `sbx-other${String(i).padStart(12, "0")}`, `someone-else-${i}`);
-	const made = provider(render, { dial, daemonPath, timeouts: { pollMs: 1, listedStableMs: 0 } });
-	const created = await made.create({ image: BUILD, lifetimeMs: 600_000, network: "none", labels: { "agentrun.run": "run-1", "agentrun.epoch": "2" } }, { requestId: "render-named-sweep" });
+	const booting = () => fakeRender({ start: (sandbox, script) => bootDial({ ...sandbox.env, AGENTRUN_ATTACH_URL: /AGENTRUN_ATTACH_URL='([^']*)'/.exec(script)[1] }, dial, { daemon: readFileSync(daemonPath) }) });
+	const spec = { image: BUILD, lifetimeMs: 600_000, network: "none", labels: { "agentrun.run": "run-1", "agentrun.epoch": "2" } };
+	const options = { dial, daemonPath, timeouts: { pollMs: 1, listedStableMs: 0 } };
+	const render = booting();
+	const created = await provider(render, options).create(spec, { requestId: "render-named-sweep" });
 	assert.equal(created.ok, true, created.ok ? "" : `${created.error.code}: ${created.error.message}`);
 	const whole = `${created.value.name}-r${runHash("run-1")}-e2`;
-	const listings = render.calls.filter(({ method, url }) => method === "GET" && url.pathname === "/v1/sandboxes");
-	assert.ok(listings.length > 0);
-	assert.deepEqual([...new Set(listings.map(({ url }) => `${url.searchParams.get("name")} ${url.searchParams.get("cursor")}`))], [`${whole} null`], "every sweep asks for the whole name, one page each");
+	const asked = (calls) => calls.filter(({ method, url }) => method === "GET" && url.pathname === "/v1/sandboxes").map(({ url }) => url.searchParams.get("name"));
+	const posted = (calls) => calls.filter(({ method, url }) => method === "POST" && url.pathname === "/v1/sandboxes").length;
+	const names = asked(render.calls);
+	assert.equal(names[0], null, "the first check reads the workspace's pages: the request's sandbox may carry another run or epoch");
+	assert.ok(names.includes(whole), "the wait to be listed asks for the whole name");
+	assert.deepEqual([...new Set(names)].sort(), [null, whole].sort());
+
+	const crowded = booting();
+	// 100 pages of 100 is the most a listing reads (MAX_PAGES): one more sandbox than that.
+	for (let i = 0; i <= 100 * 100; i++) plant(crowded, `sbx-other${String(i).padStart(12, "0")}`, `someone-else-${i}`);
+	const refused = await provider(crowded, options).create(spec, { requestId: "render-named-sweep" });
+	assert.equal(refused.ok, false, "it can't tell the request has no sandbox yet, so it makes none");
+	assert.match(refused.error.message, /Render's sandbox listing ran past 100 pages/);
+	assert.equal(posted(crowded.calls), 0, "no sandbox is made");
 });
 
 test("a request made already, asked again with another epoch or run, finds its sandbox by the request's name and is refused as exists: no second sandbox", async () => {

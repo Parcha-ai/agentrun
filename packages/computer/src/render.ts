@@ -350,8 +350,8 @@ class RenderHost implements MachineHost {
 		// The sandbox dials the server: Render's runs take no stdin (S: runs/{sync,stream} take { command }), so there is
 		// no exec and no upload here. Its descriptor's (connectOf).
 		connect: RENDER.connect,
-		// A sandbox's name carries its run's hash and its epoch (sandboxName): a create's sweeps by name ask for both, so
-		// list asks Render for the whole name rather than reading the workspace's every page.
+		// A sandbox's name carries its run's hash and its epoch (sandboxName): a create's sweeps for the sandbox it made ask
+		// for both, so list asks Render for the whole name rather than reading the workspace's every page.
 		labels: { named: true },
 	};
 	readonly #api: Rest;
@@ -579,7 +579,7 @@ class RenderHost implements MachineHost {
 	/**
 	 * GET /v1/sandboxes?ownerId (S, list-sandboxes: terminated ones left out unless asked), every page by its last item's
 	 * cursor while a page is full. Render filters by an exact name alone, and a sandbox's name carries its run and epoch
-	 * beside the adapter's: a listing that asks all three (wholeName, as the adapter's sweeps by a create's name do) asks
+	 * beside the adapter's: a listing that asks all three (wholeName, as a create's sweeps for the sandbox it made do) asks
 	 * Render for that name, and the name's labels hold all three, so no file is read; any other is matched here, over
 	 * every page (MAX_PAGES at most, then it fails). Only sandboxes named as computers whose name may carry the
 	 * labels asked (mayCarry: the adapter's name, the run's hash and the epoch); a label asked that is not the name's is

@@ -286,9 +286,11 @@ export interface HostFacts {
 	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'. unpacked:
 	 * the host's machines may also carry their labels as given (made before it packed): one with no packed map reads as
 	 * its stored labels, and a listing by name asks for the labels as given beside the packed name. named: the host's
-	 * machine names carry the run and epoch labels beside the adapter's name (Render's), so a create's listings by its name
-	 * ask for its run and epoch too where its spec has both, and the host can look up the one whole name; the machines
-	 * kept are still those whose get carries the name's labels.
+	 * machine names carry the run and epoch labels beside the adapter's name (Render's), so a create's sweeps for the
+	 * machine it made (the wait to be listed, the sweep after a failed create) ask for its run and epoch too where its
+	 * spec has both, and the host can look up the one whole name; the machines kept are still those whose get carries the
+	 * name's labels. Its first check and convergence ask by the name alone: they look for the request's machine whatever
+	 * run or epoch it was made with.
 	 */
 	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number; unpacked?: true }; named?: true };
 	/**
