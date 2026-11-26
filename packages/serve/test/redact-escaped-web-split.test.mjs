@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { redactSecrets, valueMatcher } from "../dist/learn/secrets.js";
 import { redacted, redactedAnswer, redactedCall, withheldWhole } from "../dist/key-refusal.js";
 import { answersCut } from "../dist/runner/adapter-run-spec.js";
+import { answersCutInside } from "../dist/tools.js";
 import { secretRedactor } from "../dist/runner/redact.js";
 import { CALL_RESULT_CHARS, scrubUrls, timelineOf, webShownOf, webWithin } from "../dist/timeline/index.js";
 import { webHeld } from "../dist/timeline/web-calls.js";
@@ -142,6 +143,18 @@ test("the runner stores a web answer with a held value split across two of its s
   const plain = (text) => redactedAnswer(text, [KEY]);
   assert.equal((await answersCut(tool(split), plain).call({}, context)).text, "[redacted]");
   const whole = (await answersCut(tool(search(`see ${KEY}`, `${REST} more`)), secretRedactor([KEY])).call({}, context)).text;
+  assert.deepEqual(JSON.parse(whole).results[0], { url: "https://h.example/a", title: "see [redacted]", snippet: `${REST} more` });
+});
+
+test("a workflow node's web answer with a held value split across two of its strings is \"[redacted]\" before the model reads it; one whole in a string is cut in place", async () => {
+  const tool = (text, name = "web_search") => ({ name, execute: async () => ({ content: [{ type: "text", text }], details: {} }) });
+  const read = async (text, cut, name) => (await answersCutInside(tool(text, name), cut).execute("c1", {}, new AbortController().signal)).content[0].text;
+  assert.equal(await read(search(`see ${HEAD}`, `${REST} more`), secretRedactor([KEY])), "[redacted]");
+  const page = JSON.stringify({ ok: true, url: "https://h.example/page", title: `A page ${HEAD}`, text: `${REST} and on` });
+  assert.equal(await read(page, secretRedactor([KEY]), "web_fetch"), "[redacted]");
+  // A redactor that does not know its values: the join is read through it.
+  assert.equal(await read(search(`see ${HEAD}`, `${REST} more`), (text) => redactedAnswer(text, [KEY])), "[redacted]");
+  const whole = await read(search(`see ${KEY}`, `${REST} more`), secretRedactor([KEY]));
   assert.deepEqual(JSON.parse(whole).results[0], { url: "https://h.example/a", title: "see [redacted]", snippet: `${REST} more` });
 });
 

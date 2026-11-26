@@ -223,15 +223,29 @@ export function walkValues(config) {
   return out;
 }
 
-/** Waits for `check` to return a value (not undefined), asking every `everyMs`, for at most `forMs`; else throws `what`.
- *  The walks' shared steps (until, rows, firstVisit, setUp, firstRunOf, report) take a client of `http` (fetch's shape)
- *  and `sleep`: Railway's, or deploy/render/walk.mjs's through Render's edge. */
+/** A wait that ran out (until): `last`, what its check last said it saw, for the caller to say where it stopped. A caller
+ *  tells it from its check's own throw by its type, never by its words. */
+export class TimedOut extends Error {
+  constructor(message, last) {
+    super(message);
+    this.last = last;
+  }
+}
+
+/** Waits for `check` to return a value (not undefined), asking every `everyMs`, for at most `forMs`; else throws TimedOut
+ *  with `what`. `check` is handed `saw`, to keep what it read on a poll that is not done yet (undefined keeps the one
+ *  before); the TimedOut carries the last. The walks' shared steps (until, rows, firstVisit, setUp, firstRunOf, report)
+ *  take a client of `http` (fetch's shape) and `sleep`: Railway's, or deploy/render/walk.mjs's through Render's edge. */
 export async function until(client, what, forMs, everyMs, check) {
   const end = Date.now() + forMs;
+  let last;
+  const saw = (value) => {
+    if (value !== undefined) last = value;
+  };
   for (;;) {
-    const got = await check();
+    const got = await check(saw);
     if (got !== undefined) return got;
-    if (Date.now() > end) throw new Error(`${what}: not within ${Math.round(forMs / 1000)} s`);
+    if (Date.now() > end) throw new TimedOut(`${what}: not within ${Math.round(forMs / 1000)} s`, last);
     await client.sleep(everyMs);
   }
 }
@@ -373,16 +387,17 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
     environmentId = edges(project.environments)[0]?.id;
     serviceId = edges(project.services).find((s) => s.name === service.name)?.id;
     if (!environmentId || !serviceId) throw new Error(`the walk's project has no service named ${service.name}`);
-    // The deployment last seen, so a wait that runs out says where it stopped: QUEUED or INITIALIZING (Railway never
-    // started it), BUILDING (the image pull), DEPLOYING (the health check), or none listed.
-    let seen;
-    const deployment = await until(client, "the service's deploy succeeded", 20 * 60_000, 10_000, async () => {
+    // The deployment last seen (the wait's `last`), so a wait that runs out says where it stopped: QUEUED or
+    // INITIALIZING (Railway never started it), BUILDING (the image pull), DEPLOYING (the health check), or none listed.
+    // A poll that lists none keeps the one seen before: a list that goes empty never hides a deployment that was there.
+    const deployment = await until(client, "the service's deploy succeeded", 20 * 60_000, 10_000, async (saw) => {
       const d = edges((await client.call("Deployments", { input: { projectId, environmentId, serviceId } })).deployments)[0];
-      seen = d;
+      saw(d);
       if (d && ["FAILED", "CRASHED", "REMOVED", "SKIPPED"].includes(d.status)) throw new Error(`the service's deploy ended ${d.status} (deployment ${d.id}); its last log lines:\n${await lastLines(client, d.id)}`);
       return d?.status === "SUCCESS" ? d : undefined;
     }).catch(async (error) => {
-      if (!/: not within \d+ s$/.test(error.message)) throw error;
+      if (!(error instanceof TimedOut)) throw error;
+      const seen = error.last;
       throw new Error(seen ? `${error.message}: deployment ${seen.id} was still ${seen.status}; its last log lines:\n${await lastLines(client, seen.id)}` : `${error.message}: Railway listed no deployment for the service`);
     });
     times.deployed = Date.now();

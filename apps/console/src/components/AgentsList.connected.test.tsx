@@ -77,7 +77,8 @@ describe("Connected agents is one inventory", () => {
     expect(card.querySelector('[aria-label="Edit Review the checkout flow options"]')).not.toBeNull();
     expect(card.querySelector('[aria-label="Archive Review the checkout flow"]')).toBeNull();
     expect(card.textContent).not.toContain("Source");
-    expect(t.cards()[0].querySelector('[aria-label="Run Release reports options"]')).not.toBeNull();
+    // A registered agent this server runs: Run opens its page, where the Run box is, not a coding-agent menu.
+    expect(t.cards()[0].querySelector('a[aria-label="Run Release reports"]')?.getAttribute("href")).toBe("#/agents/reports");
   });
 
   it("collapses a CLI learning profile into its linked session while preserving archived access", () => {

@@ -122,7 +122,7 @@ export const KINDS = {
   learningMerged: "agentrun.learning.merged",
   /** Why a learning run merged nothing, with the run's end. */
   learningDropped: "agentrun.learning.dropped",
-  /** The learning folder could not be reached: the run parks and tries again after a backoff. */
+  /** The learning could not be reached: the run parks and tries again after a backoff. */
   learningUnavailable: "agentrun.learning.unavailable",
   /** A browser hand-over (pi-browser's browser_request_handoff), on the root. The run's browser host commits the ask, the
    *  whole of it (HandoverAsked); its answer is an entry too (HandoverAnswered): the person's (a browser_hand_back row
