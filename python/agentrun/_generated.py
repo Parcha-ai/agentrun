@@ -637,6 +637,9 @@ __all__ = [
     "GetWorkspaceArchilResponse",
     "GetWorkspaceArchilResponseSecret",
     "GetWrappedResponse",
+    "GetWrappedResponseCache",
+    "GetWrappedResponseCacheBreaks",
+    "GetWrappedResponseCacheExtraCostUsd",
     "GetWrappedResponseDaysItem",
     "GetWrappedResponseHarnessesItem",
     "GetWrappedResponseImportedItem",
@@ -1906,6 +1909,7 @@ class AgentToolsItem(_AgentToolsItemRequired, total=False):
     provider_from: Literal["agent", "server", "default"]
     default_provider: str
     resolved: str
+    ceiling: str
 
 
 class AgentLearning(TypedDict):
@@ -2543,6 +2547,7 @@ class GetAgentResponseToolsItem(_GetAgentResponseToolsItemRequired, total=False)
     provider_from: Literal["agent", "server", "default"]
     default_provider: str
     resolved: str
+    ceiling: str
 
 
 class GetAgentResponseLearning(TypedDict):
@@ -12165,6 +12170,7 @@ class GetWrappedResponse(TypedDict):
     sources: list[GetWrappedResponseSourcesItem]
     imported: list[GetWrappedResponseImportedItem]
     unread_files: int
+    cache: GetWrappedResponseCache | None
 
 
 class GetWrappedResponseTokens(TypedDict):
@@ -12205,6 +12211,32 @@ class GetWrappedResponseSourcesItem(TypedDict):
 class GetWrappedResponseImportedItem(TypedDict):
     source: str
     runs: int
+
+
+class GetWrappedResponseCache(TypedDict):
+    runs: int
+    hit_rate: float | None
+    breaks: GetWrappedResponseCacheBreaks
+    extra_cost_usd: GetWrappedResponseCacheExtraCostUsd
+    unpriced_breaks: int
+
+
+class GetWrappedResponseCacheBreaks(TypedDict):
+    model: int
+    idle: int
+    compaction: int
+    edited: int
+    sidechain: int
+    unknown: int
+
+
+class GetWrappedResponseCacheExtraCostUsd(TypedDict):
+    model: float
+    idle: float
+    compaction: float
+    edited: float
+    sidechain: float
+    unknown: float
 
 
 # Each operation as the runtime sends it, by operationId.

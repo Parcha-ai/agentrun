@@ -42,11 +42,12 @@ export type ToolResults = Map<string, { text: string; isError: boolean }>;
  *  `waitForTask` are the run's own Harness's (run.harness, the claim's journal on the runner), as `commit` is: a
  *  document or a task of this run, never another's. A remote executor (workspace/executors.ts
  *  piExecutor) has no run Harness and gives none of these three (RUN_ONLY_MEMBERS); the coding tools it runs read none.
- *  `memo` and `taskId` are a pi tool task's own, which a host tool runs in none of: they are not given here. */
+ *  `memo` and `taskId` are a pi tool task's own, which a host tool runs in none of: they are not given here, but to a tool
+ *  whose binding runs each call once (RUNS_ONCE), whose `memo` is the call's own. */
 export const HOST_API_MEMBERS = ["env", "callId", "commit", "output", "outputWindow", "retainedOutput", "diagnostic", "agent", "models", "conversationId", "snapshot", "waitForTask"] as const;
 /** The members a host tool's api gives only on a run's Harness: a remote executor's api has none of them. */
 export const RUN_ONLY_MEMBERS = ["conversationId", "snapshot", "waitForTask"] as const;
-type HostApi = Pick<ToolExecutionApi, (typeof HOST_API_MEMBERS)[number]>;
+type HostApi = Pick<ToolExecutionApi, (typeof HOST_API_MEMBERS)[number]> & Partial<Pick<ToolExecutionApi, "memo">>;
 const hostApi = (given: HostApi): ToolExecutionApi =>
   new Proxy(given, {
     get: (target, key) => {
@@ -79,12 +80,34 @@ export interface HostToolCtx {
   settle?(name: string, args: unknown, callId: string): { refused: string } | undefined;
 }
 
+/** How a tool with no host row (tool-list.ts `replay`) runs as a host tool, given by its own binding: the browser on a
+ *  harness other than pi (runner/adapter-run-spec.ts browserHostTools). It is never replay-safe, so its call's intent is
+ *  flushed before it acts (runner/side-effects.ts) and a crash at any point leaves the call's start on the record. Each
+ *  call runs once, and its api's `memo` is the call's own, empty at its start and gone at its end: no other call, before,
+ *  after or beside it, reads it. pi's memo is a tool task's, durable across that task's invocations, which lets pi run a
+ *  cut call again from what it kept; a call that runs once has one invocation. So a run that resumes with such a call in
+ *  flight (its runner stopped or crashed) has that call ended interrupted by the record's open ("may or may not have
+ *  taken effect", runner/adapter-loop.ts openCliRecord), never runs it again, and the model goes on from that answer.
+ *  After a crash the session it drove is the binding's reconcile's to take back on the next claim; a runner's own stop
+ *  lets it go (the loop's beforeRelease on a shutdown). */
+export const RUNS_ONCE = { replay: "never", memo: "call" } as const;
+
+/** One call's memo, as pi's tool task's reads: `memo(name, context)` reads it, `memo(name, candidate, context)` stores the
+ *  candidate unless one is stored and answers the one stored. */
+function callMemo(): ToolExecutionApi["memo"] {
+  const kept = new Map<string, unknown>();
+  return (async (name: string, ...rest: unknown[]) => {
+    if (rest.length >= 2 && !kept.has(name)) kept.set(name, rest[0]);
+    return kept.get(name);
+  }) as ToolExecutionApi["memo"];
+}
+
 /** One pi ToolRegistration `tool` (named `name` by its catalog name) as the kernel's HostTool an adapter session takes:
  *  the paid-call seam, then the tool on the run's environment and harness, its answer the text a
  *  model reads (the output or the failure, a write's or an error's path named relative to the run's folder). Undefined when
- *  `name` is not one a host runs (tool-list.ts `replay`). */
-export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCtx): HostTool | undefined {
-  const replay = replayOf(name);
+ *  `name` is not one a host runs (tool-list.ts `replay`) and its binding gives no `own` way to run it (RUNS_ONCE). */
+export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCtx, own?: typeof RUNS_ONCE): HostTool | undefined {
+  const replay = own?.replay ?? replayOf(name);
   if (!replay) return undefined;
   return {
     name: tool.name,
@@ -112,6 +135,7 @@ export function hostToolOf(name: string, tool: ToolRegistration, ctx: HostToolCt
         models: createModels(),
         conversationId: ROOT_CONVERSATION_ID,
         snapshot: ctx.snapshot, waitForTask: ctx.waitForTask,
+        ...(own ? { memo: callMemo() } : {}),
       });
       // A tool that throws (bash on a non-zero exit or a timeout) still answers with its output, as pi's harness does;
       // one that answers a failure as an error result is kept as it is.

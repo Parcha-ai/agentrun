@@ -100,14 +100,14 @@ test("a key saved by name is kept sealed over the store: GET says which fields a
   assert.deepEqual(listed.body.keys.map((k) => [k.id, k.kind, k.unlocks, k.harnesses]), [
     ["parallel", "tool", ["web_fetch", "web_search", "decisions.parallel"], ["pi", "claude-agent", "codex", "opencode"]],
     ["monid", "tool", ["monid:*"], ["pi", "claude-agent", "codex", "opencode"]],
-    ["browserbase", "tool", ["browser"], ["pi"]],
-    ["kernel", "tool", ["browser"], ["pi"]],
+    ["browserbase", "tool", ["browser"], ["pi", "claude-agent", "codex", "opencode"]],
+    ["kernel", "tool", ["browser"], ["pi", "claude-agent", "codex", "opencode"]],
     ["typesafe", "tool", ["decisions.jev"], []],
     ["anthropic", "model", [], ["pi", "claude-agent"]],
     ["openai", "model", [], ["pi", "codex", "opencode"]],
     ["particle", "model", [], ["pi"]],
     ["openrouter", "model", [], ["pi", "claude-agent", "codex", "opencode"]],
-  ], "only what this server binds: web_fetch and web_search on every harness; monid's endpoints, granted by name, on every harness, as host tools run");
+  ], "only what this server binds: web_fetch, web_search and the browser on every harness; monid's endpoints, granted by name, on every harness, as host tools run");
   assert.equal(listed.body.reenter, null);
   await meetsDocument(api, listed.body);
   // Sealed at rest: no answer and no store byte (the DB and its WAL/shm) holds a saved value or the seal key in the clear.
@@ -413,14 +413,14 @@ test("a key saved is read by name with no restart: capabilities lose the tool's 
   // The plane keeps its own value (a run's meta stores it); only the words a person reads name Settings first.
   const STORED_NO_BROWSER_KEY = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
   const reason = "it needs a Browserbase key: save one in Settings → API Keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts), or a Kernel key: save one in Settings → API Keys (or set KERNEL_API_KEY where the server starts)";
-  const unset = { name: "browser", nodes: false, calls: false, runner_only: true, available: false, reason, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: STORED_NO_BROWSER_KEY, key: "browserbase" };
+  const unset = { name: "browser", nodes: false, calls: false, runner_only: true, available: false, reason, harnesses: ["pi", "claude-agent", "codex", "opencode"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: STORED_NO_BROWSER_KEY, key: "browserbase" };
   assert.deepEqual(await browser(), unset);
   assert.deepEqual((await api("GET", "/capabilities")).body.tools.filter((tool) => tool.key).map((tool) => [tool.name, tool.key]), [["web_fetch", "parallel"], ["web_search", "parallel"], ["browser", "browserbase"]], "only a tool a key unlocks names one");
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
   assert.deepEqual(await refused(), [409, "agent_not_runnable", {}]);
 
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values })).status, 204);
-  assert.deepEqual(await browser(), { name: "browser", nodes: false, calls: false, runner_only: true, available: true, harnesses: ["pi"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: "browserbase", key: "browserbase" }, "no restart");
+  assert.deepEqual(await browser(), { name: "browser", nodes: false, calls: false, runner_only: true, available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: "browserbase", key: "browserbase" }, "no restart");
   const started = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   await follow(api, started.body.run_id, ["completed"]);
