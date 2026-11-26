@@ -589,6 +589,7 @@ export interface components {
       answer: boolean;
       follow_up: boolean;
       steer_workflow_runs: boolean;
+      said?: boolean;
     };
     timeline: {
       long_poll: boolean;
@@ -792,6 +793,7 @@ export interface components {
   };
   MessageCreate: {
     content: string;
+    said?: string;
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
@@ -3020,7 +3022,7 @@ export interface operations {
     answer: {
       text: string;
       etag: string;
-      cap_bytes: 2048;
+      cap_bytes: 8192;
     };
   };
   getLearningCost: {
@@ -3599,6 +3601,7 @@ export interface operations {
         pending?: true;
       }[];
       corrections: number;
+      dropped_lines: number;
       problems: {
         rule: string;
         path?: string;
@@ -6158,7 +6161,7 @@ export interface operations {
     answer: {
       text: string;
       etag: string;
-      cap_bytes: 2048;
+      cap_bytes: 8192;
     };
   };
   putMcpPrivateHosts: {
