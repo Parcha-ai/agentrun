@@ -151,6 +151,7 @@ function ShareFooter({ bundle, preview, width }: { bundle: ShareBundle; preview:
           ? <p className="font-mono text-small text-muted-foreground" role="status">Exporting again with your restores…</p>
           : (
             <div className="flex flex-wrap items-center gap-3">
+              <span className="text-label text-muted-foreground">Publish to your share host with</span>
               <code className="min-w-0 flex-1 break-all border bg-background px-3 py-2 font-mono text-small">{command}</code>
               <CopyButton text={command} label="Copy" />
             </div>

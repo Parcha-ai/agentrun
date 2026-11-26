@@ -216,7 +216,7 @@ function keep(base, token, env, io, cli, entry) {
  *  checked against its own list of the token's shares (GET <URL>/r/v2/shares), and kept in the share entry. */
 async function shareLogin(given, env, io, cli) {
   const base = shareBase(given);
-  if (base === undefined) throw cli.fail(2, "--share must be a share host's http or https address with no query, fragment, user or password (https://agentrun.ai, or a self-hosted agentrun-serve --share-host).");
+  if (base === undefined) throw cli.fail(2, "--share must be a share host's http or https address with no query, fragment, user or password (an agentrun-serve --share-host).");
   const token = (await readSecret(io, cli.fail, "The share host's token", `agentrun login --share ${base} < FILE`)).trim();
   if (!token) throw cli.fail(2, "stdin holds no token: one line, the token alone.");
   if (cli.BAD_HEADER.test(token) || /\s/.test(token)) throw cli.fail(4, "The token is not a valid header value (it holds a space, a line break, a control character or a character outside Latin-1); nothing was written.");

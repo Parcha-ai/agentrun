@@ -211,7 +211,7 @@ function uploadRefusal(response, bytes, { host, known, run }) {
       return [1, `The share host refused the bundle (413): it is over the host's size cap. ${UNSTORED}`];
     }
     case 404:
-      return [1, `${host} answered 404 at /r/v2/shares: no share host there. --to takes a share host's address, such as https://agentrun.ai. ${UNSTORED}`];
+      return [1, `${host} answered 404 at /r/v2/shares: no share host there. --to takes a share host's address (an agentrun-serve --share-host). ${UNSTORED}`];
     default:
       return [response.status === 501 ? 5 : 1, `The share host refused it: ${response.status}${code ? ` ${code}` : ""}. Its answer is not shown. ${UNSTORED}`];
   }
@@ -233,6 +233,8 @@ function hostClientOf(cli, io, host, target, refusal) {
 async function publishTo(cli, io, { host, target, bytes, bundle, summary }) {
   const known = rulesOf(bundle);
   const client = hostClientOf(cli, io, host, target, (response, body) => uploadRefusal(response, body, { host, known, run: summary.run }));
+  // Who can open it, said before anything is sent: an upload that goes through is public at once.
+  io.stderr.write(`Publishing to ${host}: a share is public, anyone with the link can open it.\n`);
   const got = await cli.request(client, { method: "POST", path: "/shares", headers: {}, body: bytes, type: "application/json" });
   if (got.code !== undefined) return got.code;
   let answer;
@@ -252,7 +254,7 @@ async function publishTo(cli, io, { host, target, bytes, bundle, summary }) {
   // is kept for (a host's public address may be another, and shareTargetOf takes the login's own address alone).
   const takeDown = `agentrun share delete ${host}/r/${id}`;
   const lines = linesOf(summary);
-  lines.push(`Shared: ${url}`, `Anyone with the link can open it. Take it down with: ${takeDown}`);
+  lines.push(`Shared: ${url}`, `Take it down with: ${takeDown}`);
   const unchecked = countsLine(answer.restored_unchecked, known);
   if (unchecked) lines.push(`Restores of Jev's cuts the host took unchecked (it runs no Jev), by rule: ${unchecked}.`);
   if (answer.sha256 !== summary.sha256) {
@@ -348,7 +350,7 @@ export function shareOf({ launch = launchOpener, platform = process.platform, fi
       if (out !== undefined && existsSync(out)) throw cli.fail(REFUSED, `${out} already exists: --out writes a new file. Nothing was asked of the server.`);
       // The share host and its login before the export: a publish that can't be sent asks nothing of the server.
       const host = publish ? shareBase(values.to) : undefined;
-      if (publish && host === undefined) throw cli.fail(REFUSED, `--to must be a share host's http or https address with no query, fragment, user or password (https://agentrun.ai, or a self-hosted agentrun-serve --share-host). ${UNSENT}`);
+      if (publish && host === undefined) throw cli.fail(REFUSED, `--to must be a share host's http or https address with no query, fragment, user or password (an agentrun-serve --share-host). ${UNSENT}`);
       const hostTarget = publish ? shareTargetOf(host, env, cli, UNSENT) : undefined;
       const nothing = publish ? UNSENT : NOTHING;
 

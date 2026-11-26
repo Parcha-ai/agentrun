@@ -53,9 +53,9 @@ export const KINDS: readonly { kind: CutKind; name: string; about: string }[] = 
   { kind: "dump", name: "Dumps", about: LOCKED_WHY.dump! },
 ];
 
-/** The share host a publish goes to: agentrun.ai, whose /r/ is the share host (a self-hosted one takes its own address
- *  in --to). */
-export const SHARE_HOST = "https://agentrun.ai";
+/** Where the reader's share host goes in the command: a place to fill, never a default. No hosted share host serves /r/
+ *  or issues share tokens yet, so the page names none (the reader's own runs agentrun-serve --share-host). */
+export const SHARE_HOST = "<url>";
 
 /** The command that publishes this exact bundle to the share host: the restores it holds, and its sha256, which the CLI
  *  checks against a fresh export before it sends anything. */
