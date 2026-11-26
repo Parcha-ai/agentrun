@@ -51,7 +51,7 @@
           "title": "id"
         },
         "url": {
-          "description": "Open this in the app: a deep link, or a page in a browser.",
+          "description": "Open this in the app: a deep link, or a page in a browser. On Linux, an absolute URL with a scheme (https://…,\nfile:///…) or an absolute path (/…); anything else, such as a leading \"-\" or a relative path, is refused `invalid`\nand nothing starts.",
           "type": "string",
           "title": "url"
         },
