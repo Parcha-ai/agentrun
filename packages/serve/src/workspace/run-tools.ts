@@ -306,6 +306,9 @@ export type RunTools = {
   readonly hands: Hands;
   /** Where the run's shell is (runHands' shell): its gate reads its defaults by it (tool-gate.ts defaultPermission). */
   readonly shell: ShellPlace;
+  /** Every absolute name of the run's folder its file tools take (runHands' names: cwd, its path here, each alias): its
+   *  gate holds a filed folder by each (tool-gate.ts filedRefusal). */
+  readonly names: readonly string[];
   /** The tools the claimed computer brings by its kind, as its groups offer them: a desktop's or a phone's
    *  (computer_observe, computer_act, computer_screenshot, computer_op, computer_request_handoff), by the kernel
    *  registry's own list. None with no computer, for a sandbox, or for a browser (its own binding lists its tools). An
@@ -349,6 +352,7 @@ export async function runTools(workspace: Workspace, computer: RunComputer | und
     registry,
     hands: run.hands,
     shell: run.shell,
+    names: run.names,
     kindTools,
     ...(run.computer ? { computer: run.computer } : {}),
     ...(run.apart ? { apart: { kind: run.apart, screenshot: kindTools.includes("computer_screenshot") } } : {}),

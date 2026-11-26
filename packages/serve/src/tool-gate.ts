@@ -134,7 +134,8 @@ const SAVED_AS_WRITES = ["computer_screenshot with save_as writes a file into th
  *  `path`, claude-agent's `file_path` and `notebook_path`), which filedRefusal reads. */
 const FILE_KEYS: ReadonlySet<string> = new Set(["read", "write", "edit"]);
 const PATH_ARGS = ["path", "file_path", "notebook_path"] as const;
-/** `given` as a path in the run's folder (`names`: its names, this machine's path and the computer's), relative to it
+/** `given` as a path in the run's folder (`names`: its names, this machine's path, the computer's and each alias its file
+ *  tools take, a CLI's scratch folder among them), relative to it
  *  ("" for the folder), or undefined outside it. Lexical (posix): no file is read, so a link is not followed. */
 function inRunFolder(names: readonly string[], given: string): string | undefined {
   const abs = posix.resolve(names[0]!, given);
@@ -444,10 +445,10 @@ export function previewOf(text: string): string {
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. */
-export function runGate(where: { root: string; work: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf; facts: AdapterFacts | undefined }, runId: string, revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals; computer?: unknown; place?: unknown } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+export function runGate(where: { root: string; work: string; names?: readonly string[]; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf; facts: AdapterFacts | undefined }, runId: string, revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals; computer?: unknown; place?: unknown } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
   // The run's computer kind, from its revision's setting (as the claim starts it): a computer tool's words name it.
   const kind = settingOfDefinition(revision.body)?.computer.kind;
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, tools: revision.body.tools ?? [], ...(where.computer === undefined ? {} : { computer: where.computer }), ...(kind !== undefined ? { kind } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}), facts: where.facts }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+  return new RunGate({ root: where.root, work: where.work, ...(where.names ? { names: where.names } : {}), runId, harness: revision.body.harness ?? DEFAULT_HARNESS, tools: revision.body.tools ?? [], ...(where.computer === undefined ? {} : { computer: where.computer }), ...(kind !== undefined ? { kind } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}), facts: where.facts }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
 /** The host tools that run on a computer that holds the run's shell (the kernel registry's, for shell "computer"). */
@@ -490,7 +491,7 @@ export class RunGate {
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
   /** `where.effectOf`: an MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf), what "allow reads" reads;
    *  never a live listing, so a server can't widen a run's access mid-run. */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; /** The run's computer kind (its revision's setting): the key a computer tool's refusal and ask name on a tie (kindSetting). */ kind?: string; /** The tools the agent is given (its revision's `tools`): a screenshot's save_as and a script's op held as write are refused unless write is among them; none given, none (writeBar). */ tools?: readonly string[]; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf; /** The harness's adapter facts on the owner's table (its native tools' names, nameMapOf); undefined for one with none. */ facts: AdapterFacts | undefined }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; /** Every name of the run's folder its file tools take (RunTools.names: cwd, its path here, each alias, a CLI's scratch folder among them), held with `work` and the computer's root for a filed folder (filedRefusal). */ names?: readonly string[]; runId: string; harness?: string; computer?: boolean; /** The run's computer kind (its revision's setting): the key a computer tool's refusal and ask name on a tie (kindSetting). */ kind?: string; /** The tools the agent is given (its revision's `tools`): a screenshot's save_as and a script's op held as write are refused unless write is among them; none given, none (writeBar). */ tools?: readonly string[]; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf; /** The harness's adapter facts on the owner's table (its native tools' names, nameMapOf); undefined for one with none. */ facts: AdapterFacts | undefined }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
   private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
@@ -690,7 +691,8 @@ export class RunGate {
   private filed?: readonly { key: string; folder: string }[];
   /** Why the call `name` (held to `key`) with `args` is refused for a filed folder, or undefined: a call of the agent's own
    *  read, write or edit (not read_skill_file, which reads the agent's skill) whose path is at or under a folder the
-   *  revision's own `mcp:` setting files answers in, by its words against the run's folder by both its names (`..` and
+   *  revision's own `mcp:` setting files answers in, by its words against the run's folder by every name of it (`work`,
+   *  the computer's root and the names its file tools take: RunTools.names, a CLI's scratch folder among them; `..` and
    *  ./ resolved). An ancestor, a sibling and a path outside the run's folder are not refused; bash is not gated by path. */
   private filedRefusal(key: string, name: string, args: unknown, ran: "no" | "unknown"): string | undefined {
     if (!FILE_KEYS.has(key) || name === READ_SKILL_FILE || args === null || typeof args !== "object") return undefined;
@@ -699,7 +701,7 @@ export class RunGate {
     for (const arg of PATH_ARGS) {
       const given = (args as Record<string, unknown>)[arg];
       if (typeof given !== "string") continue;
-      const rel = inRunFolder([this.where.work, COMPUTER_ROOT], given);
+      const rel = inRunFolder([this.where.work, COMPUTER_ROOT, ...(this.where.names ?? [])], given);
       const hit = rel === undefined ? undefined : folders.find(({ folder }) => rel === folder || rel.startsWith(`${folder}/`));
       if (hit) return `${key}${CANT_BE_CALLED}${given} is in ${hit.folder}/, the folder this agent's setting for ${hit.key} files that tool's answers in (its file setting), so the agent's own file tools are refused there. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
     }
