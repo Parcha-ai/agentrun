@@ -4906,7 +4906,7 @@ CLI `learning: "notes"` settings read publicly as `true`; that compatibility rea
 An agent's learning is kept by the server as versioned rows in its store, SQLite or Postgres alike. It reads as a
 folder, and the routes name its files by path:
 
-- `corrections.md`, its owner's standing corrections, one `- ` line each, at most 2048 bytes;
+- `corrections.md`, its owner's standing corrections, one `- ` line each, at most 8192 bytes;
 - one folder per learned workflow, `workflows/<name>/`, with its `workflow.json` and its `README.md` (front matter with
   `name` and `description`, and `status: pending` while it waits for its owner's OK).
 
@@ -4973,8 +4973,10 @@ round on the agent's learning, whatever its harness:
 
 - Its owner's words. A grade's words, or a message they sent after the job's first, become one line of
   `corrections.md`, with no model turn: `- ` and the words, whitespace folded. A line that holds one of the server's
-  secrets, text shaped like a secret or a hidden character, or that would take the file past 2048 bytes, is refused
-  whole, nothing of it written, and the run's learning says why (`problems`).
+  secrets, text shaped like a secret or a hidden character, or that is past 8192 bytes alone, is refused whole,
+  nothing of it written, and the run's learning says why (`problems`). A line that would take the file past 8192
+  bytes drops the file's oldest lines until it fits: the newest correction wins, and the run's learning says how many
+  lines went (`dropped_lines`).
 - Its job, when a compile is due: once the agent has its `learning.compile_after` completed runs (20 by default) and no
   learned workflow, or once per hold of one its promotion held, the server asks the same session one more turn, under
   the fixed request id `learn-reflect-<run id>` and the origin `reflect`, so a server that restarts mid-turn asks again
@@ -5103,7 +5105,7 @@ with the token, an archived agent's too:
 - `GET .../learning/corrections`: `corrections.md` at the newest save as `{text, etag, cap_bytes}` (empty text when there is
   none). `PUT .../learning/corrections` with `{text}` replaces it whole under `If-Match: <etag>`: a stale ETag is 412,
   none (or `If-Match: *`) 428 `precondition_required`. A text that holds one of the server's secrets, a secret's shape or
-  a hidden character, or passes 2048 bytes, is 422 with the problems, and nothing is written. A text read cut of a
+  a hidden character, or passes 8192 bytes, is 422 with the problems, and nothing is written. A text read cut of a
   secret and sent back keeps the cut: a person's write never puts a secret back. One save of the agent's learning,
   `edited by a person: corrections.md`, which the log shows as `by: {user: true}`.
 - `GET .../learning/files/{file}`: `corrections.md` or a workflow's file at the newest save, with its `ETag`, its text's

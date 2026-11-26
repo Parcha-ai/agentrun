@@ -3020,7 +3020,7 @@ export interface operations {
     answer: {
       text: string;
       etag: string;
-      cap_bytes: 2048;
+      cap_bytes: 8192;
     };
   };
   getLearningCost: {
@@ -3596,6 +3596,7 @@ export interface operations {
         pending?: true;
       }[];
       corrections: number;
+      dropped_lines: number;
       problems: {
         rule: string;
         path?: string;
@@ -6155,7 +6156,7 @@ export interface operations {
     answer: {
       text: string;
       etag: string;
-      cap_bytes: 2048;
+      cap_bytes: 8192;
     };
   };
   putMcpPrivateHosts: {

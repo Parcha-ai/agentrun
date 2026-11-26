@@ -22,7 +22,7 @@ const PAGE: TimelinePage = {
 };
 const LEARNING: NonNullable<RunLearningRead> = {
   run: RUN.run_id, state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", at: "2026-11-11T10:00:09Z", seed: "a".repeat(40), merged: null,
-  workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [],
+  workflows: [], corrections: 0, dropped_lines: 0, problems: [], compiled: null, draft_errors: [],
   used: { workflows: [{ name: "check-refunds", calls: 3, failed: 1 }, { name: "find-policies", calls: 1, failed: 0 }] },
 };
 

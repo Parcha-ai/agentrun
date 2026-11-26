@@ -386,6 +386,8 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
     workflows: filesView(learning, shown).workflows ?? [],
     // How many lines of its owner's words its merge added to corrections.md.
     corrections: learning.corrections ?? 0,
+    // How many of corrections.md's oldest lines that correction pushed out to keep the file within its cap.
+    dropped_lines: learning.dropped_lines ?? 0,
     seed: input.seed,
     merged: merged ?? null,
     // Each cut of the host's secrets (printable), then as every served text is (`shown`: no loopback address).

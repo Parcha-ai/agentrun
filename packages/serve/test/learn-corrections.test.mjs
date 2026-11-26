@@ -2,8 +2,9 @@
 //   - A grade with words appends one line to it (no model turn), and every later run of the agent is served it
 //     whole under its # Learned heading.
 //   - GET /v2/agents/{id}/learning/corrections reads it whole with its ETag; PUT replaces it whole under If-Match. A text
-//     past CORRECTIONS_CAP (2 KB) is refused with the cap's words, as is one holding a character a reader does not see;
-//     a stale If-Match is a conflict. Nothing it refuses is saved.
+//     past CORRECTIONS_CAP (8 KB) is refused with the cap's words (a person's write never drops lines, unlike a run's
+//     correction), as is one holding a character a reader does not see; a stale If-Match is a conflict. Nothing it
+//     refuses is saved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LEARN, ended, learningAt, made, started } from "./learn-support.mjs";
@@ -34,7 +35,7 @@ test("a grade with words appends one line to corrections.md, with no model turn;
   assert.equal((await learningAt(server, "keeper")).text("corrections.md"), "- Answer in tables from now on.\n");
   const got = await read(api);
   assert.equal(got.status, 200, JSON.stringify(got.body));
-  assert.deepEqual([got.body.text, got.body.cap_bytes], ["- Answer in tables from now on.\n", 2048]);
+  assert.deepEqual([got.body.text, got.body.cap_bytes], ["- Answer in tables from now on.\n", 8192]);
   assert.ok(got.headers.get("etag"), "an ETag");
   // The next run's system prompt (the faux model says it back) holds the file whole.
   const next = await started(api, "keeper");
@@ -58,9 +59,10 @@ test("GET and PUT corrections over v2: replaced whole under If-Match; over the c
   const now = saved.headers.get("etag");
   assert.notEqual(now, etag);
   assert.equal((await put(api, "- Be terse.\n", etag)).status, 412, "a stale ETag is a conflict");
-  const big = await put(api, "x".repeat(2049), now);
+  // A person's text one byte past the cap is refused whole, its oldest lines never dropped for it.
+  const big = await put(api, `${"- An old rule kept in its owner's words.\n".repeat(199)}- The newest rule, over the cap!.\n`, now);
   assert.equal(big.status, 422, JSON.stringify(big.body));
-  assert.match(JSON.stringify(big.body), /2049 bytes.*2048/, JSON.stringify(big.body));
+  assert.match(JSON.stringify(big.body), /8193 bytes.*8192/, JSON.stringify(big.body));
   const hidden = await put(api, `- Be${HIDDEN} brief.\n`, now);
   assert.equal(hidden.status, 422, JSON.stringify(hidden.body));
   assert.match(JSON.stringify(hidden.body), /a character a reader does not see/);

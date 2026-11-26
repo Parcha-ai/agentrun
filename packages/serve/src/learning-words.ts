@@ -86,15 +86,17 @@ export const said = {
    *  an attempt the checks sent back. */
   askedCompile: "Writing this job as a learned workflow.",
   askedCompileAgain: "Writing the workflow again: the checks sent back what they refused.",
-  /** What it learned: its workflow by name and the corrections it added; then what waits for the owner's OK, by name;
-   *  then what the checks refused beside it. A merge that only holds things for the OK says that alone. */
-  merged: (files: readonly Pick<LearnedFile, "name" | "pending">[] = [], corrections = 0, checked: readonly Pick<Problem, "rule" | "path" | "detail">[] = []) => {
+  /** What it learned: its workflow by name and the corrections it added, and how many of corrections.md's oldest lines
+   *  they pushed out (`dropped`); then what waits for the owner's OK, by name; then what the checks refused beside it. A
+   *  merge that only holds things for the OK says that alone. */
+  merged: (files: readonly Pick<LearnedFile, "name" | "pending">[] = [], corrections = 0, checked: readonly Pick<Problem, "rule" | "path" | "detail">[] = [], dropped = 0) => {
     const flat = (name: string) => name.replace(/\s+/g, " ").trim();
     const held = files.filter((file) => file.pending).map((file) => `workflow ${flat(file.name)}`);
     const waiting = held.length ? `Waiting for your OK: ${held.join("; ")}.` : "";
     const made = files.filter((file) => !file.pending).map((file) => `the workflow ${flat(file.name)}`);
     const added = corrections ? (corrections === 1 ? "your correction" : `${corrections} of your corrections`) : "";
-    const kept = [made.length ? `Learned ${listed(made)}` : "", added ? `Kept ${added}` : ""].filter(Boolean).join(". ");
+    const room = added && dropped ? `Dropped ${dropped === 1 ? "the oldest line" : `the ${dropped} oldest lines`} of corrections.md to make room` : "";
+    const kept = [made.length ? `Learned ${listed(made)}` : "", added ? `Kept ${added}` : "", room].filter(Boolean).join(". ");
     // A correction corrections.md had no room for is said in the cap's words, never as a workflow over its cap.
     const cap = correctionsCapOf(checked);
     const rest = checked.filter((problem) => problem !== cap);
@@ -126,14 +128,15 @@ export const said = {
 };
 
 /** A run's learning in words as a read says them, whole: what it learned and what waits for the owner's OK, said again
- *  from its parts (`workflows`, `corrections`, `problems`), each name cut by `cut` first (the host's secrets as they are
- *  now), and the whole line cut again; any other detail, the server's own sentence, cut as well. The caller cuts the
- *  words short after. */
-export function wordsOf(learning: Pick<Learning, "state" | "detail" | "workflows" | "corrections" | "problems">, cut: (text: string) => string): string | null {
+ *  from its parts (`workflows`, `corrections`, `dropped_lines`, `problems`), each name cut by `cut` first (the host's
+ *  secrets as they are now), and the whole line cut again; any other detail, the server's own sentence, cut as well. The
+ *  caller cuts the words short after. */
+export function wordsOf(learning: Pick<Learning, "state" | "detail" | "workflows" | "corrections" | "dropped_lines" | "problems">, cut: (text: string) => string): string | null {
   if (learning.state === "merged") {
     const files = (Array.isArray(learning.workflows) ? learning.workflows : []).filter((file) => typeof file?.file === "string" && typeof file.name === "string");
     const corrections = typeof learning.corrections === "number" && learning.corrections > 0 ? learning.corrections : 0;
-    if (files.length || corrections) return cut(said.merged(files.map((file) => ({ name: cut(file.name), ...(file.pending ? { pending: true as const } : {}) })), corrections, Array.isArray(learning.problems) ? learning.problems : []));
+    const dropped = typeof learning.dropped_lines === "number" && learning.dropped_lines > 0 ? learning.dropped_lines : 0;
+    if (files.length || corrections) return cut(said.merged(files.map((file) => ({ name: cut(file.name), ...(file.pending ? { pending: true as const } : {}) })), corrections, Array.isArray(learning.problems) ? learning.problems : [], dropped));
   }
   return learning.detail === null ? null : cut(learning.detail);
 }

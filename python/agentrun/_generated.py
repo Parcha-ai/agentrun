@@ -4679,7 +4679,7 @@ class WriteHomeFileResponse(_WriteHomeFileResponseRequired, total=False):
 class GetLearningCorrectionsResponse(TypedDict):
     text: str
     etag: str
-    cap_bytes: Literal[2048]
+    cap_bytes: Literal[8192]
 
 
 class GetLearningCostResponse(TypedDict):
@@ -5021,7 +5021,7 @@ class PutLearningCorrectionsBody(TypedDict):
 class PutLearningCorrectionsResponse(TypedDict):
     text: str
     etag: str
-    cap_bytes: Literal[2048]
+    cap_bytes: Literal[8192]
 
 
 class ConnectGitHubBody(TypedDict, total=False):
@@ -8127,6 +8127,7 @@ class _GetRunLearningResponseObjectRequired(TypedDict):
     merged: str | None
     workflows: list[GetRunLearningResponseObjectWorkflowsItem]
     corrections: int
+    dropped_lines: int
     problems: list[GetRunLearningResponseObjectProblemsItem]
     compiled: GetRunLearningResponseObjectCompiled | None
     draft_errors: list[str]

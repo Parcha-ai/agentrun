@@ -34,15 +34,17 @@ them runs.
 `corrections.md` is a markdown list, one correction a line, in its owner's words (`correctionLine`: `- ` and the words,
 whitespace folded to single spaces). A run is served the file whole under `# Learned`, after one line saying what it
 is (`Your owner's standing corrections from earlier runs, one per line. Follow each one that applies.`). Nothing
-picks, ranks or summarizes it: the cap keeps it whole.
+picks, ranks or summarizes it: the cap keeps it short, oldest lines out first.
 
 - An owner's feedback on a run (a grade's words, or a message they sent after the job's first) appends one line, at
   the run's end, in the same commit as anything the run compiled (`LearningChange.correction`). The run is a feedback
   round, `correction`.
 - A person replaces the file whole over v2 (`PUT /v2/agents/{id}/learning/corrections`, under the ETag its GET
   gave); an empty body empties it.
-- Over `CORRECTIONS_CAP`, 2048 bytes, a write is refused whole, never cut, and the run's learning says why. So is one
-  holding what must never be stored (below).
+- `CORRECTIONS_CAP` is 8192 bytes. A run's correction that would take the file past it drops the file's oldest lines
+  until it fits: the newest correction wins, and the run's learning says how many lines went (`dropped_lines`). A
+  correction whose line alone is past the cap, or a person's whole text past it, is refused whole, never cut, and says
+  why. So is one holding what must never be stored (below).
 
 ## A workflow draft
 
@@ -266,7 +268,7 @@ Over a cap is refused, never cut.
 
 | What | Cap |
 | --- | --- |
-| `corrections.md` | 2048 bytes |
+| `corrections.md` | 8192 bytes (a run's correction drops the oldest lines to fit) |
 | A draft's `workflow.json` | 16384 bytes |
 | A draft's `README.md` | 1024 bytes |
 | Workflow drafts one turn adds or changes | 1 |
