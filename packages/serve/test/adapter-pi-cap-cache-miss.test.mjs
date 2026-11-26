@@ -19,6 +19,7 @@ import { closeOpenSessions, hostTools, MODEL } from "./conformance-pi-adapter.mj
 import { cap, capRun, quiet, SONNET, sleep, specCap, STEADY } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { startRunner } = await import("../dist/runner/runner.js");
@@ -57,7 +58,7 @@ const miss = (body, bytes, step) => answer(body, step, { input_tokens: 0, cache_
 
 const read = { name: "read", replaySafe: true, ask: false, run: async () => "read" };
 const specOf = (fetch) => (_claim, run) => ({
-  adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch, price }),
+  adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch, price }),
   session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools({ read }), context: "fresh" },
   input: "Follow the script.",
   hooks: quiet,

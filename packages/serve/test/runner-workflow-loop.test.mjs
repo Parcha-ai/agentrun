@@ -15,6 +15,7 @@ import { storeOn } from "./store-helpers.mjs";
 import { answerFlow, FAUX } from "./support.mjs";
 
 const { createWorkflowLoop, isWorkflowRevision } = await import("../dist/runner/workflow-loop.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { runModels, FAUX_ENV } = await import("../dist/model.js");
 
@@ -69,7 +70,7 @@ async function workflowSpec(workflow, input) {
 
 function loopOn(store, workflow, input, signal = new AbortController().signal) {
   const factory = createWorkflowLoop(() => workflowSpec(workflow, input));
-  return factory({ journal: (claim) => store.journal(claim), flush: () => store.flush(), signal });
+  return factory({ redact: heldRedactor((text) => text), journal: (claim) => store.journal(claim), flush: () => store.flush(), signal });
 }
 
 /** The DSL's durable runner over the run's journal, to terminal, with the Harness still open (a run that ran but whose
@@ -117,7 +118,7 @@ function heldNodeLoop(store, workflow, input, control, signal = new AbortControl
       },
     };
   };
-  return createWorkflowLoop(specOf)({ journal: (claim) => store.journal(claim), flush: () => store.flush(), signal });
+  return createWorkflowLoop(specOf)({ redact: heldRedactor((text) => text), journal: (claim) => store.journal(claim), flush: () => store.flush(), signal });
 }
 
 test("the runner picks the workflow loop for a workflow revision, not an agentic one", () => {
@@ -178,7 +179,7 @@ test("a person's stop while the end waits on its patch ends the run stopped, its
   const answered = new Promise((resolve) => (answerPatch = resolve));
   const endPatch = async () => (patchAsked(), await answered, { costUsd: 0.25, metrics: { requests: 1 } });
   const spec = async () => ({ ...(await workflowSpec(workflow, { question: "What is six times seven?" })), endPatch });
-  const loop = createWorkflowLoop(spec)({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const loop = createWorkflowLoop(spec)({ redact: heldRedactor((text) => text), journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
   const started = loop.start(claim);
   await asked;
   const stop = await store.command("run-1", { kind: "stop", body: {} });
@@ -249,7 +250,7 @@ function cappedLoopOn(store, workflow, input, state, signal = new AbortControlle
       },
     };
   };
-  return createWorkflowLoop(specOf)({ journal: (claim) => store.journal(claim), flush: () => store.flush(), signal, ...(delivered ? { delivered } : {}) });
+  return createWorkflowLoop(specOf)({ redact: heldRedactor((text) => text), journal: (claim) => store.journal(claim), flush: () => store.flush(), signal, ...(delivered ? { delivered } : {}) });
 }
 
 test("a step the cap holds parks the run on an agentrun.budget entry; a raise takes an agentrun.raise entry and the resume ends it", async (t) => {

@@ -18,6 +18,7 @@ import { Button } from "@/components/ui/button";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
 import { RunGrade } from "@/components/RunGrade";
 import { RunUsed, useRunLearning } from "@/components/RunUsed";
+import { RunReceipt } from "@/components/RunReceipt";
 import { Timeline, Working } from "@/components/Timeline";
 import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
@@ -92,6 +93,8 @@ export type RunDetailProps = {
   /** How the Dev tools tab opens, for a story or a test: its clock (a span still going is drawn to it), the span open and
    *  the view shown. */
   traceAt?: { now?: number; open?: string; view?: "calls" | "breakdown" };
+  /** The server's free-model request limit a run (capabilities' `limits.free_model_requests`), said on a free run's receipt. */
+  freeRequests?: number;
 };
 type Tab = "graph" | "report" | "timeline" | "trace" | "files" | "screen" | "learning";
 
@@ -132,7 +135,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, inFlight = [], messages, harnessSteers, rows, files, outputSchema, readFile, fileUrl, openFile = null, actions, embedded, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade, readTrace, readUsage, traceAt }: RunDetailProps) {
+export function RunDetail({ run, agentName, inFlight = [], messages, harnessSteers, rows, files, outputSchema, readFile, fileUrl, openFile = null, actions, embedded, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade, readTrace, readUsage, traceAt, freeRequests }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const native = run.native;
   const sdk = backendSdkOf(run);
@@ -333,6 +336,7 @@ export function RunDetail({ run, agentName, inFlight = [], messages, harnessStee
           )}
           {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} ended={runEnded(run.status)} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} files={files} onOpen={show} />}
           {(tab === "report" || tab === "timeline") && <RunGrade run={run} graded={runGrade} onGrade={grade} onOpenTimeline={tab === "timeline" ? undefined : () => setTab("timeline")} />}
+          {(tab === "report" || tab === "timeline") && <RunReceipt run={run} agentName={agentName} readUsage={readUsage} readTrace={readTrace} freeRequests={freeRequests} />}
           {(tab === "report" || tab === "timeline") && <RunUsed used={learning?.used ?? null} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
           {tab === "learning" && <RunLearningResult key={run.run_id} run={run} read={readLearningResult} onViewChanges={changes ? () => setTab("report") : undefined} />}
