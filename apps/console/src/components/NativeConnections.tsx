@@ -1,6 +1,10 @@
 import { agentHash } from "@/components/AgentPage";
+import { ArrowLeft, Plug } from "lucide-react";
 import { useState } from "react";
 import { Banner, Button, Chip, Field, Input, Segmented } from "@/components/ui";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { goBack } from "@/lib/back";
+import { cn } from "@/lib/utils";
 import { RemoteConnections } from "@/components/RemoteConnections";
 import { CodingAgentAction, type CodingAgentActionProps } from "@/components/CodingAgentAction";
 import { connectExistingAgentsPrompt, enableCliLearningPrompt } from "@/lib/codingAgentPrompts";
@@ -12,7 +16,7 @@ export function ConnectExistingAgents({ variant }: Pick<CodingAgentActionProps, 
 }
 
 /** Reads only the server host's explicitly selected project. It never presents browser-local discovery as possible. */
-export function NativeConnections({ v2, go, initialSource = "server" }: { v2: Client; go: (hash: string) => void; initialSource?: "server" | "remote" | "observe" }) {
+export function NativeConnections({ v2, initialSource = "server" }: { v2: Client; initialSource?: "server" | "remote" | "observe" }) {
   const [source, setSource] = useState<"server" | "remote" | "observe">(initialSource);
   const [project, setProject] = useState("");
   const [targets, setTargets] = useState<NativeTarget[] | null>(null);
@@ -38,8 +42,14 @@ export function NativeConnections({ v2, go, initialSource = "server" }: { v2: Cl
     } catch (e) { setError(problemOf(e)); }
     finally { setBusy(false); }
   };
-  return <section className="mx-auto max-w-page space-y-6 p-5 md:p-8" aria-label="Connect agent">
-    <div className="flex flex-wrap items-center gap-3"><h1 className="mr-auto text-2xl font-semibold">Connect agent</h1><Button size="sm" onClick={() => go("#/agents")}>Back to agents</Button></div>
+  // The shared frame of a page under Agents (a connected agent's, New agent): the bar with the back arrow and the page's
+  // name stays in view, and the body under it is the box that scrolls. Each tab's hand-off stays in its own section.
+  return <section className={pageClass} aria-label="Connect agent">
+    <header className={cn(pageToolbarClass, "gap-2 px-5")}>
+      <Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={() => goBack("#/agents")}><ArrowLeft aria-hidden /></Button>
+      <h1 className={pageTitleClass}><Plug className="size-4" aria-hidden />Connect agent</h1>
+    </header>
+    <div data-page-body className={pageBodyClass}><div className="space-y-6 p-5 md:p-8">
     <p className="max-w-prose text-lead text-muted-foreground">Connect an agent already running, or use an existing native setup for new jobs. Keep its instructions, tools, permissions and sign-in.</p>
     <Banner title="Choose how to connect">Choose this server or another machine to launch jobs from an existing native setup. Choose an existing application for observation or learning while you keep using its CLI. This browser cannot scan your laptop.</Banner>
     <Segmented name="native-source" label="Connection method" value={source} onChange={setSource} options={[{ value: "server", label: "This server", disabled: busy }, { value: "remote", label: "Another machine", disabled: busy }, { value: "observe", label: "Existing application", disabled: busy }]} />
@@ -80,5 +90,6 @@ export function NativeConnections({ v2, go, initialSource = "server" }: { v2: Cl
     </section>}
     </>}
     <p className="text-small text-muted-foreground">Your coding agent can also help import selected history. Past conversations stay historical; they do not become live jobs or AgentRun learning.</p>
+    </div></div>
   </section>;
 }

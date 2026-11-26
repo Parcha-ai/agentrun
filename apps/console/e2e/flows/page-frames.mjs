@@ -3,7 +3,7 @@
 // and tall enough for the sidebar, not `short:`): on each page the largest box under the bar that scrolls is grown by
 // 3000 px and scrolled to its end, and main must still have nothing to scroll and the bar must not move. Growing the box
 // makes the check hold on a page whatever its content, so a page that only fits by chance fails too. The pages with no
-// top bar (Build an agent, Connect, a trigger's own and new pages) scroll as one and are not here. A phone on its side
+// top bar (a trigger's own and new pages) scroll as one and are not here. A phone on its side
 // (`short:`) scrolls the run page as a whole; narrow-layouts.mjs holds that.
 // A window too small for the sidebar (a phone, upright or on its side) has no logo row for the bar to meet, and a bar whose
 // actions wrap is tall there: the pages marked `whole` (the ones framed by pageClass) scroll as a whole in main, bar and
@@ -126,6 +126,7 @@ const agents = {
       { hash: "#/agents", bar: "Agents", whole: true },
       { hash: "#/agents?archived=true", bar: "Archived agents", whole: true },
       { hash: "#/agents/new?editor", bar: "New agent" },
+      { hash: "#/agents/connect", bar: "Connect agent" },
       { hash: "#/agents/sorter", bar: "Sample sorter" },
       { hash: "#/agents/sorter/runs", bar: "Sample sorter" },
       { hash: "#/agents/sorter/versions", bar: "Sample sorter" },

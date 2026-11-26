@@ -1005,7 +1005,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
             </>}
           </section>
         : where.section === "agents"
-        ? where.observation ? <ObservedSessionPage v2={v2} sessionId={where.observation} go={go} /> : where.nativeConnect ? <NativeConnections v2={v2} go={go} initialSource={where.connectionSource} />
+        ? where.observation ? <ObservedSessionPage v2={v2} sessionId={where.observation} go={go} /> : where.nativeConnect ? <NativeConnections v2={v2} initialSource={where.connectionSource} />
           : where.agent === undefined ? <AgentsPage key={refreshed} v2={v2} archived={!!where.archived} go={go} learning={learningCap} />
           : where.agent !== null ? <AgentPage key={where.agent} v2={v2} agentId={where.agent} tab={where.edit ? "settings" : where.tab} learning={learningCap} routePrefix={c?.models?.route_prefix} harnesses={editorCaps.harnesses} efforts={efforts} limits={caps?.limits} places={editorCaps.places} go={go} {...(demo ? { upload: demoUpload } : {})}
               renderEditor={(onAgent, onEditPromptChange) => <AgentEditPage key={`${where.agent}:${where.edit ? "edit" : "settings"}:${where.settingsSection ?? ""}:${where.tool ?? ""}`} initialStep={where.settingsSection} embedded onAgent={onAgent} onEditPromptChange={onEditPromptChange} v2={v2} choices={choices} gates={gates} focusTool={where.tool} caps={fullEditorCaps} agentId={where.agent!} go={go} />} />
