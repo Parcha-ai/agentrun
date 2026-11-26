@@ -38,7 +38,7 @@ import { asksByDefault, isTableTool, isToolRow, tableTools } from "./tool-list.j
 import { CANT_BE_CALLED, computerOffText, computerOffWords, DENIED_OPENING, deniedText, NOT_RUN, RAN_UNKNOWN, type SettingFrom } from "./refusal-words.js";
 import { type Approvals, approvalsOf } from "./approvals.js";
 import { settingOfDefinition } from "./computer-setting.js";
-import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
+import { BASH_POLICIES, readOnlyReason, readOnlyText, readOnlyToolReason } from "./bash-read-only.js";
 import { formatToolName, isCatalogName, mcpNameOf, mcpToolName, monidNameOf } from "./tool-names.js";
 
 /** What the gate does with a tool's calls. */
@@ -125,9 +125,9 @@ const SAVED_AS_WORDS = "computer_screenshot with save_as writes a file into the 
 /** Why the gate refuses every call held to a tool whatever its arguments, or undefined where it may let one through:
  *  "not given", the tool needs `grant` among the agent's `tools` and it is not there (none given, none: leaving it out is
  *  how its owner keeps it, whatever its setting says); "denied", the tool's `permission` is deny; "no approver", it asks
- *  and no one can approve (`approvers` false). The one answer the run's gate refuses by and its files note and bound
- *  tools offer by. */
-export type Bar = "not given" | "denied" | "no approver";
+ *  and no one can approve (`approvers` false); "policy", bash's policy refuses every call of it (RunGate.opBar alone).
+ *  The one answer the run's gate refuses by and its files note and bound tools offer by. */
+export type Bar = "not given" | "denied" | "policy" | "no approver";
 const barOf = (grant: string | undefined, tools: readonly string[] | undefined, permission: Permission, approvers: boolean): Bar | undefined =>
   grant !== undefined && !tools?.includes(grant) ? "not given" : permission === "deny" ? "denied" : permission === "ask" && !approvers ? "no approver" : undefined;
 /** Why a run can't write a file (a screenshot's save_as), or undefined where it can: barOf, write needing write. */
@@ -497,12 +497,17 @@ export class RunGate {
   readonly writeBar = (): Bar | undefined => writeBar(this.where.tools, this.policy("write"), this.approvers);
 
   /** Why this run's gate refuses the computer op `op` whatever its arguments, or undefined where it may let one through:
-   *  its grant not given (OP_GRANTS), or the tool it is held to (OP_HELD_AS) set to deny or to an ask no one can approve,
-   *  as decide reads them: the grant first, then the held tool's setting as on a computer (onComputer), the one decide
-   *  asks. An op held to no tool (apps, raw input) is the kind's, never barred here. */
+   *  its grant not given (OP_GRANTS), or the tool it is held to (OP_HELD_AS) set to deny, refused by bash's policy
+   *  whatever its arguments, or set to an ask no one can approve, in decide's order: the grant first, then the held
+   *  tool's setting and policy as on a computer (onComputer), the gate decide asks. An op held to no tool (apps, raw
+   *  input) is the kind's, never barred here. */
   private opBar(op: string): Bar | undefined {
     const held = Object.hasOwn(OP_HELD_AS, op) ? OP_HELD_AS[op]! : undefined;
-    return held === undefined ? undefined : barOf(grantOf(op), this.where.tools, this.onComputer().policy(held), this.approvers);
+    if (held === undefined) return undefined;
+    const gate = this.onComputer();
+    const bar = barOf(grantOf(op), this.where.tools, gate.policy(held), this.approvers);
+    if (bar === "not given" || bar === "denied") return bar;
+    return gate.policyRefusal(gate.keyOf(held) ?? held, held) !== undefined ? "policy" : bar;
   }
 
   /** The computer ops this run's gate refuses whatever their arguments (opBar): what computer_op's op list and a
@@ -546,8 +551,9 @@ export class RunGate {
     if (held && this.policy(name) !== "deny") {
       // An op that needs a tool among the agent's tools (OP_GRANTS: a file's write, read, listing or stat) is refused to
       // an agent not given it first, on every computer, whatever that tool's setting says: no setting offers a tool the
-      // agent was not given. Past that, the held tool's own setting decides, a deny or an ask no one can approve refused
-      // in its words: what opBar reads, so the offer (opsRefused) leaves out what this refuses.
+      // agent was not given. Past that, the held tool's own setting and bash's policy decide, a deny, a policy refusal or
+      // an ask no one can approve refused in its words: what opBar reads, so the offer (opsRefused) leaves out what this
+      // refuses whatever the arguments.
       const op = (args as { op: string }).op;
       if (this.opBar(op) === "not given") return { deny: notGivenText(`computer_op ${op}`, grantOf(op)!, "", ran) };
       return this.onComputer().decide(held.tool, held.args, options);
@@ -564,7 +570,7 @@ export class RunGate {
     }
     const pinned = this.pinned(key, args, ran);
     if (pinned) return { deny: pinned.text };
-    const policed = this.policyRefusal(key, name, args);
+    const policed = this.policyRefusal(key, name, { args });
     if (policed) return { deny: policed };
     // A screenshot saved into the run's files (save_as) is a file written as write writes one: write's setting holds it
     // too, after the kind's deny, and the stricter decides (write's deny refuses it before the computer is asked, write's
@@ -687,8 +693,10 @@ export class RunGate {
 
   /** Why bash's policy refuses the call `name` (held to `key`) with `args` now, or undefined: the revision's own setting
    *  (an agent's tool_settings.bash.policy), so every shell tool under every harness's name for it is held to it. A policy
-   *  this server does not know refuses every shell call (fail closed), as a pin that does not read does. */
-  private policyRefusal(key: string, name: string, args: unknown): string | undefined {
+   *  this server does not know refuses every shell call (fail closed), as a pin that does not read does. With no `call`,
+   *  only what refuses every call of it whatever its arguments (opBar): an unknown policy, or a shell tool the read-only
+   *  policy never runs (readOnlyToolReason). */
+  private policyRefusal(key: string, name: string, call?: { readonly args: unknown }): string | undefined {
     if (key !== "bash") return undefined;
     const policy = this.overrides.bash?.policy;
     if (policy === undefined) return undefined;
@@ -696,7 +704,7 @@ export class RunGate {
     // a CLI's own shell (codex's shell, claude-agent's Bash).
     const tool = shellToolOf(name) ?? "bash";
     if (!(BASH_POLICIES as readonly string[]).includes(policy)) return `${tool}${CANT_BE_CALLED}this agent's bash policy ${JSON.stringify(policy).slice(0, 60)} is not one this server knows (${BASH_POLICIES.join(", ")}), so no command is let through until its tool_settings name one. ${NOT_RUN}`;
-    const reason = readOnlyReason(tool, args, [this.where.work, COMPUTER_ROOT]);
+    const reason = call === undefined ? readOnlyToolReason(tool) : readOnlyReason(tool, call.args, [this.where.work, COMPUTER_ROOT]);
     return reason === undefined ? undefined : readOnlyText(tool, reason, NOT_RUN);
   }
 
