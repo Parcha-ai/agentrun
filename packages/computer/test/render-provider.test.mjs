@@ -569,7 +569,7 @@ test("a listing by run reads only that run's sandboxes: another run's wedged gue
 
 test("prepareImage shares an import only between providers of one key: a wrong key's refusal is its own", async () => {
 	const render = fakeRender();
-	const [wrong, right] = await Promise.all([provider(render, { apiKey: "fake-test-key-wrong-not-a-secret" }).prepareImage(), provider(render).prepareImage()]);
+	const [wrong, right] = await Promise.all([provider(render, { apiKey: "not-a-secret" }).prepareImage(), provider(render).prepareImage()]);
 	assert.equal(wrong.ok, false, "the wrong key is refused");
 	assert.match(wrong.error.message, /401/);
 	assert.deepEqual(right, { ok: true, value: BUILD }, "the right key's import is not the wrong key's 401");
