@@ -55,6 +55,10 @@ const named: string[] = [""];
 /** The table's next free word: how much of the walk's table the fields compiled so far take (a test reads it). */
 export const tableUsed = (): number => tableTop;
 
+/** The walker's memory, read-only: its bytes and where a line starts in them (below that, its table, keys and events),
+ *  or undefined before the first scan on this thread (a test reads it). */
+export const walkerMemory = (): { bytes: number; base: number } | undefined => (walker ? { bytes: walker.memory.buffer.byteLength, base: walker.base() } : undefined);
+
 /** The walker, built on first use: a module of a few kilobytes, compiled where it is used (each worker its own). */
 function walkerOf(): Walker {
   return (walker ??= new WebAssembly.Instance(new WebAssembly.Module(Buffer.from(SCAN_WASM, "base64"))).exports as unknown as Walker);
@@ -83,9 +87,11 @@ function compile(w: Walker, shape: Shape): number {
   return node;
 }
 
-/** The longest line scan reads, in the walker's memory, which holds as much as the longest line it has read for as long
- *  as the process lives: one longer is decoded as before. */
-const LONGEST = 1 << 26;
+/** The longest line scan reads, 8 MiB. The walker's memory holds as much as the longest line it has read for as long as
+ *  its thread lives, outside the thread's heap limits: so each reading thread (a pool worker, or the thread that calls
+ *  parseHome) holds up to 8 MiB of scanner memory beyond its heap, and no more. A longer line is parsed whole, as before,
+ *  with the same answer. */
+const LONGEST = 1 << 23;
 
 /** `length` bytes of room for a line, or false where memory cannot grow to it. */
 function room(w: Walker, length: number): boolean {

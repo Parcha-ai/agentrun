@@ -45,6 +45,8 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 - `workerOldMb` caps each worker's old generation (default 64, at least 8, refused with a RangeError under it: at 1 or
   2 MB V8 ends the whole process as a worker starts, and at 3 to 7 the workers run out of memory). A line over an eighth of it, or a file that runs a worker
   out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
+  Each reading thread (each worker, and the calling thread) also holds up to 8 MiB of scanner memory outside its heap:
+  the scanner keeps room for the longest line it read, and a line over 8 MiB is parsed whole instead, with the same totals.
 - A request two sources wrote is counted once. OpenCode's claude-agent provider runs Claude Code, which writes each
   request into its own session file too; OpenCode names that session on the request (`mirrors`). When the same call
   reads that Claude Code session (serve's import: or its store holds it), the request counts there and not in the OpenCode session (tokens, calls and cost),
