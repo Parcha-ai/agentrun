@@ -505,8 +505,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		if (problem) return fail("invalid", problem);
 		if (Object.keys(labels).length === 0) return fail("invalid", "list and attach take at least one label: a Kernel organization holds browsers this provider did not make");
 		const first = Object.entries(labels).find(queryable);
-		const found: KernelRow[] = [];
-		const seen = new Set<string>();
+		const found = new Map<string, KernelRow>();
 		const call = "GET /browsers";
 		for (let offset = 0, pages = 0; pages < MAX_PAGES; pages++) {
 			const query = new URLSearchParams({ status: "all", ...(first === undefined ? {} : { [`tags[${first[0]}]`]: first[1] }), limit: "100", offset: String(offset) });
@@ -521,13 +520,18 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 			if (!Array.isArray(page.json)) return vendorFailure("kernel", NAME, call, new BrowserVendorError(NAME, call, page.status, "not_a_list"));
 			for (const row of page.json as KernelBrowser[]) {
 				const id = text(row?.session_id);
-				if (id !== "" && (withDeleted || !row.deleted_at) && carries(row.tags, labels) && !seen.has(id)) {
-					seen.add(id);
-					const createdAt = text(row.created_at);
-					found.push({ id, tags: withoutCreateLabel(labelsOf(row.tags)), ...(createdAt === "" ? {} : { createdAt }), ...(row.deleted_at ? { deleted: true as const } : {}) });
+				if (id === "" || (!withDeleted && row.deleted_at) || !carries(row.tags, labels)) continue;
+				const before = found.get(id);
+				// A browser listed twice (pages shifted under the read) reads as deleted once either row says so: a delete is
+				// never undone.
+				if (before !== undefined) {
+					if (row.deleted_at && before.deleted === undefined) found.set(id, { ...before, deleted: true });
+					continue;
 				}
+				const createdAt = text(row.created_at);
+				found.set(id, { id, tags: withoutCreateLabel(labelsOf(row.tags)), ...(createdAt === "" ? {} : { createdAt }), ...(row.deleted_at ? { deleted: true as const } : {}) });
 			}
-			if (page.headers.get("x-has-more") !== "true") return ok(found);
+			if (page.headers.get("x-has-more") !== "true") return ok([...found.values()]);
 			const next = Number(page.headers.get("x-next-offset"));
 			if (!Number.isInteger(next) || next <= offset) return vendorFail("kernel","Kernel reported more browsers without the next page's offset");
 			offset = next;

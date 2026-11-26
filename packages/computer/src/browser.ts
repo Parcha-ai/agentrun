@@ -201,7 +201,8 @@ const RECOVER_GAP_MS = 2_000;
  * After a create whose outcome is unknown: the browsers carrying its create label, found and released under a signal
  * of the recovery's own, `ms` in all (the caller's may be what ended the create). Where `made` reads the request's
  * browsers (ended ones included), one left to another create's converge (leftToConverge) is read again, every
- * RECOVER_GAP_MS for up to half of `ms` (once at least), and kept once a newer one has ended (convergeSettled): that is
+ * RECOVER_GAP_MS for up to half of `ms` (once at least, sooner when half of `ms` is shorter than the gap), and kept
+ * once a newer one has ended (convergeSettled): that is
  * what a converge that answers it does first. One whose newer browsers all still run at the end was answered by no
  * converge (each kept its own) and is released; one that cannot be read again is kept. The words say what became of
  * them, for the create's failure; they never carry a URL.
@@ -254,7 +255,8 @@ export async function recoverCreate(
 /**
  * A left browser's request read again (convergeSettled) after each RECOVER_GAP_MS, until it is answered or released,
  * `reads` times at most and not past `by` (one read at least): "running" when the last read still found every newer
- * browser running, "unread" when the last read failed.
+ * browser running, "unread" when the last read failed. No wait runs past `by`, so a bound shorter than the gap still
+ * reads once within it, and the read and the release keep the time after `by`.
  */
 async function settle(
 	mine: string,
@@ -265,9 +267,10 @@ async function settle(
 	reads: number,
 ): Promise<"answered" | "running" | "release" | "unread"> {
 	let last: "running" | "unread" = "unread";
-	for (let read = 0; read < reads && (read === 0 || Date.now() + RECOVER_GAP_MS <= by); read++) {
-		if (signal.aborted) break;
-		await sleep(RECOVER_GAP_MS);
+	for (let read = 0; read < reads; read++) {
+		const left = by - Date.now();
+		if ((read > 0 && left < RECOVER_GAP_MS) || signal.aborted) break;
+		await sleep(Math.max(0, Math.min(RECOVER_GAP_MS, left)));
 		const again = await made(signal);
 		if (!again.ok) {
 			last = "unread";

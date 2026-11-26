@@ -727,7 +727,8 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	 * The running and pending sessions with all of these labels. Browserbase is asked by status and by the first label a
 	 * query carries as it is; the match is the provider's own, so a lane that drops the query never hands back another's.
 	 * Both statuses must answer: a release trusts this list. `statuses` widens it, to the ended ones too (EVER). The
-	 * statuses are asked in a session's own order (LIFECYCLE), so every session there when the read starts is found.
+	 * statuses are asked in a session's own order (LIFECYCLE), so every session there when the read starts is found, and a
+	 * session found in two answers reads as the later one says.
 	 */
 	async #sessions(labels: Record<string, string>, signal?: AbortSignal, statuses: ReadonlySet<SessionStatus> = LIVE): Promise<Result<BrowserbaseSession[]>> {
 		const problem = browserbaseLabelsProblem(labels);
@@ -742,7 +743,8 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 				if (asked.length === 0) continue;
 				const pages = await Promise.all(asked.map((status) => this.#api.list({ status, ...(q === undefined ? {} : { q }) }, signal)));
 				for (const s of pages.flat()) {
-					if (typeof s?.id === "string" && statuses.has(s.status as SessionStatus) && carries(metadataLabels(s.userMetadata), labels) && !found.has(s.id)) found.set(s.id, s);
+					// A later group's row wins: a session only moves forward, so one answered RUNNING and then COMPLETED has ended.
+					if (typeof s?.id === "string" && statuses.has(s.status as SessionStatus) && carries(metadataLabels(s.userMetadata), labels)) found.set(s.id, s);
 				}
 			}
 		} catch (error) {

@@ -2663,12 +2663,13 @@ stuck behind it. Another create's browser of the same request, even one another 
 label and is left running. A lost create's own browser is left for another create's converge when it is the oldest of
 the request's that runs and the request's browsers, ended ones included, hold a newer one: only another create made
 that one, and its converge may answer the older. The request's browsers are then read again, every 2 s for up to half
-of `cleanupMs` (once at least). A converge that answers the older releases its own first, so once a newer browser has
+of `cleanupMs` (once at least, and sooner when that half is under 2 s, so the release keeps the other half). A converge that answers the older releases its own first, so once a newer browser has
 ended, the lost create's is left running for that create. While every newer one still runs, no converge has answered
 it (each such create kept its own), and at the end it is released. A read again that fails leaves it running.
 Browserbase is asked status by status in a session's own order (pending, then running, then the ended ones), so a
-session that moves on while a list runs is found in a later answer, never missed; Kernel answers every state in one
-list. A newer browser that ended for another reason reads the same as one a converge released: its create was aborted
+session that moves on while a list runs is found in a later answer, never missed, and one found in two answers reads as
+the later one says; Kernel answers every state in one paged list, and a browser listed twice reads as deleted once
+either row says so. A newer browser that ended for another reason reads the same as one a converge released: its create was aborted
 while it listed the request, or released its own and then failed (its release reported a failure, or its read of the
 older failed), or its own reply was lost too and its recovery released it. Nothing on the vendor tells those apart, so
 there the lost create's browser runs to the vendor's lifetime: on Browserbase its `timeout`, up to the run's lifetime;
