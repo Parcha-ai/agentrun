@@ -1095,7 +1095,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  for it, so the run's next end comes after that turn's answer. Undefined once the claim has read its delivered rows.
    *  Also set while the run waits in its claim on the person's answer to its question (waitInClaim): their message is sent
    *  the same way, as the claim's next turn, and `placed` wakes the wait once it is sent. */
-  let reopen: { sent?: Promise<void>; placed?: () => void; feedback?: FeedbackData } | undefined;
+  let reopen: { sent?: Promise<void>; placed?: () => void; feedback?: FeedbackData; by?: number } | undefined;
   /** A grade's feedback round this claim closes (runner/feedback-round.ts): the run opened again on a grade's words (its
    *  steer, taken with a FEEDBACK entry and never sent as a turn), or a claim that finds such an entry with no end after it.
    *  The agent is asked no turn of the job's: the run goes to its end-of-run turn, told the grade first (feedbackAsk). */
@@ -1462,12 +1462,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // on the timeline, since the API answered the message as steered. A reopen's own message (the claim's turn, not yet
     // sent; never a wait's answer) came before the claim opened, so whatever it handed, the claim opened with: a
     // credential handed since is a later message's, and this one is still the claim's turn. Held, a reopen of a session
-    // still new would wait for a first input that never comes.
+    // still new would wait for a first input that never comes. It is the first message to reach here while the reopen
+    // is unsent (`by`): one after it, though that message was refused or left, is no reopen's and is checked.
     if (leftForNextTurn) return { later: "a message before this one runs as the run's next turn: this one runs after it" };
     const claimMcp = mcp;
     const leftOut = claimMcp?.leftOut;
-    const reopenTurn = reopen !== undefined && !reopen.sent && reopen !== waitTurn;
-    if (claimMcp && leftOut?.length && !reopenTurn) {
+    const claimTurn = reopen !== undefined && !reopen.sent && reopen !== waitTurn ? reopen : undefined;
+    if (claimTurn) claimTurn.by ??= command.id;
+    if (claimMcp && leftOut?.length && claimTurn?.by !== command.id) {
       const still = new Set(await claimMcp.fresh());
       const handed = leftOut.filter((server) => !still.has(server));
       if (handed.length) {
@@ -3919,6 +3921,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const next = new Promise<TurnEnd | "lapsed">((resolve, reject) => {
       let done = false;
       let lapsed = false;
+      /** Ended by a message left for the run's next turn (endWaitNow), no hold having lapsed. */
+      let cut = false;
       const finish = (value: Promise<TurnEnd> | "lapsed") => {
         if (done) return;
         done = true;
@@ -3936,8 +3940,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         if (!mine.sent) finish("lapsed");
       }, () => undefined);
       // So does a message left for the run's next turn (steer), the same way; one left while the wait was starting ends it
-      // as soon as it holds.
+      // as soon as it holds. One left while an answer is placed (a message that waited for the run's first input is placed
+      // off the runner's delivery, so the next row can arrive meanwhile) ends it once that answer is refused: no message
+      // reaches the wait after it.
       endWaitNow = () => {
+        cut = true;
         if (!mine.sent) finish("lapsed");
       };
       if (leftForNextTurn) endWaitNow();
@@ -3951,7 +3958,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // Not placed (the steer was refused): the next message may be.
             mine.sent = undefined;
             placing = new Promise<void>((resolve) => (mine.placed = resolve));
-            if (lapsed) return finish("lapsed");
+            if (lapsed || cut) return finish("lapsed");
           }
         }
       })().catch(reject);
