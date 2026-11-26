@@ -134,7 +134,8 @@ test("computer_op offers exactly the ops the gate would not refuse whatever thei
     const offered = opTool.inputSchema.properties.op.enum;
     const refused = [];
     for (const name of Object.keys(COMPUTER_OPS)) {
-      const decision = await gate(op(name, name.startsWith("files.") ? { ...PATH, data: "x" } : { command: "id", actions: [], id: "x" }));
+      // A command bash's read-only policy runs (ls), so a refusal here is one whatever the command.
+      const decision = await gate(op(name, name.startsWith("files.") ? { ...PATH, data: "x" } : { command: "ls", actions: [], id: "x" }));
       const denied = typeof decision === "object";
       if (denied) refused.push(name);
       const what = `${name}, ${JSON.stringify(agent)}`;
