@@ -263,6 +263,19 @@ test("deploying an already connected agent moves that exact identity without enr
   assert.equal(updating.seen.filter(x => x.path.endsWith("/sync/grant")).length, 2, "the saved connector retries applying the newer snapshot");
 });
 
+test("a connected agent never sends its saved connector credential to another destination with the same IDs", async t => {
+  for (const mismatch of ["base", "workspace"]) {
+    const local = setup(t), peer = destination();
+    const original = { ...target, workspace: "team:original" };
+    assert.equal(await deployCapturedSetup(local.ctx, captured(), original, { fetch: peer.fetch }), 0);
+    peer.state.snapshot = "c".repeat(64);
+    const other = { ...original, [mismatch]: mismatch === "base" ? "https://other.example/v2" : "team:other" };
+    const grants = peer.seen.filter(x => x.path.endsWith("/sync/grant")).length;
+    await assert.rejects(deployConnected(local.ctx, "remote-existing", other, { fetch: peer.fetch }), e => e.code === 2);
+    assert.equal(peer.seen.filter(x => x.path.endsWith("/sync/grant")).length, grants, `${mismatch}: no saved credential reaches the selected destination`);
+  }
+});
+
 test("a missing or incompatible destination capability refuses before reading the local setup", async t => {
   for (const capability of [undefined, false, { version: 1, runtimes: ["codex"] }]) {
     const local = setup(t), peer = destination({ capability: capability ?? null });

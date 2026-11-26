@@ -209,7 +209,7 @@ function journal(ctx, source, base, workspace = null) {
   } catch (error) { close(); throw error; }
 }
 
-function savedConnector(ctx, agentId, connection, wire) {
+function savedConnector(ctx, agentId, connection, target, wire) {
   const root = journalRoot(ctx);
   if (!existsSync(root)) return undefined;
   const rootInfo = lstatSync(root);
@@ -226,7 +226,8 @@ function savedConnector(ctx, agentId, connection, wire) {
       continue;
     let state;
     try { state = JSON.parse(ctx.cli.privateFile(file)); } catch { continue; }
-    if (state?.version === 1 && state.agent_id === agentId && state.connector_id === connection.connector_id
+    if (state?.version === 1 && state.base === target.base && state.workspace === (target.workspace ?? null)
+        && state.agent_id === agentId && state.connector_id === connection.connector_id
         && state.target_id === connection.target_id && wire.tokenOK(state.credential)) matches.push(state.credential);
   }
   if (matches.length > 1) throw ctx.cli.fail(2, "More than one private deployment journal owns this connected agent. Review the saved connections before retrying.");
@@ -353,7 +354,7 @@ export async function deployConnected(ctx, agentId, target, { fetch: fetcher } =
   if (status.moved === true && status.current_snapshot !== status.snapshot) {
     const connection = status.connection;
     if (!connection || !ID.test(connection.connector_id) || !ID.test(connection.target_id)) throw ctx.cli.fail(2, "The destination did not identify this agent's source connection.");
-    const credential = savedConnector(ctx, agentId, connection, wire);
+    const credential = savedConnector(ctx, agentId, connection, target, wire);
     if (!credential) throw ctx.cli.fail(2, "This setup has a newer snapshot waiting to apply. Retry the original --from command on its source machine so its private connection can finish the update.");
     wire.scrub.add(credential);
     await wire.call("POST", `/connectors/${enc(connection.connector_id)}/targets/${enc(connection.target_id)}/sync/grant`, {}, credential);

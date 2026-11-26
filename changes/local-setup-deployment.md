@@ -7,6 +7,8 @@ The CLI previews and uploads project files, instructions, complete authored skil
 then moves the same agent into managed execution. `connect --from` stops after upload; `deploy --connected` preserves
 an existing connection's identity. Private journals preserve upload bytes and identifiers across retries, and Cloud
 workspace checks prevent reusing a connection in a different workspace.
+`deploy --connected` uses a saved connector credential only when its private journal matches the selected base URL
+and workspace as well as the agent, connector and target IDs.
 
 Destinations advertise the versioned source-deployment capability. Pending imports cannot run or be edited until
 Move succeeds. Missing model or tool accounts, unsupported source extensions or policies, and incomplete snapshots
