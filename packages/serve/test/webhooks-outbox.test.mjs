@@ -357,6 +357,8 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     let api = client(first.baseUrl, first.token);
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     const run = await startRun(api, "soon", "Answer soon.");
+    // The first read comes after the run has ended, as on a starved runner (CI under load).
+    await follow(api, run.run_id, ["completed"]);
     await follow(api, run.run_id, ["working"]);
     // The stop drains the run's turn: it answers, and is carried back, while the server closes.
     await first.close();
