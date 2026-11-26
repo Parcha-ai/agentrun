@@ -88,7 +88,8 @@ file from Finder into a Mail message), or anything outside every window.
 **Only what you were given.** An agent's computer setting may leave some out: a code-only agent drives the desktop from
 `codemode` alone, with no `computer_observe`, `computer_act` or `computer_screenshot` in its tool list; an agent whose
 exec is off has no `computer.shell`, no `computer.processes` and no bash; one not given read has no `computer.files`
-read, list or stat, and one not given write no `computer.files.write`. Where the desktop has the `apps` group a
+read, list or stat, and one not given write no `computer.files.write`; an op whose setting is deny, or an ask no one
+can answer here, is left out the same way. Where the desktop has the `apps` group a
 script opens apps with `computer.apps`, and on a desktop with no ui group the tools open the app they name (below);
 otherwise it uses the desktop's own launcher through the screen. Use what your tool list and codemode's types show.
 

@@ -94,11 +94,9 @@ const KIND_TOOLS: ReadonlyMap<string, readonly string[]> = (() => {
 const OP_HELD_AS: Readonly<Record<string, string>> = Object.freeze({ "shell.run": "bash", "processes.start": "bash_background", "files.write": "write", "files.read": "read", "files.list": "read", "files.stat": "read" });
 /** The tool a computer op needs among the agent's tools (none given, none) before any setting of it is read, as the
  *  run's own file tools do: a file's write needs write, its read, listing or stat read. An op not here needs no grant:
- *  the shell's (shell.run, processes.start) follow bash's setting alone, and the others the kind's. */
+ *  the shell's (shell.run, processes.start) follow bash's setting alone, and the others the kind's. A test holds every
+ *  op of the kernel's files group to one (computer-op-grants.test.mjs). */
 const OP_GRANTS: Readonly<Record<string, string>> = Object.freeze({ "files.write": "write", "files.read": "read", "files.list": "read", "files.stat": "read" });
-/** The ops an agent given `tools` is refused for a tool it is not given (OP_GRANTS): what computer_op and a script's
- *  `computer` leave out of their offer. */
-export const opsNotGiven = (tools: readonly string[] | undefined): readonly string[] => Object.keys(OP_GRANTS).filter((op) => !tools?.includes(OP_GRANTS[op]!));
 /** The tool `op` needs among the agent's tools (OP_GRANTS), or undefined for one that needs none. */
 const grantOf = (op: unknown): string | undefined => (typeof op === "string" && Object.hasOwn(OP_GRANTS, op) ? OP_GRANTS[op] : undefined);
 /** The ops whose command runs in the computer's shell. */
@@ -124,13 +122,16 @@ function savedAs(name: string, args: unknown): { readonly path: unknown } | unde
 }
 /** What a screenshot's refusal for write's setting adds to write's own words: why write's setting holds it. */
 const SAVED_AS_WORDS = "computer_screenshot with save_as writes a file into the run's files, so write's setting holds it; a screenshot without save_as is not held to it.";
-/** Why a run can't write a file (a screenshot's save_as, a script's op held as write), or undefined where it can: "not
- *  given", write is not among the agent's `tools` (none given, none: leaving write out is how its owner keeps it from
- *  writing, whatever write's setting says); "denied", write's `permission` is deny; "no approver", it asks and no one can
- *  approve (`approvers` false). The one answer the run's gate refuses by and its files note and bound tools offer by. */
-export type WriteBar = "not given" | "denied" | "no approver";
-export const writeBar = (tools: readonly string[] | undefined, permission: Permission, approvers: boolean): WriteBar | undefined =>
-  !tools?.includes("write") ? "not given" : permission === "deny" ? "denied" : permission === "ask" && !approvers ? "no approver" : undefined;
+/** Why the gate refuses every call held to a tool whatever its arguments, or undefined where it may let one through:
+ *  "not given", the tool needs `grant` among the agent's `tools` and it is not there (none given, none: leaving it out is
+ *  how its owner keeps it, whatever its setting says); "denied", the tool's `permission` is deny; "no approver", it asks
+ *  and no one can approve (`approvers` false). The one answer the run's gate refuses by and its files note and bound
+ *  tools offer by. */
+export type Bar = "not given" | "denied" | "no approver";
+const barOf = (grant: string | undefined, tools: readonly string[] | undefined, permission: Permission, approvers: boolean): Bar | undefined =>
+  grant !== undefined && !tools?.includes(grant) ? "not given" : permission === "deny" ? "denied" : permission === "ask" && !approvers ? "no approver" : undefined;
+/** Why a run can't write a file (a screenshot's save_as), or undefined where it can: barOf, write needing write. */
+export const writeBar = (tools: readonly string[] | undefined, permission: Permission, approvers: boolean): Bar | undefined => barOf("write", tools, permission, approvers);
 /** The refusal of a call (`what`, in words) that needs `tool` among the agent's tools, for an agent not given it
  *  (`instead`: what to do, or ""). */
 const notGivenText = (what: string, tool: string, instead: string, ran: "no" | "unknown"): string =>
@@ -493,11 +494,20 @@ export class RunGate {
   /** Why this run can't write a file now (writeBar over its agent's tools, write's permission and whether anyone can
    *  approve), or undefined where it can: what decide refuses a save_as or a script's write by, and what the run's files
    *  note and computer_screenshot's save_as are offered by. */
-  readonly writeBar = (): WriteBar | undefined => writeBar(this.where.tools, this.policy("write"), this.approvers);
+  readonly writeBar = (): Bar | undefined => writeBar(this.where.tools, this.policy("write"), this.approvers);
 
-  /** The computer ops this run's gate refuses for a tool its agent is not given (opsNotGiven): what computer_op's op list
-   *  and a script's `computer` declarations leave out. */
-  readonly opsNotGiven = (): readonly string[] => opsNotGiven(this.where.tools);
+  /** Why this run's gate refuses the computer op `op` whatever its arguments, or undefined where it may let one through:
+   *  its grant not given (OP_GRANTS), or the tool it is held to (OP_HELD_AS) set to deny or to an ask no one can approve,
+   *  as decide reads them: the grant first, then the held tool's setting as on a computer (onComputer), the one decide
+   *  asks. An op held to no tool (apps, raw input) is the kind's, never barred here. */
+  private opBar(op: string): Bar | undefined {
+    const held = Object.hasOwn(OP_HELD_AS, op) ? OP_HELD_AS[op]! : undefined;
+    return held === undefined ? undefined : barOf(grantOf(op), this.where.tools, this.onComputer().policy(held), this.approvers);
+  }
+
+  /** The computer ops this run's gate refuses whatever their arguments (opBar): what computer_op's op list and a
+   *  script's `computer` declarations leave out. */
+  readonly opsRefused = (): readonly string[] => Object.keys(OP_HELD_AS).filter((op) => this.opBar(op) !== undefined);
 
   /** The refusal of a call (`what`, in words) that needs `tool` among the agent's tools, for an agent not given it (none
    *  given, none); undefined for one given it, or for a call that needs no tool (`tool` undefined). */
@@ -536,10 +546,10 @@ export class RunGate {
     if (held && this.policy(name) !== "deny") {
       // An op that needs a tool among the agent's tools (OP_GRANTS: a file's write, read, listing or stat) is refused to
       // an agent not given it first, on every computer, whatever that tool's setting says: no setting offers a tool the
-      // agent was not given.
+      // agent was not given. Past that, the held tool's own setting decides, a deny or an ask no one can approve refused
+      // in its words: what opBar reads, so the offer (opsRefused) leaves out what this refuses.
       const op = (args as { op: string }).op;
-      const refused = this.notGiven(grantOf(op), `computer_op ${op}`, "", ran);
-      if (refused) return refused;
+      if (this.opBar(op) === "not given") return { deny: notGivenText(`computer_op ${op}`, grantOf(op)!, "", ran) };
       return this.onComputer().decide(held.tool, held.args, options);
     }
     const key = this.keyOf(name) ?? name;
