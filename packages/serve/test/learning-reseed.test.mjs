@@ -32,6 +32,8 @@ const MID_TURN = journalOf(["agentrun.message", KINDS.jobEnd, KINDS.end, "agentr
 /** The follow-up's end-of-run learning step running: its job's end kept after the run's last end. */
 const LEARNING_END = journalOf(["agentrun.message", KINDS.jobEnd, KINDS.end, "agentrun.message", KINDS.jobEnd]);
 const TAKEN_STEER = { id: 2, runId: "run-1", kind: "steer", body: { text: "Correction" }, createdAt: 1, takenAt: 2, refused: null, tries: 0 };
+/** A person's next message to that run, not taken yet: it waits while the run's look-back runs to its end and merges. */
+const WAITING_STEER = { id: 3, runId: "run-1", kind: "steer", body: { text: "And one more thing" }, createdAt: 3, takenAt: null, refused: null, tries: 0 };
 const SHOWN = async () => ({ text: (s) => s, name: (s) => s, holds: () => false });
 
 test("a run queued or parked on a person is no open round, whatever it holds: a run started beside it names none", async () => {
@@ -67,6 +69,10 @@ test("a run in a follow-up's turn is not named, though an earlier round of it en
   assert.deepEqual(await openRoundsOf(goingRound([TAKEN_STEER], MID_TURN), "agent-1"), []);
 });
 
+test("a run looking back with a person's next message waiting untaken is still named: its look-back runs to its end and merges the correction", async () => {
+  assert.deepEqual(await openRoundsOf(goingRound([TAKEN_STEER, WAITING_STEER]), "agent-1"), ["run-1"]);
+});
+
 test("an older running run with an open round is named behind sixty newer queued runs: the read lists running runs only", async () => {
   const queued = Array.from({ length: 60 }, (_, i) => ({ id: `run-q${String(i).padStart(2, "0")}`, state: "queued", startedAt: 1_000 + i })).reverse();
   const rows = [...queued, { id: "run-old", state: "running", epoch: 1, startedAt: 1 }];
@@ -98,7 +104,7 @@ test("a POST over 120 running runs reads their commands in one read a page (thre
 /** A claim store whose run `run-2` (at `epoch`, no turn yet) names run `run-1`, whose round stays open (its end-of-run
  *  learning step runs: LEARNING_END); `own(reads)` is run-2's row at each read after the first, `commands(reads)` its
  *  command rows, `other()` run-1's row (a throw is a failed read). Its seed is read from `seed`. */
-function waitStore({ own = () => ({ id: "run-2", agentId: "agent-1", state: "running", epoch: 1 }), commands = () => [], other = () => ({ id: "run-1", agentId: "agent-1", state: "running", epoch: 1 }), seed = refused("its seed"), epoch = 1 } = {}) {
+function waitStore({ own = () => ({ id: "run-2", agentId: "agent-1", state: "running", epoch: 1 }), commands = () => [], other = () => ({ id: "run-1", agentId: "agent-1", state: "running", epoch: 1 }), otherCommands = () => [TAKEN_STEER], seed = refused("its seed"), epoch = 1 } = {}) {
   const written = [];
   let reads = 0;
   const launch = { runId: "run-2", body: launchBody({ input: {}, title: "t", place: { mode: "runner" }, learning: { seed: "save-1", section: "", after: ["run-1"] } }), sealed: null, census: null, createdAt: 0 };
@@ -112,7 +118,7 @@ function waitStore({ own = () => ({ id: "run-2", agentId: "agent-1", state: "run
       reseedLearning: async (_runId, learning, at) => (written.push({ learning, epoch: at }), true),
     },
     readJournal: (id) => (id === "run-1" ? LEARNING_END : EMPTY_JOURNAL),
-    commands: async (id) => (id === "run-2" ? commands(reads) : [TAKEN_STEER]),
+    commands: async (id) => (id === "run-2" ? commands(reads) : otherCommands()),
     learning: { seed, proposal: async () => undefined },
   };
   return { store, written };
@@ -184,15 +190,40 @@ test("the wait itself returns at once on its signal's abort, the row as it is, n
   assert.deepEqual(written, [], "nothing written");
 });
 
-test("a person's cancel or stop while the claim waits ends the wait at once: the row as it was, nothing written", async (t) => {
+/** A dispatch over `launchOf` whose harness resolves to a loop that runs until it is told to stop, recording its choice
+ *  and the stops it is given. */
+function dispatchWithLoop(launchOf) {
+  const seen = { chosen: 0, stops: [] };
+  let finish = () => {};
+  const inner = {
+    start: () => new Promise((resolve) => (finish = resolve)),
+    stop: async (reason) => {
+      seen.stops.push(reason);
+      finish({ state: "stopped" });
+    },
+    command: async () => ({ taken: true }),
+  };
+  const dispatch = createDispatchLoop({ launchOf, resolve: async () => (seen.chosen++, () => inner) })({ redact: heldRedactor((text) => text), journal: () => ({}), flush: async () => {}, signal: new AbortController().signal });
+  return { dispatch, seen };
+}
+
+test("a person's stop or cancel while the claim waits reaches the dispatch: the wait ends at once, nothing written, and the loop starts already stopped", async (t) => {
   const data = await tmpData(t);
-  for (const kind of ["cancel", "stop"]) {
-    const { store, written } = waitStore({ commands: (reads) => (reads > 2 ? [{ id: 7, runId: "run-2", kind, body: {}, createdAt: 1, takenAt: null, refused: null, tries: 0 }] : []) });
+  for (const cancel of [false, true]) {
+    const { store, written } = waitStore();
+    const { dispatch, seen } = dispatchWithLoop(reseededLaunchOf({ store, data, shown: refused("the secrets"), log: () => undefined, waitMs: 12_000 }));
     const started = Date.now();
-    const row = await reseededLaunchOf({ store, data, shown: refused("the secrets"), log: () => undefined, waitMs: 12_000 })("run-2", 1);
-    assert.ok(Date.now() - started < 6_000, `${kind}: it never waited to its bound`);
-    assert.deepEqual(row.body.learning.after, ["run-1"], `${kind}: the row as it was`);
-    assert.deepEqual(written, [], `${kind}: nothing written`);
+    const end = dispatch.start(CLAIM_2);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    // As the runner delivers a person's stop or cancel row (runner.ts stopLoop): the dispatch's stop, the loop not chosen yet.
+    const reason = { kind: "command", commandId: 7, ...(cancel ? { cancel: true } : {}) };
+    const stopped = dispatch.stop(reason);
+    assert.deepEqual(await end, { state: "stopped" }, `cancel ${cancel}`);
+    await stopped;
+    assert.ok(Date.now() - started < 3_000, `cancel ${cancel}: it never waited to its bound`);
+    assert.equal(seen.chosen, 1, `cancel ${cancel}: the loop is chosen, so the run ends stopped in its own commit`);
+    assert.deepEqual(seen.stops, [reason], `cancel ${cancel}: the loop starts already stopped`);
+    assert.deepEqual(written, [], `cancel ${cancel}: nothing written`);
   }
 });
 
@@ -220,6 +251,31 @@ test("a failed read of the round's run counts its round as still open: the claim
   await reseededLaunchOf({ store, data, shown: refused("the secrets"), log: (line) => lines.push(line), waitMs: 3_000, now: () => clock, sleep: async (ms) => void (clock += ms) })("run-2", 1);
   assert.equal(clock, 3_000, "it waited to its bound");
   assert.ok(lines.some((line) => line.includes("did not end within 3 s")), lines.join("\n"));
+});
+
+test("a claim waiting on a round whose run gets a person's next message (untaken, its look-back still merging) waits on: never an early read without the correction", async (t) => {
+  const data = await tmpData(t);
+  const { store } = waitStore({ otherCommands: () => [TAKEN_STEER, WAITING_STEER], seed: SEED_UNREAD });
+  let clock = 0;
+  const lines = [];
+  await reseededLaunchOf({ store, data, shown: refused("the secrets"), log: (line) => lines.push(line), waitMs: 3_000, now: () => clock, sleep: async (ms) => void (clock += ms) })("run-2", 1);
+  assert.equal(clock, 3_000, "it waited to its bound");
+  assert.ok(lines.some((line) => line.includes("did not end within 3 s")), lines.join("\n"));
+});
+
+test("a claim whose first read of its own row or of its journal fails hands the run back (the claim gone, tried again): never a start without the wait, never a failed run", async (t) => {
+  const data = await tmpData(t);
+  const busy = async () => {
+    throw new Error("the store is busy");
+  };
+  const rowUnread = waitStore();
+  rowUnread.store.runs.get = busy;
+  assert.equal(await reseededLaunchOf({ store: rowUnread.store, data, shown: refused("the secrets"), log: () => undefined, waitMs: 12_000 })("run-2", 1), CLAIM_GONE, "its row unread");
+  assert.deepEqual(rowUnread.written, [], "its row unread: nothing written");
+  const journalUnread = waitStore();
+  journalUnread.store.readJournal = (id) => (id === "run-2" ? { scanConversations: busy } : LEARNING_END);
+  assert.equal(await reseededLaunchOf({ store: journalUnread.store, data, shown: refused("the secrets"), log: () => undefined, waitMs: 12_000 })("run-2", 1), CLAIM_GONE, "its journal unread");
+  assert.deepEqual(journalUnread.written, [], "its journal unread: nothing written");
 });
 
 test("a failed read of the run's own row while it waits is tried at the next read, never an end of the wait", async (t) => {
