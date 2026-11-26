@@ -21,7 +21,7 @@ import { test } from "node:test";
 
 const { workflowCallsOf } = await import("../dist/runner/workflow-calls.js");
 const { costLineOf, pathMetrics, workflowCostsOf, workflowDigest, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL } = await import("../dist/runner/workflow-first.js");
-const { LEARNED_NODES } = await import("../dist/learned-nodes.js");
+const { LEARNED_ALLOWED, LEARNED_NODES, learnedCallRan } = await import("../dist/learned-nodes.js");
 const { record } = await import("../dist/learn/ledger.js");
 const { learnedWorkflowTool } = await import("../dist/learned-workflow.js");
 
@@ -136,6 +136,36 @@ test("on pi a toolCall that never got its result (its turn aborted) closes at it
   // Another conversation's call with no result yet is still open: it may be at work in the window.
   const other = [asked(CHILD, ["w1", "web_search"]), asked(ROOT, ["c1", "learned_workflow"]), ...node(2, 0.25), kept("c1", { ended: "complete" }), result(ROOT, "c1")];
   assert.equal(workflowCallsOf(other)[0].usd, null);
+});
+
+test("a call whose record says refused is refused only while nothing was booked under its call id: one an earlier attempt spent under is failed, at what it booked or unknown, never $0", () => {
+  const refused = { ended: "failed", refused: true };
+  const outcomes = (entries) => workflowCallsOf(entries).map(({ caller, outcome, usd }) => [caller, outcome, usd]);
+  // A CLI's call: the attempt a crash cut booked a node, its rerun refused before any node ran (a call node's tool set
+  // to deny since, refused at runLearned; or its gate).
+  assert.deepEqual(outcomes([start("c1"), ...node(2, 0.25), start("c1"), kept("c1", refused), end("c1")]), [["agent", "failed", 0.25]]);
+  // The cut attempt's request booked with no figure: its $ is unknown.
+  const cut = [{ kind: "runner.request", conversationId: SESSION, data: { turn: 2, model: "m", host: "learned_workflow", side: true } }, { kind: "runner.turn", conversationId: SESSION, data: { turn: 2, usd: null, cut: true } }];
+  assert.deepEqual(outcomes([start("c1"), ...cut, start("c1"), kept("c1", refused), end("c1")]), [["agent", "failed", null]]);
+  // A paid request named under it, its window shared with another call: booked under its id, its $ unknown.
+  assert.deepEqual(outcomes([start("c1"), start("r1", "read"), ...booked(2, 0.1, { call: "c1/mcp-1" }), end("r1"), kept("c1", refused), end("c1")]), [["agent", "failed", null]]);
+  // The platform's call, no start, a paid request named under it: failed, its $ unknown.
+  assert.deepEqual(outcomes([...booked(2, 0.1, { call: WORKFLOW_FIRST_CALL }), kept(WORKFLOW_FIRST_CALL, refused)]), [["platform", "failed", null]]);
+  // Nothing booked under it (the agent's own turns beside it are never its): refused at $0.
+  assert.deepEqual(outcomes([...booked(1, 1), start("c1"), kept("c1", refused), end("c1"), ...booked(3, 1)]), [["agent", "refused", 0]]);
+});
+
+test("whether an attempt of a call refused at its gate may have run: its newest allow mark or record says, and with neither, the bridge's word that it is issued again", () => {
+  const mark = (call) => ({ kind: LEARNED_ALLOWED, data: { call } });
+  const record = (call, over = {}) => ({ kind: LEARNED_NODES, data: { call, nodes: [], ended: "failed", ...over } });
+  assert.equal(learnedCallRan([mark("c1")], "c1"), true, "let go once");
+  assert.equal(learnedCallRan([mark("c1"), record("c1", { refused: true })], "c1", true), false, "refused since: its newest says it ran nothing, replayed or not");
+  assert.equal(learnedCallRan([record("c1", { refused: true }), mark("c1")], "c1"), true, "let go after its refusal");
+  assert.equal(learnedCallRan([record("c1")], "c1"), true, "a record that ran");
+  assert.equal(learnedCallRan([mark("c2")], "c1"), false, "another call's mark");
+  assert.equal(learnedCallRan([], "c1"), false, "never let go");
+  // A run begun before the marks existed has none: an attempt its bridge says was made (`replayed`) may have run.
+  assert.equal(learnedCallRan([], "c1", true), true, "issued again, nothing kept");
 });
 
 test("a call refused before any node ran is `refused`: it ran nothing, and the money rule counts it on no side", () => {
