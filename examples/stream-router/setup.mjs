@@ -45,8 +45,9 @@ if (existing.status === 404) {
   if (made.status !== 201) fail("Making the stream-router agent", made);
   console.log("Made the agent stream-router.");
 } else if (existing.status === 200) {
-  // The revision this one leaves current is the next after the agent's own (its definition's version).
-  const revised = await call("PUT", `/agents/${AGENT}/definition`, { definition: { ...definition, version: (existing.body.definition?.version ?? 0) + 1 }, note: "Stream router from examples/stream-router" }, existing.headers.get("etag") ? { "if-match": existing.headers.get("etag") } : {});
+  // No version: the server numbers the revision (the same definition again makes none), and If-Match refuses an edit made
+  // since the read.
+  const revised = await call("PUT", `/agents/${AGENT}/definition`, { definition, note: "Stream router from examples/stream-router" }, existing.headers.get("etag") ? { "if-match": existing.headers.get("etag") } : {});
   if (![200, 201].includes(revised.status)) fail("Revising the stream-router agent", revised);
   console.log("Revised the agent stream-router.");
 } else fail("Reading the stream-router agent", existing);

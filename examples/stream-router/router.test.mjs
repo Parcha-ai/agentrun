@@ -1,10 +1,12 @@
 // Offline check of the Stream router on a faux AgentRun server, with Jev scripted by faux-jev.mjs (it routes by the
 // note's words; live routing is Jev's judgment). The stream trigger (signature "stream") starts the stream-router
 // workflow for each signed note; Jev routes it to none, Arun, research or code; a none note ends with no model request.
-// The last test pins what the design needs that AgentRun does not do yet (README.md, "Gaps").
+// The gaps test pins what the design needs that AgentRun does not do yet (README.md, "Gaps"); the last runs setup.mjs
+// twice.
 //
 // From the repo root, after `npm run build`:  node --test examples/stream-router/router.test.mjs
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -14,6 +16,7 @@ const WORKFLOW = JSON.parse(readFileSync(new URL("./router.workflow.json", impor
 // The faux model submits {answer: 42} for every model node: here alone, the reply's answer takes any value.
 WORKFLOW.schemas.Reply.properties.answer = {};
 const FAUX_JEV = new URL("./faux-jev.mjs", import.meta.url).pathname;
+const SETUP = new URL("./setup.mjs", import.meta.url).pathname;
 const SECRET = `swh_${randomBytes(32).toString("base64url")}`;
 /** Stream's signature, as its "Set up Stream Webhook" article gives it. */
 const sign = (body, t = Math.floor(Date.now() / 1000)) => `t=${t},v1=${createHmac("sha256", SECRET).update(`${t}.${body}`).digest("hex")}`;
@@ -89,4 +92,25 @@ test("gaps, as AgentRun behaves today: a prefix rule has no word boundary, no ru
   assert.equal((await api("PATCH", `/triggers/${wake}`, { enabled: false })).status, 200);
   found.paused_trigger = (await post(baseUrl, wake, note("Arun, this is shadow mode."))).status;
   assert.deepEqual(found, { prefix_without_boundary: 202, blank_text: 202, paused_trigger: 401 });
+});
+
+test("setup.mjs makes the router and its trigger, and run again with nothing changed keeps both", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { TYPESAFE_API_KEY: "fake-test-key" });
+  const server = await serve(t, { fauxJev: FAUX_JEV });
+  const setup = () => new Promise((done) => {
+    const child = spawn(process.execPath, [SETUP], { env: { ...process.env, AGENTRUN_BASE_URL: server.baseUrl, AGENTRUN_API_KEY: server.token }, stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    child.stdout.on("data", (chunk) => (out += chunk));
+    child.stderr.on("data", (chunk) => (out += chunk));
+    child.on("close", (code) => done({ code, out }));
+  });
+  const first = await setup();
+  assert.equal(first.code, 0, first.out);
+  assert.match(first.out, /^Made the agent stream-router\.\nMade the trigger "Stream ring"\./);
+  const again = await setup();
+  assert.equal(again.code, 0, again.out);
+  assert.match(again.out, /^Revised the agent stream-router\.\nPointed the trigger "Stream ring" at stream-router\./);
+  const agent = (await server.api("GET", "/agents/stream-router")).body;
+  assert.equal(agent.definition.version, 1, "the same definition again is no new revision");
+  assert.equal((await server.api("GET", "/triggers")).body.triggers.filter((one) => one.name === "Stream ring").length, 1);
 });

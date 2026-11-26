@@ -14,6 +14,7 @@ const manifest = (signature, version) => `---
 name: notes
 version: ${version}
 description: Reads each note.
+tools: []
 budget: { per_run_usd: 0.5 }
 triggers:
   - name: ring
