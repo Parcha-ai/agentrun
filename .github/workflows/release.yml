@@ -97,10 +97,20 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-ci-gate.mjs
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      # @parcha/agentrun-computer publishes the daemon, dist/computerd-linux-amd64 and -arm64, which Go builds;
+      # verify:packages stops the release without them. Pinned by commit: this job holds the npm OIDC token.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: packages/computer/daemon/go.mod
+          cache: false
+      - run: npm run build:daemon -w @parcha/agentrun-computer
       - name: Fold the fragments the tag carries into this version
         # A pull request that merged after the release pull request's fold, and before the tag, left its changes/ fragment at the tag;
-        # its code is in this release. The fold puts those into this version's sections, uncommitted, before anything is built or
-        # packed, so the published changelogs list everything the archives ship. release-preflight checks the tree is the tag plus
+        # its code is in this release. The fold puts those into this version's sections, uncommitted, before anything is packed, so
+        # the published changelogs list everything the archives ship. It runs after the daemon's build: Go records a modified tree
+        # in a binary's build info (+dirty), and nothing built reads a changelog. release-preflight checks the tree is the tag plus
         # this fold. The next release pull request's fold moves them into this version's section on main (docs/releasing.md).
         run: node scripts/changes.mjs --fold "${RELEASE_TAG#v}"
       # The fold's CHANGELOG.md is the GitHub release's notes (the github-release job), so the notes say what the archives say.
@@ -111,15 +121,6 @@ jobs:
           path: CHANGELOG.md
           if-no-files-found: error
           overwrite: true
-      - run: npm ci --ignore-scripts
-      - run: npm run build
-      # @parcha/agentrun-computer publishes the daemon, dist/computerd-linux-amd64 and -arm64, which Go builds;
-      # verify:packages stops the release without them. Pinned by commit: this job holds the npm OIDC token.
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version-file: packages/computer/daemon/go.mod
-          cache: false
-      - run: npm run build:daemon -w @parcha/agentrun-computer
       - run: node scripts/generate-author-contract.mjs --check
       - run: node scripts/check-typescript-floor.mjs
       - run: node scripts/generate-schema.mjs --check

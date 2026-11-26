@@ -48,6 +48,9 @@ import type { ClaudeAgentSdk } from '../harness.js';
  *   call and exits at once (the CLI dying mid-call).
  * - `mirror-error` yields the SDK's `system/mirror_error` (a dropped mirror
  *   batch), then answers as usual.
+ * - `whole <json>` (`{ thinking?, text }`) is an answer that came whole, as
+ *   Claude Code's non-streaming retry of a stalled stream hands it: its
+ *   `assistant` messages with no stream deltas.
  * - `cut <json answers>` says each answer in one turn; one the output limit
  *   cut (stop_reason max_tokens) the CLI resumes with its recovery note, up
  *   to 3 times, as Claude Code does, and the result says the last stop.
@@ -501,6 +504,22 @@ export function fakeSdk(fake: FakeSdkOptions = {}): FakeSdk {
             await mirror([b]);
             yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: b.message };
             yield { type: 'result', subtype: 'success', is_error: false, result: 'ok', session_id: sessionId, user_message_uuids: consumed, queued_turn_count: 0 };
+            await mirror([{ type: 'last-prompt' }]);
+            continue;
+          }
+          // `whole <json>` (`{ thinking?, text }`): the answer as Claude Code hands on its non-streaming retry of a stalled
+          // stream: the stalled message's start, then the answer's `assistant` messages (its thinking block, then its text
+          // block, one message id), with no stream deltas.
+          const whole = /^whole (.*)$/s.exec(command);
+          if (whole) {
+            const answer = JSON.parse(whole[1]!) as { thinking?: string; text: string };
+            yield { type: 'stream_event', parent_tool_use_id: null, event: { type: 'message_start', message: { id: `msg_${uuid().slice(0, 8)}`, role: 'assistant', content: [] } } };
+            const id = `msg_${uuid().slice(0, 8)}`;
+            const blocks = [...(answer.thinking ? [{ type: 'thinking', thinking: answer.thinking, signature: '' }] : []), { type: 'text', text: answer.text }];
+            const b = entry('assistant', { message: { id, role: 'assistant', content: blocks, stop_reason: 'end_turn' } });
+            await mirror([b]);
+            for (const block of blocks) yield { type: 'assistant', parent_tool_use_id: null, uuid: b.uuid, session_id: sessionId, message: { id, role: 'assistant', content: [block] } };
+            yield { type: 'result', subtype: 'success', is_error: false, result: answer.text, session_id: sessionId, user_message_uuids: consumed, queued_turn_count: 0 };
             await mirror([{ type: 'last-prompt' }]);
             continue;
           }

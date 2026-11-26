@@ -44,6 +44,11 @@ const MAX_PAGES = 10;
  *  on (the managed one found or made, or the one auth_config_id named; none for a server saved before that was recorded,
  *  whose link is then under managedConfig's, or of a toolkit with no sign-in). */
 export type ComposioCredential = { key: string; user: string; toolkit: string; auth_config?: string };
+/** What a saved server's own routes read of it (`route`): no user, which none of them sends Composio; only a trigger's
+ *  own steps (`field`) read the user. */
+export type ComposioRouteCredential = Omit<ComposioCredential, "user">;
+/** The credential a read for `refusal` answers. */
+export type ComposioCredentialOf<R extends "field" | "route"> = R extends "field" ? ComposioCredential : ComposioRouteCredential;
 /** What an instance comes to once a trigger no longer holds it (leftWith). */
 type Left = "delete" | "off" | "keep";
 /** A trigger of kind composio, as the engine keeps it. */
@@ -57,9 +62,10 @@ export type ComposioTriggerDeps = {
   publicUrl?: string;
   /** The composio source's sealed settings: each hook's subscription secret. */
   sealed: Sealed;
-  /** Saved server `name`'s key, user, toolkit and auth config; refused (thrown) when it is no Composio server: by the source's field at
-   *  a trigger's create (`field`), as a 404 on its own routes (`route`). */
-  credential(name: string, refusal: "field" | "route"): Promise<ComposioCredential>;
+  /** Saved server `name`'s key, toolkit and auth config, and for a trigger's own steps (`field`) its user; refused (thrown)
+   *  when it is no Composio server: by the source's field at a trigger's create (`field`), as a 404 on its own routes
+   *  (`route`). */
+  credential<R extends "field" | "route">(name: string, refusal: R): Promise<ComposioCredentialOf<R>>;
   /** Every trigger of kind composio, on or off. */
   holders(): Promise<Holder[]>;
   signal?: AbortSignal;
@@ -548,7 +554,7 @@ export class ComposioTriggers implements TriggerUpstream {
 
   /** Composio asked with the server's key; a failure's words end with what it left (`outcome`), and pass on none of
    *  Composio's own with a value of `sealed` (a trigger's sealed config) in play. */
-  private ask(credential: ComposioCredential, outcome = "nothing was changed", sealed: readonly string[] = []): Ask {
+  private ask(credential: Pick<ComposioCredential, "key">, outcome = "nothing was changed", sealed: readonly string[] = []): Ask {
     return asking(this.deps.control, credential.key, this.deps.signal, outcome, sealed);
   }
 

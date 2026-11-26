@@ -161,6 +161,10 @@ export interface ClaudeAgentAdapterOptions {
   zone?: string;
 }
 
+/** How long the CLI waits on a silent stream from a model the host's route translates: the longest the CLI takes
+ *  (CLAUDE_STREAM_IDLE_TIMEOUT_MS, 30 minutes). */
+export const TRANSLATED_STREAM_IDLE_MS = 30 * 60_000;
+
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
 export type ClaudeAgentThinking = "low" | "medium" | "high" | "xhigh" | "max";
 const THINKING: ReadonlySet<string> = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -454,6 +458,10 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         model: modelFor(spec),
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
+        // A model the host's route translates (an Ollama model) sends nothing while it loads, reads its prompt or thinks
+        // (the route holds its thinking to redact it whole): the CLI waits its longest on it, never dropping the stream
+        // at 5 minutes to ask again without one.
+        ...(options.fetch ? { streamIdleMs: TRANSLATED_STREAM_IDLE_MS } : {}),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
         ...(provider ? { credential: async () => provider.credential(), gatewayUrl: provider.origin } : { login: { at: login!, models: io.models } }),
         executable,

@@ -12,6 +12,7 @@ import { closeOpenSessions, hostTools, MODEL } from "./conformance-pi-adapter.mj
 import { capRun, quiet, specCap } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 after(closeOpenSessions);
 
@@ -41,7 +42,7 @@ test("pi: a run that spends its cap down is refused once what is left cannot buy
   const look = { look: { name: "look", replaySafe: true, run: async () => "seen" } };
   const { row, sent, server } = await capRun(t, {
     specOf: (got) => (_claim, run) => ({
-      adapter: piAdapter({ run, model: MODEL, provider, fetch: lookingOrigin(got, [10, 20, 40, 10]), price: (_model, usage) => (usage.output ?? 0) * PER_TOKEN }),
+      adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider, fetch: lookingOrigin(got, [10, 20, 40, 10]), price: (_model, usage) => (usage.output ?? 0) * PER_TOKEN }),
       session: { key: "root", label: "root", system: ["Look three times, then answer."], tools: hostTools(look), context: "fresh" },
       input: "Look three times, then answer.",
       hooks: quiet,
@@ -71,7 +72,7 @@ test("the control: the same run under a cap that buys every request's least take
   const look = { look: { name: "look", replaySafe: true, run: async () => "seen" } };
   const { row, sent, server } = await capRun(t, {
     specOf: (got) => (_claim, run) => ({
-      adapter: piAdapter({ run, model: MODEL, provider, fetch: lookingOrigin(got, [10, 20, 40, 10]), price: (_model, usage) => (usage.output ?? 0) * PER_TOKEN }),
+      adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider, fetch: lookingOrigin(got, [10, 20, 40, 10]), price: (_model, usage) => (usage.output ?? 0) * PER_TOKEN }),
       session: { key: "root", label: "root", system: ["Look three times, then answer."], tools: hostTools(look), context: "fresh" },
       input: "Look three times, then answer.",
       hooks: quiet,

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 /** Servers listening in this process now. */
 const listening = () => process._getActiveHandles().filter((handle) => handle?.constructor?.name === "Server" && handle.listening).length;
@@ -17,6 +18,7 @@ test("a pi session whose open fails after its proxy started leaves no proxy list
     setModels: () => {},
   };
   const adapter = piAdapter({
+    redact: heldRedactor((text) => text),
     run,
     model: "claude-sonnet-5-5",
     provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` },
