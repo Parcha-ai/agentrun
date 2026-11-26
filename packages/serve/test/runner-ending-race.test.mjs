@@ -5,7 +5,9 @@
 //     end's words: no final run keeps an untaken row (the store refuses the leftovers in the write that makes it final),
 //     and holding every loop's end for its in-flight commands would move endWaitMs into every loop;
 // (b) a renew in flight when the run ends and answered after the release: no claim-lost is emitted;
-// (c) a command() that answers only after finish's wait ran out and the release: no store call and no event follow it.
+// (c) a command() that answers only after finish's wait ran out and the release: no store call and no event follow it;
+// (d) a person's message that reopens the run after its end commit (the store's release) and before the runner's own
+//     release: the runner claims it once and holds that claim, and its first claim's end still says released.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -118,4 +120,28 @@ test("(c) a command() that answers only after finish's wait ran out and the rele
   await sleep(200);
   assert.deepEqual(record.calls.slice(calls), [], "no store call after the late answer");
   assert.deepEqual(events.slice(said), [], "no event after the late answer");
+});
+
+test("(d) a run reopened between its end commit and the runner's release is claimed once and held, and the first claim's end still says released", async (t) => {
+  const { server, record, events, control } = await running(t);
+  let letRelease;
+  record.holdRelease = new Promise((resolve) => (letRelease = resolve));
+  t.after(() => letRelease());
+  control.started = false;
+  await control.end();
+  await until(() => releasedAt(record) !== undefined, "the first claim's release asked");
+  assert.equal((await server.runs.get("run-1")).state, "ended", "the end commit landed");
+
+  await server.runs.reopen("run-1", { kind: "steer", body: { text: "go on" } });
+  await until(() => record.claims.length === 2, "the reopened run claimed");
+  const second = record.claims[1].epoch;
+  await until(() => events.some((event) => (event.type === "claimed" && event.claim.epoch === second) || event.type === "error"), "the reopen's claim held or given back");
+  assert.deepEqual(events.filter((event) => event.type === "error" || event.type === "handed-back"), [], "the reopen's claim is not given back");
+  await until(() => control.started, "the reopened run's loop runs");
+
+  letRelease();
+  const first = record.claims[0].epoch;
+  await until(() => events.some((event) => (event.type === "released" && event.epoch === first) || event.type === "error"), "the first claim's end settles");
+  assert.deepEqual(events.filter((event) => event.type === "error"), [], "the first claim's release is no fenced write");
+  assert.equal(record.claims.length, 2, `one claim for the reopen: ${JSON.stringify(record.claims)}`);
 });
