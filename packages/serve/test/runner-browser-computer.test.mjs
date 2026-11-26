@@ -331,28 +331,36 @@ for (const [harness, on, table] of RUNS_ON) for (const [how, tools] of [["grante
 // pi's does (tools.ts). The vendor is the faux browser (fixtures/faux-browser.mjs), named for the vendor it stands in
 // for, which logs the vendor, key and sign-in it was handed and each session it makes and releases; the claim's browser
 // computer (the stand-in provider over the fake page) is never asked for anything.
+/** A run of an agent with no computer, granted `tools`, on CLI harness `harness`, whose launch's plane picks Kernel, with
+ *  Kernel's key and a Kernel sign-in saved beside Browserbase's keys, and the faux browser (logging to its own file)
+ *  standing in for the vendor, to its rest (asked by `instructions`, by default to snapshot the browser and click). `ops()` reads the faux vendor's log; `page` and `record` are the claim's
+ *  browser computer's, which nothing of such a run may reach. */
+async function planeRun(t, harness, table, tools, instructions = undefined) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-browser-plane-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const log = join(dir, "browser.jsonl");
+  writeFileSync(log, "");
+  const prior = process.env.FAUX_BROWSER_LOG;
+  process.env.FAUX_BROWSER_LOG = log;
+  t.after(() => (prior === undefined ? delete process.env.FAUX_BROWSER_LOG : (process.env.FAUX_BROWSER_LOG = prior)));
+  const page = await fakeAxPage();
+  t.after(() => page.close());
+  const record = { created: [], released: [], connects: 0 };
+  const claim = await cliClaim(t, harness, `${page.url}?${SIGNED}`, record, tools, instructions, table, {
+    computer: null, plane: { browser: "kernel" }, keys: { KERNEL_API_KEY: fake("kernel") }, env: { [FAUX_ENV]: FAUX_MODEL, [FAUX_BROWSER_ENV]: FAUX_BROWSER },
+  });
+  const pointer = `kernel-profile-${randomBytes(8).toString("hex")}`;
+  await saveSignIn(claim.opened.server, SEAL_KEY, { agentId: "agent-1", provider: "kernel", pointer });
+  await claim.opened.server.flush?.();
+  claim.start("runner-a");
+  const rested = await claim.rested(page);
+  const ops = () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  return { ...rested, claim, page, record, pointer, ops };
+}
+
 for (const [harness, on, table] of RUNS_ON) {
   test(`${harness}${on}: an agent granted the browser with no computer gets the vendor its tool plane picked: Kernel, on the key saved for it and the agent's saved sign-in, takes the snapshot and the click, its one session made once and released once, and the claim's browser computer is never used`, { timeout: 120_000 }, async (t) => {
-    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-browser-plane-"));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
-    const log = join(dir, "browser.jsonl");
-    writeFileSync(log, "");
-    const prior = process.env.FAUX_BROWSER_LOG;
-    process.env.FAUX_BROWSER_LOG = log;
-    t.after(() => (prior === undefined ? delete process.env.FAUX_BROWSER_LOG : (process.env.FAUX_BROWSER_LOG = prior)));
-    // The claim's browser computer, over a page of its own: nothing of this run may reach it.
-    const page = await fakeAxPage();
-    t.after(() => page.close());
-    const record = { created: [], released: [], connects: 0 };
-    const claim = await cliClaim(t, harness, `${page.url}?${SIGNED}`, record, ["read", "browser"], undefined, table, {
-      computer: null, plane: { browser: "kernel" }, keys: { KERNEL_API_KEY: fake("kernel") }, env: { [FAUX_ENV]: FAUX_MODEL, [FAUX_BROWSER_ENV]: FAUX_BROWSER },
-    });
-    const pointer = `kernel-profile-${randomBytes(8).toString("hex")}`;
-    await saveSignIn(claim.opened.server, SEAL_KEY, { agentId: "agent-1", provider: "kernel", pointer });
-    await claim.opened.server.flush?.();
-    claim.start("runner-a");
-    const { row, timeline, lists, answers } = await claim.rested(page);
-    const ops = () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    const { row, timeline, lists, answers, page, record, pointer, ops } = await planeRun(t, harness, table, ["read", "browser"]);
 
     assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, ops: ops() }));
     for (const name of ["snapshot", "run"]) assert.ok(lists.length > 0 && lists.every((list) => list.filter((one) => one === name).length === 1), `the harness is handed ${name} once: ${JSON.stringify(lists)}`);
@@ -369,6 +377,29 @@ for (const [harness, on, table] of RUNS_ON) {
     await until(() => ops().some((op) => op.op === "release"), "the session is released");
     assert.deepEqual(ops().filter((op) => op.op.startsWith("release")).map((op) => [op.op, op.id]), [["release", created[0].id]], "released once, at the run's end");
     assert.deepEqual([record.created, record.connects, record.released, page.calls.length], [[], 0, [], 0], "the claim's browser computer was never asked for anything");
+    assert.ok(!JSON.stringify(timeline).includes(pointer), "the sign-in's pointer reaches no row of the run's");
+  });
+}
+
+// And the converse: an agent not granted the browser never gets it, though everything else a session needs is there (the
+// plane names Kernel, its key and a sign-in are saved, Browserbase's keys too, and its web_fetch grant builds the same
+// tool host the browser binds on), so the grant alone (adapter-run-spec.ts browserListed) keeps it off billed sessions.
+// On the faux harness it is asked to use the browser all the same (its calls name tools it was never handed); on the ACP
+// adapter, whose agent calls only what its MCP server lists, it answers in words. Either way the harness is handed none
+// of the browser's tools, the vendor is never made (its log stays empty), and the run books no browser charge.
+/** Every registration of the browser's binding, as the tool gate names them (tool-gate.ts BROWSER_REGISTRATIONS). */
+const BROWSER_REGISTRATIONS = ["snapshot", "run", "screenshot", "browser_read", "browser_release", "browser_relaunch", "browser_request_handoff", "browser_downloads", "browser_upload"];
+for (const [harness, on, table] of RUNS_ON) {
+  test(`${harness}${on}: an agent granted web_fetch and not the browser, with no computer, never gets it, though its plane names a vendor and that vendor's key and a sign-in are saved: no browser tool is handed to the harness, no vendor or session is made, and no browser charge is booked`, { timeout: 120_000 }, async (t) => {
+    const { row, timeline, lists, page, record, pointer, ops, claim } = await planeRun(t, harness, table, ["read", "web_fetch"], table ? "Answer in words." : undefined);
+
+    assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, ops: ops() }));
+    assert.ok(lists.length > 0 && lists.every((list) => list.includes("web_fetch")), `the harness is handed web_fetch, on the tool host the browser would bind on: ${JSON.stringify(lists)}`);
+    for (const list of lists) assert.deepEqual(list.filter((name) => BROWSER_REGISTRATIONS.includes(name)), [], `no browser tool is handed to the harness: ${JSON.stringify(list)}`);
+    assert.deepEqual(ops(), [], "the vendor's browser was never made: no vendor, sign-in, session or release");
+    const charges = (await runEntries(claim.opened.server, RUN, ctx)).filter((entry) => (entry.kind === "agentrun.tool_cost" || entry.kind === "agentrun.browser_charged") && entry.data?.tool === "browser");
+    assert.deepEqual(charges, [], "no browser charge is booked");
+    assert.deepEqual([record.created, record.connects, page.calls.length], [[], 0, 0], "nor is the claim's browser computer asked for anything");
     assert.ok(!JSON.stringify(timeline).includes(pointer), "the sign-in's pointer reaches no row of the run's");
   });
 }
