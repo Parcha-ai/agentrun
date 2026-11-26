@@ -6,18 +6,26 @@
 //   - a child whose deadline cannot be read is not started either: its claim is given back, said on the runner's events,
 //     and a later claim reads it again (and starts it once the read answers and its deadline is ahead);
 //   - a child whose deadline is ahead starts as any run does;
-//   - a poll's claims read their deadlines in one store read (store.runs.learningDeadlines), never a launch read a claim.
+//   - a poll's claims read their deadlines in one store read (store.runs.learningDeadlines), never a launch read a claim;
+//   - a child that parks (for an approval) is woken at its deadline and ends there, never left parked past it.
 // The runner's loops are faux (runner-support.mjs fauxLoops): a loop made is a loop started.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fauxLoops, queue, release, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
+const { sealRunLaunch } = await import("../dist/store/seal.js");
+const { learningWorkOf, noteLearningChild } = await import("../dist/learning-work.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
+const SEAL_KEY = Buffer.alloc(32, 9);
+/** A run's own learning, for a run that learns nothing itself (learning-work.ts OwnLearning): its children alone count. */
+const NO_OWN = { learns: false, compiling: false, compiled: false, endedAt: null, compileBy: null };
 
-/** A replay run `id` of a check, its deadline `deadlineAt` (ms), queued on the server's store. */
-const queueReplay = (server, id, deadlineAt) => server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, {
+/** A replay run `id` of a check, its deadline `deadlineAt` (ms), queued on the server's store; `sealed` its launch's
+ *  sealed values (a copy of its run's key), when it has one. */
+const queueReplay = (server, id, deadlineAt, sealed) => server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, {
   body: { input: { content: "Six times seven?" }, place: { mode: "runner" }, replay: { of: "run-0", workflow: "answer", digest: "d1", deadline_at: new Date(deadlineAt).toISOString() } },
+  ...(sealed ? { sealed } : {}),
 });
 
 const ended = (server, id) => until(async () => {
@@ -117,3 +125,26 @@ test("a poll's claims read their learning deadlines in one store read, never a l
   assert.ok(counts.deadlines >= 1 && counts.deadlines <= 4, `one deadline read a poll that claimed, never one a run: ${counts.deadlines}`);
 });
 
+test("a learning child that parks (an approval, a raise) is woken at its deadline and ends there, cancelled: never left parked past it, its copy of its run's key erased and its run's learning work ended with it", async (t) => {
+  const opened = await stores();
+  // Its first claim parks it, with nothing of its own to wake it; a later claim's loop would run it to its end.
+  const faux = fauxLoops({ park: true });
+  const runner = startRunner({ store: opened.runners[0], name: "runner-a", ...TIMING, createLoop: faux.createLoop });
+  t.after(async () => {
+    await runner.close();
+    await release(opened);
+  });
+  // A keyed replay of run-0: its own sealed copy of run-0's key, and run-0's learning_work naming it.
+  const sealed = sealRunLaunch(SEAL_KEY, "replay-parks", { model: { key: "not-a-secret-run-key", origin: "https://gateway.invalid" } });
+  await queueReplay(opened.server, "replay-parks", Date.now() + 1_500, sealed);
+  await noteLearningChild(opened.server.settings, "run-0", { run: "replay-parks", kind: "replay", at: Date.now(), keyed: true });
+  await until(async () => (await opened.server.runs.get("replay-parks"))?.state === "parked", "the child parked before its deadline", 10_000);
+  assert.equal((await learningWorkOf(opened.server, "run-0", NO_OWN)).state, "running", "run-0's learning work reads running while its child is parked");
+  assert.notEqual((await opened.server.runs.launch("replay-parks")).sealed, null, "its copy of the key is kept while it is parked");
+  const done = await ended(opened.server, "replay-parks");
+  assert.deepEqual([done.state, done.outcome], ["stopped", "cancelled"], `woken at its deadline and cancelled: ${JSON.stringify([done.state, done.outcome, done.summary])}`);
+  assert.deepEqual(faux.loops.map((loop) => loop.claim?.runId), ["replay-parks"], "only the claim that parked it ran a loop: the one at its deadline only ended it");
+  assert.equal((await opened.server.runs.launch("replay-parks")).sealed, null, "its copy of the run's key erased by the write that ends it");
+  const work = await learningWorkOf(opened.server, "run-0", NO_OWN);
+  assert.deepEqual([work.state, work.runs, work.deadline_at], ["ended", [], null], `run-0's learning work ends with it: ${JSON.stringify(work)}`);
+});
