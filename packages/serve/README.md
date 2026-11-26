@@ -3804,7 +3804,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, `source=<name>` (`runsource/1`, once per request) keeps the runs imported from that source (its name as `imported_from.source` holds it: `claude-code`, `codex`, ...) and `source=live` the runs made here, not imported, `from` and `to` (`runwindow/1`, RFC 3339 date-times with their zone, each once) keep the runs started in [from, to), `model=<provider/model>` (`runmodel/1`, once) the runs that sent at least one request to that model (its exact name as their metrics hold it; a run counts from its first finished turn, as its metrics are written each time a turn ends), and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" \| "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis` `reported`, `estimate` or `unpriced`, with its model requests' `tokens`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis); $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. Beside the rows, `in_flight`: what a live run waits on now, each model request sent and not answered (from its booking's `runner.request`, stamped `at` when it left) and each tool call not returned, from when it was sent; empty once the run is final. A request sent or answered is a change of the page, as a row is. |
-| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). |
+| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). The model gets `content`; a host that wraps the person's words in its own text (an earlier report, turn instructions) sends their words alone as `said` (`messagesaid/1`), which the run's [learning](#learning) keeps in place of `content` (at most 4,000 characters, not empty after trimming, else `422 input_invalid` at `said`; `features.messages.said` says a server takes it). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw, one byte range at a time on asking (`Range`, `206`); and its screen recordings under `recordings/` ([A video of each run](#computers)). |
@@ -4920,7 +4920,7 @@ CLI `learning: "notes"` settings read publicly as `true`; that compatibility rea
 An agent's learning is kept by the server as versioned rows in its store, SQLite or Postgres alike. It reads as a
 folder, and the routes name its files by path:
 
-- `corrections.md`, its owner's standing corrections, one `- ` line each, at most 2048 bytes;
+- `corrections.md`, its owner's standing corrections, one `- ` line each, at most 8192 bytes;
 - one folder per learned workflow, `workflows/<name>/`, with its `workflow.json` and its `README.md` (front matter with
   `name` and `description`, and `status: pending` while it waits for its owner's OK).
 
@@ -4985,10 +4985,12 @@ agent's learning cannot be read, the run starts with nothing learned (`seed_fail
 When a run that learns answers or fails, its end step (`src/runner/reflect-hook.ts`) keeps two things, one save a
 round on the agent's learning, whatever its harness:
 
-- Its owner's words. A grade's words, or a message they sent after the job's first, become one line of
+- Its owner's words. A grade's words, or a message they sent after the job's first (its `said` when sent), become one line of
   `corrections.md`, with no model turn: `- ` and the words, whitespace folded. A line that holds one of the server's
-  secrets, text shaped like a secret or a hidden character, or that would take the file past 2048 bytes, is refused
-  whole, nothing of it written, and the run's learning says why (`problems`).
+  secrets, text shaped like a secret or a hidden character, or that is past 8192 bytes alone, is refused whole,
+  nothing of it written, and the run's learning says why (`problems`). A line that would take the file past 8192
+  bytes drops the file's oldest lines until it fits: the newest correction wins, and the run's learning says how many
+  lines went (`dropped_lines`).
 - Its job, when a compile is due: once the agent has its `learning.compile_after` completed runs (20 by default) and no
   learned workflow, or once per hold of one its promotion held, the server asks the same session one more turn, under
   the fixed request id `learn-reflect-<run id>` and the origin `reflect`, so a server that restarts mid-turn asks again
@@ -5117,7 +5119,7 @@ with the token, an archived agent's too:
 - `GET .../learning/corrections`: `corrections.md` at the newest save as `{text, etag, cap_bytes}` (empty text when there is
   none). `PUT .../learning/corrections` with `{text}` replaces it whole under `If-Match: <etag>`: a stale ETag is 412,
   none (or `If-Match: *`) 428 `precondition_required`. A text that holds one of the server's secrets, a secret's shape or
-  a hidden character, or passes 2048 bytes, is 422 with the problems, and nothing is written. A text read cut of a
+  a hidden character, or passes 8192 bytes, is 422 with the problems, and nothing is written. A text read cut of a
   secret and sent back keeps the cut: a person's write never puts a secret back. One save of the agent's learning,
   `edited by a person: corrections.md`, which the log shows as `by: {user: true}`.
 - `GET .../learning/files/{file}`: `corrections.md` or a workflow's file at the newest save, with its `ETag`, its text's
@@ -5362,8 +5364,10 @@ names it and `<GPU_TYPE>` the provider's own GPU name, both in capitals with eve
 | `AGENTRUN_COMPUTE_USD_PER_DISK_GB_MONTH_<PROVIDER>` | one GB of disk for a month of 730 hours |
 
 A price sheet that quotes by the hour divides by 3,600 (a vCPU at $0.0504 an hour is `0.000014`). What a computer holds
-is its provider's own figure where the provider's answer gives one (Daytona: vCPUs, memory, disk and GPUs; E2B and Fly:
-vCPUs and memory), else what its create asked for. Nothing is built in: a provider that bills nothing (`docker`) is $0,
+is its provider's own figure where the provider's answer gives one (Daytona: vCPUs, memory, disk and GPUs; Agent37:
+vCPUs, memory and disk; E2B, Fly and Render: vCPUs and memory), else what its create asked for. Modal reads no size back
+and bills a sandbox by its use up to the limits its create set, so a Modal computer holds those limits (2 vCPUs and
+4096 MB unless the spec asks other sizes), the most its time can bill. Nothing is built in: a provider that bills nothing (`docker`) is $0,
 a resource set to `0` is $0 (its time booked at $0, its line `estimate` with `usd` 0), and with no setting a resource
 is unpriced.
 

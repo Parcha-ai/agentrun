@@ -166,6 +166,9 @@ test("the gate's spelling of a path is pi's own: piToolPath answers what pi's re
 // refused, whatever it names.
 /** The refusal of a script's `op` at `given` outside /workspace, in a run whose list_charges files in stripe/pages. */
 const outside = (op, given) => `computer_op ${op} can't be called: ${given} is outside /workspace, and while this agent's setting for ${KEY} files that tool's answers in stripe/pages/ (its file setting), a script's file ops are kept in /workspace, the run's folder on the computer. ${NOT_RUN}`;
+/** The refusal of a script's `op` at a relative `given`: the computer is handed the path as given, so the gate holds only
+ *  an absolute one, the form it checked. */
+const relative = (op, given) => outside(op, given).replace(" is outside /workspace, ", " is not an absolute path, ");
 const OPS = { "files.read": {}, "files.list": {}, "files.write": { data: "x" }, "files.stat": {} };
 /** A run's gate on a computer that mounts its folder (`computer: true`) or one that does not (`false`). */
 const mountedGate = (computer, overrides = FILED, names) => runnerGate({ settings: ALLOW, overrides, harness: "pi", root: RUN, tools: ["read", "write", "edit", "bash"], computer, ...(names ? { names } : {}) });
@@ -182,10 +185,38 @@ test("on a computer that mounts the run's folder, while a folder is filed, a scr
   }
 });
 
-test("on that computer, a path inside /workspace or another name of the run's folder still runs, and the filed folder itself is refused as before", async () => {
+test("a `..` or `//` spelling that starts at /workspace and leaves it is refused: the path is held as the computer cleans it", async () => {
+  const gate = mountedGate(true);
+  for (const [op, extra] of Object.entries(OPS)) {
+    for (const given of ["/workspace/../proc/self/root/workspace/stripe/pages/x", "/workspace/./../dev/fd/3/x", "//proc/self/root/workspace/x", "/workspace//..//proc/self/cwd/x", "/workspace/stripe/pages/../../../proc/1/root/workspace/stripe/pages/x", "/workspace/../workspace-old/x"]) {
+      assert.equal(await verdictOf(gate, "computer_op", { op, args: { path: given, ...extra } }), outside(op, given), `${op} ${given}`);
+    }
+  }
+});
+
+test("a relative path is refused: the computer is handed the path as given, so only an absolute one is the path the gate checked", async () => {
+  const gate = mountedGate(true);
+  for (const [op, extra] of Object.entries(OPS)) {
+    for (const given of ["proc/self/root/workspace/stripe/pages/x", "notes/a.json", "./notes/a.json", "workspace/notes/a.json", ""]) {
+      assert.equal(await verdictOf(gate, "computer_op", { op, args: { path: given, ...extra } }), relative(op, given), `${op} ${JSON.stringify(given)}`);
+    }
+  }
+});
+
+test("the run folder's names on this machine (a bind's path, a CLI's scratch folder) are not /workspace on the computer: a path under one is refused", async () => {
+  const HERE = "/nonexistent/bind/run";
+  const gate = mountedGate(true, FILED, [RUN, "/workspace", HERE, SCRATCH]);
+  for (const [op, extra] of Object.entries(OPS)) {
+    for (const given of [`${SCRATCH}/notes/a.json`, SCRATCH, `${HERE}/notes/x`, `${RUN}/notes/x`, `${SCRATCH}/stripe/pages/a.json`]) {
+      assert.equal(await verdictOf(gate, "computer_op", { op, args: { path: given, ...extra } }), outside(op, given), `${op} ${given}`);
+    }
+  }
+});
+
+test("on that computer, an absolute path inside /workspace still runs, and the filed folder itself is refused as before", async () => {
   const gate = mountedGate(true, FILED, ["/workspace", SCRATCH]);
   for (const [op, extra] of Object.entries(OPS)) {
-    for (const given of ["/workspace/other/x", "/workspace", "notes/a.json", "/workspace/stripe/x", `${SCRATCH}/notes/a.json`]) {
+    for (const given of ["/workspace/other/x", "/workspace", "/workspace/", "/workspace/stripe/x", "/workspace/a/b/../../notes/x", "/workspace//notes/./x"]) {
       assert.equal(await verdictOf(gate, "computer_op", { op, args: { path: given, ...extra } }), "allow", `${op} ${given}`);
     }
   }
@@ -203,4 +234,19 @@ test("with no folder filed, or on a computer that does not mount the run's folde
   }
   // A script's shell is not a file op: on the mounted computer with a folder filed, its command runs as bash's setting says.
   assert.equal(await verdictOf(mountedGate(true), "computer_op", { op: "shell.run", args: { command: "cat /proc/self/cwd/stripe/pages/x" } }), "allow");
+});
+
+// A screenshot's save_as is held as the kernel saves it (its savePathOf: posix.normalize, so a `~` or `file:` segment a
+// `..` follows is gone), not only as the agent's file tools read a path: such a spelling saves into the filed folder, so
+// it is refused, held as write, in the words a save_as there always got. A shot outside the folder is saved as before.
+test("a screenshot's save_as is held as the kernel saves it: a ~ or file: prefix that normalizes into the filed folder is refused", async () => {
+  const gate = gateOn("pi");
+  for (const given of ["~x/../stripe/pages/shot.png", "file:x/../stripe/pages/shot.png", "~/../Stripe/Pages/shot.png"]) {
+    const shot = await verdictOf(gate, "computer_screenshot", { save_as: given });
+    assert.ok(typeof shot === "string" && shot.startsWith(refusal("write", given)), `${given}: ${shot}`);
+    assert.ok(shot.endsWith("a screenshot without save_as is not held to it."), shot);
+  }
+  for (const given of ["shot.png", "shots/home.png", "~x/stripe/pages/shot.png"]) {
+    assert.equal(await verdictOf(gate, "computer_screenshot", { save_as: given }), await verdictOf(gate, "computer_screenshot", {}), `${given} is saved outside the folder, as a shot with no save_as runs`);
+  }
 });

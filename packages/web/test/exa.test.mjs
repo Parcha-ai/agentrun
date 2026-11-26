@@ -29,13 +29,14 @@ async function exaWeb(t, answer, { settings, order = { search: ["exa"], fetch: [
 /** Fails when the key reaches anything a call hands back or logs. */
 const keyless = (label, ...said) => assert.ok(!JSON.stringify(said).includes(EXA_CANARY), `${label}: the key is never handed back`);
 
-test("a search is one paid request to Exa's /search on the run's key: auto, the n asked, each result's highlights to 3,000 characters; the hits in the one search shape", async (t) => {
+test("a search is one paid request to Exa's /search on the run's key: auto, the n asked, each result's highlights bare (Exa sizes them to the query, as its guidance asks); the hits in the one search shape", async (t) => {
   const { exa, w, fees, logs } = await exaWeb(t, () => exaResults(EXA_HITS));
   const { answer, receipt } = await w.search(" widgets ", { n: 3 });
   assert.equal(exa.got.length, 1);
   assert.equal(exa.got[0].path, "/search");
   assert.equal(exa.got[0].headers["x-api-key"], EXA_CANARY);
-  assert.deepEqual(exa.got[0].body, { query: "widgets", type: "auto", numResults: 3, contents: { highlights: { maxCharacters: 3_000 } } });
+  // MUTATION: highlights sent with a fixed maxCharacters: Exa's guidance asks bare highlights, a limit only where one is required.
+  assert.deepEqual(exa.got[0].body, { query: "widgets", type: "auto", numResults: 3, contents: { highlights: true } });
   assert.deepEqual(answer, { provider: "exa", objective: "widgets", queries: ["widgets"], results: [
     { url: "https://first.example/widgets", title: "Widgets, explained", snippet: "Widgets are small parts. … They fit together.", published: "2026-11-01T00:00:00.000Z" },
     { url: "https://second.example/gadgets", title: "Gadgets", snippet: "A second result." },
@@ -53,6 +54,27 @@ test("Exa's settings shape the request and its fee: type, text or highlights and
   assert.deepEqual(exa.got[0].body, { query: "widgets", type: "instant", numResults: 10, includeDomains: ["first.example"], excludeDomains: ["spam.example"], category: "news", contents: { text: { maxCharacters: 500 }, maxAgeHours: 24 } });
   assert.deepEqual(answer.results, [{ url: "https://first.example/widgets", title: "Widgets", snippet: "Whole text of the page." }]);
   assert.deepEqual(fees.map((fee) => fee.usd), [0.004], "$0.004 an instant search, its text in that price");
+});
+
+test("highlights with snippetChars set: Exa is asked for that many characters of them", async (t) => {
+  const { exa, w } = await exaWeb(t, () => exaResults(EXA_HITS), { settings: { snippetChars: 800 } });
+  await w.search("widgets");
+  assert.deepEqual(exa.got[0].body.contents, { highlights: { maxCharacters: 800 } });
+});
+
+test("a setting given as undefined keeps its default, for a search and a fetch: it is the same as unset", async (t) => {
+  // MUTATION: settings spread over the defaults: an undefined pageLinks drops the page's links, an undefined type sends no
+  // type, an undefined snippetChars or pageVerbosity sends none.
+  const unset = { type: undefined, snippet: undefined, snippetChars: undefined, maxAgeHours: undefined, includeDomains: undefined, excludeDomains: undefined, category: undefined, pageVerbosity: undefined, pageLinks: undefined };
+  const answer = (path, body) => (path === "/contents" ? exaPage(body.urls[0], "A page.") : exaResults(EXA_HITS));
+  const plain = await exaWeb(t, answer);
+  const given = await exaWeb(t, answer, { settings: unset });
+  for (const { w } of [plain, given]) {
+    await w.search("widgets");
+    await w.fetch(PUBLIC);
+  }
+  assert.deepEqual(given.exa.got.map((one) => [one.path, one.body]), plain.exa.got.map((one) => [one.path, one.body]));
+  assert.equal(given.exa.got[1].body.text.linkStyle, "full", "links kept");
 });
 
 test("settings Exa does not take are refused when the Web is made, never sent", () => {
