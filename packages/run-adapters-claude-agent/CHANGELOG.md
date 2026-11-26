@@ -4,7 +4,14 @@
 
 ## 0.1.0-beta.62 (2026-11-26)
 
+**Breaking:**
+
+- `claudeLogout` answers `{ signedOut, leftoverGone }` (the exported type `ClaudeLogout`) where it answered a boolean. `signedOut` is the boolean it answered before: the CLI's own sign-out exited 0 within its limit. `leftoverGone` says whether the Keychain item a sign-in left under the account `unknown` at AgentRun's own folder on macOS is gone. Who breaks: a caller that reads the answer as a boolean, since an object is always truthy. What to do: read `signedOut` where you read the answer, and tell the person to delete the item in Keychain Access when `leftoverGone` is false. <!-- changes/claude-logout-answer-object.md -->
+
+**Changes:**
+
 - A claude-agent run on a local model (an Ollama model, or any model AgentRun's route translates onto Anthropic's Messages) no longer ends with no answer. On a slow machine such a model can send nothing on its stream for over five minutes while it loads, reads its prompt or thinks. The CLI gave the stream up at five minutes, asked again without streaming, and got the answer whole. AgentRun only heard the streamed text, so the run completed at $0 with `final_answer: null` and no answer on its timeline. The text of a message that comes whole is now said once, as the turn's answer, and a message whose text did stream is never said twice. This holds on any model: a claude-agent run whose CLI fell back to a non-streaming retry on a provider's own Anthropic model lost its answer the same way. On a translated model the CLI now waits up to 30 minutes on a silent stream (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`), so the first request is no longer thrown away. On a provider's own Messages the CLI keeps its default. <!-- changes/claude-local-answer.md -->
+- On macOS, a sign-out that arrives while a status check is deleting the Keychain item a sign-in left under the account `unknown` waits on that delete, and when it fails or is killed at its limit, tries once more itself. Before, the sign-out answered with the item, which holds a refresh token, still in the login keychain. When the item may remain, serve's sign-out is not confirmed, and its words name the item's exact service, to search in Keychain Access or delete with one `security` command, so they never point at the person's own CLI's item. The harness exports that service as `claudeKeychainService`. It hashes the folder in Unicode's composed form (NFC), as the CLI does, so a folder path with a decomposed character no longer sends the delete to a service no item has, which answered the item gone while it stayed. <!-- changes/claude-signout-drop-retry.md -->
 
 ## 0.1.0-beta.61 (2026-11-26)
 
