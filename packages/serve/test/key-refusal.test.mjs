@@ -173,6 +173,13 @@ const CONTROL_PADS = [
   // What a join view drops inside an escape (a colon, a no-break space) leaves the escape whole there.
   ["raw escapes with a colon inside", "\u001b(:B".repeat(300), "json"],
   ["raw escapes with a no-break space inside", "\u001b(\u00a0B".repeat(300), "json"],
+  // An ESC written in another encoding inside a sequence: the decoding that reads it as one reads a sequence of its
+  // own from there, which can end inside the next sequence's opener as the text decodes it. That opener still opens.
+  ["JSON's \\u001b OSC titles with a percent-encoded ESC inside", `${String.raw`\u001b]0;t%1B`}\u0007`.repeat(300), "json"],
+  ["Python's \\x1b OSC titles with a percent-encoded ESC inside", `${String.raw`\x1b]0;t%1B`}\u0007`.repeat(250), "python"],
+  ["Python's \\x1b OSC titles with HTML's &#27; inside", `${String.raw`\x1b]0;t&#27;`}\u0007`.repeat(250), "python"],
+  ["raw CSI colours with JSON's \\u001b written twice inside", `\u001b[0${String.raw`\\u001b`}m`.repeat(300), "json"],
+  ["percent-encoded OSC titles with JSON's \\u001b written twice inside", `%1B]0;t${String.raw`\\u001b`}\u0007`.repeat(300), "json"],
   // Characters that show as a box or a blank: U+FFFE, the braille blank, a lone surrogate as JSON's escape.
   ["raw U+FFFE", "\ufffe".repeat(300), "json"],
   ["raw braille blanks", "\u2800".repeat(300), "json"],
