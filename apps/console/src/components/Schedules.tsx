@@ -92,6 +92,13 @@ const checkWords = (c: NonNullable<Trigger["last_check"]>) => `${c.ok ? "Checked
 /** The words under New app trigger when the server has no public address. */
 export const NO_ADDRESS_LINE = "App triggers need this server's public address: set AGENTRUN_PUBLIC_URL and restart.";
 
+/** The bar's six New buttons on a phone: a grid as wide as the bar, under its name, in the smallest button's measures
+ *  (button.tsx's `xs`). Toolbar-sized, the longest is 191px and a 390px phone's column 171px; at `xs` it is 169px, so
+ *  each name is one line from 386px of window. A narrower phone breaks a long name onto a second line, never cuts it.
+ *  Written out because Tailwind reads class names as written; a test holds them to `xs`. Each is a range (max-sm:),
+ *  never a breakpoint that shows (sm:), which would be written after the bar's own widths and undo its one row. */
+export const PHONE_NEW = "max-sm:w-full max-sm:[&>button]:h-auto max-sm:[&>button]:min-h-7 max-sm:[&>button]:gap-1.5 max-sm:[&>button]:whitespace-normal max-sm:[&>button]:px-2 max-sm:[&>button]:py-1 max-sm:[&>button]:text-left max-sm:[&>button]:text-label";
+
 function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddress }: PageProps & { every: number; now: () => number; failuresToPause?: number; noAddress: boolean }) {
   const [triggers, setTriggers] = useState<Trigger[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
@@ -116,11 +123,16 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
     // The page's frame is every list page's (Agents, Runs): a header bar with the place's icon and name in caps
     // and its actions at the right, the main one last, then the content.
     <section className={pageClass} aria-label="Triggers">
-      <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
+      <header className={cn(pageToolbarClass, "@container flex-wrap justify-between gap-3 px-5")}>
         <h1 className={pageTitleClass}><CalendarClock className="size-4" aria-hidden />Triggers</h1>
         {/* With no trigger yet the panel below offers each kind, with what it is for: the page says each once. */}
+        {/* Six buttons and the bar's name are one row only where the bar has 1,138px inside (measured). Narrower, they
+            wrapped as loose words: one alone, then two, then one, then two. They stand in columns instead, by the
+            bar's own width, each a little past where it fits: two from a tablet's width; three from 44rem (694px
+            beside the name); one row from 72rem. The main one is last in each.
+            A phone keeps the six, in two columns under the bar's name (PHONE_NEW). */}
         {!(triggers && !triggers.length) && (
-          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          <div data-new-triggers className={cn("ml-auto grid grid-cols-2 gap-2 @[44rem]:grid-cols-3 @[72rem]:flex @[72rem]:items-center [&>button]:justify-start", PHONE_NEW)}>
             <Button size="sm" disabled={noAddress} onClick={() => go("#/triggers/new-composio")}><Blocks aria-hidden /> New app trigger</Button>
             <Button size="sm" onClick={() => go("#/triggers/new-github")}><GitPullRequest aria-hidden /> New GitHub trigger</Button>
             <Button size="sm" onClick={() => go("#/triggers/new-webhook")}><Webhook aria-hidden /> New webhook</Button>
