@@ -1014,3 +1014,29 @@ test("--check passes a late fragment the previous release's tag carried while th
   await fold(root, '0.1.0-beta.14', '2026-10-25');
   assert.equal((await readFile(join(root, 'CHANGELOG.md'), 'utf8')).match(/<!-- changes\/a-late\.md -->/g).length, 1);
 }));
+
+test("--check passes a late fragment the tag carried only where that release's section carries its marker, on any line of the entry: its exact bullet copied in without the marker is refused, as the next fold would write it again", async () => {
+  const rows = [
+    { entry: '- Late.\n  <!-- changes/a-late.md -->\n', status: 0, lates: 1 },
+    { entry: '- Late.\n', status: 1, lates: 2 },
+  ];
+  for (const { entry, status, lates } of rows) {
+    await repo(async (root, git) => {
+      await taggedWithLateFragments(root, git);
+      const tag = (await git('rev-parse', 'HEAD')).stdout.trim();
+      const curated = (await readFile(join(root, 'CHANGELOG.md'), 'utf8')).replace(/^(- Early\. <!-- changes\/early\.md -->\n)/m, `$1${entry}`);
+      await writeFile(join(root, 'CHANGELOG.md'), curated);
+      await commitAll(git, 'the release section curated by hand, the late fragments still in changes/');
+      const run = await checkAt(root, tag);
+      assert.equal(run.status, status, `${JSON.stringify(entry)}\n${run.stdout}${run.stderr}`);
+      if (status) {
+        assert.match(run.stderr, /^changes\/a-late\.md: CHANGELOG\.md has it in its 0\.1\.0-beta\.13 section \(its bullet\); this fragment was released in 0\.1\.0-beta\.13; delete it \(git rm changes\/a-late\.md\)$/m);
+        assert.doesNotMatch(run.stderr, /b-late-vision\.md/);
+      } else assert.match(run.stdout, /2 fragment\(s\) valid/);
+      // What the check stands for: the next fold skips the late fragment only where the section carries its marker.
+      await fold(root, '0.1.0-beta.14', '2026-10-25');
+      const section = sectionOf(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), '0.1.0-beta.13');
+      assert.equal(section.split('\n').filter(line => line.replace(/ <!-- changes\/[a-z0-9-]+\.md -->/g, '') === '- Late.').length, lates, section);
+    });
+  }
+});
