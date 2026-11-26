@@ -11,6 +11,7 @@ import { MissionControl } from "./MissionControl";
 import { ClientError, createClient } from "@/lib/client";
 import type { MissionView } from "@/lib/mission";
 import { observedState, useObservations, type Observations, type ObservedSession } from "@/lib/observations";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const roots: ReturnType<typeof createRoot>[] = [];
@@ -55,7 +56,7 @@ describe("existing agent observation", () => {
     const host = await render(createElement(AgentsList, { agents: [], observations: read }));
     expect(host.querySelector<HTMLImageElement>("li a img")?.getAttribute("src")).toBe(claudeMark);
     expect(host.textContent).toContain("Existing backend");
-    expect(host.textContent).toContain("Claude Code");
+    expect(host.querySelector('li a [role="img"]')?.getAttribute("aria-label"), "the icon names its harness").toBe("Claude Code");
     expect(host.textContent).toContain("test-model");
     expect(host.textContent).not.toContain("No agents yet");
     const card = host.querySelector('a[href="#/observations/session-a"]')!.closest("li")!;
@@ -141,6 +142,11 @@ describe("existing agent observation", () => {
     expect(host.querySelector('a[href="#/runs/new-registered-run"]')?.textContent).toContain("New registered result");
     expect(!!host.querySelector('a[href="#/observations/session-a"]')).toBe(observed);
     expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+  it("keeps a connected agent's bar with Edit and Run in view: its details scroll in the one box under it", async () => {
+    const host = await render(createElement(ObservedSessionPage, { v2: { observations: async () => data } as never, sessionId: session.id, go: vi.fn() }));
+    expect(expectPinnedBar(host).querySelector('section[aria-label="Session token usage"]')).not.toBeNull();
+    expect(host.querySelector("header")!.textContent).toContain("Run agent");
   });
   it("labels source detail tokens as retained session totals, preserving cache values", async () => {
     const retained = { ...data, sessions: [{ ...session, created_at: "2026-10-01T00:00:00Z", usage: { ...usage, total_tokens: 1200 } }] };
@@ -271,12 +277,21 @@ describe("existing agent observation", () => {
       expect(host.textContent).not.toContain("Existing backend");
     }
   });
+  it("heads This server's section with its hand-off, under the tabs, as Another machine's is headed", async () => {
+    const host = await render(createElement(NativeConnections, { v2: { discoverNative: vi.fn() } as never, go: vi.fn() }));
+    const handoff = host.querySelector('[role="group"][aria-label="Connect your agents options"]')!;
+    const section = host.querySelector('section[aria-label="Discover native setups"]')!;
+    expect(section.contains(handoff)).toBe(true);
+    expect(handoff.parentElement!.querySelector("h2")!.textContent).toBe("Discover on this server");
+    // Never on the tabs' line: the tabs' radio group and the hand-off are not siblings.
+    expect(host.querySelector('[role="radiogroup"][aria-label="Connection method"]')!.parentElement!.contains(handoff) && !section.contains(handoff)).toBe(false);
+  });
   it("offers existing-application observation through the same coding-agent dropdown", async () => {
     const discoverNative = vi.fn();
     const host = await render(createElement(NativeConnections, { v2: { discoverNative } as never, go: vi.fn(), initialSource: "observe" }));
     expect(host.querySelector('section[aria-label="Observe an existing application"]')).toBeTruthy();
     expect(host.textContent).toContain("Connect Claude Code or Codex running locally, in Docker, or on another server");
-    expect(host.textContent).toContain("Connect agent");
+    expect(host.textContent).toContain("Connect your agents");
     expect(host.querySelector('input[aria-label="Project on server host"]')).toBeNull();
     expect(discoverNative).not.toHaveBeenCalled();
   });

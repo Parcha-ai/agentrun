@@ -15,12 +15,14 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { networkRefusal } from "./hosted/network.js";
+import { httpsBase } from "./hosted/rest.js";
 import { childCommands, type DaemonExpected, daemonDrift } from "./hosted/scripts.js";
 import { DaemonClient } from "./client.js";
 import { ORGO, ORGO_BASE_IMAGE } from "./descriptors/orgo.js";
 import { DESKTOP_GROUPS } from "./desktop.js";
 import { DAEMON_IN_COMPUTER, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, SOCKET_DIR, WORK } from "./drift.js";
 import { EPOCH_LABEL, OWNER_LABEL, OWNER_SERVER_LABEL, ownerLabels, RUN_HASH_LABEL, RUN_LABEL, runHash } from "./labels.js";
+import { CreateRequests, endedWords, labelsDiffer, otherSpecWords, readBackDiffer } from "./create-requests.js";
 import { checkMount } from "./mount.js";
 import { type OrgoChannel, type OrgoRest, type OrgoStart, type OrgoWebSocketFactory, ORGO_API_URL, orgoRest, orgoTerminalChannel, START_LOG } from "./orgo-channel.js";
 import { OrgoDesktopProvider, type OrgoDesktopOptions } from "./orgo-desktop.js";
@@ -181,9 +183,14 @@ const DEFAULT_DAEMON_PATH = fileURLToPath(new URL("./computerd-linux-amd64", imp
 export const LABELS_FILE = "/opt/agentrun/labels.json";
 const STAGING = "/tmp/agentrun-computerd-";
 const LISTEN_RETRY_MS = 250;
+/** The order a request's computers are read in (#held, #converge): the oldest first, by created_at, then id. */
+const oldestFirst = (a: OrgoComputer, b: OrgoComputer): number => String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")) || a.id.localeCompare(b.id);
+
 /** How often a delete that answers 409 (the computer waking) is tried again. */
 const DELETE_TRIES = 5;
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "cpus", "memoryMb", "labels", "gpu"]);
+/** The request's name (computerNameFor) a computer's Orgo name begins with. */
+const requestOf = (name: string) => `computer-${nameParts(name)?.hex ?? ""}`;
 /** The states in which a computer runs, or is on its way to. */
 const RUNNING = new Set(["running", "creating", "restarting", "updating", "resuming"]);
 /** Why a network other than "none" is refused, in the words every hosted provider uses (hosted/network.ts), and why:
@@ -312,17 +319,13 @@ export class OrgoProvider implements ComputerProvider {
 	readonly #extending = new Map<string, Promise<unknown>>();
 	/** Each agent's computer's attach or detach in flight, by id: the next waits for it, so two never overlap here. */
 	readonly #owning = new Map<string, Promise<unknown>>();
+	/** Idempotent create's in-process half: one computer per request id (provider.md). */
+	readonly #requests = new CreateRequests();
 
 	constructor({ apiKey, workspaceId, apiUrl = ORGO_API_URL, fetch, webSocket, channel, daemonPath = DEFAULT_DAEMON_PATH, maxLifetimeMs = MAX_LIFETIME_MS, user = "2510:2510", start = "bash", display = ":99", timeouts = {}, probeTargets = DEFAULT_PROBE_TARGETS, ledger = orgoMemoryLedger() }: OrgoProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, an Orgo API key, is required");
 		if (workspaceId !== undefined && (typeof workspaceId !== "string" || !WORKSPACE_ID.test(workspaceId))) throw new Error("options.workspaceId, the Orgo workspace this deployment's computers live in, is an Orgo workspace id when given");
-		let url: URL;
-		try {
-			url = new URL(apiUrl);
-		} catch {
-			throw new Error("options.apiUrl is not a URL");
-		}
-		if (url.protocol !== "https:" || url.username !== "" || url.password !== "") throw new Error("options.apiUrl must be https, with no credentials in it: the key goes to it");
+		const base = httpsBase(apiUrl, "the Orgo API URL");
 		if (!Number.isSafeInteger(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > MAX_LIFETIME_MS) throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most Orgo's 720 h (${MAX_LIFETIME_MS} ms)`);
 		const ids = USER.exec(user);
 		if (ids === null) throw new Error(`the user ${JSON.stringify(user)} must be uid:gid in numbers, such as 2510:2510`);
@@ -336,7 +339,7 @@ export class OrgoProvider implements ComputerProvider {
 		if (!Array.isArray(probeTargets) || probeTargets.length === 0 || probeTargets.some((target) => typeof target !== "string" || !TARGET.test(target))) {
 			throw new Error("probeTargets must name at least one address for the probe, each host:port or host:port/udp");
 		}
-		this.#rest = orgoRest({ apiKey, apiUrl: url.href, ...(fetch ? { fetch } : {}) });
+		this.#rest = orgoRest({ apiKey, apiUrl: base, ...(fetch ? { fetch } : {}) });
 		this.#workspace = workspaceHolder(workspaceId, this.#rest, merged.requestMs);
 		this.#channel = channel ?? orgoTerminalChannel({ rest: this.#rest, workspace: (signal) => this.#workspace.read(signal), ...(webSocket ? { webSocket } : {}) });
 		this.#daemonPath = daemonPath;
@@ -404,10 +407,23 @@ export class OrgoProvider implements ComputerProvider {
 		return refusals;
 	}
 
+	/**
+	 * Makes a computer, once per request (provider.md, Idempotent create): context.requestId's name (computerNameFor)
+	 * begins the computer's Orgo name, the run's hash, epoch and deadline after it. A request whose computer Orgo still
+	 * holds answers that one (#held); one whose computer was deleted here is refused exists; a create of a request in
+	 * flight here waits for the first (CreateRequests).
+	 */
 	async create(spec: ComputerSpec, context: CreateContext): Promise<Result<CreatedComputer>> {
-		const signal = context?.signal;
 		const refusals = this.check(spec);
-		if (refusals.length > 0) return fail("refused", refusals.map(({ field, message }) => `${field}: ${message}`).join("; "));
+		return this.#requests.create(spec, context, {
+			refuse: fail,
+			...(refusals.length > 0 ? { refused: refusals.map(({ field, message }) => `${field}: ${message}`).join("; ") } : {}),
+			make: (request) => this.#createNamed(spec, request, context.signal),
+		});
+	}
+
+	/** Everything create does under the request's name: the computer Orgo holds under it, or a new one. */
+	async #createNamed(spec: ComputerSpec, request: string, signal?: AbortSignal): Promise<Result<CreatedComputer>> {
 		let daemon: Buffer;
 		try {
 			daemon = readFileSync(this.#daemonPath);
@@ -426,9 +442,11 @@ export class OrgoProvider implements ComputerProvider {
 		const maxDeadline = new Date(now + this.#maxLifetimeMs).toISOString();
 		const deadline = owner === undefined ? new Date(now + runLifetimeMs(spec)).toISOString() : maxDeadline;
 		const init = owner === undefined ? { deadline, maxDeadline } : this.#ownedInit(now);
-		// The janitor's deadline is in the name, so list() and the sweep read it with nothing run inside.
-		const name = orgoName(labels, randomBytes(6).toString("hex"), owner === undefined ? new Date(deadline) : undefined, owner);
+		// The request's name first, then the janitor's deadline, so list() and the sweep read it with nothing run inside.
+		const name = orgoName(labels, request.slice("computer-".length), owner === undefined ? new Date(deadline) : undefined, owner);
 		if (name.length > NAME_MAX || nameParts(name) === undefined) return fail("invalid", `the name ${name} is not one Orgo holds: at most ${NAME_MAX} of letters, digits and dashes`);
+		const held = await this.#held(spec, request, labels, signal);
+		if (!held.ok || held.value !== undefined) return held as Result<CreatedComputer>;
 		const ram = spec.memoryMb === undefined ? 4 : spec.memoryMb / 1024;
 		const cpu = spec.cpus ?? (CPU_FOR_RAM[ram] as number);
 		const body = {
@@ -443,13 +461,27 @@ export class OrgoProvider implements ComputerProvider {
 		};
 		const made = await this.#rest.request<OrgoComputer>("POST", "/computers", { body, timeoutMs: this.#timeouts.createMs, ...(signal ? { signal } : {}) });
 		if (!made.ok) {
+			// A name Orgo holds already (409) is another process's create of this request in the same second: that computer
+			// is answered as a retry's would be.
+			if ((made as { status?: number }).status === 409) {
+				const theirs = await this.#held(spec, request, labels, signal);
+				return !theirs.ok || theirs.value !== undefined ? (theirs as Result<CreatedComputer>) : made;
+			}
 			// A create Orgo refused (a 4xx) made nothing. One whose answer never came may have: it goes by its name.
 			if (["invalid", "denied", "limit", "not_found", "refused"].includes(made.error.code)) return made;
+			this.#requests.end(request);
 			return fail(made.error.code, `${made.error.message}${await this.#deleteNamed(name)}`);
 		}
 		const id = made.value?.id;
-		if (typeof id !== "string" || !COMPUTER_ID.test(id)) return vendorFail("orgo",`Orgo's create answered no computer id${await this.#deleteNamed(name)}`);
+		if (typeof id !== "string" || !COMPUTER_ID.test(id)) {
+			this.#requests.end(request);
+			return vendorFail("orgo", `Orgo's create answered no computer id${await this.#deleteNamed(name)}`);
+		}
+		this.#requests.made(request);
 		const ref = { id, name };
+		// Another process's create of this request may have made one too (#converge): the older is kept.
+		const first = await this.#converge(spec, request, labels, made.value, signal);
+		if (first !== undefined) return first;
 		// An agent's computer's labels go in the ledger at once, so list finds it as the agent's whatever happens next.
 		if (owner !== undefined) {
 			const kept = await this.#keep({ id, labels });
@@ -458,8 +490,91 @@ export class OrgoProvider implements ComputerProvider {
 		const file: LabelsFile = { name, labels, deadline: owner === undefined ? deadline : NO_DEADLINE, maxDeadline: owner === undefined ? maxDeadline : NO_DEADLINE, image: spec.image, cpus: cpu, memoryMb: ram * 1024 };
 		const prepared = await this.#prepare(ref, made.value.status, file, daemon, signal, init);
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" });
-		if (prepared.ok) return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
-		return this.#abandon(ref, prepared.error);
+		if (!prepared.ok) return this.#abandon(ref, prepared.error);
+		// The last read of the workspace, once this computer is up: an older one listed only now is answered here.
+		const last = await this.#converge(spec, request, labels, made.value, signal);
+		if (last !== undefined) return last;
+		return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
+	}
+
+	/**
+	 * The one computer a request keeps. Two creates of one request in two processes can both find no computer for it
+	 * (#held) and both make one: CreateRequests holds within one provider alone, and the names differ once the
+	 * deadline in them does. So after Orgo's answer the workspace is read again: where an older computer of this request
+	 * is there (the oldest by created_at, then id, the order #held reads), this one is deleted and the older answered
+	 * through #held, as a retry's create answers it. Every process picks the same one from the same listing, so the
+	 * newer creates delete their own and the oldest keeps its. Undefined when this computer is the request's oldest (or
+	 * the listing fails: the create goes on with its own); an abort deletes this computer (#abandon, never under the
+	 * caller's signal), and the create is aborted.
+	 */
+	async #converge(spec: ComputerSpec, request: string, labels: Record<string, string>, mine: OrgoComputer, signal?: AbortSignal): Promise<Result<CreatedComputer> | undefined> {
+		const listed = await this.#desktops(signal);
+		if (!listed.ok) {
+			if (listed.error.code !== "aborted" && !signal?.aborted) return undefined;
+			// The caller is gone: the computer this POST made is deleted, never under the caller's signal.
+			return this.#abandon({ id: mine.id, name: mine.name }, { code: "aborted", message: "create was aborted" });
+		}
+		const hex = request.slice("computer-".length);
+		const holders = listed.value.filter((one) => nameParts(one.name)?.hex === hex && this.#ours(one) && RUNNING.has(one.status));
+		// Not listed yet, it was made just now: no older than now.
+		if (!holders.some((one) => one.id === mine.id)) holders.push({ ...mine, created_at: mine.created_at ?? new Date().toISOString() });
+		const [kept] = holders.sort(oldestFirst);
+		if (kept === undefined || kept.id === mine.id) return undefined;
+		const ref = { id: mine.id, name: mine.name };
+		const deleted = await this.#delete(ref);
+		if (!deleted.ok) return fail(deleted.error.code, `${kept.name}, the older computer of this request, is kept, and ${ref.name} could not be deleted (${deleted.error.message}); Orgo ends it at its end`);
+		const theirs = await this.#held(spec, request, labels, signal);
+		if (!theirs.ok || theirs.value !== undefined) return theirs as Result<CreatedComputer>;
+		this.#requests.end(request);
+		return fail("exists", `${ref.name} was deleted for ${kept.name}, the older computer of this request, which is gone now: create with a new request id`);
+	}
+
+	/**
+	 * The computer Orgo holds for this request, when it holds one: undefined when it holds none, so create makes it. It
+	 * is found by the request's name, the start of every name create gives (the rest moves with the deadline), among the
+	 * workspace's computers, the oldest first. Up and sound (its labels file and its daemon, as attach reads them), it is
+	 * returned when it is what this spec asks for, and refused exists when it is another spec's. One still being made
+	 * (by another process's create) is waited for, within the time a create of its own takes; one that no longer runs,
+	 * or whose deadline has passed, is refused exists.
+	 */
+	async #held(spec: ComputerSpec, request: string, labels: Record<string, string>, signal?: AbortSignal): Promise<Result<CreatedComputer | undefined>> {
+		const hex = request.slice("computer-".length);
+		const { createMs, uploadMs, helloMs, probeMs, pollMs } = this.#timeouts;
+		const wait = createMs + uploadMs + helloMs + probeMs;
+		const until = Date.now() + wait;
+		let last: string | undefined;
+		for (;;) {
+			const listed = await this.#desktops(signal);
+			if (!listed.ok) return listed;
+			const found = listed.value.filter((one) => nameParts(one.name)?.hex === hex && this.#ours(one)).sort(oldestFirst);
+			const record = found[0];
+			if (record === undefined) return ok(undefined);
+			const ref = { id: record.id, name: record.name };
+			const deadline = nameParts(record.name)?.deadline;
+			if (deadline !== undefined && deadline.getTime() <= Date.now()) return fail("exists", endedWords(record.name));
+			if (!RUNNING.has(record.status)) return fail("exists", `${record.name} was made for this request and is ${record.status}, not running: create with a new request id`);
+			if (record.status === "running") {
+				const file = await this.#readLabels(ref, signal);
+				if (file.ok) {
+					const differ = [
+						...labelsDiffer(labels, file.value.labels, "read back"),
+						...readBackDiffer(spec, { image: file.value.image, user: `${this.#uid}:${this.#gid}`, network: "none", ...(file.value.cpus === undefined ? {} : { cpus: file.value.cpus }), ...(file.value.memoryMb === undefined ? {} : { memoryMb: file.value.memoryMb }) }, ["image", "cpus", "memoryMb"]),
+					];
+					if (differ.length > 0) return fail("exists", otherSpecWords(record.name, "was made", differ));
+					const inside = await this.#inside(ref, signal);
+					if (inside.ok) return ok(inside.value.length > 0 ? { ...ref, notes: inside.value } : ref);
+					if (inside.error.code === "aborted") return inside;
+					// Its daemon is not up yet: the create that made it is still preparing it.
+					last = inside.error.message;
+				} else {
+					if (file.error.code === "aborted") return file;
+					last = file.error.message;
+				}
+			} else last = `Orgo reads it ${record.status}`;
+			if (Date.now() + pollMs >= until) return fail("timeout", `${record.name}, made for this request, was not up within ${seconds(wait)}: ${last}`);
+			await pause(pollMs, signal);
+			if (signal?.aborted) return fail("aborted", `create was aborted while ${record.name}, made for this request, came up`);
+		}
 	}
 
 	/**
@@ -692,6 +807,7 @@ export class OrgoProvider implements ComputerProvider {
 
 	/** Deletes a computer create gives up on, and waits until Orgo no longer has it. Never signalled: it outlives an abort. */
 	async #abandon(ref: ComputerRef, error: ComputerError): Promise<Result<never>> {
+		this.#requests.end(requestOf(ref.name));
 		const deleted = await this.#delete(ref);
 		return fail(error.code, `the computer ${ref.name} ${deleted.ok ? "was deleted" : `could not be deleted (${deleted.error.message}); Orgo ends it at its end`}: ${error.message}`);
 	}
@@ -1137,7 +1253,16 @@ export class OrgoProvider implements ComputerProvider {
 		if (!read.ok) return read.error.code === "not_found" && how === "delete" ? ok(undefined) : read;
 		if (read.value.status === "deleted") return how === "delete" ? ok(undefined) : fail("not_found", `${ref.name} is deleted: there is nothing to detach`);
 		if (!this.#ours(read.value, ref.name)) return fail("not_found", `no Orgo computer of this provider is ${ref.name} (${ref.id}), so it is left as it is`);
-		if (how === "delete") return claim === undefined ? this.#delete(ref, signal) : this.#claimedDelete(ref, read.value.name, claim, signal);
+		if (how === "delete") {
+			// The request's computer is ended here: a later create of it is refused exists, never made again.
+			if (claim === undefined) {
+				this.#requests.end(requestOf(read.value.name));
+				return this.#delete(ref, signal);
+			}
+			const deleted = await this.#claimedDelete(ref, read.value.name, claim, signal);
+			if (deleted.ok) this.#requests.end(requestOf(read.value.name));
+			return deleted;
+		}
 		const owner = nameParts(read.value.name)?.owner;
 		if (owner === undefined) return fail("refused", `${ref.name} is a run's computer, not an agent's own: it is deleted at its release, never detached`);
 		// In turn with this process's attaches, and holding the ledger entry from before the suspend until it is marked

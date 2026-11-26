@@ -20,17 +20,16 @@ export type Definition = { native?: NativeBinding; version: number; approvals?: 
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
 export type SaveWarning = NonNullable<Agent["warnings"]>[number];
 export type { Agent };
-export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
+export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { skillFiles?: Record<string, string>; workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; the name stays as the agent was created,
  *  and a changed description is sent (serve writes it with the new revision). Every field the
  *  form does not show (schemas, tools, a workflow, connection references) is kept as it is, never dropped. A workflow
- *  revision keeps no thinking level (the server refuses one). Skill files are not sent, so they stay as they are. */
-export function editBody(agent: Agent, fields: AgentFields, note: string): { definition: Definition; note?: string; unchanged: boolean } {
+ *  revision keeps no thinking level (the server refuses one). Untouched skill files are omitted; an edited file set is sent whole, including supporting files. */
+export function editBody(agent: Agent, fields: AgentFields, note: string, originalSkills?: Record<string, string>): { definition: Definition; skills?: Record<string, string>; note?: string; unchanged: boolean } {
   // The agent store keeps an agent's id and name from its creation: an edit never sends a changed one.
-  const { name: _name, ...editable } = fields as AgentFields & { id?: string };
-  const edited: Definition = { ...agent.definition, ...editable };
-  // An agent with no description, left blank in the form, still has none: not a change.
+  const { name: _name, skillFiles, ...editable } = fields as AgentFields & { id?: string };
+  const edited: Definition = { ...agent.definition, ...editable, ...(skillFiles !== undefined ? { skills: skillNames(skillFiles) } : {}) };
   if (edited.description === "" && agent.definition.description === undefined) delete edited.description;
   // The computer is the setting; place is the server's view of it. A definition with a computer goes without its place,
   // which would still say the old computer after a change (the server writes place from computer).
@@ -59,10 +58,13 @@ export function editBody(agent: Agent, fields: AgentFields, note: string): { def
     if (computer !== undefined) { compared.computer = computer; delete compared.place; }
     return compared;
   };
-  const unchanged = same(comparable(edited), comparable(current));
+  const unchanged = same(comparable(edited), comparable(current)) && (skillFiles === undefined || same(skillFiles, originalSkills));
   edited.version = unchanged ? agent.definition.version : agent.revisions + 1;
-  return { definition: edited, ...(note.trim() ? { note: note.trim() } : {}), unchanged };
+  return { definition: edited, ...(skillFiles !== undefined ? { skills: skillFiles } : {}), ...(note.trim() ? { note: note.trim() } : {}), unchanged };
 }
+
+/** The skill names represented by the complete file set; supporting files remain beside each SKILL.md. */
+export const skillNames = (files: Record<string, string>) => Object.keys(files).filter(path => path.endsWith("/SKILL.md")).map(path => path.slice(0, -"/SKILL.md".length)).sort();
 
 /** Deep equality of two JSON values, whatever their keys' order. */
 export function same(a: unknown, b: unknown): boolean {
@@ -103,21 +105,22 @@ export function decisionProvider(workflows: { adapters?: string[]; decisions?: {
  *  to edit, never empty. Harness-neutral, one sentence. */
 export const DEFAULT_INSTRUCTIONS = "You are a helpful agent. Do the task you're given and report what you found.";
 
-/** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
+/** The body that creates an agent: its first revision, with what the form names and any custom skill files. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: LearningSetting; decisionProvider?: string; tool_settings?: ToolSettings; computer?: Computer; max_cost_usd?: number }): { definition: Definition } {
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: LearningSetting; decisionProvider?: string; tool_settings?: ToolSettings; computer?: Computer; max_cost_usd?: number; skillFiles?: Record<string, string> }): { definition: Definition; skills?: Record<string, string> } {
   if (isStarter(f.harness)) {
-    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] } };
+    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: skillNames(f.skillFiles ?? {}), tools: [] }, ...(f.skillFiles !== undefined ? { skills: f.skillFiles } : {}) };
   }
   return {
     definition: {
       version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
-      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.computer ? { computer: f.computer } : {}), ...(f.learning ? { learning: f.learning } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: [], tools: f.tools,
+      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.computer ? { computer: f.computer } : {}), ...(f.learning ? { learning: f.learning } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: skillNames(f.skillFiles ?? {}), tools: f.tools,
       ...(f.tool_settings && Object.keys(f.tool_settings).length ? { tool_settings: f.tool_settings } : {}),
       // Approvals: sent only when it never asks (ask is the server's default).
       ...(f.approvals === "never" ? { approvals: "never" as const } : {}),
     },
+    ...(f.skillFiles !== undefined ? { skills: f.skillFiles } : {}),
   };
 }
 
@@ -134,17 +137,17 @@ export function capOf(text: string | undefined): { ok: true; value: number | und
 
 /** One tool the server offers (`GET /v2/capabilities` `tools`): whether it can run here, what it lacks, what it does
  *  (`summary`), and, when the server says, which harnesses run it. */
-export type ToolOffer = { name: string; available: boolean; summary?: string; /** One line for people, served beside the model-facing `summary`; an MCP server's tool has none. */ blurb?: string; missing?: string[]; reason?: string; /** The harnesses that run it here (served on every tool). */ harnesses: string[]; call_only?: true; sandbox_only?: true; nodes?: boolean };
+export type ToolOffer = { name: string; available: boolean; summary?: string; /** One line for people, served beside the model-facing `summary`; an MCP server's tool has none. */ blurb?: string; missing?: string[]; reason?: string; /** The harnesses that run it here (served on every tool). */ harnesses: string[]; call_only?: true; sandbox_only?: true; /** Only an agent whose place is the runner (on the server) names it (capabilities' `runner_only`: the browser). */ runner_only?: true; nodes?: boolean };
 
 export function toolOffers(raw: unknown): ToolOffer[] {
   return (Array.isArray(raw) ? raw : []).flatMap((t): ToolOffer[] => {
     if (!t || typeof t !== "object" || typeof (t as { name?: unknown }).name !== "string") return [];
     // A host tool over the run's own tools (capabilities' `meta`: tools_search, tools_call, codemode) is no grant: Settings → Tools sets it.
     if ((t as { meta?: unknown }).meta === true) return [];
-    const { name, available, summary, blurb, missing, reason, harnesses, call_only, sandbox_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; blurb?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; nodes?: unknown };
+    const { name, available, summary, blurb, missing, reason, harnesses, call_only, sandbox_only, runner_only, nodes } = t as { name: string; available?: boolean; summary?: unknown; blurb?: unknown; missing?: string[]; reason?: unknown; harnesses?: string[]; call_only?: unknown; sandbox_only?: unknown; runner_only?: unknown; nodes?: unknown };
     return [{
       name, available: available !== false, ...(typeof summary === "string" && summary ? { summary } : {}), ...(typeof blurb === "string" && blurb.trim() ? { blurb: blurb.trim() } : {}), ...(missing?.length ? { missing } : {}), ...(typeof reason === "string" && reason ? { reason } : {}), harnesses: Array.isArray(harnesses) ? harnesses : [],
-      ...(call_only === true ? { call_only: true as const } : {}), ...(sandbox_only === true ? { sandbox_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
+      ...(call_only === true ? { call_only: true as const } : {}), ...(sandbox_only === true ? { sandbox_only: true as const } : {}), ...(runner_only === true ? { runner_only: true as const } : {}), ...(typeof nodes === "boolean" ? { nodes } : {}),
     }];
   });
 }
@@ -188,12 +191,19 @@ export function toolsOnSwitch(harness: string, tools: readonly string[], held: r
 }
 
 /** Why `tool` cannot be ticked on an agent whose definition names `place`: a sandbox-only tool (bash) runs in a box, and
- *  this form shows no place, so a new agent's is the runner. Undefined when it can be ticked. */
-export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined =>
-  tool.sandbox_only && (place as { mode?: unknown } | undefined)?.mode !== "sandbox" ? "Sandbox-only: it runs in a box, and this agent's place is the runner" : undefined;
+ *  the agent's place is the runner, or it has none (null: the server has no default place, so a box is to be chosen); a
+ *  runner-only one (the browser) runs on the server, and the agent's place is a box. Undefined when it can be ticked. */
+export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined => {
+  const where = place as { mode?: unknown; box?: unknown } | null | undefined;
+  if (tool.sandbox_only && where === null) return "Sandbox-only: it runs in a box, and this agent has no place yet: choose a box under Where it runs";
+  if (tool.sandbox_only && where?.mode !== "sandbox") return "Sandbox-only: it runs in a box, and this agent's place is the runner";
+  if (tool.runner_only && where?.mode === "sandbox") return `Server-only: it runs on the server, and this agent's place is ${typeof where.box === "string" && where.box ? `the ${where.box} box` : "a box"}`;
+  return undefined;
+};
 
-/** The tools the server refuses in a sandbox place (serve's runnable.ts, `runnerOnly`): the browser, which files the run's
- *  work/ from the server by path. The server's own rule, until its capabilities mark them. */
+/** The tools the server refuses in a sandbox place (serve's runnable.ts, `runnerOnly`; capabilities' `runner_only`, which
+ *  a tool card reads): the browser, which files the run's work/ from the server by path. The place helpers below take
+ *  tool names alone, so they keep the server's rule here. */
 const RUNNER_ONLY: ReadonlySet<string> = new Set(["browser"]);
 /** The tools that run only in a box (serve's tools.ts, `sandboxOnly`; capabilities' `sandbox_only`): bash and the
  *  background tools. A revision with no place gets the box only when it names one. */
@@ -202,16 +212,18 @@ const SANDBOX_ONLY: ReadonlySet<string> = new Set(["bash", "bash_background", "b
 /** Where a revision that names no place runs, as the server resolves it at each run: this mirrors the server's
  *  defaultPlaceOf (packages/serve/src/place.ts), which the server does not report per revision. The runner for a workflow,
  *  for one whose tools need no shell, and for one that names a tool that runs only there (the browser); else this
- *  server's default_place. The editor's picker and its tool checks both read it, so they agree with the server and with
- *  each other. */
-export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place =>
+ *  server's default_place, null where it has none (the server refuses such a revision's save and its run: it names a box
+ *  or the runner). The editor's picker and its tool checks both read it, so they agree with the server and with each
+ *  other. */
+export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place | null =>
   workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) || !tools.some((tool) => SANDBOX_ONLY.has(tool)) || !places ? { mode: "runner" } : places.defaultPlace;
 
 /** Where an agent's current revision runs: its own place, else where the server resolves one that names none
- *  (defaultPlaceOf), with `byDefault` saying so. Undefined for a revision that names no place while the server's places are
- *  not read yet (and it names a shell tool and no runner-only one), whose place is not known. The agent page's fact and
- *  the Learning tab's host-bash line both read it. */
-export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Places | null | undefined): { place: Place; byDefault: boolean } | undefined {
+ *  (defaultPlaceOf), with `byDefault` saying so; a null place where the server has no default for it (none to run in).
+ *  Undefined for a revision that names no place while the server's places are not read yet (and it names a shell tool and
+ *  no runner-only one), whose place is not known. The agent page's fact and the Learning tab's host-bash line both read
+ *  it. */
+export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Places | null | undefined): { place: Place | null; byDefault: boolean } | undefined {
   const own = placeOf(agent.definition.place);
   if (own) return { place: own, byDefault: false };
   const workflow = agent.kind === "workflow";
@@ -236,12 +248,14 @@ const ORDER: HarnessId[] = ["pi", "claude-agent", "codex", "opencode"];
 
 /** The harness choices: pi, Claude, Codex and OpenCode as the server lists them (`GET /v2/capabilities` `harnesses`), then
  *  any other harness it lists (one its harness modules add), by the label it gives, else its id; each one the server does
- *  not run shown disabled with its reason. A harness the server does not list is not offered. With `decision` (a new
- *  agent), the starters follow them: Decision, available when the server runs decision workflows, and Workflow,
- *  available on every server. */
-export function harnessOptions(harnesses: { id: string; label?: string; available: boolean; reason?: string }[], decision?: { available: boolean }) {
-  const option = (h: { id: string; label?: string; available: boolean; reason?: string }, label: string) => ({ id: h.id, label, available: h.available, reason: h.reason });
-  const options: { id: string; label: string; available: boolean; reason?: string }[] = [
+ *  not run shown disabled with its reason. One off only for want of a model key (its `needs`: pi with no key and no
+ *  ChatGPT sign-in) is `wantsKey`: a save of it is taken, with a warning, and it runs once a key is added, so it stays a
+ *  choice. A harness the server does not list is not offered. With `decision` (a new agent), the starters follow them:
+ *  Decision, available when the server runs decision workflows, and Workflow, available on every server. */
+type ServedHarness = { id: string; label?: string; available: boolean; reason?: string; needs?: readonly string[] };
+export function harnessOptions(harnesses: ServedHarness[], decision?: { available: boolean }) {
+  const option = (h: ServedHarness, label: string) => ({ id: h.id, label, available: h.available, reason: h.reason, ...(!h.available && h.needs?.length ? { wantsKey: true as const } : {}) });
+  const options: { id: string; label: string; available: boolean; reason?: string; wantsKey?: true }[] = [
     ...ORDER.flatMap((id) => {
       const h = harnesses.find((x) => x.id === id);
       return h ? [option(h, LABEL[id])] : [];

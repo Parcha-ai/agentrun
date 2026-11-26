@@ -10,6 +10,8 @@ import { nativeOf } from "./native/binding.js";
 // The input's origin keeps its fail-safe on read (#1856): a run started by a trigger keeps an origin only when it names
 // the run's own trigger with owner === (the source is a schedule, whose words its owner wrote when they set it up), else
 // that trigger's own with owner false, so a forged or lost origin never reads as the person's or the owner's.
+import { HOLD_MINUTES } from "./computer-held.js";
+import type { InputIssue } from "./errors.js";
 import { type MessageOrigin, originOf } from "./timeline/index.js";
 import type { Plane } from "./tool-plane.js";
 import type { RunTrigger } from "./triggers.js";
@@ -62,7 +64,7 @@ export interface RunLaunch {
    *  The control marker is outside the run's tool workspace. No source path or credential is kept in this record. */
   readonly sourceProject?: SourceProjectLaunch;
   /** The run's learning start, when its agent learns and the server's learning is on, decided once here so the runner reads
-   *  no learning folder or git: `seed`, the learning commit's sha (or null when the seed could not be read); `section`,
+   *  no learning rows: `seed`, the learning save's id (or null when the seed could not be read); `section`,
    *  the exact # Learned text to lay into the prompt (its owner's corrections, learning.ts learnedSection); `workflows`,
    *  the names of the learned workflows the seed offers the run (chooseWorkflows), absent when none; `noWorkflows`, a run
    *  never answered by a learned workflow and asked for no workflow draft at its end (a native run, an SDK run with no
@@ -93,9 +95,15 @@ export interface RunLaunch {
    *  claim, revoke and reclaim of the run, after a restart too, acts on that one disk. */
   readonly archilDisk?: LaunchDisk;
   /** A run started with `hold: true` (computer-held.ts): its computer waits for its owner's start, and stays the owner's
-   *  after the agent's end until released, each wait for at most `minutes` with no call. */
-  readonly hold?: { readonly minutes: number };
+   *  after the agent's end until released, each wait for at most `minutes` with no call. `refused`: its model kept it from
+   *  running when it was created (a key, the harness, a price), which a held run's create does not refuse: its computer is
+   *  the owner's to call, and its agent never starts, every start and message refused in these words. */
+  readonly hold?: { readonly minutes: number; readonly refused?: HeldRefusal };
 }
+
+/** A held run's model refusal, as its create would have answered it (409 agent_not_runnable): its message, its fields and
+ *  its details, kept in its launch for its start to answer the same. */
+export type HeldRefusal = { readonly message: string; readonly fields: readonly InputIssue[]; readonly details: Record<string, unknown> };
 
 /** Immutable placement identity for a project copied before admission. */
 export interface SourceProjectLaunch {
@@ -210,7 +218,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.inputOrigin ? { input_origin: launch.inputOrigin } : {}),
     ...(launch.followUp ? { follow_up: true } : {}),
     ...(launch.archilDisk ? { archil_disk: { disk_id: launch.archilDisk.diskId, kind: launch.archilDisk.kind } } : {}),
-    ...(launch.hold ? { hold: { minutes: launch.hold.minutes } } : {}),
+    ...(launch.hold ? { hold: { minutes: launch.hold.minutes, ...(launch.hold.refused ? { refused: launch.hold.refused } : {}) } } : {}),
   };
 }
 
@@ -255,6 +263,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   const model = readModel(stored.model);
   const boxAllow = readBoxAllow(stored.box_allow);
   const archilDisk = readDisk(stored.archil_disk);
+  const refused = isObject(stored.hold) ? readRefusal(stored.hold.refused) : undefined;
   return {
     input: stored.input,
     ...(isObject(stored.sdk) && sdkBindingOf(stored.sdk) && typeof stored.sdk.instructions === "string" ? {sdk: stored.sdk as unknown as NonNullable<RunLaunch["sdk"]>} : {}),
@@ -283,8 +292,17 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
     ...(archilDisk ? { archilDisk } : {}),
-    ...(isObject(stored.hold) && typeof stored.hold.minutes === "number" ? { hold: { minutes: stored.hold.minutes } } : {}),
+    ...(isObject(stored.hold) ? { hold: { minutes: typeof stored.hold.minutes === "number" ? stored.hold.minutes : HOLD_MINUTES, ...(refused ? { refused } : {}) } } : {}),
   };
+}
+
+/** A held run's model refusal as its launch keeps it, else undefined (none kept). One kept that can't be read (a corrupt
+ *  row, another version's) is a refusal still, in words that name the field and never what it holds: read as none, the
+ *  run would start and its claim open the keys its model was refused for. */
+function readRefusal(value: unknown): HeldRefusal | undefined {
+  if (value === undefined) return undefined;
+  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return { message: "This run's model was kept from running at its create, and its launch's hold.refused can't be read: it holds its computer only. Start a new run to run its agent.", fields: [], details: {} };
+  return { message: value.message, fields: value.fields as InputIssue[], details: value.details };
 }
 
 /** The run's learning start (its seed sha, its # Learned section and its learned workflows), read from one place by learning's
@@ -294,9 +312,9 @@ export const learningStartOf = (launch: RunLaunch): RunLaunch["learning"] => lau
 /** The same start read from a launch body's `learning` member alone (Store.runs.learningStarts), as readLaunchBody reads it. */
 export const learningStartOfStored = (stored: unknown): RunLaunch["learning"] => (stored === undefined ? undefined : readLearning(stored) ?? { seed: null, section: "" });
 
-/** Why a learning run starts with nothing learned, as main says it: its agent's learning folder could not be read
+/** Why a learning run starts with nothing learned, as main says it: its agent's learning could not be read
  *  (`unreadable`, STOPPED.unreadable), what was read could not be made into its start (`not_copied`,
- *  STOPPED.notCopied), or its launch names a disk of its own, whose learning folder the server does not read
+ *  STOPPED.notCopied), or its launch names a disk of its own, whose learning the server does not read
  *  (`other_disk`, STOPPED.otherDisk): a run on a named disk learns nothing (learn/learning-of.ts). */
 export type SeedFailed = "unreadable" | "not_copied" | "other_disk";
 const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied", "other_disk"];

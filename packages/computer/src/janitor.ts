@@ -15,6 +15,12 @@ export interface SweepOptions {
 	 * agent's computer whose owner is gone is deleted; without this, no owner counts as gone.
 	 */
 	ownerGone?: (owner: ComputerOwner) => boolean | Promise<boolean>;
+	/**
+	 * Whether a leftover (sweepLeftovers: a part a computer left behind), by the labels it carries, is the caller's to
+	 * remove; default every one with `labels`. A caller that shares the provider's host with another (serve: a run of
+	 * this store) answers true for its own alone.
+	 */
+	mine?: (labels: Record<string, string>) => boolean | Promise<boolean>;
 	signal?: AbortSignal;
 }
 
@@ -73,7 +79,7 @@ async function ownerEnds(info: ComputerInfo, owner: ComputerOwner, at: number, o
  * provider that declares persistence is swept for its agents' computers alone under lifetime "vendor", since no vendor
  * ends them.
  */
-export async function sweep(provider: ComputerProvider, { labels = {}, now, ownerGone, signal }: SweepOptions = {}): Promise<Result<Swept>> {
+export async function sweep(provider: ComputerProvider, { labels = {}, now, ownerGone, mine, signal }: SweepOptions = {}): Promise<Result<Swept>> {
 	const { lifetime, maxLifetimeMs, persistence } = provider.capabilities();
 	if (lifetime !== "janitor" && persistence === undefined) {
 		return fail("refused", `the ${provider.id} provider declares lifetime "${lifetime}": its vendor ends its computers itself, so the janitor does not sweep them`);
@@ -113,7 +119,7 @@ export async function sweep(provider: ComputerProvider, { labels = {}, now, owne
 	let leftBehind: string | undefined;
 	if (provider.sweepLeftovers) {
 		if (signal?.aborted) return fail("aborted", `the sweep was aborted; it had deleted ${deleted.join(", ") || "none"}`);
-		const left = await provider.sweepLeftovers({ labels, now: new Date(at), signal });
+		const left = await provider.sweepLeftovers({ labels, now: new Date(at), signal, ...(mine === undefined ? {} : { mine }) });
 		if (left.ok) leftovers = left.value;
 		else {
 			firstError ??= left.error;

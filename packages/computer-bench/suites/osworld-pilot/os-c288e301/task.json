@@ -1,0 +1,66 @@
+{
+  "$schema": "../../../schema/task.schema.json",
+  "id": "osworld.c288e301",
+  "version": 2,
+  "title": "Make Python4 the default Python (it does not exist)",
+  "split": "heldout",
+  "source": {
+    "suite": "OSWorld-Verified",
+    "id": "os/c288e301-e626-4b98-a1ab-159dcb162af5",
+    "revision": "0ad41bee56565efe7bb3c3a5ebc67590a1b8276f",
+    "licence": "Apache-2.0 (Copyright 2024 XLANG NLP Lab); the instruction is copied word for word",
+    "changes": "OSWorld marks this task infeasible and passes an agent whose last action is FAIL. computer-bench has no FAIL action, so the agent says so in its final answer: an answer check proves there is one (not its words), an exec check proves no python4 was faked in the run's home, and the agentic grader reads the answer and decides with rubric.md. No check reads the answer's words: a failing check fails a run whatever the grader says, and no regex knows every way to say Python 4 does not exist. OSWorld set nothing up; setup here opens Xfce's terminal in the run's folder, with HOME set to it, since this desktop has no dock or terminal shortcut."
+  },
+  "tags": ["osworld", "os", "terminal", "infeasible"],
+  "needs": {
+    "os": "linux",
+    "kind": "desktop",
+    "capabilities": [
+      { "id": "xfce4-terminal", "kind": "exec", "why": "Xfce's terminal, and xdotool, which setup places its window with.", "argv": ["sh", "-c", "command -v xfce4-terminal && command -v xdotool"] }
+    ]
+  },
+  "setup": [
+    {
+      "method": "exec.run",
+      "why": "Make the run's folder, which stands in for OSWorld's /home/user.",
+      "params": { "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; rm -rf $d && mkdir -p $d"], "timeoutMs": 20000 }
+    },
+    {
+      "method": "process.start",
+      "why": "Open Xfce's terminal in the run's folder, with HOME set to it.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); export HOME=/tmp/computer-bench-{{nonce}}; cd /tmp/computer-bench-{{nonce}} && echo $$ > /tmp/computer-bench-{{nonce}}-terminal.pid && exec xfce4-terminal --disable-server --working-directory=/tmp/computer-bench-{{nonce}}"] }
+    },
+    {
+      "method": "exec.run",
+      "why": "Wait for the terminal's window (20 s at most), make it fill the screen, put the pointer on it and activate it: a window manager gives the keys to the window activated, and with none they go to the window under the pointer.",
+      "params": { "argv": ["sh", "-c", "export DISPLAY=:$(ls /tmp/.X11-unix | sed -n s/^X//p | head -n1); w=$(timeout 20 xdotool search --sync --onlyvisible --class xfce4-terminal | head -n1); [ -n \"$w\" ] || { echo no terminal window in 20 s >&2; exit 1; }; eval $(xdotool getdisplaygeometry --shell); xdotool windowmove $w 0 0 windowsize $w $WIDTH $HEIGHT; xdotool mousemove $((WIDTH / 2)) $((HEIGHT / 2)); xdotool windowactivate $w 2>/dev/null; sleep 1"], "timeoutMs": 30000 }
+    }
+  ],
+  "exec": "deny",
+  "instruction": "Please set the default Python version to Python4 on my Ubuntu system.",
+  "budget": { "steps": 100, "usd": 3, "wall_s": 900 },
+  "sufficient": false,
+  "checks": [
+    {
+      "id": "answered",
+      "kind": "answer",
+      "why": "The agent gave a final answer, which the grader reads for the refusal. Its words are the grader's: this check only fails a run with none (a null run, or an agent that stopped silent), so the untouched state fails.",
+      "text": { "empty": true, "not": true }
+    },
+    {
+      "id": "no-fake-python4",
+      "kind": "exec",
+      "why": "Nothing answers to python4 in the run's home: no python4 on PATH, none in ~/.local/bin, and no alias or function for it in the shell's start files. Faking Python 4 (a link or alias to python3) is the wrong answer.",
+      "argv": ["sh", "-c", "d=/tmp/computer-bench-{{nonce}}; export HOME=$d; if command -v python4 >/dev/null 2>&1 || [ -e $d/.local/bin/python4 ] || [ -e $d/bin/python4 ] || grep -qs python4 $d/.bashrc $d/.bash_aliases $d/.profile $d/.bash_profile; then echo 'python4 was faked'; else echo 'no python4'; fi"],
+      "timeoutMs": 20000,
+      "stdout": { "equals": "no python4" }
+    }
+  ],
+  "teardown": [
+    {
+      "method": "exec.run",
+      "why": "Close the run's apps by the pids setup kept beside the folder (a desktop may have others open), and delete the run's folder and its siblings.",
+      "params": { "argv": ["sh", "-c", "for f in /tmp/computer-bench-{{nonce}}-*.pid; do [ -f \"$f\" ] && kill -9 \"$(cat \"$f\")\" 2>/dev/null; done; rm -rf /tmp/computer-bench-{{nonce}} /tmp/computer-bench-{{nonce}}-*; true"], "timeoutMs": 20000 }
+    }
+  ]
+}

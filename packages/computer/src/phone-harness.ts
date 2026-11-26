@@ -12,14 +12,17 @@ import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { STATUS_CODES } from "node:http";
 import { createConnection } from "node:net";
 import type { Duplex } from "node:stream";
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { adbEnv } from "./child-env.js";
 import { DaemonClient } from "./client.js";
 import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
 import { PHONE_GROUPS, PHONE_HARNESS } from "./descriptors/phone-harness.js";
-import { type ComputerClient, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
+import { httpsBase, type Rest, rest } from "./hosted/rest.js";
+import { type ComputerClient, type DaemonMethod, type DaemonMethods, type HelloResult, helloProblem } from "./protocol.js";
 import {
 	type AttachedComputer,
 	type CallContext,
@@ -39,7 +42,7 @@ import {
 	type ReleaseHow,
 	runLifetimeMs,
 } from "./provider.js";
-import { type ComputerErrorCode, failFor, ok, type Result, vendorFail } from "./result.js";
+import { type ComputerErrorCode, failAs, failFor, ok, type Result, vendorFail } from "./result.js";
 import { daemonWatch, redactWords, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "./screen-watch.js";
 import { listTested } from "./test-connection.js";
 
@@ -235,25 +238,23 @@ type AdbRun = (args: string[], options?: { timeoutMs?: number; signal?: AbortSig
 /** The adb server's port when none is given: adb's own default. */
 export const ADB_SERVER_PORT = 5037;
 
-/** The environment variables adb reads to find its server or its device: every one is dropped from a spawned adb's. */
-const ADB_ENV = /^(ADB_|ANDROID_ADB_|ANDROID_SERIAL$)/;
-
 /**
  * The adb CLI (Android platform-tools) at path, by execFile, never a shell, and the adb server it starts, on the
  * loopback at port (adb's own default), spoken to by its socket protocol.
  *
- * env is the environment a spawned adb starts from, with every adb variable dropped from it (ADB_SERVER_SOCKET,
- * ANDROID_ADB_SERVER_SOCKET, ANDROID_ADB_SERVER_ADDRESS, ANDROID_SERIAL, ...), so nothing in it points the CLI at
- * another server than its socket requests reach. The library reads no environment of its own: a caller passes it (the
- * conformance module passes process.env). Without env, a spawned adb inherits the process's environment as it is.
+ * env is the environment the host passes: a spawned adb, and the adb server it starts, hold its ADB_ENV_NAMES alone
+ * (adbEnv), never a key, and none of the variables that point adb at another server or device (ADB_SERVER_SOCKET,
+ * ANDROID_ADB_SERVER_ADDRESS, ANDROID_SERIAL, ...) than its socket requests reach. The library reads no environment of
+ * its own: the provider passes its env, the conformance module process.env. Without env, adb starts with none, and a
+ * bare "adb" is found only on the default path: pass env, or adb's absolute path.
  */
 export function adbCli(path = "adb", { port = ADB_SERVER_PORT, env }: { port?: number; env?: Readonly<Record<string, string | undefined>> } = {}): AdbTransport {
 	// Every spawned adb names the server the socket requests go to: without -P it would take its own default, 5037 or
 	// ANDROID_ADB_SERVER_PORT, and start or ask another server.
-	const spawnEnv = env === undefined ? undefined : Object.fromEntries(Object.entries(env).filter(([name, value]) => value !== undefined && !ADB_ENV.test(name)));
+	const spawnEnv = adbEnv(env);
 	const run: AdbTransport["run"] = (args, { timeoutMs, signal, input }) =>
 		new Promise((resolve) => {
-			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", ...(spawnEnv ? { env: spawnEnv } : {}), timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
+			const child = execFile(path, ["-P", String(port), ...args], { encoding: "buffer", env: spawnEnv, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
 				const code = (error as NodeJS.ErrnoException | null)?.code;
 				if (code === "ENOENT") {
 					return resolve(fail("not_found", `the phone provider needs adb (Android platform-tools) on this machine: ${path} is not there; install platform-tools or give the provider's adb option`));
@@ -401,7 +402,7 @@ export interface PhoneProviderOptions {
 	apiKey: string;
 	/** Which phone: "android", a temporary cloud emulator (the default). "ios" is refused until it is built. */
 	platform?: "android" | "ios";
-	/** The API's base URL; default PHONE_HARNESS_URL. */
+	/** The API's base URL, https alone; default PHONE_HARNESS_URL. */
 	baseUrl?: string;
 	/** fetch; default the global one. Tests give a fake. */
 	fetch?: typeof globalThis.fetch;
@@ -433,7 +434,8 @@ export interface PhoneProviderOptions {
 	 * PHONE_HARNESS_APKS, else none. A connect that cannot install one fails in words.
 	 */
 	apks?: readonly PinnedApk[];
-	/** The host's own variables its descriptor declares (hostEnv): PHONE_HARNESS_APKS alone, the server's apks. */
+	/** The host's own variables its descriptor declares (hostEnv): PHONE_HARNESS_APKS, the server's apks, and what adb
+	 *  reads (ADB_ENV_NAMES), the only environment an adb this provider runs starts with. */
 	env?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -463,6 +465,7 @@ export async function create(options: PhoneProviderOptions): Promise<PhoneHarnes
 export const conformance = () => import("./conformance/phone-harness.js");
 
 const show = (value: unknown) => JSON.stringify(value) ?? String(value);
+const decoder = new TextDecoder();
 /** One argument for the phone's sh: single-quoted. */
 const quote = (text: string) => `'${text.replaceAll("'", "'\\''")}'`;
 /** An Android package id: dotted Java names. */
@@ -487,7 +490,9 @@ export class PhoneHarnessProvider implements ComputerProvider {
 	readonly version = VERSION;
 	readonly #apiKey: string;
 	readonly #baseUrl: string;
-	readonly #fetch: typeof globalThis.fetch;
+	readonly #fetch?: typeof globalThis.fetch;
+	/** The API's client (hosted/rest.ts); a call with headers of its own (a create's Idempotency-Key) gets one of its own. */
+	readonly #rest: Rest;
 	readonly #adb: AdbTransport;
 	readonly #ledger: PhoneLedger;
 	/** Each create in flight, and the names of the phones this provider ended (create-requests.ts). Past this process, the
@@ -530,8 +535,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (platform === "ios") throw new Error('platform "ios" is not offered yet: the phone-harness provider rents a cloud Android; an iPhone is a later change');
 		if (platform !== "android") throw new Error(`platform ${show(platform)} is not one of android, ios`);
 		this.#apiKey = apiKey;
-		this.#baseUrl = (options.baseUrl ?? PHONE_HARNESS_URL).replace(/\/+$/, "");
-		this.#fetch = options.fetch ?? globalThis.fetch;
+		this.#baseUrl = httpsBase(options.baseUrl ?? PHONE_HARNESS_URL, "the phone harness URL");
+		this.#fetch = options.fetch;
 		const adb = options.adb;
 		if (adb !== undefined && typeof adb !== "string" && !(typeof adb?.run === "function" && typeof adb?.server === "function" && typeof adb?.open === "function")) {
 			throw new Error("options.adb is the adb CLI's path, or a transport with run(), server() and open()");
@@ -540,7 +545,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const apks = options.apks ?? apksOf(options.env?.PHONE_HARNESS_APKS);
 		if (!Array.isArray(apks) || !apks.every(pinned)) throw new Error(`options.apks ${show(options.apks)} is not a list of { path, sha256 }: an APK file's absolute path and its sha256, 64 lowercase hex digits`);
 		this.#apks = apks.map(({ path, sha256 }) => ({ path, sha256 }));
-		this.#adb = adb === undefined || typeof adb === "string" ? adbCli(adb ?? "adb") : adb;
+		this.#adb = adb === undefined || typeof adb === "string" ? adbCli(adb ?? "adb", { env: options.env ?? {} }) : adb;
 		this.#ledger = guardedLedger(options.ledger ?? memoryLedger());
 		this.#maxLifetimeMs = options.maxLifetimeMs ?? DEFAULT_MAX_LIFETIME_MS;
 		if (!(Number.isSafeInteger(this.#maxLifetimeMs) && this.#maxLifetimeMs > 0)) throw new Error(`maxLifetimeMs ${show(options.maxLifetimeMs)} is not a whole number of milliseconds above 0`);
@@ -552,6 +557,7 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		if (!(Number.isSafeInteger(this.#requestMs) && this.#requestMs > 0)) throw new Error(`requestMs ${show(options.requestMs)} is not a whole number of milliseconds above 0`);
 		this.#timeout = options.timeout ?? ((ms) => AbortSignal.timeout(ms));
 		this.#daemonVersion = options.daemonVersion ?? VERSION;
+		this.#rest = this.#client();
 	}
 
 	capabilities(): ComputerCapabilities {
@@ -588,63 +594,63 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		return text.replaceAll(this.#apiKey, "[the key]");
 	}
 
+	/** The API's client, with headers of one call's own beside the key. */
+	#client(headers: Record<string, string> = {}): Rest {
+		return rest({
+			base: this.#baseUrl,
+			headers: () => ({ Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...headers }),
+			vendor: this.id,
+			...(this.#fetch ? { fetch: this.#fetch } : {}),
+			timeoutMs: this.#requestMs,
+			timeout: this.#timeout,
+		});
+	}
+
 	/**
 	 * One request, bounded by ms (default requestMs) and by the caller's signal. A failure is `uncertain` when the
 	 * service may have acted on the request all the same: no answer (lost, or cut off by its bound), or a 5xx other than
-	 * phones_busy, the service's own word that nothing was made.
+	 * phones_busy, the service's own word that nothing was made. A redirect is refused unfollowed, and is uncertain too:
+	 * its answer is never read, and a 303 after a create is the usual answer to a POST.
 	 */
 	async #api(
 		method: string,
 		path: string,
-		{ body, headers = {}, signal, ms = this.#requestMs }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; ms?: number } = {},
+		{ body, headers, signal, ms = this.#requestMs }: { body?: unknown; headers?: Record<string, string>; signal?: AbortSignal; ms?: number } = {},
 	): Promise<Result<{ status: number; json: unknown }> & { uncertain?: boolean }> {
-		const bound = this.#timeout(Math.max(1, Math.ceil(ms)));
-		const either = signal ? AbortSignal.any([signal, bound]) : bound;
-		const cut = (error: unknown): Result<never> & { uncertain?: boolean } => {
-			if (signal?.aborted) return fail("aborted", `${method} ${path} was aborted`);
-			if (bound.aborted) return { ...fail("timeout", `${method} ${path}: the phone harness did not answer within ${Math.round(ms / 100) / 10} s`), uncertain: true };
-			return { ...fail("unreachable", `${method} ${path}: the phone harness could not be reached: ${this.#clean((error as Error)?.message ?? String(error))}`), uncertain: true };
-		};
-		let response: Response;
-		try {
-			response = await this.#fetch(`${this.#baseUrl}${path}`, {
-				method,
-				headers: { Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...headers },
-				...(body === undefined ? {} : { body: JSON.stringify(body) }),
-				signal: either,
-			});
-		} catch (error) {
-			return cut(error);
+		const api = headers === undefined ? this.#rest : this.#client(headers);
+		// Every answer is a value here, read below in the service's own words: what the client fails is no answer at all,
+		// or a redirect it would not follow.
+		const got = await api.call(method, api.url(path), { ...(body === undefined ? {} : { json: body }), timeoutMs: Math.max(1, Math.ceil(ms)), accept: () => true }, signal);
+		if (!got.ok) {
+			const words = this.#clean(got.error.message);
+			if (got.error.code === "aborted") return failAs(got.error, words);
+			// A redirect keeps the client's code and words: the API answered, though the answer is unknown.
+			const code = got.error.redirect ? got.error.code : got.error.code === "timeout" ? "timeout" : "unreachable";
+			return { ...failAs(got.error, words, code), uncertain: true };
 		}
-		let text: string;
-		try {
-			text = await response.text();
-		} catch (error) {
-			// The answer's body stalled or broke: as a lost answer when it was cut off, else no words.
-			if (signal?.aborted || bound.aborted) return cut(error);
-			text = "";
-		}
+		const { status } = got.value;
+		const text = decoder.decode(got.value.bytes);
 		let json: unknown;
 		try {
 			json = text === "" ? undefined : JSON.parse(text);
 		} catch {
 			json = undefined;
 		}
-		if (response.ok) return ok({ status: response.status, json });
+		if (status >= 200 && status < 300) return ok({ status, json });
 		const answer = (typeof json === "object" && json !== null ? json : {}) as { error?: string; code?: string; retry_after_seconds?: number };
-		const said = this.#clean(answer.error ?? (text.slice(0, 200) || response.statusText || "no words"));
+		const said = this.#clean(answer.error ?? (text.slice(0, 200) || STATUS_CODES[status] || "no words"));
 		const where = `${method} ${path}`;
-		if (response.status === 401) return fail("denied", `${where}: the phone harness refused the API key (401): ${said}`);
-		if (response.status === 403) return fail("denied", `${where}: ${said} (403)`);
+		if (status === 401) return fail("denied", `${where}: the phone harness refused the API key (401): ${said}`);
+		if (status === 403) return fail("denied", `${where}: ${said} (403)`);
 		if (answer.code === "phones_busy") {
-			const retry = answer.retry_after_seconds ?? Number(response.headers.get("retry-after"));
-			return fail("limit", `${where}: ${said}${Number.isFinite(retry) && retry > 0 ? `; try again in ${retry} s` : ""} (phones_busy)`);
+			const retry = answer.retry_after_seconds;
+			return fail("limit", `${where}: ${said}${typeof retry === "number" && Number.isFinite(retry) && retry > 0 ? `; try again in ${retry} s` : ""} (phones_busy)`);
 		}
 		if (answer.code === "session_limit") return fail("limit", `${where}: ${said} (session_limit)`);
-		if (response.status === 404) return fail("not_found", `${where}: ${said} (404)`);
-		const failed = vendorFail("phone-harness",`${where}: ${said} (${response.status}${answer.code ? `, ${answer.code}` : ""})`);
+		if (status === 404) return fail("not_found", `${where}: ${said} (404)`);
+		const failed = vendorFail("phone-harness",`${where}: ${said} (${status}${answer.code ? `, ${answer.code}` : ""})`);
 		// A 5xx is no refusal: a gateway may answer it for a request the service went on to act on.
-		return response.status >= 500 ? { ...failed, uncertain: true } : failed;
+		return status >= 500 ? { ...failed, uncertain: true } : failed;
 	}
 
 	async #session(id: string, signal?: AbortSignal, ms?: number): Promise<Result<Session>> {
@@ -829,8 +835,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		const posted = await this.#api("POST", "/sessions", { body, headers: { "Idempotency-Key": requestKey }, ...(signal ? { signal } : {}) });
 		const cancelled = !posted.ok && posted.error.code === "aborted";
 		let first = posted.ok ? sessionOf(posted.value.json, "POST /sessions") : undefined;
-		// Only a refusal (a 4xx, or phones_busy) says nothing was made. No answer, a cancel, a 5xx, or a 2xx with no
-		// session in it leaves the request uncertain: the service may have made the phone.
+		// Only a refusal (a 4xx, or phones_busy) says nothing was made. No answer, a cancel, a 5xx, a redirect, or a 2xx
+		// with no session in it leaves the request uncertain: the service may have made the phone.
 		const uncertain = posted.ok ? !first?.ok : posted.uncertain === true || cancelled;
 		if (uncertain) {
 			// Ask by its key, never POST again, before the key is forgotten. The ask is create's own, not under the
@@ -1157,7 +1163,8 @@ export class PhoneHarnessProvider implements ComputerProvider {
 		}
 		const { hello } = daemon.value;
 		if (hello.version !== this.#daemonVersion) return letGo(fail("refused", `hello: the daemon reports version ${hello.version}, expected ${this.#daemonVersion}`));
-		if (hello.protocol !== PROTOCOL_VERSION) return letGo(fail("refused", `hello: phoned speaks protocol ${hello.protocol}, and this provider ${PROTOCOL_VERSION}`));
+		const problem = helloProblem(hello.protocol, "provider");
+		if (problem) return letGo(fail("refused", `hello: phoned ${problem}`));
 		const client = new PhoneClient(daemon.value.client, release);
 		return ok({ client, hello, close: () => client.closed() });
 	}

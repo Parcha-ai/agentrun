@@ -105,7 +105,7 @@ async function storeWith(t, revision, launch, flows) {
   });
   await server.agents.create({ id: "agent-1", name: "Gateway" }, { id: "rev-1", kind: "agentic", body: { ...revision, ...(flows ? { learning: true } : {}) } });
   const seed = flows ? await landWorkflows(dir, "agent-1", flows) : undefined;
-  if (flows) await promoteChecked(server.settings, "agent-1", flows);
+  if (flows) await promoteChecked(server, "agent-1", flows);
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launch, ...(flows ? { learning: startAt(seed) } : {}) } });
   await server.flush?.();
   return { dir, server, store };

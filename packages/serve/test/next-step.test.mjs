@@ -20,10 +20,13 @@ const BOXES = BOX_IDS.join(", ");
 const DOCKER_PLACE = '"place": {"mode": "sandbox", "box": "docker"}';
 const ENABLE_DOCKER = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker";
 const DAEMON = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
-// Runs execute in docker, the VM box and daytona: a server with none names each, with its setting.
-const ENABLE_DAYTONA = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=daytona";
-const ENABLE_VM = `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM}`;
-const NO_BOX = `no box is set up on this server: docker is unavailable (${ENABLE_DOCKER}); ${VM} is unavailable (${ENABLE_VM}); daytona is unavailable (${ENABLE_DAYTONA})`;
+// A server with no box ready names each box AGENTRUN_BOXES lists, with its reason, then the boxes it does not list at
+// once, with the setting that lists them.
+const and = (ids) => new Intl.ListFormat("en", { type: "conjunction" }).format(ids);
+const UNLISTED = (ids) => `${and(ids)} are not enabled: start AgentRun with AGENTRUN_BOXES listing the boxes to set up`;
+const ALL_UNLISTED = UNLISTED(BOX_IDS);
+const OTHERS_UNLISTED = UNLISTED(BOX_IDS.filter((id) => id !== "docker"));
+const NO_BOX = `no box is set up on this server: ${ALL_UNLISTED}`;
 
 /** A fake `docker` first on PATH whose every call fails, as a CLI with no daemon answering does. */
 async function failingDocker(t) {
@@ -74,14 +77,17 @@ test("a place of the wrong shape is a 422 whose fix is the place to copy, and th
   }
 });
 
-test("bash on a runner, the browser in a sandbox and a workflow in one are 422s that say what to do, each with a fix that saves", async (t) => {
+test("bash on a runner, the browser in a sandbox and a workflow in one are 422s that say what to do, each with a fix that saves; bash with no place names a box", async (t) => {
   const { api } = await serve(t);
   const cases = [
-    [agent("shell", { tools: ["read", "bash"] }).definition, "definition.tools[1]", "bash runs only in a box, and this agent names no place, so it runs on the runner, which has no shell (a shell needs a sandbox computer), and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
-    [agent("shell-runner", { tools: ["read", "bash"], place: { mode: "runner" } }).definition, "definition.tools[1]", "bash runs only in a box, and this agent's place is the runner, which has no shell (a shell needs a sandbox computer), and new agents run on the runner, because the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
+    [agent("shell-runner", { tools: ["read", "bash"], place: { mode: "runner" } }).definition, "definition.tools[1]", "bash runs only in a box, and this agent's place is the runner, which has no shell (a shell needs a sandbox computer), and the docker box is unavailable here: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker. Do that, or keep this agent on the runner: name \"place\": {\"mode\": \"runner\"} and remove \"bash\" from definition.tools.", 'Remove "bash" from definition.tools.'],
     [agent("browsing", { tools: ["bash", "browser"], place: { mode: "sandbox", box: "docker" } }).definition, "definition.tools[1]", "browser does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.", 'Remove "browser" from definition.tools.'],
     [flowAgent("flow", undefined, { place: { mode: "sandbox", box: "docker" } }).definition, "definition.place", "A workflow runs on the runner here: its place is runner (or none), not sandbox on docker.", '"place": {"mode": "runner"}'],
   ];
+  // One with no place is refused at its place, naming a box: its fix lists what to set, picking none.
+  const shell = await api("POST", "/agents", { definition: agent("shell", { tools: ["read", "bash"] }).definition });
+  assert.equal(shell.status, 422, JSON.stringify(shell.body));
+  assert.deepEqual(shell.body.error.fields, [{ field: "definition.place", reason: "missing", message: "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell. docker: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker.", fix: "Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell." }]);
   for (const [definition, field, message, fix] of cases) {
     const refused = await api("POST", "/agents", { definition });
     assert.equal(refused.status, 422, JSON.stringify(refused.body));
@@ -109,11 +115,8 @@ test("a sandbox agent edited into a workflow with no place keeps its sandbox pla
 test("a box this server does not enable names the setting that enables it: in capabilities, the save's warning and the run's 409, each ending in one full stop", async (t) => {
   const { api } = await serve(t);
   const { places, tools } = (await api("GET", "/capabilities")).body;
-  assert.deepEqual(places.boxes, [
-    { id: "docker", available: false, state: "unavailable", reason: ENABLE_DOCKER },
-    { id: VM, available: false, state: "unavailable", reason: `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM}` },
-    { id: "daytona", available: false, state: "unavailable", reason: "not enabled on this server: start AgentRun with AGENTRUN_BOXES=daytona" },
-  ]);
+  assert.deepEqual(places.boxes, BOX_IDS.map((id) => ({ id, available: false, state: "unavailable", reason: `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${id}` })));
+  assert.equal(places.boxes[0].reason, ENABLE_DOCKER);
   const bash = tools.find((tool) => tool.name === "bash");
   assert.deepEqual([bash.available, bash.reason, bash.sandbox_only], [false, NO_BOX, true], JSON.stringify(bash));
   assert.equal(bash.summary, "Run a bash command in the run's box, from its work/, never on this server itself: an agent whose place is a sandbox names it, or one on the runner in Mode 2 (Archil), where it runs on Archil's serverless exec. Its output's tail; 120 s unless the call names a timeout, at most 600 s, or 295 s on Archil's exec (longer work: bash_background, in a box).");
@@ -135,7 +138,7 @@ test("a box this server does not enable names the setting that enables it: in ca
 test("the setting a box names keeps the boxes AGENTRUN_BOXES already lists", async () => {
   const offers = await placeOffers({ AGENTRUN_BOXES: "daytona" });
   assert.equal(offers.find((offer) => offer.id === "docker").reason, "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,daytona");
-  assert.equal(offers.find((offer) => offer.id === VM).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=${VM},daytona`);
+  assert.equal(offers.find((offer) => offer.id === VM).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=daytona,${VM}`);
 });
 
 test("docker enabled with no daemon answering: the box's reason says to start Docker or join the docker group, a Docker computer's 409 says there is no Docker here in one sentence, and the banner says no box is ready", async (t) => {
@@ -144,9 +147,8 @@ test("docker enabled with no daemon answering: the box's reason says to start Do
   const { api } = server;
   const { places, tools } = (await api("GET", "/capabilities")).body;
   assert.deepEqual(places.boxes.find((box) => box.id === "docker"), { id: "docker", available: false, state: "unavailable", reason: DAEMON });
-  const DAYTONA_TOO = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,daytona";
-  const VM_TOO = `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}`;
-  assert.equal(tools.find((tool) => tool.name === "bash").reason, `no box is set up on this server: docker is unavailable (${DAEMON}); ${VM} is unavailable (${VM_TOO}); daytona is unavailable (${DAYTONA_TOO})`);
+  assert.equal(places.boxes.find((box) => box.id === VM).reason, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}`);
+  assert.equal(tools.find((tool) => tool.name === "bash").reason, `no box is set up on this server: docker is unavailable (${DAEMON}); ${OTHERS_UNLISTED}`);
 
   const made = await api("POST", "/agents", agent("docked", { place: { mode: "sandbox", box: "docker" } }));
   // A place is its computer setting's view: a Docker computer with no daemon is refused in the words Settings → Computers says.
@@ -156,14 +158,14 @@ test("docker enabled with no daemon answering: the box's reason says to start Do
   assert.equal(run.body.error.message, said);
   assert.ok(!/[?.!]\.$/.test(run.body.error.message) && !run.body.error.message.includes("?"), run.body.error.message);
 
-  assert.equal(server.boxesLine, `Boxes: none is ready, so sandbox agents do not run here. docker: ${DAEMON}. ${VM}: ${VM_TOO}. daytona: ${DAYTONA_TOO}.`);
+  assert.equal(server.boxesLine, `Boxes: none is ready, so sandbox agents do not run here. docker: ${DAEMON}. ${OTHERS_UNLISTED}.`);
   const lines = banner({ url: server.url, baseUrl: server.baseUrl, data: server.data, token: server.token, source: "file", boxes: server.boxesLine });
   assert.equal(lines.at(-1), server.boxesLine, "the banner's last line");
 });
 
 test("the banner says in words which boxes are ready: none with nothing enabled, naming the setting; docker when the faux docker stands in for it", async (t) => {
   const none = await serve(t);
-  assert.equal(none.boxesLine, `Boxes: none is ready, so sandbox agents do not run here. docker: ${ENABLE_DOCKER}. ${VM}: ${ENABLE_VM}. daytona: ${ENABLE_DAYTONA}.`);
+  assert.equal(none.boxesLine, `Boxes: none is ready, so sandbox agents do not run here. ${ALL_UNLISTED}.`);
   const faux = await serve(t, { faux: new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname, fauxDocker: true });
   assert.equal(faux.boxesLine, "Boxes: docker is ready, so sandbox agents run their tools there. docker boxes have no network: a faux docker (tests).");
   const bash = (await faux.api("GET", "/capabilities")).body.tools.find((tool) => tool.name === "bash");
@@ -176,13 +178,14 @@ test("the banner's words for each mix of boxes: ready, listed and not ready", ()
   const rest = [off(VM, `not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}`), off("daytona", "needs DAYTONA_API_KEY")];
   assert.equal(boxesLine([docker, ...rest], new Set(["docker"])), "Boxes: docker is ready, so sandbox agents run their tools there.");
   assert.equal(boxesLine([docker, ...rest], new Set(["docker", "daytona"])), "Boxes: docker is ready, so sandbox agents run their tools there. daytona: needs DAYTONA_API_KEY.", "a listed box that is not ready says why");
-  assert.equal(boxesLine([off("docker", "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun"), ...rest], new Set(["docker"])), `Boxes: none is ready, so sandbox agents do not run here. docker: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun. ${VM}: not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,${VM}. daytona: needs DAYTONA_API_KEY.`);
-  // AGENTRUN_BOXES not set at all: docker alone, said to be on by default, or why new agents run on the runner.
+  assert.equal(boxesLine([off("docker", "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun"), ...rest], new Set(["docker"])), `Boxes: none is ready, so sandbox agents do not run here. docker: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun. ${OTHERS_UNLISTED}.`);
+  assert.equal(boxesLine([off("docker", "no daemon"), ...rest], new Set(["docker", "daytona"])), `Boxes: none is ready, so sandbox agents do not run here. docker: no daemon. daytona: needs DAYTONA_API_KEY. ${UNLISTED(BOX_IDS.filter((id) => id !== "docker" && id !== "daytona"))}.`, "each listed box in its own words, then the rest at once");
+  // AGENTRUN_BOXES not set at all: docker alone, said to be on by default, or why a new agent must name its place.
   const ON = "Boxes: docker (on by default; set AGENTRUN_BOXES to change).";
   assert.equal(boxesLine([docker, ...rest], new Set(["docker"]), "none", true), ON);
   assert.equal(boxesLine([{ ...docker, network: "none", network_reason: "AGENTRUN_BOX_ALLOW is none" }, ...rest], new Set(["docker"]), "none", true), `${ON} docker boxes have no network: AGENTRUN_BOX_ALLOW is none.`);
   const NO_DOCKER = "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun";
-  assert.equal(boxesLine([off("docker", NO_DOCKER), ...rest], new Set(["docker"]), "none", true), `Boxes: none, so new agents run on the runner. ${NO_DOCKER}.`);
+  assert.equal(boxesLine([off("docker", NO_DOCKER), ...rest], new Set(["docker"]), "none", true), `Boxes: none, so a new agent must name its place: a box, or the runner. ${NO_DOCKER}.`);
 });
 
 test("a read under learning/ names the learning route only where this server has it, and never one that answers 404", async (t) => {

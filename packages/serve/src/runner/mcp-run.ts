@@ -18,15 +18,16 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
 import { wireName } from "../catalog.js";
 import { mcpGateway, type McpGatewayOptions } from "../mcp-gateway.js";
-import { meterFor, publicMedia } from "../fal-price.js";
+import { falBills, meterNamed, publicMedia } from "../fal-price.js";
 import { FAUX_ENV } from "../model.js";
-import { fetchOptions } from "../web-fetch-direct.js";
+import { fetchOptions } from "../web-run.js";
 import { fakeSaveOptions, type WebFake } from "../web-fake.js";
 import type { SaveSlots } from "../web-save.js";
 import { dialAt, mcpServerAt, type OAuthNetwork, systemNetwork } from "../mcp-oauth.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
 import type { Store, TriggerSettings } from "../store/index.js";
 import { mcpNameOf } from "../tool-names.js";
+import { UNUSABLE, unconnectedWords } from "../mcp-probe.js";
 import { type ApprovalPrice, mcpToolName, permissionKeys, pinnedEffect, type ToolEffect } from "../tool-gate.js";
 import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
@@ -34,6 +35,7 @@ import { registryListing } from "../mcp-pin-first.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
 import { type HeldMcp, type HeldMcpTool, heldOrThrow } from "./held.js";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
+import { filedBy } from "../filed-tool.js";
 
 /** The GitHub App access for a claim (runner/github-app.ts githubAppAccess, tl-triggers'): the server's App, read from
  *  the store with the runner's seal key, bound to the repository the run's launch input names. */
@@ -88,6 +90,17 @@ export interface McpForClaimOptions {
   readonly media?: { readonly env: NodeJS.ProcessEnv; readonly web?: WebFake; readonly slots?: SaveSlots };
   /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
   readonly hold?: (values: string[]) => void;
+  /** The run's revision's own tool settings (body.toolSettings), where a tool's file setting is read (filed-tool.ts
+   *  filedBy): each answer of such a tool is filed whole in the run's files and the tool's result is its summary. A run's
+   *  own process passes none: its runner reads them from the revision it reads itself (run-child-host.ts). */
+  readonly toolSettings?: unknown;
+}
+
+/** What a spec builder gives a claim's MCP for its metered jobs (`capped` and `media`), the same for every builder:
+ *  whether its launch has a cap, and where a job's input media are read from: the run's eval web fake (`web`, as its
+ *  builder read the run's fakes, once), else the builder's `env`, in web_save's slots. */
+export function claimMetering(deps: { readonly env: NodeJS.ProcessEnv; readonly saveSlots?: SaveSlots }, web: WebFake | undefined, launch: { readonly maxCostUsd?: number | undefined }): Pick<McpForClaimOptions, "capped" | "media"> {
+  return { capped: launch.maxCostUsd !== undefined, media: { env: deps.env, ...(web ? { web } : {}), ...(deps.saveSlots ? { slots: deps.saveSlots } : {}) } };
 }
 
 /** A claim's MCP (AdapterRunSpec.mcp): what the loop reaches the gateway by, and the claim step's own hooks. */
@@ -95,6 +108,12 @@ export interface ClaimMcp {
   /** One host tool per pinned tool, under its wire name, on every harness. Each reaches the gateway only as the loop
    *  wraps it, behind the run's one gate (the gate before the intent); nothing else does. */
   readonly tools: readonly HostTool[];
+  /** The pinned servers whose credential comes from each run (a per_run server, a per-run Composio server) that this run
+   *  was handed none for (UNUSABLE.perRunMissing) when the claim opened them: every call of their tools is refused
+   *  unsent. mcpWhereHeld leaves their tools out where the harness takes its tools again at each claim. */
+  readonly unconnected: readonly string[];
+  /** The servers whose tools mcpWhereHeld left out of `tools` (of `unconnected`); none where it left none out. */
+  readonly leftOut?: readonly string[];
   /** A pinned tool's catalog name (`mcp:<server>/<tool>`) by its wire name; undefined for any other tool. */
   catalogOf(tool: string): string | undefined;
   /** The top-level arguments a pinned tool's listing declares (its inputSchema's `properties`, as the run's pin holds it
@@ -108,9 +127,10 @@ export interface ClaimMcp {
   /** A pinned tool's effect (`mcp:<server>/<tool>`), by its annotations as the pin holds them (tool-gate.ts toolEffect):
    *  what the gate's "allow reads" and a destructive call's card read; never a later listing. Undefined for any other. */
   effectOf(name: string): ToolEffect | undefined;
-  /** The claim step's credentials opened again on the same pin (an expired OAuth token refreshed), then the claim
-   *  confirmed: before a resumed loop's next model request. */
-  fresh(): Promise<void>;
+  /** The claim step's credentials opened again on the same pin (an expired OAuth token refreshed, a per_run one a
+   *  message handed), then the claim confirmed: before a resumed loop's next model request. Answers the servers still
+   *  handed no credential, as `unconnected` reads at the claim. */
+  fresh(): Promise<readonly string[]>;
   /** Drops every credential held: the pass ended, the claim is lost, or its signal aborted. */
   release(): void;
 }
@@ -182,12 +202,17 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     commit: () => <T>(change: (tx: unknown) => Promise<T>) => options.harness.commit(change as never, BACKGROUND_CONTEXT) as Promise<T>,
     ...(options.fetch ? { fetch: options.fetch } : {}),
     ...(options.callBounds ? { bounds: options.callBounds } : {}),
-    capped: () => options.capped !== false,
+    capped: options.capped !== false,
+    ...(options.toolSettings !== undefined ? { filed: filedBy(options.toolSettings) } : {}),
     ...(media ? { media: publicMedia(async () => (media.web ? fakeSaveOptions(media.web) : fetchOptions(media.env, FAUX_ENV)), media.slots) } : {}),
   });
   const catalog = new Map<string, string>();
   const declared = new Map<string, ReadonlySet<string>>();
   const tools: HostTool[] = [];
+  // A server the run was handed no credential for: the gateway refuses every call of it unsent, in those words, until a
+  // message hands one. Its tools are still listed here; mcpWhereHeld leaves them out where that is safe.
+  const unconnectedNow = () => Object.keys(pin).filter((server) => step.credentials[server]?.unopened === UNUSABLE.perRunMissing);
+  const unconnected = unconnectedNow();
   for (const [server, pinned] of Object.entries(pin)) {
     for (const tool of pinned.tools) {
       const name = mcpToolName(server, tool.name);
@@ -210,6 +235,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
   }
   return {
     tools,
+    unconnected,
     catalogOf: (tool) => catalog.get(tool),
     argumentsOf: (name) => declared.get(name),
     priceOf(name) {
@@ -217,11 +243,14 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
       const pinned = parsed && Object.hasOwn(pin, parsed.server) ? pin[parsed.server] : undefined;
       if (!pinned?.tools.some((tool) => tool.name === parsed!.tool)) return undefined;
       if (pinned.prices && Object.hasOwn(pinned.prices, parsed!.tool)) return pinned.prices[parsed!.tool]!;
-      // A metered server's job is priced from its input, when the call runs: no price to show before it.
-      return meterFor(pinned)?.bills(parsed!.tool) ? undefined : "not metered";
+      // fal's job is priced from its input when the call runs, after the person's allow.
+      return meterNamed(pinned.url, pinned.meter) && falBills(parsed!.tool) ? "priced by usage" : "not metered";
     },
     effectOf: (name) => pinnedEffect(pin, name),
-    fresh: () => step.fresh(),
+    fresh: async () => {
+      await step.fresh();
+      return unconnectedNow();
+    },
     release: () => held.abort(),
   };
 }
@@ -253,6 +282,7 @@ export function heldMcpOf(mcp: ClaimMcp, cut: (text: string) => string): HeldMcp
         },
       };
     }),
+    unconnected: [...mcp.unconnected],
     fresh: () => mcp.fresh(),
     release: async () => mcp.release(),
   };
@@ -270,6 +300,7 @@ export function claimMcpOfHeld(held: HeldMcp): ClaimMcp {
       replay: "never",
       call: (args, context) => tool.call(args, { ...(context.signal ? { signal: context.signal } : {}), ...(context.callId ? { callId: context.callId } : {}) }),
     })),
+    unconnected: held.unconnected ?? [],
     catalogOf: (tool) => byWire.get(tool)?.catalog,
     argumentsOf: (name) => {
       const declared = byCatalog.get(name)?.arguments;
@@ -283,8 +314,23 @@ export function claimMcpOfHeld(held: HeldMcp): ClaimMcp {
 }
 
 /** The claim's MCP where the run is: mcpForClaim with the runner's seal key, else its runner's (held.ts), the gateway's
- *  record of each call appended to the run's root through this process's own harness. */
-export async function mcpWhereHeld(options: Omit<McpForClaimOptions, "sealKey"> & { readonly sealKey: Buffer | undefined }): Promise<ClaimMcp | undefined> {
+ *  record of each call appended to the run's root through this process's own harness.
+ *  The tools of a server the run was handed no credential for (ClaimMcp.unconnected) are left out, so the model is never
+ *  offered a tool every call of which would be refused, and each such server is said once a claim, by `say` (the spec's
+ *  AdapterRun.phase: a row of the run's timeline); a message that hands the credential brings them back at the run's
+ *  next claim (the loop holds one that comes while a turn is going for the run's next turn, adapter-loop steer). Not for a harness whose tools are fixed at its thread's start (`toolsFixedAtStart`, AdapterFacts): left
+ *  out there, they would never come back, so they stay listed and their calls are refused unsent until the credential
+ *  comes. */
+export async function mcpWhereHeld(options: Omit<McpForClaimOptions, "sealKey"> & { readonly sealKey: Buffer | undefined; readonly say?: (words: string) => void; readonly toolsFixedAtStart?: boolean }): Promise<ClaimMcp | undefined> {
+  const { say, toolsFixedAtStart, ...rest } = options;
+  const mcp = await mcpHeld(rest);
+  if (!mcp || mcp.unconnected.length === 0 || toolsFixedAtStart) return mcp;
+  const out = new Set(mcp.unconnected);
+  for (const server of mcp.unconnected) say?.(unconnectedWords(server));
+  return { ...mcp, leftOut: mcp.unconnected, tools: mcp.tools.filter((tool) => !out.has(mcpNameOf(mcp.catalogOf(tool.name) ?? "")?.server ?? "")) };
+}
+
+async function mcpHeld(options: Omit<McpForClaimOptions, "sealKey"> & { readonly sealKey: Buffer | undefined }): Promise<ClaimMcp | undefined> {
   if (options.sealKey) return mcpForClaim({ ...options, sealKey: options.sealKey });
   const at = heldOrThrow("a run's MCP");
   const appendRoot = (entry: unknown) => options.harness.commit((async (tx: { appendEntry(conversation: number, entry: unknown): Promise<unknown> }) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, entry))) as never, BACKGROUND_CONTEXT) as Promise<void>;

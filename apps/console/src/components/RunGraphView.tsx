@@ -53,7 +53,7 @@ export type GraphActions = { onPause?: () => void; onResume?: () => void; busy?:
 
 /** A workflow run as a live graph: the totals, pause and resume, the graph with each node's and item's state, and the
  *  drawer for the node or item picked. */
-export function RunGraphView({ data, actions = {}, fileUrl, initial = null, lastRead }: { data: RunGraph; actions?: GraphActions; fileUrl: (ref: string) => string; initial?: Selection; lastRead?: number }) {
+export function RunGraphView({ data, actions = {}, fileUrl, initial = null, lastRead, shared = false }: { data: RunGraph; actions?: GraphActions; fileUrl: (ref: string) => string; initial?: Selection; lastRead?: number; shared?: boolean }) {
   const [selected, setSelected] = useState<Selection>(initial);
   const marks = useMemo(() => runMarks(data, selected), [data, selected]);
   const final = isFinal(data.run.status);
@@ -75,12 +75,27 @@ export function RunGraphView({ data, actions = {}, fileUrl, initial = null, last
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         <div className="min-h-[320px] min-w-0 flex-1 overflow-auto bg-[radial-gradient(hsl(var(--border))_1px,transparent_1px)] [background-size:22px_22px]">
           <div className="px-5 py-6 md:px-8">
+            {data.run.withheld && (
+              <p className="mb-4 border p-4 font-mono text-body text-muted-foreground" role="status">
+                This run's agent and revision are withheld: a saved secret is split across them, so neither is shown.
+              </p>
+            )}
+            {data.graph.withheld && (
+              <p className="mb-4 border p-4 font-mono text-body text-muted-foreground" role="status">
+                This run's workflow graph is withheld: a saved secret is split across two of its words, so none of them is shown.
+              </p>
+            )}
+            {typeof (data.nodes as unknown) === "string" && (
+              <p className="mb-4 border p-4 font-mono text-body text-muted-foreground" role="status">
+                This run's node states are withheld: a saved secret is split across them, so none is shown.
+              </p>
+            )}
             <WorkflowGraph graph={data.graph} marks={marks} onSelect={(hit) => setSelected((s) => (s && s.path === hit.path && (s.item ?? null) === hit.item ? null : hit))} label="The run's workflow graph" />
           </div>
         </div>
         {selected && (
           <div className="flex min-h-0 shrink-0 flex-col border-t lg:w-[460px] lg:border-l lg:border-t-0">
-            <NodeDrawer data={data} selected={selected} onSelect={setSelected} onClose={() => setSelected(null)} fileUrl={fileUrl} />
+            <NodeDrawer data={data} selected={selected} onSelect={setSelected} onClose={() => setSelected(null)} fileUrl={fileUrl} shared={shared} />
           </div>
         )}
       </div>

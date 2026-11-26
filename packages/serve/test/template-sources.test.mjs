@@ -28,6 +28,7 @@ const MANIFEST = `---
 name: notes-digest
 version: 1.0.0
 description: Reads your notes and sends one on.
+tools: []
 category: research
 tags: [notes, digest]
 mcp:

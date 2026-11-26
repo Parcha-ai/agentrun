@@ -1,15 +1,21 @@
 // Claude Code: ~/.claude/projects/<cwd slug>/<session id>.jsonl, its subagents' in <session id>/subagents/ (children).
 import { lstat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import { addRequest, setUsage } from "../counts.js";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { type Env, entries } from "../reader.js";
-import { argsOf, effortOf, INTERRUPTED, isObject, str, textOf } from "../text.js";
+import { addNew, ownerOf, type RecordIndex, recordIndex } from "../record-index.js";
+import { packed, packInto } from "../record-key.js";
+import type { Shape } from "../scan.js";
+import { argsOf, effortOf, FAILED, INTERRUPTED, isObject, str, textOf } from "../text.js";
 import type { Answer, SessionOf, ToolCall } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
 type Own = {
   /** This file's requests by key (keyOf), each a turn its later lines join. */
   keyed: Map<string, Answer>;
+  /** A totals read's instead: each request's index in its counts, by its key packed (packInto). */
+  indexes?: RecordIndex;
   /** The calls of requests that were copies, whose results are copies too. */
   copied: Set<string>;
   /** Its titles (titleRecord), and its records' uuids, for the summaries' leaves. */
@@ -42,16 +48,19 @@ const keyOf = (message: Record<string, unknown>, value: Record<string, unknown>)
   return id && request ? `${id}:${request}` : id;
 };
 
+const PACKED = packed();
+
 /** Claude Code's record; false for one read already (the import's earlier file, or this file's own repeat). */
 function record(value: Record<string, unknown>, at: number, { state, seen, keep, add }: ReadContext<Own>): boolean | void {
-  const { session, names, own } = state;
+  const { session, names, own, counts } = state;
   // Claude Code names a session's file for its id (<id>.jsonl): the file's own, whatever a record in it says. A resumed
   // session's file can open with records copied from the session it resumed, each still naming that one.
   if (!session.id) session.id = basename(session.file, ".jsonl");
   if (!session.cwd && str(value.cwd)) session.cwd = value.cwd as string;
   if (value.isSidechain === true) session.child = true;
-  if (TITLES.has(value.type as string)) return titleRecord(value, session, own.titles);
-  if (str(value.uuid)) own.titles.uuids.add(value.uuid as string);
+  // A totals read keeps no title, nor the uuids a summary's is checked against.
+  if (TITLES.has(value.type as string)) return counts ? undefined : titleRecord(value, session, own.titles);
+  if (str(value.uuid) && !counts) own.titles.uuids.add(value.uuid as string);
   if (value.type === "cost-state") {
     // The last one is the session's: unknown when the CLI could not price a model it used.
     session.costUsd = typeof value.totalCostUSD === "number" && Number.isFinite(value.totalCostUSD) && value.totalCostUSD >= 0 && value.hasUnknownModelCost !== true ? value.totalCostUSD : undefined;
@@ -83,7 +92,8 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
         name: String(b.name ?? ""),
         arguments: keep ? argsOf(b.input) : {},
       }));
-    for (const call of calls) names.set(call.id, call.name);
+    // A tool's name is for its result's turn: none is kept without turns.
+    if (keep) for (const call of calls) names.set(call.id, call.name);
     // The CLI's own turns (model <synthetic>): one marked an API error is a request that failed; any other ("No response
     // requested.") is no request, kept as the CLI's note.
     const failed = value.isApiErrorMessage === true;
@@ -97,12 +107,22 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
     // stream's start): the last line's usage is the request's.
     const key = keyOf(message, value);
     const usage = normalizeUsage("anthropic", message.usage);
-    const held = key ? own.keyed.get(key) : undefined;
+    // A request this file holds already, by its key: as its Answer, or a totals read's as its index in its counts (its
+    // model, usage and time alone), by its key packed. Started small: a session's file often holds a request or two, and
+    // its cursor keeps the index.
+    const indexes = counts ? (own.indexes ??= recordIndex(2)) : undefined;
+    const packed = indexes && key ? packInto(key, PACKED) : undefined;
+    const index = packed ? ownerOf(indexes!, packed) : -1;
+    const held = key && !counts ? own.keyed.get(key) : undefined;
     if (held) {
       if (keep) held.text = [held.text, text].filter(Boolean).join("\n");
       held.calls.push(...calls);
       if (uuid) held.uuids = [...(held.uuids ?? []), uuid];
       if (usage) held.usage = usage;
+      return;
+    }
+    if (index !== -1) {
+      if (usage) setUsage(counts!, index, usage);
       return;
     }
     // A request an earlier file of the import holds: counted there, never again; its calls' results are copies too. A
@@ -112,14 +132,18 @@ function record(value: Record<string, unknown>, at: number, { state, seen, keep,
       return false;
     }
     if (!key && !text && calls.length === 0) return;
-    const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
-    // Without turns, no answer text: the request is kept for its counts, in the result and the cursor alike.
-    const turn: Answer = { role: "assistant", text: keep ? text : "", calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: text || "API error" } : {}), ...mark };
-    if (key) {
-      own.keyed.set(key, turn);
-      seen.add(`m:${key}`);
+    if (counts) {
+      const added = addRequest(counts, session.model, usage, at);
+      // ownerOf found none above, and nothing has been added to this file's index since.
+      if (packed) addNew(indexes!, packed, added);
+    } else {
+      const effort = effortOf(value.perTurnEffort) ?? effortOf(value.effort);
+      // Without turns, no answer text: the request is kept for its counts, in the result and the cursor alike.
+      const turn: Answer = { role: "assistant", text: keep ? text : "", calls, at, ...(key ? { key } : {}), ...(session.model ? { model: session.model } : {}), ...(effort ? { effort } : {}), ...(usage ? { usage } : {}), ...(failed ? { error: keep ? text || "API error" : FAILED } : {}), ...mark };
+      if (key) own.keyed.set(key, turn);
+      add(turn);
     }
-    add(turn);
+    if (key) seen.add(`m:${key}`);
     return;
   }
   if (typeof message.content === "string") {
@@ -189,6 +213,27 @@ export async function childFiles(home: string, env?: Env): Promise<{ file: strin
 /** Claude Code's own directory: CLAUDE_CONFIG_DIR where the environment names it, else ~/.claude. */
 const configDir = (home: string, env?: Env): string => env?.CLAUDE_CONFIG_DIR || join(home, ".claude");
 
+/** The counts normalizeUsage takes from Anthropic's usage (usage.ts). */
+const USAGE = { input_tokens: true, output_tokens: true, cache_read_input_tokens: true, cache_creation_input_tokens: true, cache_creation: { ephemeral_1h_input_tokens: true } } as const;
+
+/** What record reads of a line in a totals read (LineSource.fields). A tool_result's content is left out: it is only the
+ *  result's turn's text, which a totals read keeps none of; so are a tool_use's input (its call's arguments, kept only
+ *  with turns), a thinking block's text, and every field record reads only with turns (titles, efforts). */
+const FIELDS = {
+  cwd: true,
+  isSidechain: true,
+  type: true,
+  uuid: true,
+  totalCostUSD: true,
+  hasUnknownModelCost: true,
+  isMeta: true,
+  isCompactSummary: true,
+  isVisibleInTranscriptOnly: true,
+  isApiErrorMessage: true,
+  requestId: true,
+  message: { model: true, id: true, usage: USAGE, content: [{ type: true, text: true, id: true, name: true, tool_use_id: true, is_error: true }] },
+} as const satisfies Shape;
+
 const spec: LineSource<"claude-code", Own> = {
   source: "claude-code",
   name: "Claude Code",
@@ -207,6 +252,8 @@ const spec: LineSource<"claude-code", Own> = {
   children: childFiles,
   start: () => ({ keyed: new Map(), copied: new Set(), titles: { summaries: [], uuids: new Set() } }),
   record,
+  totals: true,
+  fields: FIELDS,
   finish(out, turns, { state: { own } }) {
     const { titles } = own;
     const sourceTitle = titles.custom ?? titles.ai ?? titles.summaries.findLast(({ leaf }) => leaf === undefined || titles.uuids.has(leaf))?.title;
@@ -219,3 +266,5 @@ const spec: LineSource<"claude-code", Own> = {
 };
 
 export const claudeCode = lineReader(spec);
+/** The source as lineReader takes it (a test reads with it, its fields or not). */
+export const claudeCodeLines = spec;

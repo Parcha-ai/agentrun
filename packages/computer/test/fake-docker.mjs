@@ -1,6 +1,7 @@
 // A fake docker program under a temp dir, for DockerProvider's unit tests: it records each call's argv, keeps its
 // containers in a JSON file, and answers run, inspect, ps, stop, rm, info, image inspect, pull and exec (with the daemon's hello) as the
 // docker CLI does. An inspect --format renders each {{json .Path}} in it. No Docker and no daemon binary are needed.
+// Each call's environment is recorded too (envs()): its names, and the values of PATH, HOME, DOCKER_HOST and DOCKER_CONFIG.
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -10,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { checkAddress } from "../dist/docker/egress-table.js";
 import { DockerProvider } from "../dist/docker.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
+import { records } from "./jsonl.mjs";
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 export const HELLO = { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
@@ -101,7 +103,7 @@ export function container({ name, labels = {}, network = "none", running = true,
  * Self-contained: the fake docker program runs a copy of it for each docker run of a proxy.
  */
 export function proxyReport({
-	id, name, image = "node:22.23.4-bookworm-slim", labels = {}, entrypoint = ["node"], cmd, user = "1000:1000", running = true, exitCode = 0, network = "bridge", capDrop = ["ALL"], securityOpt = ["no-new-privileges"],
+	id, name, image = "node:22.23.4-bookworm-slim", labels = {}, entrypoint = ["node"], cmd, user = "1000:1000", running = true, exitCode = 0, network = "agentrun-egress", capDrop = ["ALL"], securityOpt = ["no-new-privileges"],
 	readonlyRootfs = true, privileged = false, mounts = [], logs = "", memory = 256 * 1024 * 1024, swap = memory, pids = 64, ipc = "private", cgroupns = "private",
 	logConfig = { Type: "json-file", Config: { "max-file": "2", "max-size": "1m" } }, period = 100_000, quota = 50_000, ulimits = [{ Name: "nofile", Hard: 1024, Soft: 1024 }],
 	created = "2026-01-01T00:00:00.000000000Z",
@@ -159,6 +161,11 @@ export function allowed({ name, allow, deadline = new Date(Date.now() + 600_000)
 	return { containers: [computer, ...made], volumes: [egressVolume({ computer: name, deadline, labels })] };
 }
 
+/** The provider's egress bridge as `docker network inspect` reports it once create made it; `patch` is merged over it. */
+export function egressNetwork(patch = {}) {
+	return { Name: "agentrun-egress", Id: idOf("agentrun-egress"), Scope: "local", Driver: "bridge", Internal: false, Options: { "com.docker.network.bridge.enable_icc": "false" }, Labels: { "agentrun.computer.egress-network": "1" }, ...patch };
+}
+
 /** A computer's egress volume as `docker volume inspect` reports it: its labels (the computer's, its deadline, the
  *  spec's) and when it was made. */
 export function egressVolume({ computer, deadline = new Date(Date.now() + 600_000).toISOString(), labels = {}, created = "2026-01-01T00:00:00Z" }) {
@@ -168,10 +175,10 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
 /**
  * Options: `running` is what a new container's inspect reports; `gone` makes stop and rm answer "No such container";
  * `containers` are there from the start; `patch` is merged over each new container (to make drift); `hello` over the
- * daemon's hello; `arch` is the architecture docker info reports, and `info` is merged over the rest of what it reports
+ * daemon's hello; `inspectFails` names whose inspect the daemon answers with an error (not "No such container"); `arch` is the architecture docker info reports, and `info` is merged over the rest of what it reports
  * (every limit enforced, seccomp builtin, no AppArmor); `vanish` names are listed by ps but gone by inspect; `noDaemon`
  * makes exec fail as when the daemon is missing; `user` is the provider's user option; `hold` names steps ("inspect",
- * "info", "hello", "logs") that wait, once called, until `proceed(step)`; "run" is a docker run that never answers, cut
+ * "info", "hello", "logs", "ps") that wait, once called, until `proceed(step)`; "run" is a docker run that never answers, cut
  * off before Docker looked at the name (`runHeld()` says it began). `desktop` is the provider's desktop option; `display`
  * is what the daemon's display does once process.start runs its X server: "up" (hello reports kind desktop and the
  * display's groups from then on), "exits" (the server ends at once, saying why on stderr), "never", or "stalls" (the
@@ -192,16 +199,28 @@ export function egressVolume({ computer, deadline = new Date(Date.now() + 600_00
  * "computer") makes that kind's `docker run` a CLI that never answers, whose container the daemon still makes after
  * the CLI is killed (by the caller's abort), once the cleanup that follows goes quiet, as a real daemon does with a
  * create already under way; `late()`
- * reads its marks. `sticky` lists name endings of containers `docker rm` never removes.
+ * reads its marks. `sticky` lists name endings of containers `docker rm` never removes. `removing` maps name endings to
+ * the milliseconds a container so named stays after the first `docker rm` of it, as when another removal of it was
+ * already under way: every rm of it answers as Docker does then (exit 1, "removal of container <key> is already in
+ * progress"), inspect finds it, status "removing", until that time is up, and null keeps it for good (a removal that
+ * never ends). `runFails` makes a computer's `docker run` make its container and then fail to start it, as Docker does
+ * when the runtime refuses it: exit 125, the container left Created. `networks` are the Docker
+ * networks there from the start, besides Docker's own ({ Name, ... } as `network inspect` reports one): none by default,
+ * so create makes the egress bridge, and a docker run on a network that is not there fails as Docker's does. One with
+ * `Late: true` is made by another create between this create's inspect and its own: inspect does not find it, and
+ * create finds it there. `networkNames()` reads the networks there besides Docker's own. `settleMs` and `settleQuietMs`
+ * are the provider's options of those names: a test of a removal that never ends sets the bound it waits out.
  */
-export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [], computerd = false } = {}) {
+export function fakeDocker({ running = true, gone = false, containers = [], patch = {}, hello = {}, arch = "x86_64", info = {}, vanish = [], noDaemon = false, user, hold = [], desktop, display = "up", binds = {}, daemonMode = 0o755, daemonCache, volumes = [], egress = "ready", proxyPatch = {}, proxyLocal, egressOptions, endpoint = "unix:///var/run/docker.sock", images, pull = "ok", volume, volumeRoots = {}, lateRun = null, sticky = [], removing = {}, runFails = false, computerd = false, networks = [], inspectFails = [], env, settleMs, settleQuietMs } = {}) {
 	const dir = mkdtempSync(join(tmpdir(), "computer-fake-docker-"));
 	dirs.push(dir);
 	const log = join(dir, "calls.jsonl");
 	const state = join(dir, "containers.json");
 	const volumeState = join(dir, "volumes.json");
 	const imageState = join(dir, "images.json");
+	const networkState = join(dir, "networks.json");
 	writeFileSync(imageState, JSON.stringify(images ?? null));
+	writeFileSync(networkState, JSON.stringify(networks));
 	const daemonPath = join(dir, "computerd");
 	// The provider copies its daemon into its cache directory, by default one under this temp dir, and binds the copy.
 	const cache = daemonCache ?? join(dir, "cache");
@@ -214,9 +233,9 @@ export function fakeDocker({ running = true, gone = false, containers = [], patc
 	// With `computerd`, every call but hello and ping goes to a fake computerd (fake-computerd.mjs) the fake's `run` starts for
 	// each computer: exec, files and processes run on this machine in the computer's own folders, over the real protocol.
 	const computerdModule = computerd ? fileURLToPath(new URL("./fake-computerd.mjs", import.meta.url)) : null;
-	const config = JSON.stringify({ computerd: computerdModule, dir, log, state, volumeState, imageState, volumeRoots, lateRun, sticky, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
+	const config = JSON.stringify({ computerd: computerdModule, dir, log, state, volumeState, imageState, networkState, volumeRoots, lateRun, sticky, removing, runFails, pull, running, gone, patch, binds, egress, proxyPatch, proxyLocal: proxyLocal ?? null, endpoint, hello: { ...HELLO, ...hello },
 		info: { Architecture: arch, SecurityOptions: ["name=seccomp,profile=builtin", "name=cgroupns"], MemoryLimit: true, SwapLimit: true, PidsLimit: true, CPUCfsQuota: true, CPUCfsPeriod: true, ServerVersion: "29.0.0", ...info },
-		vanish, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys", "apps"] } });
+		vanish, inspectFails, noDaemon, hold, display, desktopHello: { ...HELLO, ...hello, kind: "desktop", groups: [...HELLO.groups, "screen", "input.pointer", "input.keys", "apps"] } });
 	writeFileSync(
 		program,
 		`#!${process.execPath}
@@ -234,13 +253,20 @@ const report = ${report.toString()};
 const proxyReport = ${proxyReport.toString()};
 const args = process.argv.slice(2);
 appendFileSync(config.log, JSON.stringify(args) + "\\n");
-const load = () => JSON.parse(readFileSync(config.state, "utf8"));
+// The environment each call was started with: every name, and the values of those docker reads alone (envs()).
+appendFileSync(config.dir + "/envs.jsonl", JSON.stringify({ args, names: Object.keys(process.env).sort(), seen: Object.fromEntries(["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONFIG"].map((n) => [n, process.env[n] ?? null])) }) + "\\n");
+// A container whose removal (config.removing) has run its time is gone.
+const load = () => JSON.parse(readFileSync(config.state, "utf8")).filter((c) => !(typeof c.RemovalEnds === "number" && c.RemovalEnds <= Date.now()));
 const save = (all) => replace(config.state, JSON.stringify(all));
 const loadVolumes = () => JSON.parse(readFileSync(config.volumeState, "utf8"));
 const saveVolumes = (all) => replace(config.volumeState, JSON.stringify(all));
 // The images on the host, or null when every image is.
 const loadImages = () => JSON.parse(readFileSync(config.imageState, "utf8"));
 const saveImages = (all) => replace(config.imageState, JSON.stringify(all));
+// The networks besides Docker's own (bridge, host, none), which are always there.
+const loadNetworks = () => JSON.parse(readFileSync(config.networkState, "utf8"));
+const saveNetworks = (all) => replace(config.networkState, JSON.stringify(all));
+const networkThere = (name) => ["bridge", "host", "none"].includes(name) || loadNetworks().some((n) => n.Name === name);
 // A container docker run made: saved and its id printed, or, for config.lateRun's kind, a CLI that never answers while
 // the daemon (a detached process here) still makes the container after the CLI is killed: once the cleanup that follows
 // has gone quiet (no docker call for 150 ms), so it lands after the provider's first removal looked and found nothing.
@@ -321,6 +347,12 @@ switch (args[0]) {
 			process.stderr.write('docker: Error response from daemon: Conflict. The container name "/' + name + '" is already in use by container "' + holder.Id + '". You have to remove (or rename) that container to be able to reuse that name.\\n');
 			process.exit(125);
 		}
+		// A network that is not there, as Docker refuses it before it makes anything.
+		const on = flags["--network"]?.[0];
+		if (on !== undefined && !networkThere(on)) {
+			process.stderr.write("docker: Error response from daemon: failed to set up container networking: network " + on + " not found\\n");
+			process.exit(125);
+		}
 		const labels = Object.fromEntries(flags["--label"].map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]));
 		const parsed = flags["--mount"].map((m) => Object.fromEntries(m.split(",").map((p) => (p.includes("=") ? [p.slice(0, p.indexOf("=")), p.slice(p.indexOf("=") + 1)] : [p, ""]))));
 		// An image not on the host: --pull never fails as Docker does; any other run pulls it first.
@@ -396,6 +428,13 @@ switch (args[0]) {
 			}
 			made.Computerd = { pid: init.pid, socket };
 		}
+		// config.runFails: the container is made, and the runtime refuses to start it.
+		if (config.runFails) {
+			Object.assign(made.State, { Running: false, Status: "created", ExitCode: 128, Error: "the fake runtime refuses it" });
+			save([...load(), merge(made, config.patch)]);
+			process.stderr.write("docker: Error response from daemon: failed to create task for container: OCI runtime create failed: the fake runtime refuses it\\n");
+			process.exit(125);
+		}
 		commit(merge(made, config.patch), "computer");
 		break;
 	}
@@ -403,6 +442,10 @@ switch (args[0]) {
 		const all = load();
 		let missing;
 		for (const key of args.slice(5)) {
+			if (config.inspectFails.includes(key)) {
+				process.stderr.write("Error response from daemon: the daemon is busy and did not answer for " + key + "\\n");
+				process.exit(1);
+			}
 			const found = config.vanish.includes(key) ? undefined : find(all, key);
 			if (found) process.stdout.write(rendered(args[4], found) + "\\n");
 			else missing = key;
@@ -410,22 +453,48 @@ switch (args[0]) {
 		if (missing) noSuch(missing);
 	}); break;
 	case "ps": {
-		const names = args.includes("{{.Names}}");
-		for (const c of load()) {
-			if (hasLabels(c.Config.Labels)) process.stdout.write((names || config.vanish.includes(c.Name.slice(1)) ? c.Name.slice(1) : c.Id) + "\\n");
-		}
+		// hold "ps": a list that answers only once proceed("ps") is called, so a test can look between a caller's calls.
+		held("ps", () => {
+			const names = args.includes("{{.Names}}");
+			for (const c of load()) {
+				if (hasLabels(c.Config.Labels)) process.stdout.write((names || config.vanish.includes(c.Name.slice(1)) ? c.Name.slice(1) : c.Id) + "\\n");
+			}
+		});
 		break;
 	}
 	case "stop": case "rm": {
-		if (config.gone) noSuch(args.at(-1));
-		const all = load();
-		const found = find(all, args.at(-1));
-		// The computer's own init (config.computerd), and every process it started, end with it.
-		if (found?.Computerd && !(args[0] === "rm" && config.sticky.some((ending) => found.Name.endsWith(ending)))) { try { process.kill(found.Computerd.pid, "SIGTERM"); } catch {} }
-		// config.sticky: name endings of containers rm never removes, ones Docker keeps (a daemon stuck in its removal).
-		if (args[0] === "rm" && !(found && config.sticky.some((ending) => found.Name.endsWith(ending)))) save(all.filter((c) => c !== found));
-		else if (found) { Object.assign(found.State, { Running: false, Status: "exited" }); save(all); }
-		process.stdout.write(args.at(-1) + "\\n");
+		// Each container named, as Docker's CLI takes several: every one is asked, the ones it could not end are said on
+		// stderr, and the call exits 1 when any was.
+		const keys = args.slice(1).filter((arg) => !arg.startsWith("--"));
+		let failed = false;
+		for (const key of keys) {
+			if (config.gone) {
+				process.stderr.write("Error response from daemon: No such container: " + key + "\\n");
+				failed = true;
+				continue;
+			}
+			const all = load();
+			const found = find(all, key);
+			// config.removing: a container another removal of which is under way, which Docker refuses to remove twice.
+			const removing = found && args[0] === "rm" ? Object.entries(config.removing).find(([ending]) => found.Name.endsWith(ending)) : undefined;
+			if (removing) {
+				if (found.RemovalEnds === undefined) {
+					found.RemovalEnds = removing[1] === null ? null : Date.now() + removing[1];
+					Object.assign(found.State, { Running: false, Status: "removing" });
+					save(all);
+				}
+				process.stderr.write("Error response from daemon: removal of container " + key + " is already in progress\\n");
+				failed = true;
+				continue;
+			}
+			// The computer's own init (config.computerd), and every process it started, end with it.
+			if (found?.Computerd && !(args[0] === "rm" && config.sticky.some((ending) => found.Name.endsWith(ending)))) { try { process.kill(found.Computerd.pid, "SIGTERM"); } catch {} }
+			// config.sticky: name endings of containers rm never removes, ones Docker keeps (a daemon stuck in its removal).
+			if (args[0] === "rm" && !(found && config.sticky.some((ending) => found.Name.endsWith(ending)))) save(all.filter((c) => c !== found));
+			else if (found) { Object.assign(found.State, { Running: false, Status: "exited" }); save(all); }
+			process.stdout.write(key + "\\n");
+		}
+		if (failed) process.exit(1);
 		break;
 	}
 	case "image": {
@@ -485,6 +554,28 @@ switch (args[0]) {
 		} else { process.stderr.write("unexpected docker volume call\\n"); process.exit(2); }
 		break;
 	}
+	case "network": {
+		const name = args.at(-1);
+		const all = loadNetworks();
+		const found = all.find((n) => n.Name === name);
+		if (args[1] === "inspect") {
+			if (!found || found.Late) { process.stderr.write("Error response from daemon: network " + name + " not found\\n"); process.exit(1); }
+			process.stdout.write(JSON.stringify(found) + "\\n");
+		} else if (args[1] === "create") {
+			if (found) {
+				// A Late network is one another create made between this create's inspect and its own: there from now on.
+				if (found.Late) { delete found.Late; saveNetworks(all); }
+				process.stderr.write("Error response from daemon: network with name " + name + " already exists\\n");
+				process.exit(1);
+			}
+			const values = (flag) => args.flatMap((arg, i) => (arg === flag ? [args[i + 1]] : []));
+			const pairs = (flag) => Object.fromEntries(values(flag).map((p) => [p.slice(0, p.indexOf("=")), p.slice(p.indexOf("=") + 1)]));
+			const made = { Name: name, Id: createHash("sha256").update(name).digest("hex"), Scope: "local", Driver: values("--driver")[0] ?? "bridge", Internal: args.includes("--internal"), Options: pairs("--opt"), Labels: pairs("--label") };
+			saveNetworks([...all, made]);
+			process.stdout.write(made.Id + "\\n");
+		} else { process.stderr.write("unexpected docker network call\\n"); process.exit(2); }
+		break;
+	}
 	case "exec": {
 		if (config.noDaemon) { process.stderr.write("OCI runtime exec failed: no such file or directory\\n"); process.exit(126); }
 		let buffered = "";
@@ -528,11 +619,15 @@ switch (args[0]) {
 `,
 		{ mode: 0o755 },
 	);
-	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
-	const names = () => JSON.parse(readFileSync(state, "utf8")).map((c) => c.Name.slice(1));
+	// The logs each call appends to are read by records(): only whole lines, never one a call is still writing.
+	const calls = () => records(log);
+	/** Each call's environment, as the program recorded it: { args, names, seen } (seen: PATH, HOME, DOCKER_HOST, DOCKER_CONFIG). */
+	const envs = () => records(join(dir, "envs.jsonl"));
+	const names = () => JSON.parse(readFileSync(state, "utf8")).filter((c) => !(typeof c.RemovalEnds === "number" && c.RemovalEnds <= Date.now())).map((c) => c.Name.slice(1));
 	const proceed = (step) => writeFileSync(join(dir, `proceed-${step}`), "");
-	const started = () => (existsSync(join(dir, "started.jsonl")) ? readFileSync(join(dir, "started.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
+	const started = () => records(join(dir, "started.jsonl"));
 	const volumeNames =() => JSON.parse(readFileSync(volumeState, "utf8")).map((v) => v.Name);
+	const networkNames = () => JSON.parse(readFileSync(networkState, "utf8")).map((n) => n.Name);
 	/** Changes a container in the fake's state, by name: what Docker would do under the provider (a proxy that crashed). */
 	const alter = (name, change) => {
 		const all = JSON.parse(readFileSync(state, "utf8"));
@@ -540,23 +635,32 @@ switch (args[0]) {
 		writeFileSync(`${state}.next`, JSON.stringify(all));
 		renameSync(`${state}.next`, state);
 	};
+	/** Puts containers (and volumes) on the fake host as Docker would have made them meanwhile: a create another process
+	 *  finished while a caller was between its calls. */
+	const add = (containers = [], volumes = []) => {
+		for (const [file, more] of [[state, containers], [volumeState, volumes]]) {
+			if (more.length === 0) continue;
+			writeFileSync(`${file}.next`, JSON.stringify([...JSON.parse(readFileSync(file, "utf8")), ...more]));
+			renameSync(`${file}.next`, file);
+		}
+	};
 	// The host the provider looks at for a container's signs is a clean fake root, so these tests run the same inside a
 	// container; egressOptions.hostRoot replaces it.
 	const hostRoot = join(dir, "host-root");
 	mkdirSync(hostRoot);
-	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }) };
+	const options = { daemonPath, daemonCache: cache, docker: program, ...(user === undefined ? {} : { user }), ...(desktop === undefined ? {} : { desktop }), egress: { hostRoot, ...egressOptions }, ...(volume === undefined ? {} : { volume }), ...(env === undefined ? {} : { env }), ...(settleMs === undefined ? {} : { settleMs }), ...(settleQuietMs === undefined ? {} : { settleQuietMs }) };
 	// `options` makes a fresh provider over the same Docker: another process's.
 	/** lateRun's marks: whether the daemon's late create has begun, and the container it made (its name), if it did. */
 	const late = () => ({ started: existsSync(join(dir, "late-started")), committed: existsSync(join(dir, "late-committed")) ? readFileSync(join(dir, "late-committed"), "utf8").replace(/^\//, "") : undefined });
 	const runHeld = () => existsSync(join(dir, "run-held"));
-	return { provider: new DockerProvider(options), options, calls, names, volumeNames, alter, daemonPath, bound, cache, program, proceed, started, late, runHeld };
+	return { provider: new DockerProvider(options), options, calls, envs, names, volumeNames, networkNames, alter, add, daemonPath, bound, cache, program, proceed, started, late, runHeld };
 }
 
-/** The docker calls that delete computer `name` with nothing else of its own: rm it, then look for its egress proxy and
- *  its volume by their label, and find none. */
+/** The docker calls that delete computer `name` with nothing else of its own: look for its egress proxy by its label and
+ *  find none, rm it, then look for its volume by its label and find none. */
 export const removal = (name) => [
-	["rm", "--force", "--volumes", name],
 	["ps", "-a", "--no-trunc", "--filter", `label=agentrun.computer.egress=${name}`, "--format", "{{.ID}}"],
+	["rm", "--force", "--volumes", name],
 	["volume", "ls", "--filter", `label=agentrun.computer.egress=${name}`, "--format", "{{.Name}}"],
 ];
 

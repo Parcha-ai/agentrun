@@ -281,15 +281,15 @@ test("a refusal read the token store never answers holds create no later than cr
 });
 
 // A provider is given no dial in a runner apart from the server (serve's runner subcommand, and the container image's
-// default server-and-runner): the refusal names the one-line fix in the words a paired computer's refusal gives
-// (serve's workspace/attached-computers.ts ONE_PROCESS_FIX).
-test("a dial host's provider given no dial refuses create in its own words, of the process and its fix, before the vendor is called", async () => {
+// default server-and-runner) that relays no socket: the refusal names both fixes in the words a paired computer's
+// refusal gives (serve's workspace/attached-computers.ts RELAY_FIX, then ONE_PROCESS_FIX): the relay first.
+test("a dial host's provider given no dial refuses create in its own words, of the process and its fixes, before the vendor is called", async () => {
 	const { fake } = fakeDialHost({ daemon: DAEMON_BYTES });
 	const refused = await create(new HostedProvider(fake.host, { daemonPath: DAEMON_PATH }));
 	assert.equal(refused.error?.code, "refused");
 	assert.equal(
 		refused.error.message,
-		"Fakehost machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)",
+		"Fakehost machines dial in to this server, and this runner runs in a process of its own and relays no machine's socket: give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)",
 	);
 	assert.equal(fake.creates(), 0);
 });
@@ -340,9 +340,11 @@ test("a machine that never dials is deleted, its token revoked, and create fails
 	assert.deepEqual(fake.live(), [], "the machine was deleted");
 });
 
-test("a machine that never dials: the timeout carries the host's dialLog, its last 10 lines within 800 characters, or that agentrun-dial never started; a dialLog that fails, or none, keeps the message", { timeout: 30_000 }, async () => {
+test("a machine that never dials: the timeout leads with the host's dialLog, its last 10 lines within 800 characters, or that agentrun-dial never started; a dialLog that fails, or none, keeps the message", { timeout: 30_000 }, async () => {
 	const DIALED = "did not dial ws://127.0.0.1:8080/v2/computers/attach within 0.05 s: the machine must reach that address";
-	const SAID = "; agentrun-dial said: ";
+	const SAID = "agentrun-dial said: ";
+	/** What agentrun-dial said, as the words lead with it: from SAID to the name of the machine that did not dial. */
+	const saidOf = (message) => message.slice(message.indexOf(SAID) + SAID.length, message.search(/; computer-[0-9a-f]{12} did not dial/));
 	// A fake that never dials: create gives up at createMs, so these wait 50 ms each.
 	const QUICK = { timeouts: { ...TIMEOUTS, createMs: 50 } };
 	const lines = Array.from({ length: 15 }, (_, at) => `line ${at + 1}`);
@@ -355,7 +357,7 @@ test("a machine that never dials: the timeout carries the host's dialLog, its la
 	const failed = await create(said.provider);
 	assert.equal(failed.error?.code, "timeout");
 	assert.ok(failed.error.message.includes(DIALED), failed.error.message);
-	assert.ok(failed.error.message.endsWith(`${SAID}${lines.slice(5).join(" | ")}`), failed.error.message);
+	assert.equal(saidOf(failed.error.message), lines.slice(5).join(" | "), failed.error.message);
 	assert.equal(asked.length, 1, "asked once, at the timeout");
 	assert.equal(typeof asked[0], "string");
 	assert.deepEqual(said.fake.live(), [], "the machine was deleted");
@@ -363,7 +365,7 @@ test("a machine that never dials: the timeout carries the host's dialLog, its la
 	const long = setup({ dials: false }, QUICK);
 	long.fake.host.dialLog = async () => `start\n${"x".repeat(2_000)}y\n`;
 	const cut = await create(long.provider);
-	const tail = cut.error.message.slice(cut.error.message.indexOf(SAID) + SAID.length);
+	const tail = saidOf(cut.error.message);
 	assert.equal(tail.length, 800, "the last 800 characters");
 	assert.ok(tail.endsWith("xy"));
 
@@ -373,19 +375,19 @@ test("a machine that never dials: the timeout carries the host's dialLog, its la
 	const leaky = setup({ dials: false }, QUICK);
 	leaky.fake.host.dialLog = async () => `sent ${TOKEN}\n${TOKEN} was refused\n`;
 	const redacted = await create(leaky.provider);
-	assert.ok(redacted.error.message.endsWith(`${SAID}sent <token> | <token> was refused`), redacted.error.message);
+	assert.equal(saidOf(redacted.error.message), "sent <token> | <token> was refused", redacted.error.message);
 	// A longer word whose tail reads like a token is no token: it is left whole.
 	const WORD = `restart_${"a".repeat(43)}`;
 	const wordy = setup({ dials: false }, QUICK);
 	wordy.fake.host.dialLog = async () => `${WORD} AGENTRUN_ATTACH_TOKEN=${TOKEN}\n`;
 	const kept = await create(wordy.provider);
-	assert.ok(kept.error.message.endsWith(`${SAID}${WORD} AGENTRUN_ATTACH_TOKEN=<token>`), kept.error.message);
+	assert.equal(saidOf(kept.error.message), `${WORD} AGENTRUN_ATTACH_TOKEN=<token>`, kept.error.message);
 
 	const never = setup({ dials: false }, QUICK);
 	never.fake.host.dialLog = async () => undefined;
 	const silent = await create(never.provider);
 	assert.equal(silent.error?.code, "timeout");
-	assert.ok(silent.error.message.endsWith("; agentrun-dial never started"), silent.error.message);
+	assert.match(silent.error.message, /: agentrun-dial never started; computer-[0-9a-f]{12} did not dial/, silent.error.message);
 
 	// A cancel while the log read stalls ends the wait at once: the read never holds create's cleanup back. The read's
 	// bound is ten minutes, so a cancel that failed to cut it would hang into the test's own 30 s bound and fail there.
@@ -408,6 +410,112 @@ test("a machine that never dials: the timeout carries the host's dialLog, its la
 		assert.doesNotMatch(kept.error.message, /agentrun-dial said|never started|the toolbox is down/);
 		assert.deepEqual(plain.fake.live(), []);
 	}
+});
+
+/** agentrun-dial's words for a fetch the relay dropped in TLS, as it writes them. */
+const CURL_35 = "curl: (35) TLS connect error: error:0A000126:SSL routines::unexpected eof while reading";
+const FETCH_FAILED = `${CURL_35}\nagentrun-dial: fetching the daemon from http://127.0.0.1:8080/v2/computers/daemon?arch=amd64 failed: curl exit 35, after 4 tries\n`;
+
+test("a dial host whose agentrun-dial exits before attaching fails create within a poll, not at createMs, carrying its exit and log; a sha256 refusal (4) and a server refusal (7) are never started again", { timeout: 30_000 }, async () => {
+	for (const [exit, log] of [
+		[4, "agentrun-dial: the daemon from http://127.0.0.1:8080/v2/computers/daemon?arch=amd64 reads sha256 ab, not cd, so nothing runs\n"],
+		[7, "agentrun-dial: fetching the daemon from http://127.0.0.1:8080/v2/computers/daemon?arch=amd64 failed: the server answered HTTP 401\n"],
+	]) {
+		const { fake, provider, tokens } = setup({ starts: [{ exit, log }] }, { timeouts: { ...TIMEOUTS, createMs: 10_000, pollMs: 10 } });
+		const began = Date.now();
+		const failed = await create(provider);
+		assert.equal(failed.ok, false);
+		assert.ok(Date.now() - began < 1_000, `failed in ${Date.now() - began} ms, not at createMs`);
+		assert.equal(failed.error.code, "refused");
+		assert.ok(failed.error.message.includes(`agentrun-dial said: ${log.trim()}; `), failed.error.message);
+		assert.match(failed.error.message, new RegExp(`computer-[0-9a-f]{12} did not dial ws://127\\.0\\.0\\.1:8080/v2/computers/attach: agentrun-dial exited ${exit}: the machine must reach that address`));
+		assert.deepEqual(fake.redials, [], `exit ${exit} is not started again`);
+		const [, request] = fake.calls.find(([what]) => what === "create");
+		assert.equal(tokens.check(request.boot.env.AGENTRUN_ATTACH_TOKEN), undefined, "its token is revoked");
+		assert.deepEqual(fake.live(), [], "the machine was deleted");
+	}
+});
+
+test("an agentrun-dial that exits 3 (its fetch failed) or 5 (init never listened) is started once more in the same machine, and the machine that dials then is returned, with a note naming the first exit", async () => {
+	for (const exit of [3, 5]) {
+		const { fake, provider, hub } = setup({ starts: [{ exit, log: FETCH_FAILED }, "dials"] }, { timeouts: { ...TIMEOUTS, createMs: 10_000 } });
+		const ref = made(await create(provider));
+		assert.equal(fake.creates(), 1, "one machine");
+		assert.deepEqual(fake.redials, [ref.id], "agentrun-dial started once more, in it");
+		assert.equal(hub.online(ref.name), true);
+		const notes = ref.notes ?? [];
+		assert.equal(notes.filter((note) => note.includes("started once more")).length, 1, JSON.stringify(notes));
+		assert.ok(notes.some((note) => note.startsWith(`agentrun-dial's first start in ${ref.name} exited ${exit}`) && note.includes(CURL_35)), JSON.stringify(notes));
+		made(await provider.release(ref, "delete"));
+		assert.deepEqual(fake.live(), []);
+	}
+});
+
+test("an agentrun-dial that exits 3 again after its second start fails create, naming both exits; it is started once more at most", async () => {
+	const { fake, provider } = setup({ starts: [{ exit: 3, log: FETCH_FAILED }, { exit: 3, log: FETCH_FAILED }, "dials"] }, { timeouts: { ...TIMEOUTS, createMs: 10_000 } });
+	const failed = await create(provider);
+	assert.equal(failed.ok, false);
+	assert.equal(failed.error.code, "refused");
+	assert.equal(fake.redials.length, 1);
+	assert.match(failed.error.message, /agentrun-dial exited 3, and its first start exited 3 before it was started once more/);
+	assert.deepEqual(fake.live(), []);
+});
+
+test("a dial host's agentrun-dial that is alive and writing past createMs is waited for, up to twice createMs; a silent one is not", { timeout: 30_000 }, async () => {
+	const QUICK = { timeouts: { ...TIMEOUTS, createMs: 400, pollMs: 5 } };
+	// One line every 20 ms: a fetch it is still trying, then init starting.
+	const writing = (ms) => Array.from({ length: Math.floor(ms / 20) + 1 }, (_, at) => `agentrun-dial: try ${at + 1}`).join("\n");
+	const late = setup({ starts: [{ log: writing, dialsAfterMs: 600 }] }, QUICK);
+	const began = Date.now();
+	const ref = made(await create(late.provider));
+	assert.ok(Date.now() - began >= 600, "it dialed past createMs, and was waited for");
+	made(await late.provider.release(ref, "delete"));
+
+	const never = setup({ starts: [{ log: writing }] }, QUICK);
+	const start = Date.now();
+	// Aborted at 3 s: a wait with no cap ends "aborted", never "timeout".
+	const capped = await never.provider.create(SPEC, { requestId: `dial-${++requests}`, signal: AbortSignal.timeout(3_000) });
+	const took = Date.now() - start;
+	assert.equal(capped.error?.code, "timeout");
+	assert.ok(took >= 800 && took < 3_000, `ended at twice createMs: ${took} ms`);
+	assert.match(capped.error.message, /did not dial ws:\/\/127\.0\.0\.1:8080\/v2\/computers\/attach within 0\.8 s/);
+	assert.deepEqual(never.fake.live(), []);
+
+	const silent = setup({ starts: [{ log: "agentrun-dial: waiting\n" }] }, QUICK);
+	const quiet = Date.now();
+	const ended = await create(silent.provider);
+	assert.equal(ended.error?.code, "timeout");
+	assert.ok(Date.now() - quiet < 800, `a silent one ends at createMs: ${Date.now() - quiet} ms`);
+	assert.match(ended.error.message, /within 0\.4 s/);
+});
+
+test("a slow read of the dial log holds no poll back: a machine that dials while it runs is opened at once, never timed out", { timeout: 30_000 }, async () => {
+	// The step's first read starts at 600 ms (a step before createMs) and answers at 1,200 ms; the machine dials at 700.
+	const slow = setup({ starts: [{ log: "agentrun-dial: try 1", logMs: 600, dialsAfterMs: 700 }] }, { timeouts: { ...TIMEOUTS, createMs: 800, pollMs: 5 } });
+	const began = Date.now();
+	const ref = made(await create(slow.provider));
+	assert.ok(Date.now() - began < 1_100, `opened as it dialed, not after the read: ${Date.now() - began} ms`);
+	assert.equal(slow.fake.live().length, 1, "the machine that dialed is kept");
+	made(await slow.provider.release(ref, "delete"));
+});
+
+test("a machine that dials while the dial log is read at the deadline is opened, not timed out and deleted", { timeout: 30_000 }, async () => {
+	// The reads run from 300 to 600 ms and from 600 to 900, past createMs (400); the machine dials at 450.
+	const late = setup({ starts: [{ log: "agentrun-dial: try 1", logMs: 300, dialsAfterMs: 450 }] }, { timeouts: { ...TIMEOUTS, createMs: 400, pollMs: 5 } });
+	const ref = made(await create(late.provider));
+	assert.equal(late.fake.live().length, 1, "the machine that dialed is kept");
+	made(await late.provider.release(ref, "delete"));
+});
+
+test("the dial failure's words begin with what agentrun-dial said: its curl line is in the first 200 characters, for an exit and for a timeout", async () => {
+	const exited = setup({ starts: [{ exit: 4, log: FETCH_FAILED }] }, { attachEgress: "192.0.2.40:18443" });
+	const early = await create(exited.provider);
+	assert.ok(early.error.message.slice(0, 200).includes(CURL_35), early.error.message);
+	const silent = setup({ dials: false }, { attachEgress: "192.0.2.40:18443", timeouts: { ...TIMEOUTS, createMs: 50 } });
+	silent.fake.host.dialLog = async () => FETCH_FAILED;
+	const late = await create(silent.provider);
+	assert.equal(late.error.code, "timeout");
+	assert.ok(late.error.message.slice(0, 200).includes(CURL_35), late.error.message);
 });
 
 test("attachEgress: the machine is booted with AGENTRUN_ATTACH_EGRESS beside the five names, one that never dials fails naming the relay too, and a malformed one is refused at construction", async () => {

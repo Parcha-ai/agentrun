@@ -10,12 +10,22 @@ export type ServerError = Record<string, unknown>;
 /** The most of the server's reason a message carries. */
 export const REASON_CHARS = 300;
 
-/** The server's reason as a message's end: `: <its message>`, on one line, at most REASON_CHARS characters (code points);
- *  empty when the error object holds no message. `error` is the one the client keeps, the key already cut from it. */
+/** The characters a reason keeps as one space: every whitespace run is one. Spelled out, not \s, so the Python client's
+ *  rule (python/agentrun/_errors.py) is the same character for character. */
+const SPACES = /[\t\n\v\f\r \u{85}\u{A0}\u{1680}\u{2000}-\u{200A}\u{2028}\u{2029}\u{202F}\u{205F}\u{3000}]+/gu;
+/** The characters a reason drops: every other control character (C0, DEL, C1), the zero-width ones, the bidi controls and
+ *  the BOM, none of which a terminal or a log shows as what it is. */
+const DROPPED = /[\u{0}-\u{8}\u{E}-\u{1F}\u{7F}-\u{84}\u{86}-\u{9F}\u{200B}-\u{200F}\u{202A}-\u{202E}\u{2060}-\u{2064}\u{2066}-\u{2069}\u{FEFF}]/gu;
+
+/** The server's reason as a message's end: `: <its message>`, on one line (whitespace runs one space, every control,
+ *  zero-width, bidi and BOM character dropped, the ends trimmed), at most REASON_CHARS characters (code points), the last
+ *  a … when cut; empty when the error object holds no message, or none that survives. `error` is the one the client
+ *  keeps, the key already cut from it. The same cases test both clients (packages/client/test/reason-cases.json). */
 export function said(error: ServerError | undefined): string {
   const message = error?.message;
-  if (typeof message !== "string" || !message.trim()) return "";
-  const line = [...message.trim().split(/\s+/).join(" ")];
+  if (typeof message !== "string") return "";
+  const line = [...message.replace(DROPPED, "").replace(SPACES, " ").trim()];
+  if (!line.length) return "";
   return `: ${line.length <= REASON_CHARS ? line.join("") : `${line.slice(0, REASON_CHARS - 1).join("")}…`}`;
 }
 

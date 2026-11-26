@@ -25,7 +25,7 @@ const IDLE = Object.keys(IDLE_TOOLS);
 function pinnedPackage(dir, name, harness, idle = []) {
   mkdirSync(join(dir, name), { recursive: true });
   const tools = ["SLACK_SEND_MESSAGE", "GMAIL_SEND_EMAIL", "GITHUB_CREATE_AN_ISSUE", ...idle].join(", ");
-  writeFileSync(join(dir, name, "agent.md"), `---\nname: ${name}\nversion: 1.0.0\ndescription: Sends to one channel, one inbox and one repository, unattended.\nharness: [${harness}]\nmcp:\n  - source: url\n    toolkit: fake\n    tools: [${tools}]\n    required: true\n    allow: [${tools}]\n    pin: { SLACK_SEND_MESSAGE: { channel: C0123 }, GMAIL_SEND_EMAIL: { recipient_email: ops@example.com }, GITHUB_CREATE_AN_ISSUE: { owner: acme, repo: widgets } }\napprovals: never\n---\nCall the tool you are asked to call.\n`);
+  writeFileSync(join(dir, name, "agent.md"), `---\nname: ${name}\nversion: 1.0.0\ndescription: Sends to one channel, one inbox and one repository, unattended.\nharness: [${harness}]\ntools: []\nmcp:\n  - source: url\n    toolkit: fake\n    tools: [${tools}]\n    required: true\n    allow: [${tools}]\n    pin: { SLACK_SEND_MESSAGE: { channel: C0123 }, GMAIL_SEND_EMAIL: { recipient_email: ops@example.com }, GITHUB_CREATE_AN_ISSUE: { owner: acme, repo: widgets } }\napprovals: never\n---\nCall the tool you are asked to call.\n`);
 }
 
 for (const harness of HARNESSES) {

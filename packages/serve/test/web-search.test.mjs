@@ -2,27 +2,38 @@
 // Parallel's Search API on the run's Parallel key where Parallel is picked, Exa's keyless MCP search, and pi's one
 // request to its model provider's hosted search. Parallel, Exa and the provider are the tests' fakes
 // (fixtures/faux-parallel.mjs, faux-exa.mjs, faux-upstream.mjs) and the network a table (fixtures/fake-network.mjs): no
-// socket leaves this machine (Exa's IPv4 pin dials a loopback server), and no real key is used.
+// socket leaves this machine, and no real key is used. The providers themselves are @parcha/agentrun-web's (its
+// web-search and exa-keyless tests); what stays here is serve's: its words, its paid booking and cap, and its runs.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { test } from "node:test";
+import { beforeEach, test } from "node:test";
 import { bookedCapSpend } from "../dist/runner/metrics.js";
-import { bookedIn, PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_USD } from "../dist/paid-calls.js";
-import { parallelExtract, webFetch } from "../dist/web-fetch.js";
+import { bookedIn } from "../dist/paid-calls.js";
+import { parallelExtract, webFetch } from "./fixtures/serve-web.mjs";
 import * as kernel from "@parcha/agentrun-kernel";
-import * as searches from "../dist/web-search.js";
-import { PARALLEL_SEARCH_URL, webSearch } from "../dist/web-search.js";
-import { exaSearch } from "../dist/exa-keyless.js";
-import * as keyless from "../dist/exa-keyless.js";
+import * as web from "@parcha/agentrun-web";
+import { PARALLEL_EXTRACT_USD, PARALLEL_SEARCH_URL, PARALLEL_SEARCH_USD, parallelSearched } from "@parcha/agentrun-web";
+import * as keyless from "../dist/web-run.js";
 import { hostedSearch } from "../dist/hosted-search.js";
 import { runModels } from "../dist/model.js";
+import { TOOLS } from "../dist/tools.js";
+import { TOOL_PLANE_ENV } from "../dist/tool-plane.js";
 import fakeParallel, { CANARY } from "./fixtures/faux-parallel.mjs";
 import fakeExa, { EXA_LIMIT_TEXT, resetFauxExa } from "./fixtures/faux-exa.mjs";
 import { network } from "./fixtures/fake-network.mjs";
 import { FAUX, follow, journalOf, paidBookings, paidCallsOf, runDir, scratch, serve, toolLedger, withEnv } from "./support.mjs";
+import { forgetHolds } from "../dist/web-holds.js";
+
+// Each case starts as on a server just started: no keyless hold a case before it met (web-holds.ts).
+beforeEach(() => forgetHolds());
+
+const searches = { ...web, ...(await import("../dist/web-search.js")) };
+/** Parallel's search as the model reads it: parallelSearched's answer, its limit left to the breaker. */
+const webSearch = async (args, parallel, signal) => (await parallelSearched(args, parallel, signal)).answer;
+/** Web's keyless Exa search in serve's words for its free limit (keyless.RATE_LIMITED), as serve's search asks it. */
+const exaSearch = (query, n, options = {}) => web.exaSearch(query, n, { words: { rateLimited: keyless.RATE_LIMITED }, ...options });
 
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
@@ -56,23 +67,6 @@ function parallel(mode = "") {
   return { sent, send };
 }
 
-test("results are mapped and clipped into the one search shape: excerpts joined into one snippet of at most 3,000 characters, links as their text, published only where Parallel dates a page", inCall(async (t) => {
-  withEnv(t, {}, [MODE]);
-  const { sent, send } = parallel();
-  const answer = await webSearch({ query: "  widgets delaware ", n: 3 }, parallelExtract(CANARY, send));
-  assert.deepEqual(sent, [{ url: PARALLEL_SEARCH_URL, key: CANARY, body: { objective: "widgets delaware", search_queries: ["widgets delaware"], mode: "fast", advanced_settings: { max_results: 3, excerpt_settings: { max_chars_per_result: 3_000 } } } }]);
-  assert.deepEqual([answer.provider, answer.query, Object.keys(answer)], ["parallel", "widgets delaware", ["provider", "query", "results"]]);
-  const [first, ...rest] = answer.results;
-  assert.deepEqual(Object.entries({ ...first, snippet: "" }), Object.entries({ url: "https://registry.example/widgets", title: "", snippet: "", published: "2026-10-01" }), "a null title is empty");
-  assert.match(first.snippet, /^See the registry entry for Widgets, Inc\. … Widgets are registered in Delaware/, "the excerpts joined, the link its text, whitespace collapsed");
-  assert.ok(first.snippet.length <= 3_000 && first.snippet.length > 2_900 && first.snippet.endsWith("…"), `clipped on a word: ${first.snippet.length}`);
-  assert.deepEqual(rest, [2, 3].map((i) => ({ url: `https://result.example/${i}`, title: `Result ${i} for widgets delaware`, snippet: `Excerpt ${i}.` })), "no published where Parallel gives no date");
-  const long = await webSearch({ query: "q".repeat(300) }, parallelExtract(CANARY, send));
-  assert.equal(long.query, "q".repeat(200), "the query is cut at 200 characters");
-  assert.deepEqual(await webSearch({ query: "  " }, parallelExtract(CANARY, send)), { error: "web_search needs a query" });
-  assert.equal(sent.length, 2, "an empty query is not sent");
-}));
-
 test("an answer is held to the host's result bound: past it, the least relevant results are left out and counted (omitted); one within it is whole, followed by the line asking for citations", () => {
   const hit = (i, snippet) => ({ url: `https://s.example/${i}`, title: `Result ${i}`, snippet });
   const small = { provider: "parallel", query: "widgets", results: [hit(1, "One."), hit(2, "Two.")] };
@@ -90,48 +84,16 @@ test("an answer is held to the host's result bound: past it, the least relevant 
   assert.ok(text.length > searches.SEARCH_MAX_CHARS - 7_000, "as many as fit");
 });
 
-test("n is 1 to 25, 10 when it is not a number above zero", inCall(async (t) => {
+test("a call node's search is held to the same bound as the agent's: an answer past it comes back fitted, its least relevant results left out and counted (omitted)", async (t) => {
   withEnv(t, {}, [MODE]);
-  for (const [n, asked] of [[undefined, 10], [0, 10], ["many", 10], [-3, 1], [0.5, 1], [2.7, 2], ["7", 7], [25, 25], [99, 25]]) {
-    const { sent, send } = parallel();
-    const answer = await webSearch({ query: "widgets", n }, parallelExtract(CANARY, send));
-    assert.deepEqual([sent[0].body.advanced_settings.max_results, answer.results.length], [asked, asked], String(n));
-  }
-}));
-
-test("a 5xx, a timeout or a request that fails answers {error}, and Parallel is asked again next time: there is nothing else to search", inCall(async (t) => {
-  withEnv(t, {}, [MODE]);
-  const failing = (error) => async () => { throw error; };
-  for (const [mode, error] of [["500", /^Parallel's search answered 500$/], ["503", /^Parallel's search answered 503$/], ["timeout", /did not answer within 60 s/], ["reset", /^Parallel's search failed: socket hang up$/]]) {
-    const { sent, send } = parallel(/^\d+$/.test(mode) ? mode : "");
-    const thrown = { timeout: new DOMException("The operation timed out.", "TimeoutError"), reset: new Error("socket hang up") }[mode];
-    const client = parallelExtract(CANARY, thrown ? failing(thrown) : send);
-    const answer = await webSearch({ query: "widgets" }, client);
-    assert.deepEqual(Object.keys(answer), ["error"], mode);
-    assert.match(answer.error, error, mode);
-    assert.equal(sent.length, thrown ? 0 : 1, mode);
-    assert.equal(client.live(), true, `${mode} is not the key refused`);
-  }
-}));
-
-test("a 401 or 403 stops Parallel for the rest of the run, for both web tools: neither asks it again", inCall(async (t) => {
-  withEnv(t, {}, [MODE, EXTRACT_MODE]);
-  for (const [key, mode] of [["not-the-key", ""], [CANARY, "403"]]) {
-    const { sent, send } = parallel(mode);
-    const client = parallelExtract(key, send);
-    const answers = [await webSearch({ query: "widgets" }, client), await webSearch({ query: "widgets" }, client)];
-    assert.deepEqual(answers.map((a) => Object.keys(a)), [["error"], ["error"]]);
-    assert.match(answers[1].error, /refused this run's key/, mode || "401");
-    assert.equal((await webFetch("http://public.example/", { ...network(), parallel: client })).via, "direct", "web_fetch goes straight to the direct fetch");
-    assert.deepEqual(sent.map((call) => new URL(call.url).pathname), ["/v1/search"], `${mode || "401"}: Parallel was asked once`);
-  }
-  // And a refusal to web_fetch's extract stops web_search.
-  const { sent, send } = parallel();
-  const client = parallelExtract("not-the-key", send);
-  await webFetch("http://public.example/", { ...network(), parallel: client });
-  assert.match((await webSearch({ query: "widgets" }, client)).error, /refused this run's key/);
-  assert.deepEqual(sent.map((call) => new URL(call.url).pathname), ["/v1/extract"]);
-}));
+  process.env[MODE] = "long";
+  const env = { [TOOL_PLANE_ENV]: JSON.stringify({ web_search: "parallel" }), PARALLEL_API_KEY: CANARY, AGENTRUN_SERVE_FAUX: FAUX, AGENTRUN_SERVE_FAUX_PARALLEL: FAUX_PARALLEL };
+  const answer = await TOOLS.web_search.effect({ query: "widgets", n: 25 }, { env, ledger: { call: "node-1", paid: await toolLedger() } });
+  assert.equal(answer.provider, "parallel", JSON.stringify(answer).slice(0, 300));
+  assert.ok(answer.omitted > 0 && answer.results.length + answer.omitted === 25, `${answer.results.length} kept, ${answer.omitted} omitted`);
+  assert.ok(JSON.stringify(answer).length <= searches.SEARCH_MAX_CHARS, "within the bound");
+  assert.deepEqual(answer, searches.fitSearch(answer), "fitted");
+});
 
 test("under a spend cap, a search through Parallel is a paid call on the run's one ledger: sent only when what the run spent and holds plus its price fits the cap, then booked at its price; else refused in the cap's words and never sent", async (t) => {
   withEnv(t, {}, [MODE]);
@@ -251,7 +213,7 @@ test("a capped workflow's call nodes are booked as an agent's calls are: its sea
   const seen = await calls(t, true);
   withEnv(t, {}, [EXTRACT_MODE]);
   const { api, data } = await serve(t, { fauxParallel: FAUX_PARALLEL, fauxWeb: FAUX_WEB });
-  const Search = { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array", minItems: 2, maxItems: 2 } } };
+  const Search = { type: "object", required: ["objective", "results"], properties: { objective: { type: "string" }, results: { type: "array", minItems: 2, maxItems: 2 } } };
   const Page = { type: "object", required: ["via"], properties: { via: { const: "parallel" } } };
   const flow = { v: 2, name: "booked", schemas: { In: { type: "object", required: ["q"], properties: { q: { type: "string" } } }, Search, Page }, input: { schemaId: "In" }, output: { schemaId: "Search", path: "found" }, root: { node: "chain", steps: [
     { node: "call", label: "Search", via: "tool", tool: "web_search", args: { query: "{q}", n: 2 }, out: "Search", as: "found", deadline_s: 60 },
@@ -323,15 +285,15 @@ test("with the key and Parallel picked by the agent, web_search runs on pi: an a
   const { rows } = await follow(api, started.body.run_id, ["completed"]);
   const results = rows.filter((row) => row.kind === "tool_result").map((row) => row.tool_result_preview);
   assert.equal(results.length, 1, JSON.stringify(results));
-  assert.match(results[0], /^\{"provider":"parallel","query":"widgets delaware","results":\[\{"url":"https:\/\/registry\.example\/widgets"/);
-  const Search = { type: "object", required: ["query", "results"], properties: { query: { type: "string" }, results: { type: "array", minItems: 2, maxItems: 2 } } };
+  assert.match(results[0], /^\{"provider":"parallel","objective":"widgets delaware","queries":\["widgets delaware"\],"results":\[\{"url":"https:\/\/registry\.example\/widgets"/);
+  const Search = { type: "object", required: ["objective", "results"], properties: { objective: { type: "string" }, results: { type: "array", minItems: 2, maxItems: 2 } } };
   const flow = { v: 2, name: "search", schemas: { In: { type: "object", required: ["q"], properties: { q: { type: "string" } } }, Search }, input: { schemaId: "In" }, output: { schemaId: "Search", path: "found" }, root: { node: "chain", steps: [{ node: "call", label: "Search", via: "tool", tool: "web_search", args: { query: "{q}", n: 2 }, out: "Search", as: "found", deadline_s: 60 }] } };
   assert.equal((await api("POST", "/agents", { definition: { id: "flow", name: "flow", workflow: flow, tools: ["web_search"], tool_settings: parallel } })).status, 201);
   const run = await api("POST", "/agents/flow/runs", { input: { q: "acme registry" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"]);
   const output = (await api("GET", `/runs/${run.body.run_id}`)).body.result.output;
-  assert.deepEqual([output.query, output.results.map((r) => r.url)], ["acme registry", ["https://registry.example/widgets", "https://result.example/2"]]);
+  assert.deepEqual([output.objective, output.results.map((r) => r.url)], ["acme registry", ["https://registry.example/widgets", "https://result.example/2"]]);
   assert.deepEqual((await seen()).map((call) => [call.path, call.authorized, call.queries]), [["/v1/search", true, ["widgets delaware"]], ["/v1/search", true, ["acme registry"]]]);
 });
 
@@ -345,7 +307,7 @@ test("keyless Exa: one MCP exchange with no key, its text read into results; a 4
   };
   const found = await exaSearch("widgets", 3, { send });
   assert.deepEqual(sent, [["initialize", false], ["notifications/initialized", false], ["tools/call", false]]);
-  assert.deepEqual(found, { provider: "exa-keyless", query: "widgets", results: [
+  assert.deepEqual(found, { provider: "exa-keyless", objective: "widgets", queries: ["widgets"], results: [
     { url: "http://public.example/", title: "Public page", snippet: "The answer is forty-two. See the registry for more.", published: "2026-10-01T00:00:00.000Z" },
     { url: "https://result.example/2", title: "Result 2 for widgets", snippet: "Excerpt 2." },
     { url: "https://result.example/3", title: "Result 3 for widgets", snippet: "Excerpt 3." },
@@ -397,13 +359,13 @@ test("keyless Exa past its free limit (a 429, or Exa's own notice in a 200): tri
 
   // A 429 naming 2 s, then results: the retry's results, after the 2 s Exa named and under half a second more.
   const retried = await search("429:2,ok");
-  assert.deepEqual(retried.answer, { provider: "exa-keyless", query: "widgets", results });
+  assert.deepEqual(retried.answer, { provider: "exa-keyless", objective: "widgets", queries: ["widgets"], results });
   assert.deepEqual([retried.searches, retried.exchanges, retried.waits.length], [2, 2, 1], "one more exchange, after one wait");
   assert.ok(retried.waits[0] >= 2_000 && retried.waits[0] < 2_500, `waited ${retried.waits[0]} ms`);
   // Exa's own notice of its free limit inside a 200 (isError, marked ai.exa/rateLimited), as a real run met it: no
   // Retry-After, so the wait is 1 to 3 s.
   const notice = await search("limited,ok");
-  assert.deepEqual([notice.answer, notice.searches], [{ provider: "exa-keyless", query: "widgets", results }, 2]);
+  assert.deepEqual([notice.answer, notice.searches], [{ provider: "exa-keyless", objective: "widgets", queries: ["widgets"], results }, 2]);
   assert.ok(notice.waits.length === 1 && notice.waits[0] >= 1_000 && notice.waits[0] < 3_000, `waited ${notice.waits} ms`);
 
   // Past the limit twice, either way: our words, tried twice and no more, none of Exa's text.
@@ -427,66 +389,12 @@ test("keyless Exa past its free limit (a 429, or Exa's own notice in a 200): tri
   assert.ok(Date.now() - started < 900, `ended ${Date.now() - started} ms after it started, inside the shortest wait`);
 });
 
-test("any other failure Exa answers is said in our words, quoting only the first sentence of Exa's, at most 120 characters: never its fix for an MCP URL, even from a deployment that does not mark its limit", async (t) => {
-  withEnv(t, {}, ["AGENTRUN_TEST_FAUX_EXA"]);
-  /** Exa answering the search with `answer` (a tools/call body, as JSON), counting the searches it was sent. */
-  const answering = (answer) => {
-    const sent = [];
-    const send = async (url, init) => {
-      const { method, id } = JSON.parse(init.body);
-      if (method !== "tools/call") return fakeExa(url, init);
-      sent.push(method);
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id, ...answer }), { status: 200, headers: { "content-type": "application/json" } });
-    };
-    return { sent, send };
-  };
-  const SETUP = /Fix:|MCP URL|exaApiKey|exa\.ai|api-keys|Create a free Exa account/;
-  // Exa's notice of its free limit with no ai.exa/rateLimited mark (an older deployment): a failure like any other,
-  // not retried, and none of its setup text.
-  const unmarked = answering({ result: { isError: true, content: [{ type: "text", text: EXA_LIMIT_TEXT }] } });
-  const said = await exaSearch("widgets", 3, { send: unmarked.send, pause: async () => assert.fail("an unmarked failure is not retried") });
-  assert.deepEqual(said, { error: 'Free web search failed. Exa said: "You\'ve hit Exa\'s free MCP rate limit."' });
-  assert.doesNotMatch(said.error, SETUP);
-  assert.equal(unmarked.sent.length, 1);
-  // A JSON-RPC error, its message on several lines: the first sentence of the first line.
-  const rpc = answering({ error: { code: -32000, message: `web_search_exa error (500): Internal error. Retry later.\nTimestamp: 2026-11-03T17:00:00Z\n\n${EXA_LIMIT_TEXT}` } });
-  assert.deepEqual(await exaSearch("widgets", 3, { send: rpc.send }), { error: 'Free web search failed. Exa said: "web_search_exa error (500): Internal error."' });
-  // A long first sentence is cut on a word, at most 120 characters.
-  const long = answering({ result: { isError: true, content: [{ type: "text", text: `${"word ".repeat(60)}end` }] } });
-  const cut = /^Free web search failed\. Exa said: "(.*)"$/.exec((await exaSearch("widgets", 3, { send: long.send })).error)?.[1];
-  assert.ok(cut && cut.length <= 120 && cut.endsWith("…") && /^(word )+word…$/.test(cut), `cut on a word: ${cut}`);
-  // A failure with no words: said so.
-  const empty = answering({ result: { isError: true, content: [] } });
-  assert.deepEqual(await exaSearch("widgets", 3, { send: empty.send }), { error: "Free web search failed: Exa gave no answer" });
-});
-
-test("keyless Exa is dialled over IPv4 alone: its name is looked up for family 4 and the connection goes to that address, on a host whose resolver answers IPv6 otherwise", async (t) => {
-  assert.equal(typeof keyless.ipv4Fetch, "function", "exa-keyless has a transport pinned to IPv4");
-  const server = createServer((request, response) => response.end(`over IPv4, to ${request.headers.host}`));
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const { port } = server.address();
-  // A host whose default route is IPv6: its resolver answers ::1 alone unless it is asked for family 4.
-  const asked = [];
-  const lookup = (host, options, callback) => {
-    asked.push({ host, family: options?.family });
-    const [address, family] = options?.family === 4 ? ["127.0.0.1", 4] : ["::1", 6];
-    if (options?.all) callback(null, [{ address, family }]);
-    else callback(null, address, family);
-  };
-  const transport = keyless.ipv4Fetch(lookup);
-  t.after(() => transport.close());
-  const answer = await transport.send(`http://exa.example:${port}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
-  assert.equal(await answer.text(), `over IPv4, to exa.example:${port}`);
-  assert.ok(asked.length > 0 && asked.every((call) => call.host === "exa.example" && call.family === 4), `every lookup asked for IPv4: ${JSON.stringify(asked)}`);
-});
-
 test("pi's hosted search: Anthropic's pause_turn answers the results it has and no text, sent once; a model with no hosted search is an error, sent nowhere", async (t) => {
   const file = join(await scratch(t), "upstream.jsonl");
   withEnv(t, { AGENTRUN_TEST_FAUX_UPSTREAM: "pause", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: file });
   const env = { AGENTRUN_SERVE_FAUX: FAUX, AGENTRUN_SERVE_FAUX_UPSTREAM: new URL("./fixtures/faux-upstream.mjs", import.meta.url).pathname, ANTHROPIC_API_KEY: "not-a-secret" };
   const { models } = await runModels(env, undefined);
-  assert.deepEqual(await hostedSearch("widgets", 5, "anthropic/claude-sonnet-5-5", undefined, models), { provider: "native", query: "widgets", results: [{ url: "http://public.example/", title: "Public page", snippet: "", published: "October 1, 2026" }, { url: "https://result.example/2", title: "Result 2", snippet: "" }] });
+  assert.deepEqual(await hostedSearch("widgets", 5, "anthropic/claude-sonnet-5-5", undefined, models), { provider: "native", objective: "widgets", queries: ["widgets"], results: [{ url: "http://public.example/", title: "Public page", snippet: "", published: "October 1, 2026" }, { url: "https://result.example/2", title: "Result 2", snippet: "" }] });
   assert.match((await hostedSearch("widgets", 5, "faux/faux-1", undefined, models)).error, /has no hosted web search here/);
   assert.match((await hostedSearch("widgets", 5, "anthropic/no-such-model", undefined, models)).error, /no model to search on/);
   assert.equal((await readFile(file, "utf8")).trim().split("\n").length, 1, "one request, the paused one, not resubmitted");
@@ -559,15 +467,16 @@ test("a template eval's web fake: a native plane turns to the run's own web_sear
   assert.deepEqual(fakedPlane({ web_search: "parallel" }), { web_search: "parallel" });
   assert.equal(fakedPlane(undefined), undefined);
   assert.deepEqual(fakeSearch("unavailable", { query: "anything" }, "exa-keyless"), { error: keyless.RATE_LIMITED });
-  assert.deepEqual(fakeSearch("unavailable", {}, "exa-keyless"), { error: "web_search needs a query" });
+  assert.deepEqual(fakeSearch("unavailable", {}, "exa-keyless"), { error: "web_search needs an objective" });
   const hit = (i) => ({ url: `https://example.com/${i}`, title: `Hit ${i}`, snippet: `snippet ${i}` });
   const fixture = {
     search: { answers: [{ query: "^robots? funding", results: [hit(1), hit(2), hit(3)] }, { query: "funding", error: "Parallel's search answered 503" }], default: { results: [] } },
     fetch: { answers: [{ url: "https://example.com/empty", status: 204, text: "" }], default: { error: "fetch failed" } },
   };
-  assert.deepEqual(fakeSearch(fixture, { query: "Robot funding this week", n: 2 }, "parallel"), { provider: "parallel", query: "Robot funding this week", results: [hit(1), hit(2)] }, "the first answer whose query matches, case-insensitive, cut at n");
+  assert.deepEqual(fakeSearch(fixture, { query: "Robot funding this week", n: 2 }, "parallel"), { provider: "parallel", objective: "Robot funding this week", queries: ["Robot funding this week"], results: [hit(1), hit(2)] }, "the first answer whose query matches, case-insensitive, cut at n");
+  assert.deepEqual(fakeSearch(fixture, { objective: "Who raised money this week", queries: ["robot funding"], n: 1 }, "parallel"), { provider: "parallel", objective: "Who raised money this week", queries: ["robot funding"], results: [hit(1)] }, "a pattern matches the objective or any query");
   assert.deepEqual(fakeSearch(fixture, { query: "seed funding" }, "native"), { error: "Parallel's search answered 503" }, "the next answer when the first does not match");
-  assert.deepEqual(fakeSearch(fixture, { query: "weather" }, "native"), { provider: "native", query: "weather", results: [] }, "else the default");
+  assert.deepEqual(fakeSearch(fixture, { query: "weather" }, "native"), { provider: "native", objective: "weather", queries: ["weather"], results: [] }, "else the default");
   const refused = await fakeFetch("unavailable", "https://example.com/post");
   assert.equal(refused.ok, false);
   assert.equal(refused.error, "fetch failed", "as a fetch whose connection is refused fails");

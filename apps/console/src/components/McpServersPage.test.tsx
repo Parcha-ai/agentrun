@@ -8,6 +8,7 @@ import { type McpServer, PREVIEW_SCOPE_NOTE } from "@/lib/mcp";
 import { SERVER_DENY } from "@/lib/toolSettings";
 import recorded from "@/fixtures/mcp.requests.json";
 import { pick, picker, valueOf } from "@/test/picker";
+import { searchPicker, searchPick, shownIn } from "@/test/search-picker";
 
 // Settings → MCP servers over /v2/settings/mcp-servers: add a server, preview its tools, save it; each refusal in plain
 // words; OAuth's sign-in and its way back; the saved list with each credential's state, refresh and delete. A credential
@@ -38,20 +39,25 @@ const refusal = (status: number, code: string, message: string, extra: Record<st
 const PRIVATE_HOSTS = "/v2/settings/mcp-servers/oauth/private-hosts";
 /** The server's own callback (its AGENTRUN_PUBLIC_URL), on another address than the page's: the words name this one. */
 const CALLBACK = "https://agents.example.test/v2/settings/mcp-servers/oauth/callback";
-/** A server: GET the list answers `lists` in turn (the last again after); every other request is `answer`'s. */
+/** A server: GET the list answers `lists` in turn (the last again after); every other request is `answer`'s. As fetch
+ *  does, a request whose signal aborts rejects at once, answered or not; each request's signal is kept (`signals`). */
 function server(lists: McpServer[][], answer: (call: Sent) => Response | Promise<Response> | undefined = () => undefined) {
   const calls: Sent[] = [];
+  const signals: (AbortSignal | undefined)[] = [];
   let read = 0;
   const fetch = (async (url: string, init?: RequestInit) => {
     const call: Sent = { method: init?.method ?? "GET", path: String(url), ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) };
     calls.push(call);
+    signals.push(init?.signal ?? undefined);
     const own = answer(call);
+    const signal = init?.signal;
+    if (own && signal) return Promise.race([own, new Promise<never>((_, refuse) => signal.addEventListener("abort", () => refuse(new DOMException("The request was aborted.", "AbortError")), { once: true }))]);
     if (own) return own;
     if (call.method === "GET" && call.path === "/v2/settings/mcp-servers") return json(200, { servers: lists[Math.min(read++, lists.length - 1)] });
     if (call.method === "GET" && call.path === PRIVATE_HOSTS) return json(200, { hosts: [] });
     return json(404, { error: { code: "not_found", message: call.path, retryable: false } });
   }) as typeof globalThis.fetch;
-  return { v2: createClient({ fetch }), calls, writes: () => calls.filter((c) => c.method !== "GET") };
+  return { v2: createClient({ fetch }), calls, signals, writes: () => calls.filter((c) => c.method !== "GET") };
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
@@ -425,6 +431,24 @@ describe("Settings → MCP servers, the saved ones", () => {
     expect(s.calls.filter((c) => c.method === "GET" && c.path === "/v2/settings/mcp-servers")).toHaveLength(2);
   });
 
+  it("a Composio server's row says its account: not connected after the save, then connected as its label once a Refresh finds it", async () => {
+    const checked = "2026-11-24T10:00:00Z";
+    const gmail = (account: McpServer["composio_account"]) => saved({ name: "gmail", source: "composio", toolkit: "gmail", auth: { type: "headers", headers: ["x-api-key"] }, composio_account: account });
+    const pending = gmail({ state: "pending", checked_at: checked });
+    const connected = gmail({ state: "connected", labels: ["person@example.com"], checked_at: checked });
+    const s = server([[pending], [connected]], (c) => (c.method === "POST" && c.path === "/v2/settings/mcp-servers/gmail/refresh" ? json(200, { added: [], removed: [], changed: [], server: connected }) : c.path.endsWith("/composio/triggers") ? json(404, { error: { code: "not_found", message: "", retryable: false } }) : undefined));
+    const p = await open(s.v2);
+    const account = () => p.row("gmail").querySelector<HTMLElement>("[data-composio-account]");
+    expect(account()?.dataset.composioAccount).toBe("pending");
+    expect(account()?.textContent).toContain("not connected");
+    expect(account()?.textContent).toContain("connect it on Composio, then Refresh");
+    await p.click(/^Refresh$/, p.row("gmail"));
+    expect(account()?.dataset.composioAccount).toBe("connected");
+    expect(account()?.textContent).toContain("connected");
+    expect(account()?.textContent).not.toContain("not connected");
+    expect(account()?.textContent).toContain("person@example.com");
+  });
+
   it("a refresh refused for an expired sign-in reloads the list: the row shows the sign-in expired and offers Sign in again, with the refusal kept", async () => {
     const later = "2026-11-08T10:00:00Z";
     const live = saved({ name: "docs", auth: { type: "oauth" }, credential: "sealed", oauth: { expires_at: later, scopes: ["read"], client: "dynamic" } });
@@ -788,26 +812,142 @@ describe("Settings → MCP servers, the Composio preset", () => {
   const KEY = "not-a-real-composio-key-0123";
   const ACTIONS = [{ slug: "GITHUB_STAR_REPO", name: "Star a repo", description: "Star a repository." }, { slug: "GITHUB_LIST_ISSUES", name: "List issues", description: "List a repository's issues." }];
   const TOOLS_PATH = "/v2/settings/mcp-servers/composio/tools";
+  const TOOLKITS_PATH = "/v2/settings/mcp-servers/composio/toolkits";
+  const TOOLKITS = [{ slug: "github", name: "GitHub" }, { slug: "gmail", name: "Gmail" }, { slug: "slack", name: "Slack" }];
   const answer = (c: Sent) => {
+    if (c.path === TOOLKITS_PATH) return json(200, { toolkits: TOOLKITS });
     if (c.path === TOOLS_PATH) return json(200, { toolkit: "github", no_auth: false, tools: ACTIONS });
     if (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/gh/composio") return json(200, { server: saved({ name: "gh", auth: { type: "headers", headers: ["x-api-key"] } }), connect_url: "https://connect.composio.test/link/ac_1", not_served: ["GITHUB_STAR_REPO"] });
     return undefined;
   };
+  /** The toolkit chosen as a person does: Load toolkits with the key typed, then the one picked in the Toolkit picker. */
+  const chooseToolkit = async (p: Awaited<ReturnType<typeof open>>, slug: string) => {
+    if (!p.host.querySelector('[data-toolkits-loaded]')) await p.click(/^Load toolkits$/);
+    await searchPick(searchPicker(p.host, "Toolkit")!, slug);
+  };
+
+  it("lists Composio's toolkits for the key in a picker, by name and slug, and loads the actions of the one picked: no free-text toolkit field", async () => {
+    const s = server([[]], answer);
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    expect(p.host.querySelector('input[name="composio-toolkit"]:not([type="hidden"])'), "no text field to type a slug in").toBeNull();
+    expect(p.button(/^Load toolkits$/)?.disabled, "the list waits for a key").toBe(true);
+    await p.type("composio-key", KEY);
+    await p.click(/^Load toolkits$/);
+    expect(s.writes()[0]).toEqual({ method: "POST", path: TOOLKITS_PATH, body: { api_key: KEY } });
+    const field = searchPicker(p.host, "Toolkit")!;
+    expect(field, "the toolkit is a picker").not.toBeNull();
+    expect((await shownIn(field)).options.map((o) => [o.value, o.text])).toEqual([["github", "GitHub · github"], ["gmail", "Gmail · gmail"], ["slack", "Slack · slack"]]);
+    await searchPick(field, "gmail");
+    expect(field.getAttribute("data-value")).toBe("gmail");
+    await p.click(/^Load actions$/);
+    expect(s.writes()[1]).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "gmail" } });
+    expect(document.body.innerHTML).not.toContain(KEY);
+  });
+
+  it("narrows the toolkit list to the toolkits whose slug or name has the words typed, case aside, and picking one loads its actions", async () => {
+    const many = [...TOOLKITS, ...Array.from({ length: 300 }, (_, i) => ({ slug: `app_${i}`, name: `Application ${i}` }))];
+    const s = server([[]], (c) => (c.path === TOOLKITS_PATH ? json(200, { toolkits: many }) : answer(c)));
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.click(/^Load toolkits$/);
+    const field = searchPicker(p.host, "Toolkit");
+    expect(field, "the toolkit is a search box to type in").not.toBeNull();
+    expect((await shownIn(field!, "gma")).options.map((o) => o.value), "typing gma leaves Gmail alone").toEqual(["gmail"]);
+    expect((await shownIn(field!, "SLACK")).options.map((o) => o.value), "by slug, case aside").toEqual(["slack"]);
+    expect((await shownIn(field!, "git hub")).options.map((o) => o.value), "by name, every word").toEqual(["github"]);
+    expect((await shownIn(field!, "application 29")).options.map((o) => o.value), "by name among hundreds").toContain("app_29");
+    expect((await shownIn(field!, "no-such-kit")).options).toEqual([]);
+    await searchPick(field!, "gmail", "gma");
+    expect(field!.getAttribute("data-value"), "picking it sets the toolkit").toBe("gmail");
+    await p.click(/^Load actions$/);
+    expect(s.writes().at(-1)).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "gmail" } });
+  });
+
+  it("a typed slug still loads actions after the list failed", async () => {
+    const s = server([[]], (c) => (c.path === TOOLKITS_PATH ? refusal(424, "upstream_failed", "Composio did not answer while listing the toolkits: no toolkit was listed.") : answer(c)));
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.click(/^Load toolkits$/);
+    expect(p.host.querySelector('[role="alert"]')?.textContent).toContain("Composio did not answer while listing the toolkits");
+    expect(p.input("composio-toolkit"), "a field to type the toolkit's slug in").not.toBeNull();
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    expect(s.writes().at(-1)).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "github" } });
+    expect(p.text()).toContain("Star a repo");
+  });
+
+  it("a toolkit the list leaves out is typed as its slug, and its actions load", async () => {
+    const s = server([[]], answer);
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.click(/^Load toolkits$/);
+    expect((await shownIn(searchPicker(p.host, "Toolkit")!)).options.map((o) => o.value)).not.toContain("linear");
+    expect(p.button(/^Not listed\? Type its slug$/), "a way to type a toolkit the list leaves out").toBeDefined();
+    await p.click(/^Not listed\? Type its slug$/);
+    await p.type("composio-toolkit", "linear");
+    await p.click(/^Load actions$/);
+    expect(s.writes().at(-1)).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "linear" } });
+  });
+
+  it("Cancel stays open while a load runs, and aborts it", async () => {
+    const s = server([[]], (c) => (c.path === TOOLKITS_PATH ? new Promise<Response>(() => undefined) : answer(c)));
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.click(/^Load toolkits$/);
+    expect(p.button(/^Load toolkits$/)?.disabled, "the load is under way").toBe(true);
+    expect(p.button(/^Cancel$/)?.disabled).toBe(false);
+    await p.click(/^Cancel$/);
+    expect(s.signals[s.calls.findIndex((c) => c.path === TOOLKITS_PATH)]?.aborted, "the list's request is aborted").toBe(true);
+    expect(p.host.querySelector('form[aria-label="Add from Composio"]'), "the form is closed").toBeNull();
+  });
+
+  it("drops a toolkit list asked with a key since edited, and an edit of the key clears the list and the toolkit picked from it", async () => {
+    const NEW_KEY = "not-a-real-composio-key-4567";
+    let late: (r: Response) => void = () => undefined;
+    const s = server([[]], (c) => {
+      if (c.path === TOOLKITS_PATH && (c.body as { api_key?: string } | undefined)?.api_key === KEY) return new Promise<Response>((done) => { late = done; });
+      if (c.path === TOOLKITS_PATH) return json(200, { toolkits: [{ slug: "linear", name: "Linear" }] });
+      return answer(c);
+    });
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.click(/^Load toolkits$/);
+    await p.type("composio-key", NEW_KEY);
+    await p.settle();
+    expect(s.signals[s.calls.findIndex((c) => c.path === TOOLKITS_PATH)]?.aborted, "the key's edit aborts the list asked with the key before").toBe(true);
+    expect(p.button(/^Load toolkits$/)?.disabled, "and the form is free at once").toBe(false);
+    await act(async () => { late(await json(200, { toolkits: TOOLKITS })); });
+    await p.settle();
+    expect(p.host.querySelector("[data-toolkits-loaded]"), "the list asked with the earlier key never shows").toBeNull();
+    await p.click(/^Load toolkits$/);
+    expect(s.writes()[1]).toEqual({ method: "POST", path: TOOLKITS_PATH, body: { api_key: NEW_KEY } });
+    expect((await shownIn(searchPicker(p.host, "Toolkit")!)).options.map((o) => o.value), "the new key's list").toEqual(["linear"]);
+    await searchPick(searchPicker(p.host, "Toolkit")!, "linear");
+    await p.type("composio-key", KEY);
+    expect(p.host.querySelector("[data-toolkits-loaded]"), "a key edit clears the list loaded with the key before").toBeNull();
+    expect(searchPicker(p.host, "Toolkit")!.getAttribute("data-value"), "and the toolkit picked from it").toBe("");
+  });
 
   it("loads a toolkit's actions, saves the ones picked, and shows the link to connect the account; the key is gone from the page", async () => {
     const s = server([[], [saved({ name: "gh" })]], answer);
     const p = await open(s.v2);
     await p.click(/^Add from Composio$/);
     await p.type("composio-key", KEY);
-    await p.type("composio-toolkit", "github");
+    await chooseToolkit(p, "github");
     await p.click(/^Load actions$/);
-    expect(s.writes()[0]).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "github" } });
+    expect(s.writes()[1]).toEqual({ method: "POST", path: TOOLS_PATH, body: { api_key: KEY, toolkit: "github" } });
     const box = (slug: string) => p.host.querySelector(`input[type="checkbox"][value="${slug}"]`) as HTMLInputElement;
     expect(p.text()).toContain("Star a repo");
     await act(async () => { box("GITHUB_LIST_ISSUES").click(); });
     await p.type("composio-name", "gh");
     await p.click(/^Save$/);
-    expect(s.writes()[1]).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
+    expect(s.writes()[2]).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
     const link = [...p.host.querySelectorAll("a")].find((a) => /Connect your github account/.test(a.textContent ?? ""));
     expect(link?.getAttribute("href")).toBe("https://connect.composio.test/link/ac_1");
     expect(p.text()).toContain("Composio's server doesn't list GITHUB_STAR_REPO");
@@ -820,7 +960,7 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const p = await open(s.v2);
     await p.click(/^Add from Composio$/);
     await p.type("composio-key", KEY);
-    await p.type("composio-toolkit", "github");
+    await chooseToolkit(p, "github");
     await p.click(/^Load actions$/);
     await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
     await p.type("composio-name", "gh");
@@ -836,7 +976,7 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const p = await open(s.v2);
     await p.click(/^Add from Composio$/);
     await p.type("composio-key", KEY);
-    await p.type("composio-toolkit", "github");
+    await chooseToolkit(p, "github");
     await p.click(/^Load actions$/);
     await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
     await p.type("composio-name", "gh");
@@ -857,9 +997,9 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const p = await open(s.v2);
     await p.click(/^Add from Composio$/);
     await p.type("composio-key", KEY);
-    await p.type("composio-toolkit", "github");
+    await chooseToolkit(p, "github");
     await p.click(/^Load actions$/);
-    await p.type("composio-toolkit", "slack");
+    await chooseToolkit(p, "slack");
     await act(async () => { late(await json(200, { toolkit: "github", no_auth: false, tools: ACTIONS })); });
     expect(p.host.querySelector('input[type="checkbox"]')).toBeNull();
     await p.click(/^Load actions$/);
@@ -875,7 +1015,7 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const older = [saved({ name: "slack" }), saved({ name: "slack-2" }), saved({ name: "hubspot" })];
     const s = server([older], answer);
     const p = await open(s.v2, { add: { name: "slack", preset: "composio", toolkit: "slack", tools: ["SLACK_SEND_MESSAGE"] } });
-    expect(p.input("composio-toolkit").value).toBe("slack");
+    expect(searchPicker(p.host, "Toolkit")?.getAttribute("data-value"), "the link's toolkit is picked").toBe("slack");
     await p.type("composio-key", KEY);
     await p.click(/^Load actions$/);
     expect(p.input("composio-name").value).toBe("slack-3");
@@ -916,7 +1056,7 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const p = await open(s.v2, { add: { name: "gh", preset: "composio", toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
     expect(p.host.querySelector('form[aria-label="Add from Composio"]')).toBeTruthy();
     expect(p.host.querySelector('form[aria-label="Add an MCP server"]')).toBeNull();
-    expect(p.input("composio-toolkit").value).toBe("github");
+    expect(searchPicker(p.host, "Toolkit")?.getAttribute("data-value"), "the template's toolkit is picked before any list is loaded").toBe("github");
     expect(p.text()).toContain("A template uses GITHUB_LIST_ISSUES");
     await p.type("composio-key", KEY);
     await p.click(/^Load actions$/);
@@ -932,7 +1072,7 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const p = await open(s.v2);
     await p.click(/^Add from Composio$/);
     await p.type("composio-key", KEY);
-    await p.type("composio-toolkit", "github");
+    await chooseToolkit(p, "github");
     await p.click(/^Load actions$/);
     const filter = () => p.host.querySelector('input[aria-label="Filter actions"]') as HTMLInputElement;
     const shown = () => [...p.host.querySelectorAll<HTMLInputElement>('form[aria-label="Add from Composio"] input[type="checkbox"]')].map((b) => b.value);
@@ -958,9 +1098,9 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
     await act(async () => { filter().dispatchEvent(enter); });
     expect(enter.defaultPrevented).toBe(true);
-    expect(s.writes()).toHaveLength(1);
+    expect(s.writes()).toHaveLength(2);
     await p.click(/^Save$/);
-    expect(s.writes()[1]).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES", "GITHUB_STAR_REPO"] } });
+    expect(s.writes()[2]).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES", "GITHUB_STAR_REPO"] } });
   });
 
   it("loading the actions again clears the filter", async () => {
@@ -968,7 +1108,7 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const p = await open(s.v2);
     await p.click(/^Add from Composio$/);
     await p.type("composio-key", KEY);
-    await p.type("composio-toolkit", "github");
+    await chooseToolkit(p, "github");
     await p.click(/^Load actions$/);
     const filter = () => p.host.querySelector('input[aria-label="Filter actions"]') as HTMLInputElement;
     await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter(), "star"); filter().dispatchEvent(new Event("input", { bubbles: true })); });

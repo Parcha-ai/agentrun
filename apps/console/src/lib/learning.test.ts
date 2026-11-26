@@ -41,7 +41,7 @@ describe("a run's learning, read tolerantly", () => {
     expect(["checker", "empty", "use", "no_budget", "unknown_cost", "crashed", null].map(dropKind)).toEqual(["refused", "nothing", "nothing", "skipped", "skipped", "stopped", "stopped"]);
   });
   it("no reason's words use git's or the loop's own names", () => {
-    const words = ["empty", "use", "checker", "no_budget", "unknown_cost", "seed_failed", "cancelled", "crashed", "reflect_failed"].map((reason) => dropWords({ state: "dropped", reason, detail: null })).join(" ");
+    const words = ["empty", "use", "checker", "no_budget", "unknown_cost", "seed_failed", "cancelled", "crashed", "reflect_failed", "purged_since_seed"].map((reason) => dropWords({ state: "dropped", reason, detail: null })).join(" ");
     expect(words).not.toMatch(/\b(main|merge|merged|commit|grader|verdict|proposal|end-of-run|reflect|seed|checker)\b/i);
   });
 });

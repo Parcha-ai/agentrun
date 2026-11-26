@@ -38,7 +38,7 @@ export const referenceSubject = {
   createLoop: (setup) => (deps) => referenceLoop(setup, deps),
   metaTools: false,
   unsupported: {
-    "end-of-run-answer": "the reference loop has no end-of-run step (LoopDeps.endOfRun): it writes its end after the job's turn",
+    "end-of-run-answer": "the reference loop has no end-of-run step (ConformanceSetup.endOfRun): it writes its end after the job's turn",
   },
 };
 

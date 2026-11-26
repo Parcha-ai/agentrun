@@ -4,8 +4,8 @@
 import assert from "node:assert/strict";
 import { appendFile } from "node:fs/promises";
 import { test } from "node:test";
-import { parseHome, readSession } from "../dist/index.js";
-import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, tempHome, writeJsonl } from "./fixtures.mjs";
+import { readSession } from "../dist/index.js";
+import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, parseHome, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const blocks = [
   { type: "thinking", thinking: "Fixture thought." },

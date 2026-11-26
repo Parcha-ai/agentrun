@@ -1,7 +1,7 @@
 // Docker by default: a server started with AGENTRUN_BOXES not set at all probes Docker as if it were listed (place-offers.ts
 // enabledBoxes), and offers it when Docker answers, so a new agent lands in the Docker box with a shell (place.ts
-// newAgentPlace). Where Docker is not there, new agents run on the runner and capabilities, the start's banner and the
-// console's editor say why in words a first-time user can act on. An operator's AGENTRUN_BOXES still wins: a list probes
+// newAgentPlace). Where Docker is not there, a new agent names its place (a box, or the runner) or is refused, and
+// capabilities, the start's banner and the console's editor say why in words a first-time user can act on. An operator's AGENTRUN_BOXES still wins: a list probes
 // only what it names, and an empty value or `none` sets up no box. Every other box stays the operator's to list.
 // Everything runs on a fake `docker` first on PATH (fixtures/fake-docker.mjs), or on a PATH with no docker at all: no
 // daemon is reached, nothing is pulled or built, and no box provider is called.
@@ -12,7 +12,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { askDockerDaemon, containerOf, DOCKER_NO_SOCKET, DOCKER_SOCKET_GROUP, enabledBoxes, placeOffers, withNetworks } from "../dist/place-offers.js";
+import { askDockerDaemon, containerOf, DOCKER_NO_SOCKET, DOCKER_SOCKET_GROUP, enabledBoxes, IMAGE_ENV, placeOffers, withNetworks } from "../dist/place-offers.js";
 import { dockerHost } from "./docker-host-fake.mjs";
 import { client, follow, jsonLines, printed, scratch, serve, withEnv } from "./support.mjs";
 
@@ -20,7 +20,6 @@ const PROBE = new URL("./fixtures/faux-probe.mjs", import.meta.url).pathname;
 const FAKE = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
 const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 const DOCKER = { mode: "sandbox", box: "docker" };
-const RUNNER = { mode: "runner" };
 const ON_BY_DEFAULT = "Boxes: docker (on by default; set AGENTRUN_BOXES to change).";
 const NO_DOCKER = "Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart AgentRun";
 const NO_DAEMON = "Docker isn't running on this machine, or this user may not use it (docker version failed: exit 1): start Docker, or add this user to the docker group, then restart AgentRun";
@@ -28,7 +27,7 @@ const NOT_IN_GROUP = "This server's process isn't in the docker group: restart y
 const JOIN_GROUP = "This server's process isn't in the docker group: add this user to it with `sudo usermod -aG docker $USER`, then restart your user manager with `sudo systemctl restart user@$(id -u)`, or log in again if linger is off";
 const NOT_ENABLED = "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker";
 /** A server on a host, as a test that expects the host's words pins it (the suite may itself run in a container). */
-const HOST = { inside: false };
+const HOST = { where: "host" };
 
 /** A fake docker first on PATH, its state directory set, and AGENTRUN_BOXES as `boxes` says (undefined: not set at all). */
 async function fakeDocker(t, boxes) {
@@ -37,7 +36,8 @@ async function fakeDocker(t, boxes) {
   const state = join(dir, "state");
   await mkdir(bin);
   await mkdir(state);
-  await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE}' "$@"\n`, { mode: 0o755 });
+  // Its state is set in its own program: the Docker provider hands docker only the names docker reads.
+  await writeFile(join(bin, "docker"), `#!/bin/sh\nexport FAKE_DOCKER_STATE='${state}'\nexec '${process.execPath}' '${FAKE}' "$@"\n`, { mode: 0o755 });
   withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, ...(boxes === undefined ? {} : { AGENTRUN_BOXES: boxes }) }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW", "DAYTONA_API_KEY"]);
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
   return { calls: () => jsonLines(join(state, "argv.jsonl")), state };
@@ -52,6 +52,11 @@ async function noDocker(t) {
   assert.notEqual(spawnSync("/bin/sh", ["-c", "command -v docker"], { encoding: "utf8" }).status, 0, "no docker on PATH");
 }
 
+/** Why a new agent that names no place is refused where no Docker box is set up (and no other box is). */
+const NAME_A_BOX = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell.";
+/** The same, with why Docker's box is not here, in its offer's own words (`why`: its probe's, with their fix), as the
+ *  refusal and default_reason keep them. */
+const nameABox = (why) => `${NAME_A_BOX} docker: ${why}.`;
 const placesOf = async (api) => (await api("GET", "/capabilities")).body.places;
 const dockerOf = (places) => places.boxes.find((box) => box.id === "docker");
 /** A definition as a person writes one first: a name and instructions, no place and no tools. */
@@ -99,15 +104,18 @@ test("demo through the API: with AGENTRUN_BOXES not set and Docker answering, do
   assert.equal((await api("GET", `/runs/${run.body.run_id}/files/out.txt`)).body, "hello from the box\n");
 });
 
-test("with AGENTRUN_BOXES not set and no docker command on PATH, new agents run on the runner, and capabilities and the banner say why plainly", { timeout: 60_000 }, async (t) => {
+test("with AGENTRUN_BOXES not set and no docker command on PATH, a new agent that names no place is refused in words that name a box, and capabilities and the banner say why plainly", { timeout: 60_000 }, async (t) => {
   await noDocker(t);
   const server = await serve(t, { faux: PROBE });
   const places = await placesOf(server.api);
   assert.deepEqual(dockerOf(places), { id: "docker", available: false, state: "unavailable", reason: NO_DOCKER });
-  assert.deepEqual(places.default_place, RUNNER);
-  assert.equal(places.default_reason, `new agents run on the runner, because the docker box is unavailable here: ${NO_DOCKER}`);
-  assert.equal(server.boxesLine, `Boxes: none, so new agents run on the runner. ${NO_DOCKER}.`);
-  const made = await server.api("POST", "/agents", fresh("plain"));
+  assert.equal(places.default_place, null);
+  assert.equal(places.default_reason, nameABox(NO_DOCKER));
+  assert.equal(server.boxesLine, `Boxes: none, so a new agent must name its place: a box, or the runner. ${NO_DOCKER}.`);
+  const refused = await server.api("POST", "/agents", fresh("plain"));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.equal(refused.body.error.message, nameABox(NO_DOCKER));
+  const made = await server.api("POST", "/agents", { definition: { ...fresh("plain").definition, tools: [] } });
   assert.equal(made.status, 201, JSON.stringify(made.body));
   assert.equal("place" in made.body.definition, false);
   assert.deepEqual(made.body.definition.tools, []);
@@ -156,14 +164,10 @@ test("a docker socket that refuses this process: the group file lists the user, 
   }
 });
 
-/** Why docker is unavailable to a server in AgentRun's image: with no Docker socket (the one-container `docker run`, the
- *  deploy/ compose file, a Kubernetes pod), and with one it may not use (compose.yaml without DOCKER_GID). Never "start
- *  Docker" or usermod. */
-const NO_SOCKET = DOCKER_NO_SOCKET;
-const SOCKET_GROUP = DOCKER_SOCKET_GROUP;
-
-/** A server in AgentRun's image's facts: inside, with nothing there but `paths`. */
-const inContainerWith = (...paths) => ({ inside: true, image: true, exists: (path) => paths.includes(path) });
+/** A server in AgentRun's image's facts, with nothing there but `paths`. Its docker is unavailable with no Docker socket
+ *  (a hosted service, the one-container `docker run`, the deploy/ compose file, a Kubernetes pod), and with one it may not
+ *  use (compose.yaml without DOCKER_GID). Never "start Docker" or usermod. */
+const inContainerWith = (...paths) => ({ where: "image", exists: (path) => paths.includes(path) });
 /** A docker that cannot connect to the daemon `at` names, in the CLI's words. */
 async function unreachableDocker(t, at) {
   const bin = join(await scratch(t), "bin");
@@ -173,15 +177,14 @@ async function unreachableDocker(t, at) {
 }
 const CONTEXT_SOCKET = "/run/user/1000/docker.sock";
 
-test("a server in AgentRun's image: no Docker socket says how to get one (compose.yaml) and that it is root on the host; a socket it may not use says DOCKER_GID; never start Docker or usermod", async (t) => {
-  assert.match(NO_SOCKET, /root on (the|that) host/, "the socket it sends a public server to is root on the host (compose.yaml says so too)");
+test("a server in AgentRun's image: no Docker socket says both ways, a vendor computer hosted and compose.yaml's socket on a machine you run; a socket it may not use says DOCKER_GID; never start Docker or usermod", async (t) => {
   const failing = await unreachableDocker(t, "unix:///var/run/docker.sock");
   const dockerOfOffers = async (env, options) => (await placeOffers(env, options)).find((offer) => offer.id === "docker");
-  assert.deepEqual(await dockerOfOffers({ PATH: failing }, { container: inContainerWith() }), { id: "docker", available: false, reason: NO_SOCKET }, "the image's docker CLI, no socket");
-  assert.deepEqual(await dockerOfOffers({ PATH: join(await scratch(t), "empty") }, { container: inContainerWith() }), { id: "docker", available: false, reason: NO_SOCKET }, "no docker command, no socket");
+  assert.deepEqual(await dockerOfOffers({ PATH: failing }, { container: inContainerWith() }), { id: "docker", available: false, reason: DOCKER_NO_SOCKET }, "the image's docker CLI, no socket");
+  assert.deepEqual(await dockerOfOffers({ PATH: join(await scratch(t), "empty") }, { container: inContainerWith() }), { id: "docker", available: false, reason: DOCKER_NO_SOCKET }, "no docker command, no socket");
   const denied = await deniedDocker(t, CLI_DENIED);
   const groups = { file: await groupFile(t, ["someone"]), user: "node", ids: [1000] };
-  assert.deepEqual(await dockerOfOffers({ PATH: denied }, { container: inContainerWith("/var/run/docker.sock"), groups }), { id: "docker", available: false, reason: SOCKET_GROUP });
+  assert.deepEqual(await dockerOfOffers({ PATH: denied }, { container: inContainerWith("/var/run/docker.sock"), groups }), { id: "docker", available: false, reason: DOCKER_SOCKET_GROUP });
   // A socket that is there and a daemon that does not answer it: the host's Docker is down, and starting it is the fix.
   assert.deepEqual(await dockerOfOffers({ PATH: failing }, { container: inContainerWith("/var/run/docker.sock") }), { id: "docker", available: false, reason: NO_DAEMON });
   // On a host, the words are as they were.
@@ -190,8 +193,10 @@ test("a server in AgentRun's image: no Docker socket says how to get one (compos
   // Settings → Computers asks the same (askDockerDaemon): a refused socket in a container says DOCKER_GID; no socket is no
   // daemon at all, which that page words as none (docker-daemon.ts noDockerWords).
   const ask = (env, container) => askDockerDaemon(env, AbortSignal.timeout(10_000), groups, container);
-  assert.deepEqual(await ask({ PATH: denied }, inContainerWith("/var/run/docker.sock")), { up: false, absent: false, reason: SOCKET_GROUP });
-  assert.deepEqual(await ask({ PATH: failing }, inContainerWith()), { up: false, absent: true, reason: NO_SOCKET });
+  assert.deepEqual(await ask({ PATH: denied }, inContainerWith("/var/run/docker.sock")), { up: false, absent: false, reason: DOCKER_SOCKET_GROUP });
+  const none = await ask({ PATH: failing }, inContainerWith());
+  assert.deepEqual([none.up, none.absent], [false, true], JSON.stringify(none));
+  assert.notEqual(none.reason, DOCKER_NO_SOCKET, "no socket is an absent daemon, whose words that page never reads: not the container's");
   assert.deepEqual(await ask({ PATH: denied }, HOST), { up: false, absent: false, reason: JOIN_GROUP });
 });
 
@@ -200,45 +205,76 @@ test("a server in a container whose Docker context names another socket: the soc
   const atContext = await unreachableDocker(t, `unix://${CONTEXT_SOCKET}`);
   // The context's socket is there (the default one is not) and its daemon does not answer: start Docker, not compose.yaml.
   assert.deepEqual(await dockerOf(atContext, inContainerWith(CONTEXT_SOCKET)), { id: "docker", available: false, reason: NO_DAEMON });
-  assert.deepEqual(await dockerOf(atContext, inContainerWith("/var/run/docker.sock")), { id: "docker", available: false, reason: NO_SOCKET });
+  assert.deepEqual(await dockerOf(atContext, inContainerWith("/var/run/docker.sock")), { id: "docker", available: false, reason: DOCKER_NO_SOCKET });
   // A context's socket that refuses this process, with no /var/run/docker.sock: its group, never "no socket".
   const refused = await deniedDocker(t, `permission denied while trying to connect to the Docker daemon socket at unix://${CONTEXT_SOCKET}: EOF`);
-  assert.deepEqual(await dockerOf(refused, inContainerWith()), { id: "docker", available: false, reason: SOCKET_GROUP });
+  assert.deepEqual(await dockerOf(refused, inContainerWith()), { id: "docker", available: false, reason: DOCKER_SOCKET_GROUP });
   const ask = await askDockerDaemon({ PATH: refused }, AbortSignal.timeout(10_000), { file: await groupFile(t, []), user: "node", ids: [1000] }, inContainerWith());
-  assert.deepEqual(ask, { up: false, absent: false, reason: SOCKET_GROUP }, "Settings → Computers shows the access problem, not none");
+  assert.deepEqual(ask, { up: false, absent: false, reason: DOCKER_SOCKET_GROUP }, "Settings → Computers shows the access problem, not none");
   // A daemon elsewhere (tcp) is not a missing socket.
   assert.deepEqual(await dockerOf(await unreachableDocker(t, "tcp://docker.example:2376"), inContainerWith()), { id: "docker", available: false, reason: NO_DAEMON });
 });
 
 // Kubernetes and other containerd runtimes write neither /.dockerenv nor /run/.containerenv: AgentRun's image says it is
-// itself (the Dockerfile's ENV), and a runtime's mark without it is some other container (a dev container), where
-// compose.yaml at the repository's root is not there to use.
-test("which container: AgentRun's image says so itself, with no runtime mark; a runtime's mark alone is another container", async () => {
-  assert.deepEqual(containerOf({ AGENTRUN_IN_IMAGE: "1" }, () => false), { inside: true, image: true }, "the image in a Kubernetes pod");
-  assert.deepEqual(containerOf({}, (path) => path === "/.dockerenv"), { inside: true, image: false }, "a dev container");
-  assert.deepEqual(containerOf({}, (path) => path === "/run/.containerenv"), { inside: true, image: false }, "Podman");
-  assert.deepEqual(containerOf({}, () => false), { inside: false, image: false }, "a host");
-  assert.match(await readFile(new URL("../docker/Dockerfile", import.meta.url), "utf8"), /^ENV .*\bAGENTRUN_IN_IMAGE=1\b/m, "the image sets it");
+// itself (the Dockerfile's ENV), and any other container is told by computer's containerSigns: a runtime's mark, or a
+// container's cgroup (a pod's), where compose.yaml at the repository's root is not there to use.
+// A line of /proc/self/cgroup: hierarchy id, controllers (none under cgroup v2), path.
+const cgroup = (id, controllers, path) => `${id}:${controllers}:${path}\n`;
+const rootWith = async (t, files) => {
+  const root = await scratch(t);
+  for (const [path, text] of Object.entries(files)) {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), text);
+  }
+  return root;
+};
+test("which container: AgentRun's image says so itself; a runtime's mark or a container's cgroup alone is another container", async (t) => {
+  const host = await rootWith(t, { "/proc/self/cgroup": cgroup(0, "", "/") });
+  const pod = await rootWith(t, { "/proc/self/cgroup": cgroup(0, "", "/kubepods/burstable/pod0a1b2c/cri-containerd-3f2e1d") });
+  assert.deepEqual(containerOf({ [IMAGE_ENV]: "1" }, pod), { where: "image" }, "the image in a Kubernetes pod");
+  assert.deepEqual(containerOf({ [IMAGE_ENV]: "1" }, await rootWith(t, { "/.dockerenv": "" })), { where: "image" }, "the image under Docker");
+  assert.deepEqual(containerOf({}, await rootWith(t, { "/.dockerenv": "" })), { where: "other" }, "a dev container");
+  assert.deepEqual(containerOf({}, await rootWith(t, { "/run/.containerenv": "" })), { where: "other" }, "Podman");
+  assert.deepEqual(containerOf({}, pod), { where: "other" }, "another image in a Kubernetes pod: its cgroup alone says so");
+  const podV1 = await rootWith(t, { "/proc/self/cgroup": cgroup(12, "pids", "/kubepods/burstable/pod0f00/abc") + cgroup(1, "name=systemd", "/kubepods/burstable/pod0f00/abc") });
+  assert.deepEqual(containerOf({}, podV1), { where: "other" }, "a pod under cgroup v1");
+  assert.deepEqual(containerOf({}, host), { where: "host" }, "a host: a cgroup namespace's bare root says nothing");
+  assert.deepEqual(containerOf({}, await rootWith(t, {})), { where: "host" }, "a host with no /proc to read");
+  const sets = new RegExp(`^ENV .*\\b${IMAGE_ENV}=1\\b`, "m");
+  assert.match(await readFile(new URL("../docker/Dockerfile", import.meta.url), "utf8"), sets, "the image sets it");
 });
 
 test("a server in another container (not AgentRun's image) gets the host's words, said to be the container's, never compose.yaml", async (t) => {
+  const other = { where: "other", exists: () => false };
   const failing = await unreachableDocker(t, "unix:///var/run/docker.sock");
-  const other = { inside: true, image: false, exists: () => false };
-  const inOther = `This server runs in a container. ${NO_DAEMON}`;
-  assert.deepEqual((await placeOffers({ PATH: failing }, { container: other })).find((offer) => offer.id === "docker"), { id: "docker", available: false, reason: inOther });
-  const ask = await askDockerDaemon({ PATH: failing }, AbortSignal.timeout(10_000), { file: await groupFile(t, []), user: "node", ids: [1000] }, other);
-  assert.deepEqual(ask, { up: false, absent: true, reason: inOther });
+  assert.deepEqual((await placeOffers({ PATH: failing }, { container: other })).find((offer) => offer.id === "docker"), { id: "docker", available: false, reason: `This server runs in a container. ${NO_DAEMON}` });
+  // Settings → Computers shows a refused socket's words (an absent daemon's it words as none, noDockerWords).
+  const denied = await deniedDocker(t, CLI_DENIED);
+  const ask = await askDockerDaemon({ PATH: denied }, AbortSignal.timeout(10_000), { file: await groupFile(t, []), user: "node", ids: [1000] }, other);
+  assert.deepEqual(ask, { up: false, absent: false, reason: `This server runs in a container. ${JOIN_GROUP}` });
 });
 
-test("a refused docker socket's reason is the one capabilities, the default reason and the banner say, default or listed", { timeout: 60_000 }, async (t) => {
+test("a --faux server in AgentRun's image (the deploy walk's) says the image's words, as a real one does", { timeout: 60_000 }, async (t) => {
+  const bin = await unreachableDocker(t, "unix:///nonexistent/docker.sock");
+  withEnv(t, { PATH: `${bin}:${dirname(process.execPath)}`, [IMAGE_ENV]: "1" }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
+  // undefined: the server's own marks, not the host the suite's servers are pinned to.
+  const server = await serve(t, { faux: PROBE, probeContainer: undefined });
+  assert.equal(dockerOf(await placesOf(server.api)).reason, DOCKER_NO_SOCKET);
+});
+
+test("a refused docker socket's reason is the one capabilities and the banner say, default or listed; the default reason names a box", { timeout: 60_000 }, async (t) => {
   const bin = await deniedDocker(t, CLI_DENIED);
   withEnv(t, { PATH: `${bin}:${dirname(process.execPath)}` }, ["AGENTRUN_BOXES", "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
   const server = await serve(t, { faux: PROBE });
   const places = await placesOf(server.api);
   const reason = dockerOf(places).reason;
   assert.ok([NOT_IN_GROUP, JOIN_GROUP].includes(reason), reason);
-  assert.equal(places.default_reason, `new agents run on the runner, because the docker box is unavailable here: ${reason}`);
-  assert.equal(server.boxesLine, `Boxes: none, so new agents run on the runner. ${reason}.`);
+  // The group's fix (usermod, then a restart) is in the refusal's words too, not only in capabilities and the banner.
+  assert.equal(places.default_reason, nameABox(reason));
+  const refused = await server.api("POST", "/agents", fresh("plain"));
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.error.fields.map((one) => [one.field, one.reason, one.message]), [["definition.place", "missing", nameABox(reason)]]);
+  assert.equal(server.boxesLine, `Boxes: none, so a new agent must name its place: a box, or the runner. ${reason}.`);
   withEnv(t, { AGENTRUN_BOXES: "docker" });
   const listed = await serve(t, { faux: PROBE });
   assert.ok(listed.boxesLine.includes(`docker: ${reason}.`), listed.boxesLine);
@@ -250,22 +286,22 @@ test("an explicit AGENTRUN_BOXES wins: a list probes only what it names, so dayt
   const places = await placesOf(server.api);
   assert.deepEqual(dockerOf(places), { id: "docker", available: false, state: "unavailable", reason: "not enabled on this server: start AgentRun with AGENTRUN_BOXES=docker,daytona" });
   assert.equal(places.boxes.find((box) => box.id === "daytona").reason, "needs DAYTONA_API_KEY");
-  assert.deepEqual(places.default_place, RUNNER);
+  assert.equal(places.default_place, null);
   assert.deepEqual(docker.calls(), [], "no docker command ran");
   assert.ok(server.boxesLine.startsWith("Boxes: none is ready, so sandbox agents do not run here."), server.boxesLine);
   assert.ok(!server.boxesLine.includes("on by default"), server.boxesLine);
 });
 
 for (const value of ["", "none", " none "]) {
-  test(`AGENTRUN_BOXES=${JSON.stringify(value)} sets up no box: nothing is probed, and new agents run on the runner`, { timeout: 60_000 }, async (t) => {
+  test(`AGENTRUN_BOXES=${JSON.stringify(value)} sets up no box: nothing is probed, and a new agent names its place`, { timeout: 60_000 }, async (t) => {
     const docker = await fakeDocker(t, value);
     assert.deepEqual([...enabledBoxes(process.env)], []);
     const server = await serve(t, { faux: PROBE });
     const places = await placesOf(server.api);
     assert.ok(places.boxes.every((box) => !box.available), JSON.stringify(places.boxes));
     assert.equal(dockerOf(places).reason, NOT_ENABLED);
-    assert.deepEqual(places.default_place, RUNNER);
-    assert.equal(places.default_reason, `new agents run on the runner, because the docker box is unavailable here: ${NOT_ENABLED}`);
+    assert.equal(places.default_place, null);
+    assert.equal(places.default_reason, nameABox(NOT_ENABLED));
     assert.deepEqual(docker.calls(), [], "no docker command ran");
     assert.ok(server.boxesLine.startsWith("Boxes: none is ready, so sandbox agents do not run here."), server.boxesLine);
   });

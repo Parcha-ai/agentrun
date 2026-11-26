@@ -1,16 +1,19 @@
-import { ArrowUpRight, Check, FileCode, GitPullRequest, Github, RefreshCw, ScanSearch, Sparkles, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowRight, ArrowUpRight, Check, Circle, FileCode, GitPullRequest, Github, RefreshCw, ScanSearch, Sparkles, TriangleAlert, X } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Banner, Button, buttonVariants, Checkbox, Chip, Dialog, Field, Input, Picker, Spinner, useToast } from "@/components/ui";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { type Client, ClientError } from "@/lib/client";
-import { githubFormAction } from "@/lib/github";
+import { githubFormAction, githubOrgOf } from "@/lib/github";
 import { type Problem, problem } from "@/lib/problem";
 import { httpHref } from "@/lib/safeUrl";
 import { agentVariable, IMPACT, keepReturn, LANGUAGE, permissionLabel, readinessWords, repoHref, same, scanLine, scanning, suggestionsHash, TIER } from "@/lib/suggestions";
 import { cn } from "@/lib/utils";
-import type { GitHubRepository, ScannedRepository, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList } from "@/lib/v2";
+import type { Agent, GitHubRepository, ScannedRepository, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList } from "@/lib/v2";
+import { agentHarness, HarnessIcon } from "@/components/HarnessIcon";
+import { harnessLabel } from "@/lib/agentForm";
+import { when } from "@/lib/format";
 
 /** How often the page reads the list again while a scan runs. */
 const SCAN_POLL_MS = 3_000;
@@ -81,19 +84,19 @@ export function SuggestionsPage({ v2, repo, go }: { v2: Client; repo?: string; g
           </div>
         )}
         {[...list.repositories].sort((a, b) => (same(a.repo, repo) ? -1 : same(b.repo, repo) ? 1 : 0)).map((r) => (
-          <RepositorySection key={r.repo} v2={v2} r={r} suggestions={list.suggestions.filter((s) => same(s.repo, r.repo))} busy={busy}
+          <RepositorySection key={r.repo} v2={v2} r={r} round={round} suggestions={list.suggestions.filter((s) => same(s.repo, r.repo))} busy={busy}
             onDiscard={(s) => void discard(s)} onCreate={(s) => { setDiscarded(null); setCreating(s); }} onScanned={() => void read()} />
         ))}
       </div>
     );
 
   return (
-    <section className="flex min-h-full flex-col">
+    <section className={pageClass}>
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
         <h1 className={pageTitleClass}><Sparkles className="size-4" aria-hidden />Suggested agents</h1>
         {list && <Button size="sm" variant="ghost" className="ml-auto" onClick={() => { setRound((n) => n + 1); void read(); }} aria-label="Read the suggestions and repositories again"><RefreshCw aria-hidden />Refresh</Button>}
       </header>
-      <div className="p-5 md:p-6">{body}</div>
+      <div data-page-body className={cn(pageBodyClass, "p-5 md:p-6")}>{body}</div>
       {creating && <CreateDialog v2={v2} suggestion={creating} onClose={() => setCreating(null)} onCreated={() => void read()} go={go} />}
     </section>
   );
@@ -111,9 +114,12 @@ function ConnectGitHub({ v2 }: { v2: Client }) {
   useEffect(() => { if (opening) form.current?.submit(); }, [opening]);
   const connect = async () => {
     if (busy) return;
+    // A pasted github.com address or @name is its login; anything else is said here, and nothing is sent.
+    const typed = githubOrgOf(org);
+    if (typed.problem) { setSaid({ text: typed.problem }); return; }
     setBusy(true); setSaid(null);
     try {
-      const start = await v2.connectGitHub(org.trim() || undefined, write ? "write" : undefined);
+      const start = await v2.connectGitHub(typed.org, write ? "write" : undefined);
       const action = githubFormAction(start.action, httpHref);
       if (!action) { setSaid({ text: "GitHub's address didn't look right, so nothing was sent." }); setBusy(false); return; }
       keepReturn("#/suggestions");
@@ -141,7 +147,7 @@ function ConnectGitHub({ v2 }: { v2: Client }) {
         </ol>
         <div className="mt-5 flex flex-wrap items-end gap-3">
           <Field label="Organization" optional note="The App is made under it; leave it empty for your own account." className="min-w-[240px] flex-1">
-            <Input value={org} onChange={(e) => setOrg(e.target.value)} disabled={busy} placeholder="your-org" />
+            <Input value={org} onChange={(e) => setOrg(e.target.value)} disabled={busy} placeholder="your-org or github.com/your-org" />
           </Field>
         </div>
         <Checkbox className="mt-4" checked={write} onChange={(e) => setWrite(e.target.checked)} disabled={busy}
@@ -280,7 +286,7 @@ function ScanBox({ v2, repo, round = 0, scanned, onStarted }: { v2: Client; repo
 }
 
 /** One scanned repository: its scan, its open suggestions and the ones created. */
-function RepositorySection({ v2, r, suggestions, busy, onDiscard, onCreate, onScanned }: { v2: Client; r: ScannedRepository; suggestions: Suggestion[]; busy: string | null; onDiscard: (s: Suggestion) => void; onCreate: (s: Suggestion) => void; onScanned: () => void }) {
+function RepositorySection({ v2, r, suggestions, busy, onDiscard, onCreate, onScanned, round = 0 }: { v2: Client; r: ScannedRepository; suggestions: Suggestion[]; busy: string | null; onDiscard: (s: Suggestion) => void; onCreate: (s: Suggestion) => void; onScanned: () => void; round?: number }) {
   const open = suggestions.filter((s) => s.status === "open");
   const created = suggestions.filter((s) => s.status === "created");
   const [rescanning, setRescanning] = useState(false);
@@ -305,7 +311,7 @@ function RepositorySection({ v2, r, suggestions, busy, onDiscard, onCreate, onSc
         </span>
       </div>
       {said && <p role="alert" className="text-body text-destructive-text">{said}</p>}
-      {r.scan.app && <p className="max-w-prose text-lead text-muted-foreground">{r.scan.app}</p>}
+      {r.scan.app && <p className="text-lead text-muted-foreground">{r.scan.app}</p>}
       {r.scan.status === "running" && (
         <p role="status" className="flex items-center gap-2 border px-4 py-6 text-body text-muted-foreground"><Spinner />Reading {r.repo}: its README, its layout, then the code where language is judged by hand. This page updates by itself.</p>
       )}
@@ -329,12 +335,7 @@ function RepositorySection({ v2, r, suggestions, busy, onDiscard, onCreate, onSc
           {open.map((s) => <li key={s.id} className="min-w-0"><SuggestionCard s={s} busy={busy === s.id} onDiscard={() => onDiscard(s)} onCreate={() => onCreate(s)} /></li>)}
         </ul>
       )}
-      {created.length > 0 && (
-        <div>
-          <h3 className="caps mb-2 text-small font-semibold text-muted-foreground">Created</h3>
-          <ul className="divide-y border">{created.map((s) => <CreatedRow key={s.id} s={s} onRetry={() => onCreate(s)} />)}</ul>
-        </div>
-      )}
+      {created.length > 0 && <CreatedSection v2={v2} repo={r.repo} created={created} onRetry={onCreate} round={round} />}
     </section>
   );
 }
@@ -384,19 +385,105 @@ function SuggestionCard({ s, busy, onDiscard, onCreate }: { s: Suggestion; busy:
   );
 }
 
-/** A created suggestion: its agent here and its pull request, or why the pull request is not there yet. */
-function CreatedRow({ s, onRetry }: { s: Suggestion; onRetry: () => void }) {
-  const pull = s.created?.pull_request;
-  const href = httpHref(pull?.url);
+/** The agents created from a repository's suggestions, each read here for its harness and its runs: `undefined` while
+ *  it is read, `null` once it is gone (deleted), `"unread"` when the read failed. */
+type CreatedAgent = Agent | null | "unread" | undefined;
+function useCreatedAgents(v2: Pick<Client, "getAgent">, ids: string[], round: number): Record<string, CreatedAgent> {
+  const [agents, setAgents] = useState<Record<string, CreatedAgent>>({});
+  const key = ids.join(" ");
+  useEffect(() => {
+    let live = true;
+    for (const id of ids) {
+      v2.getAgent(id).then(({ agent }) => { if (live) setAgents((a) => ({ ...a, [id]: agent })); },
+        (e) => { if (live) setAgents((a) => ({ ...a, [id]: e instanceof ClientError && e.status === 404 ? null : "unread" })); });
+    }
+    return () => { live = false; };
+  }, [v2, key, round]); // eslint-disable-line react-hooks/exhaustive-deps
+  return agents;
+}
+
+/** What a repository's suggestions became: one card per created agent, how far along it is (created, its pull request,
+ *  its first call), and the one thing to do next. */
+function CreatedSection({ v2, repo, created, onRetry, round }: { v2: Pick<Client, "getAgent">; repo: string; created: Suggestion[]; onRetry: (s: Suggestion) => void; round: number }) {
+  // Read again on each Refresh (`round`): a first call made since shows, and a read that failed is tried again.
+  const agents = useCreatedAgents(v2, created.flatMap((s) => s.created ? [s.created.agent_id] : []), round);
+  const runs = created.reduce((n, s) => { const a = s.created && agents[s.created.agent_id]; return n + (a && typeof a === "object" ? a.runs.count : 0); }, 0);
+  const headingId = `created-${repo.replace(/[^A-Za-z0-9]/g, "-")}`;
   return (
-    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5 text-body">
-      <Check className="size-4 shrink-0 text-success-text" aria-hidden />
-      <span className="min-w-0 flex-1 font-semibold">{s.title}</span>
-      {s.created && <a href={`#/agents/${encodeURIComponent(s.created.agent_id)}`} className={cn("text-small text-muted-foreground", link)}>The agent</a>}
-      {href && pull ? <a href={href} target="_blank" rel="noopener noreferrer" className={cn("inline-flex items-center gap-1 font-mono text-small", link)}><GitPullRequest className="size-3.5" aria-hidden />#{pull.number}<ArrowUpRight className="size-3.5" aria-hidden /></a>
-        : <Button size="xs" onClick={onRetry}>Open the pull request</Button>}
-      {s.created?.pull_error && !pull && <p className="w-full text-small text-destructive-text">{s.created.pull_error}</p>}
+    <section aria-labelledby={headingId} className="space-y-3 pt-2">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <h3 id={headingId} className="caps flex items-center gap-2 text-small font-semibold text-success-text"><Check className="size-4" aria-hidden />Created<span className="font-normal text-muted-foreground">{created.length}</span></h3>
+        <p className="text-small text-muted-foreground">{created.length === 1 ? "One agent" : `${created.length} agents`} from {repo}{runs ? `, ${runs} ${runs === 1 ? "run" : "runs"} so far` : ""}. A pull request changes none of your code: your app calls its agent once you wire in the client it adds.</p>
+      </div>
+      <ul aria-label={`Created from ${repo}`} className="grid gap-3 xl:grid-cols-2">
+        {created.map((s) => <li key={s.id} className="min-w-0"><CreatedCard s={s} agent={s.created ? agents[s.created.agent_id] : undefined} onRetry={() => onRetry(s)} /></li>)}
+      </ul>
+    </section>
+  );
+}
+
+type StepTone = "done" | "waiting" | "problem";
+const STEP: Record<StepTone, { edge: string; icon: typeof Check; iconClass: string }> = {
+  done: { edge: "border-success/60", icon: Check, iconClass: "text-success-text" },
+  waiting: { edge: "border-border-strong", icon: Circle, iconClass: "text-muted-foreground" },
+  problem: { edge: "border-warning/60", icon: TriangleAlert, iconClass: "text-warning-text" },
+};
+function Step({ tone, label, children }: { tone: StepTone; label: string; children: ReactNode }) {
+  const { edge, icon: Icon, iconClass } = STEP[tone];
+  return (
+    <li data-step={label} data-tone={tone} className={cn("min-w-0 border-t pt-2", edge)}>
+      <p className="caps flex items-center gap-1.5 text-label text-muted-foreground"><Icon className={cn("size-3.5 shrink-0", iconClass)} aria-hidden />{label}<span className="sr-only">: {tone === "done" ? "done" : tone === "problem" ? "needs you" : "not yet"}</span></p>
+      <div className="mt-1 min-w-0 break-words text-small">{children}</div>
     </li>
+  );
+}
+
+/** One created agent: when it was made, what it takes and answers, how far along it is, and what to do next. */
+function CreatedCard({ s, agent, onRetry }: { s: Suggestion; agent: CreatedAgent; onRetry: () => void }) {
+  const made = s.created;
+  const pull = made?.pull_request;
+  const pullHref = httpHref(pull?.url);
+  const agentHref = made ? `#/agents/${encodeURIComponent(made.agent_id)}` : undefined;
+  const site = s.integration.call_site;
+  const siteHref = httpHref(site.url);
+  const here = agent && typeof agent === "object" ? agent : undefined;
+  const impact = IMPACT[s.impact];
+  return (
+    <article aria-label={s.title} data-created={s.key} className="flex h-full min-w-0 flex-col border border-success/40 bg-card">
+      <p className="caps flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-success/30 bg-success/10 px-5 py-1.5 text-label text-success-text">
+        <Check className="size-3.5 shrink-0" aria-hidden />Created{s.decided_at ? ` ${when(s.decided_at)}` : ""}
+        {made && <span className="ml-auto font-mono normal-case tracking-normal text-muted-foreground">{made.branch ?? made.agent_id}</span>}
+      </p>
+      <div className="flex flex-1 flex-col px-5 py-4">
+        <div className="flex items-start gap-2">
+          <span data-agent-icon className="flex h-7 shrink-0 items-center">{here ? <HarnessIcon harness={agentHarness(here)} label={harnessLabel(here.definition.harness ?? "pi")} /> : <span className="size-5" aria-hidden />}</span>
+          <h4 className="min-w-0 flex-1 break-words text-prose font-semibold">{s.title}</h4>
+          <Chip tone={impact.tone}>{impact.label}</Chip>
+        </div>
+        <p className="mt-1.5 text-lead text-muted-foreground">{s.summary}</p>
+        {/* What it does, as a flow: what the app sends, the agent, what it answers. */}
+        <div aria-label="What it takes and answers" className="mt-4 flex flex-wrap items-center gap-x-2 gap-y-1.5 font-mono text-small">
+          <span className="flex flex-wrap items-center gap-1">{s.agent.inputs.map((f) => <code key={f.name} className="bg-muted px-1.5 py-0.5">{f.name}{f.required ? "" : "?"}</code>)}</span>
+          <ArrowRight className="size-3.5 shrink-0 text-muted-foreground" aria-label="into" />
+          <span className="border border-border-strong px-2 py-0.5 font-semibold">{here?.definition.name ?? s.agent.name}</span>
+          <ArrowRight className="size-3.5 shrink-0 text-muted-foreground" aria-label="which answers" />
+          <span className="flex flex-wrap items-center gap-1">{s.agent.output.map((f) => <code key={f.name} className="bg-muted px-1.5 py-0.5">{f.name}</code>)}</span>
+        </div>
+        <ol aria-label="How far along it is" className="mt-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.6fr)]">
+          <Step tone="done" label="Agent">{agentHref && agent !== null ? <a href={agentHref} className={link}>{here?.definition.name ?? s.agent.name}</a> : <span className="text-muted-foreground">Removed from this server</span>}</Step>
+          {pull ? <Step tone="done" label="Pull request">{pullHref ? <a href={pullHref} target="_blank" rel="noopener noreferrer" className={cn("inline-flex items-center gap-1 font-mono", link)}><GitPullRequest className="size-3.5" aria-hidden />#{pull.number}<ArrowUpRight className="size-3.5" aria-hidden /></a> : <span className="font-mono">#{pull.number}</span>}</Step>
+            : <Step tone="problem" label="Pull request"><span className="text-warning-text">{made?.pull_error ?? "Not opened yet."}</span></Step>}
+          {here && here.runs.count > 0
+            ? <Step tone="done" label="Called">{here.runs.count} {here.runs.count === 1 ? "run" : "runs"}{here.runs.live ? <span className="text-primary-text"> · {here.runs.live} live</span> : null}</Step>
+            : <Step tone="waiting" label="First call"><span className="text-muted-foreground">{agent === "unread" ? "Its runs couldn't be read." : <>{pull ? "Wire its client in at " : "From "}{/* Wraps whole, onto its own line where it must; the step breaks only a path too long for a line. */}{siteHref ? <a href={siteHref} target="_blank" rel="noopener noreferrer" className={cn("font-mono", link)}>{site.path}:{site.line}</a> : <span className="font-mono">{site.path}:{site.line}</span>}{pull ? `, and set the variables #${pull.number} lists` : ""}</>}</span></Step>}
+        </ol>
+      </div>
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t px-4 py-3">
+        {agentHref && agent !== null && <a href={agentHref} className={buttonVariants({ size: "sm" })} aria-label={`Open ${s.title}'s agent`}>Open the agent</a>}
+        {pull && pullHref ? <a href={pullHref} target="_blank" rel="noopener noreferrer" className={buttonVariants({ size: "sm", variant: "primary" })}><GitPullRequest aria-hidden />Review #{pull.number}<ArrowUpRight aria-hidden /></a>
+          : !pull && <Button size="sm" variant="primary" onClick={onRetry}><GitPullRequest aria-hidden />Open the pull request</Button>}
+      </div>
+    </article>
   );
 }
 
@@ -458,7 +545,7 @@ function CreateDialog({ v2, suggestion, onClose, onCreated, go }: { v2: Client; 
           <div>
             <h3 className="caps mb-1.5 text-small font-semibold">Set in your app's environment</h3>
             <dl className="divide-y border font-mono text-small">
-              {[["AGENTRUN_URL", location.origin], ["AGENTRUN_API_KEY", "an API key of this server: keep it in your secrets"], [agentVariable(done.key), done.created!.agent_id]].map(([k, v]) => (
+              {[["AGENTRUN_BASE_URL", `${location.origin}/v2`], ["AGENTRUN_API_KEY", "an API key of this server: keep it in your secrets"], [agentVariable(done.key), done.created!.agent_id]].map(([k, v]) => (
                 <div key={k} className="flex flex-wrap gap-x-3 px-3 py-1.5"><dt className="font-semibold">{k}</dt><dd className="min-w-0 break-all text-muted-foreground">{v}</dd></div>
               ))}
             </dl>
