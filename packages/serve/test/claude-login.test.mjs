@@ -356,7 +356,7 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   const saved = { get: async () => row };
   assert.equal(await loginForRun(saved, own, env, "claude-agent", { mode: "runner" }), undefined);
   // On, a runner place goes on the login (with the person's home, the env's HOME) and a sandbox place on the keys.
-  assert.deepEqual(await loginForRun(saved, own, { HOME: UP }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: UP });
+  assert.deepEqual(await loginForRun(saved, own, { HOME: UP }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: UP, own: true });
   assert.equal(await loginForRun(saved, own, {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
 });
 
@@ -719,7 +719,7 @@ test("this machine's login honours CLAUDE_SECURESTORAGE_CONFIG_DIR in the server
   assert.deepEqual(claude.claudeLoginEnv(folderEmpty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
   // A relative one is not taken, as with CLAUDE_CONFIG_DIR; AgentRun's own login never reads it.
   assert.deepEqual(claude.claudeSignInEnv(at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "secure" }), "linux"), { HOME: UP, ANTHROPIC_CONFIG_DIR: profiles });
-  assert.deepEqual(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: UP });
+  assert.deepEqual(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: UP, own: true });
 
   // A server started with it: the view names it, and the sign-in and every status check keep the tokens there.
   const secure = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-secure-dir-"));
@@ -1337,7 +1337,7 @@ test("a HOME the server's user does not own is not the person's home: the login 
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const saved = { get: async () => settingFor("agentrun", data) };
-  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own, homeApart: true }, "a run's CLI runs in that user's own home");
+  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own, homeApart: true, own: true }, "a run's CLI runs in that user's own home");
 });
 
 // Where the server's user owns neither its HOME nor its own home (a service account whose home is /nonexistent, with a

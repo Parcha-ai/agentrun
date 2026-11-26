@@ -445,13 +445,15 @@ export type LoginAt = { login: ClaudeAgentLogin; toMake: readonly string[]; refu
  *  runs on a copy of the account file (the harness's claudeLoginStatus). Every login carries the person's home as
  *  `userHome`, read here once (homeOf), so the status check, the sign-in and a run on macOS all run in that one home
  *  whatever reads it later (the harness's personHome), and `homeApart` where the env's HOME was not that home (homeOf's
- *  `apart`). The home and the folders the env gives are the real paths the walk ended in. */
+ *  `apart`). AgentRun's carries `own`. The home and the folders the env gives are the real paths the walk ended in. */
 export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>> = process.env, uid: number | undefined = process.geteuid?.()): LoginAt {
   const checked = homeOf(env, uid);
   if (checked.refused !== undefined) return { refused: checked.refused };
   const { home, apart } = checked;
   const homeAt = { userHome: home, ...(apart ? { homeApart: true } : {}) };
-  if (place === "agentrun") return { login: { dir: agentRunLoginDir(data), profiles: join(agentRunLoginDir(data), "anthropic"), ...homeAt }, toMake: [] };
+  // `own`: no CLI of the person's uses AgentRun's folder, so the harness may delete the Keychain item a sign-in left
+  // there under "unknown" (its dropUnknownItem).
+  if (place === "agentrun") return { login: { dir: agentRunLoginDir(data), profiles: join(agentRunLoginDir(data), "anthropic"), ...homeAt, own: true }, toMake: [] };
   const real = new Map<string, string>();
   const toMake: string[] = [];
   for (const [name, folder] of envFolders(env)) {
