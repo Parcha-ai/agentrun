@@ -1,5 +1,5 @@
 import { envGatewayInForce, readSavedGateway, savedGatewayIn, savedGatewayMarked, SAVED_GATEWAY_ENV, withSavedGateway } from "../model-gateway.js";
-import { GATEWAY_KEY_ENV } from "../model.js";
+import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { heldRedactor } from "./redact.js";
 import { envValue } from "../key-meta.js";
 import { createSdkLoop } from "./sdk-loop.js";
@@ -88,6 +88,9 @@ function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined
  *  (run-model-key.ts noServerKeyFor), nothing sent. */
 export async function sdkCompileEnv(deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env">, claim: Parameters<typeof withRequestMetadata>[1]): Promise<{ readonly env: NodeJS.ProcessEnv; readonly off: string | undefined }> {
   const base = deps.env ?? process.env;
+  // On a --faux runner the turn's model is the faux model (model.ts chooseModel), which sends no key: none is read, and
+  // the turn is never skipped for want of one.
+  if (base[FAUX_ENV]) return { env: withRequestMetadata(withModelKeys(base, {}), claim), off: undefined };
   const env = withRequestMetadata(withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base })), claim);
   return { env, off: noServerKeyFor(env, "An SDK run's compile turn") };
 }
