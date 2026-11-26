@@ -137,6 +137,14 @@ test("the loader passes a recipe's allowFile and its title tie through, to the a
   assert.deepEqual(acpRecipeFor(tied, "/opt/agent", tied.release.archives[PLATFORM], route).quirks, { permissionTie: "title" });
 });
 
+test("the loader passes a recipe's MCP configs through to the adapter's recipe as they are: ~/ in HOME, any other in the work directory", async () => {
+  const { acpRecipeFor } = await import("../dist/harness-recipe-entry.js");
+  const recipe = parseRecipe(JSON.stringify(recipeOf(undefined, { ...TIED, mcpConfigs: ["~/.agent/mcp.json", ".agent/mcp.json"] })));
+  assert.deepEqual(recipe.mcpConfigs, ["~/.agent/mcp.json", ".agent/mcp.json"]);
+  assert.deepEqual(acpRecipeFor(recipe, "/opt/agent", recipe.release.archives[PLATFORM], { on: "keys" }).mcpConfigs, ["~/.agent/mcp.json", ".agent/mcp.json"]);
+  assert.equal(acpRecipeFor(parseRecipe(JSON.stringify(recipeOf())), "/opt/agent", recipe.release.archives[PLATFORM], { on: "keys" }).mcpConfigs, undefined);
+});
+
 test("the loader passes a recipe's announces field through to the adapter's recipe, and refuses one in another shape with words that give its shape", async () => {
   // Which tool of ours an agent's tool_call names is read from the field this names, never from its title.
   const { acpRecipeFor } = await import("../dist/harness-recipe-entry.js");
@@ -205,6 +213,8 @@ const BROKEN = [
   }],
   ["rule 3, private paths: a file outside HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { files: { "/etc/model-agent.json": "{}" } })],
   ["rule 3, private paths: state that climbs out of HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { state: ["../shared/sessions"] })],
+  ["rule 3, private paths: an MCP config that climbs out of HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { mcpConfigs: ["~/../.cursor/mcp.json"] })],
+  ["rule 3, private paths: an MCP config outside the work directory", RECIPE_CODES.paths, () => recipeOf(undefined, { mcpConfigs: ["/etc/cursor/mcp.json"] })],
   ["rule 3, private paths: an allowFile outside HOME", RECIPE_CODES.paths, () => recipeOf(undefined, { allowFile: { path: "/etc/goose/permission.yaml", form: "goose-permission" } })],
   ["an allowFile in a form no agent reads", RECIPE_CODES.invalid, () => recipeOf(undefined, { allowFile: { path: ".config/goose/permission.yaml", form: "yaml" } })],
   ["an allowFile at a path its files also write", RECIPE_CODES.invalid, () => recipeOf(undefined, { files: { ".config/goose/permission.yaml": "{}" } })],

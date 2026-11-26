@@ -77,8 +77,9 @@ export function namesServer(announces: AcpAnnounces | undefined): boolean {
  *  (`tie`, quirks.permissionTie: the tie answers a request for one of our tools' calls without the host's gate, so
  *  another server must never pass for ours), whose prefix joins by one character (joinsByOne) or that reads the
  *  server's name from a field (namesServer), `ar` and 6 random hex digits, no `_` or `-`, which no server set up before
- *  the start can spell. It is the start's own, not secret from the agent: its model reads it in its tool list. Under
- *  any other (Goose's `agentrun__`, no tie, whose configuration is all ours and whose proxy offers its model our tools
+ *  the run can spell. A run keeps its first start's and gives it again at each later one, unless a config the agent
+ *  reads declares it by then (server-name.ts). It is not secret from the agent: its model reads it in its tool list.
+ *  Under any other (Goose's `agentrun__`, no tie, whose configuration is all ours and whose proxy offers its model our tools
  *  alone), `agentrun`. As long as `agentrun`, no longer: each of our tools is named with it, under the agent's cap
  *  (TOOL_NAME_CAP), so a tool fits as it would under `agentrun`. */
 export function mcpServerName(announces: AcpAnnounces | undefined, tie?: string): string {

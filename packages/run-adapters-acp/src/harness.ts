@@ -22,10 +22,11 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, journalTurn, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ResultBudget, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, mcpServerName, nameCall, namesTooLong, otherServer, ourTool, permissionCallId, toolsLeftOut, type AcpAnnounces } from "./calls.js";
+import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, MCP_SERVER, mcpServerName, nameCall, namesTooLong, otherServer, ourTool, permissionCallId, toolsLeftOut, type AcpAnnounces } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { allowFileText, homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
+import { configDeclaring, KEPT_SERVER, nameRefused, SERVER_STREAM, type ServerRecord } from "./server-name.js";
 import { startAgent, type AgentProcess } from "./host/agent.js";
 import { cutKeys, keysToCut } from "./host/key-cut.js";
 import type { ConfineChild } from "./host/child.js";
@@ -624,13 +625,6 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       else absent.push(name);
     }
     if (absent.length) throw new Error(`${ACP_CODES.keyMissing}: ${recipe.label ?? recipe.id} runs on ${absent.join(" and ")}, which this host does not hold; the agent was not started`);
-    // A tool of ours the agent would name past its cap is not listed (capped); the run is told which, and goes on.
-    const serverName = mcpServerName(recipe.announces, recipe.quirks?.permissionTie);
-    if (capped.length) {
-      const words = toolsLeftOut(recipe.label ?? recipe.id, announcesAt(recipe.announces, serverName)?.prefix ?? "", capped);
-      log("acp: tools left out of the agent's listing, named past its cap", { tools: capped });
-      ctx.live({ type: "notice", text: words });
-    }
     mkdirSync(base, { recursive: true, mode: 0o700 });
     // Everything the agent kept goes: what it starts with is the session's records, never an earlier process's files.
     for (const dir of [home, tmp]) {
@@ -640,6 +634,29 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     mkdirSync(root, { recursive: true, mode: 0o700 });
     const records = (await journal.read<StateRecord>(STATE_STREAM)).map((r) => r.data);
     restoreState(home, records);
+    // Our server's name (server-name.ts): under a per-start name, the one the run kept, unless a config the agent reads
+    // declares a server under it; then a fresh one, kept from now on, and the run is told once. The fixed name, as it is.
+    const minted = mcpServerName(recipe.announces, recipe.quirks?.permissionTie);
+    let serverName = minted;
+    if (minted !== MCP_SERVER) {
+      const kept = journal.records<ServerRecord>(SERVER_STREAM).map((r) => r.data?.name).filter((name): name is string => typeof name === "string" && KEPT_SERVER.test(name)).at(-1);
+      const file = kept === undefined ? undefined : configDeclaring(kept, recipe.mcpConfigs ?? [], home, root, log);
+      if (kept !== undefined && file === undefined) serverName = kept;
+      else {
+        journal.append(SERVER_STREAM, { name: minted, ...(file !== undefined ? { refused: kept, file } : {}) } satisfies ServerRecord);
+        await journal.flush();
+        if (file !== undefined) {
+          log("acp: a config the agent reads declares a server under the run's name; this start names ours afresh", { file, refused: kept, name: minted });
+          ctx.live({ type: "notice", text: nameRefused(recipe.label ?? recipe.id, file, kept!, minted) });
+        }
+      }
+    }
+    // A tool of ours the agent would name past its cap is not listed (capped); the run is told which, and goes on.
+    if (capped.length) {
+      const words = toolsLeftOut(recipe.label ?? recipe.id, announcesAt(recipe.announces, serverName)?.prefix ?? "", capped);
+      log("acp: tools left out of the agent's listing, named past its cap", { tools: capped });
+      ctx.live({ type: "notice", text: words });
+    }
     const own = new Set<string>();
     // The recipe's allowFile (Goose's permission file): the tools this start lists, in the agent's own form, and nothing
     // else, so the agent runs them unasked and our gate asks at the MCP call.

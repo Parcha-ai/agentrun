@@ -105,6 +105,10 @@ export interface Recipe {
    *  another tool is the agent's own; absent, calls are matched to MCP calls by their arguments alone (AcpAnnounces). */
   readonly announces?: { readonly tool: string; readonly server?: string; readonly prefix?: string; readonly args?: string; readonly extras?: readonly string[] };
   readonly state: readonly string[];
+  /** MCP config files the agent reads, each JSON with an `mcpServers` object: `~/<path>` in the private HOME, any other
+   *  a path in the work directory. One that declares a server under the run's own name for ours has it refused at a
+   *  start (the adapter's mcpConfigs). */
+  readonly mcpConfigs?: readonly string[];
   readonly declares: { readonly load: boolean; readonly mcp: "http" | "stdio" };
   /** `permissionTie: "title"`: the adapter answers the agent's permission request for one of our announced calls
    *  allow_once (Cursor's way); absent, every request goes to the server's gate. */
@@ -121,7 +125,7 @@ export class RecipeRefused extends Error {
 }
 
 /** The fields a recipe has. */
-const FIELDS = new Set(["id", "label", "release", "args", "keys", "keyMethod", "env", "model", "files", "allowFile", "announces", "state", "declares", "quirks", "signIn", "description", "$schema"]);
+const FIELDS = new Set(["id", "label", "release", "args", "keys", "keyMethod", "env", "model", "files", "allowFile", "announces", "state", "mcpConfigs", "declares", "quirks", "signIn", "description", "$schema"]);
 /** Fields that would run something of the recipe's own at install or start (rule 4). */
 const INSTALL_FIELDS = new Set(["install", "installCommand", "postinstall", "preinstall", "setup", "script", "scripts", "run", "hooks", "update"]);
 /** Fields that would name a binary other than the release's archive (rule 2). */
@@ -332,6 +336,8 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
   }
   if (r.state !== undefined && !strings(r.state)) say(RECIPE_CODES.paths, "state is a list of folders in the private HOME");
   else for (const path of (r.state as string[] | undefined) ?? []) if (!insideHome(path)) say(RECIPE_CODES.paths, `the state folder ${JSON.stringify(path)} must be inside the session's private HOME`);
+  if (r.mcpConfigs !== undefined && !strings(r.mcpConfigs)) say(RECIPE_CODES.paths, "mcpConfigs is a list of MCP config files the agent reads");
+  else for (const path of (r.mcpConfigs as string[] | undefined) ?? []) if (!insideHome(path.startsWith("~/") ? path.slice(2) : path)) say(RECIPE_CODES.paths, `the mcpConfigs file ${JSON.stringify(path)} must be ~/<a path inside the session's private HOME> or a path inside its work directory`);
 
   const declares = r.declares;
   if (!isPlain(declares) || typeof declares.load !== "boolean" || (declares.mcp !== "http" && declares.mcp !== "stdio")) say(RECIPE_CODES.invalid, 'declares is { "load": true or false, "mcp": "http" or "stdio" }');
@@ -369,6 +375,7 @@ export function parseRecipe(text: string): Recipe {
     ...(r.allowFile ? { allowFile: Object.freeze({ path: insideHome(r.allowFile.path)!, form: r.allowFile.form }) } : {}),
     ...(r.announces ? { announces: Object.freeze({ tool: r.announces.tool, ...(r.announces.server !== undefined ? { server: r.announces.server } : {}), ...(r.announces.prefix !== undefined ? { prefix: r.announces.prefix } : {}), ...(r.announces.args !== undefined ? { args: r.announces.args } : {}), ...(r.announces.extras !== undefined ? { extras: Object.freeze([...r.announces.extras]) } : {}) }) } : {}),
     state: (r.state ?? []).map((path) => insideHome(path)!),
+    ...(r.mcpConfigs?.length ? { mcpConfigs: Object.freeze([...r.mcpConfigs]) } : {}),
     declares: r.declares,
     quirks: r.quirks ?? {},
     ...(r.signIn ? { signIn: Object.freeze({ args: Object.freeze([...r.signIn.args]), homeArg: r.signIn.homeArg, ...(r.signIn.terms ? { terms: r.signIn.terms } : {}) }) } : {}),
