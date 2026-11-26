@@ -158,6 +158,16 @@ const CONTROL_PADS = [
   ["space overstrikes", "Z \b\b".repeat(300), "json"],
   ["raw CSI colours with a character past ASCII inside", "\u001b[0\u00e9m".repeat(300), "json"],
   ["percent-encoded CSI colours with a character past ASCII inside", "%1B%5B%30%C3%A9%6D".repeat(300), "json"],
+  // A percent-encoded U+FFFD is a character past ASCII like any other, and bytes that are no UTF-8 read as U+FFFD.
+  ["percent-encoded CSI colours with U+FFFD inside", "%1B%5B0%EF%BF%BDm".repeat(300), "json"],
+  ["percent-encoded CSI colours with a byte that is no UTF-8 inside", "%1B%5B0%FFm".repeat(300), "json"],
+  // A byte order mark is whitespace and default-ignorable: a terminal sequence passes over it, percent-encoded too.
+  ["percent-encoded CSI colours with a byte order mark inside", "%1B%5B0%EF%BB%BFm".repeat(300), "json"],
+  ["percent-encoded OSC titles with a byte order mark inside", "%1B%5D0%3Bt%EF%BB%BF%07".repeat(300), "json"],
+  ["percent-encoded escapes with a byte order mark inside", "%1B(%EF%BB%BFB".repeat(300), "json"],
+  // What a join view drops inside an escape (a colon, a no-break space) leaves the escape whole there.
+  ["raw escapes with a colon inside", "\u001b(:B".repeat(300), "json"],
+  ["raw escapes with a no-break space inside", "\u001b(\u00a0B".repeat(300), "json"],
   // Characters that show as a box or a blank: U+FFFE, the braille blank, a lone surrogate as JSON's escape.
   ["raw U+FFFE", "\ufffe".repeat(300), "json"],
   ["raw braille blanks", "\u2800".repeat(300), "json"],
