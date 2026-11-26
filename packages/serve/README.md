@@ -640,7 +640,8 @@ Where a new agent with no place goes, by mode:
   the default box is the one whose provider descriptor sets `defaultBox` (Docker's), never another box that answers. They
   end with why Docker's box is not here, in its entry's own words and fix (joining the docker group, say). A template
   apply, or an `agentrun deploy`, of a package that names no `tools` and no `computer` list is refused the same way,
-  whatever MCP tools it ticks: it is the agent that gets the box where Docker is here. `default_place` is `null`, and
+  whatever MCP tools it ticks: it is the agent that gets the box where Docker is here. Its `dry_run` is refused
+  alike, with no plan. `default_place` is `null`, and
   `default_reason` carries those words. A definition with no place that names a shell tool and the browser is refused at
   the shell tool instead: a box refuses the browser, so no place runs both, and the words say to remove one.
 - **No Docker, in Mode 2:** not refused. The runner's shell is Archil's serverless exec, so a new agent with no place
