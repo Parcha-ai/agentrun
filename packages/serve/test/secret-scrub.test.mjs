@@ -1958,6 +1958,29 @@ test("LVI (11-26): a full PS1 prompt (`user@host:~$`, `root@c:/#`, `[user@host d
   assert.deepEqual((await scrub(ls, { mode: "count" })).cuts, []);
 });
 
+test("LVI (11-26): a transcript flattened onto one line (a run's title) is cut as its lines were: the env command's output to the next prompt", async () => {
+  const seed = "Tallow4quarry62";
+  // A run's title is its first message with every run of blanks made one space (runs-over-store.ts prepareLaunch), so
+  // the command and its output share a line: the multi-line rule never sees an output line of its own.
+  const printed = await gone(`Say: Here is what I ran. $ printenv HOME=/root SYNTH_UNHELD=${seed} SHELL=/bin/sh $ ls README.md`, [seed], { flattened: true });
+  assert.equal(printed.text, "Say: Here is what I ran. $ printenv [redacted:env-dump 1 lines] $ ls README.md");
+  assert.deepEqual(printed.cuts.map((cut) => [cut.rule, cut.kind]), [["env-dump", "dump"]]);
+  // Clipped at the end (a title is 80 characters, "…" last): the dump runs to the text's end.
+  const clipped = await gone(`Say: $ env SYNTH_REGION=basin SYNTH_SEED=${seed.slice(0, 9)}…`, [seed.slice(0, 9)], { flattened: true });
+  assert.equal(clipped.text, "Say: $ env [redacted:env-dump 1 lines]");
+  // Through a pipe, after a full PS1 prompt, and env's own value a label rule cut already: one dump cut holds it all.
+  const piped = await gone(`user@host:~$ env | sort SYNTH_A=1 SYNTH_SEED=${seed} user@host:~$ ls`, [seed], { flattened: true });
+  assert.equal(piped.text, "user@host:~$ env | sort [redacted:env-dump 1 lines] user@host:~$ ls");
+  const labelled = await gone(`Say: $ env AWS_SECRET_ACCESS_KEY=${seed}Zx81 $ ls README`, [seed], { flattened: true });
+  assert.equal(labelled.text, "Say: $ env [redacted:env-dump 1 lines] $ ls README");
+  // Flattened, a command that prints nothing of the environment, or a dollar that is no prompt, keeps its words.
+  for (const text of ["Fix it: $ ls src $ npm test", "It costs $ 5 with SYNTH_RATE=low", "Run $ make build TARGET=web", "SYNTH_A=1 before any prompt"]) {
+    assert.deepEqual((await scrub(text, { mode: "count", flattened: true })).cuts, [], text);
+  }
+  // Not flattened (a row, a file): `env NAME=value command` on its line is a command, and its output is the next lines'.
+  assert.deepEqual((await scrub(`Run $ env SYNTH_MODE=dev node app.js`, { mode: "count" })).cuts, []);
+});
+
 test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {
   const wrappers = [
     (s) => s,
