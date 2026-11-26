@@ -171,6 +171,7 @@ test('the shim passes on a TERM that reaches it the moment its child has started
   assert.ok(alive(child), 'the child runs');
   shim.kill('SIGTERM');
   writeFileSync(gate, '');
+  assert.ok(!existsSync(`${gate}.expired`), 'the shim was still held in its spawn when the TERM was sent');
   assert.deepEqual(await closed, { code: null, signal: 'SIGKILL' }, 'the shim passed the TERM on and ends as its child did, killed a grace later');
   assert.deepEqual(await gone([child], 5_000), [], `the child (pid ${child}) still runs after the shim ended`);
 });
