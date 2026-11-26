@@ -271,7 +271,8 @@ const zipWith = <K, V>(keys: readonly K[], values: readonly V[]): [K, V][] => ke
 /** What summarize reads of agent `agentId` (LedgerRead, its revisions aside), over `listed` (its runs, as runs.list read
  *  them): the ledger rows of its ended runs that do a job or check one (neither imported nor archived, no workflow
  *  revision's run, no shadow), each on the path its end wrote, each with the workflow name its launch
- *  offered; every spend row; each run's audit shadow (open or ended); and the runs on no named disk (learn/learning-of.ts:
+ *  offered; every spend row; each run's audit shadow (open or ended); the runs whose own-key check has a replay still at
+ *  work (`openChecks`, one launch read per run of `listed` not yet final); and the runs on no named disk (learn/learning-of.ts:
  *  one on a named disk learns nothing and serves nothing). Each ended run has its row: its end wrote it, or the server's
  *  open (run-patch.ts backfillLedger) for one an earlier build ended; none is recorded here. `runIds`: the runs whose
  *  ledger is read (Learning.ledger), the agent's every run when absent. `named` false: no workflow name is read for the
@@ -297,8 +298,22 @@ async function ledgerReadOf(store: Store, agentId: string, listed: readonly RunR
     const shadow = shadowOf(byId, run.id);
     if (shadow) shadows.set(run.id, shadow);
   }
+  // The runs whose own-key check still runs: each replay not yet final names the run that pays it (its launch's
+  // `replay.paid_by`), whose check stays unknown until it ends, as that run's own read says (runFiguresOf). A replay's end
+  // writes its spend row with its ledger row, so one that ended is counted there.
+  const openChecks = new Set<string>();
+  for (const run of listed) {
+    if (FINAL_STATES.includes(run.state)) continue;
+    // A run with no launch row was started by no check (a replay's launch is written with it).
+    const launch = await records.runs.launch(run.id).catch((error: unknown) => {
+      if (error instanceof StoreLaunchMissing) return undefined;
+      throw error;
+    });
+    const paidBy = readLaunchBody(launch?.body)?.replay?.paidBy;
+    if (paidBy) openChecks.add(paidBy);
+  }
   // Only a name the launch offered is shown.
-  return { rows, spend, shadows, learning, compileAfter: COMPILE_AFTER_DEFAULT, ...(named ? { named: (row: LedgerRow) => offeredName(row.workflow, offered.get(row.runId)) } : {}) };
+  return { rows, spend, shadows, openChecks, learning, compileAfter: COMPILE_AFTER_DEFAULT, ...(named ? { named: (row: LedgerRow) => offeredName(row.workflow, offered.get(row.runId)) } : {}) };
 }
 
 /** Run `runId`'s audit shadow among `byId` (open while queued or running, ended once final), undefined with none. */

@@ -262,6 +262,9 @@ export type LedgerRead = {
   readonly rows: readonly LedgerRow[];
   readonly spend: readonly SpendRow[];
   readonly shadows: ReadonlyMap<string, Shadow>;
+  /** The runs a replay of whose own-key check is still at work: each one's check, learning and all-in unknown until every
+   *  replay of it ended (as runAllInOverStore reads it), never a settled $0. Absent: none. */
+  readonly openChecks?: ReadonlySet<string>;
   readonly learning?: ReadonlySet<string>;
   readonly revisions: readonly RevisionAt[];
   readonly compileAfter: number;
@@ -289,7 +292,7 @@ export function summarize(read: LedgerRead): Summarized {
   const learns = (runId: string) => place.has(runId) && (read.learning?.has(runId) ?? true);
   const spend = read.spend.filter((one) => (one.kind === "audit" || ownCheck(one) ? place.has(one.ofRun ?? "") : learns(one.runId)));
   const { compile, audit, check } = spendByRun(spend);
-  const partsOf = (row: LedgerRow, share: number | null) => ({ compile: compile.has(row.runId) ? compile.get(row.runId)! : 0, shadow: shadowCostOf(row.runId, audit, read.shadows), check: check.has(row.runId) ? check.get(row.runId)! : 0, share });
+  const partsOf = (row: LedgerRow, share: number | null) => ({ compile: compile.has(row.runId) ? compile.get(row.runId)! : 0, shadow: shadowCostOf(row.runId, audit, read.shadows), check: read.openChecks?.has(row.runId) ? null : check.has(row.runId) ? check.get(row.runId)! : 0, share });
   // One numbering, the bill's: the runs that do a job, 1 the first; a replay checks a revision and has none.
   let jobs = 0;
   const series = ordered.map((row): Omit<CostRun, "took_over"> => {
