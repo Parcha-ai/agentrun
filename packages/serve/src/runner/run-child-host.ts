@@ -1451,6 +1451,8 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
                 return loopDeps.delivered;
               case "deliverNow":
                 return loopDeps.deliverNow?.();
+              case "refuse":
+                return loopDeps.refuse?.(Number(args[0]), String(args[1]));
               case "live":
                 latest = (args[0] ?? undefined) as HeldState | undefined;
                 keeps = args[1] === true;
