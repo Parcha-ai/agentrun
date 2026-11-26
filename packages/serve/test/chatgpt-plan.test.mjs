@@ -2152,7 +2152,7 @@ test("a renewal whose write-back finds another sign-in in the row revokes its pa
 
 test("a stop that lands while a renewal takes its lease sends OpenAI nothing: the lease is given back and the caller told to try again", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
-  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const { ChatGPTPlan, PlanStopping } = await import("../dist/chatgpt-plan.js");
   const store = mapStore();
   const sealKey = randomBytes(32);
   const stale = await seatRow(store, sealKey, -1_000);
@@ -2172,12 +2172,62 @@ test("a stop that lands while a renewal takes its lease sends OpenAI nothing: th
   await until(() => leasing, "the lease's write is out");
   const closed = plan.close();
   release();
-  assert.match(String((await renewing)?.message), /try again in a moment/);
+  const refused = await renewing;
+  assert.match(String(refused?.message), /try again in a moment/);
+  assert.ok(refused instanceof PlanStopping, "a stop refusal, so a run's reader hands the run back rather than failing it");
   await closed;
   assert.equal(openai.refreshes, 0, "the refresh token is never sent past the stop");
   const row = await openRow(store, sealKey);
   assert.equal(row.lease, undefined, "the lease is given back");
   assert.equal(row.credential.refresh, stale.refresh);
+});
+
+test("a stop that lands after a renewal took its lease, while the owner signed in again or out, never hands out the old sign-in's token: the row's state wins", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan, PlanStopping, PlanUnavailable, RENEWAL_DRAIN_MS, SIGNED_OUT, stopRenewals } = await import("../dist/chatgpt-plan.js");
+  for (const then of ["signs in again", "signs out"]) {
+    const store = mapStore();
+    const sealKey = randomBytes(32);
+    // Inside the refresh margin, so it is renewed; long enough that a stop with 1 s left would send it as it is.
+    const old = await seatRow(store, sealKey, 1_000 + RENEWAL_DRAIN_MS + 60_000);
+    const replaceIf = store.sealedKeys.replaceIf;
+    let other;
+    // The lease lands; then the owner signs in again (or out) and the store's stop begins, before the refresh is sent.
+    store.sealedKeys.replaceIf = async (...args) => {
+      store.sealedKeys.replaceIf = replaceIf;
+      const leased = await replaceIf(...args);
+      if (then === "signs out") await store.sealedKeys.remove(PLAN_ROW);
+      else other = await seatRow(store, sealKey, 3_600_000);
+      void stopRenewals(store, 1_000);
+      return leased;
+    };
+    const answer = await new ChatGPTPlan({ store, sealKey }).token().catch((error) => error);
+    assert.notEqual(answer, old.access, `${then}: the old sign-in's token is never handed out`);
+    if (then === "signs out") assert.ok(answer instanceof PlanUnavailable && !(answer instanceof PlanStopping) && answer.message === SIGNED_OUT, `${then}: told it is signed out: ${answer}`);
+    else assert.equal(answer, other.access, `${then}: the new sign-in's token, which outlives the stop, is sent as it is`);
+    assert.equal(openai.refreshes, 0, `${then}: OpenAI is sent nothing`);
+  }
+});
+
+test("a renewal that waits on another holder's lease stops waiting when its store's stop begins: a token that needs the renewal is refused with PlanStopping at once, and OpenAI is sent nothing", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan, PlanStopping, stopRenewals } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  // Ended, with another holder's lease live for 20 s: a renewal here waits on it.
+  await seatRow(store, sealKey, -1_000, { holder: "another", until: Date.now() + 20_000 });
+  let reads = 0;
+  const get = store.sealedKeys.get;
+  store.sealedKeys.get = async (...args) => (reads++, get(...args));
+  const waiting = new ChatGPTPlan({ store, sealKey }).token().catch((error) => error);
+  // token()'s read and two of the wait's: it is waiting on the lease.
+  await until(() => reads >= 3, "the renewal waits on the other holder's lease");
+  const stopped = Date.now();
+  void stopRenewals(store, 1_000);
+  const answer = await waiting;
+  assert.ok(answer instanceof PlanStopping, `a stop refusal, so a run's reader hands the run back: ${answer}`);
+  assert.ok(Date.now() - stopped < 2_000, "the wait ends at the stop, not at the other holder's lease");
+  assert.equal(openai.refreshes, 0);
 });
 
 /** Each ChatGPTPlan loaded from here on (a server's at its start, a runner's reader at a claim), in order. */
