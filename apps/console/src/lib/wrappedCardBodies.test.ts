@@ -16,6 +16,7 @@ const YEAR: Wrapped = {
   sources: [{ source: "claude-code", sessions: 10, requests: 250 }, { source: "codex", sessions: 2, requests: 50 }],
   imported: [{ source: "claude-code", runs: 7 }, { source: "gemini", runs: 4 }],
   cache: { runs: 6, hit_rate: 0.8812, breaks: { model: 2, idle: 30, compaction: 5, edited: 0, sidechain: 0, unknown: 3 }, extra_cost_usd: { model: 0.5, idle: 12.25, compaction: 1.5, edited: 0, sidechain: 0, unknown: 0.75 }, unpriced_breaks: 4 },
+  secrets: { runs: 9, runs_holding: 2, removed: 3 },
 };
 const NO_CACHE: Wrapped = { ...YEAR, cache: null };
 const PRICED: Wrapped = { ...YEAR, unpriced_requests: 0, models: YEAR.models.map((m) => ({ ...m, unpriced_requests: 0 })) };
@@ -33,8 +34,9 @@ const many = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `h${i +
 
 describe("the cards drawn now", () => {
   it("draws cover, split, hours and summary, and keeps every card with a wait not met hidden", () => {
-    expect([...SATISFIED_WAITS]).toEqual(["race-card-renderer", "cache-analyzer"]);
-    expect(WRAPPED_CARDS.filter((c) => drawnBody(c, YEAR) !== null).map((c) => c.id)).toEqual(["cover", "split", "hours", "cache", "summary"]);
+    expect([...SATISFIED_WAITS]).toEqual(["race-card-renderer", "cache-analyzer", "secret-count"]);
+    expect(WRAPPED_CARDS.filter((c) => drawnBody(c, YEAR) !== null).map((c) => c.id), "the leak receipt is off until the user turns it on").toEqual(["cover", "split", "hours", "cache", "summary"]);
+    expect(WRAPPED_CARDS.filter((c) => drawnBody(c, YEAR, new Set<CardWait>([...SATISFIED_WAITS, "opt-in"])) !== null).map((c) => c.id), "turned on").toEqual(["cover", "split", "hours", "cache", "leak", "summary"]);
     expect(WRAPPED_CARDS.filter((c) => drawnBody(c, NO_CACHE) !== null).map((c) => c.id), "no run of the year analyzed: no cache card").toEqual(["cover", "split", "hours", "summary"]);
   });
 
@@ -43,13 +45,13 @@ describe("the cards drawn now", () => {
     const drawn = (satisfied: ReadonlySet<CardWait>) => WRAPPED_CARDS.filter((c) => drawnBody(c, YEAR, satisfied, bodies) !== null).map((c) => c.id);
     expect(drawn(SATISFIED_WAITS)).toEqual(["cover", "split", "hours", "cache", "summary"]);
     expect(drawn(new Set<CardWait>(["race-card-renderer", "derived"]))).toEqual(["cover", "split", "hours", "laptop", "type", "summary"]);
-    expect(drawn(new Set<CardWait>(["race-card-renderer", "cache-analyzer", "scrubber-count-mode", "benchmark", "derived"]))).toEqual(WRAPPED_CARDS.map((c) => c.id));
-    expect(drawn(new Set<CardWait>(["cache-analyzer", "scrubber-count-mode", "benchmark", "derived"]))).toEqual([]);
+    expect(drawn(new Set<CardWait>(["race-card-renderer", "cache-analyzer", "secret-count", "opt-in", "benchmark", "derived"]))).toEqual(WRAPPED_CARDS.map((c) => c.id));
+    expect(drawn(new Set<CardWait>(["cache-analyzer", "secret-count", "opt-in", "benchmark", "derived"]))).toEqual([]);
   });
 
-  it("has no body for a card whose rules the year cannot give (laptop, leak, type, launch)", () => {
-    expect(Object.keys(CARD_BODIES).sort()).toEqual(["cache", "cover", "hours", "split", "summary"]);
-    for (const id of ["laptop", "leak", "type", "launch"]) expect(drawnBody(card(id), YEAR, new Set<CardWait>(["race-card-renderer", "cache-analyzer", "scrubber-count-mode", "benchmark", "derived"]))).toBeNull();
+  it("has no body for a card whose rules the year cannot give (laptop, type, launch)", () => {
+    expect(Object.keys(CARD_BODIES).sort()).toEqual(["cache", "cover", "hours", "leak", "split", "summary"]);
+    for (const id of ["laptop", "type", "launch"]) expect(drawnBody(card(id), YEAR, new Set<CardWait>(["race-card-renderer", "cache-analyzer", "secret-count", "opt-in", "benchmark", "derived"]))).toBeNull();
   });
 
   it("draws no card for an empty year: no sessions, or no requests", () => {
@@ -282,5 +284,28 @@ describe("cache", () => {
     expect([0.97, 0.9699, 0.94, 0.91, 0.88, 0.8799, 0.85, 0.82, 0.78, 0.74, 0.7, 0.6, 0.5999, 0].map(grade)).toEqual(["A+", "A", "A", "A-", "B+", "B", "B", "B-", "C+", "C", "C-", "D", "F", "F"]);
     const rate = (hit_rate: number) => body("cache", { ...YEAR, cache: { ...YEAR.cache!, hit_rate } })!.rows![0]!.value;
     expect([0.9999, 1, 0.0001, 0].map(rate)).toEqual([">99%", "100%", "<1%", "0%"]);
+  });
+});
+
+describe("leak", () => {
+  it("says how many keys and tokens the import cut from the year's sessions, how many sessions held one and how many were checked, counts only", () => {
+    expect(body("leak")).toEqual({
+      eyebrow: EYEBROW,
+      title: "Your leak receipt",
+      figure: { value: "3", unit: "keys and tokens cut" },
+      rows: [
+        { label: "Sessions with a key", value: "2" },
+        { label: "Sessions checked", value: "9" },
+      ],
+      footnote: "Cut on import from the 9 runs imported here; counts only, no key shown.",
+    });
+  });
+
+  it("draws no leak card when no run of the year was counted, and says one key, one run and none in their own words", () => {
+    expect(body("leak", { ...YEAR, secrets: null })).toBeNull();
+    const one = body("leak", { ...YEAR, secrets: { runs: 1, runs_holding: 1, removed: 1 } })!;
+    expect([one.figure, one.footnote]).toEqual([{ value: "1", unit: "key or token cut" }, "Cut on import from the 1 run imported here; counts only, no key shown."]);
+    const none = body("leak", { ...YEAR, secrets: { runs: 12_345, runs_holding: 0, removed: 0 } })!;
+    expect([none.figure, none.rows]).toEqual([{ value: "0", unit: "keys and tokens cut" }, [{ label: "Sessions with a key", value: "0" }, { label: "Sessions checked", value: "12,345" }]]);
   });
 });
