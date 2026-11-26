@@ -6,15 +6,12 @@
 // still reads whole.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { agentFolderOf } from "../dist/files.js";
-import { seedOf } from "../dist/learning.js";
 import { workflowNodesOf } from "../dist/learn/workflow-nodes.js";
-import { git, resnap } from "./learn-support.mjs";
+import { putLearning } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve, withEnv } from "./support.mjs";
+import { putPromotions } from "./learned-workflow-seed-support.mjs";
 
 const flow = (label) => ({
   v: 2, name: "answer",
@@ -49,32 +46,21 @@ test("workflowNodesOf: every node depth first, a chain's steps in order and the 
 
 test("the promotions read has the champion's own revision, by its recorded digest and commit: 25 held drafts on main after it, and it still reads whole", { timeout: 120_000 }, async (t) => {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
-  const { api, data, baseUrl, store } = await serve(t, { learning: "on" });
+  const { api, baseUrl, store } = await serve(t, { learning: "on" });
   assert.equal((await api("POST", "/agents", agent("source", { learning: true }))).status, 201);
-  await seedOf(data, "source");
-  const repo = join(agentFolderOf(data, "source"), "learning");
-  const path = "workflows/answer/workflow.json";
-  const land = (text, message) => {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-    writeFileSync(join(repo, "workflows/answer/README.md"), "---\nname: answer\ndescription: Answers a question as a number; use when the person asks for the answer\n---\n");
-    git(repo, ["add", "--", "workflows/answer"]);
-    git(repo, ["commit", "-q", "-m", message]);
-    return git(repo, ["rev-parse", "main"]);
-  };
+  const land = (text, runId) => putLearning(store, "source", { "workflows/answer/workflow.json": text, "workflows/answer/README.md": "---\nname: answer\ndescription: Answers a question as a number; use when the person asks for the answer\n---\n" }, { runId, reason: "merged" });
   const champion = JSON.stringify(flow("answer"));
-  // Each commit as a run's merge (its Run-Id trailer), as the learning log reads one.
-  const commit = land(champion, "learning: run-0: merged\n\nRun-Id: run-0");
+  // Each save as a run's merge, as the learning log reads one.
+  const commit = await land(champion, "run-0");
   const bar = { compile_after: 5, agree_min: 0.8, alone_min: 0.7 };
   const items = [{ workflow: "answer", digest: digestOf(champion), at: new Date(Date.UTC(2026, 10, 17, 6)).toISOString(), decided: "promote", reason: "checked: promoted", check: { ...bar, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit }];
   // 25 newer revisions on main, each held: its draft failed its checks.
   for (let i = 1; i <= 25; i++) {
     const text = JSON.stringify(flow(`answer-${i}`));
-    land(text, `learning: run-${i}: merged\n\nRun-Id: run-${i}`);
+    await land(text, `run-${i}`);
     items.push({ workflow: "answer", digest: digestOf(text), at: new Date(Date.UTC(2026, 10, 17, 7, i)).toISOString(), decided: "hold", reason: "its draft failed its checks", check: { ...bar, attempt: 2, n: 5, agreed: 0, alone: 0, of: [] } });
   }
-  await resnap(data, "source");
-  await store.settings.put("learning.promotions.source", { v: 1, items });
+  await putPromotions(store, "source", items);
   // A page of the workflow's history (20 changes by default) no longer holds the champion.
   const page = (await api("GET", "/agents/source/learning/workflows/answer/revisions")).body;
   assert.ok(!page.revisions.some((one) => one.digest === digestOf(champion)), "the champion is past the history's default page");
@@ -100,7 +86,7 @@ test("the promotions read's champion is null while nothing serves", { timeout: 6
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const { api, store } = await serve(t, { learning: "on" });
   assert.equal((await api("POST", "/agents", agent("source", { learning: true }))).status, 201);
-  await store.settings.put("learning.promotions.source", { v: 1, items: [{ workflow: "answer", digest: "e".repeat(16), at: new Date().toISOString(), decided: "hold", reason: "its draft failed its checks" }] });
+  await putPromotions(store, "source", [{ workflow: "answer", digest: "e".repeat(16), at: new Date().toISOString(), decided: "hold", reason: "its draft failed its checks" }]);
   const [serving] = (await api("GET", "/agents/source/learning/promotions")).body.serving;
   assert.deepEqual([serving.digest, serving.champion], [null, null]);
 });

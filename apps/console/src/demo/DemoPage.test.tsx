@@ -70,3 +70,12 @@ it("the bar says what the person is looking at, and turns the demo off", () => {
   act(() => named(host, "button", /^Turn off$/)!.click());
   expect(onOff).toHaveBeenCalled();
 });
+
+// Under Settings' tabs, as every Settings page does: the page is as tall as the space under the tabs and scrolls in its
+// own box, so a long tour never scrolls the tabs away.
+it("scrolls in its own box, as tall as the space under the Settings tabs", () => {
+  const host = mount(createElement(DemoPage, { on: true, onChange: () => {}, v2: client(), go: () => {} }));
+  const page = host.firstElementChild!;
+  for (const c of ["h-full", "overflow-auto"]) expect(page.getAttribute("class")?.split(" ")).toContain(c);
+  expect(page.textContent).toContain("Approve a tool call");
+});

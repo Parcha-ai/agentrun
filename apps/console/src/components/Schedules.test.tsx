@@ -5,6 +5,7 @@ import { SchedulesPage, type ScheduleView } from "./Schedules";
 import { createClient } from "@/lib/client";
 import type { Firing, Trigger } from "@/lib/v2";
 import { optionsOf, pick, picker, valueOf } from "@/test/picker";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 // Schedules (serve's trigger/1): the list, the form that makes or edits one with the server's 422 under the field it
 // names, and one schedule's page: pause, resume, edit, delete, run now (once per click), and its firings.
@@ -117,6 +118,11 @@ async function open(v2: ReturnType<typeof createClient>, view: ScheduleView, min
 }
 
 describe("the schedules list", () => {
+  it("keeps the bar with its New buttons in view: the triggers scroll in the one box under it", async () => {
+    const t = await open(server({ triggers: [NIGHTLY] }).v2, {});
+    expect(expectPinnedBar(t.host).querySelector('[data-trigger="trg_1"]')).not.toBeNull();
+    expect(t.host.querySelector("header")!.textContent).toContain("New schedule");
+  });
   it("names each schedule, its agent, when it fires, its next time, whether it is paused, and how its last firing went", async () => {
     const paused: Trigger = { ...NIGHTLY, id: "trg_2", name: "every five", enabled: false, next_at: null, source: { kind: "schedule", every_s: 300, start_at: "2026-11-04T00:00:00Z" }, last_firing: null };
     const t = await open(server({ triggers: [NIGHTLY, paused] }).v2, {});
@@ -885,6 +891,19 @@ describe("a trigger's typed input and its agent picker", () => {
     await t.set("agent", "triage");
     await t.click(/^Save changes$/);
     expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ target: { kind: "start_run", agent_id: "triage", input: { content: "Check." }, max_cost_usd: 2 } }]);
+  });
+
+  it("an edit that picks another agent and then the trigger's own again keeps the input it had, the keys no field shows too", async () => {
+    const kyb: Trigger = { ...NIGHTLY, target: { kind: "start_run", agent_id: "kyb_1", input: { content: "Check.", company: "Acme GmbH", country: "DE", note: { from: "api" } }, max_cost_usd: 2 } };
+    const { v2, calls } = server({ triggers: [kyb], agents });
+    const t = await open(v2, { trigger: "trg_1", edit: true });
+    await t.set("agent", "triage");
+    await t.set("agent", "kyb_1");
+    await t.set("name", "kyb nightly");
+    await t.click(/^Save changes$/);
+    // Before: the stored input went with the first pick, so the target was sent again without note (no field shows it).
+    expect(t.issue("target.input")).toBeNull();
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ name: "kyb nightly" }]);
   });
 
   it("a name changed alone leaves a typed input as it is", async () => {

@@ -11,6 +11,7 @@ import { MissionControl } from "./MissionControl";
 import { ClientError, createClient } from "@/lib/client";
 import type { MissionView } from "@/lib/mission";
 import { observedState, useObservations, type Observations, type ObservedSession } from "@/lib/observations";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const roots: ReturnType<typeof createRoot>[] = [];
@@ -141,6 +142,11 @@ describe("existing agent observation", () => {
     expect(host.querySelector('a[href="#/runs/new-registered-run"]')?.textContent).toContain("New registered result");
     expect(!!host.querySelector('a[href="#/observations/session-a"]')).toBe(observed);
     expect(host.querySelector('[role="alert"]')).toBeNull();
+  });
+  it("keeps a connected agent's bar with Edit and Run in view: its details scroll in the one box under it", async () => {
+    const host = await render(createElement(ObservedSessionPage, { v2: { observations: async () => data } as never, sessionId: session.id, go: vi.fn() }));
+    expect(expectPinnedBar(host).querySelector('section[aria-label="Session token usage"]')).not.toBeNull();
+    expect(host.querySelector("header")!.textContent).toContain("Run agent");
   });
   it("labels source detail tokens as retained session totals, preserving cache values", async () => {
     const retained = { ...data, sessions: [{ ...session, created_at: "2026-10-01T00:00:00Z", usage: { ...usage, total_tokens: 1200 } }] };

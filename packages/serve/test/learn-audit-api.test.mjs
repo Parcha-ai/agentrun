@@ -10,16 +10,13 @@
 // compile by itself.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { agentFolderOf } from "../dist/files.js";
 import { shadowRunId } from "../dist/learn/audit.js";
-import { seedOf } from "../dist/learning.js";
-import { git, resnap } from "./learn-support.mjs";
+import { putLearning } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 import { outboxOf, PRIVATE_OK, receiver } from "./webhook-support.mjs";
+import { putPromotions } from "./learned-workflow-seed-support.mjs";
 
 /** The faux model at $100 per million output tokens, 400 a request: every model request costs $0.04. */
 const PRICED = new URL("./fixtures/faux-workflow-priced.mjs", import.meta.url).pathname;
@@ -49,24 +46,15 @@ const DIGEST = createHash("sha256").update(TEXT).digest("hex").slice(0, 16);
 const LONG_LEASE = { leaseMs: 600_000, renewEveryMs: 10_000 };
 
 /** Agent `source` learning with `learning` (granted `tools`: none by default, so every tool it can call reads), the
- *  workflow landed on its learning folder's main and promoted by its check. */
+ *  workflow landed on its learning and promoted by its check. */
 async function world(t, learning, tools = [], options = {}) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_GRADE_HOLD", "AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENTRUN_SERVE_GRADE_MODEL"]);
   const server = await serve(t, { learning: "on", faux: PRICED, runnerTiming: LONG_LEASE, ...options });
   const { api, data, baseUrl, store } = server;
   assert.equal((await api("POST", "/agents", agent("source", { learning, tools }))).status, 201);
-  await seedOf(data, "source");
-  const repo = join(agentFolderOf(data, "source"), "learning");
   const files = { "workflows/answer/workflow.json": TEXT, "workflows/answer/README.md": "---\nname: answer\ndescription: Answers a question as a number; use when the person asks for the answer\n---\n" };
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, "source");
-  const main = git(repo, ["rev-parse", "main"]);
-  await store.settings.put("learning.promotions.source", { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: main }] });
+  const main = await putLearning(store, "source", files);
+  await putPromotions(store, "source", [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: main }]);
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const meets = (path, value, method = "get", status = "200") => assert.deepEqual(schemaProblems(doc, doc.paths[path][method].responses[status].content["application/json"].schema, value), [], `${path}: ${JSON.stringify(value)}`);
   /** Starts a run of `input` that learns nothing new (`use`) and follows it to its end. */

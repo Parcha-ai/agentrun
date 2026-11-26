@@ -4,10 +4,9 @@
 // run's recorded calls read from the run it replays (replayRecordedFor). Every step writes the store or reads another
 // run, so it runs where the seal key and the store are: the runner, for the claim it holds. A run's own process asks it
 // (held.ts learnedFirst) with whether its seed lay laid any workflow, and never names the workflows: the runner reads
-// them from the agent's learning folder at the claim's seed itself (learning-seed.ts workflowsAt).
+// them from the agent's learning at the claim's seed itself (learning-seed.ts workflowsAt).
 import type { Context } from "@earendil-works/chord/context";
 import type { LearnedWorkflow, Shown } from "../learning.js";
-import type { LearningFolder } from "../learn/folder.js";
 import type { AtRunEnd } from "../learning-work.js";
 import type { Recorded } from "../learn/replay-calls.js";
 import type { RunLaunch } from "../run-launch.js";
@@ -34,7 +33,6 @@ export interface LearnedFirstDeps {
   readonly launch: RunLaunch;
   readonly context: Context;
   readonly log: (line: string) => void;
-  readonly folder: () => LearningFolder;
   readonly shown: () => Promise<Shown>;
   readonly spendOff?: (what: string) => string | undefined;
   /** Whether the claim holds its run's own key now, and where it queues what starts at its run's end (promotion.ts
@@ -54,12 +52,12 @@ export interface LearnedFirst {
 /** The claim's learned first choice over `laid`, the workflows its seed lay laid (see the file's head). A replay run's
  *  claim that is refused throws ClaimRefused, as replayClaimed does. */
 export async function learnedFirst(deps: LearnedFirstDeps, laid: readonly LearnedWorkflow[]): Promise<LearnedFirst> {
-  const { store, agentId, runId, revisionId, launch, context, log, folder, shown } = deps;
+  const { store, agentId, runId, revisionId, launch, context, log, shown } = deps;
   const own = { ...(deps.sealKey ? { sealKey: deps.sealKey } : {}), ...(deps.spendOff ? { spendOff: deps.spendOff } : {}), ...(deps.admitAuxiliary ? { admitAuxiliary: deps.admitAuxiliary } : {}), ...(deps.keyed ? { keyed: deps.keyed } : {}), ...(deps.atEnd ? { atEnd: deps.atEnd } : {}) };
   // A replay run lays only the workflow it replays (promotion.ts replayLaid).
   const laidFlows = replayLaid(launch, laid);
-  if (launch.learning && !launch.replay && !launch.audit) await settleAudits({ store, agentId, revisionId, context, log, folder, shown, ...own });
-  const promotion = claimPromotion({ store, agentId, runId, revisionId, launch, context, log, folder, shown, ...own });
+  if (launch.learning && !launch.replay && !launch.audit) await settleAudits({ store, agentId, revisionId, context, log, shown, ...own });
+  const promotion = claimPromotion({ store, agentId, runId, revisionId, launch, context, log, shown, ...own });
   const learns = learnsWorkflows(deps.kind, laidFlows);
   // The agent's past runs, read once for both sides of the money rule: the platform's first choice and the agent's tool.
   let read: Promise<PastRuns> | undefined;

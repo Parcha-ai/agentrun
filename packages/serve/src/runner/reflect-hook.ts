@@ -1,5 +1,5 @@
 // The learning lane's end-of-run step on the runner (loop-contract.ts EndOfRunTurn): what a run that learns keeps
-// beside its end, with no look-back turn and no grade. Two things, one merge a round on its agent's learning folder:
+// beside its end, with no look-back turn and no grade. Two things, one merge a round on its agent's learning:
 //   - its owner's feedback (a grade's words, a message after its first), appended to corrections.md as one line, with
 //     no model turn;
 //   - its compile turn (learn/compile.ts), when one is due: the job written as a workflow, or a revision of a held one,
@@ -33,7 +33,7 @@ export type DraftCommit = {
  *  LearningCommitResult `refusedCorrection`), or why it did not. */
 export type Committed =
   | { readonly ok: true; readonly commit: string; readonly refusedCorrection?: readonly Problem[] }
-  | { readonly ok: false; readonly reason: "conflict" | "refused" | "unavailable"; readonly problems: readonly Problem[] };
+  | { readonly ok: false; readonly reason: "conflict" | "refused" | "purged" | "unavailable"; readonly problems: readonly Problem[] };
 
 /** What the step reads of the run and the host. */
 export interface ReflectDeps {
@@ -65,7 +65,7 @@ export interface ReflectDeps {
   /** One compile draft through the checks (learning-end.ts checkDraftOf): its errors, else what is committed and its
    *  digest. `revised`: a revision's workflow and the commit of main it was read at, its conflict base. */
   readonly checkDraft: (input: { runId: string; agentId: string; draft: { name: string; text: string }; refuse: readonly string[]; revised?: { readonly workflow: string; readonly base: string } }) => Promise<DraftChecked<DraftCommit>>;
-  /** The round's merge on the agent's learning folder (learning-end.ts commitDirect): its draft and its owner's
+  /** The round's merge on the agent's learning (learning-end.ts commitDirect): its draft and its owner's
    *  correction, one commit by the run. */
   readonly commit: (input: { runId: string; agentId: string; round: number; draft?: DraftCommit; correction?: string; refuse: readonly string[] }) => Promise<Committed>;
   /** Every value the run must never learn: the host's secrets and what the run was handed, its sign-in pointer among
@@ -202,6 +202,8 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
         return close(keptRow({ state: "merged", reason: null, merged: done.commit, ...(workflows.length ? { workflows } : {}), ...(corrections ? { corrections } : {}), ...(problems.length ? { problems } : {}), ...compiledFields, detail: said.merged(workflows, corrections, problems) }));
       }
       if (done.reason === "unavailable") return close(dropped("reflect_failed", said.stopped(STOPPED.failed), compiledFields));
+      // A run's purge came after this run's seed: nothing of its merge was written (learn/commit.ts `purged`).
+      if (done.reason === "purged") return close(dropped("purged_since_seed", said.purgedSinceSeed, compiledFields));
       return close(dropped("checker", correctionWords(done.problems), { problems: [...done.problems], ...compiledFields }));
     }
     if (refusedCorrection.length) return close(dropped("checker", correctionWords(refusedCorrection), { problems: [...refusedCorrection, ...draftProblems], ...compiledFields }));

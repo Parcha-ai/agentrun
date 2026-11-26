@@ -370,6 +370,10 @@ function replyTo(context, faux) {
   }
   // A tool name past what the agent store keeps (256 characters): pi answers that no such tool exists.
   if (first.includes("Call a tool with a long name")) return results === 0 ? faux.message(faux.toolCall("t".repeat(300), {}), { stopReason: "toolUse" }) : faux.message("Called it.");
+  // "Take your time, and mark <file> as you start.": the file says the request is out (a run reads working before it is).
+  // The path as given, spaces and all (a temporary directory may have them).
+  const marked = /Take your time, and mark (.+?) as you start\./.exec(last);
+  if (marked) return import("node:fs").then(({ writeFileSync }) => (writeFileSync(marked[1], ""), slow(faux, 60_000, "Done slowly.")));
   if (last.includes("Take your time")) return slow(faux, 60_000, "Done slowly.");
   // Answers only once it is stopped: the answer lands after the stop, the race the server must not read as an answer.
   if (first.includes("Answer when stopped") && users.length === 1) return new Promise((resolve) => faux.signal?.addEventListener("abort", () => resolve(faux.message("Stopped, but here is the answer.")), { once: true }));

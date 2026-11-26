@@ -15,20 +15,21 @@ import { delimiter, dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
 import { API_ONLY_ROUTES } from "../dist/api-only.js";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
+import { savedIn, withSecrets } from "../dist/secrets.js";
 import { agent, FAUX, follow, secretWritePath, serve, withEnv } from "./support.mjs";
 
 secretWritePath(["GET", "PUT", "DELETE"], /^\/settings\/claude-login$/);
-secretWritePath(["POST"], /^\/settings\/claude-login\/login$/);
+secretWritePath(["POST"], /^\/settings\/claude-login\/(login|sign-out)$/);
 secretWritePath(["PUT", "DELETE"], /^\/settings\/harness-keys\/[^/]+\/[^/]+$/);
 secretWritePath(["POST"], /^\/settings\/api-keys$/);
 secretWritePath(["DELETE"], /^\/settings\/api-keys\/[^/]+$/);
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SERVE_DEFAULT_MODEL", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_LOGIN_ENV, ...MODEL_KEYS.map((row) => row.field)];
-const OPERATIONS = [["GET", "/settings/claude-login", "getClaudeLogin"], ["PUT", "/settings/claude-login", "turnOnClaudeLogin"], ["DELETE", "/settings/claude-login", "turnOffClaudeLogin"], ["POST", "/settings/claude-login/login", "startClaudeLogin"]];
+const OPERATIONS = [["GET", "/settings/claude-login", "getClaudeLogin"], ["PUT", "/settings/claude-login", "turnOnClaudeLogin"], ["DELETE", "/settings/claude-login", "turnOffClaudeLogin"], ["POST", "/settings/claude-login/login", "startClaudeLogin"], ["POST", "/settings/claude-login/sign-out", "signOutClaudeLogin"]];
 const SIGNED_OUT = { loggedIn: false, authMethod: "none", apiProvider: "firstParty" };
 const SIGNED_IN = { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: "person@example.com", orgName: "Example", subscriptionType: "max" };
 /** A person's home for the tests that read paths alone: a folder of the test's own user, as the server's HOME must be to
@@ -248,6 +249,27 @@ test("an agent on Claude Agent in a box on an OpenRouter model, while the login 
   assert.equal(own.body.error.details.login_on_runner, true, JSON.stringify(own.body.error.details));
 });
 
+// A sandbox place's checks read the server's env without the login (envAtPlace), and with every model key it holds: a
+// pi agent in a box on an OpenRouter model, OpenRouter's key saved in Settings, is not refused for its model while the
+// login reads signed in, at its save or before its run.
+test("a pi agent in a box on an OpenRouter model, OpenRouter's key saved and the login signed in, is not refused for its model at its save or before its run", { timeout: 120_000 }, async (t) => {
+  const { api, fake } = await withDockerBox(t);
+  fake.status(SIGNED_IN);
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_in");
+  // The save's check of the key (key-check.ts) asks OpenRouter: here a stand-in that accepts it, never the network.
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init) => (String(input?.url ?? input) === "https://openrouter.ai/api/v1/key" ? new Response("{}", { status: 200 }) : real(input, init));
+  t.after(() => void (globalThis.fetch = real));
+  const key = await api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: "fake-test-key" } });
+  assert.equal(key.status, 204, JSON.stringify(key.body));
+  const saved = await api("POST", "/agents", agent("piboxed", { harness: "pi", model: "openrouter/anthropic/claude-sonnet-5.5", place: { mode: "sandbox", box: "docker" } }));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body.warnings.filter((w) => w.field === "definition.model"), [], `the save of a box agent whose OpenRouter key is saved warned of its model: ${JSON.stringify(saved.body.warnings)}`);
+  const read = await api("GET", "/agents/piboxed");
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.run_blockers, null, `a box agent whose OpenRouter key is saved is kept from running: ${JSON.stringify(read.body.run_blockers)}`);
+});
+
 // An agent that names no model runs on the host's default for its harness, on the runner too: AGENT_MODEL first, when
 // the harness runs it (model.ts hostModel). Where that is an OpenRouter model, the moved agent still needs OpenRouter's
 // key, so the move is not offered; where it is Anthropic's own, the login runs it and the move is.
@@ -356,7 +378,7 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   const saved = { get: async () => row };
   assert.equal(await loginForRun(saved, own, env, "claude-agent", { mode: "runner" }), undefined);
   // On, a runner place goes on the login (with the person's home, the env's HOME) and a sandbox place on the keys.
-  assert.deepEqual(await loginForRun(saved, own, { HOME: UP }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: UP });
+  assert.deepEqual(await loginForRun(saved, own, { HOME: UP }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: UP, own: true });
   assert.equal(await loginForRun(saved, own, {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
 });
 
@@ -391,6 +413,23 @@ test("Claude Code's login on this machine on: claude-agent's Anthropic models go
   assert.equal(providerFor("anthropic-messages", envAtPlace(env, { mode: "sandbox", box: "e2b" }), { provider: "anthropic", modelId: "claude-haiku-5-5" }, "claude-agent").login, undefined);
   assert.equal(envAtPlace(env, { mode: "runner" }), env);
   assert.deepEqual(providerFor("anthropic-messages", env, { provider: "anthropic", modelId: "claude-haiku-5-5" }, "claude-agent").login, at);
+});
+
+test("envAtPlace at a sandbox place keeps every secret of a withSecrets env, still out of a spread, and drops the login alone; a runner place's env is the same object", (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  const at = { dir: "/data/claude-login", profiles: "/data/claude-login/anthropic" };
+  const env = withClaudeLogin(withSecrets({ PATH: "/usr/bin" }, "all", (name) => (name === "OPENROUTER_API_KEY" ? "fake-test-key" : undefined)), at);
+  assert.equal(env.OPENROUTER_API_KEY, "fake-test-key");
+  const boxed = envAtPlace(env, { mode: "sandbox", box: "e2b" });
+  assert.notEqual(boxed, env);
+  assert.equal(boxed.OPENROUTER_API_KEY, "fake-test-key", "a sandbox place's env lost the saved OpenRouter key");
+  assert.ok(!Object.keys(boxed).includes("OPENROUTER_API_KEY"), "a sandbox place's env enumerates the key");
+  assert.equal({ ...boxed }.OPENROUTER_API_KEY, undefined, "a spread of a sandbox place's env carries the key");
+  assert.deepEqual([...savedIn(boxed)], ["OPENROUTER_API_KEY"], "a sandbox place's env no longer says the key was saved");
+  assert.equal(boxed.PATH, "/usr/bin");
+  assert.equal(claudeLoginOf(boxed), undefined, "a sandbox place's env carries the login");
+  assert.deepEqual(claudeLoginOf(env), at, "the server's env lost its login");
+  assert.equal(envAtPlace(env, { mode: "runner" }), env);
 });
 
 test("one owner: refused in one line where more than one person can start runs, and a saved turn-on dropped there at the start", { timeout: 120_000 }, async (t) => {
@@ -719,7 +758,7 @@ test("this machine's login honours CLAUDE_SECURESTORAGE_CONFIG_DIR in the server
   assert.deepEqual(claude.claudeLoginEnv(folderEmpty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
   // A relative one is not taken, as with CLAUDE_CONFIG_DIR; AgentRun's own login never reads it.
   assert.deepEqual(claude.claudeSignInEnv(at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "secure" }), "linux"), { HOME: UP, ANTHROPIC_CONFIG_DIR: profiles });
-  assert.deepEqual(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: UP });
+  assert.deepEqual(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: UP, own: true });
 
   // A server started with it: the view names it, and the sign-in and every status check keep the tokens there.
   const secure = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-secure-dir-"));
@@ -877,13 +916,15 @@ async function loginRig(t) {
       const ended = new Promise((resolve) => { end = resolve; });
       return { ended, stop: () => { one.stopped = true; end({ end: "stopped" }); } };
     },
+    claudeLogout: async () => true,
   };
   const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
   const stale = (keeps) => started.filter((one) => !one.stopped && one.dir !== keeps);
   return { data, env, rows, settings, started, signIns, pinned, deps, stale };
 }
 
-// A sign-in reads the setting, then looks up the CLI, then starts it. A move of the login or a turn-off that lands in
+// A sign-in reads the setting, then looks up the CLI, then starts it. A move of the login, a turn-off or a sign-out (which
+// turns the mode off as a turn-off does, so a row of its own here) that lands in
 // between must not leave that sign-in waiting with what it read before: at a place the login no longer reads, or for a
 // login that is off, holding the browser's callback port. Here the sign-in is held inside that gap (its lookup of the
 // pinned CLI waits on the test), and the change is asked while it is held. Where nothing holds the change, it answers
@@ -893,6 +934,7 @@ async function loginRig(t) {
 const RACE_CHANGES = [
   ["a turn-on that moves the login to the other place", (deps) => turnOnClaudeLogin(deps, { only_me: true, place: "machine" }), "machine"],
   ["a turn-off", (deps) => turnOffClaudeLogin(deps), undefined],
+  ["a sign-out", async (deps) => (await signOutClaudeLogin(deps)).login, undefined],
 ];
 for (const [change, ask, place] of RACE_CHANGES) {
   test(`${change}, asked while a sign-in's start is between its read of the setting and the CLI's start, leaves no sign-in waiting with the setting it read`, { timeout: 10_000 }, async (t) => {
@@ -1334,7 +1376,7 @@ test("a HOME the server's user does not own is not the person's home: the login 
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const saved = { get: async () => settingFor("agentrun", data) };
-  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own, homeApart: true }, "a run's CLI runs in that user's own home");
+  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own, homeApart: true, own: true }, "a run's CLI runs in that user's own home");
 });
 
 // Where the server's user owns neither its HOME nor its own home (a service account whose home is /nonexistent, with a
@@ -2379,6 +2421,7 @@ const PICK_PACKAGE = `---
 name: on-plan
 version: 1.0.0
 description: Says hi.
+tools: []
 harness: [claude-agent, pi]
 model:
   tier: balanced

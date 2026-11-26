@@ -69,6 +69,10 @@ export type MarketplaceTemplate = MarketplaceList["templates"][number];
 export type Cost = components["Cost"];
 
 export type Run = components["Run"];
+/** Active and ended-needs-review projections over the same run identities. */
+export type FactoryRunPage = components["RunList"];
+export type FactoryRun = FactoryRunPage["runs"][number];
+export type FactoryScope = NonNullable<FactoryRunPage["scope"]>;
 
 /** A trigger of any kind (GET /v2/triggers/{id}): a schedule or a webhook. */
 export type Trigger = Answer<"getTrigger">;
@@ -193,6 +197,9 @@ export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 /** Claude Code's login on this machine (GET /v2/settings/claude-login, a serve extension): on or off, and what the CLI
  *  says of its login, never a token. */
 export type ClaudeLoginView = Answer<"getClaudeLogin">;
+/** POST /v2/settings/claude-login/sign-out's answer: whether the CLI confirmed its own sign-out, its words when it didn't,
+ *  and the login's view after it (off). */
+export type ClaudeLoginSignOut = Answer<"signOutClaudeLogin">;
 /** The model gateway in force (GET /v2/settings/model-gateway, a serve extension): the environment's, the one saved in the
  *  console, or none; its address, id style and models, and its key as a SecretMeta, never a value. */
 export type ModelGateway = Answer<"getModelGateway">;

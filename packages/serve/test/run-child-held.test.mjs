@@ -157,8 +157,8 @@ test("a run that sends no model key (a --faux runner's, a faux-pinned one, a hel
   const subagent = { kind: "agentic", body: { tools: ["subagent"], modelTiers: { fast: "openai/gpt-6.1-sol" } } };
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-child-held-faux-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
-  const sha = await landWorkflows(data, "agent-own", [{ name: "on-strong", description: "Answers a question", workflow: strongFlow }]);
-  await promoteChecked(store.settings, "agent-own", [{ name: "on-strong", workflow: strongFlow }]);
+  const sha = await landWorkflows(store, "agent-own", [{ name: "on-strong", description: "Answers a question", workflow: strongFlow }]);
+  await promoteChecked(store, "agent-own", [{ name: "on-strong", workflow: strongFlow }]);
   const learning = { input: { content: "Hello." }, learning: startAt(sha) };
   for (const [where, env, own] of [["off faux, unpinned and not held", {}, {}], ...SENDS_NO_MODEL_KEY]) {
     // The subagent's run on a host that names no tier: its fast tier alone routes a model.
@@ -196,8 +196,8 @@ test("a run's process gets no decision or tier key its claim's learned workflows
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-child-held-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const flow = judgeFlow("on-parallel", "parallel");
-  const sha = await landWorkflows(data, "agent-own", [{ name: "on-parallel", description: "Checks a certificate", workflow: flow }]);
-  await promoteChecked(store.settings, "agent-own", [{ name: "on-parallel", workflow: flow }]);
+  const sha = await landWorkflows(store, "agent-own", [{ name: "on-parallel", description: "Checks a certificate", workflow: flow }]);
+  await promoteChecked(store, "agent-own", [{ name: "on-parallel", workflow: flow }]);
   const learning = heldOf(store, { env, data, launch: { input: { content: "Hello." }, learning: startAt(sha) } });
   assert.deepEqual(await learning.decisionKeys(["parallel"]), {}, "none before the runner chose the claim's workflows");
   const first = await learning.learnedFirst({ laid: true });
@@ -417,7 +417,7 @@ test("the settings a run's process reads are the server's shared configuration a
     { key: "sdk-run:run-own", value: "own" },
     { key: "sdk-run:run-other", value: "another run's messages" },
     { key: "archil.agent.agent-other", value: "{}" },
-    { key: "learning.promotions.agent-own", value: "[]" },
+    { key: "archil.agent.agent-own", value: "{}" },
   ];
   const asked = [];
   const store = { settings: { get: async (key) => (asked.push(key), rows.find((row) => row.key === key)?.value), all: async () => rows } };
@@ -429,7 +429,7 @@ test("the settings a run's process reads are the server's shared configuration a
   assert.deepEqual(asked, [], "a refused read reached the store");
   assert.equal(await call("settings.get", ["sdk-run:run-own"]), "own");
   assert.equal(await call("settings.get", ["tool-settings"]), "{}");
-  assert.deepEqual((await call("settings.all", [])).map(({ key }) => key), ["tool-settings", "sdk-run:run-own", "learning.promotions.agent-own"]);
+  assert.deepEqual((await call("settings.all", [])).map(({ key }) => key), ["tool-settings", "sdk-run:run-own", "archil.agent.agent-own"]);
   assert.ok(lines.some((line) => /asked the store for settings\.get, which a run's process may not/.test(line)), lines.join("\n"));
 });
 

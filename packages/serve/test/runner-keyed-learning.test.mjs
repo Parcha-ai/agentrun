@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, putPromotions, startAt } from "./learned-workflow-seed-support.mjs";
 import { storeBytes } from "./support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
@@ -116,7 +116,7 @@ async function holdingFront(t, origin, held) {
 }
 
 /** An agent of `learning` with `prior` earlier runs of its own, on no key (the server's path), and `answer` landed in its
- *  learning folder (`promoted`: as its check's record promotes it, so it serves first). The runner's env names the
+ *  learning (`promoted`: as its check's record promotes it, so it serves first). The runner's env names the
  *  gateway and holds no key of its own; its route reads the key the claim's model env holds. `hold`: requests whose body
  *  it matches wait until `front.release()`. `learningClock`: the runner's clock for its learning children's deadlines.
  *  `usage`: what the gateway says each request used. `pollMs`: the runner's poll, when not TIMING's. */
@@ -158,11 +158,11 @@ async function world(t, { learning = true, prior = 0, promoted = false, hold, le
     await ended(`prior-${i}`);
   }
   const seed = await landWorkflows(dir, "agent-1", FLOWS);
-  if (promoted) await server.settings.put("learning.promotions.agent-1", { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: seed }] });
+  if (promoted) await putPromotions(server, "agent-1", [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 5, alone: 5, of: [] }, commit: seed }]);
   /** Makes run `id` on `question`, handed the run key RUN_KEY bound to the gateway's origin and capped at `capUsd`, at the
-   *  learning folder's main now, as the server's start makes it. */
+   *  agent's newest learning save now, as the server's start makes it. */
   const keyed = async (id, question, capUsd) => server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, {
-    body: launchOf(question, { learning: startAt((await seedOf(dir, "agent-1")).sha), ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) }),
+    body: launchOf(question, { learning: startAt((await seedOf(dir, server, "agent-1")).sha), ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}) }),
     sealed: sealRunLaunch(SEAL_KEY, id, { model: { key: RUN_KEY, origin: new URL(origin).origin } }),
   });
   const children = async (field) => {
@@ -225,7 +225,7 @@ test("a keyed run's new workflow is checked at its end on the run's own key: eac
   const done = (await w.view("run-1")).learning_work;
   const lastEnd = Math.max(...(await Promise.all(ids.map((id) => w.server.runs.get(id)))).map((row) => row.endedAt));
   assert.deepEqual(done, { state: "ended", runs: [], ended_at: new Date(lastEnd).toISOString(), deadline_at: null }, "ended at the last child's end, its deadline gone");
-  assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "replaying", "the check's record: decided at a later claim");
+  assert.equal((await promotionsOf(w.server.learning, "agent-1")).at(-1).decided, "replaying", "the check's record: decided at a later claim");
   // What the replays spent on the run's key is the run's own learning, as its shadow's would be: its cost.learning_usd
   // carries it (its part check_usd), and its all-in with it.
   const spent = (await Promise.all(ids.map((id) => w.server.runs.get(id)))).map((row) => row.costUsd);
@@ -380,7 +380,7 @@ test("a keyed run whose cap leaves too little for its check drops it (no_budget)
   assert.ok(Date.parse(work.ended_at) > 0, JSON.stringify(work));
   assert.ok(w.logs.some((line) => /answer at \w+ is not checked: what this run's cap leaves is too little for 6 replay runs on its own key, or not known \(no_budget\)/.test(line)), w.logs.join("\n"));
   assert.deepEqual(await w.children("replay"), [], "no replay run made");
-  assert.deepEqual((await promotionsOf(w.server.settings, "agent-1")).filter((one) => one.digest === DIGEST), [], "nothing reserved: a later claim checks it");
+  assert.deepEqual((await promotionsOf(w.server.learning, "agent-1")).filter((one) => one.digest === DIGEST), [], "nothing reserved: a later claim checks it");
   await assertNowhere(w);
 });
 
@@ -422,7 +422,7 @@ test("a keyed run its promoted workflow served, whose cap leaves under a run's s
 
 test("an unkeyed run on a keyless server starts no learning work on any key: its check is skipped in words, and it reads none", { timeout: 240_000 }, async (t) => {
   const w = await world(t, { prior: 6 });
-  await w.server.runs.create({ id: "plain-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Plain?", question: "Plain" }, title: "Plain", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, learning: startAt((await seedOf(w.dir, "agent-1")).sha) } });
+  await w.server.runs.create({ id: "plain-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Plain?", question: "Plain" }, title: "Plain", place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, learning: startAt((await seedOf(w.dir, w.server, "agent-1")).sha) } });
   await w.ended("plain-1");
   assert.ok(w.logs.some((line) => /replay check is skipped: it is tied to no run's model key, and this server holds none of its own/.test(line)), w.logs.join("\n"));
   assert.deepEqual(await w.children("replay"), []);

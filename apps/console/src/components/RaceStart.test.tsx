@@ -7,6 +7,7 @@ import { createClient } from "@/lib/client";
 import type { Places } from "@/lib/place";
 import { laneStart } from "@/lib/race";
 import { pick, picker } from "@/test/picker";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 // #/races/new: the task, and 2 to 4 lanes (a harness and a model each, from the harnesses this server runs). Start sends
 // one inline run per lane (POST /v2/runs), each under its own Idempotency-Key, then opens the race. A lane the server
@@ -89,6 +90,13 @@ async function type(host: Element, task: string) {
 }
 
 describe("RaceStart", () => {
+  it("keeps the New race bar in view, with lanes to race or none: the form scrolls in the one box under it", () => {
+    const { host } = mount(started);
+    expect(expectPinnedBar(host).querySelectorAll("[data-race-lane]")).toHaveLength(2);
+    act(() => root!.unmount());
+    const none = mount(started, null, undefined, HARNESSES.map((h) => ({ ...h, available: false })));
+    expect(expectPinnedBar(none.host).textContent).toContain("nothing to race");
+  });
   it("offers the harnesses this server runs, and makes each lane an agent of the console's own and starts a run of it, each under its own key, then opens the race", async () => {
     const { host, sent, made, went } = mount(started);
     const lanes = [...host.querySelectorAll("[data-race-lane]")];

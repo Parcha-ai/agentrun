@@ -5,9 +5,9 @@ import { execFileSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { builtinCatalog, parseHome, priceRequests } from "../dist/index.js";
+import { builtinCatalog, priceRequests } from "../dist/index.js";
 import { priceRequest, roundUsd } from "../dist/price.js";
-import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexContext, codexFile, codexMeta, codexTokens, openaiUsage, SESSION, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
+import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexContext, codexFile, codexMeta, codexTokens, openaiUsage, parseHome, SESSION, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const INDEX = new URL("../dist/index.js", import.meta.url).href;
 const costState = (usd, i) => ({ type: "cost-state", timestamp: at(i), totalCostUSD: usd });
@@ -20,7 +20,7 @@ import { registerHooks } from "node:module";
 const loaded = [];
 registerHooks({ resolve(specifier, context, next) { if (specifier.startsWith("@earendil-works/pi-ai")) loaded.push(specifier); return next(specifier, context); } });
 const { parseHome } = await import(${JSON.stringify(INDEX)});
-const sessions = await parseHome(${JSON.stringify(home)});
+const sessions = await parseHome(${JSON.stringify(home)}, { threads: 1 });
 process.stdout.write(JSON.stringify({ loaded, costs: sessions.map(({ cost }) => cost).sort() }));`;
   return JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8" }));
 }
