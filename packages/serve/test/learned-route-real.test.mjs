@@ -8,7 +8,7 @@
 import assert from "node:assert/strict";
 import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
@@ -38,15 +38,27 @@ async function owner(server, first) {
   return (runId, approvalId) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body: { decision: "allow" } });
 }
 
-/** Nothing outlives a test whose servers are all closed: no process is this test process's child (the ps that looks is
- *  left out), and none names the runs' data `data` (a run's process, or a harness CLI reparented when its parent died). */
+/** The processes ps lists that are this test process's children (the ps that looks is left out) or name the runs' data
+ *  `data` (a run's process, or a harness CLI reparented when its parent died), each as its pid and the start of its args. */
+const leftOf = (data) => execFileSync("ps", ["-eo", "pid=,ppid=,args="]).toString().split("\n").map((line) => line.trim()).filter(Boolean)
+  .map((line) => line.match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && !m[3].startsWith("ps -eo") && (Number(m[2]) === process.pid || m[3].includes(data)))
+  .map((m) => `${m[1]} ${m[3].slice(0, 120)}`);
+
+/** Nothing outlives a test whose servers are all closed: ps lists nothing of its runs (leftOf). */
 async function nothingOutlives(data) {
-  const left = () => execFileSync("ps", ["-eo", "pid=,ppid=,args="]).toString().split("\n").map((line) => line.trim()).filter(Boolean)
-    .map((line) => line.match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && !m[3].startsWith("ps -eo") && (Number(m[2]) === process.pid || m[3].includes(data)))
-    .map((m) => `${m[1]} ${m[3].slice(0, 120)}`);
+  const left = () => leftOf(data);
   for (const deadline = Date.now() + 15_000; left().length && Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 200)));
   assert.deepEqual(left(), [], "no process of the test's runs outlives it");
 }
+
+test("the check that nothing outlives a run reads a busy box's whole process list: a ps listing of several MiB, past exec's default buffer", async (t) => {
+  // A stand-in ps on PATH: 40,000 lines of another lane's long command lines (about 6 MiB), then a run's process.
+  const bin = await scratch(t);
+  const filler = `999999 1 node --test-concurrency=8 ${"--some-long-flag=value ".repeat(4)}test/other-lane.test.mjs`;
+  writeFileSync(join(bin, "ps"), `#!/bin/sh\nyes '${filler}' | head -n 40000\necho '4242 1 node ${bin}/runs-data/run.mjs'\n`, { mode: 0o755 });
+  withEnv(t, { PATH: `${bin}:${process.env.PATH}` }, ["PATH"]);
+  assert.deepEqual(leftOf(`${bin}/runs-data`), [`4242 node ${bin}/runs-data/run.mjs`]);
+});
 
 /** The node's submit when a request offers it and has no tool result yet (the faux gateway's `call`, codex). */
 const submitsAnswer = ({ body }) => {
