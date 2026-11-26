@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
+import { Fenced } from "../dist/store/store.js";
 import { fauxLoops, queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 /** A row id no run has: the store wrapper below answers for it, so the faux loop never takes it. */
@@ -66,4 +67,19 @@ test("a refusal is written under the claim the runner holds now: the one its las
   const { claim } = takes[0];
   assert.ok(claim.until > first.until && renewed.some((one) => one.until === claim.until), `under a claim a renew returned, not the claim the loop started on (until ${first.until}): ${JSON.stringify(claim)}`);
   assert.deepEqual(takes[0].rest, ["refused", "not now"]);
+});
+
+test("a refusal whose write the store fences loses the claim, as the runner's delivery does, and the refuse itself resolves", { timeout: 60_000 }, async (t) => {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  const { store: fencing } = takingRow(store, async (claim) => {
+    throw new Fenced(claim.runId, claim.epoch);
+  });
+  const { faux, events } = running(t, fencing);
+  await queue(server, "run-1");
+  const loop = await until(() => faux.loops[0]?.claim && faux.loops[0], "the run's loop started");
+  await loop.deps.refuse(ROW, "not now");
+  const lost = events.filter((event) => event.type === "claim-lost");
+  assert.deepEqual(lost.map((event) => [event.runId, event.why]), [["run-1", "fenced"]], `the claim is lost as fenced: ${JSON.stringify(events.map((event) => event.type))}`);
+  await until(() => loop.stopCalls.some((stop) => stop.kind === "claim-lost"), "the loop is stopped for the lost claim");
+  assert.ok(!events.some((event) => event.type === "refused"), "nothing said refused");
 });

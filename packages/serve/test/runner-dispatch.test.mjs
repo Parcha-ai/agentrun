@@ -5,7 +5,7 @@
 // sleeps: the fake loop signals when its start() is called, so the ordering is read from that, not from the clock.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createDispatchLoop } from "../dist/runner/dispatch.js";
+import { createDispatchLoop, REPLAY_RETRY_FIRST_MS, REPLAY_RETRY_MAX_MS, REPLAY_TRIES } from "../dist/runner/dispatch.js";
 const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const CLAIM = { runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "queued" };
@@ -221,7 +221,9 @@ test("a buffered command its inner loop refuses is refused in the runner's store
   await run;
 });
 
-test("a buffered command whose refusal fails to be written is handed to its inner loop once, and the write once: the failure is said, delivered still resolves, and nothing escapes", async () => {
+test("a buffered command whose refusal fails to be written is handed to its inner loop once, and the write once: the failure is said, delivered still resolves, and nothing escapes", async (t) => {
+  // The replay's clock, moved by the test: past every retry the replay would make of a delivery that failed.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   const inner = fakeLoop();
   let commands = 0;
   const refusing = (d) => {
@@ -250,6 +252,11 @@ test("a buffered command whose refusal fails to be written is handed to its inne
     await inner.whenStarted;
     await inner.depsOf().delivered;
     await new Promise((resolve) => setImmediate(resolve));
+    // Past the replay's retries: a failed write is no failed delivery, so the command is never handed over again.
+    for (let wait = REPLAY_RETRY_FIRST_MS; wait <= REPLAY_RETRY_MAX_MS * REPLAY_TRIES; wait *= 2) {
+      t.mock.timers.tick(wait);
+      for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+    }
     assert.equal(commands, 1, "the loop is handed the command once: a failed write is no failed delivery");
     assert.equal(writes, 1, "the refusal is written once");
     assert.ok(said.some((line) => line.includes("was not written refused") && line.includes("the store is away")), `the failure is said: ${JSON.stringify(said)}`);
