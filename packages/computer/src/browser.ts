@@ -129,6 +129,37 @@ export interface HeldBrowser {
 }
 
 /**
+ * The request's running browsers for a create's lookup (heldBrowser), read again while more than one runs: every
+ * RECOVER_GAP_MS, for up to `ms` and as many reads as fit in it (one at least), until one is left. Two run while one
+ * create's converge releases its own, and while a lost create's recovery reads the request before it releases its own
+ * (recoverCreate): the oldest of them may be the one that recovery releases, so the lookup answers what is left. A read
+ * that fails, or the bound reached, gives the last listing, whose oldest the lookup answers as before. Refused aborted
+ * once the caller's signal ends.
+ */
+export async function lookupSettled(
+	found: HeldBrowser[],
+	read: (signal?: AbortSignal) => Promise<Result<HeldBrowser[]>>,
+	sleep: (ms: number) => Promise<void>,
+	ms: number,
+	vendor: string,
+	signal?: AbortSignal,
+): Promise<Result<HeldBrowser[]>> {
+	const by = Date.now() + ms;
+	const reads = Math.max(1, Math.ceil(ms / RECOVER_GAP_MS));
+	let last = found;
+	for (let n = 0; n < reads && last.length > 1; n++) {
+		const left = by - Date.now();
+		if (n > 0 && left <= 0) break;
+		await sleep(Math.max(0, Math.min(RECOVER_GAP_MS, left)));
+		if (signal?.aborted) return fail("aborted", `create was aborted while two or more ${vendor} browsers of its request ran`);
+		const again = await read(signal);
+		if (!again.ok) break;
+		last = again.value;
+	}
+	return ok(last);
+}
+
+/**
  * The order a request's browsers are read in (heldBrowser, a create's converge): the oldest first, by the time the
  * vendor made each, then by id. The same browsers give the same order in every process.
  */
@@ -176,8 +207,8 @@ export function leftToConverge(mine: string, made: ReadonlyArray<MadeBrowser>): 
 
 /**
  * Where a lost create's browser left to a converge (leftToConverge) stands when the request's browsers are read again:
- * "unread" when the read lists neither mine nor any newer one (the first read did, so it says nothing); "release" once
- * mine has ended; "answered" when a newer one has ended, since a converge that answers the older ends its own first;
+ * "unread" when the read does not list mine, or lists no newer one (the first read did, so it says nothing); "release"
+ * once mine has ended; "answered" when a newer one has ended, since a converge that answers the older ends its own first;
  * "answered-older" when an older one also runs, since that converge may have missed the older and answered mine, or
  * answered the older and left mine held by none; "release" when an older one runs and every newer one runs too;
  * "running" while every newer one still runs, so no converge has answered mine yet.
@@ -222,9 +253,10 @@ const RECOVER_GAP_MS = 2_000;
  * included), each found browser's request is read, again after a read that failed or did not list it, and one no read
  * lists is kept: such a read says nothing of who holds it. One older than a browser of its request that has ended
  * (convergeSettled) is kept at once, even when an older one runs, as a converge that answers it ends its own first and
- * one whose list missed the older may have answered it; where an older one runs, the words say it may be held by none. One left to another create's converge (leftToConverge) is otherwise read again,
- * every RECOVER_GAP_MS within that half (once at least), and kept once a newer one has ended or a read fails or misses
- * a browser the first read listed. One whose newer browsers all still run at the end was answered by no converge (each
+ * one whose list missed the older may have answered it; where an older one runs, the words say it may be held by none.
+ * One left to another create's converge (leftToConverge) is otherwise read again, every RECOVER_GAP_MS within that half
+ * (once at least), and kept once a newer one has ended or the last read fails or misses a browser the first read
+ * listed. One whose newer browsers all still run at the end was answered by no converge (each
  * kept its own) and is released. The words say what became of them, for the create's failure; they never carry a URL.
  */
 export async function recoverCreate(

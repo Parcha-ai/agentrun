@@ -42,6 +42,7 @@ import {
 	convergedBrowser,
 	type HeldBrowser,
 	heldBrowser,
+	lookupSettled,
 	newAttempt,
 	defaultSleep,
 	idProblem,
@@ -448,7 +449,13 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		if (signal?.aborted) return fail("aborted", "create was aborted before Browserbase was called");
 		const held = await this.#sessions({ [CREATE_LABEL]: request }, signal);
 		if (!held.ok) return held;
-		const found = heldBrowser(spec.labels ?? {}, held.value.map(heldOf));
+		const read = async (bound?: AbortSignal): Promise<Result<HeldBrowser[]>> => {
+			const again = await this.#sessions({ [CREATE_LABEL]: request }, bound);
+			return again.ok ? ok(again.value.map(heldOf)) : again;
+		};
+		const running = await lookupSettled(held.value.map(heldOf), read, this.#sleep, this.#cleanupMs, "Browserbase", signal);
+		if (!running.ok) return running;
+		const found = heldBrowser(spec.labels ?? {}, running.value);
 		if (found !== undefined) {
 			if (found.differ.length > 0) return fail("exists", otherSpecWords(`${request} (session ${found.id})`, "was made", found.differ));
 			this.#requestOf.set(found.id, request);
