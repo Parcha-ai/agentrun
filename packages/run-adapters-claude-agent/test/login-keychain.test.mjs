@@ -381,3 +381,45 @@ test('on macOS the Keychain item a sign-in left under the account "unknown" goes
     }
   }
 });
+
+/** How long the delete of an "unknown" item may take before it is ended (the source's DROP_MS). */
+const DROP_MS = 5_000;
+/** A `security` whose delete under "unknown" never ends of itself: it ignores SIGTERM and keeps running, as a hung
+ *  `security` or a wrapper on PATH may. Each such delete writes its pid, so the test ends any that outlive it. Every other
+ *  command is SECURITY's. */
+const HANGING = `#!${process.execPath}
+if (process.argv[2] === 'delete-generic-password' && process.argv.includes('unknown')) {
+  require('node:fs').appendFileSync(require('node:path').join(__dirname, 'hung.pids'), process.pid + '\\n');
+  process.on('SIGTERM', () => {});
+  setInterval(() => {}, 1000);
+} else {
+${SECURITY.slice(SECURITY.indexOf('\n') + 1)}
+}
+`;
+/** `p`, or a failure once `ms` have gone by with it unsettled, so a hang is a clean red rather than a hung run. */
+function within(ms, what, p) {
+  let timer;
+  const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} had not settled ${ms} ms on`)), ms); });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+for (const when of Object.keys(STALE_WHEN)) {
+  test(`on macOS a delete of the "unknown" item that ignores SIGTERM is killed at its limit: ${when} does not wait on it past that`, { skip }, async () => {
+    const m = mac();
+    writeFileSync(join(m.bin, 'security'), HANGING, { mode: 0o755 });
+    const login = PLACES["AgentRun's own folder"](m);
+    try {
+      if (when === 'the sign-in this host starts') {
+        await asServerOf(m, async () => assert.deepEqual(await within(DROP_MS + 3_000, `${when}: the sign-in's end`, claude.startClaudeLogin(m.cli, login, { path: m.path, display: {}, platform: 'darwin' }).ended), { end: 'exited', code: 0, signal: null }));
+      } else {
+        WAYS['the shown line, run in their terminal'](m, login);
+        assert.equal((await within(DROP_MS + 3_000, `${when}: the status check`, status(m, login))).signedIn, true, `${when}: the status check reads signed in`);
+      }
+      assert.ok(existsSync(join(m.bin, 'hung.pids')), `${when}: the delete under "unknown" was asked`);
+    } finally {
+      const pids = existsSync(join(m.bin, 'hung.pids')) ? readFileSync(join(m.bin, 'hung.pids'), 'utf8').split('\n').filter(Boolean).map(Number) : [];
+      for (const pid of pids) {
+        try { process.kill(pid, 'SIGKILL'); } catch {}
+      }
+    }
+  });
+}

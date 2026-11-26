@@ -352,7 +352,8 @@ async function accountCopy(from: string, to: string): Promise<string> {
  *  session's) it finds no keychain and reads signed out, whatever the variables. */
 export const personHome = (login: ClaudeAgentLogin): string => login.userHome ?? login.home ?? homedir();
 
-/** How long the delete of an "unknown" item may take before it is left (dropUnknownItem). */
+/** How long the delete of an "unknown" item may take before it is killed (SIGKILL, which a `security` or a wrapper on
+ *  PATH cannot ignore, as it can SIGTERM) and left (dropUnknownItem): the sign-in's end and the status check wait on it. */
 const DROP_MS = 5_000;
 /** The items dropUnknownItem has dealt with in this process, by home and service: each is deleted once. */
 const dropped = new Set<string>();
@@ -377,7 +378,7 @@ export async function dropUnknownItem(login: ClaudeAgentLogin, options: { path: 
   dropped.add(key);
   await new Promise<void>((resolve) => {
     try {
-      const child = spawn("security", ["delete-generic-password", "-a", "unknown", "-s", service], { env: { PATH: options.path, HOME, ...user }, stdio: "ignore", timeout: DROP_MS });
+      const child = spawn("security", ["delete-generic-password", "-a", "unknown", "-s", service], { env: { PATH: options.path, HOME, ...user }, stdio: "ignore", timeout: DROP_MS, killSignal: "SIGKILL" });
       child.once("error", () => resolve());
       child.once("close", () => resolve());
     } catch {
