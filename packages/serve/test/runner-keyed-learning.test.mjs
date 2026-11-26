@@ -149,7 +149,12 @@ async function world(t, { learning = true, prior = 0, promoted = false, hold, le
   const routeOf = async (_model, env) => ({ model: MODEL, provider: { api: "anthropic-messages", origin, credential: () => env.AGENT_MODEL_API_KEY ?? PI }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch });
   const logs = [];
   const deps = { env: { AGENT_MODEL_BASE_URL: origin }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
-  const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
+  // Each claim a loop started on, by run id, in order: a claim that only ends its run (endRetried) starts none.
+  const loops = [];
+  const specOf = async (claim, run) => {
+    loops.push(claim.runId);
+    return adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
+  };
   const startOne = (name, clock) => startRunner({ store: wrap ? wrap(store) : store, name, ...TIMING, ...lease, ...(pollMs ? { pollMs } : {}), ...(clock ? { learningClock: clock } : {}), createLoop: createAdapterLoop(specOf) });
   runner = startOne("runner-a", learningClock);
   const restart = (clock) => {
@@ -179,7 +184,7 @@ async function world(t, { learning = true, prior = 0, promoted = false, hold, le
     return out;
   };
   const view = async (id) => viewOverStore(server, id, { origin: "", serverSecrets: () => [], sealKey: SEAL_KEY });
-  return { dir, server, gw, front, logs, ended, keyed, children, view, restart };
+  return { dir, server, gw, front, logs, ended, keyed, children, view, restart, loops };
 }
 
 /** The key nowhere in the clear: no log line, none of the store's bytes. */
@@ -477,13 +482,15 @@ test("a replay that spent before its runner went, claimed again past its deadlin
   await until(async () => (await Promise.all(ids.map(spentOf))).every((usd) => typeof usd === "number" && usd > 0), "each replay booked its answered request");
   for (const id of ids) assert.ok(!FINAL.includes((await w.server.runs.get(id)).state), `replay ${id} not ended while its cancel was not written`);
   // The runner dies; the next starts past each replay's deadline, and can write a cancel.
+  const loopsBefore = w.loops.length;
   w.restart(() => Date.now() + LEARNING_CHILD_MS + 60_000);
   commandsDown = false;
   for (const id of ids) {
     const row = await w.ended(id);
     assert.deepEqual([row.state, row.outcome], ["stopped", "cancelled"], `replay ${id} cancelled at its claim past its deadline: ${JSON.stringify([row.state, row.outcome, row.summary])}`);
   }
-  assert.equal(results(), 0, "no loop ran a replay again: the tool's result never reached the gateway");
+  assert.deepEqual(w.loops.slice(loopsBefore).filter((id) => ids.includes(id)), [], "the claim past the deadline only ended each replay: no loop started on one");
+  assert.equal(results(), 0, "the tool's result never reached the gateway");
   // Its end stored what it booked: a figure, no bound.
   const rows = await Promise.all(ids.map((id) => w.server.runs.get(id)));
   assert.ok(rows.every((row) => typeof row.costUsd === "number" && row.costUsd > 0 && row.costAtMostUsd === null), `each replay ends at the figure it booked: ${JSON.stringify(rows.map((row) => [row.costUsd, row.costAtMostUsd]))}`);
