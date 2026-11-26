@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseHome, READERS } from "../dist/index.js";
 import { codexLines, codexReader } from "../dist/readers/codex.js";
+import { tableUsed } from "../dist/scan.js";
 import { at, codexAnswer, codexContext, codexUser, openaiUsage, tempHome, writeJsonl } from "./fixtures.mjs";
 
 // UUIDv7 ids dated 2026-01-01, as Codex names its threads.
@@ -109,4 +110,15 @@ test("a thread-stamped Codex fork counts its copy once its parent is read, and a
     assert.deepEqual(result, scanned, `the pool at ${threads} threads gives one thread's totals`);
     assert.ok(files.some((file) => file === rollout(home, STAMPED) || file === rollout(home, ORPHAN)), "a stamped fork read on a worker");
   }
+});
+
+test("a Codex fork read again compiles no fields again: the walk's table holds Codex's fields once, however many forks are read", async (t) => {
+  const home = await forkHome(t);
+  const options = { sources: ["codex"], catalog: false, env: {}, threads: 1 };
+  const first = await parseHome(home, options);
+  const used = tableUsed();
+  // Each fresh fork read builds a reader of its own over Codex's fields; were they compiled per reader, the table (which
+  // only grows) would fill after some dozens of forks and every later line would be parsed whole.
+  for (let k = 0; k < 3; k += 1) assert.deepEqual(await parseHome(home, options), first);
+  assert.equal(tableUsed(), used, "three more reads of three forks took no more of the table");
 });

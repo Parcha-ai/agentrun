@@ -305,10 +305,20 @@ function finish<S extends string, O>(spec: LineSource<S, O>, file: string, state
   return out;
 }
 
+/** Each source's fields as scan takes them, made once per Shape: a reader built again over the same fields (a Codex
+ *  fork's, whose spec differs only in its start) reads with the node they were compiled to, since the walk's table, which
+ *  holds every compiled node, only grows. */
+const compiled = new WeakMap<Shape, Fields>();
+function fieldsFor(shape: Shape): Fields {
+  let fields = compiled.get(shape);
+  if (!fields) compiled.set(shape, (fields = fieldsOf({ ...shape, timestamp: true })));
+  return fields;
+}
+
 /** The Reader of a JSONL source: each file one locator, its cursor a FileCursor. */
 export function lineReader<S extends string, O>(spec: LineSource<S, O>): Reader<S, FileCursor> {
   const { source, name, harness, order, children } = spec;
-  const fields = spec.fields ? fieldsOf({ ...spec.fields, timestamp: true }) : undefined;
+  const fields = spec.fields ? fieldsFor(spec.fields) : undefined;
   return {
     source,
     name,
