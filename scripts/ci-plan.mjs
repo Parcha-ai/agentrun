@@ -29,7 +29,7 @@ export function readConfig(root) {
 }
 
 const FILE = /^[\w./@-]+$/;
-const nodeTest = /^node --test((?: --test-(?:concurrency|timeout)=\d+)*)((?: (?:'[\w./*-]+'|[\w./*-]+))+)$/;
+const nodeTest = /^node --test((?: (?:--test-(?:concurrency|timeout)=\d+|--import=[\w./-]+))*)((?: (?:'[\w./*-]+'|[\w./*-]+))+)$/;
 const VITEST = 'vitest --run';
 
 function listed(command, cwd, what) {

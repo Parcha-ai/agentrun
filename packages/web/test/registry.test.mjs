@@ -88,5 +88,13 @@ test("each provider's settings are checked by its own entry, and a provider that
   assert.deepEqual(web.settingsProblemsOf({ native: { x: 1 } }), ["settings name native, which takes no settings here (parallel, exa and firecrawl do)"]);
   assert.deepEqual(web.settingsProblemsOf({ exa: { type: "auto" }, parallel: { mode: "fast" }, firecrawl: { onlyMainContent: false } }), []);
   assert.equal(web.settingsProblemsOf({ exa: { pageVerbosity: "loud" } }).length, 1);
+  // A setting named as one of a plain object's own members is a setting the provider does not take, never a check.
+  for (const provider of ["exa", "parallel", "firecrawl"]) {
+    let problems = [];
+    assert.doesNotThrow(() => (problems = web.settingsProblemsOf({ [provider]: JSON.parse('{"constructor": 1, "__proto__": 2}') })), `${provider}: a settings key named constructor or __proto__ is looked up as the checks' own, never as Object's`);
+    assert.equal(problems.length, 2, `${provider}: a settings key named constructor or __proto__ is reported as unknown, not run as a check`);
+    assert.match(problems[0], /takes no setting "constructor"/);
+    assert.match(problems[1], /takes no setting "__proto__"/);
+  }
   assert.throws(() => web.createWeb({ order: { search: ["exa"], fetch: ["direct"] }, settings: { "exa-keyless": {} } }), /web settings: settings name exa-keyless, which takes no settings here/);
 });

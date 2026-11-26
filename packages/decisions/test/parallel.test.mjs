@@ -398,3 +398,9 @@ test('includeExcerpts: false keeps no passage text on either route; true keeps t
     assert.ok(on[0].excerpts.length > 0 && on[0].excerpts.every((x) => x.length <= 4096), `${route}: passages kept, each capped`);
   }
 });
+
+test('a 402 (the account is out of credit) is payment_required, sent once and with no cost', async () => {
+  const { fetch, seen } = fakeFetch([json({ error: { message: 'out of credit' } }, 402)]);
+  await assert.rejects(parallelProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions: { holds: { type: 'noul', instructions: 'Q?' } } }, ctx()), (error) => code('payment_required')(error) && error.costUsd === undefined);
+  assert.equal(seen.length, 1, 'a 402 is not sent again');
+});

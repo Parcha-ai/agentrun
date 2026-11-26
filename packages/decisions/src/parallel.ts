@@ -164,7 +164,8 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
       for (let attempt = 1; ; attempt++) {
         let response: Response;
         try {
-          response = await fetcher(url, { method: "POST", headers: { "content-type": "application/json", "x-api-key": key }, body, signal });
+          // It carries the key: a redirect is an error, never followed to an address the key was not meant for.
+          response = await fetcher(url, { method: "POST", headers: { "content-type": "application/json", "x-api-key": key }, body, signal, redirect: "error" });
         } catch (error) {
           // A deadline that ends a request in flight may have ended it after Parallel answered: only the host's cancel is not a lost outcome.
           if (signal.aborted) throw ctx.signal.aborted ? stopped(attempt) : lost(attempt, "passed its deadline");
@@ -197,6 +198,7 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
         const refId = await response.json().then((b: unknown) => (isRecord(b) && isRecord(b.error) && typeof b.error.ref_id === "string" ? b.error.ref_id : undefined), () => undefined);
         const details = { status, attempts: attempt, ...(refId !== undefined ? { refId } : {}) };
         if (status === 401 || status === 403) throw new DecisionProviderError("auth", `Parallel refused the key (HTTP ${status}).`, details);
+        if (status === 402) throw new DecisionProviderError("payment_required", `Parallel refused the key's account: it is out of credit (HTTP 402).`, details);
         if (status === 400 || status === 422) throw new DecisionProviderError("invalid_request", `Parallel refused the request (HTTP ${status}).`, details);
         if (status === 429) throw new DecisionProviderError("rate_limited", `Parallel rate-limited the request after ${attempt} attempts.`, details);
         throw new DecisionProviderError("http", `Parallel answered HTTP ${status}.`, details);

@@ -38,7 +38,7 @@ name: ${name}
 version: ${version}
 description: Says what changed in the repository today.
 budget: { per_run_usd: 1.00 }
-${extra.join("\n")}
+${extra.some((line) => line.startsWith("tools:")) ? "" : "tools: []\n"}${extra.join("\n")}
 ---
 You check what changed. Use your check skill.
 `;

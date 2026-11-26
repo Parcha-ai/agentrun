@@ -16,7 +16,7 @@ import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
 import { PLAN_PROVIDER, planOf, planReaderOf, withPlan } from "../chatgpt-plan.js";
 import type { SealedKeys } from "../store/store.js";
-import { handsParallel } from "../tool-plane.js";
+import { handsJevWeb, handsParallel } from "../tool-plane.js";
 import type { Revision } from "../agent-rows.js";
 import { held, held as runnerSeam } from "./held.js";
 import { savedGatewayIn } from "../model-gateway.js";
@@ -82,7 +82,9 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   // A model key is never enumerable, as withModelKeys lays a route's, but unlike a route's it stays writable and deletable
   // (withoutModelKeys drops it); a tool key is a plain value, which its tools read and hand on.
   for (const name of keysFor(scoped, working)) if (working[name] !== undefined && !(savedGateway && name === GATEWAY_KEY_ENV) && !(keyless && MODEL_KEY_NAMES.includes(name)) && !(modelRefused && BUILTIN_OWN_KEYS.includes(name))) Object.defineProperty(env, name, { value: working[name], enumerable: !MODEL_KEY_NAMES.includes(name), writable: true, configurable: true });
-  const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false });
+  // TypeSafe's key is a model key: a run whose model sends none (keyless) is not handed it for Jev's web ranking either,
+  // and its web tools answer unranked.
+  const decision = decisionKeysFor(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false, jevWeb: launch.plane && !keyless ? handsJevWeb(launch.plane, working, needs.harness) : false });
   // A decision key is a plain value, as before, under a model key's name too (OpenRouter's, which Jev's nodes use).
   for (const [name, value] of Object.entries(decision)) Object.defineProperty(env, name, { value, enumerable: true, writable: true, configurable: true });
   // The run's own tool keys, sealed with its launch: each one its revision declares, over the server's by the same name.
@@ -182,7 +184,7 @@ export async function hostDecisionKeys(deps: ClaimSecretsDeps, providers: readon
   // A run's own process holds no seal key: its runner reads them (held.ts).
   const at = deps.sealKey ? undefined : held();
   if (at) return at.decisionKeys(providers);
-  return decisionKeysFor(await workingEnv(deps), { providers, parallelWeb: false });
+  return decisionKeysFor(await workingEnv(deps), { providers, parallelWeb: false, jevWeb: false });
 }
 
 /** The model keys the host's models of `tiers` need (model.ts modelKeys: each one's provider's, or the gateway's), read as

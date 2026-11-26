@@ -271,7 +271,7 @@ test("a compile ask the cap refused keeps nothing, saying so; a turn that failed
   }
 });
 
-test("a merge that could not be written drops the learning: unavailable as failed, a conflict in the checks' words", async () => {
+test("a merge that could not be written drops the learning: unavailable as failed, a conflict in the checks' words, a purge since its seed as purged_since_seed", async () => {
   const unavailable = hookWith({ words: ["Keep it short."], commit: () => ({ ok: false, reason: "unavailable", problems: [] }) });
   const one = kept(await unavailable.hook(unavailable.input()));
   assert.deepEqual([one.state, one.reason, one.detail], ["dropped", "reflect_failed", said.stopped(STOPPED.failed)]);
@@ -281,6 +281,9 @@ test("a merge that could not be written drops the learning: unavailable as faile
   const conflict = hookWith({ compile: NEW, commit: () => ({ ok: false, reason: "conflict", problems }) });
   const two = kept(await conflict.hook(conflict.input()));
   assert.deepEqual([two.state, two.reason, two.problems], ["dropped", "checker", problems]);
+  const purged = hookWith({ compile: NEW, words: ["Keep it short."], commit: () => ({ ok: false, reason: "purged", problems: [] }) });
+  const three = kept(await purged.hook(purged.input()));
+  assert.deepEqual([three.state, three.reason, three.detail], ["dropped", "purged_since_seed", said.purgedSinceSeed]);
 });
 
 test("every string the step keeps is cut of what the run must never learn", async () => {

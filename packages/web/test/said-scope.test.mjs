@@ -27,5 +27,5 @@ test("[parallel, direct]: Parallel fails and the direct fetch reads the page; th
   const w = web.createWeb({ order: { search: [], fetch: ["parallel", "direct"] }, keys: { parallel: CANARY }, send: { parallel: send }, guard: guardOf(network()) });
   const page = await w.fetch(PUBLIC);
   assert.deepEqual([page.answer.via, page.answer.parallel], ["direct", "answered 500"]);
-  assert.match(web.webFetchText(page.answer), /\nParallel was picked for web_fetch and gave no page \(answered 500\); this one was fetched directly\.$/);
+  assert.match(web.webFetchText(page.answer), /\nParallel gave no page \(answered 500\); this one was fetched directly\.$/);
 });
