@@ -206,7 +206,9 @@ class ModalHost implements MachineHost {
 			windowManager: true,
 			// Never root: each connection is Modal's exec of the stdio bridge, as Modal's root, outside the daemon.
 			user: ["uid"],
-			labels: { count: MAX_TAGS, bytes: MAX_TAG_BYTES },
+			// Packed: the server's labels (a mount, a network list, an owner, a run and its deadlines) pass 512 bytes as they
+			// are. A value holds 64 KiB, so the map is one tag. Sandboxes made before packing carry their tags as given.
+			labels: { count: MAX_TAGS, bytes: MAX_TAG_BYTES, packed: { unpacked: true } },
 		};
 		if (connect === "exec") this.exec = (id, argv, ctx) => this.#exec(id, argv, ctx);
 	}
