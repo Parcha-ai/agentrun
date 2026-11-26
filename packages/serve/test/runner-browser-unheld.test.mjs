@@ -2,8 +2,9 @@
 // (startRunner over createDispatchLoop and the adapter spec, on a real store, the faux browser and a scripted model):
 // a create whose reply was lost can leave a session no claim holds (one its recovery kept for a converge that answered
 // another), which a vendor that ends its sessions itself runs to its lifetime otherwise. At the run's end, its stop,
-// and its park (the claim's release), that session is released once, its time is in the run's cost
-// once (a final BROWSER_CHARGED under its own tag), and the run's timeline says so; the session the run held goes by
+// and its park (the claim's release), that session is released once, its time is booked on the run's cost
+// once (a final BROWSER_CHARGED under its own tag) and absorbed on its usage (a line of its own, not billable), and the
+// run's timeline says so; the session the run held goes by
 // its own release, never a second one. Where the vendor lists that session as the run's own is released by its tag,
 // that release ends it, and it is charged there under the same tag: once, also when the let-go's release lists it
 // again, and the run's own session, which a vendor's list shows a moment past its release, is never charged as one
@@ -33,6 +34,7 @@ const { FAUX_BROWSER_ENV } = await import("../dist/tools.js");
 const { FAUX_ENV } = await import("../dist/model.js");
 const browserComputer = await import("../dist/browser-computer.js");
 const { unheldWords } = await import("../dist/browser-cost.js");
+const { runUsageOverStore } = await import("../dist/run-usage.js");
 after(closeOpenSessions);
 
 /** A test seal key, no real one. */
@@ -140,9 +142,26 @@ function assertLetGo(what, got, made) {
   assert.ok(charge.data.seconds >= AGE_S, `${what}: charged from when it was made, ${AGE_S} s or more before: ${charge.data.seconds} s`);
   assert.equal(eight(charge.data.usd), eight(charge.data.seconds * USD_PER_S), `${what}: at Browserbase's price: ${JSON.stringify(charge.data)}`);
   assert.equal(got.said.length, 1, `${what}: the run's root says it once`);
-  assert.match(got.said[0].data.words, new RegExp(`^Released 1 browser a create race left running \\(${made.id}\\); this run did not hold it, and its time is in the run's cost\\.$`));
+  assert.match(got.said[0].data.words, new RegExp(`^Released 1 browser a create race left running \\(${made.id}\\); this run did not hold it, and its time is booked on the run and absorbed, not billed\\.$`));
   assert.equal(got.unheldCharges.length, 1, `${what}: no other charge names ${made.id}: ${JSON.stringify(got.unheldCharges)}`);
   assert.equal(got.ownUnheldCharges.length, 0, `${what}: the run's own session ${made.with} is never charged as one nobody held`);
+}
+
+/** The run's usage (GET /runs/{id}/usage) after the let-go: the raced session's charge is booked (in `total`, the run's
+ *  `cost.usd`) and absorbed (its own `browser_time` line, not billable, in `infra_usd`), so a bill of the billable lines
+ *  leaves it out; the run's own session's time stays billable. */
+async function assertAbsorbed(what, run, row, charge) {
+  const usage = await runUsageOverStore(run.server, RUN);
+  const browser = usage.lines.filter((one) => one.meter === "browser_time");
+  const absorbed = browser.filter((one) => one.absorbed === "create_race");
+  assert.equal(absorbed.length, 1, `${what}: one absorbed browser_time line: ${JSON.stringify(browser)}`);
+  assert.equal(absorbed[0].billable, false, `${what}: the raced session's time is not billable`);
+  assert.equal(eight(absorbed[0].usd), eight(charge.data.usd), `${what}: the absorbed line is the raced session's charge`);
+  assert.equal(eight(usage.total.usd), eight(row.costUsd), `${what}: the ledger records it: total is the run's cost.usd`);
+  assert.ok(usage.infra_usd !== null && eight(usage.infra_usd) >= eight(charge.data.usd), `${what}: infra_usd holds it: ${usage.infra_usd}`);
+  const billed = usage.lines.filter((one) => one.billable).reduce((sum, one) => sum + one.usd, 0);
+  assert.equal(eight(billed), eight(row.costUsd - charge.data.usd), `${what}: a bill of the billable lines leaves the raced session's time out`);
+  assert.ok(browser.some((one) => one.billable && one.usd > 0), `${what}: the run's own session's time stays billable: ${JSON.stringify(browser)}`);
 }
 
 test("at the run's end, the session of the run's labels that nobody held, which the vendor did not list at its companion's release, is released by the let-go once and its time is in the run's cost once; the run's own goes by its own release, and the timeline says it", { timeout: 120_000 }, async (t) => {
@@ -155,6 +174,7 @@ test("at the run's end, the session of the run's labels that nobody held, which 
   assertLetGo("the end", got, made);
   const browser = recs.entries.filter((e) => e.kind === "agentrun.browser_charged").reduce((sum, e) => sum + e.data.usd, 0);
   assert.equal(eight(row.costUsd ?? Number.NaN), eight(browser), `the run's cost holds every browser charge once, the unheld one's too: ${row.costUsd}`);
+  await assertAbsorbed("the end", run, row, got.charged[0]);
   const rows = await runTimeline(run.server, RUN, ctx, { settled: true });
   assert.ok(rows.some((one) => one.origin === "server" && /^AgentRun: Released 1 browser a create race left running/.test(one.summary ?? "")), `the timeline says it: ${JSON.stringify(rows.map((one) => one.summary))}`);
 });
@@ -170,6 +190,7 @@ test("where the vendor lists the session a create race left as the run's own is 
   assert.ok(!run.ops().some((op) => op.op === "release-noop" && op.id === made.id), "the let-go's list no longer showed it: the tag release alone ended it");
   const browser = recs.entries.filter((e) => e.kind === "agentrun.browser_charged").reduce((sum, e) => sum + e.data.usd, 0);
   assert.equal(eight(row.costUsd ?? Number.NaN), eight(browser), `the run's cost holds every browser charge once: ${row.costUsd}`);
+  await assertAbsorbed("the tag release", run, row, got.charged[0]);
 });
 
 test("where the tag release ends that session and the let-go's list still shows it and the run's own as running, the let-go releases it again and charges nothing more, and never charges the run's own as one nobody held", { timeout: 120_000 }, async (t) => {
@@ -183,6 +204,7 @@ test("where the tag release ends that session and the let-go's list still shows 
   assert.ok(run.ops().some((op) => op.op === "release-noop" && op.id === made.id), `the let-go's list showed it and released it again: ${JSON.stringify(run.ops().filter((op) => op.op?.startsWith("release")))}`);
   const browser = recs.entries.filter((e) => e.kind === "agentrun.browser_charged").reduce((sum, e) => sum + e.data.usd, 0);
   assert.equal(eight(row.costUsd ?? Number.NaN), eight(browser), `the run's cost holds every browser charge once: ${row.costUsd}`);
+  await assertAbsorbed("the tag release and the let-go", run, row, got.charged[0]);
 });
 
 test("a reopen after the let-go charged the session nobody held books that charge once: the park's let-go charges it, the raise reopens the run, and its cost holds it once at the end", { timeout: 180_000 }, async (t) => {
@@ -206,6 +228,7 @@ test("a reopen after the let-go charged the session nobody held books that charg
   assert.equal(after.unheldReleases, 1, "released once");
   const browser = recs.entries.filter((e) => e.kind === "agentrun.browser_charged").reduce((sum, e) => sum + e.data.usd, 0);
   assert.equal(eight(row.costUsd ?? Number.NaN), eight(browser), `the run's cost holds the charge once after the reopen: ${row.costUsd} against ${browser}, the unheld one ${charge.data.usd}`);
+  await assertAbsorbed("the reopen", run, row, charge);
 });
 
 test("at the run's stop, the session nobody held is released once and charged once, the run's own by its own release", { timeout: 120_000 }, async (t) => {

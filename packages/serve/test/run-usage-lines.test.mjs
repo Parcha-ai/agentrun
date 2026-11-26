@@ -511,3 +511,27 @@ test("a run that took its first attempt row after its earlier work (an older run
   assert.equal(infraUsdOf(lines), null, "only the cut follow-up's unfinished request, of no known cost");
   assert.deepEqual(attemptTags(attempts).atTime(ENDED - 700_000), { attempt: null, billable: true }, "a computer made before it too");
 });
+
+test("browser time a create race left (charged under unheld:<id>) is booked and absorbed: a browser_time line of its own, not billable, in total and in infra_usd; the provider's other browser time stays billable", async () => {
+  const { usageLinesOf, infraUsdOf } = await import("../dist/run-usage.js");
+  const entries = [
+    ...keys(),
+    ...reported(7, 1, "m", 0.01, usage(100, 10)),
+    ...paid(1, "browser", "browserbase", 0.002, { tool: "browser", tag: "s1" }),
+    e(1, "agentrun.browser_charged", { tool: "browser", charged_by: "browserbase", seconds: 60, tag: "s1" }),
+    ...paid(2, "browser", "browserbase", 0.02, { tool: "browser", tag: "unheld:bb-raced" }),
+    e(1, "agentrun.browser_charged", { tool: "browser", charged_by: "browserbase", seconds: 600, tag: "unheld:bb-raced" }),
+  ];
+  const { lines, total } = usageLinesOf(entries);
+  const browser = lines.filter((one) => one.meter === "browser_time");
+  assert.deepEqual(browser, [
+    { meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 600, unit: "second", basis: "estimate", attempt: null, billable: false, absorbed: "create_race", usd: 0.02 },
+    { meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 60, unit: "second", basis: "estimate", attempt: null, billable: true, usd: 0.002 },
+  ].sort((a, b) => Number(a.billable) - Number(b.billable)), "the raced browser's time on a line of its own; the run's own session's billable");
+  assert.equal(micro(total.usd), micro(0.032), "the ledger's record is whole: total holds the absorbed time");
+  assert.equal(micro(infraUsdOf(lines)), micro(0.02), "infra_usd is the absorbed time");
+  const billed = lines.filter((one) => one.billable).reduce((sum, one) => sum + one.usd, 0);
+  assert.equal(micro(billed), micro(0.012), "a bill of the billable lines leaves the raced browser's time out");
+  assert.ok(lines.every((one) => one.absorbed === undefined || one.absorbed === "create_race"));
+  assert.equal(lines.filter((one) => "absorbed" in one).length, 1, "absent on every other line");
+});

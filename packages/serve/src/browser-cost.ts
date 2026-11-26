@@ -26,7 +26,7 @@ import { type Harness, ROOT_CONVERSATION_ID, type Conversation, type Session, ty
 import { PROVIDERS } from "@parcha/agentrun-computer";
 import type { SessionCharge } from "@parcha/pi-browser";
 import type { BeforeCreate } from "@parcha/pi-browser/durable";
-import { BROWSER_CHARGED, SPEND_CAP_REACHED } from "./cap.js";
+import { BROWSER_CHARGED, SPEND_CAP_REACHED, UNHELD_BROWSER_TAG, unheldBrowserTag } from "./cap.js";
 import { BROWSERS_UNHELD } from "./timeline/index.js";
 import type { UnheldSessions } from "./workspace/resolve-computer.js";
 import { type PaidBooking, paidStep, unbookedRefusal } from "./paid-calls.js";
@@ -108,14 +108,14 @@ type Row = { tag: string; conversationId: number; state: string; resourceId: str
 /** The tag a browser a create race left running is charged under (BROWSER_CHARGED), whichever release ended it (a let-go's
  *  releaseUnheld, or a release by a session's tag that ended it beside that session): one key, so it is charged once in a
  *  process and booked once on the ledger (chargeRef). */
-export const unheldTag = (id: string): string => `unheld:${id}`;
+export const unheldTag = (id: string): string => `${UNHELD_BROWSER_TAG}${id}`;
 
 /** What a release of the browsers a create race left running says on the run's timeline and its root (BROWSERS_UNHELD):
  *  that nothing the run held was among them, so a reader does not take their time for the run's own use. */
 export function unheldWords(swept: UnheldSessions): string {
   const n = swept.released.length;
   const one = n === 1;
-  const released = n > 0 ? `Released ${n} browser${one ? "" : "s"} a create race left running (${swept.released.map((r) => r.id).join(", ")}); this run did not hold ${one ? "it" : "them"}, and ${one ? "its" : "their"} time is in the run's cost.` : "";
+  const released = n > 0 ? `Released ${n} browser${one ? "" : "s"} a create race left running (${swept.released.map((r) => r.id).join(", ")}); this run did not hold ${one ? "it" : "them"}, and ${one ? "its" : "their"} time is booked on the run and absorbed, not billed.` : "";
   const failed = swept.failed.length > 0 ? `Could not release ${swept.failed.length} browser${swept.failed.length === 1 ? "" : "s"} a create race left running (${swept.failed.join("; ")}): each runs to its vendor's lifetime.` : "";
   const creating = swept.creating.length > 0 ? `Left ${swept.creating.length} browser${swept.creating.length === 1 ? "" : "s"} to ${swept.creating.length === 1 ? "its create" : "their creates"}, still running (${swept.creating.join(", ")}).` : "";
   return [released, failed, creating].filter(Boolean).join(" ");
@@ -331,7 +331,7 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
 
   /** The one booking a charge names on the ledger: its session, its time, and whether it was the session's last. A
    *  browser a create race left (unheldTag) is charged once whatever ended it, so its booking is its id alone. */
-  const chargeRef = (data: Pick<Booked, "tag" | "at" | "final">) => (data.tag.startsWith(unheldTag("")) ? `browser:${data.tag}/final` : `browser:${data.tag}@${data.at}${data.final ? "/final" : ""}`);
+  const chargeRef = (data: Pick<Booked, "tag" | "at" | "final">) => (unheldBrowserTag(data.tag) ? `browser:${data.tag}/final` : `browser:${data.tag}@${data.at}${data.final ? "/final" : ""}`);
 
   /** At a reopen, on the runner's one ledger: every charge the root holds (BROWSER_CHARGED) is booked there, once by its
    *  ref, so one whose commit landed and whose booking did not (its process lost between the two) is counted now; one

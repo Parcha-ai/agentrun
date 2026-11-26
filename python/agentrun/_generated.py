@@ -8566,6 +8566,7 @@ class _GetRunUsageResponseLinesItemRequired(TypedDict):
 
 
 class GetRunUsageResponseLinesItem(_GetRunUsageResponseLinesItemRequired, total=False):
+    absorbed: Literal["create_race"]
     so_far_usd: float
     unpriced: int
     upper_bound: Literal[True]

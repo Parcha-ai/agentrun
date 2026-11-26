@@ -3700,6 +3700,7 @@ export interface operations {
         basis: "reported" | "estimate" | "unpriced";
         attempt: number | null;
         billable: boolean;
+        absorbed?: "create_race";
         usd: number | null;
         so_far_usd?: number;
         unpriced?: number;
