@@ -1091,7 +1091,9 @@ export function startRunner(options: RunnerOptions): Runner {
       let end: LoopEnd;
       let threw = false;
       try {
-        end = await loop.start(claim);
+        // A claim lost, or stopped by the runner's close, while it waited starts nothing: its process would take the run's
+        // folders back from under whoever holds the run now. Its end is a stopped loop's, with nothing written.
+        end = settled && (held.fence.lost || held.stopping || held.abort.signal.aborted || killed) ? { state: "interrupted" } : await loop.start(claim);
       } catch (error) {
         threw = true;
         // A claim refused before any loop could start (the dispatch's ClaimRefused: a harness this host never holds) is
