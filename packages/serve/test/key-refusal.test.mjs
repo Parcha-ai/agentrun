@@ -138,6 +138,10 @@ const CONTROL_PADS = [
   ["JSON's \\u001b CSI colours", String.raw`\u001b[1;31m`.repeat(300), "json"],
   ["raw OSC titles", "\u001b]0;t\u0007".repeat(300), "json"],
   ["backspace overstrikes", "Z\b".repeat(300), "json"],
+  // Characters that show as a box or a blank: U+FFFE, the braille blank, a lone surrogate as JSON's escape.
+  ["raw U+FFFE", "\ufffe".repeat(300), "json"],
+  ["raw braille blanks", "\u2800".repeat(300), "json"],
+  ["JSON's \\ud800", String.raw`\ud800`.repeat(300), "json"],
 ];
 const wrapped = (kind, body) => (kind === "python" ? `{'a': '${body}'}` : `{"a": "${body}"}`);
 

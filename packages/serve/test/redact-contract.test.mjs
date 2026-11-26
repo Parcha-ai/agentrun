@@ -850,6 +850,47 @@ const CASES = [
       { name: "a held value split by an ESC and its rest's first letter withholds the text (control)", text: `x ${H}${E}${R} y`, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])) },
     ];
   })(),
+  // More characters that show as a box, a blank or nothing: U+FFFE, the interlinear annotation characters
+  // (U+FFF9-FFFB), the noncharacters U+FDD0-FDEF, private use (U+E000-F8FF), the braille blank (U+2800, which shows as
+  // a space and is no whitespace), and a lone surrogate. Between a held value's halves each hides it from no view: as it
+  // stands, in a JSON string as JSON.stringify writes it (a lone surrogate as its \u escape), as JSON's \u escape in
+  // prose, percent-encoded and as an HTML character reference where it has those forms, and between each of the value's
+  // characters, it withholds the text.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const hex4 = (code) => code.toString(16).padStart(4, "0");
+    return [0xfffe, 0xfff9, 0xfffa, 0xfffb, 0xfdd0, 0xfdef, 0xe000, 0xf8ff, 0x2800, 0xd800, 0xdbff, 0xdc00, 0xdfff].flatMap((code) => {
+      const char = String.fromCharCode(code);
+      const at = `U+${hex4(code).toUpperCase()}`;
+      const lone = code >= 0xd800 && code <= 0xdfff;
+      return [
+        [`${at} as it stands`, `x ${H}${char}${R} y`],
+        [`${at} in a JSON string as JSON.stringify writes it`, JSON.stringify({ note: `see ${H}${char}${R} more` })],
+        [`${at} as JSON's \\u escape in prose`, `x ${H}${B}u${hex4(code)}${R} y`],
+        [`${at} between each of its characters`, `v=${[...H, ...R].join(char)} ok`],
+        // A lone surrogate has no UTF-8 bytes, and a browser reads its reference as U+FFFD, which shows.
+        ...(lone ? [] : [[`${at} percent-encoded`, `x ${H}${encodeURIComponent(char)}${R} y`], [`${at} as an HTML character reference`, `x ${H}&#x${hex4(code)};${R} y`]]),
+      ].map(([what, text]) => ({ name: `a held value split by a character that shows as a box or a blank, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+    });
+  })(),
+  // Controls: a character past U+FFFF (two surrogates, as they stand or as two \u escapes) is no lone surrogate: a
+  // held value holding one is cut in place whole, and a text of such characters, private use characters and braille
+  // with no held value shows as it came.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const V = `${H}\u{1F600}${R}`;
+    const same = (text) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text]));
+    const plain = `x ${V} y`;
+    const words = `see \u{1F600} and \uE000\uF8FF in \u2801\u2803\u2800\u2809 done`;
+    return [
+      { name: "a held value holding a character past U+FFFF is cut in place whole (control)", text: plain, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: { redacted: "x [redacted] y", redactedAnswer: "x [redacted] y", redactSecrets: "x [redacted] y", runFile: "x [redacted] y" } },
+      { name: "a held value holding a character past U+FFFF, written as two \u escapes in prose, withholds the text (control)", text: `x ${H}${B}ud83d${B}ude00${R} y`, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])) },
+      { name: "a text of characters past U+FFFF, private use characters and braille, with no held value, shows as it came (control)", text: words, values: [P24.join("")], hides: [], exact: same(words) },
+    ];
+  })(),
   // U+FFFF, a noncharacter, shows as a box at most, so a reader still reads a held value split by one: as it stands, in
   // a JSON string (JSON.stringify keeps it as it is; once, and twice: JSON in JSON), as JSON's \uffff escape in prose
   // and in a JSON string, percent-encoded (its UTF-8 bytes), as an HTML character reference, and between each of the
@@ -1191,6 +1232,8 @@ const adversarial = (size) => {
     // inside JSON strings, escaped, percent-encoded, as a reference.
     // Terminal sequences: CSIs back to back, opened and never closed, OSCs never ended, ESCs alone, backspaces.
     f("\u001b[0m"), f("a\u001b[1;31m"), f("\u001b["), f("\u001b[1;"), f("\u001b]0;t"), f("\u001b]0;t\u0007"), f("\u001b"), f("a\b"), f("\b"), f("\u009b1"), f("\u009d0;"), f(`${B}u001b[0m`), f("%1B[0m"), f("&#27;[0m"),
+    // Characters that show as a box or a blank, as they stand, escaped (a lone surrogate too), and a pair whole.
+    f("\ufffe"), f("a\ufff9"), f("\ufdd0\ue000"), f("\u2800"), f("\ud800"), f("a\udc00"), f(`${B}ud800`), f("\u{1F600}"),
     f("\uffff"), f("a\uffff"), f('"a\uffff",'), f(`${B}uffff`), f("%EF%BF%BF"), f("&#xffff;"),
   ];
   return [
@@ -1212,6 +1255,7 @@ const adversarial = (size) => {
     // finds glued together, each still cut in place.
     { text: f(`${DENSE}\u0000`), values: [DENSE] },
     { text: f(`${DENSE}\uffff`), values: [DENSE] },
+    { text: f(`${DENSE}\ud800`), values: [DENSE] },
     { text: f(`${DENSE}\u001b[0m`), values: [DENSE] },
     { text: f(`${DENSE}Z\b`), values: [DENSE] },
     { text: f(`"${DENSE}\uffff",`), values: [DENSE] },
