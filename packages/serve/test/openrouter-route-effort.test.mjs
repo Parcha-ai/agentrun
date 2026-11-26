@@ -13,6 +13,7 @@ import { capRun, quiet } from "./adapter-pi-cap-support.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
 after(closeOpenSessions);
@@ -31,7 +32,7 @@ async function runAt(t, model, thinking) {
   const route = await routeOf(model, { OPENROUTER_API_KEY: KEY }, "default", PI_WIRES, toGateway(gateway.url));
   assert.equal(typeof route.fetch, "function", "pi reaches OpenRouter's Chat Completions through the route's translation");
   const specOf = () => (_claim, run) => ({
-    adapter: piAdapter({ run, model: route.model, provider: route.provider, ...(route.like ? { like: route.like } : {}), price: route.price, fetch: route.fetch }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: route.model, provider: route.provider, ...(route.like ? { like: route.like } : {}), price: route.price, fetch: route.fetch }),
     session: { key: "root", label: "root", system: ["Answer."], tools: hostTools({}), context: "fresh", ...(thinking ? { thinking } : {}) },
     input: "Say hi.",
     hooks: quiet,
