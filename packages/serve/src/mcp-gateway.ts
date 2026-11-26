@@ -480,8 +480,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       if (filing === UNREADABLE) return said(unreadableFile(server, tool.name), true);
       if (filing) {
         const { text: answer, other } = answerOf(result, clean);
-        // An error answer's status is the transport's (200), so only its own fields can name a retry time.
-        return await filedOf(filing, tool.name, other === 0 ? answer : clean(JSON.stringify(result)), result.isError === true ? {} : undefined);
+        // An error answer's status is the transport's (200), so it names none; its wait is its own response's Retry-After
+        // (answeredBy), when that names one, else one of its own fields (errorLine).
+        return await filedOf(filing, tool.name, other === 0 ? answer : clean(JSON.stringify(result)), result.isError === true ? (own.retryAfter !== undefined ? { retryAfterS: own.retryAfter } : {}) : undefined);
       }
       return said(await textOf(server, tool.name, result, clean), result.isError === true);
     } catch (error) {
