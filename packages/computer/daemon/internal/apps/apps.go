@@ -108,14 +108,10 @@ func Handlers(display *desktop.Display, table *process.Table, options Options) m
 // entries are the apps whose desktop files computerd's user can't change, each read from the file Writer.Open checked:
 // the only ones listed, launched, ended or owning a window. An app runs its desktop file's Exec, so one the user could
 // change would run whatever a file written through the files group says, exec off or not. Each call reads them again,
-// so a launch runs the Exec of a file checked for that launch.
-func (g *group) entries() []Entry {
+// so a launch runs the Exec of a file checked for that launch. The files Writer.Open refused are given by id, with its
+// words, and never read: find names one asked for by its id.
+func (g *group) entries() ([]Entry, map[string]refusal) {
 	return entriesOpened(g.applicationDirs(), g.writer.Open)
-}
-
-// all are the apps of every desktop file, the ones entries leaves out too: read only to name one left out.
-func (g *group) all() []Entry {
-	return Entries(g.applicationDirs())
 }
 
 // applicationDirs are where the group reads desktop files.
@@ -126,20 +122,18 @@ func (g *group) applicationDirs() []string {
 	return ApplicationDirs()
 }
 
-// find is the app asked for, or why not in words: denied, naming its desktop file, for an app entries left out, else
-// not_found.
-func (g *group) find(entries []Entry, asked string) (Entry, error) {
+// find is the app asked for in s, or why not in words: denied, naming its desktop file and why, for an id whose file
+// entries refused, else not_found. A refused file is not read, so the name or program it gives finds nothing.
+func (g *group) find(s *snapshot, asked string) (Entry, error) {
 	if asked == "" {
 		return Entry{}, rpc.Errorf(rpc.KindInvalid, "id names the app: an id apps.list gives, or its name")
 	}
-	e, ok := Find(entries, asked)
+	e, ok := Find(s.entries, asked)
 	if ok {
 		return e, nil
 	}
-	if left, ok := Find(g.all(), asked); ok {
-		if why := g.writer.Changes(left.Path); why != "" {
-			return Entry{}, rpc.Errorf(rpc.KindDenied, "%s's desktop file %s could be changed by computerd's own user (%s): an app runs what its desktop file says, so a file written through the files group would run any command, and apps.launch opens no such app (apps.list leaves it out)", left.ID, left.Path, why)
-		}
+	if left, ok := s.refused[asked]; ok {
+		return Entry{}, rpc.Errorf(rpc.KindDenied, "%s's desktop file %s is left out, as computerd's own user could change it or it can't be checked (%s): an app runs what its desktop file says, so a file written through the files group would run any command, and apps.launch opens no such app (apps.list leaves it out)", asked, left.path, left.why)
 	}
 	return Entry{}, rpc.Errorf(rpc.KindNotFound, "this desktop has no app %q: apps.list names the ones it has", asked)
 }
@@ -176,7 +170,7 @@ func (g *group) launch(ctx context.Context, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	e, err := g.find(before.entries, params.ID)
+	e, err := g.find(before, params.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -278,9 +272,17 @@ func (g *group) terminate(ctx context.Context, raw json.RawMessage) (any, error)
 	if err != nil {
 		return nil, err
 	}
-	e, err := g.find(s.entries, params.ID)
+	e, err := g.find(s, params.ID)
 	if err != nil {
-		return nil, err
+		// An id this group launched is ended though find refuses it now (a desktop file of its id written since, ahead
+		// of the one launched): the launch runs what was checked when it started, and nothing else would end it.
+		g.mu.Lock()
+		_, ours := g.launched[params.ID]
+		g.mu.Unlock()
+		if !ours {
+			return nil, err
+		}
+		e = Entry{ID: params.ID}
 	}
 	// Ended once none of its windows shows and none of its launches still runs: a launch with no window yet (one that
 	// timed out), or an app that closed its window and runs on, gets KILL too after the grace.
