@@ -260,7 +260,7 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
  *  space, a soft hyphen, a control character that is no whitespace: a NUL, an escape, a delete; U+FFFF) or as a box or a
  *  blank (U+FFFE, a private use character, the braille blank, a lone surrogate: match.ts IGNORABLE), as it stands or as
  *  "\u0001", "\x01", "%01" or "&#1;" decodes, or a combining mark counts as nothing too: the views drop it. A whole
- *  terminal sequence counts nothing (sequenceEnd), and a backspace one less (counted). So does a quote, an apostrophe
+ *  terminal sequence counts nothing (sequenceEnd), and a backspace two less (counted). So does a quote, an apostrophe
  *  or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join views drop between a text's strings, and, with
  *  `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-", "_", ":", "."), which the fold view
  *  drops. Padding of any of them never hides the rest of a value split before it. Undefined, so the caller withholds
@@ -315,7 +315,7 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
       if (end > at) {
         const bytes = Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8");
         found = counted(found, bytes, fold);
-        if (opensSequence(bytes.at(-1))) end = sequenceEnd(text, end, to, bytes.at(-1)!);
+        if (opensSequence(bytes.at(-1))) [end, found] = sequenceEnd(text, end, to, bytes.at(-1)!, found);
       } else {
         // A character past U+FFFF is read whole, its two UTF-16 units as they are or as two escapes, as the views gather
         // it before they squeeze it: a combining mark past U+FFFF is then dropped as the views drop it, where each of
@@ -330,7 +330,7 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
           }
         }
         if (!(read.raw && read.char === "+")) found = counted(found, read.char, fold);
-        if (opensSequence(read.char)) end = sequenceEnd(text, end, to, read.char);
+        if (opensSequence(read.char)) [end, found] = sequenceEnd(text, end, to, read.char, found);
       }
       parts.push(text.slice(at, end));
       span += end - at;
@@ -367,16 +367,23 @@ function counted(found: number, chars: string, fold: boolean): number {
 /** Whether `char` opens a terminal sequence (ESC, the 8-bit CSI or OSC): the views read one as a terminal shows it. */
 const opensSequence = (char: string | undefined): boolean => char === "\u001b" || char === "\u009b" || char === "\u009d";
 /** Where the terminal sequence `intro` opens, read on from text[at], ends, as the views read it (match.ts readingsOf:
- *  a CSI, an OSC, or an escape with a final byte), each of its characters as charAt reads it and whitespace passed over
- *  (the views drop it); or `at` where it opens none (the views then read on from there). It counts as nothing. Read no
+ *  a CSI, an OSC, or an escape with a final byte, or a CAN or SUB that aborts it), each of its characters as charAt or
+ *  percentAt reads it, and what a terminal passes over inside a sequence passed over (whitespace, a NUL, a DEL, any
+ *  other control but ESC, CAN, SUB, the 8-bit CSI, ST and OSC, a BEL but where it ends an OSC, and a character the
+ *  views drop); or `at` where it opens none (the views then read on from there). It counts as nothing, and a backspace
+ *  inside it, which still moves back, as one would outside it: `found` comes back with it taken off (counted). Read no
  *  further than a piece of text. */
-function sequenceEnd(text: string, at: number, to: number, intro: string): number {
+function sequenceEnd(text: string, at: number, to: number, intro: string, found: number): [number, number] {
   let k = at;
-  const next = (): { code: number; end: number } | undefined => {
+  let struck = found;
+  const structural = (code: number, osc: boolean): boolean =>
+    code === 0x18 || code === 0x1a || code === 0x1b || code === 0x9b || code === 0x9c || code === 0x9d || (osc && code === 0x07);
+  const next = (osc = false): { code: number; end: number } | undefined => {
     while (k < to && k - at <= ANSWER_PIECE) {
       const read = percentAt(text, k, to) ?? charAt(text, k);
       const code = read.char.charCodeAt(0);
-      if (/\s/.test(read.char)) {
+      if (!structural(code, osc) && (/\s/.test(read.char) || code < 0x20 || squeeze(read.char) === "")) {
+        if (code === 0x08) struck = counted(struck, "\b", false);
         k = read.end;
         continue;
       }
@@ -384,9 +391,10 @@ function sequenceEnd(text: string, at: number, to: number, intro: string): numbe
     }
     return undefined;
   };
-  const done = (end: number): number => {
+  const aborts = (unit: { code: number } | undefined): boolean => unit !== undefined && (unit.code === 0x18 || unit.code === 0x1a);
+  const done = (end: number): [number, number] => {
     scanned.chars += Math.max(k, end) - at;
-    return end;
+    return [end, end === at ? found : struck];
   };
   let kind = intro === "\u009b" ? "csi" : intro === "\u009d" ? "osc" : "";
   if (!kind) {
@@ -401,7 +409,7 @@ function sequenceEnd(text: string, at: number, to: number, intro: string): numbe
         k = unit.end;
         unit = next();
       }
-      return done(unit && unit.code >= 0x30 && unit.code <= 0x7e ? unit.end : at);
+      return done((unit && unit.code >= 0x30 && unit.code <= 0x7e) || aborts(unit) ? unit!.end : at);
     }
   }
   if (kind === "csi") {
@@ -414,14 +422,14 @@ function sequenceEnd(text: string, at: number, to: number, intro: string): numbe
       k = unit.end;
       unit = next();
     }
-    return done(unit && unit.code >= 0x40 && unit.code <= 0x7e ? unit.end : at);
+    return done((unit && unit.code >= 0x40 && unit.code <= 0x7e) || aborts(unit) ? unit!.end : at);
   }
-  for (let unit = next(); unit; unit = next()) {
-    if (unit.code === 0x07 || unit.code === 0x9c) return done(unit.end);
+  for (let unit = next(true); unit; unit = next(true)) {
+    if (unit.code === 0x07 || unit.code === 0x9c || aborts(unit)) return done(unit.end);
     if (unit.code === 0x9b || unit.code === 0x9d) return done(at);
     k = unit.end;
     if (unit.code === 0x1b) {
-      const after = next();
+      const after = next(true);
       return done(after && after.code === 0x5c ? after.end : at);
     }
   }
