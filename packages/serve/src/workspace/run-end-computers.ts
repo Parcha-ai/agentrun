@@ -37,9 +37,9 @@
 // gone can no longer take a machine of this end's. A read that fails, or finds no run, can't tell whether a later claim
 // has the run, and a machine's old label can't either: the end lets nothing go then too (before the mark, it marks
 // nothing), said in the log. What is left goes at the run's next end or the computer janitor's sweep. That sweep skips a
-// provider whose vendor ends its own machines (E2B, Daytona, Modal, Morph, Browserbase, Kernel, the phone harness): there
-// the janitor ends only a machine a park kept, by its row, and any other machine left runs until the vendor's own
-// lifetime ends it.
+// provider whose vendor ends its own machines (its capabilities().lifetime is "vendor"; VENDOR_ENDS_ITS_OWN below names
+// them): there the janitor ends only a machine a park kept, by its row, and any other machine left runs until the
+// vendor's own lifetime ends it.
 // A machine kept on Archil has its park's mount credential removed before its row is marked ended
 // (computer-janitor.ts keptMountRevoke, as the janitor's kept pass removes it): an ended row is one no janitor pass
 // removes a credential for, so one marked ended first would leave it valid for its ttl with no machine. A remove that
@@ -65,8 +65,8 @@ export const RUN_END_RETRY_MS = 5_000;
 
 /** The providers whose vendor ends its own machines at their lifetime (their capabilities().lifetime is "vendor"), by
  *  their labels: the janitor's provider sweep skips them (computer-janitor.ts sweepServerComputers), so there it ends
- *  only a machine a park kept (its kept pass, on any provider). Kept by hand: a provider added with lifetime "vendor"
- *  is named here too. */
+ *  only a machine a park kept (its kept pass, on any provider). Kept by hand, and held to the registry by
+ *  run-end-computers-vendor-list.test.mjs: a provider added with lifetime "vendor" must be named here too. */
 const VENDOR_ENDS_ITS_OWN = "E2B, Daytona, Modal, Morph, Browserbase, Kernel or the phone harness";
 
 /** Why a run's end can't have its provider here, which no later try changes: its keys or options. */

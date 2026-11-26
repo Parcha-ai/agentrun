@@ -1,8 +1,8 @@
 // A tool's output with its call's context (ruling LVI): the file the call read whole (`path`) or the shell command it ran
 // (`command`), so the scrubber reads a credential file's or a dump command's output as the dump it is, though the output
-// stands alone in its field (secret-cut.ts ScrubOptions `path`, `command`). One home for it: the scrub command's count
-// (scrub-command.ts) and a share's export (run-export.ts) give the same strings the same context, so the cuts the count
-// names are the cuts the export makes.
+// stands alone in its field (secret-cut.ts ScrubOptions `path`, `command`). A share's export (run-export.ts) reads it;
+// the scrub command's count is made from that export (scrub-command.ts), so the cuts the count names are the cuts the
+// export makes.
 
 /** What a call says of its output: the file it printed whole, the shell command it ran. */
 export interface CallContext {

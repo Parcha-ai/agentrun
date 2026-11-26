@@ -44,8 +44,8 @@ const WIRES = {
 
 /** pi's own turns on `wire`: a web_search, then an answer that says `say`. */
 async function turnsOn(t, wire, say = "done") {
-  if (wire === "anthropic-messages") return scriptedOrigin([{ call: "web_search", args: { query: "widgets", n: 3 } }, { say }]);
-  const gateway = await startFauxGateway({ text: say, call: (request) => (JSON.stringify(request.body?.input ?? []).includes("function_call_output") ? undefined : { name: "web_search", input: { query: "widgets", n: 3 } }) });
+  if (wire === "anthropic-messages") return scriptedOrigin([{ call: "web_search", args: { objective: "widgets", n: 3 } }, { say }]);
+  const gateway = await startFauxGateway({ text: say, call: (request) => (JSON.stringify(request.body?.input ?? []).includes("function_call_output") ? undefined : { name: "web_search", input: { objective: "widgets", n: 3 } }) });
   t.after(() => gateway.close());
   return (target, init) => fetch(`${gateway.url}${new URL(String(target)).pathname}`, init);
 }
@@ -116,7 +116,7 @@ for (const [wire, on] of Object.entries(WIRES)) {
     const { row, timeline, view, searches, records } = await nativeSearchRun(t, wire);
     assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
     const result = timeline.find((one) => one.kind === "tool_result" && one.tool_name === "web_search");
-    assert.match(String(result?.tool_result_preview ?? ""), /^\{"provider":"native","query":"widgets","results":\[\{"url":"http:\/\/public\.example\/"/, `the provider's results: ${JSON.stringify(result)}`);
+    assert.match(String(result?.tool_result_preview ?? ""), /^\{"provider":"native","objective":"widgets","queries":\["widgets"\],"results":\[\{"url":"http:\/\/public\.example\/"/, `the provider's results: ${JSON.stringify(result)}`);
     // One request to the provider's hosted search, with exactly its hosted tool, through the run's route.
     assert.equal(searches.length, 1, "one hosted search request");
     assert.deepEqual(searches[0].tools.map((tool) => tool.type), [on.searchTool], "the hosted tool alone");
@@ -175,7 +175,7 @@ test("a learned workflow's web_search call node on a pi run with native search s
     ledger,
     before: async (server, _key, dir) => {
       launch.learning = startAt(await landWorkflows(dir, "agent-1", [{ name: "search-one", description: "Searches once", workflow: SEARCH_FLOW }]));
-      await promoteChecked(server.settings, "agent-1", [{ name: "search-one", workflow: SEARCH_FLOW }]);
+      await promoteChecked(server, "agent-1", [{ name: "search-one", workflow: SEARCH_FLOW }]);
     },
   });
   const tool = spec.session.tools.find((one) => one.name === LEARNED_WORKFLOW_TOOL);

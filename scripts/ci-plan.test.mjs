@@ -69,6 +69,15 @@ test('a suite takes its script\'s --test-concurrency, or node\'s default on the 
   assert.deepEqual(unitsOf(readSuites(root), readConfig(root).timings).map((u) => [u.id, u.slots]), [['file:packages/a/test/one.test.mjs', 8], ['file:packages/b/test/b.test.mjs', 3]]);
 });
 
+test('a suite script\'s --import is carried into every shard command that runs its files', () => {
+  const root = repo('imports', {
+    workspaces: { a: ['@x/a', "node --test --test-concurrency=8 --import=./test/hook.mjs 'test/*.test.mjs'", ['test/one.test.mjs', 'test/two.test.mjs']] },
+  });
+  const suites = readSuites(root);
+  const units = unitsOf(suites, readConfig(root).timings);
+  assert.deepEqual(commandsOf(suites, units.filter((u) => u.id === 'file:packages/a/test/one.test.mjs')).map((c) => c.command), [['npm', 'exec', '-w', '@x/a', '-c', 'node --test --test-concurrency=8 --import=./test/hook.mjs test/one.test.mjs']]);
+});
+
 test("a suite node --test does not schedule takes its longest file or its files' total over its parallelism, whichever is more", () => {
   // One suite of parallelism 4: a 100 s file and four 20 s files fit under the long one; a second suite adds its own time.
   const serve = [unit('long', 100, 'serve', 4), ...[1, 2, 3, 4].map((n) => unit(`short-${n}`, 20, 'serve', 4))];
@@ -164,11 +173,11 @@ test("this repository's shards cover every test file of every suite once, and ci
   assert.deepEqual(leanTests.strategy.matrix.shard, leanShards, 'test-lean runs the lean pool\'s shards');
   for (const key of ['name', 'needs', 'runs-on', 'timeout-minutes', 'steps']) assert.deepEqual(leanTests[key], testJob[key], `test-lean's ${key} is the test job's`);
   assert.deepEqual(leanTests.strategy.matrix.node, testJob.strategy.matrix.node, 'on the same Node');
-  // The lean job waits for the lean pool's shards and no other; verify fails on a red shard of either job, and on a red
-  // share of the store's suite on Postgres.
+  // The lean job waits for the lean pool's shards and no other; verify fails on a red shard of either job, on a red
+  // share of the store's suite on Postgres, and on an import scanner that its source does not rebuild byte for byte.
   assert.deepEqual(workflow.jobs.lean.needs, ['test-lean']);
   const verify = workflow.jobs.verify;
-  assert.deepEqual(verify.needs, ['test', 'test-lean', 'serve-postgres', 'console']);
+  assert.deepEqual(verify.needs, ['test', 'test-lean', 'serve-postgres', 'console', 'import-wasm']);
   const gate = verify.steps.find((step) => step.env);
   for (const job of verify.needs) {
     const name = Object.entries(gate.env).find(([, value]) => value === `\${{ needs.${job}.result }}`)?.[0];
@@ -199,14 +208,14 @@ test("on a pull request this repository's any pool runs the tests its changes re
   assert.match(depth, /github\.event_name == 'pull_request' && startsWith\(matrix\.shard, 'any-'\)\) && '2'/, depth);
 });
 
-test("the build, the test shards and the required Postgres and console jobs run on Blacksmith in the merge queue and on a pull request from this repository's own branch; a fork's pull request and main stay on GitHub's runners", () => {
+test("the build, the test shards and the required Postgres, console and import-wasm jobs run on Blacksmith in the merge queue and on a pull request from this repository's own branch; a fork's pull request and main stay on GitHub's runners", () => {
   const workflow = parse(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8'));
   const runner = workflow.jobs.build['runs-on'];
   // The expression names the pull request's head repository: a fork's is not this one, so it takes the last arm.
   assert.equal(runner, "${{ (github.event_name == 'merge_group' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}");
-  // The other four write no expression of their own: each is an alias of the build's `&own-runner` anchor.
+  // The other five write no expression of their own: each is an alias of the build's `&own-runner` anchor.
   const jobs = parseDocument(readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')).get('jobs');
-  for (const job of ['test', 'test-lean', 'serve-postgres', 'console']) {
+  for (const job of ['test', 'test-lean', 'serve-postgres', 'console', 'import-wasm']) {
     assert.ok(isAlias(jobs.getIn([job, 'runs-on'], true)), `${job} runs where the build does`);
     assert.equal(workflow.jobs[job]['runs-on'], runner, `${job} resolves to the build's runner`);
   }

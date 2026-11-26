@@ -29,7 +29,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) test(`${runtime} retain
   const graded = await api("PUT", `/runs/${runId}/grade`, { correct: false, label: "Retain this reviewer feedback without starting another SDK task." });
   assert.equal(graded.status, 200, JSON.stringify(graded.body));
   assert.equal(graded.body.feedback, null, "the application SDK has no managed feedback consumer");
-  assert.equal((await gradesOf(store.settings, id)).find(grade => grade.run === runId)?.correct, false, "the grade remains durable evidence");
+  assert.equal((await gradesOf(store.learning, id)).find(grade => grade.run === runId)?.correct, false, "the grade remains durable evidence");
   const after = await store.runs.get(runId);
   assert.deepEqual([after.state, after.endedAt, after.costUsd, after.metrics], [before.state, before.endedAt, before.costUsd, before.metrics]);
   const reread = (await sdk("GET", path)).body;

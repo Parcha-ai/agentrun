@@ -116,7 +116,7 @@ describe("rendered handoffs follow the loaded agent's execution binding", () => 
   });
   it("keeps the new-agent builder handoff and its form data", async () => {
     await mount(createElement(AgentEditor, { agent: null, caps, onSave: write }));
-    const prompt = await copy(); expect(prompt).toContain("Help me build an agent"); expect(prompt).toContain("Current form draft"); expect(prompt).not.toContain("template author's text");
+    const prompt = await copy("Use coding agent"); expect(prompt).toContain("Help me build an agent"); expect(prompt).toContain("Current form draft"); expect(prompt).not.toContain("template author's text");
   });
   it("keeps a valid new-agent request as a managed create handoff without sending it", async () => {
     await mount(createElement(AgentRequest, { v2: client(managed), origin, operation: "create-agent", draft: JSON.stringify({ definition: managed.definition }) }));

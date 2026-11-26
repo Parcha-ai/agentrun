@@ -47,7 +47,7 @@ async function open(agent: Agent, { runs = runsOf("invoice-checker"), next = nul
   const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === label || b.textContent?.trim() === label)!;
   const click = async (label: string) => { await act(async () => button(label).click()); await settle(); };
   const tabs = () => [...host.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
-  const fact = (name: string) => [...host.querySelectorAll("dt")].find((t) => t.textContent === name)?.nextElementSibling as HTMLElement | undefined;
+  const fact = (name: string) => [...host.querySelectorAll("dt")].find((t) => (t.querySelector("span")?.textContent ?? t.textContent) === name)?.nextElementSibling as HTMLElement | undefined;
   const rows = () => [...host.querySelectorAll('table[aria-label="Runs"] tbody tr')];
   const focus = async () => { await act(async () => window.dispatchEvent(new Event("focus"))); await settle(); };
   return { host, went, asked, starts, timelines, statsAsked, button, click, tabs, fact, rows, focus };
@@ -121,9 +121,9 @@ describe("AgentPage overview and run workspace", () => {
     const description = heading.querySelector<HTMLElement>("[data-agent-description]")!;
     for (const c of ["lg:max-h-[50%]", "lg:flex", "lg:flex-col", "lg:shrink-0"]) expect(heading.className.split(" "), c).toContain(c);
     for (const c of ["scroll-quiet", "lg:min-h-7", "lg:overflow-y-auto"]) expect(description.className.split(" "), c).toContain(c);
-    expect(description.querySelector("#agent-description")?.textContent).toContain("Checks invoices.");
+    expect(description.querySelector("#agent-overview-description")?.textContent).toContain("Checks invoices.");
     // A word longer than the column wraps: the box shows nothing sideways.
-    expect(description.querySelector("#agent-description")!.className.split(" ")).toContain("break-words");
+    expect(description.querySelector("#agent-overview-description")!.className.split(" ")).toContain("break-words");
     expect(heading.contains(overview.querySelector("h1"))).toBe(true);
     expect(description.contains(overview.querySelector("h1"))).toBe(false);
     expect(description.textContent).not.toContain("invoice-checker");
@@ -721,6 +721,15 @@ describe("AgentPage current server settings", () => {
     expect((await open(browser, { places })).fact("Runs")?.textContent).toBe("On the server (server default)");
     const explicit = { ...base, definition: { ...base.definition, place: { mode: "runner" as const } } };
     expect((await open(explicit, { places })).fact("Runs")?.textContent).toBe("On the server");
+  });
+
+  it("on a server with no default place, an agent that names no place and a shell tool says it has none, never that it runs on the server", async () => {
+    const fixture = agentFixture("invoice-checker");
+    const places: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: false, reason: "fixture: no docker" }], defaultPlace: null };
+    const shell = { ...fixture, definition: { ...fixture.definition, tools: ["read", "bash"] } };
+    expect((await open(shell, { places })).fact("Runs")?.textContent).toBe("No place yet: choose a box, or On the server");
+    const plain = { ...fixture, definition: { ...fixture.definition, tools: ["read"] } };
+    expect((await open(plain, { places })).fact("Runs")?.textContent).toBe("On the server (server default)");
   });
 
   it("opens the requested tab from the keyboard and names its panel", async () => {

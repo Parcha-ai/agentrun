@@ -1,7 +1,7 @@
 // Decisions inside a collecting map (`onItemFailure: "collect"`): a provider's failure (rate_limited, http,
 // invalid_response, timeout, invalid_request, connection) fails that item; a decision sent whose outcome was lost, or one
 // its provider refused, marks the item needs_review; the other items finish either way, and the run completes. A
-// configuration or auth failure still stops the map. Twenty items run at once with maxConcurrency 20.
+// configuration, auth or payment_required failure still stops the map. Twenty items run at once with maxConcurrency 20.
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DecisionProviderError, judgeFromProvider, runWorkflow, isItemFailure } from '../dist/index.js';
@@ -136,4 +136,10 @@ test('a judge failing inside a parallel fails its item, not the map: the sibling
   assert.deepEqual(result.state.failed.map((row) => [row.item_index, row.code]), [[1, 'rate_limited']]);
   assert.equal(result.state.verdicts[1], null);
   assert.ok(result.state.verdicts[0] && result.state.verdicts[2], 'the other items finished');
+});
+
+test('a payment_required (a 402: the account is out of credit) is never an item failure: it fails the collecting map\'s run, with its code, as auth does', async () => {
+  assert.equal(isItemFailure(new DecisionProviderError('payment_required', 'out of credit')), false);
+  const { provider } = scripted((doc) => (doc === 'doc-2' ? 'payment_required' : undefined));
+  await assert.rejects(runWorkflow(flow(), { docs: DOCS }, { runJudge: judgeFromProvider(provider) }), (error) => error instanceof DecisionProviderError && error.code === 'payment_required' && /payment_required/.test(error.message));
 });

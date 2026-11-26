@@ -11,6 +11,7 @@ export {
   type FetchOptions,
   type Hold,
   type Receipt,
+  type SearchInput,
   type SearchOptions,
   type Web,
   type WebConfig,
@@ -28,6 +29,7 @@ export {
   type Reader,
   type SearchAsk,
   type SettingsSpec,
+  type WebClient,
   type WebProvider,
   defineProvider,
   holdingWords,
@@ -93,6 +95,8 @@ export {
   breakers,
   CITE,
   fitSearch,
+  OBJECTIVE_MAX,
+  QUERIES_MAX,
   QUERY_MAX,
   RESULTS_DEFAULT,
   RESULTS_MAX,
@@ -139,6 +143,7 @@ export {
   TITLE_CAP,
   URL_MAX,
 } from "./page.js";
+export { WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS, WEB_SEARCH_DESCRIPTION, WEB_SEARCH_PARAMETERS } from "./tool-specs.js";
 export { fetchPage, readDirect } from "./providers/direct.js";
 export { type ExaSettings, EXA_DEFAULTS } from "./providers/exa.js";
 export { type ExaLimited, exaSearch } from "./providers/exa-keyless.js";
@@ -174,6 +179,9 @@ export {
   deciderFrom,
   GUARD_CHARS,
   holdOf,
+  JEV_MODEL,
+  type JevWeb,
+  jevWebDecider,
   judgeRequest,
   pageGuardRequest,
   QUESTIONS_PER_REQUEST,

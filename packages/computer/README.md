@@ -2194,8 +2194,9 @@ A live run must show:
 ```ts
 import { providerFor } from "@parcha/agentrun-computer";
 
-// Both keys are the caller's to pass (serve's AGENT37_API_KEY and AGENT37_SSH_KEY); ssh2 (1.17.0) is an optional dependency.
-const agent37 = await providerFor("agent37", { apiKey, sshKey });
+// The API key is the caller's to pass (serve's AGENT37_API_KEY); the SSH key is the provider's own unless the caller
+// gives one (sshKey, serve's AGENT37_SSH_KEY). ssh2 (1.17.0) is an optional dependency.
+const agent37 = await providerFor("agent37", { apiKey, secrets });
 const made = await agent37.create({ image: "agent37-base", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
 ```
 
@@ -2207,16 +2208,54 @@ kind `linux`, on type `vm` (a VM with its own kernel, the default) or `default` 
 `kind: "desktop"` it is a Linux desktop on `agentrun-box-<recipe hash>`, our public box image registered as a template
 of the key's workspace on its first run ([below](#the-desktop-agentrun-box)).
 
-### Two keys
+### The API key, and the SSH key
 
-`create(options)` takes the workspace's API key as `options.apiKey` and the private half of an SSH key registered on
-the same workspace (`POST /v1/ssh-keys`, or `agent37 ssh-keys add`) as `options.sshKey`, its contents, never a path:
-the provider reads no file and no environment. A key pasted into Settings comes back on one line (a password field
-drops line breaks), so the provider wraps a one-line key's body again before ssh2 reads it. A PKCS#8 key (PEM label
-`PRIVATE KEY`), which ssh2 does not read, is converted first: RSA to PKCS#1, EC to SEC1, Ed25519 to OpenSSH's format. REST takes the API key as
-`Authorization: Bearer <key>`; the SSH tunnel's edge takes the same key in `X-Agent37-Key` (npm `agent37@0.4.1`
-`src/cli.js`, `wsHandshake` and `runTunnel`). Neither key appears in an error, a note or a label: the sweep's scope
-names the API key by its sha256 prefix alone.
+`create(options)` takes the workspace's API key as `options.apiKey`, the one key it needs: the provider reads no file
+and no environment. REST takes it as `Authorization: Bearer <key>`; the SSH tunnel's edge takes the same key in
+`X-Agent37-Key` (npm `agent37@0.4.1` `src/cli.js`, `wsHandshake` and `runTunnel`).
+
+Every command then logs in to the instance's sshd with an SSH key registered on the workspace. By default it is the
+provider's own:
+
+- On first use (the first `create` or exec, never at construction) the provider reads `ssh_key` from `options.secrets`,
+  the store it is given (`get(name)` and `putIfAbsent(name, value)`, `ProviderSecrets`; its descriptor declares the
+  option as `secrets`). With none there, it makes an Ed25519 key with `node:crypto` and hands its private half (PKCS#8
+  PEM) to `putIfAbsent`, which keeps it only where no key is and answers the one kept. Of first uses racing on one
+  store, in one process or in several, every one takes the key the store kept, and only that key is registered. In one
+  process, every provider on the same store shares one making of the key and one registration of it on a workspace.
+  Serve's store is the server's sealed one: the row `computer.agent37.ssh_key` in `sealed_keys`, sealed under
+  `AGENTRUN_SEAL_KEY` (AES-256-GCM, as every saved key) and written only where no row is (`ON CONFLICT DO NOTHING`), one
+  key per server store. Given no store (the conformance module, a caller of the package alone), the key lives in the
+  process's memory, one shared by its providers until it exits.
+- So a server with no seal key (`AGENTRUN_SEAL_KEY` unset) makes and registers a new key each time it restarts. The
+  old one stays on the workspace and counts toward its 20 keys until someone deletes it.
+- It registers the public half before its first instance, so the instance has it from boot: `GET /v1/ssh-keys` (which
+  echoes no key) matched by fingerprint (`SHA256:`, as `ssh-keygen -l` prints it), else `POST /v1/ssh-keys` with the
+  OpenSSH line and the name `agentrun-<first 12 hex of the key's SHA-256>`. A 409 `ssh_key_exists` is a registration
+  another made, and taken as done. The registration is listed once per store and workspace in a process; the key is
+  reused for every instance.
+- Agent37 takes at most 20 keys a workspace, and the 21st POST answers 400 `invalid_request`. A workspace at 20 is
+  refused before any instance, code `limit`, in words that name the cap, the `agentrun-…` keys AgentRun registered
+  (`DELETE /v1/ssh-keys/{id}`) and `AGENT37_SSH_KEY`. No key is deleted. A 400 to the POST is read as the cap only when
+  its words say so or the workspace holds 20 keys when listed again; any other is code `vendor`, in Agent37's words.
+- Agent37 hands a new key to instances already running within about two minutes (docs: agents-api/ssh). A login an
+  sshd refuses within three minutes of the key's registration is tried again every 2 s within the call's own bound; past
+  them, it is `denied`, in words naming the instance, the key's fingerprint and its registration time, and the next call
+  lists the workspace's keys again.
+- The registration is a note (`onNote`) naming the key by its fingerprint and name. The private half is in no call, note,
+  error, label or log.
+
+`options.sshKey` (serve's optional `AGENT37_SSH_KEY`) overrides it: the private half of a key already registered on the
+workspace (`POST /v1/ssh-keys`, or `agent37 ssh-keys add`), its contents, never a path. It is used as given, and nothing
+is made, stored or registered. A key pasted into Settings comes back on one line (a password field drops line breaks),
+so the provider wraps a one-line key's body again before ssh2 reads it. A PKCS#8 key (PEM label `PRIVATE KEY`), which
+ssh2 does not read, is converted first: RSA to PKCS#1, EC to SEC1, Ed25519 to OpenSSH's format. Neither key appears in
+an error, a note or a label: the sweep's scope names the API key by its sha256 prefix alone.
+
+What this leaves: a key a server made stays registered after that server's store is gone (its seal key changed, or its
+store deleted), one more of the workspace's 20, and the next key is made afresh; so does each conformance process's.
+Two servers on one store that both make the first key at once can register two; the store keeps one, and the other
+stays on the workspace unused.
 
 ### The mapping
 
@@ -2282,12 +2321,13 @@ read back.
 ### Conformance on Agent37
 
 ```sh
-AGENTRUN_COMPUTER_LIVE_AGENT37=1 COMPUTER_AGENT37_API_KEY=... COMPUTER_AGENT37_SSH_KEY="$(cat key)" \
+AGENTRUN_COMPUTER_LIVE_AGENT37=1 COMPUTER_AGENT37_API_KEY=... \
   npm run conformance -w @parcha/agentrun-computer -- --provider agent37
 ```
 
 The conformance module, `dist/conformance/agent37.js`, checks `AGENTRUN_COMPUTER_LIVE_AGENT37=1` first, then reads
-`COMPUTER_AGENT37_API_KEY` (`apiKey`, required), `COMPUTER_AGENT37_SSH_KEY` (`sshKey`, required, the key's contents),
+`COMPUTER_AGENT37_API_KEY` (`apiKey`, required), `COMPUTER_AGENT37_SSH_KEY` (`sshKey`, optional, the contents of a key
+already on the workspace; unset, the run makes its own for its process and registers it, and it stays on the workspace),
 `COMPUTER_AGENT37_KIND` (`linux`, the default, or `desktop`), `COMPUTER_AGENT37_TEMPLATE` (the run's image, default
 `agent37-base`, or for kind `desktop` the box template `prepareImage()` registers), `COMPUTER_AGENT37_TYPE`, `COMPUTER_AGENT37_REGION`,
 `COMPUTER_AGENT37_API_URL`, `COMPUTER_AGENT37_DAEMON` (`daemonPath`), `COMPUTER_AGENT37_MAX_LIFETIME_MS` and
@@ -2425,6 +2465,18 @@ the protocol's methods in process over Orgo's REST API, as the phone harness and
 `"windows"` (`ORGO_WINDOWS_IMAGE`, Orgo's Windows Server 2019) or `"macos"` (`ORGO_MACOS_IMAGE`): the one the provider was
 built for.
 
+The Linux desktop makes one computer per request id. Its Orgo name begins with the request's name,
+`computer-<12 hex of sha256(requestId)>`, then the run's hash, the epoch and the deadline (`src/orgo-names.ts`). Before
+it makes a computer it lists the workspace's computers and takes the oldest whose name begins with the request's: one
+that runs with the same labels, image and sizes (its labels file) is answered, one of another spec or no longer
+running is refused `exists`, and one still being made is waited for. Two processes whose creates of one request
+both find nothing make two computers, so after Orgo's answer, and again once its computer is up, a create reads the
+workspace once more: where an older computer of the request is there (by `created_at`, then id), it deletes its own
+and answers the older, and the oldest keeps its own. A caller's signal that aborts one of those reads deletes the
+create's own computer (not under that signal) and the create is `aborted`. A name Orgo already holds (two creates in the same second) is
+answered the same way. The parked desktops name each computer at random, so a create retried there makes a second
+computer.
+
 - **What each offers.** The protocol groups, by Orgo's calls:
   - `screen`: Orgo's screenshot (`response_format=base64&format=png`). A region is cropped in process. The live view
     polls it about once a second, scaled by Orgo past `maxWidth`.
@@ -2555,7 +2607,7 @@ kind browser that declares them.
 
 | | Browserbase | Kernel | Local Chrome |
 | --- | --- | --- | --- |
-| `capabilities().browser` | wall-clock, `stealth`, `profiles` (settle 5 s), `downloads` (`downloads/`) | inactivity, `headless`, `profiles` (settle 0) | wall-clock |
+| `capabilities().browser` | wall-clock, `stealth`, `profiles` (settle 10 s, its descriptor's `profiles`), `downloads` (`downloads/`) | inactivity, `headless`, `profiles` (settle 0) | wall-clock |
 | `viewport` | `browserSettings.viewport` | `viewport` | the window's size |
 | `stealth` | `browserSettings.verified` and `solveCaptchas` (the solver is off otherwise: Browserbase's default is on) | not declared (Kernel's stealth brings a proxy nothing prices yet) | not declared |
 | `profile` | a context: `browserSettings.context { id, persist }` | a profile by name: `profile { name, save_changes }`, made first if Kernel does not know it | not declared |
@@ -2575,11 +2627,26 @@ call and the HTTP status alone, never the vendor's words. The calls are the prov
 its own `fetch`). A thrown error rides the failure as a hidden cause (`causeOf(result)`), not enumerable, so it is in no
 JSON.
 
-Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
-create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
-aborted it) never sends a second create: it finds the browsers carrying that label as list does, in every state not
-ended, under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so. A 4xx refusal made
-nothing, so nothing is looked for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.
+Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), whose value is the request's
+name, `computer-<12 hex of sha256(requestId)>`. Before it makes a browser, create lists the running and starting
+browsers with that label: one with the spec's labels is answered, so a retried create, in this process or another,
+makes no second browser, and one with other labels is refused `exists`; where it finds several, it takes the oldest (by
+the time the vendor made each, then id). Two processes whose creates of one request both find nothing make two
+browsers, so after the vendor's answer a create lists the label again: where an older browser of the request is
+there, it releases its own and answers the older, refused `exists` when the older has ended by then, and the oldest
+keeps its own. A caller's signal that aborts that listing releases the create's own browser (not under that signal)
+and the create is `aborted`. The browser's own options (viewport, stealth, profile) are not read back from the vendor, so a create
+from another process compares the labels alone. A browser released here, or one this provider answered that the vendor
+has ended on its own (its timeout), leaves its request refused `exists`: the provider keeps each request's browser id. A create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
+aborted it) never sends a second create: each POST also writes `agentrun.attempt` (`ATTEMPT_LABEL`), a random value of
+its own, and a lost create finds the browsers carrying its attempt label as list does, in every state not ended, under
+a signal of its own, releases each under it, and its failure says so; that request is then refused `exists`. Every
+release a create runs for itself (this one, the newer browser's, and the one after an abort) is bounded by the
+provider's `cleanupMs` option (default `RECOVER_MS`, 30 s), never by the caller's signal: one that does not finish in
+time fails the create in words that say the browser may still be running, and a retry is answered as above, never
+stuck behind it. Another create's browser of the same request, even one another process answered, carries another attempt
+label and is left running. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own:
+`check()` refuses them in a spec, and no list or attach shows them.
 
 The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`
 (check past the cap, attach by id and by labels, list, CDP `Browser.getVersion` and `Runtime.evaluate` on a `data:`
@@ -2613,6 +2680,17 @@ once `/json/version` answers on that port. `connect()` hands over the DevTools U
 removes its profile and every other file of it. `list()` and attach by labels find the provider's own browsers by
 `browser.json` in each browser's directory under the root (default `<tmpdir>/agentrun-local-browser-<uid>`, made 0700,
 refused when another user can write it). That file holds the labels and the deadline.
+
+A browser's id, and its directory's name, is its request's name, `computer-<12 hex of sha256(requestId)>`, and create
+makes that directory with `mkdir`, which one create alone wins, then writes `claim.json` in it (its process's pid and
+the time) before `browser.json`. A create that finds the directory there already, in this process or another on the
+same root, answers that browser once its Chrome answers, when its labels and network are the ones asked; one of another
+spec, past its deadline or whose supervisor has ended is refused `exists`. A directory with no `browser.json` whose
+claim names a process that is gone, or that is older than a create takes (the directory's own time where there is no
+claim), is a create that crashed: refused `exists` at once ("an earlier create of this request did not finish: create
+with a new request id"), never waited on past a create's time. A browser released
+here, or one this provider made that ended on its own (its deadline removed its directory), leaves its request refused
+`exists`.
 
 Lifetime: each browser runs under a supervisor of its own (`local-supervisor.ts`), a small detached Node process. It
 ends Chrome and removes its files at the deadline, on release, or when Chrome exits, whatever became of the process
@@ -2819,15 +2897,17 @@ an optional dependency, pinned exactly, as E2B's and Modal's are.
 
 ### The desktop snapshot
 
-boxd's own image (`"default"`) has Xvfb but lists none of a desktop's stock apps (Xfce's text editor and terminal,
-xterm), so a boxd desktop starts from a snapshot that adds one. `prepareImage()` answers it by name,
+boxd's own image (`"default"`) has Xvfb, xdotool and Thunar but not Xfce's text editor and terminal or a browser, so
+a boxd desktop starts from a snapshot that adds them. `prepareImage()` answers it by name,
 `agentrun-desktop-<12 hex>`, the hash of the recipe in `src/boxd.ts`, so a new recipe is a new snapshot. When the
 key's org has none, it builds it once, telling `onWait` "build" first:
 
 1. `machines.create` of an isolated machine of boxd's own image, named `agentrun-desktop-build-<8 hex>`, with no labels
    (a restore carries a snapshot's labels over to every machine made from it) and boxd's delete timer at 2 hours;
-2. the recipe as root through the image user's passwordless sudo: `apt-get install mousepad` (Ubuntu's universe), its
-   `org.xfce.mousepad.desktop` checked;
+2. the recipe as root through the image user's passwordless sudo: `mousepad` and `xfce4-terminal` from Ubuntu's
+   universe, and `firefox-esr` from Mozilla's APT repository (Ubuntu 24.04's `firefox` is a snap, and a microVM runs no
+   snapd), its signing key held to a pinned sha256 before apt reads anything it signs; each program and its desktop
+   file (`org.xfce.mousepad`, `xfce4-terminal`, `firefox-esr`) checked;
 3. `snapshots.create` under the name, read until boxd says `ready`;
 4. the build machine deleted and read gone, pass, fail or cancel: the id create answered, read through `get` (a
    lagging list can't hide it), and any machine of its name in the org's list, so a create whose reply was lost is
@@ -3067,8 +3147,8 @@ What Groundbox refuses or this host works around:
   templates it runs as the image's user, `runner` (uid 1001), with passwordless sudo, which the adapter's scripts use;
   `daemonUser` may not be 1001 there.
 - A desktop needs Xvfb and xfwm4 in its image. Groundbox's own image has Xvfb but not xfwm4, so `check()` refuses
-  `"default"` for kind desktop; the box image has both, and Xfce's terminal and text editor, Firefox ESR and xdotool as
-  its apps.
+  `"default"` for kind desktop; the box image has both, and Xfce's terminal, text editor and file manager (Thunar),
+  Firefox ESR and xdotool as its apps.
 - Groundbox's own image keeps toolchains under `/opt` (corepack's pnpm under
   `/opt/corepack/v1/pnpm/<version>/dist/node_modules/...`, and `/opt/hostedtoolcache`), deeper than the isolation probe's
   8 levels, so `isolation.vendor-agent` can't prove the socket fence on it. That is why the box image is the default.
@@ -3478,7 +3558,8 @@ that, when set, names the image of every computer of the provider, as Daytona's 
 (whether its machines dial the server: `dial` always, as Fly Machines' and Cloudflare's; `either`, as its `connect`
 option says, which one of its settings fills, as E2B's, Daytona's and Modal's; absent, never), `local`
 (a computer on this host), and
-`ledger` (the option a provider's ledger fills). `connectOf(descriptor, options)` answers `dial` or `exec` for a provider
+`ledger` (the option a provider's ledger fills), and `secrets` (the option a store of the secrets the provider makes for
+itself fills, `ProviderSecrets`: Agent37's SSH key; serve passes its sealed store). `connectOf(descriptor, options)` answers `dial` or `exec` for a provider
 made with those options, without building it; its built host's `facts.connect` is the same answer, and a server reads
 it to say where its runs can't take a dial (a runner in a process of its own). `providerFor(id, options)` builds a provider by id from its options and
 refuses an id it does not hold, naming the ones it does. The provider file, `src/<vendor>.ts`, exports what a

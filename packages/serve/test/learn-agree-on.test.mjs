@@ -25,13 +25,20 @@ const draftSays = (fields) => `\`\`\`json\n${JSON.stringify(fields)}\n\`\`\``;
 const AGENT = { mcc: "7832", riskTier: "low", riskRationale: "A cinema with a public box office and a long trading history.", evidence: ["example.com/tickets lists showtimes"], confidence: 0.86 };
 const DRAFT = { riskTier: "low", mcc: "7832", riskRationale: "Motion picture theatre; low chargeback exposure.", evidence: ["Showtimes page on example.com"], confidence: 0.74 };
 
-/** The settings a promotion record is written through, in memory. */
-function settingsOf() {
-  const kv = new Map();
+/** The agent's learning records in memory, as Store.learning keeps them (records, changeRecords in one write each), and
+ *  its workflow "classify" held at digest d1, the one each check here decides. */
+function learningRowsOf() {
+  const kinds = new Map();
+  let seq = 0;
+  const stamp = (one) => ({ ...one, seq: one.seq ?? ++seq, at: one.at ?? Date.now() });
   return {
-    get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
-    putIfAbsent: async (key, value) => (kv.has(key) ? kv.get(key) : (kv.set(key, structuredClone(value)), value)),
-    replaceIf: async (key, was, value) => (JSON.stringify(kv.get(key)) === JSON.stringify(was) ? (kv.set(key, structuredClone(value)), true) : false),
+    records: async (_agentId, kind) => structuredClone(kinds.get(kind) ?? []),
+    changeRecords: async (_agentId, kind, update) => {
+      const out = update(structuredClone(kinds.get(kind) ?? []));
+      if ("records" in out) kinds.set(kind, out.records.map(stamp));
+      return out.result;
+    },
+    versions: async (_agentId, _kind, name) => (name === "classify" ? [{ digest: "d1" }] : []),
   };
 }
 
@@ -42,11 +49,11 @@ const readOf = (draft, n = 5, said = AGENT) => {
 };
 
 async function decide(bar, read) {
-  const settings = settingsOf();
+  const learning = learningRowsOf();
   const logs = [];
-  const deps = { store: { settings }, agentId: "a", runId: "now", revisionId: "rev", launch: {}, context: ctx, log: (line) => logs.push(line), shown: async () => secretsShown([]) };
+  const deps = { store: { learning }, agentId: "a", runId: "now", revisionId: "rev", launch: {}, context: ctx, log: (line) => logs.push(line), shown: async () => secretsShown([]) };
   const decided = await decideCheck(deps, "classify", "d1", { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, ...bar }, read, () => true, {});
-  return { record: decided.record, stored: (await promotionsOf(settings, "a")).at(-1), logs, settings };
+  return { record: decided.record, stored: (await promotionsOf(learning, "a")).at(-1), logs, learning };
 }
 
 test("check on live-shaped answers: same mcc and riskTier, other rationale, evidence and confidence: agreed on agree_on, promoted; on the whole answer, held", async () => {
@@ -151,11 +158,11 @@ test("a purged run leaves no key or value of its grade's expected answer anywher
   const expected = { "acct-7781-holder": "Pat Example 5532" };
   const held = await decide({}, gradedRead(readOf(() => draftSays(DRAFT)), expected, { same: false, differs_on: "acct-7781-holder: Pat Example 5532" }));
   assert.equal(held.record.decided, "hold", held.record.reason);
-  assert.ok(JSON.stringify(await promotionsOf(held.settings, "a")).includes("Pat Example 5532"), "kept for the recompile while its run is");
-  for (let i = 0; i < 5; i++) await forgetRunCopies(held.settings, "a", `r-${i}`);
-  const kept = JSON.stringify(await promotionsOf(held.settings, "a"));
+  assert.ok(JSON.stringify(await promotionsOf(held.learning, "a")).includes("Pat Example 5532"), "kept for the recompile while its run is");
+  for (let i = 0; i < 5; i++) await forgetRunCopies(held.learning, "a", `r-${i}`);
+  const kept = JSON.stringify(await promotionsOf(held.learning, "a"));
   for (const word of ["acct-7781-holder", "Pat Example 5532", "7781", "5532"]) assert.ok(!kept.includes(word), `${word} survived the purge: ${kept}`);
-  assert.deepEqual((await promotionsOf(held.settings, "a")).at(-1).check.disagreements[0], { run: "r-0", input: "", agent: null, draft: "", fields: ["answer"], expected: [{ field: "answer", known: "grade", value: "" }] }, "a purge blanks the known answer's value, keeping its field and source");
+  assert.deepEqual((await promotionsOf(held.learning, "a")).at(-1).check.disagreements[0], { run: "r-0", input: "", agent: null, draft: "", fields: ["answer"], expected: [{ field: "answer", known: "grade", value: "" }] }, "a purge blanks the known answer's value, keeping its field and source");
 });
 
 test("a grade with no expected answer: graded wrong, a draft that repeats the agent's answer is wrong on it, and shown as marked wrong with no right answer; graded right, the agent's answer is known as with no grade", async () => {
@@ -195,10 +202,10 @@ test("a decided check's record (its fields, its disagreements' fields and known 
 });
 
 test("a decided replay's score: the agent's accuracy on the same inputs and known answers as the workflow's (agent_agreed)", async () => {
-  const settings = settingsOf();
+  const learning = learningRowsOf();
   const check = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 5, agreed: 4, alone: 4, agent_agreed: 2, of: [], outcomes: { answered: 4, handed_back: 1, failed: 0, skipped_write: 0 } };
-  await recordPromotion(settings, "a", { workflow: "classify", digest: "d1", at: new Date().toISOString(), decided: "promote", reason: "promoted", replay_id: "p1", check }, () => true);
-  const view = await replayView({ store: { settings }, agentId: "a" }, "classify", "d1", "p1");
+  await recordPromotion(learning, "a", { workflow: "classify", digest: "d1", at: new Date().toISOString(), decided: "promote", reason: "promoted", replay_id: "p1", check }, () => true);
+  const view = await replayView({ store: { learning }, agentId: "a" }, "classify", "d1", "p1");
   assert.deepEqual(view.score, { n: 5, agree: 4, agent_acc: 0.6, wf_acc: 1, delta: 0.4, handed_back: 1 }, "the agent wrong on 2 of the 4 it answered alone: 3 of 5");
 });
 
@@ -297,10 +304,10 @@ test("agree_on round-trips through the definition PUT; a bad one is a 422 naming
 });
 
 test("a record written with agree_on reads back with it (the promotions read keeps what the check compared)", async () => {
-  const settings = settingsOf();
+  const learning = learningRowsOf();
   const check = { compile_after: 5, agree_min: 0.8, alone_min: 0.7, agree_on: ["verdict.decision"], attempt: 1, n: 1, agreed: 1, alone: 1, of: ["r-0"] };
-  await recordPromotion(settings, "a", { workflow: "classify", digest: "d1", at: new Date().toISOString(), decided: "promote", reason: "promoted", check }, () => true);
-  assert.deepEqual((await promotionsOf(settings, "a")).at(-1).check, check);
+  await recordPromotion(learning, "a", { workflow: "classify", digest: "d1", at: new Date().toISOString(), decided: "promote", reason: "promoted", check }, () => true);
+  assert.deepEqual((await promotionsOf(learning, "a")).at(-1).check, check);
 });
 
 test("a draft that repeats the answer a grade marked wrong is never right on that input, whatever the fast model says: byte for byte, or the same JSON in another dress", async () => {

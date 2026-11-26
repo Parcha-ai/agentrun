@@ -46,12 +46,14 @@ one when the last has run out) until the password is set, the console after. It 
 
 `agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
-`agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. The
-Ollama on this machine needs nothing here: the server lists its models itself. For an Ollama off its default address,
-`agentrun service install --env OLLAMA_HOST=<host:port>` writes it into the service and restarts it. `--env OLLAMA_CONTEXT_LENGTH=<tokens>` does the same for a lower context than 65,536. For a local model
-behind a gateway, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare
---env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none` does the same (`none` alone:
-without a key the server refuses each run, `model_key_required`). They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
+`agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. A local
+model needs nothing here: the server lists the models of the Ollama on this machine itself, at its default address
+(port 11434), when it is your own server on your own machine. A server with a public address (`--public-url`,
+`--tailscale`), or more than one API token, lists Ollama only where `OLLAMA_HOST` names it, the default address too. For
+that, or an Ollama off its default address, `agentrun service install --env OLLAMA_HOST=<host:port>` writes it into the
+service and restarts it, and `--env OLLAMA_CONTEXT_LENGTH=<tokens>` does the same for a lower context than
+65,536; a model gateway's variables (`AGENT_MODEL_BASE_URL`, `AGENT_MODEL_GATEWAY_IDS`, `AGENT_MODEL`, `AGENT_MODEL_PRICE`) go in
+the same way, its key in the console. They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. A service that reached Ollama through a model gateway (`AGENT_MODEL_BASE_URL` with `AGENT_MODEL_API_KEY=none`) takes the gateway off with `agentrun service install --env AGENT_MODEL_BASE_URL= --env AGENT_MODEL_GATEWAY_IDS= --env AGENT_MODEL= --env AGENT_MODEL_PRICE=` and picks the model as `ollama/<tag>`; `--env` takes no `AGENT_MODEL_API_KEY`. On a machine
 you alone use, `--env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` turns on the two start-time
 switches the same way (a switch takes `1` alone). `--env` takes the names `agentrun service install --help` lists, and
 no others: model keys go in the console, never in a service file. The service never sees the shell that installed it, so
@@ -139,10 +141,17 @@ any address, and stopped; `AGENTRUN_START_TIMEOUT_MS` sets that wait, in millise
 overwrites that log; it is private to you, as the server's first lines name its API token. A log the disk could not hold
 all of is named with the error that cut it short.
 
-Where Docker answers on this machine, a new agent runs in a Docker box of its own with a shell, and a line on stderr,
-after the address, says so: `Boxes: docker (on by default; set AGENTRUN_BOXES to change).` Where it does not, that line says why
-and that new agents run on the runner. A Docker box's image is built on its first run, which shows that on its
-timeline. `AGENTRUN_BOXES=none` turns boxes off.
+Where a new agent that names no place goes, by mode:
+
+- Where Docker answers on this machine, it runs in a Docker box of its own with a shell, and a line on stderr, after the
+  address, says so: `Boxes: docker (on by default; set AGENTRUN_BOXES to change).`
+- Where it does not, and the runner has no shell (Mode 1), its create is refused, `name a box`: it names a box, or the
+  runner (`"place": {"mode": "runner"}`) to run without a shell. That line says why, and `capabilities.places.default_place`
+  is `null`. So is `agentrun deploy` of a package that names no `tools` and no `computer` list, at its preview: name its tools
+  (`tools: []` keeps the runner) or its computer list.
+- In Mode 2, where the runner's shell is Archil's serverless exec, it is not refused: it runs on the runner, as before.
+
+A Docker box's image is built on its first run, which shows that on its timeline. `AGENTRUN_BOXES=none` turns boxes off.
 
 pi runs every agent out of the box. The Claude Code and Codex harnesses need their own packages beside the server; when
 one is missing, AgentRun says so with the one command to paste: `npx` with this package, the server and that harness's

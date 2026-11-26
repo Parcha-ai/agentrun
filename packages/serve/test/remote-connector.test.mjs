@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { serve, follow, storeBytes } from './support.mjs';
-import { learningFolderOf, seedOf } from '../dist/learning.js';
 import { learningCommit } from '../dist/learn/commit.js';
+import { learningOf } from '../dist/learn/rows.js';
+import { overStore } from './learn-support.mjs';
 import { RemoteConnectors } from '../dist/native/remote.js';
 
 const target = { runtime:'codex',project:'/source-only/project',selector:{kind:'project'},machine_id:'source-machine',version:'0.167.2',model:'source-model',fingerprint:'f'.repeat(64),configuration:[],skills:[],mcp_servers:[],state:'ready',issues:[],capabilities:{launch:true,learning:true,workflows:false,approval:'unavailable',usage:true},connected:true,verified_at:new Date().toISOString() };
@@ -176,10 +177,8 @@ test('remote task uses the ordinary journal and the learned corrections as its s
  assert.equal((await s.api('POST',`/agents/${s.agentId}/native/verify`,{})).body.native.state,'ready');
  assert.equal((await s.api('PUT',`/agents/${s.agentId}/definition`,{definition:{instructions:'',learning:true}})).status,200);
  const start=async content=>{const r=await s.api('POST',`/agents/${s.agentId}/runs`,{input:{content}});assert.equal(r.status,202,JSON.stringify(r.body));await follow(s.api,r.body.run_id,['completed']);return r.body.run_id;};
- // The owner's correction on the agent's learning main, as a run's merge lands one.
- await seedOf(s.data,s.agentId);const folder=learningFolderOf(s.data,s.agentId);
- try{const merged=await learningCommit(folder.workspace,{runId:'owner-correction',reason:"The owner's correction",files:[],correction:'For release status answers, use the label Launch state followed by the status.'});assert.equal(merged.ok,true,JSON.stringify(merged));}finally{await folder.end();}
- const main=(await seedOf(s.data,s.agentId)).sha;
+ // The owner's correction on the agent's learning, as a run's merge lands one.
+ const main=await overStore(s,async store=>{const merged=await learningCommit(learningOf(store,s.agentId),{runId:'owner-correction',reason:"The owner's correction",files:[],correction:'For release status answers, use the label Launch state followed by the status.'});assert.equal(merged.ok,true,JSON.stringify(merged));return merged.main;});
  const second=await start('Report the release status. It is ready.');
  const run=(await s.api('GET',`/runs/${second}`)).body;assert.equal(run.result.final_answer,'Launch state: ready');assert.equal(run.native.learning_revision,main);
  assert.equal((await s.api('PUT',`/agents/${s.agentId}/definition`,{definition:{instructions:'',learning:false}})).status,200);

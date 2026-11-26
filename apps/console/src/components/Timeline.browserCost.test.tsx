@@ -2,6 +2,9 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { Timeline } from "@/components/Timeline";
+import { LatestRun } from "@/components/LatestRun";
+import { RunDetail } from "@/components/RunDetail";
+import { messageFeatures, runFixture } from "@/fixtures";
 import { applyPage } from "@/lib/timeline";
 import type { TimelinePage, TimelineRow } from "@/lib/v2";
 
@@ -39,8 +42,6 @@ describe("a browser call's charge, on its own row", () => {
   });
 
   it("the agent page's latest run says an ended run's call row as known too, as the run page does", async () => {
-    const { LatestRun } = await import("./LatestRun");
-    const { runFixture } = await import("@/fixtures");
     const f = runFixture("run.completed.idle.1");
     const run = { ...f.run, kind: "agentic", status: "completed", state: "idle" };
     const rows = [call({ usd: null, requests: 0, so_far_usd: 0.001, unpriced: 1 })];
@@ -55,8 +56,6 @@ describe("a browser call's charge, on its own row", () => {
   });
 
   it("the run page says an ended run's call row as known (runEnded of its status), a working one's as so far", async () => {
-    const { RunDetail } = await import("./RunDetail");
-    const { messageFeatures, runFixture } = await import("@/fixtures");
     const f = runFixture("run.completed.idle.1");
     const rows = [call({ usd: null, requests: 0, so_far_usd: 0.001, unpriced: 1 })];
     for (const [status, state, says] of [["completed", "idle", "$0.001 known, 1 not priced"], ["working", "working", "so far $0.001, 1 not priced"]] as const) {

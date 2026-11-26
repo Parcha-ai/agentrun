@@ -12,8 +12,8 @@ import { ApiError } from "./errors.js";
 import { GRAPH_CACHE_BYTES, PartCache, servedGraphView } from "./graph-served.js";
 import { runGraph } from "./graph-view.js";
 import { checkedPath, decodedPath } from "./home-path.js";
-import { redactSecrets } from "./learn/secrets.js";
 import { censusCut, censusDigest } from "./run-census.js";
+import { cutFileText } from "./run-file-cut.js";
 import { type RunCut, underCut } from "./run-cut.js";
 import { usageWordsOf, WITHHELD_SIGN_IN } from "./run-view.js";
 import { ChangeClock, type Page, RowLog } from "./rows.js";
@@ -86,7 +86,7 @@ export async function listRunFiles(store: RunReadsStore, runId: string, deps: Ru
   // Once the run's end erased what its caller handed it (censusDigest), its cut no longer holds those values: its census
   // says where they sat in each file's text, never in a name, so no file is named (a grader counts them, as from a server
   // that doesn't know `cut`).
-  const named = await underCut(() => deps.cutValues(store, runId), async (held) => (held === "unreadable" ? undefined : held.censusDigest !== undefined ? listed : listed.map((file) => ({ ...file, name: redactSecrets(file.path, held.values, Buffer.byteLength(file.path)) }))));
+  const named = await underCut(() => deps.cutValues(store, runId), async (held) => (held === "unreadable" ? undefined : held.censusDigest !== undefined ? listed : listed.map((file) => ({ ...file, name: cutFileText(file.path, held.values) }))));
   if (named === undefined) throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   return { run_id: runId, files: named, complete: true, truncated };
 }
@@ -145,7 +145,7 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
   if (text.includes("\u0000")) throw new ApiError("unsupported_media_type", "a cut read answers text, and this file holds a NUL byte");
   const shown = await underCut(() => deps.cutValues(store, runId), async (cut): Promise<{ withheld: string } | { text: string }> => {
     if (cut === "unreadable") return { withheld: WITHHELD_SIGN_IN };
-    if (cut.censusDigest === undefined) return { text: redactSecrets(text, cut.values, Buffer.byteLength(text)) };
+    if (cut.censusDigest === undefined) return { text: cutFileText(text, cut.values) };
     // The run's end erased what its caller handed it: where those sat in this file is its census's to say. Read here, the
     // one read that cuts by it; the cut names it by digest, so a census written since withholds this answer and the cut
     // read again after it (underCut) builds it anew.
@@ -153,7 +153,7 @@ async function cutRunFile(store: RunReadsStore, runId: string, workspace: Worksp
     if (census === null || censusDigest(census) !== cut.censusDigest) return { withheld: WITHHELD_UNCOUNTED };
     const held = censusCut(census, rel, bytes, text, deps.sealKey);
     if (held === "unreadable") return { withheld: WITHHELD_UNCOUNTED };
-    return { text: held === "whole" ? "[redacted]" : redactSecrets(text, cut.values, Buffer.byteLength(text), held) };
+    return { text: cutFileText(text, cut.values, held) };
   });
   if ("withheld" in shown) throw new ApiError("forbidden", shown.withheld);
   const body = Buffer.from(shown.text);

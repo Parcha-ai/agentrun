@@ -7,19 +7,17 @@
 import assert from "node:assert/strict";
 import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, call, clientOwnerSession, follow, retried, runRecordOf, scratch, serve as serveOf, withEnv } from "./support.mjs";
 import { NODE_REQUESTS_ENV } from "./fixtures/faux-learned-node.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { agentFolderOf } from "../dist/files.js";
-import { seedOf } from "../dist/learning.js";
 import { learnedApprovedTools, learnedAskShown, LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { ARGS_PREVIEW_BYTES } from "../dist/tool-gate.js";
-import { git, resnap } from "./learn-support.mjs";
+import { putLearning } from "./learn-support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
 const FAUX_CALLS = new URL("./fixtures/faux-calls.mjs", import.meta.url).pathname;
@@ -55,23 +53,14 @@ async function owner(server) {
   return async (runId, approvalId, body) => (await call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${encodeURIComponent(approvalId)}`, headers: { ...json, cookie, origin }, body })).status;
 }
 
-/** Agent `id`, learning, granted `tools`, with `flows` learned in its folder (and `definition`'s fields: its harness); one
- *  run of it asking `content`. */
+/** Agent `id`, learning, granted `tools`, with `flows` learned (and `definition`'s fields: its harness); one run of it
+ *  asking `content`. */
 async function learnedRun(server, id, tools, flows, content, run = {}, definition = {}) {
-  const { api, data } = server;
+  const { api } = server;
   assert.equal((await retried(api)("POST", "/agents",agent(id, { learning: true, tools, ...definition }))).status, 201);
-  await seedOf(data, id);
-  const repo = join(agentFolderOf(data, id), "learning");
-  const files = Object.fromEntries(flows.flatMap((flow) => [[`workflows/${flow.name}/workflow.json`, JSON.stringify(flow)], [`workflows/${flow.name}/README.md`, `---\nname: ${flow.name}\ndescription: Runs ${flow.name}\n---\n`]]));
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
+  await putLearning(server.store, id, Object.fromEntries(flows.flatMap((flow) => [[`workflows/${flow.name}/workflow.json`, JSON.stringify(flow)], [`workflows/${flow.name}/README.md`, `---\nname: ${flow.name}\ndescription: Runs ${flow.name}\n---\n`]])));
   // Execution permissions and recovery are rechecked even for a previously promoted revision.
-  await promoteChecked(server.store.settings, id, flows.map((workflow) => ({ name: workflow.name, workflow })));
+  await promoteChecked(server.store, id, flows.map((workflow) => ({ name: workflow.name, workflow })));
   const started = await retried(api)("POST", `/agents/${id}/runs`,{ input: { content }, ...run });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   return started.body.run_id;
