@@ -10,12 +10,13 @@
 // A fake CLI stands in for the pinned one: signed in while its credentials file is in the credentials dir it is given,
 // `auth login` writes that file and the account, `auth logout` removes both and exits as the test says.
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { test } from "node:test";
+import * as harness from "@parcha/agentrun-harness-claude";
 import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_SETTING, LOGIN_ANSWERS_DIR, settingFor, startLoginHere } from "../dist/claude-login.js";
 import * as login from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
@@ -162,6 +163,7 @@ async function rig(t, { place = "agentrun", logout = async () => said(true), env
       logouts.push({ cli: cliPath, dir: at.dir, options });
       return logout();
     },
+    claudeKeychainService: (at) => harness.claudeKeychainService(at),
   };
   const deps = { signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {} };
   return { data, rows, deps, logouts, started, pinned };
@@ -216,12 +218,19 @@ for (const [cli, signedOut] of [["confirms", true], ["doesn't confirm", false]])
       assert.equal(out.confirmed, signedOut && gone, JSON.stringify(out));
       if (gone) assert.equal(out.message, signedOut ? undefined : login.LOGIN_SIGN_OUT_UNCONFIRMED, "no words of the item under \"unknown\"");
       else {
-        if (signedOut) assert.equal(out.message, login.LOGIN_SIGN_OUT_KEYCHAIN_LEFTOVER);
-        else assert.ok(out.message?.startsWith(login.LOGIN_SIGN_OUT_UNCONFIRMED), `the CLI's words first: ${out.message}`);
+        if (!signedOut) assert.ok(out.message?.startsWith(login.LOGIN_SIGN_OUT_UNCONFIRMED), `the CLI's words first: ${out.message}`);
         assert.match(out.message ?? "", /refresh token/, `the words say what the item holds: ${out.message}`);
         assert.match(out.message ?? "", /Keychain Access/, `the words say where to delete it: ${out.message}`);
-        assert.ok(out.message?.includes('search "Claude Code-credentials"'), `the words say what to search: ${out.message}`);
         assert.ok(out.message?.includes('account is "unknown"'), `the words name the item's account: ${out.message}`);
+        // The item's exact service, the one the CLI names from AgentRun's folder: the person's own CLI's item under
+        // "unknown" has the bare name, and words that name only that would point at it as well.
+        const service = `Claude Code-credentials-${createHash("sha256").update(r.logouts[0].dir).digest("hex").slice(0, 8)}`;
+        const leftover = signedOut ? (out.message ?? "") : (out.message ?? "").slice(login.LOGIN_SIGN_OUT_UNCONFIRMED.length);
+        assert.ok(leftover.includes(`search "${service}"`), `the words say to search the item's exact service: ${out.message}`);
+        assert.ok(leftover.includes(`security delete-generic-password -a unknown -s "${service}"`), `the words give the one command that deletes that item alone: ${out.message}`);
+        assert.doesNotMatch(leftover, /Claude Code-credentials(?!-[0-9a-f]{8})/, `the words never name the bare service: ${out.message}`);
+        assert.ok(!(out.message ?? "").includes(r.data), `the words name no path: ${out.message}`);
+        if (signedOut) assert.equal(out.message, login.signOutKeychainLeftover(service));
       }
       assert.equal(r.logouts.length, 1);
       assert.equal(existsSync(folder), false, "the folder is removed all the same");

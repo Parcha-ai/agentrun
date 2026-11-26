@@ -723,3 +723,50 @@ test('on macOS a status check that arrives while another\'s delete of the "unkno
     endHung(left.m);
   }
 });
+
+// Two sign-outs that wait on the same status check's delete share the one more attempt: the first to resume starts it,
+// the other joins it. Where that attempt fails too, both answer that the item may remain, after two deletes in all, and
+// neither asks again: a person's call asks once more, never in a loop.
+test('on macOS two sign-outs that wait on a status check\'s delete of the "unknown" item that fails share one more attempt, and when that fails too both answer that the item may remain, after two deletes in all', { skip }, async () => {
+  const left = leftUnknown();
+  writeFileSync(join(left.m.bin, 'security'), HELD, { mode: 0o755 });
+  const signOut = () => asServerOf(left.m, () => claude.claudeLogout(left.m.cli, left.login, { path: left.m.path, platform: 'darwin' }));
+  /** How many times the CLI's own sign-out has asked to delete the person's item. */
+  const cliDeletes = () => left.m.deleted().filter(([, account]) => account === KEYCHAIN_ACCOUNT).length;
+  try {
+    const checking = status(left.m, left.login);
+    await until(() => left.hung() === 1, "the status check's delete under \"unknown\" started");
+    // One sign-out after the other, so the two CLI sign-outs never write the one keychain file at once; both then wait on
+    // the status check's delete, which HELD holds until the release.
+    const first = signOut();
+    await until(() => cliDeletes() === 1 && left.m.items() === 1, "the first sign-out's CLI deleted the person's item");
+    await pause(500);
+    const second = signOut();
+    await until(() => cliDeletes() === 2, "the second sign-out's CLI asked to delete the person's item");
+    await pause(1_000);
+    assert.equal(left.hung(), 1, 'both sign-outs wait on the status check\'s delete and start none beside it');
+    // The held delete fails, and so does every later one: the release stays.
+    release(left.m);
+    assert.equal((await within(DROP_MS + 3_000, 'the status check', checking)).signedIn, true, 'the status check reads signed in');
+    const both = await within(DROP_MS + 3_000, 'the two sign-outs', Promise.all([first, second]));
+    assert.deepEqual(both, [{ signedOut: true, leftoverGone: false }, { signedOut: true, leftoverGone: false }], 'both CLIs confirmed their sign-out, and both answers say the item under "unknown" may remain');
+    assert.equal(left.hung(), 2, `the two sign-outs started ${left.hung() - 1} more deletes under "unknown" between them, not one`);
+    await pause(500);
+    assert.equal(left.hung(), 2, 'no delete under "unknown" starts after both answered');
+    assert.ok(left.unknownThere(), 'the failed deletes left the item under "unknown"');
+    assert.equal(left.m.items(), 1, "the person's own item went with the CLI's sign-out, and only the item under \"unknown\" is left");
+  } finally {
+    release(left.m);
+    endHung(left.m);
+  }
+});
+
+// The words a person gets where that item may remain name it by its service, so they never point at another login's
+// item under "unknown" (the person's own CLI's has no suffix). The drop deletes by the same service.
+test('on macOS the Keychain service the harness names for AgentRun\'s own folder is the one the sign-in left its item under "unknown" with, suffixed, and none for the CLI\'s default folder', { skip }, async () => {
+  const left = leftUnknown();
+  const [service] = keychain(left.m).filter(([account]) => account === 'unknown').map(([, of]) => of);
+  assert.match(service, /^Claude Code-credentials-[0-9a-f]{8}$/, 'the item under "unknown" has the suffixed service');
+  assert.equal(claude.claudeKeychainService(left.login), service, 'the harness names the service the item under "unknown" has');
+  assert.equal(claude.claudeKeychainService(PLACES["this machine's login on the CLI's default folder"](left.m)), undefined, "the CLI's default folder's item has no suffix, and the harness names none for it");
+});
