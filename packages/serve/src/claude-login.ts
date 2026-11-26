@@ -19,6 +19,7 @@ import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
 import { facts as claudeFacts, loginRefresh } from "@parcha/agentrun-harness-claude/facts";
 import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
+import { copyEnv } from "./secrets.js";
 import type { ClaudeSignIns, SignInView } from "./claude-sign-in.js";
 import type { Settings } from "./store/index.js";
 
@@ -511,10 +512,11 @@ export function withClaudeLogin<T extends object>(env: T, login: RunLogin | unde
 }
 
 /** `env` as a run at `place` reads it: a runner place keeps the login; any other place (a sandbox) gets a copy without it,
- *  so a revision's checks there ask for a key, as its run will. */
+ *  so a revision's checks there ask for a key, as its run will. The copy is copyEnv's, which keeps withSecrets' keys
+ *  (read by name, never enumerated), where a spread would keep none. */
 export function envAtPlace<T extends object>(env: T, place: { readonly mode: string } | undefined): T {
   if (place?.mode === "runner" || (env as Record<symbol, unknown>)[LOGIN] === undefined) return env;
-  return withClaudeLogin({ ...env }, undefined);
+  return withClaudeLogin(copyEnv(env), undefined);
 }
 
 /** The login `env` carries, unless the switch is off. */
