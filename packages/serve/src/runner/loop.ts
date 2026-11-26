@@ -99,11 +99,13 @@ type Expected = { readonly run?: Staged["run"]; readonly also?: Staged["also"]; 
  * calls it directly: `expect(match, expected)` stages `expected` on the first commit whose batches `match`, merged with
  * any other match of that commit, its takes keyed to the matched record (the store writes a take only with that
  * record's batch, so a command is taken with its effect or not at all), and resolves once that batch is stored. seal()
- * refuses every later commit.
+ * refuses every later commit, but those made while through() runs.
  */
 export class Gate {
   readonly journal: Journal;
   #sealed: Error | undefined;
+  /** How many through() calls are running: while one is, a sealed gate still takes commits. */
+  #through = 0;
   #pending: { match: Match; expected: Expected; landed: () => void; failed: (error: unknown) => void }[] = [];
 
   constructor(inner: Journal) {
@@ -121,7 +123,7 @@ export class Gate {
   }
 
   async #commit(target: Journal, batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: never) => void, context: Context): Promise<CommitResult> {
-    if (this.#sealed) throw this.#sealed;
+    if (this.#sealed && this.#through === 0) throw this.#sealed;
     const hits = this.#pending.flatMap((pending) => {
       const at = pending.match(batches);
       return at ? [{ pending, at }] : [];
@@ -153,6 +155,18 @@ export class Gate {
   seal(error: Error): void {
     this.#sealed ??= error;
     for (const pending of this.#pending.splice(0)) pending.failed(error);
+  }
+
+  /** `write`, its commits taken even once the gate is sealed: what a stopped loop still owes its claim's journal while it
+   *  holds the claim (a tool host's release and its charges, on a shutdown). The claim's fence still refuses them once
+   *  it is lost. The seal stands for every commit after `write` returns. */
+  async through<T>(write: () => Promise<T>): Promise<T> {
+    this.#through += 1;
+    try {
+      return await write();
+    } finally {
+      this.#through -= 1;
+    }
   }
 
   get sealed(): boolean {

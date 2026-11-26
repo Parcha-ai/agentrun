@@ -1022,6 +1022,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  stop() aborts it first, with the stop's Interrupted, so the reason a cut call reads is the stop's. */
   const stopAbort = new AbortController();
   void stopping.then(() => stopAbort.abort(new Error("the run was stopped")));
+  /** The loop was stopped for its runner's shutdown (first, or after a person's stop): the runner still holds the claim
+   *  until the loop ends, though its close seals the journal and aborts the claim's signal at once. */
+  const shutDown = (): boolean => stopReason?.kind === "shutdown" || laterStop?.kind === "shutdown";
+  /** The claim's signal as the run's ledger reads it (its sessions' context): aborted with the claim's, but for a
+   *  shutdown's, so the ledger still books a tool host's release under the claim (releaseHost); the claim's fence refuses
+   *  those writes once the claim is lost. */
+  const ledgerAbort = new AbortController();
   let parked: () => void = () => {};
   const parking = new Promise<void>((resolve) => (parked = resolve));
   /** The claim is parking: it waits for the calls already running beside the parked one (siblingsSettled), and no call
@@ -1063,14 +1070,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let hostReleased = false;
   /** A tool host's beforeRelease, once per claim: before a park's seal and before the end's commit (the end is the
    *  claim's release), so what it writes (a browser release's charge, its paid booking on run.ledger.paid) lands in its
-   *  own commits under the live claim, just before. A hook that throws is logged; the run's end or park stands. */
+   *  own commits under the live claim, just before. A shutdown seals the journal first, while the runner still holds the
+   *  claim: the hooks' commits are taken through the seal then (Gate.through), so the runner's close resolves only once
+   *  they have landed. A hook that throws is logged; the run's end or park stands. */
   const releaseHost = async (on: Harness | undefined): Promise<void> => {
     endWait();
     if (hostReleased || !on) return;
     hostReleased = true;
-    for (const stop of specNow?.lifecycle?.beforeRelease ?? []) {
-      await Promise.resolve().then(() => stop(on)).catch((error: unknown) => console.warn(`[runner] a tool host's beforeRelease failed: ${(error as Error)?.message ?? String(error)}`));
-    }
+    const release = async (): Promise<void> => {
+      for (const stop of specNow?.lifecycle?.beforeRelease ?? []) {
+        await Promise.resolve().then(() => stop(on)).catch((error: unknown) => console.warn(`[runner] a tool host's beforeRelease failed: ${(error as Error)?.message ?? String(error)}`));
+      }
+    };
+    const journal = gate;
+    await (journal && shutDown() ? journal.through(release) : release());
   };
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: AdapterRunSpec["release"];
@@ -1768,9 +1781,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     });
     const signalAbort = () => {
       gate?.seal(new Interrupted("its claim's signal aborted"));
+      if (!shutDown()) ledgerAbort.abort(deps.signal.reason);
       // A lost claim's MCP credentials go at once, a call still out among them.
       mcp?.release();
     };
+    if (deps.signal.aborted) ledgerAbort.abort(deps.signal.reason);
     deps.signal.addEventListener("abort", signalAbort, { once: true });
     let fault: KernelFault | undefined;
     try {
@@ -1812,7 +1827,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // What was spent beside them on the run's behalf (its spec's runCap.beside) is read with them at each admission
         // (runBooking), the spec's once it is known.
         const besideNow = async (): Promise<number | null> => (specNow?.runCap?.beside ? await specNow.runCap.beside() : 0);
-        const sessions = Object.assign(journalSessions(harness, context, { flush: () => deps.flush(), claim }), { beside: besideNow });
+        const sessions = Object.assign(journalSessions(harness, withAbortSignal(ledgerAbort.signal, BACKGROUND_CONTEXT), { flush: () => deps.flush(), claim }), { beside: besideNow });
         let capBuilt: RunCap | undefined;
         /** What the run keeps back beside a request of its own session while it streams (RunCapOptions.keepBackUsd), set
          *  once the wrap-up's reserve is known (below): a tool call it makes mid-stream finds room for the steps after it. */
