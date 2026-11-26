@@ -19,14 +19,14 @@ const SANDBOX = /sandbox computer/;
 /** A server in Mode 2 on Archil region `region` (its environment's), on a fake `docker` that answers or not. `data` and
  *  `seal` start it again on an earlier server's data, under that server's seal key (a restart's); `env` adds to its
  *  environment. */
-async function started(t, { region, docker, data, seal = randomBytes(32).toString("base64"), env = {} }) {
+async function started(t, { region, docker, data, seal = randomBytes(32).toString("base64"), env = {}, templates }) {
   const bin = join(await scratch(t), "bin");
   await mkdir(bin);
   const version = docker ? "echo 27.0.0-fake; exit 0" : "echo 'Cannot connect to the Docker daemon' >&2; exit 1";
   await writeFile(join(bin, "docker"), `#!/bin/sh\nif [ "$1" = version ]; then ${version}; fi\nexit 0\n`, { mode: 0o755 });
   await chmod(join(bin, "docker"), 0o755);
   withEnv(t, { AGENTRUN_SEAL_KEY: seal, PATH: [bin, process.env.PATH].join(delimiter), AGENTRUN_ARCHIL_REGION: region, ARCHIL_API_KEY: "fake-test-key", ...env }, UNSET);
-  return { seal, ...(await serve(t, { faux: undefined, runner: false, accounts: true, openSetup: true, ...(data ? { data } : {}) })) };
+  return { seal, ...(await serve(t, { faux: undefined, runner: false, accounts: true, openSetup: true, ...(data ? { data } : {}), ...(templates ? { templates } : {}) })) };
 }
 
 const server = async (t, options) => (await started(t, options)).api;
@@ -50,14 +50,28 @@ for (const docker of [true, false]) {
     assert.match(fields[0].message, NO_EXEC);
     assert.doesNotMatch(JSON.stringify(made.body), /"box":"docker"/, "never told to take Docker's box");
     assert.equal((await api("GET", "/agents/gcp-bash")).status, 404, "not saved, on the runner or on Docker's box");
-    // No tools named would give it bash: refused alike.
-    const unnamed = await api("POST", "/agents", fresh("gcp-unnamed"));
-    assert.equal(unnamed.status, 422, JSON.stringify(unnamed.body));
-    assert.match(unnamed.body.error.fields[0].message, NO_EXEC);
     // One with no shell tool runs on the runner, as before.
     const files = await api("POST", "/agents", fresh("gcp-files", ["read", "write"]));
     assert.equal(files.status, 201, JSON.stringify(files.body));
     assert.equal("place" in files.body.definition, false);
+  });
+
+  test(`Mode 2 on gcp-us-central1, ${label}: an agent that names no tools saves on the runner with none (Mode 2 gives it no bash), by POST /agents, a template apply that names none and its dry_run, never refused for bash`, async (t) => {
+    const templates = join(await scratch(t), "templates");
+    await mkdir(join(templates, "plain-reader"), { recursive: true });
+    await writeFile(join(templates, "plain-reader", "agent.md"), "---\nname: plain-reader\nversion: 1.0.0\ndescription: Answers.\n---\nAnswer.\n");
+    const { api } = await started(t, { region: "gcp-us-central1", docker, templates });
+    const made = await api("POST", "/agents", fresh("gcp-unnamed"));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const saved = (await api("GET", "/agents/gcp-unnamed")).body.definition;
+    assert.deepEqual([saved.place, saved.computer, (saved.tools ?? []).filter((tool) => tool.startsWith("bash"))], [undefined, undefined, []], JSON.stringify(saved));
+    const planned = await api("POST", "/templates/plain-reader/apply", { dry_run: true });
+    assert.equal(planned.status, 200, JSON.stringify(planned.body));
+    assert.equal(planned.body.plan.action, "create", JSON.stringify(planned.body));
+    const applied = await api("POST", "/templates/plain-reader/apply", {});
+    assert.equal(applied.status, 201, JSON.stringify(applied.body));
+    const fromTemplate = (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition;
+    assert.deepEqual([fromTemplate.place, fromTemplate.computer, fromTemplate.tools], [undefined, undefined, []], JSON.stringify(fromTemplate));
   });
 
   test(`Mode 2 on gcp-us-central1, ${label}: an agent that names no computer and bash on the runner is refused for bash, in words that name the region and a sandbox computer`, async (t) => {

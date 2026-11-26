@@ -95,9 +95,11 @@ test("placesOf, defaultPlaceOf and noBoxRefusal in Mode 2 with no exec: never Do
     // An agent with no shell tool runs on the runner, refused nothing.
     assert.equal(place.noBoxRefusal(["read", "write"], boxes, flags, noExec), undefined);
     assert.deepEqual(place.defaultPlaceOf("agentic", ["read", "write"], boxes, flags, noExec), { mode: "runner" });
-    // Unnamed tools would be given bash: refused too.
-    assert.ok(place.noBoxRefusal(undefined, boxes, flags, noExec), `${label}: no tools named`);
+    // No tools named: Mode 2 saves it on the runner with none (server.ts defaultToolsAt), so it has no bash to refuse.
+    assert.equal(place.noBoxRefusal(undefined, boxes, flags, noExec), undefined, `${label}: no tools named`);
   }
+  // Mode 1 with no Docker (no runner shell): no tools named would be given bash in Docker's box, refused as before.
+  assert.equal(place.noBoxRefusal(undefined, noDocker, flags, false)?.field, "definition.place");
   // A region with exec: the runner, as before, Docker answering or not.
   for (const boxes of [docker, noDocker]) {
     assert.deepEqual(place.placesOf(boxes, "none", true).default_place, { mode: "runner" });
