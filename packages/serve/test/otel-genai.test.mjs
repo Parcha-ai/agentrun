@@ -987,6 +987,13 @@ const SEMI_ROWS = [
     ["parse error at %27 near theme", "parse error at %27 near theme"],
   ],
   [
+    "a header value's credential pair holding an opening quote written %27 and one letter",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=%27a theme=dark" },
+    [],
+    ["a", "dark"],
+    ["parse error: a bad value at a", "parse error: a bad value at a"],
+  ],
+  [
     "a header value's credential pair whose value starts with a ;, then a piece under 8 characters",
     { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=token=;a;key-${"dummy"}-value&x=1` },
     [`key-${"dummy"}-value`],
