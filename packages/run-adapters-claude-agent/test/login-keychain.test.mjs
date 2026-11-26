@@ -610,3 +610,93 @@ test('on macOS a sign-out whose delete of the "unknown" item hangs still answers
   assert.ok(left.unknownThere(), 'the killed delete left the item under "unknown"');
   assert.equal(left.m.items(), 1, "the person's own item went with the CLI's sign-out");
 });
+
+/** A `security` whose delete under "unknown" waits until the test lets it go (a file `release` beside it), then fails
+ *  with an answer that is neither "deleted" (0) nor "not found" (44), as a keychain that refuses the delete does. Each
+ *  such delete writes its pid, as HANGING's do, and gives up by itself after a minute. Every other command is
+ *  SECURITY's. */
+const HELD = `#!${process.execPath}
+if (process.argv[2] === 'delete-generic-password' && process.argv.includes('unknown')) {
+  const fs = require('node:fs'), path = require('node:path');
+  fs.appendFileSync(path.join(__dirname, 'hung.pids'), process.pid + '\\n');
+  setInterval(() => { if (fs.existsSync(path.join(__dirname, 'release'))) process.exit(1); }, 20);
+  setTimeout(() => process.exit(1), 60_000);
+} else {
+${SECURITY.slice(SECURITY.indexOf('\n') + 1)}
+}
+`;
+/** Lets HELD's waiting deletes in `m` go: each then fails. */
+const release = (m) => writeFileSync(join(m.bin, 'release'), '');
+/** Waits until `done()` holds, 10 s at most. */
+async function until(done, what) {
+  const end = Date.now() + 10_000;
+  while (!done()) {
+    if (Date.now() > end) throw new Error(`not within 10 s: ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// A sign-out that arrives while a status check's delete of the "unknown" item runs waits on that delete rather than
+// starting a second one beside it. Where that delete leaves the item (it failed, or it was killed at its limit), the
+// sign-out asks once more itself: after it no status check reads signed in, so none would ask again. Here `security`
+// answers again by the time the sign-out asks.
+const JOINED = {
+  // The status check's delete fails once the sign-out waits on it: the CLI's own sign-out has deleted the person's item,
+  // and a second more lets the sign-out reach the delete it joins.
+  'fails': {
+    security: HELD,
+    end: async (left) => {
+      await until(() => left.m.deleted().some(([, account]) => account === KEYCHAIN_ACCOUNT), "the CLI's own sign-out deleted the person's item");
+      await pause(1_000);
+      release(left.m);
+    },
+  },
+  // The status check's delete hangs and is killed at its limit, DROP_MS after it started, long after the sign-out joined.
+  'is killed at its limit': { security: HANGING, end: async () => {} },
+};
+for (const [how, joined] of Object.entries(JOINED)) {
+  test(`on macOS a sign-out that arrives while a status check's delete of the "unknown" item runs, a delete that ${how}, asks once more itself, and the item goes`, { skip }, async () => {
+    const left = leftUnknown();
+    writeFileSync(join(left.m.bin, 'security'), joined.security, { mode: 0o755 });
+    try {
+      const checking = status(left.m, left.login);
+      await until(() => left.hung() === 1, "the status check's delete under \"unknown\" started");
+      left.answering();
+      const signingOut = asServerOf(left.m, () => claude.claudeLogout(left.m.cli, left.login, { path: left.m.path, platform: 'darwin' }));
+      await joined.end(left);
+      assert.equal((await within(DROP_MS + 3_000, 'the status check', checking)).signedIn, true, 'the status check reads signed in');
+      assert.equal(await within(DROP_MS + 5_000, "the sign-out's answer", signingOut), true, 'the CLI confirmed its sign-out');
+      assert.equal(left.hung(), 1, `the delete ${how} was the status check's alone`);
+      assert.equal(left.unknownThere(), false, `the sign-out asked once more and deleted the item under "unknown" the joined delete left: items ${JSON.stringify(keychain(left.m))}`);
+      assert.equal(left.m.deleted().filter(([, account]) => account === 'unknown').length, 1, "the sign-out's own delete under \"unknown\" ran once");
+      assert.equal(left.m.items(), 0, 'no Keychain item is left after the sign-out');
+    } finally {
+      release(left.m);
+      endHung(left.m);
+    }
+  });
+}
+
+// Only a call a person made asks once more. A status check that arrives while another's delete runs waits on that one,
+// and where it fails asks no more itself: status checks ask again only after the back-off.
+test('on macOS a status check that arrives while another\'s delete of the "unknown" item runs waits on it, and when that delete fails starts none of its own', { skip }, async () => {
+  const left = leftUnknown();
+  writeFileSync(join(left.m.bin, 'security'), HELD, { mode: 0o755 });
+  try {
+    const first = status(left.m, left.login);
+    await until(() => left.hung() === 1, "the first status check's delete under \"unknown\" started");
+    const read = left.m.asked().length;
+    const second = status(left.m, left.login);
+    await until(() => left.m.asked().length > read, "the second status check's CLI read the Keychain");
+    await pause(1_000);
+    release(left.m);
+    const both = await within(DROP_MS + 3_000, 'the two status checks', Promise.all([first, second]));
+    assert.deepEqual(both.map((each) => each.signedIn), [true, true], 'both status checks read signed in');
+    assert.equal(left.hung(), 1, `the status check that waited on the failed delete started ${left.hung() - 1} of its own, not none`);
+    assert.ok(left.unknownThere(), 'the failed delete left the item under "unknown"');
+  } finally {
+    release(left.m);
+    endHung(left.m);
+  }
+});
