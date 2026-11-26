@@ -415,6 +415,9 @@ export interface ComputerInfo {
 	owner?: ComputerOwner;
 	/** An agent's computer that is detached now: when it was detached, the janitor's idle clock. Absent otherwise. */
 	detachedAt?: Date;
+	/** When the vendor made it, where its listing says (a browser vendor's session list does): what a host that releases
+	 *  one no claim held (releaseUnheld) books its time from. Absent where the listing does not say. */
+	createdAt?: Date;
 }
 
 export interface CallContext {

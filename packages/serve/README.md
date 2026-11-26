@@ -5487,12 +5487,18 @@ call returns. So what the run spent plus what it holds stays within the cap thro
 idle time between them and its release. A session a create's lost answer left to a release after the create deadline is
 held for that deadline and a stretch until its release is billed. Across a restart of the run's process, every session
 custody still tracks (kept, unreached, still releasing) is held from the reopen, at a stretch beside what it ran since
-its last charge, and one kept is released an idle window later unless a call uses it. Three
+its last charge, and one kept is released an idle window later unless a call uses it. Four
 things can still pass the cap, each by what it ran over, booked and shown: a single browser call that runs longer than a
-stretch, a release that takes longer than 30 s to be confirmed, and the time a run's process was down while it held a
-session (spent before any process could hold it). A session whose release is never confirmed is billed in full
+stretch, a release that takes longer than 30 s to be confirmed, the time a run's process was down while it held a
+session (spent before any process could hold it), and a browser no session held (below). A session whose release is never confirmed is billed in full
 (what it ran and its minimum) when the run gives up on it. When the run is let go, its sessions are released and their
-last charges booked before its process exits.
+last charges booked before its process exits. Then, when the run ends, is stopped or parks, every browser at its vendor
+that carries the run's labels and the claim's epoch and that nothing the run holds names (not a session's browser by id,
+nor one whose tag a session still being created owns) is released: one a create made and then lost, kept by its
+recovery because another create's browser was answered, is such a browser, and it would otherwise run to the vendor's
+lifetime. Its time, from when its vendor listing says it was made, is charged on the run with the rest (one whose listing
+gives no time is charged unpriced, never $0), and the run's timeline says it: `AgentRun: Released 1 browser this
+run no longer held (…); its time is in the run's cost.` A browser of another run, or of a later claim, is never touched.
 
 A computer's minutes (a sandbox's, a desktop's or a phone's) are billed by its provider to your own account there, and
 AgentRun does not count them yet: they are in no run's cost and are not held against its cap.

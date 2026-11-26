@@ -27,6 +27,8 @@ import { PROVIDERS } from "@parcha/agentrun-computer";
 import type { SessionCharge } from "@parcha/pi-browser";
 import type { BeforeCreate } from "@parcha/pi-browser/durable";
 import { BROWSER_CHARGED, SPEND_CAP_REACHED } from "./cap.js";
+import { BROWSERS_UNHELD } from "./timeline/index.js";
+import type { UnheldSessions } from "./workspace/resolve-computer.js";
 import { type PaidBooking, paidStep, unbookedRefusal } from "./paid-calls.js";
 import { logLine } from "./print.js";
 import { forModel } from "./result.js";
@@ -102,6 +104,14 @@ const OWED = {
 const BROWSER_TOOL = "browser";
 /** A row of pi-browser's open-session inventory. */
 type Row = { tag: string; conversationId: number; state: string; resourceId: string | null };
+
+/** What a let-go's release of the browsers nothing held says on the run's timeline (BROWSERS_UNHELD). */
+export function unheldWords(swept: UnheldSessions): string {
+  const n = swept.released.length;
+  const released = n > 0 ? `Released ${n} browser${n === 1 ? "" : "s"} this run no longer held (${swept.released.map((one) => one.id).join(", ")}); ${n === 1 ? "its" : "their"} time is in the run's cost.` : "";
+  const failed = swept.failed.length > 0 ? `Could not release ${swept.failed.length} browser${swept.failed.length === 1 ? "" : "s"} this run no longer held (${swept.failed.join("; ")}): each runs to its vendor's lifetime.` : "";
+  return [released, failed].filter(Boolean).join(" ");
+}
 
 /** One run's browser bookings, for its one provider at `price` with pi-browser's idle window `idleS`. `release` lets go of
  *  a conversation's session (pi-browser's release, "close"). `log` takes the line that says a charge went uncounted
@@ -518,5 +528,30 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   /** Once every ledger step of a charge under no call is written. */
   const ledgerIdle = async (): Promise<void> => void (await Promise.all([...pending]));
 
-  return { onCharge, watch, reopened, capped, opening, personTime, carry, stretch, ledgerIdle };
+  /** At the claim's let-go, the sessions of the run's labels that nothing held, released (ClaimBrowser.releaseUnheld), in
+   *  one commit on the run's root: each one's time charged as a session's release is (a BROWSER_CHARGED, final, under no
+   *  call, its tag `unheld:<id>`), from when its vendor made it to `at`, topped up to the provider's minimum (pi-browser's
+   *  sessionCharge), and what was released, and what could not be, said on the run's timeline (BROWSERS_UNHELD). Each
+   *  charge is booked on the run's one ledger as every charge is, once its commit is in (watch, booked: by its ref, so a
+   *  reopen books one whose booking was lost, and never twice). One whose vendor does not say when it made it is charged
+   *  at no known amount (usd null): unknown, never 0. A free provider's time charges nothing. */
+  async function unheld(harness: Pick<Harness, "commit">, swept: UnheldSessions, context: Context, at = new Date().toISOString()): Promise<void> {
+    if (swept.released.length === 0 && swept.failed.length === 0) return;
+    const { sessionCharge, startSpent } = await import("@parcha/pi-browser");
+    const prices = { sessionUsdPerHour: rate, sessionMinimumS: price.minimumS, fetchUsd: 0, fetchProxiedUsd: 0, searchUsd: 0 };
+    const charges: Booked[] = swept.released.map(({ id, createdAt }) => {
+      const base = { tool: "browser" as const, charged_by: provider, call: null, tag: `unheld:${id}`, conversation: ROOT_CONVERSATION_ID as number, at, final: true };
+      if (createdAt === null) return { ...base, usd: null, seconds: 0 };
+      const charged = sessionCharge(startSpent(createdAt), at, prices, rate === null ? "unpriced" : "priced", true);
+      return { ...base, usd: charged.usage.state === "priced" ? charged.usage.usage.cost.total : null, seconds: charged.spent.seconds };
+    });
+    const words = unheldWords(swept);
+    await harness.commit(async (tx) => {
+      if (rate !== 0) for (const data of charges) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_CHARGED, data });
+      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSERS_UNHELD, data: { words, released: swept.released.map((one) => one.id), failed: [...swept.failed] } });
+    }, context);
+    log(logLine("browser_unheld_released", { said: words }));
+  }
+
+  return { onCharge, watch, reopened, capped, opening, personTime, carry, stretch, ledgerIdle, unheld };
 }

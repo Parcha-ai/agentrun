@@ -81,6 +81,15 @@ export type LaunchedComputer = {
  *  its CDP URL read through the provider's connect at each attach (a secret: it goes only to the driver), and released
  *  when the tool lets it go. Errors carry the provider's words, and its code. So the session's time is the time the
  *  tool holds it, which is what the run's spend books. */
+/** What the run's browser holds as its claim lets the run go: its sessions' ids, and the tags of its sessions whose id
+ *  it does not know (a create whose answer was lost), any session of which it may hold. */
+export type BrowserHolds = { readonly ids: ReadonlySet<string>; readonly tags: ReadonlySet<string> };
+
+/** The sessions a let-go released that nothing held (ClaimBrowser.releaseUnheld): each with its tag's label (null where it
+ *  carries none) and when its vendor made it (an ISO time; null where the vendor does not say); and each release that
+ *  failed, in words. */
+export type UnheldSessions = { readonly released: ReadonlyArray<{ readonly id: string; readonly tag: string | null; readonly createdAt: string | null }>; readonly failed: readonly string[] };
+
 export type ClaimBrowser = {
   /** The provider's id: the session's price and its name. */
   readonly provider: string;
@@ -106,6 +115,13 @@ export type ClaimBrowser = {
    *  says the session started and ended, and its proxy bytes, each null where it does not say; undefined for a session it
    *  does not know. Absent where the provider keeps no such record. A failed read throws. */
   readonly usage?: (id: string, signal?: AbortSignal) => Promise<BrowserSessionUsage | undefined>;
+  /** When the claim lets the run go: releases every session made under the run's labels (its run and this claim's epoch)
+   *  that `holds` does not keep (the janitor's releaseUnheld): a create whose reply was lost can leave one nobody holds,
+   *  which a vendor that ends its sessions itself runs to its lifetime otherwise. A session another run's labels, another
+   *  epoch's or no readable epoch carry is never touched. Each released one, with its tag's label and when its vendor made
+   *  it (null where it does not say), and each release that failed, in words. A list that fails throws its words. Absent
+   *  where the run's labels name no run and epoch (a browser no claim opened). */
+  readonly releaseUnheld?: (holds: BrowserHolds, signal?: AbortSignal) => Promise<UnheldSessions>;
   /** The files a session downloaded, kept by the provider: where its features declare downloads. */
   readonly downloads?: {
     list(id: string): Promise<BrowserFile[]>;

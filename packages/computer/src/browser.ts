@@ -114,6 +114,13 @@ export const withoutCreateLabel = (labels: Record<string, string>): Record<strin
 	return rest;
 };
 
+/** A listed browser's createdAt (ComputerInfo), from the time its vendor says it made it: none where that is absent or
+ *  is no time. */
+export const createdOf = (at: string | undefined): { createdAt?: Date } => {
+	const time = typeof at === "string" && at !== "" ? new Date(at) : undefined;
+	return time !== undefined && !Number.isNaN(time.getTime()) ? { createdAt: time } : {};
+};
+
 /** A browser a create label found: its id, when the vendor made it (an ISO time, where it says), and its labels. */
 export interface HeldBrowser {
 	id: string;

@@ -18,6 +18,13 @@
 // Input command it gets (the person's input, through the live view) is logged by its name alone.
 //
 // With $FAUX_BROWSER_SESSION_USAGE, the provider keeps a record of each session it ran (see sessionUsage, below).
+// Each session keeps the labels it was made under and when it was made; a list by the session label finds by that tag
+// alone, as the backend does, and any other list holds each session to every label it is given (a vendor's metadata),
+// each session listed with its labels and createdAt. With $FAUX_BROWSER_UNHELD, the first create also
+// makes a second session under the same labels whose reply was lost (a create race's browser that nobody holds, which
+// its recovery kept), made $FAUX_BROWSER_UNHELD seconds before: the vendor lists it late, only once the session it came
+// with has been released, so that session's own release (by its tag) does not find it. Its id is logged
+// ({ op: "unheld-made" }); only a release of the run's unheld browsers (serve's releaseUnheld) ends it.
 // With $FAUX_BROWSER_STATE (a file), the backend's sessions outlive the run's process, as a vendor's do: each one created
 // or released is written there, and a process that starts finds the ones still running.
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
@@ -135,6 +142,14 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     return fail(status === 401 || status === 403 ? "denied" : status === 404 ? "not_found" : "unreachable", error instanceof Error ? error.message : String(error));
   };
   const refOf = (sessionId) => ({ id: sessionId, tag: backend.sessions.get(sessionId)?.tag ?? "" });
+  /** Each session's labels and when it was made, by id (a session the last process left carries its tag alone). */
+  const madeUnder = new Map();
+  /** A session nobody holds (FAUX_BROWSER_UNHELD), by id: the session it came with, until whose release it is not listed. */
+  const late = new Map();
+  const unheldAgeS = Number(process.env.FAUX_BROWSER_UNHELD || 0);
+  let unheldMade = false;
+  const labelsOf = (session) => madeUnder.get(session.id)?.labels ?? { [TAG]: session.tag };
+  const listed = (session) => session.state === "running" && !(late.has(session.id) && backend.sessions.get(late.get(session.id))?.state === "running");
   const hello = { version: "0.0.0-faux", os: "linux", kind: "browser", arch: "unknown", groups: ["cdp", "stream", ...(keeps ? ["downloads"] : [])] };
   const computer = {
     id,
@@ -154,7 +169,16 @@ export default function browser(env = process.env, vendor = "browserbase", signI
       if (signIn && profile?.save && process.env.FAUX_BROWSER_REFUSE_WITH_REF) return fail("refused", `browser profile "${signIn.ref}": one session at a time may save to a profile, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.`);
       if (process.env.FAUX_BROWSER_CREATE_401_ECHO) return fail("denied", `401 Unauthorized: the API key ${echoed(process.env.FAUX_BROWSER_CREATE_401_ECHO)} is not valid for this project`);
       try {
-        const made = await fake.create({ tag, maxLifetimeS: spec.lifetimeMs / 1000, idleTimeoutS: 0, proxies: false, verified: browser.stealth === true, captcha: false, viewport: browser.viewport ?? { width: 1288, height: 711 }, metadata: {}, ...(profile ? { profile: { name: profile.pointer, save: profile.save } } : {}) }, signal ?? new AbortController().signal);
+        const asked = { tag, maxLifetimeS: spec.lifetimeMs / 1000, idleTimeoutS: 0, proxies: false, verified: browser.stealth === true, captcha: false, viewport: browser.viewport ?? { width: 1288, height: 711 }, metadata: {}, ...(profile ? { profile: { name: profile.pointer, save: profile.save } } : {}) };
+        const made = await fake.create(asked, signal ?? new AbortController().signal);
+        madeUnder.set(made.id, { labels: { ...spec.labels }, createdAt: new Date() });
+        if (unheldAgeS > 0 && !unheldMade) {
+          unheldMade = true;
+          const unheld = await fake.create(asked, signal ?? new AbortController().signal);
+          madeUnder.set(unheld.id, { labels: { ...spec.labels }, createdAt: new Date(Date.now() - unheldAgeS * 1000) });
+          late.set(unheld.id, made.id);
+          if (log) appendFileSync(log, `${JSON.stringify({ op: "unheld-made", id: unheld.id, with: made.id })}\n`);
+        }
         save();
         return ok({ id: made.id, name: made.id });
       } catch (error) {
@@ -169,8 +193,11 @@ export default function browser(env = process.env, vendor = "browserbase", signI
     },
     async list(labels) {
       try {
-        const refs = await fake.findByTag(labels[TAG] ?? "");
-        return ok(refs.map((ref) => ({ ref: { id: ref.id, name: ref.id }, labels: { [TAG]: ref.tag }, state: "running", network: "open" })));
+        // A list by tag is the backend's own lookup by that tag alone (a failure it was told to give, its log line); a list
+        // with no tag holds each session to all of the labels asked.
+        const tagged = TAG in labels ? new Set((await fake.findByTag(labels[TAG])).map((ref) => ref.id)) : undefined;
+        const found = [...backend.sessions.values()].filter((session) => listed(session) && (tagged ? tagged.has(session.id) : Object.entries(labels).every(([name, value]) => labelsOf(session)[name] === value)));
+        return ok(found.map((session) => ({ ref: { id: session.id, name: session.id }, labels: labelsOf(session), state: "running", network: "open", ...(madeUnder.has(session.id) ? { createdAt: madeUnder.get(session.id).createdAt } : {}) })));
       } catch (error) {
         return failed(error);
       }

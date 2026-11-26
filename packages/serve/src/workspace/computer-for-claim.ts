@@ -45,7 +45,7 @@
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
 import { randomUUID } from "node:crypto";
 import type { BrowserComputerProvider, BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
-import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
+import { epochOf, isBrowserProvider, ownerFilter, releaseOlder, releaseUnheld, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { type RecordInput, type Recording, type RecordWatch, startRecording } from "../computer-record.js";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions, settingOptions } from "../computer-keys.js";
@@ -62,7 +62,7 @@ import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites, stderrLo
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
 import { bounded, deleteKept, dropKept, endKept, finishedKept, heldElsewhere, keepKept, KEEP_MS, KEPT_DELETE_MS, type Kept, keptBy, type KeptHolder, keptTaken, type ParkCause, type ParkedEnd, pinnedOf, readKept, restoreKept, takeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace } from "./resolve-computer.js";
+import { type BrowserHolds, type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace } from "./resolve-computer.js";
 import { computerDenied } from "../tool-gate.js";
 import { loadToolSettings } from "../tool-plane.js";
 import { computerDeniedWords, computerStillOffWords } from "../refusal-words.js";
@@ -463,8 +463,25 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
     if (!answered.ok) throw failed(answered.error);
     return answered.value;
   };
+  // The run and claim epoch its sessions are made under: what a let-go releases the unheld ones of (releaseUnheld).
+  const run = spec.labels?.[RUN_LABEL];
+  const epoch = spec.labels ? epochOf(spec.labels) : undefined;
+  const unheld = run !== undefined && epoch?.ok
+    ? {
+        async releaseUnheld(holds: BrowserHolds, signal?: AbortSignal) {
+          const tags = new Set([...holds.tags].map(labelValue));
+          const swept = await valueOf(releaseUnheld(provider, run, epoch.value, (info) => holds.ids.has(info.ref.id) || tags.has(info.labels[SESSION_TAG] ?? ""), signal ? { signal } : {}));
+          for (const one of swept.released) open.delete(one.ref.id);
+          return {
+            released: swept.released.map((one) => ({ id: one.ref.id, tag: one.labels[SESSION_TAG] ?? null, createdAt: one.createdAt?.toISOString() ?? null })),
+            failed: swept.failed.map((one) => `${one.ref.id}: ${one.problem}`),
+          };
+        },
+      }
+    : {};
   return {
     browser: {
+      ...unheld,
       provider: provider.id,
       maxLifetimeS: Math.floor(lifetime / 1000),
       features: structuredClone(features),

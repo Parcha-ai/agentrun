@@ -1226,6 +1226,12 @@ as a caller's labels, with no code of its own: Docker writes them with `--label`
   cannot prove it is current (named in `unproven`, with why). It keeps the run's computers of this epoch. It holds
   each listed computer to the run's label again, so a computer of another run is never touched, whatever `list` gives.
   It returns `{ released, kept, unproven }`.
+- `releaseUnheld(provider, run, epoch, held, { signal? })` is the claim's own sweep, for when it lets the run go: it
+  lists the run's computers by `agentrun.run` and deletes each of this epoch that `held(info)` refuses, keeping every
+  one of another epoch, another run, or the agent's tenure. A browser one create of a request made and then lost, kept
+  by its recovery, is one: nothing holds it, and the vendor alone would end it. It returns
+  `{ released, held, failed }`, each released computer with its labels and, when the listing gives it, `createdAt`,
+  from which its time is charged; a release that fails is named in `failed` and the rest go on.
 - **Fenced.** A computer of the run with a higher epoch means a later claim holds the run: `releaseOlder` is refused
   (`refused`, `fenced: run "r1" has computer-… at epoch 4, above this claim's epoch 3; …`) before it releases
   anything.

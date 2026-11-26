@@ -209,3 +209,53 @@ export async function releaseOlder(provider: ComputerProvider, run: string, epoc
 	if (firstError) return failAs(firstError, `${what} is incomplete: ${done()}`);
 	return ok({ released, detached, kept, unproven });
 }
+
+export interface ReleasedUnheld {
+	/** The run's computers of this epoch that nothing held, released: each with its labels and, where its listing says,
+	 *  when its vendor made it (the time a host books for it). */
+	released: Array<{ ref: ComputerRef; labels: Record<string, string>; createdAt?: Date }>;
+	/** The run's computers of this epoch that `held` kept, left as they are. */
+	held: ComputerRef[];
+	/** Each release that failed, with its words: the computer is left to its lifetime, and its labels let a sweep find it. */
+	failed: Array<{ ref: ComputerRef; problem: string }>;
+}
+
+/**
+ * When a claim lets its run go: deletes every computer of the run labelled with this claim's epoch that `held` does not
+ * keep. A create whose reply was lost can leave a computer that no claim holds (one that another create's converge did
+ * not answer, which its own recovery kept), and a vendor that ends its computers itself (lifetime "vendor") runs it to
+ * its lifetime otherwise: the janitor's sweep refuses such a provider, and releaseOlder takes only lower epochs.
+ *
+ * It lists by the run's label and holds each listed computer to it, as releaseOlder does: a computer of another run is
+ * never touched, whatever list gives. A computer of another epoch is left (a lower one is the next claim's releaseOlder,
+ * a higher one a later claim's own), and so is one whose epoch cannot be read, and an agent's computer (an owner label,
+ * or an info marked owned, of a provider that declares persistence), which is never a run's to end.
+ *
+ * Every release is attempted, and each that fails is named in the result, never an error: the ones released are
+ * released whatever the others did, so a host books each. A list that fails is the error. An aborted call starts no
+ * further release; the result names what it released.
+ */
+export async function releaseUnheld(provider: ComputerProvider, run: string, epoch: number, held: (info: ComputerInfo) => boolean, { signal }: CallContext = {}): Promise<Result<ReleasedUnheld>> {
+	const problem = runProblem(run) ?? epochProblem(epoch);
+	if (problem !== undefined) return fail("invalid", problem);
+	if (signal?.aborted) return fail("aborted", `the release of run ${JSON.stringify(run)}'s unheld computers was aborted before it began`);
+	const listed = await provider.list({ [RUN_LABEL]: run }, { signal });
+	if (!listed.ok) return failAs(listed.error, `could not list run ${JSON.stringify(run)}'s computers: ${listed.error.message}`);
+	const { persistence } = provider.capabilities();
+	const result: ReleasedUnheld = { released: [], held: [], failed: [] };
+	for (const info of listed.value) {
+		const { ref, labels } = info;
+		if (labels?.[RUN_LABEL] !== run) continue;
+		const read = epochOf(labels);
+		if (!read.ok || read.value !== epoch || tenureOf(info, persistence).agent) continue;
+		if (held(info)) {
+			result.held.push(ref);
+			continue;
+		}
+		if (signal?.aborted) break;
+		const released = await provider.release(ref, "delete");
+		if (released.ok) result.released.push({ ref, labels, ...(info.createdAt instanceof Date ? { createdAt: info.createdAt } : {}) });
+		else result.failed.push({ ref, problem: released.error.message });
+	}
+	return ok(result);
+}

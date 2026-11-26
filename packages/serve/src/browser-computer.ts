@@ -26,7 +26,7 @@ import { BrowserFailureError, browserFailure, cdpCall, type CdpSession } from "@
 import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { providerFromEnv } from "./computer-keys.js";
 import { claimBrowser } from "./workspace/computer-for-claim.js";
-import type { ClaimBrowser } from "./workspace/resolve-computer.js";
+import type { BrowserHolds, ClaimBrowser, UnheldSessions } from "./workspace/resolve-computer.js";
 
 /** Custody's own refusal of a second saver, in its words: no session was started. */
 const ONE_SAVER = "one session at a time may save to this agent's saved sign-in, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.";
@@ -273,6 +273,22 @@ export function planeBrowser(provider: ComputerProvider, run: { readonly runId: 
   if (!isBrowserProvider(provider)) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: the ${provider.id} provider gives no browser.`));
   const spec = { image: BROWSER_IMAGE, lifetimeMs: provider.capabilities().maxLifetimeMs, network: "open" as const, labels: run ? runLabels(run.runId, run.epoch) : {} };
   return claimBrowser(provider, spec).browser;
+}
+
+/** What the run's browser holds as its claim lets the run go, from pi-browser's open-session inventory once its releases
+ *  have drained: every row still there is a session its custody holds (a release that failed, a lost one reconcile takes
+ *  again); its id, or where its create's answer was lost (no id), its tag, any session of which it may hold. */
+export function browserHolds(rows: ReadonlyArray<{ readonly tag: string; readonly resourceId: string | null }>): BrowserHolds {
+  return {
+    ids: new Set(rows.flatMap((row) => (row.resourceId === null ? [] : [row.resourceId]))),
+    tags: new Set(rows.filter((row) => row.resourceId === null).map((row) => row.tag)),
+  };
+}
+
+/** At the claim's let-go: every session of the run's labels (its run, this claim's epoch) that `rows` (browserHolds) does
+ *  not hold, released (ClaimBrowser.releaseUnheld); undefined for a browser that names no run and epoch. */
+export async function releaseUnheldBrowsers(computer: ClaimBrowser, rows: ReadonlyArray<{ readonly tag: string; readonly resourceId: string | null }>, signal?: AbortSignal): Promise<UnheldSessions | undefined> {
+  return computer.releaseUnheld?.(browserHolds(rows), signal);
 }
 
 /** When the run's process lets the run go: closes the download sockets its browser's sessions hold, released or not (a

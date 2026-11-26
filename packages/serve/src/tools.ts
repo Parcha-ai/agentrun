@@ -475,7 +475,7 @@ const browserTool: ToolEntry = {
   // Its downloads go into work/ by path (pi-browser), which a box's command could turn through a link.
   runnerOnly: true,
   bind: async (host) => {
-    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person, { claimBrowserProvider, closeHeldSockets, planeBrowser, planeComputer, releaseOlderBrowsers }, { cdpDriver }] = await Promise.all([
+    const [{ BACKGROUND_CONTEXT: context }, { createBrowserExtension }, { DEFAULT_BROWSER_POLICY, BrowserFailureError, browserFailure, MAX_UPLOAD_BYTES, uploadMime }, { createDrivingGates, createLiveView, liveViewProvider }, live, person, { claimBrowserProvider, closeHeldSockets, planeBrowser, planeComputer, releaseOlderBrowsers, releaseUnheldBrowsers }, { cdpDriver }] = await Promise.all([
       import("@earendil-works/chord/context"),
       import("@parcha/pi-browser/durable"),
       import("@parcha/pi-browser"),
@@ -737,6 +737,18 @@ const browserTool: ToolEntry = {
           if (conversation) await browser.release(conversation as never, "close", context);
         }
         await browser.drain(harness as never, context);
+        // A session of the run's labels that nothing holds now (a create whose reply was lost, which its recovery kept)
+        // goes with the claim, and its time is charged (releaseUnheld, spend.unheld), before the ledger is waited on.
+        // One that cannot be released, or a list that fails, is said in the log and never fails the let-go.
+        if ("browser" in made) {
+          try {
+            const rows = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null }> } | undefined)?.rows ?? {});
+            const swept = await releaseUnheldBrowsers(made.browser, rows);
+            if (swept) await spend.unheld(harness as never, swept, context);
+          } catch (error) {
+            runLog(`the browsers this run no longer held could not be released: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
         // The releases' charges are booked on the claim's one ledger before the run's release returns, so the run's end
         // commit, which ends the claim, never fences one (nothing to wait for off the ledger).
         await spend.ledgerIdle();
