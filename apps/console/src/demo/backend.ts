@@ -155,7 +155,7 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
           if (method === "PUT" && world.writeCorrections(id, String(body.text ?? "")) === null) return notFound(`learning for agent ${id}`);
           const text = world.learning(id)?.corrections ?? "";
           const etag = `"${hex(`corrections:${text}`, 16)}"`;
-          return json({ text, etag, cap_bytes: 2048 }, 200, { etag });
+          return json({ text, etag, cap_bytes: 8192 }, 200, { etag });
         }
         if (what === "cost" && get) return json(world.learningCost(id));
         if (what === "promotions" && get) return json(world.promotions(id));
