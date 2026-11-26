@@ -51,6 +51,10 @@ const boxEntry = (id: string): ProviderEntry => PROVIDERS.find((entry) => entry.
  *  addresses (docker-host-addresses.ts). */
 export const LOCAL_BOXES: readonly string[] = BOX_IDS.filter((id) => boxEntry(id).local === true);
 
+/** The box a new agent that names no place and needs a shell is given (its descriptor's `defaultBox`: Docker's), by
+ *  that fact, never by a name; undefined where no box's descriptor sets it. */
+export const DEFAULT_BOX: string | undefined = BOX_IDS.find((id) => boxEntry(id).defaultBox === true);
+
 /** A box as capabilities show it: whether this server has it, and why when not (or how it was checked); `state`, which
  *  capabilities derive from it (place.ts stated). `network`: what an available box reaches (BOX_NETWORKS), with
  *  `network_reason` when it is available and has none for a cause of its own (a daemon elsewhere). `host_addresses`: for Docker from a container (compose.yaml), the Docker host's own addresses

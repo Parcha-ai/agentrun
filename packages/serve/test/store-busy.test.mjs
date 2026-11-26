@@ -9,6 +9,7 @@ import { sqliteAdapterTests } from "./store-target.mjs";
 
 // Postgres's busy wait (lock_timeout, StoreBusy): store-postgres.test.mjs.
 const test = sqliteAdapterTests(nodeTest, "the store file held by another connection");
+import { raw } from "./store-target.mjs";
 import { agent, answerFlow, flowAgent, follow, serve, startRun } from "./support.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -38,22 +39,30 @@ async function slowestWhile(port, token, until) {
 
 /** Another connection holding store.sqlite (`IMMEDIATE`: no other writer; `EXCLUSIVE`: no reader either; `READ`: a
  *  reader's shared lock, which a writer's commit waits for). */
-function hold(t, data, mode = "IMMEDIATE") {
-  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
-  store.exec(`BEGIN ${mode === "READ" ? "" : mode}`);
-  if (mode === "READ") store.prepare("SELECT count(*) FROM agents").get();
-  const release = () => store.isOpen && (store.isTransaction && store.exec("ROLLBACK"), store.close());
+async function hold(t, data, mode = "IMMEDIATE") {
+  // Through raw(): the hold waits its turn for the lock on a worker, never on this thread, which the server commits from.
+  const store = await raw(join(data, "store.sqlite"), { timeout: 15_000 });
+  let released;
+  const release = () => (released ??= (async () => {
+    try {
+      await store.exec("ROLLBACK").catch(() => {});
+    } finally {
+      await store.close();
+    }
+  })());
   t.after(release);
+  await store.exec(`BEGIN ${mode === "READ" ? "" : mode}`);
+  if (mode === "READ") await store.get("SELECT count(*) FROM agents");
   return release;
 }
 
 test("a read while the agent store is held exclusively waits, then answers once it is free", async (t) => {
   const { api, data, port, token } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("read"))).status, 201);
-  const release = hold(t, data, "EXCLUSIVE");
+  const release = await hold(t, data, "EXCLUSIVE");
   const read = timed(port, token, "GET", "/agents/read");
   const slowest = await slowestWhile(port, token, sleep(500));
-  release();
+  await release();
   const answer = await read;
   assert.equal(answer.status, 200, JSON.stringify(answer.body));
   assert.ok(slowest < 200, `GET /capabilities took ${slowest} ms while the read waited`);
@@ -71,9 +80,9 @@ test.skip("a follow-up to a stopped run is taken while another connection holds 
   assert.equal((await api("POST", `/runs/${run_id}/stop`)).body.stopped, true);
   await follow(api, run_id, ["input_required"]);
   // No reader gets through: a message that reads the store waits about 2 s, then answers home_busy.
-  const release = hold(t, data, "EXCLUSIVE");
+  const release = await hold(t, data, "EXCLUSIVE");
   const sent = await api("POST", `/runs/${run_id}/messages`, { content: "Go on." });
-  release();
+  await release();
   // Taken or refused, never both: a refusal for a message the run took anyway (it runs) invites a retry that sends it
   // twice. Taken, the run no longer reads stopped (its message waits its turn, or has run); refused, it does.
   const after = (await api("GET", `/runs/${run_id}`)).body;

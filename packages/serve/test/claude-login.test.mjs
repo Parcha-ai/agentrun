@@ -19,6 +19,7 @@ import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLogi
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
+import { savedIn, withSecrets } from "../dist/secrets.js";
 import { LISTING_KEYED } from "../dist/store/schema.js";
 import { agent, FAUX, follow, secretWritePath, serve, withEnv } from "./support.mjs";
 
@@ -249,6 +250,27 @@ test("an agent on Claude Agent in a box on an OpenRouter model, while the login 
   assert.equal(own.body.error.details.login_on_runner, true, JSON.stringify(own.body.error.details));
 });
 
+// A sandbox place's checks read the server's env without the login (envAtPlace), and with every model key it holds: a
+// pi agent in a box on an OpenRouter model, OpenRouter's key saved in Settings, is not refused for its model while the
+// login reads signed in, at its save or before its run.
+test("a pi agent in a box on an OpenRouter model, OpenRouter's key saved and the login signed in, is not refused for its model at its save or before its run", { timeout: 120_000 }, async (t) => {
+  const { api, fake } = await withDockerBox(t);
+  fake.status(SIGNED_IN);
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_in");
+  // The save's check of the key (key-check.ts) asks OpenRouter: here a stand-in that accepts it, never the network.
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init) => (String(input?.url ?? input) === "https://openrouter.ai/api/v1/key" ? new Response("{}", { status: 200 }) : real(input, init));
+  t.after(() => void (globalThis.fetch = real));
+  const key = await api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: "fake-test-key" } });
+  assert.equal(key.status, 204, JSON.stringify(key.body));
+  const saved = await api("POST", "/agents", agent("piboxed", { harness: "pi", model: "openrouter/anthropic/claude-sonnet-5.5", place: { mode: "sandbox", box: "docker" } }));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body.warnings.filter((w) => w.field === "definition.model"), [], `the save of a box agent whose OpenRouter key is saved warned of its model: ${JSON.stringify(saved.body.warnings)}`);
+  const read = await api("GET", "/agents/piboxed");
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.run_blockers, null, `a box agent whose OpenRouter key is saved is kept from running: ${JSON.stringify(read.body.run_blockers)}`);
+});
+
 // An agent that names no model runs on the host's default for its harness, on the runner too: AGENT_MODEL first, when
 // the harness runs it (model.ts hostModel). Where that is an OpenRouter model, the moved agent still needs OpenRouter's
 // key, so the move is not offered; where it is Anthropic's own, the login runs it and the move is.
@@ -357,7 +379,7 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   const saved = { get: async () => row };
   assert.equal(await loginForRun(saved, own, env, "claude-agent", { mode: "runner" }), undefined);
   // On, a runner place goes on the login (with the person's home, the env's HOME) and a sandbox place on the keys.
-  assert.deepEqual(await loginForRun(saved, own, { HOME: UP }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: UP });
+  assert.deepEqual(await loginForRun(saved, own, { HOME: UP }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: UP, own: true });
   assert.equal(await loginForRun(saved, own, {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
 });
 
@@ -392,6 +414,23 @@ test("Claude Code's login on this machine on: claude-agent's Anthropic models go
   assert.equal(providerFor("anthropic-messages", envAtPlace(env, { mode: "sandbox", box: "e2b" }), { provider: "anthropic", modelId: "claude-haiku-5-5" }, "claude-agent").login, undefined);
   assert.equal(envAtPlace(env, { mode: "runner" }), env);
   assert.deepEqual(providerFor("anthropic-messages", env, { provider: "anthropic", modelId: "claude-haiku-5-5" }, "claude-agent").login, at);
+});
+
+test("envAtPlace at a sandbox place keeps every secret of a withSecrets env, still out of a spread, and drops the login alone; a runner place's env is the same object", (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  const at = { dir: "/data/claude-login", profiles: "/data/claude-login/anthropic" };
+  const env = withClaudeLogin(withSecrets({ PATH: "/usr/bin" }, "all", (name) => (name === "OPENROUTER_API_KEY" ? "fake-test-key" : undefined)), at);
+  assert.equal(env.OPENROUTER_API_KEY, "fake-test-key");
+  const boxed = envAtPlace(env, { mode: "sandbox", box: "e2b" });
+  assert.notEqual(boxed, env);
+  assert.equal(boxed.OPENROUTER_API_KEY, "fake-test-key", "a sandbox place's env lost the saved OpenRouter key");
+  assert.ok(!Object.keys(boxed).includes("OPENROUTER_API_KEY"), "a sandbox place's env enumerates the key");
+  assert.equal({ ...boxed }.OPENROUTER_API_KEY, undefined, "a spread of a sandbox place's env carries the key");
+  assert.deepEqual([...savedIn(boxed)], ["OPENROUTER_API_KEY"], "a sandbox place's env no longer says the key was saved");
+  assert.equal(boxed.PATH, "/usr/bin");
+  assert.equal(claudeLoginOf(boxed), undefined, "a sandbox place's env carries the login");
+  assert.deepEqual(claudeLoginOf(env), at, "the server's env lost its login");
+  assert.equal(envAtPlace(env, { mode: "runner" }), env);
 });
 
 test("one owner: refused in one line where more than one person can start runs, and a saved turn-on dropped there at the start", { timeout: 120_000 }, async (t) => {
@@ -720,7 +759,7 @@ test("this machine's login honours CLAUDE_SECURESTORAGE_CONFIG_DIR in the server
   assert.deepEqual(claude.claudeLoginEnv(folderEmpty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
   // A relative one is not taken, as with CLAUDE_CONFIG_DIR; AgentRun's own login never reads it.
   assert.deepEqual(claude.claudeSignInEnv(at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "secure" }), "linux"), { HOME: UP, ANTHROPIC_CONFIG_DIR: profiles });
-  assert.deepEqual(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: UP });
+  assert.deepEqual(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: UP, own: true });
 
   // A server started with it: the view names it, and the sign-in and every status check keep the tokens there.
   const secure = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-secure-dir-"));
@@ -1338,7 +1377,7 @@ test("a HOME the server's user does not own is not the person's home: the login 
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const saved = { get: async () => settingFor("agentrun", data) };
-  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own, homeApart: true }, "a run's CLI runs in that user's own home");
+  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own, homeApart: true, own: true }, "a run's CLI runs in that user's own home");
 });
 
 // Where the server's user owns neither its HOME nor its own home (a service account whose home is /nonexistent, with a
@@ -2458,6 +2497,7 @@ const PICK_PACKAGE = `---
 name: on-plan
 version: 1.0.0
 description: Says hi.
+tools: []
 harness: [claude-agent, pi]
 model:
   tier: balanced

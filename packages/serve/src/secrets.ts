@@ -192,6 +192,11 @@ export const withSecrets = (env: NodeJS.ProcessEnv, which: "all" | "own" = "all"
   return out;
 };
 
+/** A copy of `env` (one withSecrets made) with every own property as it is: each secret still read by name and never
+ *  enumerated, savedIn still saying which were saved, and its symbols. A spread keeps none of the secrets, so a copy
+ *  that is read for a key is made with this (env-copy.test.mjs scans for spreads). */
+export const copyEnv = <T extends object>(env: T): T => Object.create(Object.getPrototypeOf(env), Object.getOwnPropertyDescriptors(env)) as T;
+
 /** The secrets of `env` (one withSecrets made) that were saved on the server, not its own, by name. */
 export const savedIn = (env: NodeJS.ProcessEnv): ReadonlySet<string> => (env as { [SAVED]?: Set<string> })[SAVED] ?? new Set();
 
@@ -420,28 +425,55 @@ const urlSpans = (value: string): { start: number; end: number }[] => {
 
 /** The breaks between a header value's `name=value` pairs: `;`, `&`, a comma (or its `%2C`) and spaces; and, for a
  *  second, finer read, also `?`, `#` and `/`, so a pair inside a URL that is itself a pair's value
- *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone; and, for a third, all but `;`,
- *  so a credential with a raw `;` in it (`api_key=<key;rest>&region=us`) is held whole too. */
+ *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone; and three whole reads, which keep
+ *  a raw `;` in a value: all but `;` (LIST_BREAK), so a credential with a `;` in a list joined by `%2C`, the usual way to
+ *  write one (`api_key=<key;rest>%2Cregion=us`), is held as itself, and `&` and spaces alone (WHOLE_BREAK), so one with
+ *  a comma in it too (`api_key=<key;rest%2Cmore>&region=us`) is held whole, and again at their `%26` and `%20`
+ *  (ENCODED_BREAK), so that key before an encoded `&` or space is held as written too, not only decoded, and again at
+ *  `%26` alone (ENCODED_AMP_BREAK), so a key with a `%20` in it before a `%26` is held, as written and decoded; a text
+ *  with neither (ENCODED_SEEN) splits at both as at WHOLE_BREAK, so those reads are skipped for it. All are held:
+ *  every redactor matches a held value exactly, so the longer reading of any never covers a line quoting the key alone.
+ *  WHOLE_BREAK also holds a value with the comma that ends it (sentry's `sentry_key=<key>%2C`); the others hold the value
+ *  alone. */
 const PAIR_BREAK = /[;&,\s]+|%2C/i;
 const PIECE_BREAK = /[;&,\s?#/]+|%2C/i;
-const WHOLE_BREAK = /[&,\s]+|%2C/i;
+const LIST_BREAK = /[&,\s]+|%2C/i;
+const WHOLE_BREAK = /[&\s]+/;
+const ENCODED_BREAK = /[&\s]+|%26|%20/i;
+const ENCODED_AMP_BREAK = /[&\s]+|%26/i;
+const ENCODED_SEEN = /%26|%20/i;
+
+/** What a credential's value whose part before its first `;` is empty (`;<key>`) holds after that `;`, whole and up to
+ *  its next `;`, as a reader that skips an empty part reads it; nothing for any other value. */
+const afterEmpty = (value: string): string[] => {
+  if (!value.startsWith(";")) return [];
+  const after = value.replace(/^;+/, "");
+  return [after, after.split(";")[0]];
+};
 
 /** The value of each `name=value` pair of `text` split at `breaks` whose name says it is a credential (credentialNamed),
- *  out of any quotes around it, as written and decoded. A name is what follows the last `/`, `?`, `#` or `:` before its
- *  `=` (a URL's query or fragment, `https://relay/v1?region=us`, names `region`). A value of only `=` (a base64
- *  credential's padding, read as a pair) is not taken. */
+ *  out of any quotes around it, raw or written `%22` or `%27`, as written and decoded. A name is what follows the last
+ *  `/`, `?`, `#` or `:` before its `=` (a URL's query or fragment, `https://relay/v1?region=us`, names `region`). A
+ *  value whose part before its first `;` is empty, as written or decoded (`token=;<key>` read whole, `token=%3B<key>`),
+ *  is taken after that `;` too (afterEmpty). A value of only `=`, `;` and quotes, as written or decoded (a base64 credential's padding read as a
+ *  pair, `token=;` before a space, a lone `'` or its `%27`), is not taken: otlpHeaderCut has no length floor, and it
+ *  would cut that character everywhere in the tracer's lines. */
 const pairValues = (text: string, breaks: RegExp): string[] =>
   text.split(breaks).flatMap((pair) => {
     const at = pair.indexOf("=");
     if (at <= 0) return [];
     const name = pair.slice(0, at).split(/[/?#:]/).at(-1) ?? "";
-    const inner = pair.slice(at + 1).replace(/^(["'])(.*)\1$/, "$2");
-    return /[^=]/.test(inner) && credentialNamed(decoded(name) ?? name) ? [inner, decoded(inner) ?? inner] : [];
+    if (!credentialNamed(decoded(name) ?? name)) return [];
+    const inner = pair.slice(at + 1).replace(/^(["']|%22|%27)(.*)\1$/, "$2");
+    return [inner, ...afterEmpty(inner)]
+      .flatMap((value) => [value, decoded(value) ?? value])
+      .concat(afterEmpty(decoded(inner) ?? inner))
+      .filter((value) => /[^=;"']/.test(value));
   });
 
 /** The credentials a header value carries inside it, the union of two reads over the whole value as written: the value
- *  of each `name=value` pair whose name says it is a credential (pairValues, at each of PAIR_BREAK, PIECE_BREAK and
- *  WHOLE_BREAK: a cookie's `session=<token>`, sentry's
+ *  of each `name=value` pair whose name says it is a credential (pairValues, at each of PAIR_BREAK, PIECE_BREAK,
+ *  LIST_BREAK, WHOLE_BREAK, ENCODED_BREAK and ENCODED_AMP_BREAK: a cookie's `session=<token>`, sentry's
  *  `sentry_key=<key>`, a path's `;jsessionid=<id>`, a URL query's or fragment's `session=` or `access_token=`), and the
  *  user, password and key parameters of each URL in it (urlSpans, urlCredentials: a DSN's `https://<key>@host/1`, a
  *  relay's whole `user:pa;ss`). A URL only adds readings: the pair read covers its text too. A value that escapes its
@@ -453,7 +485,9 @@ const innerCredentials = (value: string): string[] => {
     return [
       ...pairValues(text, PAIR_BREAK),
       ...pairValues(text, PIECE_BREAK),
+      ...pairValues(text, LIST_BREAK),
       ...pairValues(text, WHOLE_BREAK),
+      ...(ENCODED_SEEN.test(text) ? [...pairValues(text, ENCODED_BREAK), ...pairValues(text, ENCODED_AMP_BREAK)] : []),
       ...urlSpans(text).flatMap(({ start, end }) => urlCredentials(text, start, end, queriesRead)),
     ];
   };

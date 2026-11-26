@@ -146,6 +146,11 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	readonly connect?: "dial" | "either";
 	/** Its computers run on this machine's container engine: a server passes it its local host options (volume, host addresses). */
 	readonly local?: boolean;
+	/**
+	 * Its sandbox is the box a server gives a new agent that names no place and needs a shell (Docker's): one provider at
+	 * most sets it. Where that box is not available, a server gives such an agent no other box in its place.
+	 */
+	readonly defaultBox?: true;
 	/** create() takes a ledger the server keeps for it, as `options[ledger.option]` (the phone harness's sessions). */
 	readonly ledger?: { readonly option: string };
 	/**
