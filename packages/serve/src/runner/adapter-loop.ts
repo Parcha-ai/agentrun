@@ -2754,7 +2754,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // records says which (learned-nodes.ts learnedCallRan): its bridge can't alone (a tool that nests is asked alike on
         // every attempt: process/tools.ts runNesting), nor can the call's start on the CLI record, which a refusal writes
         // too. With neither, the bridge's `replayed` stands in: a run begun before the marks existed has none. Whatever is
-        // kept, a refusal reads `failed` once anything was booked under the call id (workflow-calls.ts workflowCallsOf).
+        // kept, a refusal reads `failed` once anything was booked under the call id, or once an attempt was let go before
+        // the refused one (workflow-calls.ts workflowCallsOf).
         const learnedEntry = async (call: Parameters<typeof gateOf>[0], answer: Awaited<ReturnType<typeof gateOf>>): Promise<void> => {
           const named = call.tool === LEARNED_WORKFLOW_TOOL ? spec.gate?.learnedOf?.(call.args) : undefined;
           const [journalOf, rootOf] = [harness, root];
