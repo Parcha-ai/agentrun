@@ -377,7 +377,7 @@ export async function changeWorkflow(rows: Rows, agentId: string, raw: string, i
 
 /** GET /runs/{id}/learning's body, from the run's learning as it reads now, the seed it started from and whether it
  *  settled: the one shape, read from the one store (store-reads/learning.ts runLearningOverStore). */
-export function runLearningBody(input: { readonly id: string; readonly learning: Learning; readonly seed: string | null; readonly settled: boolean; readonly used?: LearnedUse }, shown: Shown, secrets: readonly string[]) {
+export function runLearningBody(input: { readonly id: string; readonly learning: Learning; readonly seed: string | null; readonly seedFailed?: string | null; readonly seedWaited?: string | null; readonly learnedChars?: number; readonly settled: boolean; readonly used?: LearnedUse }, shown: Shown, secrets: readonly string[]) {
   const { learning } = input;
   const { state, reason, at, problems, merged } = learning;
   return {
@@ -386,7 +386,15 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
     workflows: filesView(learning, shown).workflows ?? [],
     // How many lines of its owner's words its merge added to corrections.md.
     corrections: learning.corrections ?? 0,
+    // How many of corrections.md's oldest lines that correction pushed out to keep the file within its cap.
+    dropped_lines: learning.dropped_lines ?? 0,
     seed: input.seed,
+    // Why it started with nothing learned (run-launch.ts SeedFailed), and how long its # Learned text was: what a read of a
+    // run that seemed to start from nothing tells apart (no seed, an empty section, or one that held its corrections).
+    seed_failed: input.seedFailed ?? null,
+    // How its first claim's wait on its agent's open rounds ended (runner/learning-reseed.ts), when it waited.
+    seed_waited: input.seedWaited ?? null,
+    learned_chars: input.learnedChars ?? 0,
     merged: merged ?? null,
     // Each cut of the host's secrets (printable), then as every served text is (`shown`: no loopback address).
     problems: (problems ?? []).map((problem) => printable(problem, secrets)).map(({ rule, path, detail }) => ({ rule: shown.text(rule) as typeof rule, ...(path === undefined ? {} : { path: shown.text(path) }), detail: shown.text(detail) })),

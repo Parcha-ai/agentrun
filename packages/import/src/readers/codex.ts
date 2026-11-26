@@ -599,7 +599,7 @@ const spec: LineSource<"codex", Own> = {
   totals: true,
   fields: FIELDS,
   // 2: a fork's copy of its parent's history (replay, looked, forkedFrom). 1 (never released): the open and unpaid
-  // requests by their index (openAt, unpaidAt). 0.1.0-beta.58 and before held them as Answers (open, unpaid), which this
+  // requests by their index (openAt, unpaidAt). 0.1.0-beta.59 or before held them as Answers (open, unpaid), which this
   // record never reads. A cursor of another shape goes on from nothing.
   stateVersion: 2,
   // Older Codex writes each of the person's turns twice, as a user_message event and as a user message; current Codex
