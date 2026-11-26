@@ -2347,3 +2347,17 @@ test("a run a runner's stop drains that needs the plan's token renewed after the
     await server.stop();
   }
 });
+
+// A runner's close tail (runner/main.ts, runner/beside.ts): whatever its steps throw, the renewals' drain and the store's
+// close still run, in that order, so a renewal OpenAI is answering saves its pair; the steps' error is still the close's.
+test("closeStoreAfter drains renewals and closes the store after its work, even when the work throws, and throws the work's error", async () => {
+  const { closeStoreAfter } = await import("../dist/chatgpt-plan.js");
+  const done = [];
+  const store = { close: async () => void done.push("store closed") };
+  const drain = async () => void done.push("renewals drained");
+  await closeStoreAfter(async () => void done.push("work"), drain, store);
+  assert.deepEqual(done, ["work", "renewals drained", "store closed"]);
+  done.length = 0;
+  await assert.rejects(closeStoreAfter(async () => { throw new Error("a relay's close failed"); }, drain, store), /a relay's close failed/);
+  assert.deepEqual(done, ["renewals drained", "store closed"], "after a throw too");
+});
