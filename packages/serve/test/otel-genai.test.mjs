@@ -1063,6 +1063,18 @@ test("OTLP values that overlap or touch in a line are cut as one by every redact
   assert.deepEqual(missed, [], "every overlapping or touching held value is cut as one [redacted]");
 });
 
+test("a 16 KB OTLP header value of 900 pairs joined by %20 holds a credential pair's value up to a %20 within 4,096 characters, never a head before every pair", () => {
+  // The read that keeps a %20 in a value reads this one whole, a pair before each of its 1,800 %20; a head before each
+  // would hold 1,800 values of up to 16 KB.
+  const key = `key-${"dummy"}-1`;
+  const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${`${key}%20b=1%20`.repeat(900)}` };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+    const size = values.reduce((sum, value) => sum + value.length, 0);
+    assert.ok(size < 128 * 1024, `${list} holds ${size} characters, under 128 KB`);
+    assert.ok(values.includes(key), `${list} holds the key before the first %20`);
+  }
+});
+
 test("after a header value's first URL query, a later URL's query is read while 4,096 characters of them in all fit: one that fits has its + read as a space, and a longer one's key is still held as written by the pair read", () => {
   // A key of `length` characters with a + in it; the second URL's query is `api_key=` and the key.
   const key = (length) => `dummy+key-${"x".repeat(length - 10)}`;
