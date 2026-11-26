@@ -1076,6 +1076,27 @@ const CASES = [
         ["prose with apostrophes around single-quoted literals that hold no held value", "Here's the URL, and it's short:\nurl = 'https://h.example/' + 'a+b' + '/c'\nThat's all, the servers' too."],
         ["a held value's halves in single-quoted literals on two lines with a word between them, after an apostrophe", `Here's a note:\nk = '${BODY.slice(0, 32)}' + note\n  + '${BODY.slice(32)}'`],
       ].map(([what, text]) => ({ name: `${what} shows as it came (control)`, text, values: [BODY], hides: [], exact: all(text) })),
+      // A Python string prefix (r'...', b'...', f'...', rb'...', in any case) before an apostrophe: the letters before it
+      // are the prefix, not a word of prose, so the apostrophe opens the string. Read as prose, the dict's later
+      // apostrophes paired the wrong way round and its values were never read together: a held value split across two of
+      // them showed, where it was withheld before the prose rule.
+      ...["r", "R", "b", "B", "u", "U", "f", "F", "rb", "rB", "Rb", "RB", "br", "bR", "Br", "BR", "fr", "fR", "Fr", "FR", "rf", "rF", "Rf", "RF"].flatMap((prefix) => {
+        const code = `{'a': ${prefix}'Zq8VbN3x', 'b': 'LmT6pR2w'}`;
+        return [[code, "as the code stands"], [JSON.stringify({ path: "a.py", content: `d = ${code}\n` }), "written in a JSON string"]].map(([text, how]) => ({
+          name: `a held value split across two single-quoted values of a dict, the first with the string prefix ${prefix}, ${how}, withholds the text, as before`,
+          text, values: [P24[0]], hides: ["Zq8VbN3x", "LmT6pR2w"], exact: all("[redacted]"),
+        }));
+      }),
+      // Prose stays prose: a word before the apostrophe that is no prefix ("C'est", "l'eau", "Ur", which Python 3 does
+      // not take), and a lone letter that is one ("Plan B's"), whose string ends at the line break.
+      ...[
+        ["after French prose", "C'est l'eau:\n"],
+        ['after "Ur\'" in prose', "Ur'a key:\n"],
+        ['after "Plan B\'s" in prose', "Plan B's key:\n"],
+      ].map(([how, before]) => ({
+        name: `a held value printed as single-quoted literals joined by "+" ${how} withholds the text`,
+        text: `${before}key = '${P24[0]}' + '${P24[1]}'`, values: [P24.join("")], hides: [P24[0], P24[1]], exact: all("[redacted]"),
+      })),
       // Python's implicit join, no operator between the literals: read back to back before too.
       ...[BODY, SHORT].map((value) => ({
         name: `a held value with a "+" printed as Python literals joined by nothing but a line break withholds the text, as before (control, ${value.length} characters)`,
