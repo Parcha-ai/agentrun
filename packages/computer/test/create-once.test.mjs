@@ -1399,6 +1399,35 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		okOf(await one.release(kept, "delete"), "release");
 	});
 
+	test(`${id}: a lost create whose first read once does not list its browser tries it again, for real, and releases the browser no converge answered`, { timeout: 20_000 }, async () => {
+		const fake = vendor.vendor();
+		const cleanupMs = 6_000;
+		const { asked, sleep } = recordedSleep();
+		// B's reads of the request before its first wait leave out its own browser; the read after that wait lists it.
+		let edited = 0;
+		const wrapB = (fetch) => {
+			let posted = false;
+			return async (input, init = {}) => {
+				if (callOf(cloud, input, init).post) posted = true;
+				if (!requestRead(cloud, posted, input, init) || asked.length > 0) return fetch(input, init);
+				edited++;
+				const [own] = cloud.ids(fake);
+				return REREAD[id].answer(new URL(String(input)), REREAD[id].rows(fake).filter((row) => row.id !== own));
+			};
+		};
+		const optionsB = { cleanupMs, confirm: { polls: 1, intervalMs: 1 }, sleep };
+		const { one, a, b, older, newer, recoverMs } = await lostOlder(vendor, cloud, fake, requestOf(`${id}-first-read-own-late`), { wrapA: unlistedA(cloud), wrapB, optionsB });
+		const kept = okOf(a, "A's create, its converge's listing failed");
+		assert.equal(kept.id, newer, "A answers its own, the newer");
+		assert.equal(b.ok, false, "B's create, its reply lost");
+		assert.ok(edited > 0, "B's first read left out its browser");
+		assert.equal(cloud.live(fake, older), false, "the browser B's lost create made, answered by nobody, is released");
+		assert.match(b.error.message, /was released, since every newer .* still runs/);
+		assert.ok(asked.every((ms) => ms <= cleanupMs / 2), `B's waits (${asked.join(", ")} ms) each within half its ${cleanupMs} ms bound`);
+		assert.ok(recoverMs < cleanupMs + 1_000, `B's recovery answered in ${recoverMs} ms, within its ${cleanupMs} ms bound`);
+		okOf(await one.release(kept, "delete"), "release");
+	});
+
 	test(`${id}: a lost create whose first read fails twice under a 7 s cleanup bound tries it twice again within the bound, for real, and releases the browser no converge answered`, { timeout: 20_000 }, async () => {
 		const fake = vendor.vendor();
 		const cleanupMs = 7_000;
