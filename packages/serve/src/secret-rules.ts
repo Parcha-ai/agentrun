@@ -2679,14 +2679,23 @@ function wholeDump(text: string): Hit[] {
 /** A prompt inside a line flattened from many (a run's title): one PROMPT_HEAD opens, after a blank or at the start. */
 const FLAT_PROMPT = /(?<=^|\s)(?:\([^()\n]{1,64}\)[ \t]{1,3})?(?:[$%❯]|(?:[A-Za-z0-9_.-]{1,64}@[A-Za-z0-9_.-]{1,128}:[^\s]{0,256}|\[[^\]@\n]{1,64}@[^\]\n]{1,192}\])[$#])[ \t]{1,3}(?=\S)/g;
 const FLAT_WORD = /\S{1,4096}/g;
-/** The most words a flattened command is read for before its output's first NAME=value. */
+/** The most words a flattened command is read for before its output. */
 const FLAT_COMMAND_WORDS = 16;
+/** Whether a flattened command prints the environment (printsEnvironment) or reads one .env file whole (`cat .env`,
+ *  which env-file cuts on a line of its own). */
+const flatPrints = (command: string): boolean => {
+  const path = readPath(command);
+  return (path !== undefined && envFilePath(path)) || printsEnvironment(command);
+};
 /** A transcript flattened onto one line (11-26: a run's title is its first message with every run of blanks one
- *  space, so `$ printenv\nAPP_SEED=v\n...` reads `$ printenv APP_SEED=v ...`): after each prompt, the fewest words that
- *  print the environment (printsEnvironment) followed by a NAME=value word (ENV_LINE) are the command, and from that word
- *  to the next prompt or the text's end is its output, cut. Where a flattened command ends can't be told from its
- *  output's first word, so `$ env NAME=value command` is cut there too: an over-cut, fails closed, and only for a text
- *  its caller says was flattened. */
+ *  space, so `$ printenv\nAPP_SEED=v\n...` reads `$ printenv APP_SEED=v ...`): after each prompt, the command is the
+ *  fewest words that print the environment (flatPrints) followed by a NAME=value word (ENV_LINE), and from that word to
+ *  the next prompt or the text's end is its output, cut. With no such word (`printenv NAME`, `echo $NAME`, `cat .env`,
+ *  `docker inspect`, `heroku config`: 11-26 r2), the command is the fewest words that print, and every word after it
+ *  is cut. Where a flattened command ends can't be told from its output's first word, so an argument is cut with
+ *  the output (`$ printenv NAME`'s NAME) and so is `$ env NAME=value command`: over-cuts, fail closed, and only for a
+ *  text its caller says was flattened. A segment that already ends in an env-dump cut is no new hit: the share host reads
+ *  an exported title again, and a command longer than its fewest words (`env | sort`) is cut after the whole of it. */
 function flatDumps(text: string): Hit[] {
   const prompts = [...text.matchAll(FLAT_PROMPT)];
   const out: Hit[] = [];
@@ -2694,12 +2703,17 @@ function flatDumps(text: string): Hit[] {
     const from = prompt.index + prompt[0].length;
     const segment = text.slice(from, at + 1 < prompts.length ? prompts[at + 1]!.index : text.length).trimEnd();
     const words = [...segment.matchAll(FLAT_WORD)];
-    for (let next = 1; next < words.length && next <= FLAT_COMMAND_WORDS; next++) {
-      const head = words[next]!.index;
-      if (!ENV_LINE.test(segment.slice(head)) || !printsEnvironment(segment.slice(0, head).trimEnd())) continue;
-      out.push({ start: from + head, end: from + segment.length });
-      break;
+    const last = Math.min(words.length - 1, FLAT_COMMAND_WORDS);
+    const before = (next: number): string => segment.slice(0, words[next]!.index).trimEnd();
+    let head: number | undefined;
+    for (let next = 1; next <= last && head === undefined; next++) {
+      if (ENV_LINE.test(segment.slice(words[next]!.index)) && flatPrints(before(next))) head = words[next]!.index;
     }
+    const cutAt = segment.lastIndexOf("[redacted:env-dump ");
+    if (head === undefined && !(cutAt >= 0 && DUMP_MARKER_LINE.test(segment.slice(cutAt)))) {
+      for (let next = 1; next <= last && head === undefined; next++) if (flatPrints(before(next))) head = words[next]!.index;
+    }
+    if (head !== undefined) out.push({ start: from + head, end: from + segment.length });
   }
   return out;
 }
