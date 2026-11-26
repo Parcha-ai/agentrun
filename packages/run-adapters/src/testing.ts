@@ -1,7 +1,8 @@
 // Test kit: a session store in memory, and a scripted harness with no model and no network. The faux harness keeps its
 // own records in the store as a real adapter does (the requests it made, each tool call's intent and outcome, its turns),
 // so a later process resumes from them: a request already made is not made again, and a call a crash cut off is
-// answered interrupted, never run again (unless its action says `again`: then it is issued again, asked as `replayed`). Each call asks the host's gate first, as a real harness's tool bridge does
+// answered interrupted, never run again (unless its action says `again`: then it is issued again, asked as the bridge
+// asks it). Each call asks the host's gate first, as a real harness's tool bridge does
 // (process/tools.ts askGate): a deny is the call's answer, and a park holds the turn; a recovered turn runs the calls its
 // last request asked for that never started (a parked one), under their own ids, as a real CLI's resume does.
 import { SessionFenced } from "./errors.js";
@@ -66,8 +67,9 @@ export type FauxRequest = { onRefused?: "next"; tokens?: { input: number; output
 export type FauxAction =
   | ({ say: string; usd?: number | null } & FauxRequest)
   /** One call. `again`: a crash that cuts it off mid-call (its intent recorded, no outcome) leaves it for the recovered
-   *  turn to issue again, under its id, asking the gate with `replayed` first, as a CLI that sends its transcript's
-   *  unanswered call again through its tool bridge (process/tools.ts); without it, the cut call is answered interrupted. */
+   *  turn to issue again, under its id, asking the gate first as the tool bridge does (process/tools.ts: `replayed`,
+   *  unless the tool `nests`), as a CLI that sends its transcript's unanswered call again through its bridge; without
+   *  it, the cut call is answered interrupted. */
   | ({ call: string; args?: unknown; usd?: number | null; again?: true } & FauxRequest)
   /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls.
    *  `bookAfter`: the calls run before the answer's cost is booked, as with Claude Code, whose cost comes in after its
@@ -168,14 +170,17 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       let state: SessionState = turnsStarted === 0 ? "new" : turnsStarted > turnsEnded ? "open_turn" : "idle";
       stats.opened.push({ key: spec.key, state });
       // A call whose intent is recorded and whose outcome is not: a crash cut it off. It is answered interrupted, once; one
-      // its action marks `again`, in a turn still open, is issued again by the recovered turn instead, asked as `replayed`.
+      // its action marks `again`, in a turn still open, is issued again by the recovered turn instead, its gate asked as the
+      // tool bridge asks it (process/tools.ts): `replayed` for a tool that runs as one effect, nothing more for one that
+      // `nests` (runNesting), which writes nothing of its own and so has no earlier attempt in the kernel's log to see.
       const results = new Set(records.filter((r) => r.kind === FAUX_RECORDS.result).map((r) => (r.data as { callId: string }).callId));
-      const again = new Map<string, { name: string; args: unknown; callId: string; replayed: true }>();
+      const again = new Map<string, { name: string; args: unknown; callId: string; replayed?: true }>();
       for (const r of records.filter((r) => r.kind === FAUX_RECORDS.call)) {
         const { callId } = r.data as { callId: string };
         if (results.has(callId) || again.has(callId)) continue;
         const action = script[Number(callId.slice(spec.key.length + 1))];
-        if (state === "open_turn" && action && "call" in action && action.again) again.set(callId, { name: action.call, args: action.args ?? {}, callId, replayed: true });
+        const nests = action && "call" in action ? spec.tools.find((tool) => tool.name === action.call)?.nests === true : false;
+        if (state === "open_turn" && action && "call" in action && action.again) again.set(callId, { name: action.call, args: action.args ?? {}, callId, ...(nests ? {} : { replayed: true as const }) });
         else await append(FAUX_RECORDS.result, { callId, interrupted: true });
       }
       const tools = new Map<string, HostTool>(spec.tools.map((tool) => [tool.name, tool]));
