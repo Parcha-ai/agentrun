@@ -28,9 +28,10 @@
 //
 // Git there reads no system or global config (no filter, textconv or fsmonitor a machine's config could attach), copies
 // no template at its init (an image's template hooks and config), runs no hook (core.hooksPath=/dev/null), fetches no
-// tags and no submodules, and checks out with the repository's own config alone, which this exec wrote. Its fetches
-// verify TLS and go through no proxy, whatever that config says (GIT_PRELUDE). sh, git and the rest are found in
-// /usr/bin and /bin first (checkoutEnv).
+// tags and no submodules. Its fetches run in a repository it makes in this machine's own /tmp, never in the run's
+// folder, so the one repository config they read is the one this exec wrote, and they verify TLS and go through no
+// proxy; the repository moves into the run's folder once the header is gone (GIT_PRELUDE). sh, git and the rest are
+// found in /usr/bin and /bin first (checkoutEnv).
 //
 // What the run is told: one line in its system prompt, the checkout's facts, or why there is none and that the GitHub
 // tools can read the change instead. The checkout is removed when the claim lets go (spec-holds.ts), and made again by
@@ -68,20 +69,47 @@ const DEEPENS = 6;
 /** The file in the checkout's .git naming the claim that made it: a removal takes only its own claim's checkout. */
 const OWNER_FILE = "agentrun-claim";
 
+/** The private repository a checkout fetches into (GIT_PRELUDE), in its machine's own /tmp, named by the claim's checkout
+ *  id: a stop kills the exec's processes at once and no trap of the script's runs, so the checkout's removal takes it
+ *  too. */
+const PRIVATE_DIR = "/tmp/agentrun-checkout-";
+
+/** The checkout's removal, one exec: $1 the folder, $2 the claim's checkout id. The private repository goes whatever is
+ *  there; the folder only when its owner file names this claim. */
+const REMOVAL_SCRIPT = `rm -rf -- "${PRIVATE_DIR}\${2:?}" || exit 1; [ "$(cat "\${1:?}/.git/${OWNER_FILE}" 2>/dev/null)" = "$2" ] || exit 0; rm -rf -- "\${1:?}"`;
+
 /** What both scripts run once they have read the header: git with no system or global config and no prompt, and two ways
  *  to call it. `g`, every git call, with hooks off (core.hooksPath=/dev/null, as source-sync's git runs). `net`, a call
  *  that reaches GitHub (a fetch, ls-remote): `g` with the Authorization header in that one git's environment
  *  (GIT_CONFIG_COUNT, as prefix assignments). The header itself is a variable of the script's ($auth), never exported, so
  *  no other git call and nothing else the script runs carries it; the script empties it after its last fetch. An empty
  *  one: an anonymous fetch, no header at all. Every `net` call verifies TLS and goes through no proxy
- *  (http.sslVerify=true, and an empty http.proxy, which turns the proxy variables off too): the checkout's .git/config is
- *  the one config git still reads, and it sits in the run's folder, so it never decides where the header goes. */
+ *  (http.sslVerify=true, and an empty http.proxy, which turns the proxy variables off too).
+ *
+ *  Then the private repository: the run's checkout folder is removed first (a fetch that fails leaves none), and the
+ *  repository is made in a folder of this machine's own /tmp ($P, PRIVATE_DIR and the claim's checkout id, made new with
+ *  mode 0700, removed on every exit the script sees, and by the checkout's removal after a stop), never in the run's
+ *  folder. Every call that reaches GitHub runs there, so the one config git reads beside the command line's is the one
+ *  this script wrote: nothing another writer of the run's folder puts in a .git/config there (a URL's own proxy or
+ *  sslVerify, which beat a generic -c, or an insteadOf) decides where the header goes. `land` moves the repository into
+ *  the run's folder once the header is gone and the last fetch is done: its .git whole (refs, objects, the shallow file,
+ *  the owner file), with no gitdir file or core.worktree that points back at $P. */
 const GIT_PRELUDE = `export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 g() { git -c core.hooksPath=/dev/null "$@"; }
 net() {
   if [ -n "\${auth:-}" ]; then GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$scope.extraheader" GIT_CONFIG_VALUE_0="$auth" git -c core.hooksPath=/dev/null -c http.sslVerify=true -c http.proxy= "$@"
   else g -c http.sslVerify=true -c http.proxy= "$@"; fi
-}`;
+}
+here=$(pwd) || exit 10
+rm -rf "\${dir:?}" || exit 10
+P=${PRIVATE_DIR}$claim
+mkdir -m 700 "$P" || exit 10
+trap 'rm -rf "$P"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+g init -q --template= "$P" >/dev/null 2>&1 && cd "$P" && printf '%s\\n' "$claim" > .git/${OWNER_FILE} && g remote add origin "$url" || exit 10
+land() { cd "$here" && rm -rf "\${dir:?}" && mkdir -p "$dir" && mv "$P/.git" "$dir/.git" && cd "$dir"; }`;
 
 /** The checkouts' environment (each exec's, its removal's too): the run's shell's (shellEnv), its PATH with /usr/bin and
  *  /bin first, so sh, git and every program the scripts run are the system's own, never one a folder ahead of them on
@@ -102,8 +130,6 @@ const SCRIPT = `set -u
 url=$1 head=$2 base=$3 dir=$4 scope=$5 claim=$6
 IFS= read -r auth || true
 ${GIT_PRELUDE}
-rm -rf "\${dir:?}"
-g init -q --template= "$dir" >/dev/null 2>&1 && cd "$dir" && printf '%s\\n' "$claim" > .git/${OWNER_FILE} && g remote add origin "$url" || exit 10
 fetch() { net -c maintenance.auto=false -c gc.auto=0 fetch -q --no-tags --no-recurse-submodules origin "$@" "$head" \${base:+"$base"}; }
 fetch --depth=${DEPTH} || exit 11
 mb=
@@ -126,6 +152,7 @@ auth=
 g update-ref refs/pr/head "$head" || exit 12
 if [ -n "$base" ]; then g update-ref refs/pr/base "$base" || exit 12; fi
 if [ -n "$mb" ]; then g update-ref refs/pr/merge-base "$mb" || exit 12; fi
+land || exit 10
 g -c advice.detachedHead=false checkout -q --detach "$head" || exit 12
 printf '%s\\n' "$mb"
 `;
@@ -203,7 +230,7 @@ export async function prCheckout(options: PrCheckoutOptions): Promise<PrCheckout
   // made, never the one a later claim of the run is fetching or reading (that claim's fetch replaces a stale one itself).
   const claim = randomUUID();
   const removal = async (): Promise<void> => {
-    const result = await workspace.exec(["sh", "-c", `[ "$(cat "\${1:?}/.git/${OWNER_FILE}" 2>/dev/null)" = "$2" ] || exit 0; rm -rf -- "\${1:?}"`, "sh", CHECKOUT_DIR, claim], { env: checkoutEnv(), timeoutMs: CHECKOUT_MS });
+    const result = await workspace.exec(["sh", "-c", REMOVAL_SCRIPT, "sh", CHECKOUT_DIR, claim], { env: checkoutEnv(), timeoutMs: CHECKOUT_MS });
     if (result.code !== 0) throw new Error(`the run's ${CHECKOUT_DIR}/ checkout could not be removed (exit ${result.code ?? result.signal}): ${tail(result.stderr, secrets)}`);
   };
   const failed = async (why: string): Promise<PrCheckout> => {
@@ -278,8 +305,8 @@ export async function prCheckoutForClaim(
  *  (`mounted.fresh`: ClaimComputer.fresh; the header comment says why). The mount holds the disk's write delegation, and
  *  the fetch writes through it. With no computer that mounts the folder, or one this claim did not start, none is made
  *  and no token minted: the run is told why, and `say` puts it on its timeline (with no computer, the fix: a sandbox
- *  computer). A computer this claim did not start whose mount still shows a repo/ (an earlier claim's, its removal
- *  failed): the run is told that folder is not this claim's checkout and may be stale. */
+ *  computer). With a computer this claim did not start, the run is also told that a repo/ there, if there is one, is
+ *  not this claim's checkout (an earlier claim's, its removal failed) and may be stale. */
 export async function checkoutWhereNoExec(
   deps: Parameters<typeof prCheckoutForClaim>[0],
   mounted: { readonly workspace: Workspace; readonly fresh: boolean } | undefined,
@@ -298,16 +325,9 @@ export async function checkoutWhereNoExec(
     // The computer may have run the agent's code (a kept sandbox, the agent's own, a paired one): no token goes into it.
     const why = `${where}, and the run's computer is not one this claim started (a sandbox kept through a wait, the agent's own computer or a paired one): it may already have run the agent's code, so the server hands it no GitHub token`;
     say?.(`No checkout in repo/: ${why}.`);
-    // A repo/ there now is an earlier claim's checkout whose removal at its release failed, never this claim's: the run
-    // is told so. A look that fails tells nothing either way.
-    let left: unknown;
-    try {
-      left = await mounted.workspace.stat(CHECKOUT_DIR);
-    } catch {
-      left = undefined;
-    }
-    if (left !== undefined) return noCheckout(`No checkout was made: ${why}. The ${CHECKOUT_DIR}/ folder in the run's folder is not this claim's checkout: an earlier claim's, whose removal failed, so it may be stale. ${instead}`);
-    return noCheckout(`No checkout was made, so there is no ${CHECKOUT_DIR}/ folder: ${why}. ${instead}`);
+    // A repo/ there now can only be an earlier claim's checkout whose removal at its release failed: the run is told so
+    // either way, with no look at the folder (a computer's stat has no deadline of its own).
+    return noCheckout(`No checkout was made: ${why}. A ${CHECKOUT_DIR}/ folder in the run's folder, if there is one, is not this claim's checkout: an earlier claim's, whose removal failed, so it may be stale. ${instead}`);
   }
   say?.(`No checkout in repo/: ${where}, and this run has none. Give the agent a sandbox computer (a box) to get its checkout.`);
   return noCheckout(`No checkout was made, so there is no ${CHECKOUT_DIR}/ folder: ${where}, and this run has none. ${instead}`);
@@ -327,13 +347,12 @@ const REPO_SCRIPT = `set -u
 url=$1 dir=$2 scope=$3 claim=$4
 IFS= read -r auth || true
 ${GIT_PRELUDE}
-rm -rf "\${dir:?}"
-g init -q --template= "$dir" >/dev/null 2>&1 && cd "$dir" && printf '%s\\n' "$claim" > .git/${OWNER_FILE} && g remote add origin "$url" || exit 10
 branch=$(net ls-remote --symref origin HEAD 2>/dev/null | awk '$1 == "ref:" { sub("^refs/heads/", "", $2); print $2; exit }')
 net -c maintenance.auto=false -c gc.auto=0 fetch -q --no-tags --no-recurse-submodules --depth=1 origin HEAD || exit 11
 auth=
 g update-ref refs/repo/head FETCH_HEAD || exit 12
-g -c advice.detachedHead=false checkout -q --detach FETCH_HEAD || exit 12
+land || exit 10
+g -c advice.detachedHead=false checkout -q --detach refs/repo/head || exit 12
 g ls-tree -r --name-only HEAD > .git/${FILE_LIST} || exit 12
 printf '%s %s %s\\n' "$(g rev-parse HEAD)" "$(wc -l < .git/${FILE_LIST} | tr -d ' ')" "$branch"
 `;
@@ -372,7 +391,7 @@ export async function repoCheckout(options: RepoCheckoutOptions): Promise<PrChec
 
   const claim = randomUUID();
   const removal = async (): Promise<void> => {
-    const result = await workspace.exec(["sh", "-c", `[ "$(cat "\${1:?}/.git/${OWNER_FILE}" 2>/dev/null)" = "$2" ] || exit 0; rm -rf -- "\${1:?}"`, "sh", CHECKOUT_DIR, claim], { env: checkoutEnv(), timeoutMs: CHECKOUT_MS });
+    const result = await workspace.exec(["sh", "-c", REMOVAL_SCRIPT, "sh", CHECKOUT_DIR, claim], { env: checkoutEnv(), timeoutMs: CHECKOUT_MS });
     if (result.code !== 0) throw new Error(`the run's ${CHECKOUT_DIR}/ checkout could not be removed (exit ${result.code ?? result.signal}): ${tail(result.stderr, secrets)}`);
   };
   const failed = async (why: string): Promise<PrCheckout> => {

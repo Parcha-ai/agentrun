@@ -423,7 +423,7 @@ test("a head the repository does not have, a run no pull request started, and a 
   assert.deepEqual(await readdir(folder), []);
 });
 
-test("a fetch cut short by the claim's signal (a person's stop) ends at once and leaves its folder to the removal it handed the claim before it started", { timeout: 60_000 }, async (t) => {
+test("a fetch cut short by the claim's signal (a person's stop) ends at once: no repo/ in the run's folder, and the private repository it was fetching into goes with the removal it handed the claim before it started", { timeout: 60_000 }, async (t) => {
   const { createServer } = await import("node:http");
   const dir = await scratch(t);
   // GitHub that never answers: the fetch waits until the signal ends it.
@@ -432,18 +432,25 @@ test("a fetch cut short by the claim's signal (a person's stop) ends at once and
   await new Promise((resolve) => silent.listen(0, "127.0.0.1", resolve));
   t.after(() => { for (const req of asked) req.socket.destroy(); return new Promise((resolve) => silent.close(resolve)); });
   const { folder, workspace } = await runFolder(dir);
+  // The checkout's id is the script's last argument; its private repository is named by it.
+  const argvs = [];
+  const seen = Object.create(workspace);
+  seen.exec = (argv, options) => (argvs.push(argv), workspace.exec(argv, options));
   const stop = new AbortController();
   const held = [];
   const started = Date.now();
-  const made = prCheckout({ workspace, fromGitHub: true, input: firing("acme/widgets", { head: "a".repeat(40), base: "b".repeat(40) }), web: `http://127.0.0.1:${silent.address().port}`, signal: stop.signal, held: (part) => held.push(part) });
+  const made = prCheckout({ workspace: seen, fromGitHub: true, input: firing("acme/widgets", { head: "a".repeat(40), base: "b".repeat(40) }), web: `http://127.0.0.1:${silent.address().port}`, signal: stop.signal, held: (part) => held.push(part) });
   while (asked.length === 0) await new Promise((resolve) => setTimeout(resolve, 20));
   stop.abort(new Error("stopped by a person"));
   await assert.rejects(made, /stopped by a person/);
   assert.ok(Date.now() - started < 30_000, "the stop did not wait for the fetch");
   assert.equal(held.length, 1, "its removal was the claim's before the fetch started");
-  assert.ok((await readdir(folder)).includes(CHECKOUT_DIR), "the cut fetch left its folder");
+  assert.deepEqual(await readdir(folder), [], "the cut fetch left nothing in the run's folder");
+  const fetching = join("/tmp", `agentrun-checkout-${argvs[0].at(-1)}`);
+  assert.ok(existsSync(join(fetching, ".git")), `the stop killed the script before it could remove ${fetching}`);
   await held[0].end();
-  assert.deepEqual(await readdir(folder), [], "the claim's release removed it");
+  assert.equal(existsSync(fetching), false, "the claim's release removed the private repository");
+  assert.deepEqual(await readdir(folder), []);
 });
 
 test("an agent's definition takes checkout pull_request on an agentic revision, none to clear it, and nothing else; its body keeps pull_request alone", async () => {
