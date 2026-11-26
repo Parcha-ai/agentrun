@@ -7,7 +7,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { learningCommit } from "../dist/learn/commit.js";
 import { learningOf } from "../dist/learn/rows.js";
@@ -15,6 +14,7 @@ import { launchBody } from "../dist/run-launch.js";
 import { ended, learningAt, learningText, putLearning, started } from "./learn-support.mjs";
 import { putPromotions } from "./learned-workflow-seed-support.mjs";
 import { storeOn } from "./store-helpers.mjs";
+import { raw } from "./store-target.mjs";
 import { agent, answerFlow, serve, startRun } from "./support.mjs";
 
 /** `write` over agent `agentId`'s learning in the server's store, as a run's merge writes it: its save's id. */
@@ -97,11 +97,11 @@ test("a purge takes the purged run's workflow out of the learning: both its file
   const merge = await learned(store, "keeper", (learning) => learningCommit(learning, { runId: gone, round: 7, reason: "It learned two workflows.", files: [{ path: answerPath, text: v1 }, said("answer"), { path: soloPath, text: solo }, said("solo")] }));
   const next = await learned(store, "keeper", (learning) => learningCommit(learning, { runId: other, round: 2, reason: "It answers in whole numbers.", files: [{ path: answerPath, text: v2 }, answerSaid] }));
   // The other run's second look-back kept its merge (as its end keeps it): GET /runs/{id}/learning/diff reads it.
-  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 5_000 });
+  const db = await raw(join(data, "store.sqlite"), { timeout: 5_000 });
   try {
-    db.prepare("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, created_at) VALUES (?, 2, 'keeper', '{}', ?, ?)").run(other, JSON.stringify({ state: "merged", merged: next }), Date.now());
+    await db.run("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, created_at) VALUES (?, 2, 'keeper', '{}', ?, ?)", other, JSON.stringify({ state: "merged", merged: next }), Date.now());
   } finally {
-    db.close();
+    await db.close();
   }
   await putPromotions(store, "keeper", [recordOf("answer", digestOf(v1), "promote", merge), recordOf("solo", digestOf(solo), "promote", merge)]);
 

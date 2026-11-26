@@ -130,7 +130,8 @@ export const domains = (max: number): Check => [(value) => Array.isArray(value) 
 export function settingsProblems(who: string, settings: unknown, checks: Readonly<Record<string, Check>>): string[] {
   if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return [`${who}'s settings must be an object`];
   return Object.entries(settings).flatMap(([name, value]) => {
-    const check = checks[name];
+    // Its own checks alone: a setting named constructor or __proto__ is not Object's member.
+    const check = Object.hasOwn(checks, name) ? checks[name] : undefined;
     if (!check) return [`${who} takes no setting ${JSON.stringify(name)} (it takes ${Object.keys(checks).join(", ")})`];
     if (value === undefined || check[0](value)) return [];
     return [`${who}'s ${name} must be ${check[1]} (it was ${String(JSON.stringify(value)).slice(0, 60)})`];

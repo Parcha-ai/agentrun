@@ -134,12 +134,13 @@ export const learningAt = (target, agentId) => overStore(target, async (store) =
  *  learned (seed_failed). */
 export async function unreadable(data, agentId) {
   await putLearning(data, agentId, { "workflows/answer/workflow.json": "{}", "workflows/answer/README.md": "---\nname: answer\ndescription: Answers\n---\n" });
-  const { DatabaseSync } = await import("node:sqlite");
-  const db = new DatabaseSync(join(data, "store.sqlite"));
+  // A live server's store: written through raw() (fixtures/sqlite-guard.mjs), never a DatabaseSync of its own.
+  const { raw } = await import("./store-target.mjs");
+  const db = await raw(join(data, "store.sqlite"));
   try {
-    assert.equal(db.prepare("UPDATE learning_items SET body = 'not json' WHERE agent_id = ? AND kind = 'workflow'").run(agentId).changes, 1);
+    assert.equal((await db.run("UPDATE learning_items SET body = 'not json' WHERE agent_id = ? AND kind = 'workflow'", agentId)).changes, 1);
   } finally {
-    db.close();
+    await db.close();
   }
 }
 

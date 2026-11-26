@@ -36,6 +36,7 @@ import { archilControlFetch } from "./archil-control-fake.mjs";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { ended, learningAt, learningText, started } from "./learn-support.mjs";
 import { putPromotions } from "./learned-workflow-seed-support.mjs";
+import { raw } from "./store-target.mjs";
 import { agent, answerFlow, builtConsole, call, cookieOf, FAUX, follow, serve, startInProcessRunner, startRun, WINDOW, withEnv } from "./support.mjs";
 
 /** An agent's folder name on a disk (archil-routes.ts: agentDirName). */
@@ -81,12 +82,12 @@ function stringsIn(value, at = "") {
 }
 
 /** Statements on the store's file, for rows the server has no route to write. */
-function write(data, statements) {
-  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 5_000 });
+async function write(data, statements) {
+  const db = await raw(join(data, "store.sqlite"), { timeout: 5_000 });
   try {
-    for (const [sql, ...params] of statements) db.prepare(sql).run(...params);
+    for (const [sql, ...params] of statements) await db.run(sql, ...params);
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
@@ -157,7 +158,7 @@ test("DELETE /runs/{id} purges an ended run and keeps its money: /usage by each 
   const shadow = shadowRunId(gone);
   await storedRun(store, "calc", shadow, { state: "ended", costUsd: 0.07 });
   await storedRun(store, "calc", "learn-1", { state: "ended", costUsd: 0.05 });
-  write(data, [
+  await write(data, [
     ["UPDATE runs SET cost_usd = ? WHERE id = ?", 0.25, gone],
     ["INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, learning_run_id, created_at) VALUES (?, 99, 'calc', ?, ?, 'learn-1', ?)", gone, JSON.stringify({ asked: "What the run read." }), JSON.stringify({ state: "merged", detail: "What it learned from the run." }), Date.now()],
     // Words its metrics may hold beside their figures: a grader's verdict, a learned loop's nodes, an audit's link.

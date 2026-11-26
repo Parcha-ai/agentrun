@@ -8,11 +8,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test } from "node:test";
-import { DatabaseSync } from "node:sqlite";
 import { seal } from "../dist/sealing.js";
 import { isMessageRow } from "../dist/timeline/index.js";
 import { ownSecrets } from "../dist/import.js";
 import { schemaProblems } from "./schema-support.mjs";
+import { raw } from "./store-target.mjs";
 import { follow, runDir, scratch, serve, startServe, withEnv } from "./support.mjs";
 import { MESSAGE_RUN, RUN_EXEC, firings, keyOf, made } from "./trigger-support.mjs";
 
@@ -251,13 +251,17 @@ test("a webhook trigger's secret sealed under another seal key does not open her
   process.env.AGENTRUN_SEAL_KEY = SEAL.AGENTRUN_SEAL_KEY;
   // The trigger's secret sealed again under another key (a row copied from another server's store): still in the store,
   // sealed, and it does not open here.
-  const db = new DatabaseSync(join(data, "store.sqlite"));
+  // Through raw(): the first server's runner still commits to this store from this thread.
+  const db = await raw(join(data, "store.sqlite"));
   const other = randomBytes(32);
-  for (const row of db.prepare("SELECT adapter, scope, field FROM trigger_settings WHERE scope = ?").all(id)) {
-    const sealed = seal(other, Buffer.from("whsec_not-this-servers"), `trigger_settings|${row.adapter}|${row.scope}|${row.field}`).toString("base64");
-    db.prepare("UPDATE trigger_settings SET sealed = ? WHERE adapter = ? AND scope = ? AND field = ?").run(sealed, row.adapter, row.scope, row.field);
+  try {
+    for (const row of await db.all("SELECT adapter, scope, field FROM trigger_settings WHERE scope = ?", id)) {
+      const sealed = seal(other, Buffer.from("whsec_not-this-servers"), `trigger_settings|${row.adapter}|${row.scope}|${row.field}`).toString("base64");
+      await db.run("UPDATE trigger_settings SET sealed = ? WHERE adapter = ? AND scope = ? AND field = ?", sealed, row.adapter, row.scope, row.field);
+    }
+  } finally {
+    await db.close();
   }
-  db.close();
   const lines = [];
   const { api, baseUrl } = await serve(t, { data, log: (line) => lines.push(line) });
   const refused = await post(baseUrl, id, "{}", { secret });

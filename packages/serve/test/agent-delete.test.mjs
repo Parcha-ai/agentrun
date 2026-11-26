@@ -20,6 +20,7 @@ import { archilControlFetch } from "./archil-control-fake.mjs";
 import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
 import { calls as bbCalls, contexts, deleteFailures, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
+import { raw } from "./store-target.mjs";
 import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
 import { putLearning } from "./learn-support.mjs";
 
@@ -206,20 +207,13 @@ for (const step of ["after_step_1", "after_step_2", "in_step_3_trigger", "in_ste
 
 /** Run `runId`'s state written straight into the store's file: a test's stand-in for a run of the agent open again when its
  *  learning is deleted (the store refuses every way one could open once the agent is marked, so only a write under it does).
- *  A write the server's own holds the file against is tried again once it has let go, never waited for in place (the
- *  server's transaction finishes only while this test yields). */
+ *  Through raw(): the server's transaction finishes only while this thread is free, so the write waits on a worker. */
 async function stateOf(data, runId, state) {
-  for (let tries = 1; ; tries++) {
-    const db = new DatabaseSync(join(data, "store.sqlite"));
-    try {
-      db.prepare("UPDATE runs SET state = ? WHERE id = ?").run(state, runId);
-      return;
-    } catch (error) {
-      if (!/locked|busy/i.test(error.message) || tries >= 100) throw error;
-    } finally {
-      db.close();
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  const db = await raw(join(data, "store.sqlite"), { timeout: 15_000 });
+  try {
+    await db.run("UPDATE runs SET state = ? WHERE id = ?", state, runId);
+  } finally {
+    await db.close();
   }
 }
 
@@ -425,14 +419,14 @@ test("an agent's stored Archil disk with Archil off keeps the delete from finish
 /** Run `runId`'s launch record naming disk `diskId` as the caller's, and the run's disk with it, as POST /runs with
  *  `archil_disk` records them (run-launch.ts: archil_disk { disk_id, kind: "launch" }; runs.disk), written into the
  *  store's file. */
-function launchOnDisk(data, runId, diskId) {
-  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+async function launchOnDisk(data, runId, diskId) {
+  const db = await raw(join(data, "store.sqlite"), { timeout: 10_000 });
   try {
-    const changed = db.prepare("UPDATE run_launch SET body = json_set(body, '$.archil_disk', json(?)) WHERE run_id = ?").run(JSON.stringify({ disk_id: diskId, kind: "launch" }), runId);
-    assert.equal(Number(changed.changes), 1, "the run's launch record names the disk");
-    assert.equal(Number(db.prepare("UPDATE runs SET disk = ? WHERE id = ?").run(diskId, runId).changes), 1, "and the run its disk");
+    const changed = await db.run("UPDATE run_launch SET body = json_set(body, '$.archil_disk', json(?)) WHERE run_id = ?", JSON.stringify({ disk_id: diskId, kind: "launch" }), runId);
+    assert.equal(changed.changes, 1, "the run's launch record names the disk");
+    assert.equal((await db.run("UPDATE runs SET disk = ? WHERE id = ?", diskId, runId)).changes, 1, "and the run its disk");
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
@@ -446,7 +440,7 @@ test("a run's folder on the Archil disk its launch named (the caller's) is delet
   const made = [];
   const { api, data, store } = await serve(t, { archilControl: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: (options) => (made.push(options.disk), disk) } });
   const { agentId, runId } = await finishedAgent(api);
-  launchOnDisk(data, runId, customer);
+  await launchOnDisk(data, runId, customer);
   await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
   // What the run wrote there (its work folder and its exec spill folder, runKey's and spillFolderOf's), beside what is the
   // caller's own and another agent's run.
@@ -495,7 +489,7 @@ async function launchedOn(t, control, disk) {
   withEnv(t, { ARCHIL_API_KEY: "fake-test-key" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
   const { api, data, store } = await serve(t, { archilControl: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: () => goneWithControl(disk, control) } });
   const { agentId, runId } = await finishedAgent(api);
-  launchOnDisk(data, runId, disk.id);
+  await launchOnDisk(data, runId, disk.id);
   await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
   await disk.putObject(`agents/${agentDir(agentId)}/runs/${runId}/work/notes.md`, Buffer.from("bytes"));
   return { api, data, store, agentId, runId };
@@ -651,15 +645,15 @@ test("a trigger that reached the agent after the delete listed its triggers stop
   // past every check would have written it, already registered at Composio.
   const race = { done: false };
   const { api, data, composio } = await withComposio(t, {
-    agentDeleteAt: (at, agentId) => {
+    agentDeleteAt: async (at, agentId) => {
       if (at !== "in_step_3" || race.done || !race.trigger) return;
       race.done = true;
-      const db = new DatabaseSync(join(race.data, "store.sqlite"), { timeout: 10_000 });
+      const db = await raw(join(race.data, "store.sqlite"), { timeout: 10_000 });
       try {
-        const moved = db.prepare("UPDATE triggers SET agent_id = ?, target = json_set(target, '$.agent_id', ?) WHERE id = ?").run(agentId, agentId, race.trigger);
-        assert.equal(Number(moved.changes), 1);
+        const moved = await db.run("UPDATE triggers SET agent_id = ?, target = json_set(target, '$.agent_id', ?) WHERE id = ?", agentId, agentId, race.trigger);
+        assert.equal(moved.changes, 1);
       } finally {
-        db.close();
+        await db.close();
       }
     },
   });
