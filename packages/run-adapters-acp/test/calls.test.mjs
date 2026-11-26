@@ -152,6 +152,41 @@ test("an extra our tool's input schema declares is its argument, never agy's own
   const lone = new calls.CallIds();
   announceCall(lone, agy('call_a', { q: 'x', toolSummary: 'Look x up' }), AGY, TOOLS, declared);
   assert.equal(await hurry(lone.take('look_up', { q: 'x' }, signal, 60_000)), 'call_a');
+  // B's MCP call reaching MCP before B's own announcement: A, announced with the extra it sent, is the only one there, and
+  // B's call matches it only without the extra. It holds a short while for its own; B's comes, then A's MCP call takes A by
+  // its whole arguments, and B's the one left. Before, B's took A at once, and A's took B after the wait.
+  const ahead = new calls.CallIds();
+  announceCall(ahead, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
+  const bAhead = ahead.take('look_up', { q: 'x' }, signal, 60_000);
+  announceCall(ahead, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
+  const aAfter = ahead.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000);
+  assert.deepEqual(await hurry(Promise.all([bAhead, aAfter])), ['call_b', 'call_a'], 'its own, though it came first');
+  // The same with B's MCP call already waiting when A's announcement comes: it is not handed A for matching it without
+  // the extra. Before, add handed it A at once.
+  const handed = new calls.CallIds();
+  const bWaiting = handed.take('look_up', { q: 'x' }, signal, 60_000);
+  announceCall(handed, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
+  announceCall(handed, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
+  const aLater = handed.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000);
+  assert.deepEqual(await hurry(Promise.all([bWaiting, aLater])), ['call_b', 'call_a'], 'not handed the other');
+  // An announcement whose call ended with no MCP call (denied before it ran) is dropped, so it never holds a later one:
+  // the next MCP call matching it and another only without the extra takes the other, never waiting out the wait.
+  const stale = new calls.CallIds();
+  announceCall(stale, agy('call_s', { q: 'x', toolSummary: 'Look x up' }), AGY, TOOLS, declared);
+  stale.settle('call_s');
+  announceCall(stale, agy('call_a', { q: 'x', toolSummary: 'Look x up again' }), AGY, TOOLS, declared);
+  assert.equal(await hurry(stale.take('look_up', { q: 'x' }, signal, 60_000)), 'call_a', 'the live one, not the ended one');
+  // A call that finds none of its own left while another still waits on its arguments takes one named for nothing, as
+  // any call does, rather than queue behind a call with nothing left to wait for.
+  const drained = new calls.CallIds();
+  announceCall(drained, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
+  const quit = new AbortController();
+  const holding = drained.take('look_up', { q: 'x' }, quit.signal, 60_000);
+  assert.equal(await drained.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000), 'call_a');
+  drained.add('call_n', undefined, undefined);
+  assert.equal(await hurry(drained.take('look_up', { q: 'x' }, signal, 60_000)), 'call_n', 'not queued behind the first');
+  quit.abort();
+  await assert.rejects(holding);
   // Another tool's declaration keeps nothing for this one.
   const other = new calls.CallIds();
   announceCall(other, agy('call_c', { q: 'c', toolSummary: 'Look c up' }), AGY, TOOLS, new Map([['check_echo', new Set(['toolSummary'])]]));
