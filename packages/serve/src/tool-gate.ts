@@ -29,7 +29,7 @@
 
 import { COMPUTER_OP_TOOL, COMPUTER_TOOLS, computerToolDefs, defaultPermissionOf, hostToolDefs, SHELL_FAMILY, SHELL_WATCHERS, type ShellPlace, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
 import { type AdapterFacts, READ_SKILL_FILE } from "@parcha/agentrun-kernel";
-import { COMPUTER_ROOT } from "./workspace/paths.js";
+import { COMPUTER_ROOT, piToolPath, portPath } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
 import { META_TOOLS } from "./meta-tool-names.js";
 import { DEFAULT_HARNESS } from "./harness.js";
@@ -41,7 +41,8 @@ import { settingOfDefinition } from "./computer-setting.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
 import { formatToolName, isCatalogName, mcpNameOf, mcpToolName, monidNameOf } from "./tool-names.js";
 import { filedFolders } from "./filed-tool.js";
-import { posix } from "node:path";
+import { foldName } from "./home-path.js";
+import { savePath, WEB_SAVE_TOOL } from "./web-save.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -134,16 +135,32 @@ const SAVED_AS_WRITES = ["computer_screenshot with save_as writes a file into th
  *  `path`, claude-agent's `file_path` and `notebook_path`), which filedRefusal reads. */
 const FILE_KEYS: ReadonlySet<string> = new Set(["read", "write", "edit"]);
 const PATH_ARGS = ["path", "file_path", "notebook_path"] as const;
-/** `given` as a path in the run's folder (`names`: its names, this machine's path, the computer's and each alias its file
- *  tools take, a CLI's scratch folder among them), relative to it
- *  ("" for the folder), or undefined outside it. Lexical (posix): no file is read, so a link is not followed. */
-function inRunFolder(names: readonly string[], given: string): string | undefined {
-  const abs = posix.resolve(names[0]!, given);
-  for (const name of names.map((one) => posix.resolve(one))) {
-    if (abs === name) return "";
-    if (abs.startsWith(`${name}/`)) return abs.slice(name.length + 1);
-  }
+/** The browser's registration that reads a file of the run's files (its `path`) into a page's file input. */
+const BROWSER_UPLOAD = "browser_upload";
+/** The run-file paths the call `name` (held to `key`) with `args` names, which filedRefusal holds, with the tool its
+ *  refusal names: the agent's own read, write and edit (by key; every PATH_ARGS it gives, as given), web_save's `path` as
+ *  where it saves (savePath: a bare name under media/), browser_upload's `path`. Undefined for any other call, and for
+ *  read_skill_file, which reads the agent's skill, not the run's files. */
+function runFilePaths(key: string, name: string, args: unknown): { tool: string; paths: string[] } | undefined {
+  if (args === null || typeof args !== "object") return undefined;
+  const given = args as Record<string, unknown>;
+  if (FILE_KEYS.has(key)) return name === READ_SKILL_FILE ? undefined : { tool: key, paths: PATH_ARGS.flatMap((arg) => (typeof given[arg] === "string" ? [given[arg]] : [])) };
+  if (key === WEB_SAVE_TOOL) return typeof given.path === "string" && given.path !== "" ? { tool: key, paths: [savePath(given.path)] } : undefined;
+  if (name === BROWSER_UPLOAD) return typeof given.path === "string" ? { tool: name, paths: [given.path] } : undefined;
   return undefined;
+}
+/** `given` as a path in the run's folder (`names`: its names, this machine's path, the computer's and each alias its file
+ *  tools take, a CLI's scratch folder among them), relative to it ("" for the folder), each way a tool opens it: as given,
+ *  and as pi's read, write and edit take it (piToolPath: one leading `@` dropped, unicode spaces plain), each resolved by
+ *  the port's own portPath. Lexical (posix): no file is read, so a link is not followed. */
+const inRunFolder = (names: readonly string[], given: string): string[] =>
+  [...new Set([given, piToolPath(given)])].flatMap((path) => portPath(path, names) ?? []);
+/** Whether `rel`, relative to the run's folder, is `folder` or under it, each segment compared as a disk that folds names
+ *  takes it (foldName: case, compatibility forms, marks), so Stripe/Pages and a fullwidth spelling are stripe/pages. */
+function inFolder(rel: string, folder: string): boolean {
+  const parts = rel === "" ? [] : rel.split("/");
+  const segments = folder.split("/");
+  return parts.length >= segments.length && segments.every((segment, i) => foldName(segment) === foldName(parts[i]!));
 }
 const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
 /** A session's `{name -> settings key}` map (nameMapOf). */
@@ -689,21 +706,23 @@ export class RunGate {
   /** The folders the revision's own file settings file answers in (filed-tool.ts filedFolders), read at the first file
    *  call: a run's revision does not change under it. */
   private filed?: readonly { key: string; folder: string }[];
-  /** Why the call `name` (held to `key`) with `args` is refused for a filed folder, or undefined: a call of the agent's own
-   *  read, write or edit (not read_skill_file, which reads the agent's skill) whose path is at or under a folder the
+  /** Why the call `name` (held to `key`) with `args` is refused for a filed folder, or undefined: a call that names a
+   *  run-file path (runFilePaths: the agent's own read, write and edit, web_save, browser_upload) at or under a folder the
    *  revision's own `mcp:` setting files answers in, by its words against the run's folder by every name of it (`work`,
    *  the computer's root and the names its file tools take: RunTools.names, a CLI's scratch folder among them; `..` and
-   *  ./ resolved). An ancestor, a sibling and a path outside the run's folder are not refused; bash is not gated by path. */
+   *  ./ resolved), as given and as pi's file tools take it (a leading `@` dropped), each segment folded as a disk that
+   *  folds names takes it. An ancestor, a sibling and a path outside the run's folder are not refused; bash is not gated
+   *  by path. */
   private filedRefusal(key: string, name: string, args: unknown, ran: "no" | "unknown"): string | undefined {
-    if (!FILE_KEYS.has(key) || name === READ_SKILL_FILE || args === null || typeof args !== "object") return undefined;
+    const named = runFilePaths(key, name, args);
+    if (!named?.paths.length) return undefined;
     const folders = (this.filed ??= filedFolders(this.overrides));
     if (!folders.length) return undefined;
-    for (const arg of PATH_ARGS) {
-      const given = (args as Record<string, unknown>)[arg];
-      if (typeof given !== "string") continue;
-      const rel = inRunFolder([this.where.work, COMPUTER_ROOT, ...(this.where.names ?? [])], given);
-      const hit = rel === undefined ? undefined : folders.find(({ folder }) => rel === folder || rel.startsWith(`${folder}/`));
-      if (hit) return `${key}${CANT_BE_CALLED}${given} is in ${hit.folder}/, the folder this agent's setting for ${hit.key} files that tool's answers in (its file setting), so the agent's own file tools are refused there. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
+    const names = [this.where.work, COMPUTER_ROOT, ...(this.where.names ?? [])];
+    for (const given of named.paths) {
+      const rels = inRunFolder(names, given);
+      const hit = folders.find(({ folder }) => rels.some((rel) => inFolder(rel, folder)));
+      if (hit) return `${named.tool}${CANT_BE_CALLED}${given} is in ${hit.folder}/, the folder this agent's setting for ${hit.key} files that tool's answers in (its file setting), so the agent's own file tools are refused there. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
     }
     return undefined;
   }

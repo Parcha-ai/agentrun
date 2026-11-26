@@ -145,3 +145,15 @@ test("browser_upload's path is a run file it reads into a page: in the folder it
   }
   assert.equal(await verdictOf(gate, "browser_upload", { path: "reports/q3.pdf", selector: "input[type=file]" }), "allow");
 });
+
+test("the gate's spelling of a path is pi's own: piToolPath answers what pi's read, write and edit resolve (pi-durable's resolveToolPath), so a pi upgrade that changes it fails here", async () => {
+  const { piToolPath } = await import("../dist/workspace/paths.js");
+  // pi's path-utils is not among its package's exports: loaded by its file, beside the tools module the exports name.
+  const { resolveToolPath } = await import(new URL("./path-utils.js", import.meta.resolve("@earendil-works/pi-durable/tools")).href);
+  const env = { absolutePath: async (path) => ({ ok: true, value: path }) };
+  const spaces = [" ", ...Array.from({ length: 11 }, (_, i) => String.fromCharCode(0x2000 + i)), " ", " ", "　"];
+  const cases = ["stripe/pages/a.json", "@stripe/pages/a.json", "@@stripe/pages/a.json", "@/workspace/stripe/a.json", " @stripe/a.json", " @stripe/a.json", "@ stripe/a.json", "stripe/ pages/a.json", "@", "", "~/a.json", "​stripe/a.json", "＠stripe/a.json", ...spaces.map((space) => `stripe${space}pages/a.json`), ...spaces.map((space) => `${space}@a.json`)];
+  for (const given of cases) assert.equal(piToolPath(given), await resolveToolPath(env, given, {}), JSON.stringify(given));
+  assert.equal(piToolPath("@stripe/pages/a.json"), "stripe/pages/a.json");
+  assert.equal(piToolPath("stripe　pages/a.json"), "stripe pages/a.json");
+});
