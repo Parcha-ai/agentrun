@@ -520,7 +520,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // store's), held by the runner's one redactor and this spec's log cut before anything can echo one. Its model's key goes
   // to the model choice and the adapter's provider (withModelKeys, never enumerable), so a key saved in
   // Settings → Model keys runs the next run with no restart, as one set where AgentRun starts does.
-  const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env, redact: run.redact }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch, claim.runId);
+  const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env, redact: run.redact, handBack: run.handBack, signal: run.signal }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch, claim.runId);
   // The run's own model key, when its caller handed one (model_key): opened at every claim, held by the redactors, read by
   // its model route alone; the CLI's process and its tools never carry it, nor any other model key then.
   // A run that starts on the server's key holds the claim's key holder too: a message's first key reaches its next request.

@@ -448,6 +448,9 @@ export type AdapterRun = PiRun & {
   /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins
    *  to its runner (computer-for-claim.ts ClaimLaunch.holder). Absent where no loop gave one. */
   readonly incarnation?: string;
+  /** LoopDeps.handBack: a request the run needs refused because the runner is closing hands the run back to resume
+   *  (claim-secrets.ts: the plan's renewal). Absent where no loop gave one. */
+  readonly handBack?: () => void;
   /** Stages the run row's `summary` on the next commit of this pass that writes a root entry of `kind` whose data `test`
    *  takes, in that commit (a tool host's wait on the person, its claim held: the server tells run.needs_input by the
    *  summary). Absent where no loop gave one. */
@@ -1915,7 +1918,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (passGate.sealed) return;
           passGate.expect(writesEntry(kind, test), { run: { summary } }).catch(() => undefined);
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, redact: deps.redact, signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn, ...(deps.incarnation ? { incarnation: deps.incarnation } : {}) };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, redact: deps.redact, signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn, ...(deps.incarnation ? { incarnation: deps.incarnation } : {}), ...(deps.handBack ? { handBack: deps.handBack } : {}) };
         // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
         // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written. A claim the spec
         // refuses (ClaimRefused: a handed sign-in that won't read back) ends the run in its words too.

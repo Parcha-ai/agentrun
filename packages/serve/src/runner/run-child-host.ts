@@ -30,7 +30,7 @@ import { harnessOf, planRecipeOf, recipeHarness } from "../harness-table.js";
 import { openHarnessKeys } from "../harness-keys.js";
 import { installDirOf, installForClaim, shareInstall } from "../harness-install.js";
 import { loadArchilSettings, noExecRegionOf } from "../archil-settings.js";
-import { planOf } from "../chatgpt-plan.js";
+import { handingBack, type PlanReader, planOf } from "../chatgpt-plan.js";
 import { forgottenSignIns, handedSignInReadsBack, peekSignIn, runSignIn, signInReads, verifyRunSignIn } from "../sign-ins-store.js";
 import { vendorsOver } from "../sign-ins.js";
 import { decisionProvidersIn, fauxFetch } from "../decisions.js";
@@ -646,6 +646,8 @@ interface ClaimReads {
   readonly signal?: AbortSignal;
   /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins. */
   readonly incarnation?: string;
+  /** LoopDeps.handBack: told when the run's ChatGPT renewal is refused because the runner is closing (PlanStopping). */
+  readonly handBack?: () => void;
   /** The Claude login the claim read for this run (staysInRunner), handed down as it was read: none, and a turn-on after
    *  its claim never moves it onto a login its claim did not check; one, and the runner reads the setting again at the
    *  run's start (claudeLogin), handing it only when both reads name the same folder. */
@@ -665,6 +667,8 @@ export type RunnerCut = HeldRedact;
  *  writes (big-writes.ts), let go at the claim's release and, by the caller, when the run's channel ends. */
 export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: RunnerCut, log: (line: string) => void, bigs: RunBigWrites = runBigWrites()): { held: Held; inputs(): Promise<void>; release(): Promise<void>; projectEnd?(): Promise<void> } {
   const { claim, run, launch, revision, claimed } = reads;
+  // The plan as the run asks for it: a renewal refused because the runner is closing hands the run back (handingBack).
+  const handed = (plan: PlanReader): PlanReader => (reads.handBack && reads.signal ? handingBack(plan, reads.handBack, reads.signal) : plan);
   const sealKey = deps.sealKey;
   const store = deps.store;
   const granted = ((revision.body as { tools?: unknown }).tools as readonly string[] | undefined) ?? [];
@@ -789,7 +793,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     plan: async () => {
       const plan = planOf(claimed);
       if (!plan) return undefined;
-      return { state: plan.state, models: [...plan.models], token: () => plan.token(), refused: (sent: string) => plan.refused(sent), watch: (listener: (tokens: string[]) => void) => plan.watch(listener) };
+      return { state: plan.state, models: [...plan.models], token: handed(plan).token, refused: (sent: string) => plan.refused(sent), watch: (listener: (tokens: string[]) => void) => plan.watch(listener) };
     },
     // The claim's own login, as this runner reads the claim (its harness, its place, no model key of its own), whatever
     // the process names: its access token alone, read again at each ask and renewed here when it must be (near its end, or
@@ -910,7 +914,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       const keyed = await runKeyed();
       const got = keyed ? {} : await tierModelKeys(keys, named);
       const plan = planOf(got);
-      return { keys: stringsOf(got), ...(plan ? { plan: { state: plan.state, models: [...plan.models], token: () => plan.token(), refused: (sent: string) => plan.refused(sent), watch: (listener: (tokens: string[]) => void) => plan.watch(listener) } } : {}) };
+      return { keys: stringsOf(got), ...(plan ? { plan: { state: plan.state, models: [...plan.models], token: handed(plan).token, refused: (sent: string) => plan.refused(sent), watch: (listener: (tokens: string[]) => void) => plan.watch(listener) } } : {}) };
     },
     // The decision providers the claim's learned workflows' questions name (learnedDecisionKeys), as this runner chose
     // them: of those, the ones the process asks for (its gate's allowed). Any other provider gets no key.
@@ -1331,7 +1335,7 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
         // Its keys are its capped plane's (harness-loops.ts underServerCeilings), as the run's own loop reads that plane: a
         // run kept on Parallel and claimed after the server set kernel or native is handed no Parallel key.
         const capped = await underServerCeilings(claimDeps, launch, revisionRow as never);
-        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, capped, claim.runId);
+        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact, handBack: loopDeps.handBack, signal: loopDeps.signal }, revisionRow as never, capped, claim.runId);
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
@@ -1368,7 +1372,7 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
         const tops = runTops(deps.data, runRow.agentId, claim.runId);
         // The run's pieced writes (big-writes.ts): let go when its channel ends, or at the claim's release.
         const bigs = runBigWrites();
-        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal, login, ...(loopDeps.incarnation ? { incarnation: loopDeps.incarnation } : {}) }, cut, log, bigs);
+        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed, signal: loopDeps.signal, login, ...(loopDeps.incarnation ? { incarnation: loopDeps.incarnation } : {}), ...(loopDeps.handBack ? { handBack: loopDeps.handBack } : {}) }, cut, log, bigs);
         // The run's trace: its process posts each call of it (tracer.ts postedTracing), and this runner's tracing makes the
         // spans and exports them in the background. No exporter, flush or OTLP setting is ever the process's, so neither
         // its exit nor this claim's release waits on a collector. Made inside the claim's cleanup, so nothing it waits on

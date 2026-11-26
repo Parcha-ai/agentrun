@@ -87,6 +87,10 @@ export class PlanSignInRefused extends Error {}
 /** No plan token can be had now (signed out, expired, or OpenAI could not renew it), in plain words: a model proxy
  *  refuses the request in these words (CredentialUnavailable). */
 export class PlanUnavailable extends CredentialUnavailable {}
+/** No renewal is started because the reader's store is stopping its renewals (stopRenewals: a server's stop, or a
+ *  runner's RUNNER_RENEWALS_SERVED_MS into its close): no refresh token was sent, and the sign-in stays saved. A runner
+ *  hands the run that asked back to resume on its next start instead of failing it (LoopDeps.handBack). */
+export class PlanStopping extends PlanUnavailable {}
 
 /** What a run reads of the plan: whether it is signed in now, its models, and its token, asked per request; `watch`
  *  tells each token as it is read or renewed, for a redactor. */
@@ -109,6 +113,42 @@ export const planOf = (env: NodeJS.ProcessEnv): PlanReader | undefined => (env a
 export function withPlan<E extends NodeJS.ProcessEnv>(env: E, plan: PlanReader | undefined): E {
   if (plan) Object.defineProperty(env, PLAN, { value: plan, enumerable: true, configurable: true, writable: true });
   return env;
+}
+/** A runner's close tail: `work` (its runs' close, then what it lets go of), then, whatever `work` threw, its renewals'
+ *  drain and its store's close, in that order, so a renewal OpenAI is answering still saves its pair; `work`'s error is
+ *  thrown after them. */
+export async function closeStoreAfter(work: () => Promise<void>, drainRenewals: () => Promise<void>, store: { close(): Promise<void> }): Promise<void> {
+  try {
+    await work();
+  } finally {
+    await drainRenewals();
+    await store.close();
+  }
+}
+
+/** `plan` for one claimed run on a runner: a renewal refused because the runner is closing (PlanStopping) tells
+ *  `handBack` (LoopDeps.handBack), which stops the run's loop for a shutdown and aborts `signal`, and the ask is answered
+ *  with that abort, so the run is handed back to resume, never failed for it. Any other answer is the plan's own. */
+export function handingBack(plan: PlanReader, handBack: () => void, signal: AbortSignal): PlanReader {
+  return {
+    get state() {
+      return plan.state;
+    },
+    get models() {
+      return plan.models;
+    },
+    token: async () => {
+      try {
+        return await plan.token();
+      } catch (error) {
+        if (!(error instanceof PlanStopping)) throw error;
+        handBack();
+        throw signal.aborted ? signal.reason : error;
+      }
+    },
+    refused: (sent) => plan.refused(sent),
+    watch: (listener) => plan.watch(listener),
+  };
 }
 /** Whether `env` runs on the plan now. */
 export const signedIn = (env: NodeJS.ProcessEnv): boolean => planOf(env)?.state === "signed_in";
@@ -716,7 +756,7 @@ export class ChatGPTPlan implements PlanReader {
     let flight = flights.get(key);
     if (!flight) {
       // Its store stopping: a renewal started now could spend the refresh token and lose the pair with the store closed.
-      if (this.stopping()) throw new PlanUnavailable(RENEW_LATER);
+      if (this.stopping()) throw new PlanStopping(RENEW_LATER);
       const ours = renewalsOf(this.#deps.store).flights;
       const started: Promise<string> = this.renew(key).finally(() => {
         flights.delete(key);
@@ -768,12 +808,13 @@ export class ChatGPTPlan implements PlanReader {
       if (row.lease && row.lease.until > at) {
         if (row.credential.access !== this.#refusedAccess && row.credential.expires > this.now()) return row.credential.access;
         // Past the bound, or its server stopping: a wait on another holder's renewal never holds a stop's drain.
-        if (this.now() > giveUp || this.stopping()) throw new PlanUnavailable(RENEW_LATER);
+        if (this.stopping()) throw new PlanStopping(RENEW_LATER);
+        if (this.now() > giveUp) throw new PlanUnavailable(RENEW_LATER);
         await sleep(LEASE_WAIT_MS);
         continue;
       }
       // Its store's stop began while it read: no lease is taken, so no refresh token is spent past the stop.
-      if (this.stopping()) throw new PlanUnavailable(RENEW_LATER);
+      if (this.stopping()) throw new PlanStopping(RENEW_LATER);
       const leased: Row = { ...row, lease: { holder, until: at + REFRESH_LEASE_MS } };
       // Changed since it was read (a peer leased or renewed it, or the owner signed in again): read it again.
       const mine = await this.swap(bytes, leased);
@@ -791,7 +832,7 @@ export class ChatGPTPlan implements PlanReader {
     // token is never sent past the stop, so the drain waits only on refreshes sent before it, and the lease goes back.
     if (this.stopping()) {
       await this.swap(bytes, bare).catch(() => undefined);
-      throw new PlanUnavailable(RENEW_LATER);
+      throw new PlanStopping(RENEW_LATER);
     }
     let next: Credential;
     try {

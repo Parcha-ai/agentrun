@@ -14,7 +14,7 @@ import { keysFor, needsOf, RUN_SECRETS, type RunNeeds } from "../run-secrets.js"
 import { BUILTIN_OWN_KEYS } from "../harness-table.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
-import { PLAN_PROVIDER, planOf, planReaderOf, withPlan } from "../chatgpt-plan.js";
+import { handingBack, PLAN_PROVIDER, planOf, planReaderOf, withPlan } from "../chatgpt-plan.js";
 import type { SealedKeys } from "../store/store.js";
 import { handsJevWeb, handsParallel } from "../tool-plane.js";
 import type { Revision } from "../agent-rows.js";
@@ -61,7 +61,7 @@ type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8
  *  a model key's name, TypeSafe's (key-words.ts; model.ts PROVIDER_KEYS typesafe), is a decision key (secrets.ts
  *  DECISION_KEYS): keysFor never names one, so the model key filter below never sees it, and decisionKeysFor lays it
  *  apart, as it lays OpenRouter's for a decision node that runs on it. */
-export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: HeldRedact }, revision: Revision, launch: Pick<RunLaunch, "plane" | "model" | "hold">, runId?: string): Promise<NodeJS.ProcessEnv> {
+export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: HeldRedact; readonly handBack?: (() => void) | undefined; readonly signal?: AbortSignal | undefined }, revision: Revision, launch: Pick<RunLaunch, "plane" | "model" | "hold">, runId?: string): Promise<NodeJS.ProcessEnv> {
   const base = withoutSecrets(deps.env ?? {});
   const needs = await needsOf(revision);
   const keyless = sendsNoModelKey(launch, deps.env ?? {});
@@ -106,7 +106,9 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   // proxy sends (chatgpt-plan.ts), never put on the environment its tools run under (a symbol no spawn copies). Only for
   // a run that can reach a plan model: one pinned to a key's model (and its tiers on keys) never holds the sign-in, which
   // renews and spends the person's plan for any process that holds it.
-  const plan = keyless ? undefined : await planReaderOf(deps.store, deps.sealKey);
+  // With the loop's handBack, a renewal refused because the runner is closing hands the run back (handingBack).
+  const read = keyless ? undefined : await planReaderOf(deps.store, deps.sealKey);
+  const plan = read && deps.handBack && deps.signal ? handingBack(read, deps.handBack, deps.signal) : read;
   return plan && reachesPlan(withPlan({ ...working }, plan), scoped, revision) ? withPlan(env, plan) : env;
 }
 
