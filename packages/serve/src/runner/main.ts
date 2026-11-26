@@ -575,6 +575,7 @@ function said(name: string, event: RunnerEvent): string | undefined {
   if (event.type === "claimed") return `Runner ${name} claimed ${event.claim.runId} (epoch ${event.claim.epoch})`;
   if (event.type === "released") return `Runner ${name} released ${event.runId} (${event.end})`;
   if (event.type === "started" || event.type === "ended") return runLine(event);
+  if (event.type === "learning-deadline") return `Runner ${name} cancels ${event.runId}: a learning run at its deadline`;
   return troubleLine(name, event);
 }
 
