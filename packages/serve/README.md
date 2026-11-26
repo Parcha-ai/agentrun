@@ -3868,6 +3868,10 @@ serves these routes alone:
 - a run's usage lines (`GET /runs/{id}/usage`): what its `cost.usd` joins, by meter, cut of the host's secrets as the
   run's read is;
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
+- an ended run's share bundle (`GET /runs/{id}/export`, with its `?restore=`), the `agentrun.share/1` document the full
+  server answers, cut by the same scrubber: `409` before the run ends. A workflow run's bundle carries its graph, cut,
+  where `GET /runs/{id}/graph` stays refused. The share preview page (`/share/{run}`) is the console's, refused here:
+  `agentrun share RUN --out FILE` writes the bundle;
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
   the backend whose inline runs made it;
