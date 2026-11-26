@@ -278,15 +278,18 @@ export const SETTINGS_NOT_READ: Resolution = "unavailable: the server's tool set
  *  tool is not granted in today's tooling: it runs nothing, never the value it was kept with (claimPlane). */
 export const CEILING_LEAVES_NONE: Resolution = "unavailable: the server's tool setting keeps it from this run, with nothing it allows in its place";
 const KEYLESS: readonly string[] = ["firecrawl-keyless", "exa-keyless"];
-/** The ceiling `pick` (the server's setting for `capability`) sets over `resolves`, what a run's capability resolves to
- *  (the agent's pick, or a kept run's from before the setting), where it goes past it; else undefined. Past it: a
- *  keyless third party or Parallel, whoever picked it; a native search where the ceiling is `off`. One that sends
- *  nothing (unavailable, denied, off), the guarded direct fetch and the ceiling's own native search go past none. */
-const ceilingOver = (capability: Pickable, pick: string | undefined, resolves: string | undefined): string | undefined => {
-  if (pick === undefined || resolves === undefined || !CEILINGS[capability]?.includes(pick)) return undefined;
-  if (KEYLESS.includes(resolves) || resolves === "parallel") return pick;
-  if (resolves === "native" && pick !== "native") return pick;
-  return undefined;
+/** Whether `provider`, as picked or as resolved, goes past ceiling `pick`: a keyless third party or Parallel, under any
+ *  ceiling; a native search, under one that is not native search itself (`off`). */
+const pastCeiling = (pick: string, provider: string | undefined): boolean =>
+  provider !== undefined && (KEYLESS.includes(provider) || provider === "parallel" || (provider === "native" && pick !== "native"));
+/** The ceiling `pick` (the server's setting for `capability`) sets over a run's capability, where it goes past it; else
+ *  undefined. Past it: the agent's `choice` named past it, whatever it resolves to (Parallel with no key, a native
+ *  search the harness lacks), or `resolves`, what it resolves to (the agent's auto, or a kept run's from before the
+ *  setting), past it. One that sends nothing (unavailable, denied, off) from a choice within it, the guarded direct
+ *  fetch and the ceiling's own native search go past none. */
+const ceilingOver = (capability: Pickable, pick: string | undefined, choice: string | undefined, resolves: string | undefined): string | undefined => {
+  if (pick === undefined || !CEILINGS[capability]?.includes(pick)) return undefined;
+  return pastCeiling(pick, choice) || pastCeiling(pick, resolves) ? pick : undefined;
 };
 
 /** What `capability` resolves to on a run of `input`, and why in a plain sentence (capabilities' `why`): one rule, so
@@ -303,7 +306,7 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
 
 function ceilinged(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
   const said = explained(capability, input);
-  const ceiling = input.override === undefined ? undefined : ceilingOver(capability, input.pick, said.resolves);
+  const ceiling = input.override === undefined ? undefined : ceilingOver(capability, input.pick, input.override, said.resolves);
   if (ceiling === undefined) return said;
   const { override, ...server } = input;
   const kept = explained(capability, server);
@@ -550,14 +553,15 @@ export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, t
   return tooling ? recheckPlane(keptFromBefore(fresh), env) : {};
 }
 
-/** The ceiling over capability `name` of `kept` (a launch's Plane) under the server's `settings` now: ceilingOver, or,
- *  where the settings could not be read (`unread`), the strictest (UNREAD_CEILINGS). */
-const claimCeiling = (name: Pickable, kept: Plane, settings: ToolSettingsMap, unread: boolean): string | undefined =>
-  ceilingOver(name, unread ? UNREAD_CEILINGS[name] : settings[name]?.provider, kept[name]);
+/** The ceiling over capability `name` of `kept` (a launch's Plane) under the server's `settings` now, for a run of
+ *  `tooling` (its agent's own picks): ceilingOver, or, where the settings could not be read (`unread`), the strictest
+ *  (UNREAD_CEILINGS). */
+const claimCeiling = (name: Pickable, kept: Plane, tooling: Tooling, settings: ToolSettingsMap, unread: boolean): string | undefined =>
+  ceilingOver(name, unread ? UNREAD_CEILINGS[name] : settings[name]?.provider, tooling.overrides?.[name]?.provider, kept[name]);
 
 /** Whether a capability of `kept` goes past a ceiling of the server's `settings` now (claimCeiling). */
-export const overCeilings = (kept: Plane, settings: ToolSettingsMap, { unread = false }: { unread?: boolean } = {}): boolean =>
-  PICKABLE.some((name) => claimCeiling(name, kept, settings, unread) !== undefined);
+export const overCeilings = (kept: Plane, tooling: Tooling, settings: ToolSettingsMap, { unread = false }: { unread?: boolean } = {}): boolean =>
+  PICKABLE.some((name) => kept[name] !== undefined && claimCeiling(name, kept, tooling, settings, unread) !== undefined);
 
 /** The Plane a claim hands its run (runner/harness-loops.ts, before anything binds): `kept`, the launch's (resolved at
  *  the run's start), under the server's `settings` now. A capability kept past a ceiling the server's setting now sets
@@ -567,7 +571,7 @@ export const overCeilings = (kept: Plane, settings: ToolSettingsMap, { unread = 
  *  (SETTINGS_NOT_READ), and so does one today's resolution leaves without one (CEILING_LEAVES_NONE). Every other value
  *  stays as kept; the same Plane where nothing is past a ceiling. */
 export function claimPlane(kept: Plane, env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false, model, unread = false }: { capped?: boolean; model?: string; unread?: boolean } = {}): Plane {
-  const past = PICKABLE.filter((name) => claimCeiling(name, kept, settings, unread) !== undefined);
+  const past = PICKABLE.filter((name) => kept[name] !== undefined && claimCeiling(name, kept, tooling, settings, unread) !== undefined);
   if (!past.length) return kept;
   const out: Plane = { ...kept };
   if (unread) {

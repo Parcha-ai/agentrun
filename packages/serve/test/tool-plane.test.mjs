@@ -144,6 +144,16 @@ test("the server's ceiling covers Parallel by name: under kernel for web_fetch o
   assert.match(search.why, /^the server's setting, native, is a ceiling over this agent's pick of parallel; /);
   assert.deepEqual(explainCapability("web_search", { ...base, harness: "pi", gateway: true, parallelKey: true, pick: "native", override: "parallel" }).resolves, "unavailable: no native search for pi behind a gateway", "no native search: unavailable, never Parallel");
   assert.equal(named("web_fetch", "parallel").resolves, "parallel", "Parallel set server-wide: no ceiling");
+  // Named with no Parallel key: the ceiling still holds, never "no key" in its place.
+  const keyless = (capability, pick, extra = {}) => explainCapability(capability, { ...base, harness: "pi", model: "anthropic/claude-sonnet-5-5", pick, override: "parallel", ...extra });
+  assert.deepEqual(keyless("web_fetch", "kernel"), { resolves: "kernel", why: "the server's setting, kernel, is a ceiling over this agent's pick of parallel; the guarded direct fetch, picked in settings" }, "no Parallel key under kernel: the guarded direct fetch");
+  assert.equal(keyless("web_search", "native").resolves, "native", "no Parallel key under native: native search");
+  assert.equal(keyless("web_search", "off").resolves, SEARCH_OFF, "no Parallel key under off: off");
+  const noKey = { AGENT_MODEL: "anthropic/claude-sonnet-5-5" };
+  const fetchByName = { tools: ["web_fetch"], overrides: { web_fetch: { provider: "parallel" } } };
+  assert.deepEqual(planeFor(noKey, fetchByName, { web_fetch: { provider: "kernel" } }), { web_fetch: "kernel" }, "its plane: the guarded direct fetch, never refused for a key");
+  assert.deepEqual(claimPlane({ web_fetch: "parallel" }, noKey, fetchByName, { web_fetch: { provider: "kernel" } }), { web_fetch: "kernel" }, "kept on Parallel, its key gone since: its claim under the ceiling, never without a fetch");
+  assert.deepEqual(claimPlane({ web_fetch: "unavailable: parallel picked, no PARALLEL_API_KEY" }, noKey, fetchByName, { web_fetch: { provider: "kernel" } }), { web_fetch: "kernel" }, "kept with no Parallel key: its claim under the ceiling");
 
   const parallel = { tools: ["web_search", "web_fetch"], overrides: { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } } };
   const ceilings = { web_fetch: { provider: "kernel" }, web_search: { provider: "native" } };
@@ -164,6 +174,7 @@ test("the server's off for web_search is absolute: an agent's pick of keyless Fi
     assert.deepEqual(claimPlane({ web_search: kept }, env, { tools: ["web_search"], overrides: { web_search: { provider: pick } } }, off), { web_search: SEARCH_OFF }, `kept on ${kept} from ${pick}: off at its next claim`);
   }
   assert.equal(explainCapability("web_search", { ...base, harness: "pi", pick: "native", override: "native", model: "anthropic/claude-sonnet-5-5" }).resolves, "native", "under native, native by name is the ceiling's own");
+  assert.deepEqual(explainCapability("web_search", { ...base, harness: "pi", gateway: true, pick: "off", override: "native" }), { resolves: SEARCH_OFF, why: "the server's setting, off, is a ceiling over this agent's pick of native; turned off in settings" }, "native by name where the harness has none: off, never unavailable");
   assert.equal(explainCapability("web_search", { ...base, harness: "pi", pick: "off", override: "firecrawl-keyless", permission: "deny" }).resolves, DENIED, "a deny: the gate refuses each call");
 });
 

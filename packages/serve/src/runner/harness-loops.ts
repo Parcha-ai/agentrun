@@ -97,8 +97,8 @@ export async function underServerCeilings(deps: AdapterSpecDeps, launch: RunLaun
   if (!launch.plane) return launch;
   const { settings, unreadable } = await storeSettings(deps.store);
   const unread = unreadable === true;
-  if (!overCeilings(launch.plane, settings, { unread })) return launch;
   const tooling = await toolingOf(revision);
+  if (!overCeilings(launch.plane, tooling, settings, { unread })) return launch;
   const model = launch.model ? `${launch.model.provider}/${launch.model.modelId}` : undefined;
   const plane = claimPlane(launch.plane, unread ? deps.env ?? process.env : await savedNamesOver(deps), tooling, settings, { capped: launch.maxCostUsd !== undefined, unread, ...(model ? { model } : {}) });
   return { ...launch, plane };
