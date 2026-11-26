@@ -506,7 +506,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
   // On an Archil region with no serverless exec, the checkout now, as the pi spec makes it (pr-checkout.ts).
   if (body.checkout && noExec !== undefined) {
-    checkout = await checkoutWhereNoExec(deps, tools.shell === "computer" ? tools.workspace : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
+    checkout = await checkoutWhereNoExec(deps, tools.shell === "computer" ? { workspace: tools.workspace, fresh: computer.fresh === true } : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
     holds.hold({ checkout });
   }
   const root = runFolder(deps.data, runRow.agentId, claim.runId);

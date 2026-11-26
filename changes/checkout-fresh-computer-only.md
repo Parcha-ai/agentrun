@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+On an Archil region with no serverless exec, a run's checkout (`checkout: pull_request` or `checkout: repository`) is made in its computer only when the claim started that computer. A sandbox kept through a wait and taken back, the agent's own persistent computer and a paired computer may already have run the agent's code, so the server hands them no GitHub token: the run gets no `repo/` folder, and it and its timeline are told why up front. Every checkout's git, on every mode, now puts the App's Authorization header in the environment of the calls that reach GitHub alone (the fetches, `ls-remote`), never in the script's or any other git call's, copies no template at `git init`, runs no hook, and finds `sh`, `git` and the rest in `/usr/bin` and `/bin` before any other folder. An attached computer's exec whose stdin write fails with an error other than a closed input now closes that stdin, so the program answers at once instead of at the call's deadline.

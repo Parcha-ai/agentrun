@@ -738,9 +738,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   let remoteProjectCapture = false;
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
   // On an Archil region with no serverless exec, the checkout now: in the computer that mounts the run's folder, through
-  // its own exec, writing through its mount; with none, the run is told why there is none (pr-checkout.ts).
+  // its own exec, writing through its mount, where this claim started it (ClaimComputer.fresh); with none, or one an
+  // earlier claim or another run had, the run is told why there is none (pr-checkout.ts).
   if (body.checkout && noExec !== undefined) {
-    checkout = await checkoutWhereNoExec(deps, tools.shell === "computer" ? tools.workspace : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
+    checkout = await checkoutWhereNoExec(deps, tools.shell === "computer" ? { workspace: tools.workspace, fresh: computer.fresh === true } : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
     holds.hold({ checkout });
   }
 

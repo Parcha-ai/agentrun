@@ -52,8 +52,10 @@ const KINDS = {
 
 /** The disk's execs: Archil's serverless exec, asked. */
 const execsOf = (disk) => disk.calls.filter((call) => call.op === "exec");
+/** The checkout's git script, by its init. */
+const CHECKOUT_SCRIPT = /\binit -q --template= /;
 /** The computer's process.start calls that ran the checkout's git script. */
-const checkoutStarts = (computer) => computer.calls.filter(([method, params]) => method === "process.start" && params.argv.some((arg) => /git init -q/.test(arg)));
+const checkoutStarts = (computer) => computer.calls.filter(([method, params]) => method === "process.start" && params.argv.some((arg) => CHECKOUT_SCRIPT.test(arg)));
 
 for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFromLaunch], ["the CLI spec (opencode)", "opencode", cliRunSpecFromLaunch]]) {
   for (const kind of Object.keys(KINDS)) {
@@ -147,7 +149,7 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     const disk = new FakeArchilDisk();
     const run = await mode2Run(t, { harness, disk, region: AWS, processes: true, body: { checkout: "pull_request" }, launch, deps: { githubWeb: `file://${gh}` } });
     const { spec } = await run.claimNext(build);
-    const fetches = disk.calls.map((call, index) => ({ call, index })).filter(({ call }) => call.op === "exec" && /git init -q/.test(call.command));
+    const fetches = disk.calls.map((call, index) => ({ call, index })).filter(({ call }) => call.op === "exec" && CHECKOUT_SCRIPT.test(call.command));
     assert.equal(fetches.length, 1, JSON.stringify(execsOf(disk).map((call) => call.command.slice(0, 80))));
     assert.ok(fetches[0].index < run.mounts[0].at, "before the computer's mount took the disk's write delegation");
     assert.deepEqual(checkoutStarts(run.computer), [], "nothing of the checkout ran in the computer");
