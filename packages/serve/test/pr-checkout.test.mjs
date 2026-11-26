@@ -198,11 +198,11 @@ const SCRIPTS = {
   repository: { run: (options, server) => repoCheckout({ ...options, repo: "acme/private", web: server.url }), at: (pull) => pull.base },
 };
 
-/** A git server holding acme/private (60 commits behind, so the pull request's checkout deepens), which takes only the
- *  App's token's header, and a mint that gives that token. */
-async function privateServer(t, dir) {
+/** A git server holding acme/private (60 commits behind, so the pull request's checkout deepens; `shape` is pullRepo's),
+ *  which takes only the App's token's header, and a mint that gives that token. */
+async function privateServer(t, dir, shape = { shared: 4, ahead: 2, behind: 60 }) {
   const gh = join(dir, "gh");
-  const pull = pullRepo(gh, "acme/private", { shared: 4, ahead: 2, behind: 60 });
+  const pull = pullRepo(gh, "acme/private", shape);
   const token = `ghs_${"H".repeat(36)}`;
   const authorization = `Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`;
   const server = await gitHttp(t, gh, { authorization });
@@ -337,7 +337,8 @@ for (const [kind, script] of Object.entries(SCRIPTS)) {
 
   test(`checkout ${kind}, run: the repository moved into ${CHECKOUT_DIR}/ is whole: its own .git with the refs, the shallow file and the owner file, no worktree pointing elsewhere, and git status and merge-base work there`, { timeout: 120_000 }, async (t) => {
     const dir = await scratch(t);
-    const server = await privateServer(t, dir);
+    // A history longer than the deepened fetches, so both kinds end shallow and a .git/shallow is there to move.
+    const server = await privateServer(t, dir, { shared: 200, ahead: 2, behind: 60 });
     const { folder, workspace } = await runFolder(dir);
     const made = await script.run({ workspace, mint: server.mint }, server);
     const repo = join(folder, CHECKOUT_DIR);
@@ -347,6 +348,7 @@ for (const [kind, script] of Object.entries(SCRIPTS)) {
     assert.throws(() => git(repo, "config", "--get", "core.worktree"), undefined, "no core.worktree");
     assert.ok(readFileSync(join(repo, ".git", "shallow"), "utf8").trim().length > 0, "the shallow file came with it");
     assert.ok(readFileSync(join(repo, ".git", "agentrun-claim"), "utf8").trim().length > 0, "the owner file came with it");
+    assert.ok(Number(git(repo, "rev-list", "--count", "--all")) > 0, "every ref's history walks to its shallow edges");
     assert.equal(git(repo, "status", "--porcelain"), "", "git status works, and the checkout is clean");
     if (kind === "pull_request") {
       for (const ref of ["pr/head", "pr/base", "pr/merge-base"]) git(repo, "rev-parse", "--verify", `refs/${ref}`);
