@@ -285,9 +285,12 @@ export interface HostFacts {
 	 * list by, the map in parts of at most valueBytes each), unpacks those get and list answer, and asks list for that
 	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'. unpacked:
 	 * the host's machines may also carry their labels as given (made before it packed): one with no packed map reads as
-	 * its stored labels, and a listing by name asks for the labels as given beside the packed name.
+	 * its stored labels, and a listing by name asks for the labels as given beside the packed name. named: the host's
+	 * machine names carry the run and epoch labels beside the adapter's name (Render's), so a create's listings by its name
+	 * ask for its run and epoch too where its spec has both, and the host can look up the one whole name; the machines
+	 * kept are still those whose get carries the name's labels.
 	 */
-	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number; unpacked?: true } };
+	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number; unpacked?: true }; named?: true };
 	/**
 	 * Paths of the vendor's image that root runs or reads and whose permissions its template build sets wider than
 	 * root's: create makes each root's alone (owned by root, writable by no group or other user), and everything under a

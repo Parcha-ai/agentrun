@@ -325,7 +325,7 @@ test("a labels read that fails or never answers gives get the name's labels with
 	]) {
 		let failing = true;
 		const render = fakeRender({ answer: (method, path, body, { signal }) => (failing && path === "/runs/sync" && body.command.includes(LABELS_FILE) ? fails(signal) : undefined) });
-		plant(render, SBX, NAME, { labels: LABELS });
+		plant(render, SBX, `${NAME}-r${runHash("run-1")}`, { labels: LABELS });
 		const { host } = provider(render);
 		const started = Date.now();
 		assert.deepEqual((await host.get(SBX, { timeoutMs: 300 })).labels, own, what);
@@ -335,7 +335,7 @@ test("a labels read that fails or never answers gives get the name's labels with
 	}
 	const caller = new AbortController();
 	const render = fakeRender({ answer: (method, path, body, { signal }) => (path === "/runs/sync" ? (caller.abort(), hang(signal)) : undefined) });
-	plant(render, SBX, NAME, { labels: LABELS });
+	plant(render, SBX, `${NAME}-r${runHash("run-1")}`, { labels: LABELS });
 	await assert.rejects(provider(render).host.get(SBX, { ...CTX, signal: caller.signal }), (error) => error.code === "aborted", "the caller's own abort is no failed read: it aborts");
 });
 
@@ -396,8 +396,8 @@ test("a sandbox Render still reads running after its terminate is read without i
 	assert.equal(sandbox.record.status, "terminated");
 	Object.assign(sandbox, { ending: undefined });
 	sandbox.record.status = "running";
-	sandbox.files.set(LABELS_FILE, JSON.stringify({ ...LABELS, "agentrun.run": "run-2" }));
-	assert.equal((await made.host.get(SBX, CTX)).labels["agentrun.run"], "run-2", "the labels were let go once Render read it terminated");
+	sandbox.files.set(LABELS_FILE, JSON.stringify({ ...LABELS, "user.read": "again" }));
+	assert.equal((await made.host.get(SBX, CTX)).labels["user.read"], "again", "the labels were let go once Render read it terminated");
 });
 
 test("a sandbox Render ended by itself, which a listing no longer shows, leaves no labels behind", async () => {
@@ -409,9 +409,9 @@ test("a sandbox Render ended by itself, which a listing no longer shows, leaves 
 	render.sandboxes.delete(SBX);
 	assert.deepEqual((await host.list({ "agentrun.computer": "1" }, CTX)).map(({ id }) => id), ["sbx-00000000000000000001"]);
 	render.sandboxes.set(SBX, ended);
-	ended.files.set(LABELS_FILE, JSON.stringify({ ...LABELS, "agentrun.run": "run-2" }));
+	ended.files.set(LABELS_FILE, JSON.stringify({ ...LABELS, "user.read": "again" }));
 	const runs = render.runs().length;
-	assert.equal((await host.get(SBX, CTX)).labels["agentrun.run"], "run-2", "read again: the listing that missed it let its labels go");
+	assert.equal((await host.get(SBX, CTX)).labels["user.read"], "again", "read again: the listing that missed it let its labels go");
 	assert.equal(render.runs().length, runs + 1);
 	assert.deepEqual((await host.get("sbx-00000000000000000001", CTX)).labels["agentrun.run"], "run-1");
 	assert.equal(render.runs().length, runs + 1, "one the listing showed is kept");
@@ -445,8 +445,8 @@ test("list reads every page by cursor and matches the name asked itself, leaves 
 
 	const few = fakeRender();
 	const named = (n, run) => `computer-00000000000${n}-r${runHash(run)}-e1`;
-	plant(few, "sbx-one0123456789", named(1, "run-1"), { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000001", "agentrun.run": "run-1" } });
-	plant(few, "sbx-two0123456789", named(2, "run-2"), { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000002", "agentrun.run": "run-2" } });
+	plant(few, "sbx-one0123456789", named(1, "run-1"), { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000001", "agentrun.run": "run-1", "agentrun.epoch": "1" } });
+	plant(few, "sbx-two0123456789", named(2, "run-2"), { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000002", "agentrun.run": "run-2", "agentrun.epoch": "1" } });
 	plant(few, "sbx-new0123456789", named(3, "run-1"), { status: "creating" });
 	const other = provider(few).host;
 	const byRun = await other.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX);
