@@ -45,7 +45,7 @@ async function claimed(t, { store, dir }, server, redact) {
   await pinnedRun(store, "run-1", [server]);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 10 * HOUR });
   // A runner beside a local install, as the CLI's is: the fake MCP server is on loopback.
-  const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: [`mcp:${server}/add`], harness: { commit: async () => undefined }, work: () => dir, redact: redact ?? heldRedactor(keepText), ...(redact ? { hold: redact.hold } : {}) });
+  const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: [`mcp:${server}/add`], harness: { commit: async () => undefined }, work: () => dir, redact: heldRedactor(keepText), ...(redact ? { hold: redact.hold } : {}) });
   t.after(() => mcp.release());
   const add = mcp.tools.find((tool) => tool.name === `mcp__${server}__add`);
   return (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
