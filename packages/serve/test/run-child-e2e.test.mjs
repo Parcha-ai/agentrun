@@ -220,3 +220,42 @@ test("a run's process: a raise its loop refuses (not above the cap) on a run par
   assert.match(String(row?.refused), /raise/i, `written refused in the cap's words: ${JSON.stringify(row)}`);
   assert.equal(run.state, "parked", JSON.stringify(run));
 });
+
+test("where runs have users of their own, a run reopened by a message while its last process's slot is still reaped starts its next process only once that cleanup is done: its folders and TMPDIR survive it", { timeout: 120_000 }, async (t) => {
+  const dir = scratchDir(t, "runas-reopen-");
+  const helper = join(dir, "agentrun-runas");
+  // The image's helper, stood in for: every call logged, `run` becomes the run's process, and a slot's reap after a run of
+  // it is slow (its processes killed one by one), so the run's end commit lands well before its claim lets go.
+  writeFileSync(helper, `#!/bin/sh\nd=$(dirname "$0")\nran=no; grep -q "^run $2 " "$d/log" 2>/dev/null && ran=yes\necho "$*" >> "$d/log"\ncase "$1" in\nreap) [ "$ran" = yes ] && { sleep 3; echo "reaped $2" >> "$d/events"; }; exit 0 ;;\nrun) echo "run $2" >> "$d/events"; shift 2; while [ "$1" != -- ]; do shift; done; shift; exec "$@" ;;\nesac\nexit 0\n`);
+  chmodSync(helper, 0o755);
+  // Its first turn answers at once; its second (the message's) waits past the first claim's cleanup, then says whether its
+  // TMPDIR is still there and takes a file.
+  const faux = join(dir, "faux-tmpdir.mjs");
+  writeFileSync(faux, `import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+export default async function reply(context, faux) {
+  if (context.messages.filter((m) => m.role === "user").length < 2) return faux.message("First.");
+  await new Promise((resolve) => setTimeout(resolve, 6000));
+  const tmp = process.env.TMPDIR;
+  let wrote = "no";
+  try { writeFileSync(join(tmp, "after.txt"), "x"); wrote = "yes"; } catch (error) { wrote = error.code; }
+  return faux.message(\`tmp \${existsSync(tmp) ? "kept" : "gone"}, write \${wrote}\`);
+}
+`);
+  const lines = [];
+  const server = await serve(t, { faux, childRuns: { isolation: { kind: "uid", helper, first: 0, slots: 2 }, log: (line) => void lines.push(line) } });
+  const runId = await started(server.api, "reopened", {}, { input: { content: "Hello." } });
+  await follow(server.api, runId, ["completed"], { deadlineMs: 60_000 });
+  assert.equal(await answerOf(server.api, runId), "First.");
+  // The message lands while the first process's slot is still reaped: the run is open again, its first claim not let go.
+  const sent = await server.api("POST", `/runs/${runId}/messages`, { content: "And again." });
+  assert.ok(sent.status < 300, JSON.stringify(sent.body));
+  let said;
+  for (const end = Date.now() + 60_000; (said = await answerOf(server.api, runId)) === "First." || (await server.api("GET", `/runs/${runId}`)).body.status !== "completed"; await sleep(100)) {
+    assert.ok(Date.now() < end, `the reopened run never completed: ${JSON.stringify((await server.api("GET", `/runs/${runId}`)).body)}\n${lines.join("\n")}`);
+  }
+  assert.equal(said, "tmp kept, write yes", `the second process's TMPDIR was swept under it: ${lines.join("\n")}`);
+  // The first process's slot was reaped before the second process started.
+  const events = readFileSync(join(dir, "events"), "utf8").trim().split("\n");
+  assert.deepEqual([events[0].split(" ")[0], events[1].split(" ")[0], events[2]?.split(" ")[0]], ["run", "reaped", "run"], `the first slot's reap ended before the second process ran: ${events.join(" | ")}`);
+});
