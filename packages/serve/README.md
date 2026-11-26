@@ -4300,7 +4300,9 @@ A module exports `entries(builtins, kit)`, which returns new entries by id. [HAR
 writing one, and [examples/harness-module](../../examples/harness-module/README.md) is a whole one.
 
 An entry made without `kit` gives `label`, `steer`, `runMib`, `oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`,
-`refusal` and its `runner`, and may give `promises`; a run of it runs on its runner's `adapter(launch, extra)`. Every
+`refusal` and its `runner`, and may give `promises`; a run of it runs on its runner's `adapter(launch, extra)`, where
+`launch.redact` is the run's redactor (required: it holds every key the run's claim opens) and `extra` the harness's
+own options. Every
 harness is admitted by the `runMib` its entry declares. A module adds harnesses and never replaces one: the built-in
 harnesses' facts, offers, key rows, default models and tool names are the same with any module loaded. The start of the
 server, or of a separate runner, is refused, naming the module and the id, when a module:
