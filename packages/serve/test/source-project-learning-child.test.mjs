@@ -74,7 +74,7 @@ export default function reply(context, faux) {
     return s.store.runs.get(response.body.run_id);
   }
   const first = await start('What is six times seven?');
-  assert.equal((await promotionsOf(s.store.settings, agentId)).length, 0);
+  assert.equal((await promotionsOf(s.store.learning, agentId)).length, 0);
   const second = await start('What is seven times six?');
   const proposal = await s.store.learning.proposal(second.id);
   assert.equal(proposal?.proposal?.compiled?.attempts?.some(one => one.ok), true, JSON.stringify({ proposal, logs }));
@@ -93,7 +93,7 @@ export default function reply(context, faux) {
   if (auditAsks) await writeFile(askAudit, 'Ask before fetching.');
   const fourth = await start('What is fourteen times three?');
   assert.equal(fourth.metrics?.path, 'workflow', JSON.stringify({ fourth, logs }));
-  const promoted = (await promotionsOf(s.store.settings, agentId)).find(row => row.decided === 'promote');
+  const promoted = (await promotionsOf(s.store.learning, agentId)).find(row => row.decided === 'promote');
   assert.equal(promoted?.check?.n, 2); assert.equal(promoted?.check?.agreed, 2);
   assert.deepEqual([...promoted.check.of].sort(), [first.id, second.id].sort());
   const shadow = await until(async () => {

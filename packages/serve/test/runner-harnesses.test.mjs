@@ -10,6 +10,7 @@ import { after, test } from "node:test";
 const { RUNNER_HARNESSES, resolveHarness } = await import("../dist/runner/adapters/index.js");
 // The one table-run runner: a harness module's entry's, and Goose's and Cursor's.
 const { ON_TABLE } = await import("../dist/harness-table.js");
+const { heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
 
 const dir = mkdtempSync(join(tmpdir(), "runner-harnesses-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -42,7 +43,12 @@ test("runner harnesses: the shared runner of a table-run entry refuses to build 
 });
 
 test("runner harnesses: each builds its adapter from the launch", async () => {
-  assert.equal((await resolveHarness("pi").adapter(launch())).id, "pi");
+  // pi's redactor is the launch's (HarnessLaunch.redact), as the run's spec gives it (adapter-run-spec.ts: run.redact, the
+  // runner's held one); one among the harness's own options is not read.
+  const held = heldRedactor(secretRedactor([]));
+  assert.equal((await resolveHarness("pi").adapter(launch({ redact: held }))).id, "pi");
+  await assert.rejects(async () => resolveHarness("pi").adapter(launch()), /was given no redactor that holds keys/, "pi given no redactor builds no adapter");
+  await assert.rejects(async () => resolveHarness("pi").adapter(launch(), { redact: held }), /was given no redactor that holds keys/, "pi reads its redactor off the launch alone");
   process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = "1";
   try {
     // A stand-in CLI and a scripted SDK are a test's own options, passed on as given.

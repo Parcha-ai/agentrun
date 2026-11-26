@@ -17,6 +17,7 @@
 // set it since #2244 removed that engine. Only tests set it; its deletion is its own change.
 import { closeSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { httpsBase } from "@parcha/agentrun-computer";
 import type { DecisionProvider } from "@parcha/agentrun-dsl";
 import { openRouterApp } from "@parcha/agentrun-kernel/host";
 import { JEV_MODEL } from "@parcha/agentrun-web";
@@ -25,6 +26,10 @@ import { FAUX_ENV } from "./model.js";
 import { keyNeeded } from "./key-words.js";
 
 export const JEV_KEY_ENV = "TYPESAFE_API_KEY";
+/** TypeSafe's base in `env`: TYPESAFE_BASE_URL, else TypeSafe's own, held to the rule for a URL a key goes to
+ *  (httpsBase), which throws in words naming the variable and the URL's origin alone. A run's Jev provider and the key's
+ *  check (key-check.ts) both send TYPESAFE_API_KEY to it, so the key goes where it was checked. */
+export const typesafeBase = (env: NodeJS.ProcessEnv) => httpsBase(env.TYPESAFE_BASE_URL?.trim() || "https://api.typesafe.ai", "TYPESAFE_BASE_URL");
 export const JEV_OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY";
 export const PARALLEL_KEY_ENV = "PARALLEL_API_KEY";
 /** The provider a decision node that names none is answered by. */
@@ -107,7 +112,7 @@ export function decisionKeysOf(env: NodeJS.ProcessEnv): Record<string, string> {
 export type DecisionNeeds = { providers: readonly string[]; parallelWeb: boolean; jevWeb?: boolean };
 
 /** What capabilities' why says of Jev on `tool` under the server's `env`: on, on TypeSafe's route, naming what the tool
- *  sends TypeSafe (a search: its objective and each result's URL, title and snippet; a fetch given an objective: the
+ *  sends TypeSafe (a search: its objective and each result's URL, title, snippet and published date; a fetch given an objective: the
  *  page's text and the objective); off by AGENTRUN_WEB_JEV_OFF; off with only an OpenRouter key (the web decider runs
  *  on TypeSafe's route alone). Nothing with no Jev key at all. */
 export function jevWebWhy(env: NodeJS.ProcessEnv, tool: "web_search" | "web_fetch" = "web_search"): string | undefined {
@@ -115,7 +120,7 @@ export function jevWebWhy(env: NodeJS.ProcessEnv, tool: "web_search" | "web_fetc
   const route = jevRoute(env);
   if (route === "typesafe") {
     return tool === "web_search"
-      ? `Jev (${JEV_MODEL}) ranks results against the objective, or the query when none is given; each search sends that and each result's URL, title and snippet to TypeSafe, billed per request on the server's TypeSafe key`
+      ? `Jev (${JEV_MODEL}) ranks results against the objective, or the query when none is given; each search sends that and each result's URL, title, snippet and published date to TypeSafe, billed per request on the server's TypeSafe key`
       : `a fetch given an objective sends the page's text and the objective to TypeSafe for Jev (${JEV_MODEL}) to pick its chunks, billed per request on the server's TypeSafe key; a fetch with none sends TypeSafe nothing`;
   }
   return route === "openrouter" ? "Jev off: no TypeSafe key" : undefined;
@@ -269,7 +274,10 @@ export async function decisionProvidersIn(env: NodeJS.ProcessEnv): Promise<{ pro
  *  (the runner's store), so both routes build the same providers. */
 async function decisionProvidersFrom(handed: Record<string, string>, env: NodeJS.ProcessEnv): Promise<{ providers: Record<string, DecisionProvider>; default: string } | undefined> {
   const providers: Record<string, DecisionProvider> = {};
-  const jev = handed[JEV_KEY_ENV] !== undefined ? { apiKey: handed[JEV_KEY_ENV] } : handed[JEV_OPENROUTER_KEY_ENV] !== undefined ? { provider: "openrouter" as const, apiKey: handed[JEV_OPENROUTER_KEY_ENV] } : undefined;
+  // TypeSafe's SDK reads TYPESAFE_BASE_URL from the process's environment when given no base, and sends the key there:
+  // on TypeSafe's route the base is always given, read from `env` by the rule a saved key's check takes it by
+  // (typesafeBase), so the key goes where it was checked.
+  const jev = handed[JEV_KEY_ENV] !== undefined ? { apiKey: handed[JEV_KEY_ENV], baseURL: typesafeBase(env) } : handed[JEV_OPENROUTER_KEY_ENV] !== undefined ? { provider: "openrouter" as const, apiKey: handed[JEV_OPENROUTER_KEY_ENV] } : undefined;
   if (jev) {
     const [{ jevProvider }, faux] = await Promise.all([import("@parcha/agentrun-jev"), fauxFetch(env, FAUX_JEV_ENV)]);
     providers.jev = jevProvider({ ...jev, ...(faux ? { fetch: faux } : {}) });

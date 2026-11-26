@@ -12,11 +12,11 @@ import type { AgentTool, ToolSettings } from "@/lib/v2";
 /** The tools a form grants, picked: one filter over every card, then the built-in tools and each saved MCP server's, as the
  *  agent editor's Tools step and Build's Tools step both show them. A card the filter hides keeps its state. `offers`: every
  *  tool the server offers. `servers`: the saved MCP servers (null while read, "failed" when they could not be), shown when
- *  `mcp`; `mcpHarnesses`: those that run MCP tools here. `place`: the agent's own place, else none (see BuiltInToolCards).
- *  `extra`: more groups for the same grid (the editor's monid grants), each counted and filtered by the same words.
- *  `onChange`: the tools with the toggled one ticked or unticked. */
-export function ToolPicker({ offers, tools, harness, place, places, workflow = false, mcp = false, servers = null, mcpHarnesses, choices, gates, granted, settings, extra, onRetry, onChange }: {
-  offers: ToolOffer[]; tools: readonly string[]; harness: string; place: Place | undefined; places: Places | null | undefined;
+ *  `mcp`; `mcpHarnesses`: those that run MCP tools here. `place`: the agent's own place, else none, and `runnerShell` (see
+ *  BuiltInToolCards). `extra`: more groups for the same grid (the editor's monid grants), each counted and filtered by
+ *  the same words. `onChange`: the tools with the toggled one ticked or unticked. */
+export function ToolPicker({ offers, tools, harness, place, places, runnerShell, workflow = false, mcp = false, servers = null, mcpHarnesses, choices, gates, granted, settings, extra, onRetry, onChange }: {
+  offers: ToolOffer[]; tools: readonly string[]; harness: string; place: Place | undefined; places: Places | null | undefined; runnerShell: ReadonlySet<string>;
   workflow?: boolean; mcp?: boolean; servers?: McpServer[] | null | "failed"; mcpHarnesses?: readonly string[];
   choices?: readonly ToolChoice[]; gates?: readonly ToolGate[]; granted?: readonly AgentTool[]; settings?: ToolSettings;
   extra?: { count: (query: string) => number; render: (query: string) => ReactNode };
@@ -38,7 +38,7 @@ export function ToolPicker({ offers, tools, harness, place, places, workflow = f
     {/* Columns by a minimum width: as many as fit, one card a row in a narrow pane (a phone on its side). Every collapsed card
         one height, top-aligned: one card's Details grows it alone, never its row. */}
     <ul className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,18rem),1fr))] items-start gap-2">
-      <BuiltInToolCards shown={builtIns(query)} offers={offers} tools={tools} harness={harness} place={place} places={places} workflow={workflow}
+      <BuiltInToolCards shown={builtIns(query)} offers={offers} tools={tools} harness={harness} place={place} places={places} runnerShell={runnerShell} workflow={workflow}
         mcpHarnesses={mcpHarnesses} choices={choices} gates={gates} granted={granted} settings={settings} onChange={onChange} />
       {/* The MCP and extra groups span the whole row: each lays out its own cards in the same columns. */}
       {showMcp && <li className="col-span-full"><McpToolPicker servers={servers} tools={tools} harness={harness} harnesses={mcpHarnesses} filter={query} onRetry={onRetry} onChange={onChange} /></li>}

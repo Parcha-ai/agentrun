@@ -18,6 +18,7 @@ import { quiet, sleep, until } from "./live-support.mjs";
 
 after(closeOpenSessions);
 const { withLiveTicker } = await import("../dist/runner/live-ticker.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const TICK_MS = 250;
 // A lease no stall of a loaded machine outlasts: on a 5 s lease, 300 claims whose renews wait behind 300-row puts lapse,
 // all 300 runs are taken again, and the new loops' reports fill the ticks the window counts. This file reads the
@@ -94,7 +95,7 @@ test("a held-state write is never in a run's journal: no commit, no seq", async 
     command: async () => ({ refused: "not in this test" }),
     stop: async () => end(),
   }), { tickMs: TICK_MS });
-  const redact = Object.assign(text => text, { heldValues: () => [] });
+  const redact = heldRedactor(Object.assign(text => text, { heldValues: () => [] }));
   started = ticker.createLoop({ journal: () => journal, flush: async () => {}, signal: new AbortController().signal, redact }).start(claim);
   for (let tick = 1; tick <= 4; tick++) {
     const output = `held chunk ${tick}`;

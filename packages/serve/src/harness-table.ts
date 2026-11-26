@@ -30,7 +30,7 @@ import { modelWire, routedId, wireOf, WIRES } from "./wires.js";
 import type { SkillCheck } from "./skills.js";
 import type { RunnerHarness } from "./runner/adapters/index.js";
 import { PLAN_PROVIDER, signedIn } from "./chatgpt-plan.js";
-import { loadRecipe } from "./harness-recipe.js";
+import { loadRecipe, resolveRecipe } from "./harness-recipe.js";
 import { recipeServerEntry } from "./harness-recipe-entry.js";
 
 /** A module of entries a test merges over the built-in ones (HarnessTableModule), by absolute path. */
@@ -508,8 +508,9 @@ async function gooseLaunch(launch: ModuleLaunch): Promise<AgentAdapter> {
  *  (`ownKeys`), its model one Cursor lists for that key (`cursor/<model-id>`, `cursor/default` for Cursor's own). Listed
  *  only once its owner has installed it (`agentrun harness install cursor`): `missing` is its release, looked up and
  *  verified (harness-cursor.ts cursorMissing), and `beforeStart` checks its launcher and every file beside it again
- *  before each process starts. Stopped by its owner's turn and tool-call limits (cursorLimitsOf), which its card says. */
-function cursorOptions(facts: AdapterFacts): AcpPlanEntryOptions {
+ *  before each process starts. Stopped by its owner's turn and tool-call limits (cursorLimitsOf), which its card says.
+ *  Exported for its tests, which read its recipe on a host with no Cursor release installed. */
+export function cursorOptions(facts: AdapterFacts): AcpPlanEntryOptions {
   /** Cursor's launcher, or the HarnessUnavailable that says why it is not here, with the fix (install, pins) it names. */
   const launcher = async (env: NodeJS.ProcessEnv): Promise<string> => {
     const found = await cursorMissing(env);
@@ -524,7 +525,9 @@ function cursorOptions(facts: AdapterFacts): AcpPlanEntryOptions {
     card: cursorCardOf,
     missing: async (env) => void (await launcher(env)),
     recipe: async (launch) => {
-      if (!launch.env[CURSOR_KEY]) throw new HarnessUnavailable(`${facts.label} runs on your Cursor API key, and ${CURSOR_KEY} is not set where AgentRun starts: set it there (it is handed to Cursor's runs alone), then restart AgentRun.`);
+      // A held run its model kept from running is laid no key (claim-secrets.ts) and never starts Cursor (acpPlanEntryOf),
+      // so it is never refused for the key: its claim holds its computer.
+      if (!launch.held && !launch.env[CURSOR_KEY]) throw new HarnessUnavailable(`${facts.label} runs on your Cursor API key, and ${CURSOR_KEY} is not set where AgentRun starts: set it there (it is handed to Cursor's runs alone), then restart AgentRun.`);
       const acp = acpPackage()!;
       let limits: { maxTurns: number; maxToolCalls: number };
       try {
@@ -650,14 +653,16 @@ function recipesOf(env: NodeJS.ProcessEnv): { data: string; files: string[]; sig
 /** The owner's setting that names harness recipes when no option does: recipe files, comma-separated. */
 export const HARNESS_RECIPES_SETTING = "AGENTRUN_SERVE_HARNESS_RECIPES";
 
-/** The recipe files `given` names (a server's or a runner's `--harness-recipe`, else HARNESS_RECIPES_SETTING). */
+/** The recipe files `given` names (a server's or a runner's `--harness-recipe`, else HARNESS_RECIPES_SETTING): each a
+ *  file, or the name of a recipe AgentRun ships (harness-recipe.ts resolveRecipe). */
 export const harnessRecipesOf = (given: readonly string[] | undefined, env: NodeJS.ProcessEnv): string[] =>
   given?.length ? [...given] : (env[HARNESS_RECIPES_SETTING] ?? "").split(",").map((name) => name.trim()).filter(Boolean);
 
-/** HARNESS_RECIPES_ENV for the recipe files `files` names, installed into `data`: none for none. `signIn` only where the
- *  server's start proved --harness-sign-in. */
+/** HARNESS_RECIPES_ENV for the recipes `files` names (each resolved by resolveRecipe: a shipped one's name to its file, a
+ *  name a file here also holds refused), installed into `data`: none for none. `signIn` only where the server's start
+ *  proved --harness-sign-in. */
 export const harnessRecipesEnv = (files: readonly string[], data: string, { signIn = false }: { signIn?: boolean } = {}): NodeJS.ProcessEnv =>
-  (files.length ? { [HARNESS_RECIPES_ENV]: JSON.stringify({ data: resolve(data), files: files.map((file) => resolve(file)), ...(signIn ? { signIn: true } : {}) }) } : {});
+  (files.length ? { [HARNESS_RECIPES_ENV]: JSON.stringify({ data: resolve(data), files: files.map((file) => resolveRecipe(file).file), ...(signIn ? { signIn: true } : {}) }) } : {});
 
 /** The table `env` runs on: the built-in entries; then, only under a test runner (node --test's NODE_TEST_CONTEXT, which a
  *  server's and a run's processes there carry), a test's module's (HARNESS_TABLE_ENV) merged over them by id; then the

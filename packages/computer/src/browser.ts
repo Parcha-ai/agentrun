@@ -8,6 +8,7 @@ import { type ComputerClient, type DaemonMethod, type DaemonMethods, type Group,
 import type { BrowserFeatures, BrowserSpec, CallContext, ComputerCapabilities, ComputerProvider, ComputerRef, ComputerSpec, Refusal } from "./provider.js";
 import { checkGpu, checkLifetime } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, errorOf, fail, ok, type Result } from "./result.js";
+import { labelsDiffer } from "./create-requests.js";
 import { BROWSER_IMAGE } from "./descriptors/shared.js";
 
 /** A key's or a value's longest, in characters: what both vendors keep of a metadata entry. */
@@ -90,20 +91,98 @@ export const labelsOf = (held: unknown): Record<string, string> =>
 	typeof held === "object" && held !== null ? Object.fromEntries(Object.entries(held).filter((entry): entry is [string, string] => typeof entry[1] === "string")) : {};
 
 /**
- * The label every create writes beside the spec's, a value of its own: a create whose reply is lost, or whose caller
- * cancels it, finds the browser it made by this label alone and releases it. The provider's own: check() refuses it in a
- * spec, and no list or attach shows it.
+ * The label every create writes beside the spec's, the name of its request (computerNameFor): a create retried, here or
+ * in another process, finds the browser the first made by this label (heldBrowser), and a create that made one finds
+ * the request's others by it (convergedBrowser). The provider's own: check() refuses it in a spec, and no list or
+ * attach shows it.
  */
 export const CREATE_LABEL = "agentrun.create";
 
-/** Labels without the provider's create label. */
+/**
+ * The label each create's POST writes beside the create label, a random value of that POST's own (newAttempt): a create
+ * whose reply is lost, or whose caller cancels it, finds the browser its own POST made by this label alone and releases
+ * it, never another create's browser of the same request. The provider's own, as the create label is.
+ */
+export const ATTEMPT_LABEL = "agentrun.attempt";
+
+/** A create attempt's own value of ATTEMPT_LABEL. */
+export const newAttempt = (): string => randomBytes(8).toString("hex");
+
+/** Labels without the provider's own, the create and attempt labels. */
 export const withoutCreateLabel = (labels: Record<string, string>): Record<string, string> => {
-	const { [CREATE_LABEL]: _, ...rest } = labels;
+	const { [CREATE_LABEL]: _, [ATTEMPT_LABEL]: __, ...rest } = labels;
 	return rest;
 };
 
-/** A create label's value: 16 hex digits, fresh per create. */
-export const createLabelValue = () => randomBytes(8).toString("hex");
+/** A browser a create label found: its id, when the vendor made it (an ISO time, where it says), and its labels. */
+export interface HeldBrowser {
+	id: string;
+	createdAt?: string;
+	labels: Record<string, string>;
+}
+
+/**
+ * The order a request's browsers are read in (heldBrowser, a create's converge): the oldest first, by the time the
+ * vendor made each, then by id. The same browsers give the same order in every process.
+ */
+export const oldestBrowserFirst = (a: HeldBrowser, b: HeldBrowser): number => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")) || a.id.localeCompare(b.id);
+
+/**
+ * The browser a vendor holds for a create's request (provider.md, Idempotent create), among those its create label finds
+ * (found, each with its labels as list shows them): undefined when there is none, so create makes it, else the oldest
+ * (oldestBrowserFirst), with how its labels differ from the ones asked (labelsDiffer; empty when it is this spec's). A
+ * browser's own options are not read back from the vendor, so a create from another process compares the labels alone.
+ */
+export function heldBrowser(asked: Record<string, string>, found: ReadonlyArray<HeldBrowser>): { id: string; differ: string[] } | undefined {
+	const first = [...found].sort(oldestBrowserFirst)[0];
+	return first === undefined ? undefined : { id: first.id, differ: labelsDiffer(asked, first.labels, "read back") };
+}
+
+/**
+ * Where a create that made a browser stands among its request's (provider.md, Idempotent create). Two creates of one
+ * request in two processes can both find no browser by the create label and both make one: CreateRequests holds within
+ * one provider alone. So after the vendor's answer the label is listed again (listed; mine, made just now, added when it
+ * is not listed yet): "mine" when mine is the oldest, so the create answers it; else the older, which the create
+ * answers in place of its own once it has released its own. Every process picks the same one from the same listing.
+ */
+export function convergedBrowser(listed: ReadonlyArray<HeldBrowser>, mine: HeldBrowser): "mine" | HeldBrowser {
+	const holders = listed.some((one) => one.id === mine.id) ? [...listed] : [...listed, { ...mine, createdAt: mine.createdAt ?? new Date().toISOString() }];
+	const kept = holders.sort(oldestBrowserFirst)[0] as HeldBrowser;
+	return kept.id === mine.id ? "mine" : kept;
+}
+
+/** A browser of a request as a lost create's recovery reads it, ended ones included: whether it still runs. */
+export type MadeBrowser = HeldBrowser & { live: boolean };
+
+/**
+ * Whether a lost create's browser (`mine`) is left to another create of its request rather than released: it still runs,
+ * no older browser of the request runs (so every converge keeps it), and the request's browsers, ended ones included,
+ * hold a newer one, which only another create made: that create's converge may answer mine. A lost create whose browser
+ * is the request's only one releases it.
+ */
+export function leftToConverge(mine: string, made: ReadonlyArray<MadeBrowser>): boolean {
+	const own = made.find((one) => one.id === mine);
+	if (own === undefined || !own.live) return false;
+	if (made.some((one) => one.id !== mine && one.live && oldestBrowserFirst(one, own) < 0)) return false;
+	return made.some((one) => one.id !== mine && oldestBrowserFirst(own, one) < 0);
+}
+
+/**
+ * Where a lost create's browser left to a converge (leftToConverge) stands when the request's browsers are read again:
+ * "unread" when the read lists neither mine nor any newer one (the first read did, so it says nothing); "release" once
+ * mine has ended; "answered" when a newer one has ended, since a converge that answers the older ends its own first, and
+ * one whose list missed an older browser may have answered mine; "release" when an older one runs and every newer one
+ * runs too; "running" while every newer one still runs, so no converge has answered mine yet.
+ */
+export function convergeSettled(mine: string, made: ReadonlyArray<MadeBrowser>): "answered" | "running" | "release" | "unread" {
+	const own = made.find((one) => one.id === mine);
+	if (own === undefined) return "unread";
+	if (!own.live) return "release";
+	const newer = made.filter((one) => one.id !== mine && oldestBrowserFirst(own, one) < 0);
+	if (newer.length === 0) return "unread";
+	if (newer.some((one) => !one.live)) return "answered";
+	return made.some((one) => one.id !== mine && one.live && oldestBrowserFirst(one, own) < 0) ? "release" : "running";
+}
 
 /**
  * Whether a create that threw may still have made a browser: anything but the vendor's own 4xx answer (a refusal, which
@@ -115,26 +194,41 @@ export function createUncertain(error: unknown): boolean {
 	return !(typeof status === "number" && status >= 400 && status < 500);
 }
 
-/** How long a lost create's browser is looked for, in all, and how often: a vendor may list it a moment late. */
+/**
+ * How long a lost create's browser is looked for and released, in all, and how often: a vendor may list it a moment
+ * late. Also the default bound of every other release a create runs for itself (a provider's cleanupMs).
+ */
 export const RECOVER_MS = 30_000;
 const RECOVER_TRIES = 3;
 const RECOVER_GAP_MS = 2_000;
 
 /**
- * After a create whose outcome is unknown: the browsers carrying its create label, found under a signal of the
- * recovery's own (the caller's may be what ended the create), each released. The words say what became of them, for the
- * create's failure; they never carry a URL.
+ * After a create whose outcome is unknown: the browsers carrying its create label, found and released under a signal
+ * of the recovery's own, `ms` in all (the caller's may be what ended the create). The search, its retries for a vendor
+ * that lists late and the reads below wait at most until half of `ms` has passed, each wait RECOVER_GAP_MS or what is
+ * left of that half, so the release keeps the other half. Where `made` reads the request's browsers (ended ones
+ * included), each found browser's request is read, again after a failed read, and one that cannot be read is kept: a
+ * failed read says nothing of who holds it. One older than a browser of its request that has ended (convergeSettled) is
+ * kept at once, even when an older one runs, as a converge that answers it ends its own first and one whose list missed
+ * the older may have answered it. One left to another create's converge (leftToConverge) is otherwise read again,
+ * every RECOVER_GAP_MS within that half (once at least), and kept once a newer one has ended or a read fails or misses
+ * a browser the first read listed. One whose newer browsers all still run at the end was answered by no converge (each
+ * kept its own) and is released. The words say what became of them, for the create's failure; they never carry a URL.
  */
 export async function recoverCreate(
 	what: string,
 	find: (signal: AbortSignal) => Promise<Result<string[]>>,
-	release: (id: string) => Promise<Result<void>>,
+	release: (id: string, signal: AbortSignal) => Promise<Result<void>>,
 	sleep: (ms: number) => Promise<void>,
+	ms = RECOVER_MS,
+	made?: (signal: AbortSignal) => Promise<Result<MadeBrowser[]>>,
 ): Promise<string> {
-	const signal = AbortSignal.timeout(RECOVER_MS);
+	const signal = AbortSignal.timeout(ms);
+	const settleBy = Date.now() + ms / 2;
+	const reads = Math.max(1, Math.floor(ms / 2 / RECOVER_GAP_MS));
 	let found: Result<string[]> = ok([]);
 	for (let tries = 0; tries < RECOVER_TRIES; tries++) {
-		if (tries > 0) await sleep(RECOVER_GAP_MS);
+		if (tries > 0 && !(await waitWithin(sleep, settleBy, signal))) break;
 		found = await find(signal);
 		if (!found.ok || found.value.length > 0 || signal.aborted) break;
 	}
@@ -142,10 +236,100 @@ export async function recoverCreate(
 	if (found.value.length === 0) return `no ${what} carries its create label, so none was made or the vendor does not list it yet; its labels let a sweep find it`;
 	const words: string[] = [];
 	for (const id of found.value) {
-		const released = await release(id);
-		words.push(released.ok ? `the ${what} it made (${id}) was released` : `the ${what} it made (${id}) was not released (${released.error.code}), and its labels let a sweep find it`);
+		let unanswered = false;
+		if (made !== undefined) {
+			const read = await firstRead(made, signal, sleep, settleBy, Math.max(1, Math.ceil(ms / 2 / RECOVER_GAP_MS)));
+			if (read === undefined) {
+				words.push(`the ${what} it made (${id}) may be one another create of its request answered, and the request's browsers could not be read, so nothing says who holds it: it is left running, at most to its lifetime, and its labels let a sweep find it`);
+				continue;
+			}
+			const answered = convergeSettled(id, read) === "answered";
+			if (answered || leftToConverge(id, read)) {
+				const settled = answered ? "answered" : await settle(id, made, signal, sleep, settleBy, reads);
+				if (settled === "answered") {
+					words.push(`the ${what} it made (${id}) is older than one of its request that has ended, as a create's converge ends its own when it answers an older one: it is left running for that create, and if that create did not answer it (aborted, or failed once its own had ended, or its reply lost too) it runs to its lifetime, and its labels let a sweep find it`);
+					continue;
+				}
+				if (settled === "unread") {
+					words.push(`the ${what} it made (${id}) is its request's oldest, which another create of the request may answer, and the request's browsers could not be read again: it is left running, at most to its lifetime, and its labels let a sweep find it`);
+					continue;
+				}
+				unanswered = settled === "running";
+			}
+		}
+		const released = await release(id, signal);
+		const why = unanswered ? `, since every newer ${what} of its request still runs and so no other create answered it` : "";
+		if (released.ok) words.push(`the ${what} it made (${id}) was released${why}`);
+		else if (signal.aborted) words.push(`the ${what} it made (${id}) may still be running: the search and its release did not finish within ${ms / 1000} s, and its labels let a sweep find it`);
+		else words.push(`the ${what} it made (${id}) was not released (${released.error.code}), and its labels let a sweep find it`);
 	}
 	return words.join("; ");
+}
+
+/**
+ * One wait before a search or a read is tried again: RECOVER_GAP_MS, or what is left until `by` when that is less.
+ * False, with no wait, once nothing is left or the recovery's signal has ended.
+ */
+async function waitWithin(sleep: (ms: number) => Promise<void>, by: number, signal: AbortSignal): Promise<boolean> {
+	const left = by - Date.now();
+	if (left <= 0 || signal.aborted) return false;
+	await sleep(Math.min(RECOVER_GAP_MS, left));
+	return true;
+}
+
+/**
+ * The request's browsers, read at once and then again after each failed read, `retries` times at most, each after a
+ * wait that ends no later than `by` (waitWithin): so a window shorter than two gaps still tries again while time is left.
+ * Undefined when no read answered.
+ */
+async function firstRead(
+	made: (signal: AbortSignal) => Promise<Result<MadeBrowser[]>>,
+	signal: AbortSignal,
+	sleep: (ms: number) => Promise<void>,
+	by: number,
+	retries: number,
+): Promise<MadeBrowser[] | undefined> {
+	for (let read = 0; read <= retries; read++) {
+		if (read > 0 && !(await waitWithin(sleep, by, signal))) break;
+		const got = await made(signal);
+		if (got.ok) return got.value;
+	}
+	return undefined;
+}
+
+/**
+ * A left browser's request read again (convergeSettled) after each RECOVER_GAP_MS, until it is answered or released,
+ * `reads` times at most and not past `by` (one read at least): "running" when the last read still found every newer
+ * browser running, "unread" when the last read failed or missed a browser the first read listed. No wait runs past
+ * `by`, so a bound shorter than the gap still reads once within it, and the read and the release keep the time after
+ * `by`.
+ */
+async function settle(
+	mine: string,
+	made: (signal: AbortSignal) => Promise<Result<MadeBrowser[]>>,
+	signal: AbortSignal,
+	sleep: (ms: number) => Promise<void>,
+	by: number,
+	reads: number,
+): Promise<"answered" | "running" | "release" | "unread"> {
+	let last: "running" | "unread" = "unread";
+	for (let read = 0; read < reads; read++) {
+		const left = by - Date.now();
+		if ((read > 0 && left < RECOVER_GAP_MS) || signal.aborted) break;
+		await sleep(Math.max(0, Math.min(RECOVER_GAP_MS, left)));
+		const again = await made(signal);
+		if (!again.ok) {
+			last = "unread";
+			continue;
+		}
+		const now = convergeSettled(mine, again.value);
+		if (now === "unread" || now === "running") {
+			last = now;
+			continue;
+		}
+		return now;
+	}
+	return last;
 }
 
 const SPEC_FIELDS = new Set(["image", "lifetimeMs", "network", "labels", "gpu", "browser"]);
@@ -171,7 +355,11 @@ export function checkBrowser(spec: ComputerSpec, capabilities: ComputerCapabilit
 	if (labels !== undefined) {
 		const problem = labelsProblem(labels);
 		if (problem) refusals.push({ field: "labels", message: problem });
-		else if (Object.hasOwn(labels as object, CREATE_LABEL)) refusals.push({ field: "labels", message: `the label ${CREATE_LABEL} is the provider's own: each create writes it, so a lost create finds its browser` });
+		else {
+			for (const own of [CREATE_LABEL, ATTEMPT_LABEL]) {
+				if (Object.hasOwn(labels as object, own)) refusals.push({ field: "labels", message: `the label ${own} is the provider's own: each create writes it, so a retried or lost create finds its browser` });
+			}
+		}
 	}
 	// A browser declares no gpu: one asked is refused, in the words every provider shares.
 	refusals.push(...checkGpu(given.gpu, capabilities));
@@ -212,6 +400,18 @@ export function browserClient(hello: HelloResult, alive: (signal?: AbortSignal) 
  * up to confirm.polls times. Done means the vendor says it no longer runs, not that the request was sent; a session the
  * vendor no longer knows ("gone") is released. A session still running is a failure carrying the request's own error.
  */
+/**
+ * A release a create runs for itself (its caller gone, or its browser the newer of the request's two), under a signal of
+ * its own that ends after `ms`, never the caller's: one that does not finish by then is a timeout that says the browser
+ * may still be running.
+ */
+export async function boundedRelease(what: string, id: string, ms: number, release: (signal: AbortSignal) => Promise<Result<void>>): Promise<Result<void>> {
+	const signal = AbortSignal.timeout(ms);
+	const released = await release(signal);
+	if (released.ok || !signal.aborted) return released;
+	return fail("timeout", `its release did not finish within ${ms / 1000} s, so the ${what} ${id} may still be running`);
+}
+
 export async function releaseConfirmed(o: {
 	request: () => Promise<Result<"gone" | "asked">>;
 	running: () => Promise<Result<boolean>>;

@@ -1322,12 +1322,24 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
 - **Sizes are limits**, as in Docker: `cpus` (at least 0.25) becomes `cpuLimit` in physical cores (2 CPUs each) and
   `memoryMb` becomes `memoryLimitMiB`, each with Modal's default request (0.125 cores, 128 MiB) or less. `pids` and
   `workdir` are refused: Modal has no pids limit, and a computer works in `/work`, its home.
-- **Tags.** A sandbox's tags are the adapter's labels (`agentrun.computer`, its name, deadline and image, and a GPU
-  computer's GPUs; no max-deadline, which only `extend` reads) and the caller's. Modal takes 10 tags, 512 bytes of them, names and
-  values together (the host's `labels`): the adapter's `check()` counts them as create gives them, its own at their
-  longest, and refuses past either in words with no call; create refuses the same words first. An Archil computer's mount label records the
-  folder's agent alone, as on every host: the folder's run is the `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still
-  lists after its terminate is polled and left out once `poll()` reads it finished.
+- **Tags.** A sandbox's labels are the adapter's (`agentrun.computer`, its name, deadline and image, and a GPU
+  computer's GPUs; no max-deadline, which only `extend` reads) and the caller's. Modal takes 10 tags, 512 bytes of them,
+  names and values together, and a computer with a mount, a network list and a run's labels passes 512 bytes as they
+  are, so the adapter keeps them packed (the host's `labels.packed`): two tags, `agentrun` with the computer's name and
+  `agentrun-0` with the labels deflated, and get and list answer them unpacked. `check()` packs them as create gives
+  them, its own at their longest, and refuses in words with no call where the packed tags pass either bound; create
+  refuses the same words first. A sandbox made before the tags were packed carries its labels as tags, and reads as
+  them (`labels.packed.unpacked`): a listing by name asks for the labels as given beside the packed name, within the
+  one bound, so a request that made one sandbox of each form across an upgrade has both seen. The upgrade is one-way: a
+  server from before the change asks for the labels as given alone, so its retry of a create can make a second sandbox
+  beside a packed one. A newer server's create of that request keeps the older of the two only while the two creates
+  race, its own reads of the name after its sandbox is made seeing both; a later create of that request that finds both
+  already there refuses as `exists`, naming both ids, and keeps both. The extra sandbox then lasts until it is deleted
+  or Modal ends it at its lifetime. Upgrade every server that shares a Modal app together to avoid it. A caller's label
+  named `agentrun` or `agentrun-<n>` is refused in words, on every hosted computer: those names hold the packed labels.
+  An Archil computer's mount label records the folder's agent alone, as on every host: the folder's run is the
+  `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only,
+  and one Modal still lists after its terminate is polled and left out once `poll()` reads it finished.
 - **release** `delete` is `terminate()`, and the adapter waits until get answers none (`poll()` reads it finished).
   `stop` is refused as `unsupported`: terminate is a sandbox's only end.
 - **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,
@@ -2465,6 +2477,20 @@ the protocol's methods in process over Orgo's REST API, as the phone harness and
 `"windows"` (`ORGO_WINDOWS_IMAGE`, Orgo's Windows Server 2019) or `"macos"` (`ORGO_MACOS_IMAGE`): the one the provider was
 built for.
 
+The Linux desktop makes one computer per request id. Its Orgo name begins with the request's name,
+`computer-<12 hex of sha256(requestId)>`, then the run's hash, the epoch and the deadline (`src/orgo-names.ts`). Before
+it makes a computer it lists the workspace's computers and takes the oldest whose name begins with the request's: one
+that runs with the same labels, image and sizes (its labels file) is answered, one of another spec or no longer
+running is refused `exists`, and one still being made is waited for. Two processes whose creates of one request
+both find nothing make two computers, so after Orgo's answer, and again once its computer is up, a create reads the
+workspace once more: where an older computer of the request is there (by `created_at`, then id), it deletes its own
+and answers the older, and the oldest keeps its own. A caller's signal that aborts one of those reads deletes the
+create's own computer (not under that signal) and the create is `aborted`. A name Orgo already holds (two creates in the same second) is
+answered the same way. A create whose POST got no answer deletes the computer by that exact name, which can be the
+computer another process's create answered through that 409: not covered, and tracked separately (see the browser
+providers' gaps below). The parked desktops name each computer at random, so a create retried there makes a second
+computer.
+
 - **What each offers.** The protocol groups, by Orgo's calls:
   - `screen`: Orgo's screenshot (`response_format=base64&format=png`). A region is cropped in process. The live view
     polls it about once a second, scaled by Orgo past `maxWidth`.
@@ -2615,11 +2641,56 @@ call and the HTTP status alone, never the vendor's words. The calls are the prov
 its own `fetch`). A thrown error rides the failure as a hidden cause (`causeOf(result)`), not enumerable, so it is in no
 JSON.
 
-Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
-create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
-aborted it) never sends a second create: it finds the browsers carrying that label as list does, in every state not
-ended, under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so. A 4xx refusal made
-nothing, so nothing is looked for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.
+Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), whose value is the request's
+name, `computer-<12 hex of sha256(requestId)>`. Before it makes a browser, create lists the running and starting
+browsers with that label: one with the spec's labels is answered, so a retried create, in this process or another,
+makes no second browser, and one with other labels is refused `exists`; where it finds several, it takes the oldest (by
+the time the vendor made each, then id). Two processes whose creates of one request both find nothing make two
+browsers, so after the vendor's answer a create lists the label again: where an older browser of the request is
+there, it releases its own and answers the older, refused `exists` when the older has ended by then, and the oldest
+keeps its own. A caller's signal that aborts that listing releases the create's own browser (not under that signal)
+and the create is `aborted`. The browser's own options (viewport, stealth, profile) are not read back from the vendor, so a create
+from another process compares the labels alone. A browser released here, or one this provider answered that the vendor
+has ended on its own (its timeout), leaves its request refused `exists`: the provider keeps each request's browser id. A create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
+aborted it) never sends a second create: each POST also writes `agentrun.attempt` (`ATTEMPT_LABEL`), a random value of
+its own, and a lost create finds the browsers carrying its attempt label as list does, in every state not ended, under
+a signal of its own, releases each under it, and its failure says so; that request is then refused `exists`. Every
+release a create runs for itself (this one, the newer browser's, the one after an abort, and that of a browser the
+vendor made with no usable CDP URL) is bounded by the
+provider's `cleanupMs` option (default `RECOVER_MS`, 30 s), never by the caller's signal: one that does not finish in
+time fails the create in words that say the browser may still be running, and a retry is answered as above, never
+stuck behind it. Another create's browser of the same request, even one another process answered, carries another attempt
+label and is left running. A lost create's own browser is left for another create's converge when it is the oldest of
+the request's that runs and the request's browsers, ended ones included, hold a newer one: only another create made
+that one, and its converge may answer the older. A converge that answers the older releases its own first, so once a
+newer browser has ended, the lost create's is left running for that create, at once when the first read shows it.
+Otherwise the request's browsers are read again, every 2 s for up to half of `cleanupMs` (once at least, and sooner
+when that half is under 2 s). While every newer one still runs, no converge has answered it (each such create kept its
+own), and at the end it is released. On the first read as on every later one, a newer one that has ended counts before
+an older one that runs, since a converge whose list missed the older may have answered it. A read that fails, or a read again that misses the lost create's
+browser or every newer one, says nothing of who holds it and leaves it running; a first read that fails is tried again
+within the same half before that. The search's own retries, for a vendor that lists a browser late, wait within that
+half too, so the release keeps the other half.
+Browserbase is asked status by status in a session's own order (pending, then running, then the ended ones), so a
+session that moves on while a list runs is found in a later answer, never missed, and one found in two answers reads as
+the later one says; Kernel answers every state in one paged list, and a browser listed twice reads as deleted once
+either row says so. A newer browser that ended for another reason reads the same as one a converge released: its create was aborted
+while it listed the request, or released its own and then failed (its release reported a failure, or its read of the
+older failed), or its own reply was lost too and its recovery released it. Nothing on the vendor tells those apart, so
+there the lost create's browser runs to the vendor's lifetime: on Browserbase its `timeout`, up to the run's lifetime
+and at most 6 h; on Kernel its idle timeout, at most 72 h. One kept because the request could not be read runs as long.
+The create's failure says so, and its labels let a sweep find it. This bound is not covered, and is tracked separately.
+Where a read shows the lost create's browser is the request's only one, it is released. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own: `check()` refuses
+them in a spec, and no list or attach shows them.
+
+Two gaps are not covered, and are tracked separately. A lost create whose browser is the request's only one releases
+it even when another process's create answered it by its lookup, or when the lost create read the request before the
+other create's POST landed and that create's converge answered it: nothing on the vendor says so, and that create
+holds a browser that has ended. The same holds when a converge lists the lost create's browser running just before the
+lost create's last read again and ends its own just after: the lost create releases it, and that create's read of it
+most often finds it ended and fails the request. On Orgo, a create whose POST got no answer deletes the computer by its exact name; that
+name can be the computer another process's create answered through Orgo's 409 (name in use), which then holds a
+deleted computer.
 
 The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`
 (check past the cap, attach by id and by labels, list, CDP `Browser.getVersion` and `Runtime.evaluate` on a `data:`
@@ -2653,6 +2724,17 @@ once `/json/version` answers on that port. `connect()` hands over the DevTools U
 removes its profile and every other file of it. `list()` and attach by labels find the provider's own browsers by
 `browser.json` in each browser's directory under the root (default `<tmpdir>/agentrun-local-browser-<uid>`, made 0700,
 refused when another user can write it). That file holds the labels and the deadline.
+
+A browser's id, and its directory's name, is its request's name, `computer-<12 hex of sha256(requestId)>`, and create
+makes that directory with `mkdir`, which one create alone wins, then writes `claim.json` in it (its process's pid and
+the time) before `browser.json`. A create that finds the directory there already, in this process or another on the
+same root, answers that browser once its Chrome answers, when its labels and network are the ones asked; one of another
+spec, past its deadline or whose supervisor has ended is refused `exists`. A directory with no `browser.json` whose
+claim names a process that is gone, or that is older than a create takes (the directory's own time where there is no
+claim), is a create that crashed: refused `exists` at once ("an earlier create of this request did not finish: create
+with a new request id"), never waited on past a create's time. A browser released
+here, or one this provider made that ended on its own (its deadline removed its directory), leaves its request refused
+`exists`.
 
 Lifetime: each browser runs under a supervisor of its own (`local-supervisor.ts`), a small detached Node process. It
 ends Chrome and removes its files at the deadline, on release, or when Chrome exits, whatever became of the process

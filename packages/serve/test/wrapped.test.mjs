@@ -3,12 +3,15 @@
 // path or project. Each server here reads the fixture home it is handed (`sessionsHome`), never the runner's HOME.
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { request } from "node:http";
+import { once } from "node:events";
 import { keptReads, loggedReads, within, wrappedView } from "../dist/wrapped.js";
 import { randomBytes } from "node:crypto";
+import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import { agent, call, cookieOf, follow, serve, withEnv } from "./support.mjs";
 
 const WORDS = "Fixture prompt, never reported.";
@@ -58,6 +61,25 @@ test("GET /wrapped reads the year under the home: tokens, days, hours, models, h
   assert.deepEqual([was.sessions, was.turns, was.requests], [1, 1, 1]);
   const text = JSON.stringify(body) + JSON.stringify(was);
   for (const leak of [WORDS, "/work/wrapped-fixture", "wrapped-fixture", home, "00000000-0000-4000"]) assert.equal(text.includes(leak), false, leak);
+});
+
+test("GET /wrapped sums the cache the import kept on the year's runs: hit rate, breaks and extra cost by cause; null with none", { timeout: 120_000 }, async (t) => {
+  const home = await homeWith(t);
+  const { api, store } = await serve(t, { sessionsHome: { home } });
+  assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
+  const live = await api("POST", "/agents/calc/runs", { input: { content: "What is six times seven?" } });
+  await follow(api, live.body.run_id, ["completed"]);
+  const { agentId, revisionId } = await store.runs.get(live.body.run_id);
+  assert.equal((await api("GET", "/wrapped?year=2026")).body.cache, null, "no run of the year keeps a cache");
+  const causes = (counts) => ({ model: 0, idle: 0, compaction: 0, edited: 0, sidechain: 0, unknown: 0, ...counts });
+  const imported = (id, startedAt, cache, source = "claude-code") => store.importRun({ id, agentId, revisionId, importedFrom: { source, session: id }, launch: { body: { input: { content: "hi" }, title: id, place: { mode: "runner" } } }, state: "ended", metrics: { input: 1, cacheRead: 0, cacheWrite: 0, output: 1, requests: 1, unmetered: 0, ...(cache ? { cache } : {}) }, startedAt: Date.parse(startedAt), endedAt: Date.parse(startedAt), transcript: [] });
+  await imported("imp-1", "2026-03-02T10:00:00Z", { read: 900, prompt: 1000, breaks: causes({ idle: 2, model: 1 }), extraCost: causes({ idle: 0.000003, model: 0.25 }), unpriced: 1 });
+  await imported("imp-2", "2026-04-02T10:00:00Z", { read: 100, prompt: 1000, breaks: causes({ idle: 1 }), extraCost: causes({ idle: 0.000004 }), unpriced: 0 }, "codex");
+  await imported("imp-none", "2026-05-02T10:00:00Z");
+  await imported("imp-old", "2025-03-02T10:00:00Z", { read: 5, prompt: 5, breaks: causes({ edited: 9 }), extraCost: causes(), unpriced: 9 });
+  const { status, body } = await api("GET", "/wrapped?year=2026");
+  assert.equal(status, 200, JSON.stringify(body));
+  assert.deepEqual(body.cache, { runs: 2, hit_rate: 0.5, breaks: causes({ idle: 3, model: 1 }), extra_cost_usd: causes({ idle: 0.000007, model: 0.25 }), unpriced_breaks: 1 }, "the year's two analyzed runs, of either source: one imported before the analysis, and one of 2025, are in no figure");
 });
 
 test("a year that is not four digits, or is after this one, is 400; no year is the current one", { timeout: 120_000 }, async (t) => {
@@ -129,6 +151,21 @@ test("a session file that cannot be read is counted, as a number and no path, no
   assert.equal(body.unread_files, 1);
   assert.equal(body.requests, 2, "the rest of the year is read");
   assert.equal(JSON.stringify(body).includes("00000000-0000-4000-8000-000000000002"), false, "no path or id");
+});
+
+test("the import worker's Wrapped read names its threads and read-ahead: the cores less one, at most 8, and a quarter of the import heap", { timeout: 120_000 }, async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wrapped-worker-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  // The worker's own import of the import package, and only that one, is a stub that hands back the options it was called with.
+  const stub = join(dir, "stub.mjs");
+  await writeFile(stub, "export const wrappedHome = async (_home, _year, { threads, readAhead }) => ({ threads, readAhead });\n");
+  const hooks = join(dir, "hooks.mjs");
+  await writeFile(hooks, `import { registerHooks } from "node:module";
+registerHooks({ resolve: (specifier, context, next) => (specifier === "@parcha/agentrun-import" && context.parentURL?.endsWith("/import-worker.js") ? { url: ${JSON.stringify(pathToFileURL(stub).href)}, shortCircuit: true } : next(specifier, context)) });
+`);
+  const worker = new Worker(new URL("../dist/import-worker.js", import.meta.url), { workerData: { task: "wrapped", data: dir, home: dir, year: 2026 }, execArgv: ["--import", pathToFileURL(hooks).href] });
+  const [answer] = await once(worker, "message");
+  assert.deepEqual(answer, { wrapped: { threads: Math.max(1, Math.min(availableParallelism() - 1, 8)), readAhead: 512 * 2 ** 20 }, unread: 0 });
 });
 
 test("a harness row lists the source behind it, a source of a reader outside the table standing for itself", () => {

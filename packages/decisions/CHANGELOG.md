@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.60 (2026-11-26)
+
+- OpenRouter, Anthropic and Parallel now map a 402 (the account is out of credit) to `payment_required`, as Jev does. It was `http`. A workflow decision on an out-of-credit account is now booked at $0, and serve's run cost says $0, where it booked the hold. <!-- changes/decisions-payment-required.md -->
+  - dsl: in a map with `onItemFailure: "collect"`, a decision that answers `payment_required` now fails the run, as `auth` does, since every item would get the same 402. Before, a 402 was `http`, so each item failed on its own, booked at its hold, and the map went on.
+
 ## 0.1.0-beta.59 (2026-11-25)
 
 - `anthropicProvider()`: a prompted Claude model (Haiku 5.5 by default, through `ANTHROPIC_BASE_URL`) as a `DecisionProvider`, answering noul and choice questions held to a JSON schema, at Anthropic's published price (`ANTHROPIC_PUBLISHED_PRICING`). It is the control arm for the web classifier step in `@parcha/agentrun-web`: `WebConfig.decider` (`deciderFrom(provider, { price })`) sifts each search's results and judges each fetched part in passages before the model reads them, each request held to the run's cap. Without a decider, every answer and receipt is byte-identical to a web with no step. <!-- changes/web-classifier-step.md -->

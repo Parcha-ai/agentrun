@@ -23,6 +23,7 @@ const { chatAttributes, routeTrace, toolAttributes, tracedModel, USAGE_ATTRIBUTE
 const { keepText, runnerSecrets, secretRedactor } = await import("../dist/runner/redact.js");
 const { hostSecrets, otlpHeaderCut } = await import("../dist/secrets.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { exporterConfig } = await import("../dist/otel/tracer.js");
 const { runEnv } = await import("../dist/runner/main.js");
 const { cliRunEnv } = await import("../dist/runner/cli-run-spec.js");
@@ -1480,6 +1481,34 @@ test("no OTEL_* setting reaches a run: the run environment and a CLI's have none
   assert.deepEqual(exporterConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://c/traces", OTEL_EXPORTER_OTLP_TIMEOUT: "500" }), { url: "http://c/traces", headers: {}, timeoutMillis: 500 });
 });
 
+test("an OTLP endpoint with a user, password, query or fragment is refused by name, its origin alone said; http stays, as OTLP allows", () => {
+  const FAKE = "not-a-secret";
+  const credentialed = "https://agent:" + FAKE + "@collector.example";
+  for (const variable of ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]) {
+    for (const url of [credentialed, "https://collector.example/?key=not-a-secret", "https://collector.example/#not-a-secret"]) {
+      assert.throws(() => exporterConfig({ [variable]: url }), (error) => {
+        assert.match(error.message, new RegExp(`^${variable} `), url);
+        assert.match(error.message, /https:\/\/collector\.example/, url);
+        assert.doesNotMatch(error.message, /not-a-secret|key=|agent:/, url);
+        return true;
+      }, `${variable}=${url}`);
+    }
+  }
+  assert.equal(exporterConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318" }).url, "http://localhost:4318/v1/traces", "a local collector over http");
+  assert.equal(exporterConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector.example:4318/v1/traces" }).url, "http://collector.example:4318/v1/traces");
+});
+
+test("the exporter's URL: the endpoint as the rule normalized it plus /v1/traces, so an empty query or fragment never holds the path; a traces endpoint, checked, as given", () => {
+  for (const [env, url] of [
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example/?" }, "https://collector.example/v1/traces"],
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example/otlp/#" }, "https://collector.example/otlp/v1/traces"],
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: "HTTPS://Collector.Example:443/" }, "https://collector.example/v1/traces"],
+    // The spec uses a signal's own endpoint as it is: a collector or proxy may tell /ingest/ from /ingest.
+    [{ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example/ingest/" }, "https://collector.example/ingest/"],
+    [{ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example/v1/traces?" }, "https://collector.example/v1/traces?"],
+  ]) assert.equal(exporterConfig(env).url, url, JSON.stringify(env));
+});
+
 test("pi: a native extension's tool and a session's native tool each have one execute_tool span, as a host tool has, none twice", { timeout: 90_000 }, async (t) => {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
@@ -1491,7 +1520,7 @@ test("pi: a native extension's tool and a session's native tool each have one ex
   const script = [{ calls: [{ call: "browse" }, { call: "ask_person" }, { call: "write" }] }, { say: "done" }];
   const createLoop = createAdapterLoop(
     (_claim, run) => ({
-      adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script), price: () => 0, extensions: [defineExtension({ name: "native-browse", tools: [browse] })], tools: [ask] }),
+      adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script), price: () => 0, extensions: [defineExtension({ name: "native-browse", tools: [browse] })], tools: [ask] }),
       session: { key: "root", label: "root", system: ["Follow the script."], tools: [write], context: "fresh" },
       input: "Follow the script.",
       hooks: quiet,

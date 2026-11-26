@@ -25,6 +25,7 @@ import { ToolsPage } from "@/components/ToolsPage";
 import { GitHubPage } from "@/components/GitHubPage";
 import { McpServersPage } from "@/components/McpServersPage";
 import { useSecrets } from "@/lib/secrets";
+import { LocalModelCard } from "@/components/LocalModelCard";
 import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { EmailPage } from "@/components/EmailPage";
@@ -35,8 +36,10 @@ import { WorkspacePage } from "@/components/WorkspacePage";
 import { ScheduleNames, type TriggerKnown } from "@/components/ScheduleChip";
 import { SchedulesPage } from "@/components/Schedules";
 import { TemplatesPage } from "@/components/Templates";
+import { FreeShelf } from "@/components/FreeShelf";
 import { SuggestionsPage } from "@/components/SuggestionsPage";
 import { repoOfHash } from "@/lib/suggestions";
+import { freeModels } from "@/lib/freeShelf";
 import { WrappedPage } from "@/components/WrappedPage";
 import { LiveRun } from "@/components/LiveRun";
 import { Race } from "@/components/Race";
@@ -76,7 +79,7 @@ import { waitingOf } from "@/lib/learning";
 import { asksPerson, FAILED_WINDOW_MS, failureCount, hasOwnRun, mergeNeeds, type Needs, pollSettled, rerunBody } from "@/lib/needs";
 import { placesOf } from "@/lib/place";
 import { type Problem, problem } from "@/lib/problem";
-import { type Template, templateHarness, tryTemplate } from "@/lib/templates";
+import { type Template, templatePick, tryTemplate } from "@/lib/templates";
 import { githubReturnOf } from "@/lib/github";
 import { addOf, signInOf } from "@/lib/mcp";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
@@ -91,8 +94,9 @@ const MODEL_CHECK_MS = 10_000;
 
 /** `agent`: an agent's page (at `tab`), or with `edit` its editor; null is a new agent's editor. `runsOf`, `status` and
  *  `archived` (for runs): the runs list's filters. `race`: a race's label (lib/race.ts); `newRace`: the form that starts
- *  one. `compare`: the runs a comparison names (lib/traceCompare.ts). `settings`: a settings page. */
-type Where = { year?: number; repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; newRace?: boolean; compare?: string[]; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; source?: string; from?: string; to?: string; model?: string; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
+ *  one. `compare`: the runs a comparison names (lib/traceCompare.ts). `settings`: a settings page. `templateModel`: the
+ *  model a template's Apply screen sets (`?model=`, the Free shelf's Use free), apart from the runs list's `model`. */
+type Where = { year?: number; repo?: string; observation?: string; nativeConnect?: boolean; connectionSource?: "server" | "remote" | "observe"; section: Section; template?: string; templateModel?: string; install?: string; playgroundAgent?: string; operation?: AgentOperation | "list-runs" | "apply-template"; draft?: string; run?: string; race?: string; newRace?: boolean; compare?: string[]; trigger?: string | null; kind?: "schedule" | "webhook" | "github" | "composio" | "feed" | "email"; agent?: string | null; edit?: boolean; tool?: string; tab?: string; runsOf?: string; archived?: boolean; status?: RunStatus; source?: string; from?: string; to?: string; model?: string; settings?: SettingsPage; signIn?: ReturnType<typeof signInOf>; add?: ReturnType<typeof addOf>; github?: ReturnType<typeof githubReturnOf> };
 /** The page an address opens. Exported for its test. */
 export function route(h: string = location.hash): Where & AgentEditorLocation {
   if (h === "#/dojo") return { section: "dojo" };
@@ -153,8 +157,11 @@ export function route(h: string = location.hash): Where & AgentEditorLocation {
   // A package on GitHub, read before it is installed (its source in `src`, as an "Add from URL" box or a link sends it).
   m = h.match(/^#\/templates\/install\?(.*)$/);
   if (m) return { section: "templates", install: new URLSearchParams(m[1]).get("src") ?? "" };
-  m = h.match(/^#\/templates\/([^/?]+)$/);
-  if (m) return { section: "templates", template: decodeURIComponent(m[1]) };
+  // A template's Apply screen with the agent's model set (`?model=`, the Free shelf's Use free).
+  m = h.match(/^#\/templates\/([^/?]+)(?:\?(.*))?$/);
+  if (m) { const model = new URLSearchParams(m[2] ?? "").get("model"); return { section: "templates", template: decodeURIComponent(m[1]), ...(model ? { templateModel: model } : {}) }; }
+  // The Free shelf: what runs for $0 on this server.
+  if (h === "#/free") return { section: "free" };
   if (h.startsWith("#/templates")) return { section: "templates" };
   // Triggers: the list, a new one of each kind, one trigger, and its editor.
   if (h === "#/triggers/new") return { section: "triggers", trigger: null, kind: "schedule" };
@@ -593,14 +600,22 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // kept out of what a demo shows.
   const settingsShown: SettingsPage[] = demo ? ["demo"] : settingsOffered;
   const settingsPage: SettingsPage = demo ? "demo" : where.settings ?? "keys";
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", factory: "#/factory", triggers: "#/triggers", templates: "#/templates", suggestions: "#/suggestions", wrapped: "#/wrapped", settings: `#/settings/${settingsShown[0] ?? "keys"}` }[s]);
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", factory: "#/factory", triggers: "#/triggers", templates: "#/templates", suggestions: "#/suggestions", free: "#/free", wrapped: "#/wrapped", settings: `#/settings/${settingsShown[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
   const templateKeys = useRef(keeper()).current;
+  // The model a pull here just ended with (`ollama/<tag>`): the first screen's templates run on it, not on the server's
+  // default, which may be another of the Ollama's tools models.
+  const [localModel, setLocalModel] = useState<string | null>(null);
+  // #/free's card, kept up from a pull's start until the person is done with it: the shelf would drop it as soon as a
+  // capabilities read lists a local model, before the card's own read sees the pull end.
+  const [fitHeld, setFitHeld] = useState(false);
+  // A pull's end, on the first screen's card or #/free's: the capabilities read again, and templates run on its tag.
+  const localReady = (tag: string) => { setLocalModel(`ollama/${tag}`); void readCaps(); };
   const tryIt = async (t: Template) => {
-    const harness = templateHarness(editorCaps.harnesses);
-    if (!harness) return "This server has no model to run it on yet.";
-    try { const id = await tryTemplate(v2, t, harness, templateKeys); go(`#/runs/${encodeURIComponent(id)}`); return null; } catch (e) { return problemOf(e); }
+    const on = templatePick(editorCaps.harnesses, localModel);
+    if (!on) return "This server has no model to run it on yet.";
+    try { const id = await tryTemplate(v2, t, on, templateKeys); go(`#/runs/${encodeURIComponent(id)}`); return null; } catch (e) { return problemOf(e); }
   };
   // How many runs came from an import (the start-here panel says so); `imported` is the import in progress.
   const importedRuns = (mission?.analytics.by_source ?? []).filter((g) => g.source !== "live").reduce((n, g) => n + g.runs, 0);
@@ -796,8 +811,10 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const moveToRunner = async (agentId: string): Promise<MovedToRunner> => {
     const { agent, etag } = await v2.getAgent(agentId);
     const tools = agent.definition.tools ?? [];
-    const fields = computerFields({ kind: "none" }, tools, editorCaps.tools)
-      ?? computerFields({ kind: "none" }, tools, toolOffers((await fetchCaps() as unknown as { tools?: unknown } | null)?.tools));
+    // What the no-computer choice's shell runs on the runner, from the computers list; none where it can't be read.
+    const kinds = await v2.computers().then((r) => r.kinds, () => null);
+    const read = async () => { const caps = await fetchCaps() as unknown as { tools?: unknown } | null; return computerFields({ kind: "none" }, tools, toolOffers(caps?.tools), kinds); };
+    const fields = computerFields({ kind: "none" }, tools, editorCaps.tools, kinds) ?? await read();
     if (!fields) throw new Error("the server's tools could not be read, so which of them run only in a box is unknown. Try again.");
     const { unchanged, ...body } = editBody(agent, fields, "Moved to the runner, where Claude Code's login on this machine runs it");
     if (unchanged) return { revision: agent.revision, saved: false, dropped: [] };
@@ -858,6 +875,8 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // The first screen's card stays from a sign-in's start until the person is done with OpenAI's words on usage, though the
   // server has its model by then.
   const [planShown, setPlanShown] = useState(false);
+  // The free local model card stays once its pull ends, though the server has its model by then, until the person is done.
+  const [localShown, setLocalShown] = useState(false);
   const onPlan = (v: ChatGPTView) => {
     setPlan(v);
     if (v.state === "pending" || v.state === "signed_in") setPlanShown(true);
@@ -948,8 +967,11 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
                 needsYou={needs && <NeedsYouStrip asking={needs.asking} failed={needs.failed} failedAll={mission?.runs.failed} live={needs.live} learning={learningWaits} problem={needsProblem} agentName={agentName} onAnswer={answer} onApprove={approve} onHandBack={handBack} onRunAgain={runAgain} onStop={stop} />}
                 startHere={ownRun === false && !observations.data?.sessions.length ? <StartHere harnesses={editorCaps.harnesses} tools={editorCaps.tools} onTry={tryIt} imported={importedRuns}
                   keySettings={caps?.features?.tool_keys?.routes === true && caps.features.tool_keys.at_rest === "sealed"}
-                  modelSetup={caps && (caps.models.ready === false || planShown) ? <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} source={caps.models.source} routePrefix={caps.models.route_prefix} capsRead={caps.models} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
-                    plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} /> : undefined} /> : undefined} />
+                  modelSetup={caps && (caps.models.ready === false || planShown || localShown) ? <>
+                    {(caps.models.ready === false || localShown) && <LocalModelCard v2={v2} onPulling={() => setLocalShown(true)} onReady={(tag) => { setLocalShown(true); localReady(tag); }} onDone={() => setLocalShown(false)} />}
+                    {(caps.models.ready === false || planShown) && <ModelKeyCard v2={v2} needs={caps.models.needs} model={caps.models.default} source={caps.models.source} routePrefix={caps.models.route_prefix} capsRead={caps.models} onSaved={readCaps} writable={secretsWritable} whyNot={secretsWhyNot}
+                    plan={plan} harnesses={editorCaps.harnesses} onPlan={onPlan} onDone={() => setPlanShown(false)} />}
+                  </> : undefined} /> : undefined} />
             </div>
           </div>
         : where.section === "wrapped"
@@ -959,7 +981,10 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
         : where.section === "factory"
         ? <AgentFactoryPage v2={v2} agentName={agentName} />
         : where.section === "templates"
-        ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : where.template ?? ""} v2={v2} name={where.template} install={where.install} go={go} />
+        ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : `${where.template ?? ""}:${where.templateModel ?? ""}`} v2={v2} name={where.template} install={where.install} model={where.templateModel} freeIds={c ? freeModels(c.harnesses).map((m) => m.id) : undefined} go={go} />
+        : where.section === "free"
+        ? <FreeShelf v2={v2} harnesses={editorCaps.harnesses} tools={c?.tools} freeRequests={editorCaps.freeRequests} routePrefix={c?.models?.route_prefix} go={go}
+            fit={<LocalModelCard v2={v2} onPulling={() => setFitHeld(true)} onReady={localReady} onDone={() => setFitHeld(false)} />} fitHeld={fitHeld} localModel={localModel} />
         : where.section === "triggers"
         ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} failuresToPause={caps?.features?.triggers?.failures_to_pause} publicUrl={caps?.features?.triggers?.public_url} />
         : where.section === "playground"
@@ -970,7 +995,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
               {operationPicker}
               <span className="min-w-0 break-all font-mono text-small text-muted-foreground">{where.operation === "apply-template" ? `/v2/templates/${where.template ? encodeURIComponent(where.template) : "{template}"}/apply` : where.operation === "list-runs" ? (where.playgroundAgent ? `/v2/agents/${where.playgroundAgent}/runs` : "/v2/runs") : where.operation === "create-agent" ? "/v2/agents" : where.operation === "edit-agent" ? `/v2/agents/${where.playgroundAgent ?? "{agent_id}"}/definition` : "/v2/agents/{agent_id}/runs"}</span>
             </div>}
-            {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}:${where.source ?? ""}:${where.from ?? ""}:${where.to ?? ""}:${where.model ?? ""}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived, source: where.source, from: where.from, to: where.to, model: where.model }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
+            {where.operation === "apply-template" ? <div className="min-h-0 flex-1 overflow-auto"><TemplatesPage key={where.template ?? ""} v2={v2} name={where.template} go={go} playground draft={where.draft} freeIds={c ? freeModels(c.harnesses).map((m) => m.id) : undefined} /></div> : where.operation === "list-runs" ? <RunsRequest key={`list:${where.playgroundAgent ?? ""}:${where.status ?? ""}:${where.archived ?? false}:${where.source ?? ""}:${where.from ?? ""}:${where.to ?? ""}:${where.model ?? ""}`} v2={v2} origin={location.origin} agentId={where.playgroundAgent} filter={{ status: where.status, archived: where.archived, source: where.source, from: where.from, to: where.to, model: where.model }} /> : where.operation ? <AgentRequest key={`${where.operation}:${where.playgroundAgent ?? ""}:${where.draft ?? ""}`} v2={v2} operation={where.operation} origin={location.origin} agentId={where.playgroundAgent} draft={where.draft} harnesses={editorCaps.harnesses} routePrefix={c?.models?.route_prefix} /> : <>
               {!agents && noModel}
               {startError && <div className="m-8 border p-4" role="alert"><p className="text-lead text-destructive-text">The agents could not be read: {startError}</p><Button size="sm" className="mt-3" type="button" onClick={() => setRetry((n) => n + 1)}>Try again</Button></div>}
               {agents && <Playground lead={operationPicker} notice={noModel} agents={agents.filter((a) => !a.archived_at)} revisions={revs} efforts={efforts} origin={location.origin} agentId={pick ?? undefined} onAgent={setPick} onRevision={(revision, definition) => setPlaygroundRevision({ revision, definition })} onSend={send} limits={caps?.limits} {...(demo ? { upload: demoUpload } : {})} removeUpload={v2.deleteUpload} onMoveToRunner={moveToRunner} onOpenRun={(id) => go(`#/runs/${encodeURIComponent(id)}`)}

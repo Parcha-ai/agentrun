@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { heldRedactor } from "../dist/runner/redact.js";
 import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { SdkRuns, sdkInbox } from "../dist/sdk/runs.js";
 import { runEntries } from "../dist/store-reads/journal.js";
@@ -23,8 +24,8 @@ const start = (name) => tool("workflow", "learned_workflow", "started", { input:
 async function endedRunOf(t, events) {
   const server = await serve(t, { runner: false });
   assert.equal((await server.api("POST", "/agents", { definition: { id: "sdk-held", name: "SDK held", instructions: "Read release status.", sdk: { runtime: "claude-agent-sdk" }, learning: true, tools: [] } })).status, 201);
-  await landWorkflows(server.data, "sdk-held", [{ name: "release", description: "Read release status.", workflow }]);
-  await promoteChecked(server.store.settings, "sdk-held", [{ name: "release", workflow }]);
+  await landWorkflows(server.store, "sdk-held", [{ name: "release", description: "Read release status.", workflow }]);
+  await promoteChecked(server.store, "sdk-held", [{ name: "release", workflow }]);
   const started = await server.api("POST", "/agents/sdk-held/sdk-runs", { runtime: "claude-agent-sdk", input: "Read release status.", instructions: "Read release status.", workflow_tools: [{ name: STATUS, description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 }] }, { "Idempotency-Key": "held" });
   assert.equal(started.status, 201, JSON.stringify(started.body));
   const id = started.body.run_id;
@@ -35,7 +36,7 @@ async function endedRunOf(t, events) {
   const claim = await server.store.claim(id, "sdk-held-proof", { leaseMs: 60_000 });
   const launch = (await server.store.runs.launch(id)).body;
   // No paid request: the reflection route is scripted unavailable.
-  const loop = createSdkLoop(launch, { store: server.store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => { throw new Error("the test reflection route is unavailable"); })({ journal: () => server.store.journal(claim), flush: () => server.store.flush(), signal: new AbortController().signal });
+  const loop = createSdkLoop(launch, { store: server.store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => { throw new Error("the test reflection route is unavailable"); })({ redact: heldRedactor((text) => text), journal: () => server.store.journal(claim), flush: () => server.store.flush(), signal: new AbortController().signal });
   assert.equal((await loop.start(claim)).state, "ended");
   const journal = JSON.stringify(await runEntries(server.store, id, BACKGROUND_CONTEXT));
   assert.equal(journal.includes(HEAD) || journal.includes(REST.slice(0, 8)), false, "the journal holds no part of the held value");

@@ -16,7 +16,7 @@ import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
 import type { LearningMode } from "./learning.js";
 import type { Serve, ServeOptions } from "./server.js";
-import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV, switchFrom, WEB_JEV_OFF_ENV } from "./env-switch.js";
+import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV, SHARE_HOST_ENV, switchFrom, WEB_JEV_OFF_ENV } from "./env-switch.js";
 import { harnessModulesOf, harnessRecipesOf } from "./harness-table.js";
 import { hookOrigin, LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV, type LaunchHook, launchHookFrom } from "./trigger-launch-hook.js";
 import { surviveClosedPipes } from "./closed-pipes.js";
@@ -33,10 +33,10 @@ surviveClosedPipes();
 // (env-proxy.ts): for every command, before anything calls out. Neither set, nothing changes.
 installEnvProxy();
 
-const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
+const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--no-runner] [--share-host] [--harness-module MODULE ...] [--harness-recipe FILE ...] [--harness-sign-in]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
-       agentrun-serve install-harness goose|cursor [--data DIR]
+       agentrun-serve install-harness goose|cursor|antigravity [--data DIR]
        agentrun-serve install-harness --recipe FILE [--data DIR]
        agentrun-serve sign-in-harness --recipe FILE [--data DIR]
        agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
@@ -88,11 +88,17 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
                     separated), installed into DIR with agentrun harness install --recipe FILE. Its harness runs once a
                     harness-check of it passed on DIR, through this server's model proxy (a plan-billed one's keys are
                     not saved on a server yet); a recipe the loader refuses, or whose id another harness has, refuses
-                    the start
+                    the start. FILE may be the name of a recipe AgentRun ships (antigravity), unless a file of that
+                    name is in this directory (./NAME names the file)
   --harness-sign-in run a person's runs of a plan-billed recipe with a sign-in on your own sign-in (agentrun harness
                     sign-in), never a schedule's or a trigger's. One owner's own machine alone: the start is refused
                     unless the server listens on loopback with no public address, keeps its store in DIR (no
                     AGENTRUN_STORE_URL), runs its runs beside it as its own user, and takes one API token
+  --share-host      serve shares alone, under /r/ (as AGENTRUN_SHARE_HOST=1): a share's page at /r/<id>, its bundle at
+                    /r/<id>/bundle.json, the API at /r/v2/shares (a token's upload, re-scrubbed and refused on any
+                    value the scrubber finds; its list; its delete; 100 shares a token) and /r/v2/health. Every other
+                    address is a 404; no runner, model key or computer runs, and there is no console or owner. Its share
+                    URLs are on AGENTRUN_PUBLIC_URL, which a start on an address other than loopback needs
   --no-runner       run the server alone, with no runner beside it (default: one runner beside the server); start one or
                     more \`agentrun-serve runner --data DIR\` processes on the same data directory to claim and run runs;
                     each holds at most --loops N runs (default AGENTRUN_MAX_RUNS, else as many pi runs as its host's
@@ -246,20 +252,25 @@ if (process.argv[2] === "install-harness") {
     }
   };
   const { values, positionals } = read();
+  if (values.recipe !== undefined && positionals.length) usage("it takes a harness's name or --recipe FILE, not both.");
+  // A recipe AgentRun ships (the ACP package's: Google Antigravity's), by its name, is installed as its file is.
+  const { acpPackage: shipping } = await import("./acp-package.js");
+  const shipped = positionals.length === 1 ? shipping()?.bundledRecipePath?.(positionals[0]!) : undefined;
   // A recipe's harness (harness-recipe.ts): the recipe loaded under its five rules first, so a refused one downloads
-  // nothing; then its release for this platform, as the Goose install does it.
-  if (values.recipe !== undefined) {
-    if (positionals.length) usage("it takes a harness's name or --recipe FILE, not both.");
-    const [{ ArchiveInstallFailed }, { installRecipe, loadRecipe, recipeCheckLine, RecipeRefused }] = await Promise.all([import("./harness-archive.js"), import("./harness-recipe.js")]);
+  // nothing; then its release for this platform, as the Goose install does it. Which recipe resolved is said first.
+  if (values.recipe !== undefined || shipped) {
+    const [{ ArchiveInstallFailed }, { installRecipe, loadRecipe, recipeCheckLine, RecipeRefused, recipeSaid }] = await Promise.all([import("./harness-archive.js"), import("./harness-recipe.js")]);
     const data = resolve(values.data ?? defaultData());
     try {
-      const { recipe, file } = loadRecipe(values.recipe);
+      // A shipped recipe by the name given, never by its path: a file of that name in the directory refuses it (resolveRecipe).
+      const { recipe, file, bundled } = loadRecipe(shipped ? positionals[0]! : values.recipe!);
+      console.error(recipeSaid(recipe.label, file, bundled));
       const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "its files are checked" } as const;
       const { version, installed, binary, pinnedBy } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });
       const held = { recipe: "the recipe's tree pin", "first-seen": "the tree an earlier install recorded", recorded: "their tree recorded now, as the first one; a later binary or file beside it that differs is refused" }[pinnedBy];
       console.log(installed === "already"
         ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned files are there, so nothing was downloaded; held to ${held}).`
-        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary and every file beside it held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
+        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary and every file beside it held to ${held}). Check it with: ${recipeCheckLine(file, data)}${recipe.model.billing === "proxy" ? " --model PROVIDER/MODEL" : ""}`);
       process.exit(0);
     } catch (error) {
       if (!(error instanceof ArchiveInstallFailed) && !(error instanceof RecipeRefused)) throw error;
@@ -269,7 +280,7 @@ if (process.argv[2] === "install-harness") {
   }
   // The owner-installed harnesses (harness-owned.ts), each one's id, label, install and what its install checks.
   const installers = await Promise.all([import("./harness-goose.js").then((m) => m.GOOSE), import("./harness-cursor.js").then((m) => m.CURSOR)]);
-  const names = installers.map((each) => each.id).join(" or ");
+  const names = [...installers.map((each) => each.id), ...(shipping()?.BUNDLED_RECIPES ?? [])].join(" or ");
   if (positionals.length !== 1) usage(`it takes one harness: ${names}.`);
   const chosen = installers.find((each) => each.id === positionals[0]);
   if (!chosen) usage(`it installs ${names}, not ${positionals[0]}: claude-agent and codex install on first use, and pi and opencode come with AgentRun.`);
@@ -498,6 +509,7 @@ if (process.argv[2] === "eval-template") {
         "allow-code-nodes": { type: "boolean", default: false },
         learning: { type: "string" },
         "no-runner": { type: "boolean", default: false },
+        "share-host": { type: "boolean", default: false },
         "harness-module": { type: "string", multiple: true, default: [] },
         "harness-recipe": { type: "string", multiple: true, default: [] },
         "harness-sign-in": { type: "boolean", default: false },
@@ -568,10 +580,13 @@ if (process.argv[2] === "eval-template") {
   // AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins its token may save a per_run server at (api-only.ts), read with it alone.
   let apiOnly: boolean;
   let runKeys: boolean;
+  // --share-host, or AGENTRUN_SHARE_HOST=1: shares under /r/ alone (share-host.ts), with no runner beside the server.
+  let shareHost: boolean;
   let apiOnlyMcpOrigins: string[];
   try {
     apiOnly = switchFrom(API_ONLY_ENV);
     runKeys = switchFrom(RUN_KEYS_ENV);
+    shareHost = values["share-host"] === true || switchFrom(SHARE_HOST_ENV);
     switchFrom(WEB_JEV_OFF_ENV);
     apiOnlyMcpOrigins = apiOnly ? apiOnlyMcpOriginsFrom(process.env[API_ONLY_MCP_ORIGINS_ENV]) : [];
   } catch (error) {
@@ -587,7 +602,32 @@ if (process.argv[2] === "eval-template") {
     console.error(`agentrun-serve: ${(error as Error).message}`);
     process.exit(2);
   }
-  const accounts = !apiOnly && process.env.AGENTRUN_ACCOUNTS !== "0";
+  // Which recipe each --harness-recipe NAME resolved to, said before the start: one AgentRun ships (resolveRecipe), and a
+  // name a file here also holds refuses the start, saying both.
+  if (harnessRecipesOf(values["harness-recipe"], process.env).length) {
+    const { loadRecipe, RecipeRefused, recipeSaid, resolveRecipe } = await import("./harness-recipe.js");
+    for (const given of harnessRecipesOf(values["harness-recipe"], process.env)) {
+      let resolved: { file: string; bundled: boolean };
+      try {
+        resolved = resolveRecipe(given);
+      } catch (error) {
+        if (!(error instanceof RecipeRefused)) throw error;
+        console.error(`agentrun-serve: --harness-recipe ${given}: ${error.message}`);
+        process.exit(2);
+      }
+      // A refused recipe's words are the start's own, as for a file (the harness table loads each).
+      if (resolved.bundled) {
+        let label = given;
+        try {
+          label = loadRecipe(resolved.file).recipe.label;
+        } catch {}
+        console.error(recipeSaid(label, resolved.file, true));
+      }
+    }
+  }
+  const accounts = !apiOnly && !shareHost && process.env.AGENTRUN_ACCOUNTS !== "0";
+  // No runner beside a share host, as --no-runner.
+  const noRunner = values["no-runner"] === true || shareHost;
   // The address first (listen-first.ts): the port bound and named before the rest of the server loads, then answering that
   // the server is warming until it takes the socket over. A port already taken is left to the start's own listen below,
   // which waits for a server it replaces, as it always has: no early line then. The banner's "Open " line still means ready.
@@ -627,14 +667,14 @@ if (process.argv[2] === "eval-template") {
       ...(values["drain-timeout"] ? { drainTimeout: values["drain-timeout"] } : {}), ...(values.documents ? { documents: values.documents } : {}), ...(values["allow-code-nodes"] ? { allowCodeNodes: true } : {}), ...(values.learning !== undefined ? { learning: values.learning as LearningMode } : {}), log: (line) => void process.stdout.write(`${line}\n`),
       // The public address is the server's with accounts on or off: the Host names it serves, the webhook URLs it gives.
       ...(publicUrl ? { publicUrl } : {}),
-      ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
+      ...(accounts ? { accounts, openSetup: !publicUrl, countSessions: true } : {}), ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(launchHook ? { launchHook } : {}), ...(runKeys ? { runKeys } : {}),
       ...(apiOnlyMcpOrigins.length ? { apiOnlyMcpOrigins } : {}),
       // The proxies whose X-Forwarded-For the sign-in limit reads (comma-separated); none unless set.
       ...(trustedProxies.length ? { trustedProxies } : {}),
       // A local install only as its operator says, never inferred: an MCP server on loopback is refused without it.
       ...(process.env.AGENTRUN_MCP_ALLOW_LOOPBACK === "1" ? { mcpLoopback: true } : {}),
       // No runner beside this server: a paired computer's socket stays here, where no run reaches it, which the pairing says.
-      ...(values["no-runner"] ? { runnerApart: true } : {}),
+      ...(noRunner ? { runnerApart: true } : {}),
     });
   } catch (error) {
     // A data directory an earlier version wrote, refused on a start `npx @parcha/agentrun` made: the ways on as that command
@@ -654,7 +694,7 @@ if (process.argv[2] === "eval-template") {
   used = telemetry.used;
   const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
   // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
-  if (!values["no-runner"] && askedAt === undefined) {
+  if (!noRunner && askedAt === undefined) {
     try {
       // The beside-runner sees the server's test switches (server.ts fauxEnvOf: --faux and its modules), which the CLI hands
       // the server as options, never through this process's environment: without them a --faux start's runner looks its faux
@@ -686,7 +726,7 @@ if (process.argv[2] === "eval-template") {
   }
   // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.
   const source = given ? "env" : givenList ? "list" : serve.tokenMade ? "made" : "file";
-  for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, tokenIds: serve.tokenIds, accounts, ...(apiOnly ? { apiOnly } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), boxes: serve.boxesLine, ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
+  for (const line of banner({ url: serve.url, baseUrl: serve.baseUrl, data, token: serve.token, source, tokenIds: serve.tokenIds, accounts, ...(apiOnly ? { apiOnly } : {}), ...(shareHost ? { shareHost } : {}), ...(serve.launchCode ? { launchCode: serve.launchCode } : {}), ...(shareHost ? {} : { boxes: serve.boxesLine }), ...(values.listen ? { listen: values.listen } : {}), ...(publicUrl ? { publicUrl } : {}) })) console.log(line);
   if (launchHook) console.log(`Launch hook (${LAUNCH_HOOK_URL_ENV}): trigger firings go to ${hookOrigin(launchHook)}, whose host starts their runs; this server starts none for them.`);
   // Open setup (no public address, a loopback listener): the link that sets the password. Any other start printed the
   // setup link with its code as the code was made (owner.ts).
@@ -698,7 +738,7 @@ if (process.argv[2] === "eval-template") {
   // first visit sets the password with nothing to look up. That code works once and for 30 minutes, unlike the token, so
   // the opener's arguments and the browser's history hold nothing that outlasts the setup.
   // API-only: there is no console, so nothing to open.
-  if (values.open && !apiOnly && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [serve.setupUrl ?? `${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
+  if (values.open && !apiOnly && !shareHost && canOpen(process.env)) spawn(process.platform === "darwin" ? "open" : "xdg-open", [serve.setupUrl ?? `${publicUrl ?? serve.url}/`], { stdio: "ignore", detached: true }).on("error", () => {}).unref();
   const record = join(resolve(data), SERVER_FILE);
   // The record goes only while it is this server's: a server that takes the lock next writes its own, which this stop must
   // not remove. One stop per press or process-manager stop; a later signal, or a stop past its deadline, stops at once

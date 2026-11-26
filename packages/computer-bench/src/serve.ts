@@ -159,7 +159,9 @@ export function serveBackend(options: ServeBackendOptions): Backend {
 				...(arm.effort ? { thinking: arm.effort } : {}),
 				approvals: "never",
 				skills: [],
-				tools: [],
+				// The computer's file ops (computer.files) need read and write among the agent's tools: without them serve
+				// offers a computer with the files group none of them.
+				tools: ["read", "write"],
 				...own,
 				computer: { kind, ...(typeof arm.options?.provider === "string" ? { provider: arm.options.provider } : {}), ...pinned, surface: arm.surface, ...(exec === "deny" ? { exec: false } : {}) },
 			};

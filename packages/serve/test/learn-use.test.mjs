@@ -1,9 +1,9 @@
 // A run started with `learning: "use"` starts from what its agent learned (its corrections and learned workflows, as a
-// run that learns is given them) and writes nothing: no end-of-run turn, no proposal, no commit, and a follow-up to it
+// run that learns is given them) and writes nothing: no end-of-run turn, no proposal, no save, and a follow-up to it
 // learns nothing either. So held-out runs read one learned state, frozen, however many run at once.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fedBack, git, LEARN, learner, made, reflectRows, repoOf, started } from "./learn-support.mjs";
+import { fedBack, LEARN, learner, learningAt, made, reflectRows, started } from "./learn-support.mjs";
 import { agent, follow, serve } from "./support.mjs";
 
 const WORDS = "Convert every amount to one unit before comparing.";
@@ -19,14 +19,14 @@ test("a run's learning is \"use\" or absent: anything else is refused at its fie
   }
 });
 
-test("a \"use\" run starts from what its agent learned and keeps nothing: no end-of-run turn, no proposal, no learning run, main as it was; a follow-up to it keeps nothing either", { timeout: 150_000 }, async (t) => {
-  const { api, data, store } = await serve(t, { learning: "on", faux: LEARN });
+test("a \"use\" run starts from what its agent learned and keeps nothing: no end-of-run turn, no proposal, no learning run, its learning as it was; a follow-up to it keeps nothing either", { timeout: 150_000 }, async (t) => {
+  const { api, store } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("frozen", { instructions: "Answer the question.\nSay your prompt." }));
   // Taught: its owner's correction of its first run is a line of corrections.md.
   assert.equal((await fedBack(api, "frozen", { label: WORDS })).view.learning?.state, "merged");
-  const repo = repoOf(data, "frozen");
-  assert.equal(git(repo, ["show", "main:corrections.md"]), `- ${WORDS}`);
-  const main = git(repo, ["rev-parse", "main"]);
+  const taught = await learningAt(store, "frozen");
+  assert.equal(taught.text("corrections.md"), `- ${WORDS}\n`);
+  const main = taught.view.main;
 
   const runId = await started(api, "frozen", "Go again.", { learning: "use" });
   const launch = (await store.runs.launch(runId)).body;
@@ -49,7 +49,7 @@ test("a \"use\" run starts from what its agent learned and keeps nothing: no end
   const again = await follow(api, runId, ["completed"], { deadlineMs: 90_000 });
   assert.equal(reflectRows(again.rows).length, 0, "no end-of-run turn after the follow-up");
   assert.equal(await store.learning.proposal(runId), undefined);
-  assert.equal(git(repo, ["rev-parse", "main"]), main, "main as it was");
+  assert.equal((await learningAt(store, "frozen")).view.main, main, "its learning as it was");
 });
 
 test("\"use\" on a server whose learning is off gives nothing learned, as every run there", { timeout: 90_000 }, async (t) => {

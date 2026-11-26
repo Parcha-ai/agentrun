@@ -665,11 +665,16 @@ function commandOf(args: unknown, folder: Folder): { line: string; start: string
   return { reason: "it carries no command this policy can read" };
 }
 
+/** Why the read-only policy refuses every call of shell tool `tool`, whatever its arguments (a shell tool but bash and
+ *  the watchers), or undefined for one whose call it reads: bash, whose command decides (readOnlyReason). */
+export function readOnlyToolReason(tool: string): string | undefined {
+  return tool === "bash" || WATCHERS.has(tool) ? undefined : `${tool} is not offered: a read-only shell runs one command at a time, in the foreground, with bash`;
+}
+
 /** Why the read-only policy refuses shell tool `tool`'s call with `args`, or undefined when it may go on to the gate's
  *  permission. `folder`: the run's folder by its names (the first is where a command starts). */
 export function readOnlyReason(tool: string, args: unknown, folder: Folder): string | undefined {
-  if (WATCHERS.has(tool)) return undefined;
-  if (tool !== "bash") return `${tool} is not offered: a read-only shell runs one command at a time, in the foreground, with bash`;
+  if (tool !== "bash") return readOnlyToolReason(tool);
   const read = commandOf(args, folder);
   if ("reason" in read) return read.reason;
   try {

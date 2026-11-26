@@ -96,7 +96,8 @@ export type ModelKeyTarget = { readonly kind: "agentic" | "workflow" | string; r
 
 /** A created run's ModelKeyTarget: its revision's kind and its launch's pinned model. A held run its model kept from
  *  running (run-launch.ts hold.refused) pins none and makes no model call: no key is required for it, and one handed
- *  with it is refused as never used (modelKeyMisfit). */
+ *  with it is refused as never used (modelKeyMisfit). So its create asks no key (serverKeyMissing is false for it): a
+ *  change that lets such a hold become an agent turn must check the run's model key at that turn. */
 export function keyTargetOf(launch: Pick<RunLaunch, "model" | "native">, revision: { readonly kind: string }): ModelKeyTarget {
   return { kind: revision.kind, ...(launch.model ? { model: launch.model } : {}), native: Boolean(launch.native) };
 }

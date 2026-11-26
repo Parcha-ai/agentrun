@@ -11,7 +11,8 @@ import { reflectRequestId } from "../dist/runner/end-of-run.js";
 import { learningCommit } from "../dist/learn/commit.js";
 import { recordPromotion } from "../dist/learn/promote.js";
 import { workflowDigest } from "../dist/runner/workflow-first.js";
-import { learningFolderOf, seedOf } from "../dist/learning.js";
+import { learningOf } from "../dist/learn/rows.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const tool = {
   name: "mcp:backend/status", description: "Read release readiness from the existing backend.",
@@ -55,18 +56,14 @@ test("a reclaim with no compile due keeps the durable compile request's cost as 
     id, name: id, instructions: description, sdk: { runtime }, learning: true, tools: [], output_schema: tool.output_schema,
   } })).status, 201);
   const land = async label => {
-    await seedOf(s.data, id);
-    const folder = learningFolderOf(s.data, id);
-    try {
-      const merged = await learningCommit(folder.workspace, {
-        kind: "merge", runId: `fixture-${label}`, reason: `Keep ${label}`, graded: {},
-        files: [
-          { path: "workflows/release-status/workflow.json", text: JSON.stringify(flow(label)) },
-          { path: "workflows/release-status/README.md", text: readmeOf("release-status", description) },
-        ],
-      });
-      assert.equal(merged.ok, true, JSON.stringify(merged));
-    } finally { await folder.end(); }
+    const merged = await learningCommit(learningOf(s.store, id), {
+      runId: `fixture-${label}`, reason: `Keep ${label}`,
+      files: [
+        { path: "workflows/release-status/workflow.json", text: JSON.stringify(flow(label)) },
+        { path: "workflows/release-status/README.md", text: readmeOf("release-status", description) },
+      ],
+    });
+    assert.equal(merged.ok, true, JSON.stringify(merged));
   };
   await land("initial-status");
   const start = await s.api("POST", `/agents/${id}/sdk-runs`, { runtime, input: "Report release readiness.", instructions: description, workflow_tools: [tool] }, { "Idempotency-Key": "compile-cost" });
@@ -77,7 +74,7 @@ test("a reclaim with no compile due keeps the durable compile request's cost as 
   });
   assert.equal(done.status, 200);
   await land("before-compile");
-  await recordPromotion(s.store.settings, id, {
+  await recordPromotion(s.store.learning, id, {
     workflow: "release-status", digest: workflowDigest({ workflow: JSON.stringify(flow("before-compile")) }),
     at: new Date().toISOString(), decided: "hold", source: "graded", reason: "The owner held this revision for correction.",
   }, () => true);
@@ -98,7 +95,7 @@ test("a reclaim with no compile due keeps the durable compile request's cost as 
     } });
     // The route is asked for the claim it serves, so its requests can name the claim's run, turn and attempt.
     const asked = [];
-    const loop = createSdkLoop(launch, { store: s.store, data: s.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async (of) => (asked.push(of), route))({ journal: () => guarded, flush: () => s.store.flush(), signal: abort.signal });
+    const loop = createSdkLoop(launch, { store: s.store, data: s.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async (of) => (asked.push(of), route))({ redact: heldRedactor((text) => text), journal: () => guarded, flush: () => s.store.flush(), signal: abort.signal });
     assert.equal((await loop.start(claim)).state, crash ? "interrupted" : "ended");
     assert.ok(asked.every((of) => of === claim), "every route ask names the loop's claim");
     if (crash) { assert.ok(cut); await s.store.release(claim); }
