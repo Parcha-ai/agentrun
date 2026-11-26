@@ -406,8 +406,9 @@ function contextOf(view: View, opts: ScrubOptions): ScrubContext {
 /** Whether a cut text holds nothing the scrub must cut: no known format the format rules still find in any view of any
  *  chunk of it (each marker read as a blank, so a marker is never one), and no held value in any form (valueMatcher:
  *  split by whitespace, partly encoded) in the text as written or in any decoding of it, each marker read as a
- *  character no form holds and every view keeps (SEPARATOR: a NUL would not do, as the views drop control characters).
- *  The time budget holds here too (a throw). */
+ *  character no form holds and every view keeps (SEPARATOR, read with valueMatcher's `separated`: a NUL would not do,
+ *  as the views drop control characters). A U+FFFF the text brought is read as a NUL first, nothing to the views, so
+ *  only a marker separates. The time budget holds here too (a throw). */
 async function clean(rules: readonly ScrubRule[], out: string, opts: ScrubOptions, run: Run): Promise<boolean> {
   const blanked = out.replace(MARKER, (found) => " ".repeat(found.length));
   const formats = rules.filter((rule) => rule.kind === "format");
@@ -422,9 +423,9 @@ async function clean(rules: readonly ScrubRule[], out: string, opts: ScrubOption
   }
   const held = heldOf(opts);
   if (!held.length) return true;
-  const matches = valueMatcher(held);
-  for (const view of viewsOf(out.replace(MARKER, SEPARATOR))) {
-    if (matches(view.source)) return false;
+  const matches = valueMatcher(held, { separated: true });
+  for (const view of viewsOf(out)) {
+    if (matches(view.source.replaceAll(SEPARATOR, "\u0000").replace(MARKER, SEPARATOR))) return false;
     inTime(run);
   }
   return true;

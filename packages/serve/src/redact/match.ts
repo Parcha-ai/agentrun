@@ -752,13 +752,16 @@ const BLANKS = /[\t-\r ]+/y;
 const isControl = (code: number): boolean => code <= 0x08 || (code >= 0x0e && code <= 0x1f) || (code >= 0x7f && code <= 0x9f);
 /** What ends each pass of a join (joinOf). Every view keeps it, and no needle holds it, so no held value reads across
  *  it. It cannot be a NUL, as the views drop control characters wherever they come from (the text, or an escape or an
- *  encoding that decodes to one), and a separator they dropped would join the passes. U+FFFF is a noncharacter: viewOf
- *  copies it where it stands, never squeezing it, and squeeze, which every plain and joined needle is made with,
- *  drops it, while a hex, folded or base64 needle is ASCII. One in the text itself separates there too: it shows. */
-export const SEPARATOR = "￿";
+ *  encoding that decodes to one), and a separator they dropped would join the passes. It is U+FFFF, a noncharacter:
+ *  squeeze, which every plain and joined needle is made with, drops it, and a hex, folded or base64 needle is ASCII.
+ *  Only the one joinOf puts there separates. One the text brought shows as a box at most, and a reader reads a held
+ *  value through it, so the views drop it as they drop a control character, as it stands or as a decoder made it, and
+ *  joinOf reads one in a part's text as a NUL (one character for one, so every offset stays, and dropped too). A
+ *  caller that marks places in a text with its own (secret-cut.ts) asks holds for `separated`. */
+export const SEPARATOR = "\uffff";
 /** A character that renders as nothing (a zero-width space, a soft hyphen, a byte order mark, a variation selector, a
  *  control character that is no whitespace: isControl), and SEPARATOR. */
-const IGNORABLE = /[\p{Default_Ignorable_Code_Point}\u0000-\u0008\u000e-\u001f\u007f-\u009f￿]+/gu;
+const IGNORABLE = /[\p{Default_Ignorable_Code_Point}\u0000-\u0008\u000e-\u001f\u007f-\u009f\uffff]+/gu;
 const GONE = /[\s\p{Default_Ignorable_Code_Point}]+/gu;
 
 /** Combining marks: an accent, a cedilla, an enclosing circle. */
@@ -771,7 +774,7 @@ const MARKS = /\p{M}+/gu;
  *  combining mark after a letter, which NFKC alone composes into another letter
  *  ("Z" and U+0301 into "Ź"), and one written with a precomposed letter in place of its own ("Ź" for "Z"). A held
  *  value's accents are dropped the same way, so it reads as itself with them or without: more cutting, never less.
- *  SEPARATOR goes too, so no needle holds it (viewOf keeps it, never squeezing it). */
+ *  SEPARATOR goes too, so no needle holds it (a join's view keeps it, never squeezing it). */
 export const squeeze = (text: string): string => text.replace(IGNORABLE, "").normalize("NFKD").replace(MARKS, "").normalize("NFKC").replace(GONE, "");
 
 /** What a view decodes where its trigger character stands: given the text and that place, the end of what it decoded,
@@ -1183,10 +1186,11 @@ function bothOf(first: { text: string; cuts?: Span[] }, second: { text: string; 
  *  and its characters that render as nothing gone), as a held value's needles are. The squeeze is applied to each
  *  stretch of non-ASCII characters with the ASCII character before it, which gives what it gives over the whole text (an
  *  ASCII character is a starter nothing composes onto), and each character it makes comes from that whole stretch. A
- *  control character (isControl), as it stands or as a decoder made it, is dropped; SEPARATOR is copied as it stands.
- *  With `cuts` (merged spans of `text`), the view's
+ *  control character (isControl) is dropped, as it stands or as a decoder made it, and so is SEPARATOR, unless
+ *  `separates` and it stands in the text as it is (a join's own, or a caller's: holds), where it is copied, never
+ *  squeezed. With `cuts` (merged spans of `text`), the view's
  *  covered stretches: where every character comes from inside one cut. */
-function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
+function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates = false): View {
   const out: string[] = [];
   const covered: Span[] = [];
   let length = 0;
@@ -1256,16 +1260,9 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
   };
   const unit = (char: string, from: number, to: number) => {
     const code = char.charCodeAt(0);
-    // A control character, as it stands or decoded, is nothing: dropped before anything is flushed, so the characters
-    // either side of it compose as they would with it gone (as squeeze drops it before NFKD).
-    if (isControl(code)) return;
-    // SEPARATOR is copied as it stands, never squeezed, and nothing composes across it.
-    if (char === SEPARATOR) {
-      flushGroup();
-      flushHeld();
-      emit(char, from, to);
-      return;
-    }
+    // A control character, or SEPARATOR, as it stands or decoded, is nothing: dropped before anything is flushed, so
+    // the characters either side of it compose as they would with it gone (as squeeze drops it before NFKD).
+    if (isControl(code) || char === SEPARATOR) return;
     if (code >= 128) {
       if (group) {
         group.chars += char;
@@ -1309,6 +1306,12 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
       flushHeld();
       held = { char: text[BLANKS.lastIndex - 1]!, from: BLANKS.lastIndex - 1, to: BLANKS.lastIndex };
       at = BLANKS.lastIndex;
+    } else if (separates && char === SEPARATOR) {
+      // A separator as it stands is copied, never squeezed, and nothing composes across it.
+      flushGroup();
+      flushHeld();
+      emit(char, stop, stop + 1);
+      at = stop + 1;
     } else {
       unit(char, stop, stop + 1);
       at = stop + 1;
@@ -1404,21 +1407,32 @@ function holdsIn(view: string, covered: readonly Span[] | undefined, needles: re
  *  form encoded, an NFKC variant, its hex in any case, a hex identifier folded (`fold`), split across two strings of a
  *  JSON text (joinOf; a "+" after its head or a quote of its own in it too), or split there at its own "," or ":"
  *  (`joined`). With `cuts`, a value whose every character the view read comes from inside the cuts is not held: it is
- *  cut in place. */
-export function holds(text: string, needles: Needles, { fold = true, cuts }: { fold?: boolean; cuts?: readonly Span[] } = {}): boolean {
+ *  cut in place. A U+FFFF in `text` is nothing to the views (SEPARATOR); with `separated`, each one is the caller's
+ *  mark and separates there in every view. */
+export function holds(text: string, needles: Needles, { fold = true, cuts, separated = false }: { fold?: boolean; cuts?: readonly Span[]; separated?: boolean } = {}): boolean {
   const folds = fold ? needles.folds : [];
   if (!needles.plain.length && !needles.hexes.length && !folds.length) return false;
   const has = familiesOf(text);
+  // What the joins read: the text with each U+FFFF it brought read as a NUL (SEPARATOR), so the only one in a join is
+  // the one joinOf puts after each pass; with `separated`, the text as it is. Read once, on the first join.
+  let source: string | undefined;
+  const joinText = (): string => {
+    if (source === undefined) {
+      scanned.chars += text.length;
+      source = !separated && text.includes(SEPARATOR) ? text.replaceAll(SEPARATOR, "\u0000") : text;
+    }
+    return source;
+  };
   const joins = new Map<JoinKind, { text: string; cuts?: Span[] }>();
   const joinFor = (kind: JoinKind): { text: string; cuts?: Span[] } => {
     let join = joins.get(kind);
-    if (!join) joins.set(kind, (join = kind === "both" ? bothOf(joinFor("quoted"), joinFor("again")) : joinOf(text, kind, cuts)));
+    if (!join) joins.set(kind, (join = kind === "both" ? bothOf(joinFor("quoted"), joinFor("again")) : joinOf(joinText(), kind, cuts)));
     return join;
   };
   for (const spec of VIEWS) {
     if (!spec.when(has)) continue;
     const join = spec.join ? joinFor(spec.join) : undefined;
-    const view = join ? viewOf(join.text, spec, join.cuts) : viewOf(text, spec, cuts);
+    const view = join ? viewOf(join.text, spec, join.cuts, true) : viewOf(text, spec, cuts, separated);
     const covered = cuts ? view.covered : undefined;
     if (holdsIn(view.text, covered, needles.plain)) return true;
     if (spec.join && needles.joined?.length && holdsIn(view.text, covered, needles.joined)) return true;
