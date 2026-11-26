@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { mcpGateway } from "../dist/mcp-gateway.js";
+import { keepText } from "../dist/runner/redact.js";
 import { bookedIn } from "../dist/paid-calls.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
@@ -77,6 +78,7 @@ async function runOn(t, account, { run, url = FAL, entry = { meter: "fal" }, ser
   const paid = { admit: (request) => tools.admit(request), settle: (id, usd, options) => tools.settle(id, usd, options) };
   const pinned = url ?? fake.url;
   const gateway = mcpGateway({
+    redact: keepText,
     pin: { [server]: { url: pinned, tools: Object.keys(account.tools).map((name) => ({ name, inputSchema: { type: "object" } })), ...entry } },
     credentials: { [server]: { url: pinned, headers: { authorization: `Bearer ${TOKEN}` } } },
     work: () => work,
