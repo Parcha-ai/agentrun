@@ -107,7 +107,7 @@ export function decisionKeysOf(env: NodeJS.ProcessEnv): Record<string, string> {
 export type DecisionNeeds = { providers: readonly string[]; parallelWeb: boolean; jevWeb?: boolean };
 
 /** What capabilities' why says of Jev on `tool` under the server's `env`: on, on TypeSafe's route, naming what the tool
- *  sends TypeSafe (a search: its objective and each result's URL, title and snippet; a fetch given an objective: the
+ *  sends TypeSafe (a search: its objective and each result's URL, title, snippet and published date; a fetch given an objective: the
  *  page's text and the objective); off by AGENTRUN_WEB_JEV_OFF; off with only an OpenRouter key (the web decider runs
  *  on TypeSafe's route alone). Nothing with no Jev key at all. */
 export function jevWebWhy(env: NodeJS.ProcessEnv, tool: "web_search" | "web_fetch" = "web_search"): string | undefined {
@@ -115,7 +115,7 @@ export function jevWebWhy(env: NodeJS.ProcessEnv, tool: "web_search" | "web_fetc
   const route = jevRoute(env);
   if (route === "typesafe") {
     return tool === "web_search"
-      ? `Jev (${JEV_MODEL}) ranks results against the objective, or the query when none is given; each search sends that and each result's URL, title and snippet to TypeSafe, billed per request on the server's TypeSafe key`
+      ? `Jev (${JEV_MODEL}) ranks results against the objective, or the query when none is given; each search sends that and each result's URL, title, snippet and published date to TypeSafe, billed per request on the server's TypeSafe key`
       : `a fetch given an objective sends the page's text and the objective to TypeSafe for Jev (${JEV_MODEL}) to pick its chunks, billed per request on the server's TypeSafe key; a fetch with none sends TypeSafe nothing`;
   }
   return route === "openrouter" ? "Jev off: no TypeSafe key" : undefined;

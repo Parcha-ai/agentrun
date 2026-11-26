@@ -33,6 +33,8 @@
 //   (a call step's `ask`, {kind, title}: what its permission request says instead of the call's own kind and title;)
 //   (a native step's `lateInput`: a tool_call_update after its tool_call with that rawInput, a release that echoes the
 //   model's arguments in a later update;)
+//   (a native step's `narrate`: text the agent writes after the call's tool_call and before it ends, as Cursor
+//   2026.11.13 does;)
 //   (styles "goose" and "goose-1.59": each tool_call names its tool in _meta.goose.toolCall.toolName, as Goose 1.59.2
 //   does: `agentrun__<tool>` for ours, a native step's `toolName` or `developer__<kind>` for the agent's own;)
 //   models: the models session/new and session/load list ({modelId, name}), the first current; session/set_model
@@ -355,6 +357,7 @@ async function takeTurn(client, session, prompt, signal) {
       // {announce: false}: a permission request for a call no tool_call announced.
       if (s.announce !== false) await notify({ sessionUpdate: "tool_call", ...update, ...gooseMeta(s.toolName ?? `developer__${s.native}`) });
       if (s.lateInput) await notify({ sessionUpdate: "tool_call_update", toolCallId: id, rawInput: s.lateInput });
+      if (s.narrate) await notify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: s.narrate } });
       const allowed = deniesWrite && EDITS.has(s.native) ? false : askNative.has(s.native) ? await permitted(client, session, update) : true;
       if (signal.aborted) return { stopReason: "cancelled" };
       if (allowed && config.nativeLog) appendFileSync(config.nativeLog, `${update.title}\n`);

@@ -38,7 +38,7 @@ export async function agentLoopOverStore(store: Store, agentId: string): Promise
   const current = (await store.agents.get(agentId))?.currentRevision;
   const body = current ? (await store.agents.revision(current))?.body as { learning?: unknown } | undefined : undefined;
   const completed_runs = (await lastOwnRuns(store, agentId, loopOf(body?.learning).compile_after)).length;
-  const promotions = await promotionsOf(store.settings, agentId).catch(() => []);
+  const promotions = await promotionsOf(store.learning, agentId).catch(() => []);
   const compiles: (LoopCompile & { createdAt: number })[] = [];
   for (const run of ended) {
     for (const kept of await roundsOf(store, run.id).catch(() => [])) {

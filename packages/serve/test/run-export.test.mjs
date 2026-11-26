@@ -214,6 +214,15 @@ test("files: a held value wrapped over line breaks in a run's file is not carrie
   }
 });
 
+test("files: a path holding a held value is cut in the bundle, and the file's content is still cut as that path's: .env.<held> is an env file", async () => {
+  const held = `Hp${hex("path-held", 30)}`;
+  const plain = `orchard${hex("plain-env", 12)}`;
+  const { body, doc } = await build({ held: [held], files: [textFile(`.env.${held}`, `APP_REGION=north\nAPP_NOTE=${plain}\n`)] });
+  assert.ok(!body.includes(held), "the held value in the path is carried");
+  assert.ok(!body.includes(plain), "an env file's value with no secret shape is carried");
+  assert.equal(doc.files.length, 1);
+});
+
 test("files: a census-cut run (its end erased a value it was handed, so the cut set no longer holds it) carries no file through runExport, whatever a file holds", async () => {
   const erased = `Er${hex("erased-handed", 30)}`;
   const reads = { ...readsOf({ rows: [] }), files: async () => ({ files: [textFile("out/key.txt", `the key: ${erased}\n`)], truncated: false }), cut: async () => ({ values: [], censusDigest: "d".repeat(64) }) };

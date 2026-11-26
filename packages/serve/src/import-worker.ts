@@ -8,7 +8,7 @@
 import "./quiet-sqlite-warning.js";
 import { parentPort, workerData } from "node:worker_threads";
 import type { ReadFailure } from "@parcha/agentrun-import";
-import { candidatesOf, type ImportCandidate, ownSecrets, planImport, runImport, sessionsOf } from "./import.js";
+import { candidatesOf, type ImportCandidate, ownSecrets, planImport, runImport, sessionsOf, wrappedReading } from "./import.js";
 import { importStoreProxy } from "./import-proxy.js";
 import { catalogPrices } from "./model.js";
 import type { WrappedRead } from "./wrapped.js";
@@ -36,7 +36,7 @@ const answer = async (): Promise<ImportAnswer> => {
   if (task === "wrapped") {
     const failures: ReadFailure[] = [];
     const { wrappedHome } = await import("@parcha/agentrun-import");
-    return { wrapped: await wrappedHome(home, year!, { failures, catalog: await catalogPrices() }), unread: failures.length };
+    return { wrapped: await wrappedHome(home, year!, { failures, catalog: await catalogPrices(), ...wrappedReading() }), unread: failures.length };
   }
   if (task === "plan") {
     // A count keeps no transcript: no key scan (a whole history read through secretlint at every start).
