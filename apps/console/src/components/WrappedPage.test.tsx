@@ -161,6 +161,19 @@ describe("WrappedPage", () => {
     expect(titles()).not.toContain("Your leak receipt");
   });
 
+  it("asks again for the leak receipt in each year: turned on for one year, it is off when the page moves to another", async () => {
+    const counted = (year: number) => ({ ...YEAR, year, secrets: { runs: 9, runs_holding: 2, removed: 3 } });
+    const { v2, go } = await mount(async () => counted(2025), vi.fn(), 2025);
+    (v2.wrapped as ReturnType<typeof vi.fn>).mockImplementation(async (year: number) => counted(year));
+    await act(async () => { document.querySelector<HTMLInputElement>("[data-leak-opt-in] input[type=checkbox]")!.click(); });
+    const titles = () => [...document.querySelectorAll("[data-cards] img")].map((img) => (img.getAttribute("alt") ?? "").split(". ")[1]);
+    expect(titles()).toContain("Your leak receipt");
+    await act(async () => { root!.render(createElement(WrappedPage, { v2, year: 2024, go })); });
+    expect(document.body.textContent).toContain("Wrapped 2024");
+    expect(document.querySelector<HTMLInputElement>("[data-leak-opt-in] input[type=checkbox]")?.checked).toBe(false);
+    expect(titles()).not.toContain("Your leak receipt");
+  });
+
   it("shows no cards section, and no empty box, when the renderer draws none or the year has no sessions", async () => {
     await mount(async () => YEAR, vi.fn(), 2025, noCards);
     expect(document.querySelector("[data-cards]")).toBeNull();

@@ -7,7 +7,9 @@
 // (readAheadBytes()), the pool reads large files first (BIG_FILE and over, the largest first: they set the time), then
 // the rest in the import's order; at the read-ahead it reads only the one parseHome waits for. A worker's heap is bounded (OLD_MB): one that
 // runs out gives up its file, which parseHome reads itself, and another worker takes its place.
+import { readFileSync } from "node:fs";
 import { availableParallelism, freemem, totalmem } from "node:os";
+import { join } from "node:path";
 import { Worker } from "node:worker_threads";
 import type { Locator, SessionRead } from "./reader.js";
 import { indexArrays, type RecordIndex } from "./record-index.js";
@@ -45,9 +47,79 @@ export const BIG_FILE = 64 * 2 ** 20;
  *  memory. */
 export const READ_AHEAD_BYTES = 2 ** 30;
 
-/** The memory this process may use: its container's limit (process.constrainedMemory) when one is set below the
- *  machine's, else the machine's. A 2 GiB container on a 512 GiB host has 2 GiB. */
-export const memoryLimit = (total = totalmem(), constrained = process.constrainedMemory()): number => (constrained > 0 && constrained < total ? constrained : total);
+/** One cgroup v2 level's memory: its limit, the lower of its memory.max and memory.high (Infinity: neither sets one),
+ *  and its working set when it has a limit, memory.current less memory.stat's inactive_file (undefined: unreadable). */
+type CgroupLevel = { limit: number; workingSet?: number };
+
+/** A cgroup file's bytes: Infinity when it is "max", missing (the host's root cgroup has none) or not a number. */
+function bytesIn(dir: string, file: string): number {
+  try {
+    const value = readFileSync(join(dir, file), "utf8").trim();
+    return /^\d+$/.test(value) && Number(value) > 0 ? Number(value) : Infinity;
+  } catch {
+    return Infinity;
+  }
+}
+
+/** What a cgroup holds that the kernel will not give back: memory.current, which counts page cache, less the page cache it
+ *  takes back first (inactive_file). Raw memory.current swung by gigabytes a second on a machine whose cache came and
+ *  went; this does not count that cache. Undefined where either file is unreadable. */
+function workingSetOf(dir: string): number | undefined {
+  try {
+    const current = readFileSync(join(dir, "memory.current"), "utf8").trim();
+    const inactive = /^inactive_file (\d+)$/m.exec(readFileSync(join(dir, "memory.stat"), "utf8"));
+    if (!/^\d+$/.test(current) || !inactive) return undefined;
+    return Math.max(0, Number(current) - Number(inactive[1]));
+  } catch {
+    return undefined;
+  }
+}
+
+/** This process's cgroup v2 and every cgroup above it, the leaf first: undefined for cgroup v1 (no "0::" line), no
+ *  /proc/self/cgroup (not Linux), a path outside the mount, or any error. Synchronous: read while the pool is sized, a
+ *  few small files. */
+function cgroupLevels(root: string, self: string): CgroupLevel[] | undefined {
+  try {
+    const line = readFileSync(self, "utf8").split("\n").find((l) => l.startsWith("0::"));
+    if (line === undefined) return undefined;
+    const parts = line.slice(3).split("/").filter((p) => p !== "" && p !== ".");
+    if (parts.includes("..")) return undefined;
+    const levels: CgroupLevel[] = [];
+    for (let depth = parts.length; depth >= 0; depth -= 1) {
+      const dir = join(root, ...parts.slice(0, depth));
+      const limit = Math.min(bytesIn(dir, "memory.max"), bytesIn(dir, "memory.high"));
+      levels.push(limit < Infinity ? { limit, workingSet: workingSetOf(dir) } : { limit });
+    }
+    return levels;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The container's memory limit: process.constrainedMemory(), or the lowest memory.max or memory.high of this process's
+ *  cgroup v2 and every cgroup above it when that is lower. Node reads only the process's own cgroup (the lower of its
+ *  memory.max and memory.high, libuv 1.52); this takes the same rule up the tree. A container whose process sits in
+ *  /init.scope (memory.max "max") under a namespace root of 4 GiB had no limit by Node, and the pool was sized for the
+ *  host's 810 GB. Where no cgroup v2 level can be read, `constrained` as it is. */
+export function constrainedMemory(root = "/sys/fs/cgroup", self = "/proc/self/cgroup", constrained = process.constrainedMemory()): number {
+  const levels = cgroupLevels(root, self);
+  if (!levels) return constrained;
+  const lowest = Math.min(constrained > 0 ? constrained : Infinity, ...levels.map((level) => level.limit));
+  return lowest === Infinity ? constrained : lowest;
+}
+
+/** The memory this process's cgroups still have room for: at each level with a limit (constrainedMemory's), the limit
+ *  less its working set (workingSetOf), the least of them, never under 0. Infinity where no level has both a limit and a
+ *  readable working set. A 2 GiB container already holding 1 GiB has 1 GiB of room, though the machine has hundreds free. */
+export function cgroupRoom(root = "/sys/fs/cgroup", self = "/proc/self/cgroup"): number {
+  let room = Infinity;
+  for (const { limit, workingSet } of cgroupLevels(root, self) ?? []) if (workingSet !== undefined) room = Math.min(room, Math.max(0, limit - workingSet));
+  return room;
+}
+
+/** The memory this process may use: its container's limit (constrainedMemory) when one is set below the machine's, else
+ *  the machine's. A 2 GiB container on a 512 GiB host has 2 GiB. */
+export const memoryLimit = (total = totalmem(), constrained = constrainedMemory()): number => (constrained > 0 && constrained < total ? constrained : total);
 
 /** The default read-ahead: READ_AHEAD_BYTES, or a sixteenth of the memory this process may use when that is less (512 MiB
  *  at 8 GiB, 128 MiB in a 2 GiB container). */
@@ -63,10 +135,12 @@ export const DEFAULT_THREADS_CEILING = 16;
 export const workerBytes = (oldMb = OLD_MB): number => (YOUNG_MB + oldMb) * 2 ** 20;
 
 /** The memory still free to this process: the machine's (os.freemem, MemAvailable on Linux: page cache it may reclaim
- *  counts as free), at most its container's limit (memoryLimit). Not process.availableMemory: under a cgroup it takes the
- *  limit less memory.current, which counts the page cache as used. On a 503 GiB machine with 345 GiB free, in a cgroup
- *  of 350 GiB whose 346 GiB in use were 250 GiB of page cache, it read 130 MiB to 3.6 GiB from one second to the next. */
-export const freeMemory = (free = freemem(), limit = memoryLimit()): number => Math.min(free, limit);
+ *  counts as free), at most its container's limit (memoryLimit) and the room its cgroups have left (cgroupRoom: each
+ *  limit less what is in use, page cache the kernel takes back first not counted). Not process.availableMemory: under a
+ *  cgroup it takes the limit less memory.current, which counts all the page cache as used. On a 503 GiB machine with
+ *  345 GiB free, in a cgroup of 350 GiB whose 346 GiB in use were 250 GiB of page cache, it read 130 MiB to 3.6 GiB from
+ *  one second to the next. */
+export const freeMemory = (free = freemem(), limit = memoryLimit(), room = cgroupRoom()): number => Math.min(free, limit, room);
 
 /** parseHome's default threads: the fewest of
  *  - the cores this process may run on, one left for the thread that takes the reads and totals them (two cores keep

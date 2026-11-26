@@ -55,6 +55,8 @@ export type Learning = {
   workflows?: LearnedFile[];
   /** How many lines of its owner's words a merge added to corrections.md. */
   corrections?: number;
+  /** How many of corrections.md's oldest lines the added correction pushed out to keep the file within its cap. */
+  dropped_lines?: number;
   /** The compile turn's record, when the run's end-of-run turn wrote the agent's job as a learned workflow
    *  (learn/compile.ts): the workflow, and each attempt with what the checks refused. */
   compiled?: LearningCompiled;

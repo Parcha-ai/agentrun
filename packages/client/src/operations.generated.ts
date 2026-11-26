@@ -2923,7 +2923,7 @@ export type WriteHomeFileResponse = {
 export type GetLearningCorrectionsResponse = {
   text: string;
   etag: string;
-  cap_bytes: 2048;
+  cap_bytes: 8192;
 };
 
 /** The agent's cost per run, run after run: its own cost, what learning added and the path it took (GET /agents/{agent_id}/learning/cost). */
@@ -3200,7 +3200,7 @@ export interface PutLearningCorrectionsParams {
 export type PutLearningCorrectionsResponse = {
   text: string;
   etag: string;
-  cap_bytes: 2048;
+  cap_bytes: 8192;
 };
 
 /** Start Connect GitHub: the app-manifest form the console posts to GitHub (POST /integrations/github/connect). */
@@ -5237,6 +5237,9 @@ export type GetRunLearningResponse = {
   detail: string | null;
   at: string;
   seed: string | null;
+  seed_failed: "unreadable" | "not_copied" | "other_disk" | null;
+  seed_waited: "ended" | "timed_out" | null;
+  learned_chars: number;
   merged: string | null;
   workflows: Array<{
     file: string;
@@ -5244,6 +5247,7 @@ export type GetRunLearningResponse = {
     pending?: true;
   }>;
   corrections: number;
+  dropped_lines: number;
   problems: Array<{
     rule: string;
     path?: string;

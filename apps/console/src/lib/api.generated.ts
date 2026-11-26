@@ -3020,7 +3020,7 @@ export interface operations {
     answer: {
       text: string;
       etag: string;
-      cap_bytes: 2048;
+      cap_bytes: 8192;
     };
   };
   getLearningCost: {
@@ -3589,6 +3589,9 @@ export interface operations {
       detail: string | null;
       at: string;
       seed: string | null;
+      seed_failed: "unreadable" | "not_copied" | "other_disk" | null;
+      seed_waited: "ended" | "timed_out" | null;
+      learned_chars: number;
       merged: string | null;
       workflows: {
         file: string;
@@ -3596,6 +3599,7 @@ export interface operations {
         pending?: true;
       }[];
       corrections: number;
+      dropped_lines: number;
       problems: {
         rule: string;
         path?: string;
@@ -6155,7 +6159,7 @@ export interface operations {
     answer: {
       text: string;
       etag: string;
-      cap_bytes: 2048;
+      cap_bytes: 8192;
     };
   };
   putMcpPrivateHosts: {

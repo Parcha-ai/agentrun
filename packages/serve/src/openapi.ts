@@ -1130,7 +1130,7 @@ const AGENT_LEARNING = closed({
 const CORRECTIONS = closed({
   text: { type: "string", description: "corrections.md's whole text on main, cut of the host's secrets; empty when there is none." },
   etag: { type: "string", description: "Its version on main, the same as the ETag header: a PUT sends it as If-Match." },
-  cap_bytes: { type: "integer", const: CORRECTIONS_CAP, description: "The most bytes the file holds: a correction or an edit past it is refused." },
+  cap_bytes: { type: "integer", const: CORRECTIONS_CAP, description: "The most bytes the file holds. A run's correction that would pass it drops the file's oldest lines to fit (the newest correction wins); a correction past it alone, or an edit past it, is refused." },
 });
 const PROBLEM = { type: "object", additionalProperties: false, required: ["rule", "detail"], properties: { rule: { type: "string" }, path: { type: "string" }, detail: { type: "string" } } };
 /** A workflow draft a run's merge wrote, as its learning names it (learning.ts filesView). */
@@ -1847,10 +1847,14 @@ const RUN_LEARNING = {
       run: { type: "string" }, state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON,
       detail: { ...NULL_STRING, maxLength: 300, description: "Run.learning's detail, the same words: at most 300 characters, cut of the host's secrets as they are now before it is cut short." }, at: { type: "string", format: "date-time" },
       seed: { ...NULL_STRING, description: "The commit of main the run started from; null when its seed failed." },
+      seed_failed: { enum: ["unreadable", "not_copied", "other_disk", null], description: "Why the run started with nothing learned, when it did: `unreadable`, its agent's learning could not be read; `not_copied`, what was read could not be made into its start; `other_disk`, it runs on a disk of its own, which learns nothing. null when its seed was read." },
+      seed_waited: { enum: ["ended", "timed_out", null], description: "When the run was started while another run of its agent was still keeping what it learned (its job ended with its learning reflecting, or a follow-up turn running), its first claim waited for that, then read its seed again: `ended`, it ended first; `timed_out`, the runner's bound (3 minutes by default) ran out and it started from its agent's learning as it was then. null when it waited on none." },
+      learned_chars: { ...COUNT, description: "The length in characters of the # Learned text the run was given (its owner's corrections as its start read them, cut of the host's secrets); 0 when it was given none." },
       merged: { ...NULL_STRING, description: "Its merge commit on main, once merged." },
       workflows: { type: "array", items: MERGED_WORKFLOW, description: "The workflow draft its merge wrote, `pending` while it waits for the owner's OK; empty when none." },
       corrections: { ...COUNT, description: "How many lines of its owner's words its merge added to corrections.md: 1 when a correction was kept, else 0." },
-      problems: { type: "array", items: PROBLEM, description: "The checker's, when the reason is `checker`; on a merge, what the checks refused of a part that was not kept (an owner's correction past the cap, say) while the rest merged." },
+      dropped_lines: { ...COUNT, description: `How many of corrections.md's oldest lines the kept correction pushed out to keep the file within its ${CORRECTIONS_CAP}-byte cap (the newest correction wins); 0 when none. \`detail\` says it too.` },
+      problems: { type: "array", items: PROBLEM, description: "The checker's, when the reason is `checker`; on a merge, what the checks refused of a part that was not kept (an owner's correction whose line alone is past the cap, say) while the rest merged." },
       compiled: { oneOf: [closed({
         workflow: { type: "string", description: "The learned workflow the compile turn wrote: the agent's whole job, or a revision of the one it has." },
         attempts: { type: "array", items: closed({ ok: { type: "boolean" }, errors: { type: "array", items: { type: "string" }, description: "What the static checks and the dry run refused of this attempt, sent back to the model for the next one." } }), description: "Each attempt in order: the first, then a retry for each refusal, at most 4." },
@@ -2237,7 +2241,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}/learning/corrections": {
     get: {
       operationId: "getLearningCorrections", tags: ["agents"], summary: "The agent's corrections.md on main, with its ETag",
-      description: `The owner's corrections, one line each, as every later run is given them whole under # Learned in its instructions. A run's feedback appends one line (the owner's words, checked as every write is); a person edits the file whole with PUT. Cut of the host's secrets as they are now. An agent with none answers \`text\` empty. At most ${CORRECTIONS_CAP} bytes. ${SIGN_IN_WITHHELD}`,
+      description: `The owner's corrections, one line each, as every later run is given them whole under # Learned in its instructions. A run's feedback appends one line (the owner's words, checked as every write is), dropping the file's oldest lines when it would pass the cap (the run's learning says how many: \`dropped_lines\`); a person edits the file whole with PUT. Cut of the host's secrets as they are now. An agent with none answers \`text\` empty. At most ${CORRECTIONS_CAP} bytes. ${SIGN_IN_WITHHELD}`,
       parameters: [AGENT_ID],
       responses: { "200": { ...json(CORRECTIONS, "corrections.md as it is on main."), headers: ETAG }, ...errors(401, 403, 404, 429, 500) },
       "x-agentrun-serve": "learning/4",
