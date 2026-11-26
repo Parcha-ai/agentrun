@@ -141,6 +141,9 @@ export interface WorkflowSpecDeps {
   readonly sealKey?: Buffer;
   /** The runner's data directory: what the server keeps sealed beside the store is read from it (store-secrets.ts). */
   readonly data?: string;
+  /** The claim's plane as the runner hands it (harness-loops.ts: the launch's, under the server's settings now), over the
+   *  launch's own. */
+  readonly plane?: RunLaunch["plane"];
   /** Resolves the provider and cap model for each tier the workflow names (byTier's model, its provider, its price).
    *  Absent: the runner's model route (routeProviderOf), so a workflow and a pi run resolve models one way; a test gives a
    *  scripted one. */
@@ -1140,7 +1143,7 @@ async function readClaim(deps: WorkflowSpecDeps, runId: string): Promise<Claimed
   const input = launch && typeof launch.input === "object" && launch.input !== null ? (launch.input as Record<string, unknown>) : {};
   const capUsd = typeof launch?.max_cost_usd === "number" ? launch.max_cost_usd : undefined;
   const workRoot = typeof launch?.documents === "string" ? launch.documents : "/tmp";
-  return { agentId: run.agentId, revisionId: run.revisionId, revision: revision as unknown as Revision, workflow: (revision.body as { workflow: Workflow }).workflow, input, capUsd, workRoot, plane: (launch?.plane as RunLaunch["plane"]) };
+  return { agentId: run.agentId, revisionId: run.revisionId, revision: revision as unknown as Revision, workflow: (revision.body as { workflow: Workflow }).workflow, input, capUsd, workRoot, plane: deps.plane ?? (launch?.plane as RunLaunch["plane"]) };
 }
 
 export { BACKGROUND_CONTEXT };
