@@ -13,12 +13,12 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, createModels, getSupportedThinkingLevels } from "@earendil-works/pi-ai/models";
-import { AgentDoc, type Conversation, defineExtension, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, ProviderDoc, type Registry, type Submission, type ToolExecutionApi, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
+import { AgentDoc, AssistantEntry, type Conversation, type Cursor, defineExtension, type EntryRecord, defineTool, type Extension, GenerationTask, type Harness, hook, type JsonObject, ProviderDoc, type Registry, type Submission, type ToolExecutionApi, ToolResultEntry, ToolTask, type ToolRegistration } from "@earendil-works/pi-durable";
 import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claude";
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { conversationLabel, type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
-import { boundTo, resultMaxChars, TurnBudget } from "@parcha/agentrun-kernel/process";
+import { boundTo, resultMaxChars, TurnBudget, type TurnRecord } from "@parcha/agentrun-kernel/process";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
@@ -418,7 +418,24 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     if (!turn) turns.set(key, (turn = new TurnBudget(spec.system)));
     return turn;
   };
-  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals, windowOf, turnOf)), ...(options.tools ?? []).map((tool) => announcing(tool, io))];
+  // A session opened again in a turn (a park, a lost claim) has a budget that has read no answer: before its first claim
+  // it takes the turn back from the conversation's own entries (turnRecordsOf), once per conversation, so the calls this
+  // process answers split what their answer left beside the results handed before it. A budget that has read an answer
+  // here keeps its own (TurnBudget.restore).
+  const restoring = new Map<string, Promise<void>>();
+  const restoreOf = (conversationId: unknown, context: Context): Promise<void> => {
+    const key = String(conversationId);
+    let restored = restoring.get(key);
+    if (!restored) {
+      restored = (async () => {
+        const conversation = await run.harness.conversation(conversationId as never, context);
+        if (conversation) turnOf(key).restore(await turnRecordsOf((cursor) => conversation.entries({}, TURN_PAGE, cursor as Cursor | undefined, context)));
+      })().catch(() => {});
+      restoring.set(key, restored);
+    }
+    return restored;
+  };
+  const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals, windowOf, turnOf, restoreOf)), ...(options.tools ?? []).map((tool) => announcing(tool, io))];
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
   const extension = defineExtension({
@@ -458,6 +475,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           const refused = refusals.resultOf(call.id, result, call.parent !== undefined);
           if (refused) return refused as never;
           const agent = (await api.snapshot(AgentDoc, api.conversationId, hookContext).catch(() => undefined)) as { readonly model?: { readonly provider: string } } | undefined;
+          if (call.parent === undefined) await restoreOf(api.conversationId, hookContext);
           return (await boundPiResult(result, windowOf(agent?.model), call.parent === undefined ? { turn: turnOf(api.conversationId), callId: call.id } : undefined)) as never;
         },
       }),
@@ -467,10 +485,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         afterResponse: async (message, api, hookContext: Context) => {
           // The turn's facts, for its calls' results: the input its request held (cached input included), the answer's
           // output, and the calls it made.
-          const usage = message.usage as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined;
-          const held = usage ? (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) : 0;
-          const calls = Array.isArray(message.content) ? message.content.filter((part) => (part as { type?: string }).type === "toolCall").length : undefined;
-          turnOf(api.conversationId).open({ ...(held > 0 ? { inputTokens: held, outputTokens: usage?.output ?? 0 } : {}), ...(calls === undefined ? {} : { calls }) });
+          turnOf(api.conversationId).open(turnFactsOf(message));
           if (!io.bookedCost) return;
           // The conversation that asked, by the id pi sends with each of its requests (its pi.provider document's), as
           // the session's client names it to the proxy (port-models.ts sessionApi).
@@ -664,6 +679,45 @@ function piNested(api: ToolExecutionApi, context: Context, touched: ReadonlySet<
   };
 }
 
+/** An answer's facts for its turn's budget: the input its request held (cached input included), the answer's output, and
+ *  the calls it made (pi's AssistantMessage: its usage, its toolCall parts). */
+function turnFactsOf(message: { readonly usage?: unknown; readonly content?: unknown }): { inputTokens?: number; outputTokens?: number; calls?: number } {
+  const usage = message.usage as { input?: number; output?: number; cacheRead?: number; cacheWrite?: number } | undefined;
+  const held = usage ? (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) : 0;
+  const calls = Array.isArray(message.content) ? message.content.filter((part) => (part as { type?: string }).type === "toolCall").length : undefined;
+  return { ...(held > 0 ? { inputTokens: held, outputTokens: usage?.output ?? 0 } : {}), ...(calls === undefined ? {} : { calls }) };
+}
+
+/** Entries read a page at a time when a session takes its turn back. */
+const TURN_PAGE = 32;
+
+/**
+ * A conversation's turn as its entries keep it (newest first, a page at a time from `page`): its last answer's facts and
+ * the length of each result handed since, in the order they were, as TurnBudget.restore takes them. pi writes an
+ * answer's entry before any of its calls runs and a result's entry as afterTool held it, so a stop anywhere in the turn
+ * leaves both. No answer: nothing.
+ */
+export async function turnRecordsOf(page: (cursor: unknown) => Promise<{ readonly items: readonly EntryRecord[]; readonly next?: unknown }>): Promise<TurnRecord[]> {
+  const settled: TurnRecord[] = [];
+  let cursor: unknown;
+  do {
+    const { items, next } = await page(cursor);
+    for (const entry of items) {
+      const [message] = entry.model ?? [];
+      if (AssistantEntry.is(entry) && message) {
+        const { inputTokens, outputTokens, calls } = turnFactsOf(message as never);
+        return [{ open: inputTokens === undefined ? null : { inputTokens, outputTokens: outputTokens ?? 0, ...(calls === undefined ? {} : { calls }) } }, ...settled.reverse()];
+      }
+      if (ToolResultEntry.is(entry) && message && "toolCallId" in message) {
+        const text = (message.content as readonly { type: string; text?: string }[]).map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
+        settled.push({ settled: { callId: message.toolCallId, chars: text.length } });
+      }
+    }
+    cursor = next;
+  } while (cursor !== undefined);
+  return [];
+}
+
 /**
  * `result` with its text held to the kernel's bound for a model of `contextWindow` (boundResult: the window's share, under
  * HOST_RESULT_MAX_CHARS; none known, that bound alone), as every bridged harness's tool bridge holds a result, and, for a
@@ -727,7 +781,7 @@ export function boundedProgress(forward: (chunk: string) => void, max: number): 
  *  which a file read sizes an image by), and pi's output stream (the running tool's live slot); and its attempt
  *  (`attemptOf`: above 0 for a call the gate did not pass in this session, pi's rerun after a crash). Exported for the
  *  test of what its tool streams to pi (test/pi-tool-progress.test.mjs); the session builds it (sessionOn). */
-export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map(), windowOf: (ref: { readonly provider: string } | undefined) => number | undefined = () => undefined, turnOf?: (conversationId: unknown) => TurnBudget) {
+export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: string) => number | undefined = () => undefined, touched: Set<string> = new Set(), nestedRefusals: ReadonlyMap<string, string> = new Map(), windowOf: (ref: { readonly provider: string } | undefined) => number | undefined = () => undefined, turnOf?: (conversationId: unknown) => TurnBudget, restoreOf?: (conversationId: unknown, context: Context) => Promise<void>) {
   return defineTool({
     name: tool.name,
     description: tool.description,
@@ -747,6 +801,7 @@ export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: stri
       const window = windowOf(ref);
       // A call the model made claims its share of its turn (a nested call's result goes to the tool that made it).
       const claim = turnOf && !api.callId.includes("/") ? { turn: turnOf(api.conversationId), callId: api.callId } : undefined;
+      if (claim) await restoreOf?.(api.conversationId, toolContext);
       const max = await maxOf(window, claim);
       const answer = await tool.call(args ?? {}, {
         callId: api.callId, signal: toolContext.abortSignal ?? io.signal,
