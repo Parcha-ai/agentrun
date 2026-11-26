@@ -245,7 +245,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // models, its decisions, its call nodes' effects and its model nodes' tools all run on these, never on another run's
     // keys or on this process's whole environment.
     // Held by the runner's one redactor before anything can echo one (holding: run.redact), as the decision keys were.
-    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}), redact }, claimed.revision, { plane: claimed.plane }, claim.runId));
+    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}), redact, handBack: run?.handBack, signal: run?.signal }, claimed.revision, { plane: claimed.plane }, claim.runId));
     // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its
     // own: each tier's key from the runner's environment, else the one the claim opened (a key saved in
     // Settings → Model keys runs the next run with no restart).

@@ -62,7 +62,7 @@ import { isWebHostTool } from "../tool-list.js";
 import { hostToolOf } from "../host-tools.js";
 import { ASK_TOOL, askPerson, type ToolHost } from "../tools.js";
 import { fakedPlane } from "../web-fake.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, keyedNow, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, keyedNow, hostDecisionKeys, learnedDecisionKeys, sendsNoModelKey, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { atRunEnd } from "../learning-work.js";
 import { claimMetering, mcpWhereHeld } from "./mcp-run.js";
 import { held as runnerSeam, heldSignInReads } from "./held.js";
@@ -531,7 +531,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // store's), held by the runner's one redactor and this spec's log cut before anything can echo one. Its model's key goes
   // to the model choice and the adapter's provider (withModelKeys, never enumerable), so a key saved in
   // Settings → Model keys runs the next run with no restart, as one set where AgentRun starts does.
-  const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env, redact: run.redact }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch, claim.runId);
+  const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env, redact: run.redact, handBack: run.handBack, signal: run.signal }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch, claim.runId);
   // The run's own model key, when its caller handed one (model_key): opened at every claim, held by the redactors, read by
   // its model route alone; the CLI's process and its tools never carry it, nor any other model key then.
   // A run that starts on the server's key holds the claim's key holder too: a message's first key reaches its next request.
@@ -542,8 +542,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     holdClaimed(redact, claimed);
     if (runKey) holdRunKey(redact, runKey);
   }
-  // A held run its model kept from running asks for no login, here or of its runner: its agent never starts.
-  const login = heldRefusal !== undefined ? undefined : await runLoginOf(deps, keyed, name, launch.place, hold);
+  // A run that sends no model key (claim-secrets.ts sendsNoModelKey: a held run its model kept from running, any run on a
+  // --faux runner, a faux-pinned one) asks for no login, here or of its runner: the login is a model credential like any
+  // key.
+  const login = sendsNoModelKey(launch, deps.env ?? {}) ? undefined : await runLoginOf(deps, keyed, name, launch.place, hold);
   const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey, claim), login);
   // A plan-billed recipe's keys saved for its harness alone (harness-keys.ts), opened at each claim for this run's harness
   // and no other (a run's own process asks its runner, which opens its claim's own: held.ts harnessKeys), held by the
@@ -686,7 +688,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf). The harness's
   // native tools are named by its facts on the owner's table (factsOf: a module's harness's too).
   const ownerFacts = factsOf(deps.env, name);
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts: ownerFacts, turnedOff: offAlready !== undefined, onComputerOff: (kind) => recordComputerOff(run.harness, kind) });
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts: ownerFacts, names: tools.names, turnedOff: offAlready !== undefined, onComputerOff: (kind) => recordComputerOff(run.harness, kind) });
   // A park lets a computer the gate turned off go rather than keep it (SpecHolds Held.computerOff).
   holds.hold({ computerOff: gate.computerOff });
 
@@ -743,7 +745,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a proxy of its own beside the CLI session's, as pi's
   // is (adapter-run-spec.ts graderRouteOf), reached through the session's port while it is up. None: compared whole.
   // None for a held run its model kept from running, whose model runs nowhere.
-  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as { learning?: unknown }, keyed, runKey, claimed, cut, log, deps, [held, cut], claim) : undefined;
+  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as { learning?: unknown }, keyed, runKey, claimed, cut, log, { ...deps, handBack: run.handBack, signal: run.signal }, [held, cut], claim) : undefined;
   if (graderRoute) tierRoutes.set(GRADER as Tier, graderRoute);
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself. A held run its model kept from
@@ -789,7 +791,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // Their models' keys (tierModelKeys: a saved one too, which claimSecrets opened only for the run's own model), held by
       // the redactors, on the tiers' route env alone (withModelKeys, never enumerable), never on the tools' (toolEnv).
       // A run with its own model key: these tiers carry that key too, and no saved key is read.
-      const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
+      const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env, handBack: run.handBack, signal: run.signal }, learnedTiers(workflows));
       for (const redact of new Set([held, cut])) holdClaimed(redact, tierKeys);
       const modelEnv = claimModelEnv(deps.env, [tierKeys, claimed], runKey, claim);
       const tiers = new Map<string, LearnedTier>();

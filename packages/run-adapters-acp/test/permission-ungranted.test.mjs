@@ -184,16 +184,16 @@ for (const [style, over] of [['goose', { allowFile: undefined }], ['cursor', { q
 }
 
 /** `store` as a resume reads it when its permission requests were recorded without our server's name: each `asked`
- *  record's `server` dropped, and its title naming `agentrun` in place of that start's name, as a request of a second
+ *  record's `ours` dropped, and its title naming `agentrun` in place of that start's name, as a request of a second
  *  server named `agentrun` reads (under a recipe that names our server per start, never ours). */
 function withoutServer(store) {
   const strip = (value) => {
     if (Array.isArray(value)) return value.map(strip);
     if (!value || typeof value !== 'object') return value;
     const out = Object.fromEntries(Object.entries(value).map(([k, v]) => [k, strip(v)]));
-    if (out.type === 'asked' && typeof out.callId === 'string' && typeof out.server === 'string') {
-      out.title = out.title?.replaceAll(out.server, 'agentrun');
-      delete out.server;
+    if (out.type === 'asked' && typeof out.callId === 'string' && typeof out.ours === 'string') {
+      out.title = out.title?.replaceAll(out.ours, 'agentrun');
+      delete out.ours;
     }
     return out;
   };
@@ -203,7 +203,7 @@ function withoutServer(store) {
 for (const [style, over] of [['cursor', { quirks: undefined }], ['antigravity', { quirks: undefined }]]) {
   test(`(${style}) a request left waiting in the records without the server name of the start that asked is the gate's on the resume, though its title names \`agentrun\`: under a server name of each start's own, that is another server's`, async (t) => {
     const { store, recipe, parked } = await parkedOnSnapshot(t, style, over);
-    assert.match((await streamRecords(store, 'acp.permission'))[0].server ?? '', /^ar[0-9a-f]{6}$/, 'the start\'s own name, recorded');
+    assert.match((await streamRecords(store, 'acp.permission'))[0].ours ?? '', /^ar[0-9a-f]{6}$/, 'the start\'s own name, recorded');
     const asked = [];
     const second = await openSession(t, recipe, { store: withoutServer(store), tools: [tool('lookup', () => 'found')], gate: async (call) => (asked.push(call), PARK) });
     void second.session.recover().catch(() => undefined);

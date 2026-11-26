@@ -28,9 +28,12 @@ const IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
 const plainSegment = (segment: string): boolean => segment === segment.normalize("NFC") && !IGNORABLE.test(segment);
 
 const MARKS = /\p{M}/gu;
-/** `name` as a disk that folds names could take it: its compatibility form, upper then lower case, and without combining
- *  marks, so ı, İ, ſ, the Kelvin sign and fullwidth letters fold as the ASCII letters they stand for. */
-export const foldName = (name: string): string => name.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFD").replace(MARKS, "");
+const IGNORABLES = /\p{Default_Ignorable_Code_Point}/gu;
+/** `name` as a disk that folds names could take it: its compatibility form, upper then lower case, without combining
+ *  marks, so ı, İ, ſ, the Kelvin sign and fullwidth letters fold as the ASCII letters they stand for, and without
+ *  default-ignorable code points (a zero-width space, a soft hyphen, a word joiner, a variation selector, a Hangul
+ *  filler), which a disk may take a name with as the name without them. */
+export const foldName = (name: string): string => name.normalize("NFKC").toUpperCase().toLowerCase().normalize("NFD").replace(MARKS, "").replace(IGNORABLES, "");
 
 /** The name of `owned` that `path` is at or under, if any: its first segment, on the path as normalized, folded. */
 export function ownedBy(owned: readonly string[], path: string): string | undefined {
