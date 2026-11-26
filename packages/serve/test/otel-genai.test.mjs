@@ -765,7 +765,8 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
 // read split at & alone keeps the whole value, a %2C in it too, and read split at an & or a space written %26 or %20 too,
 // it keeps that value as written before one, and read split at a %26 alone, one with a %20 in it; a value in quotes
 // written %22 or %27 is kept out of them as written too; read split at & and %2C, it keeps the value of a pair in
-// a list joined by %2C; read split at ; too, it keeps each pair after a ;. Every reading is held. A value whose part
+// a list joined by %2C, and read split at & and %3B, the value of a pair in a list joined by %3B, a %20, quotes or a
+// %26 in it too; read split at ; too, it keeps each pair after a ;. Every reading is held. A value whose part
 // before its first ; is empty is held after it; a value of only ; is not held.
 // Each row: [what, the env, the credentials held and cut alone, what is on no held list, a line quoting the variable and
 // its cut].
@@ -923,6 +924,27 @@ const SEMI_ROWS = [
     [],
     ["'", "%27", "dark"],
     ["parse error at ' near theme", "parse error at ' near theme"],
+  ],
+  [
+    "a header value's credential pair with a %20 in its value, in a list joined by a ; written %3B",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=api_key=kaX8248%20kbY9720%3Bregion=us-east-1" },
+    ["kaX8248%20kbY9720", "kaX8248 kbY9720"],
+    ["us-east-1"],
+    ["401 from relay: key kaX8248 kbY9720 refused", "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair in raw quotes with a %20 in its value, between pairs joined by a ; written %3B",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: 'X-Relay=region=us-east-1%3Bapi_key="kaX7808%20kbY5160"%3Btheme=dark' },
+    ["kaX7808%20kbY5160", "kaX7808 kbY5160"],
+    ["us-east-1", "dark"],
+    ["401 from relay: key kaX7808 kbY5160 refused", "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair in quotes written %27 with a %26 in its value, before a ; written %3B",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${QUOTE_27}AbCdEf12%26GhIj34${QUOTE_27}%3Bregion=us` },
+    ["AbCdEf12%26GhIj34", "AbCdEf12&GhIj34"],
+    [],
+    ["401 from relay: key AbCdEf12&GhIj34 refused", "401 from relay: key [redacted] refused"],
   ],
 ];
 
