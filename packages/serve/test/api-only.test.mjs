@@ -85,6 +85,8 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/triggers"], ["HEAD", "/v2/triggers"], ["GET", "/v2/triggers/trg_1"], ["GET", "/v2/triggers/trg_1/firings"], ["PATCH", "/v2/triggers/trg_1"],
     // The launch hook's host releases a firing it took and will start no run for.
     ["POST", "/v2/triggers/trg_1/firings/fir_1/release"],
+    // An ended run's share bundle (`agentrun share`'s one request, its ?restore= on the same route), cut as the console's.
+    ["GET", "/v2/runs/run_1/export"], ["HEAD", "/v2/runs/run_1/export"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
@@ -106,6 +108,10 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["POST", "/v2/computers/pairings"], ["POST", "/v2/computers/pair"], ["GET", "/v2/computers/attach"],
     ["PUT", "/v2/computers/e2b/keys"], ["POST", "/v2/computers/e2b/test"], ["GET", "/v2/computers/e2b/choices"], ["DELETE", "/v2/computers/pc_1"],
     ["PUT", "/v2/workspace/archil"], ["DELETE", "/v2/workspace/archil"], ["POST", "/v2/workspace/archil/test"],
+    // The share preview is the console's page (an owner's session, which no one has here), and the graph and trace stay
+    // refused as routes of their own: the export carries a workflow run's graph cut, as the share page shows it.
+    ["GET", "/share/run_1"], ["GET", "/share/run_1/"], ["POST", "/v2/runs/run_1/export"], ["GET", "/v2/runs/run_1/export/x"],
+    ["GET", "/v2/runs/run_1/graph"], ["GET", "/v2/runs/run_1/trace"],
     ...LEARNING_REFUSED.map(([method, path]) => [method, at(path, "a1", "run_1")]),
   ]) assert.equal(served(method, raw), false, `${method} ${raw}`);
 });
@@ -183,6 +189,54 @@ test("an API-only server with the launch hook serves a firing's release with the
   const plain = await serve(t, { apiOnly: true, runner: false });
   const refused = await send(plain, "POST", path, { body: { error: "The job failed at launch." } });
   assert.deepEqual([refused.status, refused.body.error?.fields?.[0]?.reason], [422, "not_allowed"], JSON.stringify(refused.body));
+});
+
+test("an API-only server serves an ended run's share bundle with the token: agentrun.share/1 cut, its restore and the route's own 400 and 404; no token or another is 401; the share page is the profile's 404", { timeout: 180_000 }, async (t) => {
+  // A synthetic address, made fresh: a personal cut, which a restore may put back.
+  const email = `qa.${randomBytes(4).toString("hex")}@mailbox-synthetic.zz`;
+  const server = await serve(t, { apiOnly: true });
+  const { run_id: run } = await inlineRun(server, "share-1", `Write to ${email} about six times seven.`);
+  await ended(server.api, run);
+
+  const none = await send(server, "GET", `/v2/runs/${run}/export`, { token: false });
+  assert.deepEqual([none.status, none.body.error?.code], [401, "unauthenticated"], JSON.stringify(none.body));
+  const other = await send(server, "GET", `/v2/runs/${run}/export`, { token: false, headers: { authorization: `Bearer ${notSecret("token")}` } });
+  assert.deepEqual([other.status, other.body.error?.code], [401, "unauthenticated"], JSON.stringify(other.body));
+
+  const exported = await send(server, "GET", `/v2/runs/${run}/export`);
+  assert.equal(exported.status, 200, JSON.stringify(exported.body).slice(0, 600));
+  assert.deepEqual([exported.body.format, exported.body.run?.status], ["agentrun.share/1", "completed"], JSON.stringify(exported.body).slice(0, 600));
+  assert.ok(!JSON.stringify(exported.body).includes(email), "the address is cut");
+  const cut = exported.body.cuts.find((one) => one.kind === "personal" && one.restorable);
+  assert.ok(cut, `a restorable personal cut: ${JSON.stringify(exported.body.cuts)}`);
+
+  const restored = await send(server, "GET", `/v2/runs/${run}/export?restore=${cut.id}`);
+  assert.equal(restored.status, 200, JSON.stringify(restored.body).slice(0, 600));
+  assert.ok(restored.body.restored.some((one) => one.id === cut.id), JSON.stringify(restored.body.restored));
+  assert.ok(JSON.stringify(restored.body).includes(email), "the restored address is in place");
+  for (const query of ["restore=not-an-id", "restore=c_0000000000000000"]) {
+    const refused = await send(server, "GET", `/v2/runs/${run}/export?${query}`);
+    assert.deepEqual([refused.status, refused.body.error?.code], [400, "bad_request"], `${query}: ${JSON.stringify(refused.body)}`);
+    assert.ok(!refused.body.error.message.includes("AGENTRUN_API_ONLY"), `the route's own 400, not the profile's: ${refused.body.error.message}`);
+  }
+  const missing = await send(server, "GET", "/v2/runs/run_missing/export");
+  assert.equal(missing.status, 404, "a run it does not have is the route's own 404");
+  assert.ok(!missing.body.error.message.includes("AGENTRUN_API_ONLY"), `not the profile's: ${missing.body.error.message}`);
+
+  const page = await send(server, "GET", `/share/${run}`);
+  assert.deepEqual([page.status, page.body.error?.message], [404, `this server serves the run API only (AGENTRUN_API_ONLY=1): /share/${run} is not served here`], "the share page is the console's");
+});
+
+test("an API-only server answers 409 run_not_final to the export of a run that has not ended", { timeout: 120_000 }, async (t) => {
+  // A run started on the whole server with no runner stays queued; the same data served API-only, no runner either.
+  const whole = await serve(t, { runner: false });
+  const { run_id: run } = await startRun(whole.api, "share-live", "Take your time.");
+  await whole.stop();
+  const server = await serve(t, { apiOnly: true, runner: false, data: whole.data });
+
+  const refused = await send(server, "GET", `/v2/runs/${run}/export`);
+  assert.deepEqual([refused.status, refused.body.error?.code], [409, "run_not_final"], JSON.stringify(refused.body));
+  assert.equal((await send(server, "GET", `/v2/runs/${run}/export`, { token: false })).status, 401, "and takes the token");
 });
 
 test("an API-only server serves an agent's Archil disk, read and removed, with the token", async (t) => {

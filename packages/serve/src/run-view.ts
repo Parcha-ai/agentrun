@@ -282,7 +282,10 @@ type BudgetEntry = { pending: { kind: "budget"; cap_usd: number; spent_usd?: num
 
 /** The run's active cap park, from its journal: the last agentrun.budget entry the cap wrote when it parked the run for
  *  room, unless an agentrun.raise after it cleared the pause (the run goes on at the raised cap then). A re-park writes a
- *  fresh budget entry, which a raise before it does not clear, so the last of the two in log order decides. */
+ *  fresh budget entry, which a raise before it does not clear, so the last of the two in log order decides. A raise entry
+ *  clears the park it names (its `pause`, as the runner reads it: raiseStateOf), or any when it names none (one written
+ *  before raises named their pause): a retry of an earlier raise names that raise's pause, and the park the run stands at
+ *  since stays. */
 function activeBudget(entries: readonly JournalEntry[]): BudgetEntry | undefined {
   return activePark(entries)?.mark;
 }
@@ -292,7 +295,10 @@ function activePark(entries: readonly JournalEntry[]): { mark: BudgetEntry; id: 
   let park: { mark: BudgetEntry; id: string } | undefined;
   for (const entry of entries) {
     if (entry.kind === KINDS.budget) park = { mark: dataOf<BudgetEntry>(entry), id: String(entry.id) };
-    else if (entry.kind === KINDS.raise) park = undefined;
+    else if (entry.kind === KINDS.raise && park) {
+      const named = (entry.data as { pause?: unknown } | undefined)?.pause;
+      if (named === undefined || String(named) === park.id) park = undefined;
+    }
   }
   return park;
 }

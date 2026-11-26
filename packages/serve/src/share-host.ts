@@ -276,8 +276,9 @@ function placesOf(doc: unknown): { text: string; places: Place[] } {
   return { text: parts.join(""), places };
 }
 
-/** A context a string is read under: a file's path, or a call's command read once into its facts. */
-type ReadContext = { readonly path?: string; readonly facts?: CommandFacts };
+/** What a scrub of one string is handed: a file's path, a call's command read once into its facts, and whether the
+ *  string is lines flattened onto one (the run's title). */
+type PassContext = { readonly path?: string; readonly facts?: CommandFacts; readonly flattened?: true };
 
 /** A file's content's pointer in a bundle: its index is group 1. */
 const FILE_CONTENT_AT = /^\/files\/(\d+)\/content$/;
@@ -299,6 +300,9 @@ function encodedOffsets(value: string): number[] {
   return offsets;
 }
 
+/** What a string is read knowing: its call's (CallContext), and whether it is lines flattened onto one (the run's title). */
+type ReadContext = CallContext & { readonly flattened?: true };
+
 /** The scrubber over a bundle as a host reads it, refusing (422, counts by rule id, never a value or where) unless every
  *  value it finds is a declared restore.
  *
@@ -315,10 +319,10 @@ function encodedOffsets(value: string): number[] {
  *  never used: the host stores what was sent or nothing. */
 export async function screenShare(text: string, held: readonly string[], cutPass: CutScrub = (body, opts) => scrub(body, opts), strings = SHARE_STRINGS): Promise<{ unchecked: Record<string, number> }> {
   const failed = () => new ApiError("input_invalid", "The share host's scrub of this bundle failed, so it is refused (the scrub fails closed). Nothing was stored.", { details: { reason: "scrub_failed" } });
-  const pass = async (body: string, context?: ReadContext) => {
+  const pass = async (body: string, context?: PassContext) => {
     let result: Awaited<ReturnType<CutScrub>>;
     try {
-      result = await cutPass(body, { mode: "cut", held, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.facts !== undefined ? { command: context.facts.command, commandFacts: context.facts } : {}) });
+      result = await cutPass(body, { mode: "cut", held, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.facts !== undefined ? { command: context.facts.command, commandFacts: context.facts } : {}), ...(context?.flattened ? { flattened: true } : {}) });
     } catch {
       throw failed();
     }
@@ -334,10 +338,11 @@ export async function screenShare(text: string, held: readonly string[], cutPass
   // call's context comes from the run's calls, which no bundle carries. Each context is made once, for its file or call,
   // and named by a small id: a read is keyed by that id and its text, never by the context's own text (a call's command
   // can be megabytes, and its output thousands of strings). A text is read once per context it stands under, and those
-  // reads are what the cap counts: more than `strings` is 413 before any scrub.
+  // reads are what the cap counts: more than `strings` is 413 before any scrub. The run's title is read as the export cut
+  // it (run-export.ts): lines flattened onto one, so a transcript's env command and its output there is a dump.
   const files = Array.isArray(doc.files) ? doc.files : [];
   const effects = isObject(doc.graph) && Array.isArray(doc.graph.effects) ? doc.graph.effects : [];
-  const contexts: (CallContext | undefined)[] = [undefined]; // id 0: no context
+  const contexts: (ReadContext | undefined)[] = [undefined, { flattened: true }]; // id 0: no context; id 1: the run's title
   const ids = new Map<string, number>(); // a context's id by its path and command, interned once per file or call
   const idOfPlace = new Map<string, number>(); // "f<index>" or "e<index>": its context's id
   const intern = (context: CallContext | undefined): number => {
@@ -348,6 +353,7 @@ export async function screenShare(text: string, held: readonly string[], cutPass
     return id;
   };
   const contextIdOf = (at: string): number => {
+    if (at === "/run/title") return 1;
     const fileIndex = FILE_CONTENT_AT.exec(at)?.[1];
     const effectIndex = fileIndex === undefined ? EFFECT_OUTPUT_AT.exec(at)?.[1] : undefined;
     if (fileIndex === undefined && effectIndex === undefined) return 0;
@@ -380,7 +386,7 @@ export async function screenShare(text: string, held: readonly string[], cutPass
   // A context's texts read together, each handed the context's command facts (commandFacts), made once for them all.
   for (const [id, texts] of reads) {
     const call = contexts[id];
-    const context: ReadContext | undefined = call && { ...(call.path !== undefined ? { path: call.path } : {}), ...(call.command !== undefined ? { facts: commandFacts(call.command) } : {}) };
+    const context: PassContext | undefined = call && { ...(call.path !== undefined ? { path: call.path } : {}), ...(call.command !== undefined ? { facts: commandFacts(call.command) } : {}), ...(call.flattened ? { flattened: true as const } : {}) };
     for (const value of texts.keys()) texts.set(value, await pass(value, context));
   }
 

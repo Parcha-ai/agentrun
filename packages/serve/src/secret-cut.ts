@@ -144,6 +144,10 @@ export type ScrubOptions = {
   /** The shell command whose output `text` is, when the caller knows it (a tool call's, ruling LVI): a command that reads
    *  one file alone (`cat ~/.pgpass`) gives `path` when none is given, and an env command's output is a dump. */
   readonly command?: string;
+  /** `text` is lines flattened onto one, every run of blanks made a space (a run's title: runs-over-store.ts
+   *  prepareLaunch): a prompt inside the line opens a command as a line's start would, and an env command's output
+   *  runs on after it to the next prompt (env-dump). */
+  readonly flattened?: boolean;
   /** `command`'s facts, made once with commandFacts(command) by a caller that scrubs one call's output string by string
    *  (run-export.ts, share-host.ts), so the command is read once for them all. They stand for `command`: given both, the
    *  facts' command is the one read. Given `command` alone, a scrub makes them once for every view of its text. */
@@ -406,7 +410,7 @@ export function processHomes(): string[] {
  *  finds in the view (one pass a view, on first ask). */
 function contextOf(view: View, opts: ScrubOptions): ScrubContext {
   let lint: Promise<LintFind[]> | undefined;
-  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? opts.commandFacts?.readPath, facts: opts.commandFacts, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? opts.commandFacts?.readPath, facts: opts.commandFacts, flattened: opts.flattened === true, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
 }
 
 /** Whether a cut text holds nothing the scrub must cut: no known format the format rules still find in any view of any

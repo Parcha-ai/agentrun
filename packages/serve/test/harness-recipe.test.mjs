@@ -15,6 +15,7 @@ import { HarnessKeysOverStore, layHarnessKeys } from "../dist/harness-keys.js";
 import { planRecipesOf } from "../dist/harness-table.js";
 import { launchBody, readLaunchBody } from "../dist/run-launch.js";
 import { putSealedKey } from "../dist/server-keys.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const [{ checkedNoteOf, installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenTreeOf, signedInNoteOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
   import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
@@ -1806,7 +1807,7 @@ test("a held run on a plan-billed recipe whose model was refused at its create i
     const harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
     const deps = { env, data, journal: (c) => store.journal(c), store, sealKey: seal, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
     asked.length = 0;
-    const spec = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+    const spec = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
     specs.push({ spec, harness });
     return { spec, asked: [...asked] };
   };
@@ -1817,7 +1818,7 @@ test("a held run on a plan-billed recipe whose model was refused at its create i
   assert.ok(held.spec.adapter, "and its claim still builds its agent's adapter, so it holds its computer");
   // A run's own process asks its runner (run-child-host.ts heldFor) for its harness's keys, by the recipe file it loaded.
   const digest = planRecipesOf(env)[0].digest;
-  const seam = (launch) => heldFor({ store: server, sealKey: seal, env, data }, { claim: { runId: "run-3", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision: { kind: "agentic", body }, claimed: {} }, (text) => text, () => {}).held;
+  const seam = (launch) => heldFor({ store: server, sealKey: seal, env, data }, { claim: { runId: "run-3", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision: { kind: "agentic", body }, claimed: {} }, heldRedactor((text) => text), () => {}).held;
   assert.deepEqual(await seam(launchOf()).harnessKeys(digest), { MODEL_AGENT_API_KEY: KEY }, "a run not held is answered the keys saved for its harness, as before");
   assert.deepEqual(await seam(launchOf({ minutes: 5, refused })).harnessKeys(digest), {}, "a held run its model kept from running is answered none, whatever its process asks");
 });
@@ -1867,12 +1868,12 @@ async function planClaim(t, { over = {}, installed = true, perRunProcess = false
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
   const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
-  if (perRunProcess) setHeld(heldFor({ store: server, sealKey: seal, env, data }, { claim, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision: { kind: "agentic", body }, claimed: {} }, (text) => text, () => {}).held);
+  if (perRunProcess) setHeld(heldFor({ store: server, sealKey: seal, env, data }, { claim, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision: { kind: "agentic", body }, claimed: {} }, heldRedactor((text) => text), () => {}).held);
   const registry = createRegistry();
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const deps = { env, data, journal: (c) => store.journal(c), store, sealKey: perRunProcess ? undefined : seal, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
-  spec = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  spec = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
   return spec;
 }
 

@@ -15,7 +15,9 @@ const YEAR: Wrapped = {
   models: [{ model: "anthropic/claude-sonnet", requests: 250, tokens: 6_000_000, cost_usd: 40, unpriced_requests: 3 }, { model: "openai/gpt", requests: 50, tokens: 300_000, cost_usd: 2.5, unpriced_requests: 0 }],
   sources: [{ source: "claude-code", sessions: 10, requests: 250 }, { source: "codex", sessions: 2, requests: 50 }],
   imported: [{ source: "claude-code", runs: 7 }, { source: "gemini", runs: 4 }],
+  cache: { runs: 6, hit_rate: 0.8812, breaks: { model: 2, idle: 30, compaction: 5, edited: 0, sidechain: 0, unknown: 3 }, extra_cost_usd: { model: 0.5, idle: 12.25, compaction: 1.5, edited: 0, sidechain: 0, unknown: 0.75 }, unpriced_breaks: 4 },
 };
+const NO_CACHE: Wrapped = { ...YEAR, cache: null };
 const PRICED: Wrapped = { ...YEAR, unpriced_requests: 0, models: YEAR.models.map((m) => ({ ...m, unpriced_requests: 0 })) };
 const UNPRICED: Wrapped = { ...YEAR, cost_usd: 0, unpriced_requests: 300 };
 const EMPTY: Wrapped = { ...YEAR, sessions: 0, turns: 0, requests: 0, tokens: { input: 0, output: 0, cache_read: 0, cache_write: 0 }, cost_usd: 0, unpriced_requests: 0, days: [], hours: new Array(24).fill(0), weekdays: new Array(7).fill(0), active_ms: 0, harnesses: [], models: [] };
@@ -31,22 +33,23 @@ const many = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `h${i +
 
 describe("the cards drawn now", () => {
   it("draws cover, split, hours and summary, and keeps every card with a wait not met hidden", () => {
-    expect([...SATISFIED_WAITS]).toEqual(["race-card-renderer"]);
-    expect(WRAPPED_CARDS.filter((c) => drawnBody(c, YEAR) !== null).map((c) => c.id)).toEqual(["cover", "split", "hours", "summary"]);
+    expect([...SATISFIED_WAITS]).toEqual(["race-card-renderer", "cache-analyzer"]);
+    expect(WRAPPED_CARDS.filter((c) => drawnBody(c, YEAR) !== null).map((c) => c.id)).toEqual(["cover", "split", "hours", "cache", "summary"]);
+    expect(WRAPPED_CARDS.filter((c) => drawnBody(c, NO_CACHE) !== null).map((c) => c.id), "no run of the year analyzed: no cache card").toEqual(["cover", "split", "hours", "summary"]);
   });
 
   it("gates by the waits met, not by id: a card draws once every wait of its is met, and none draws with the renderer's unmet", () => {
     const bodies = Object.fromEntries(WRAPPED_CARDS.map((c) => [c.id, (): CardBody => ({ title: c.id })]));
     const drawn = (satisfied: ReadonlySet<CardWait>) => WRAPPED_CARDS.filter((c) => drawnBody(c, YEAR, satisfied, bodies) !== null).map((c) => c.id);
-    expect(drawn(SATISFIED_WAITS)).toEqual(["cover", "split", "hours", "summary"]);
+    expect(drawn(SATISFIED_WAITS)).toEqual(["cover", "split", "hours", "cache", "summary"]);
     expect(drawn(new Set<CardWait>(["race-card-renderer", "derived"]))).toEqual(["cover", "split", "hours", "laptop", "type", "summary"]);
     expect(drawn(new Set<CardWait>(["race-card-renderer", "cache-analyzer", "scrubber-count-mode", "benchmark", "derived"]))).toEqual(WRAPPED_CARDS.map((c) => c.id));
     expect(drawn(new Set<CardWait>(["cache-analyzer", "scrubber-count-mode", "benchmark", "derived"]))).toEqual([]);
   });
 
-  it("has no body for a card whose rules the year cannot give (cache, laptop, leak, type, launch)", () => {
-    expect(Object.keys(CARD_BODIES).sort()).toEqual(["cover", "hours", "split", "summary"]);
-    for (const id of ["cache", "laptop", "leak", "type", "launch"]) expect(drawnBody(card(id), YEAR, new Set<CardWait>(["race-card-renderer", "cache-analyzer", "scrubber-count-mode", "benchmark", "derived"]))).toBeNull();
+  it("has no body for a card whose rules the year cannot give (laptop, leak, type, launch)", () => {
+    expect(Object.keys(CARD_BODIES).sort()).toEqual(["cache", "cover", "hours", "split", "summary"]);
+    for (const id of ["laptop", "leak", "type", "launch"]) expect(drawnBody(card(id), YEAR, new Set<CardWait>(["race-card-renderer", "cache-analyzer", "scrubber-count-mode", "benchmark", "derived"]))).toBeNull();
   });
 
   it("draws no card for an empty year: no sessions, or no requests", () => {
@@ -68,7 +71,9 @@ describe("the cards drawn now", () => {
 
   it("draws every word and bar of each body: no row, bar or value is cut or left out", () => {
     const big: Wrapped = { ...YEAR, sessions: 123_456, turns: 9_876_543, requests: 12_345_678, cost_usd: 1_234_567.89, unpriced_requests: 1_234_567, unread_files: 12_345, days: Array.from({ length: 366 }, (_, i) => ({ day: `2024-01-${String((i % 28) + 1).padStart(2, "0")}`, requests: 1, tokens: 1 })), active_ms: 9_876_543_210 };
-    for (const data of [YEAR, PRICED, UNPRICED, big]) {
+    const causes = { model: 7, idle: 123_456, compaction: 9_876, edited: 55, sidechain: 4, unknown: 3_210 };
+    const allCauses: Wrapped = { ...big, cache: { runs: 98_765, hit_rate: 0.4321, breaks: causes, extra_cost_usd: { ...causes, idle: 123_456.78 }, unpriced_breaks: 98_765 } };
+    for (const data of [YEAR, PRICED, UNPRICED, big, allCauses]) {
       for (const id of Object.keys(CARD_BODIES)) {
         const b = body(id, data)!;
         const capacity = cardCapacity(b);
@@ -235,5 +240,47 @@ describe("summary", () => {
 
   it("leaves out a top harness or model the year has none of", () => {
     expect(body("summary", { ...PRICED, models: [] })!.rows!.map((r) => r.label)).toEqual(["At list price", "Days at work", "Top harness", "Busiest hour"]);
+  });
+});
+
+describe("cache", () => {
+  it("grades the year's hit rate, and says what the breaks cost, how many there were and why, from the runs imported here", () => {
+    expect(body("cache")).toEqual({
+      eyebrow: EYEBROW,
+      title: "How your cache held",
+      figure: { value: "B+", unit: "cache grade" },
+      rows: [
+        { label: "Hit rate", value: "88%" },
+        { label: "Lost to breaks", value: "$15.00" },
+        { label: "Breaks", value: "40" },
+      ],
+      charts: [{ label: "Breaks by cause", kind: "columns", bars: [{ label: "Model", value: 2, text: "2" }, { label: "Idle", value: 30, text: "30" }, { label: "Compact", value: 5, text: "5" }, { label: "Edited", value: 0, text: "0" }, { label: "Sidechain", value: 0, text: "0" }, { label: "Unknown", value: 3, text: "3" }] }],
+      footnote: "From the 6 runs imported here; 4 breaks with no known price are not in the loss.",
+    });
+  });
+
+  it("draws no cache card when no run was analyzed or none sent a prompt", () => {
+    expect(body("cache", NO_CACHE)).toBeNull();
+    expect(body("cache", { ...YEAR, cache: { ...YEAR.cache!, hit_rate: null } })).toBeNull();
+  });
+
+  it("says $0.00 lost with no break, an unknown loss when no break was priced, and the unpriced breaks left out of a known loss", () => {
+    const none = { model: 0, idle: 0, compaction: 0, edited: 0, sidechain: 0, unknown: 0 };
+    const clean = body("cache", { ...YEAR, cache: { runs: 1, hit_rate: 0.99, breaks: none, extra_cost_usd: none, unpriced_breaks: 0 } })!;
+    expect(clean.rows).toEqual([{ label: "Hit rate", value: "99%" }, { label: "Lost to breaks", value: "$0.00" }, { label: "Breaks", value: "0" }]);
+    expect(clean.charts).toBeUndefined();
+    expect(clean.footnote).toBe("From the 1 run imported here.");
+    const unpriced = body("cache", { ...YEAR, cache: { runs: 2, hit_rate: 0.5, breaks: { ...none, idle: 2 }, extra_cost_usd: none, unpriced_breaks: 2 } })!;
+    expect(unpriced.rows).toEqual([{ label: "Hit rate", value: "50%" }, { label: "Lost to breaks", value: "Unknown" }, { label: "Breaks", value: "2" }]);
+    expect(unpriced.footnote, "every break unpriced: the loss row says so already").toBe("From the 2 runs imported here.");
+    const one = body("cache", { ...YEAR, cache: { ...YEAR.cache!, unpriced_breaks: 1 } })!;
+    expect(one.footnote).toBe("From the 6 runs imported here; 1 break with no known price is not in the loss.");
+  });
+
+  it("grades in steps of three points from the prototype's 88% B+, and a rate near the ends is never 0% or 100%", () => {
+    const grade = (hit_rate: number) => body("cache", { ...YEAR, cache: { ...YEAR.cache!, hit_rate } })!.figure!.value;
+    expect([0.97, 0.9699, 0.94, 0.91, 0.88, 0.8799, 0.85, 0.82, 0.78, 0.74, 0.7, 0.6, 0.5999, 0].map(grade)).toEqual(["A+", "A", "A", "A-", "B+", "B", "B", "B-", "C+", "C", "C-", "D", "F", "F"]);
+    const rate = (hit_rate: number) => body("cache", { ...YEAR, cache: { ...YEAR.cache!, hit_rate } })!.rows![0]!.value;
+    expect([0.9999, 1, 0.0001, 0].map(rate)).toEqual([">99%", "100%", "<1%", "0%"]);
   });
 });

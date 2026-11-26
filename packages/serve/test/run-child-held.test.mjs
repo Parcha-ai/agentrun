@@ -84,7 +84,7 @@ async function fakeGitHub(t) {
 
 /** The runner's answers for claim run-own (agent-own, rev-own) of `revision` and `launch`, over `store`; `login` the
  *  login its claim read (staysInRunner), `cut` the runner's redactor for the run. */
-function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } }, login, cut = (text) => text } = {}, lines = []) {
+function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } }, login, cut = heldRedactor((text) => text) } = {}, lines = []) {
   const deps = { store, sealKey: KEY, env, data, ...(githubApi ? { githubApi } : {}) };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision, claimed: {}, ...(login ? { login } : {}) };
   return host.heldFor(deps, reads, cut, (line) => void lines.push(line)).held;
@@ -127,6 +127,31 @@ test("a run's process mints a GitHub token for its own pull request's repository
   }
   // The same launch on a revision that checks out no pull request: nothing to mint for.
   assert.equal(await heldOf(store, { githubApi: github.api, launch }).githubAppAccess(), undefined);
+});
+
+test("a GitHub token minted for a run's process joins its runner's redactor, so nothing the runner writes of the run shows it", async (t) => {
+  const { keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  const cut = heldRedactor(keepText);
+  const launch = { input: { content: PULL }, inputOrigin: { kind: "trigger", source: "github" } };
+  const access = await heldOf(store, { githubApi: github.api, revision: { kind: "agentic", body: { checkout: "pull_request" } }, launch, cut }).githubAppAccess();
+  assert.equal(cut("the token is not-a-secret-ghs-token"), "the token is not-a-secret-ghs-token", "nothing minted yet, nothing held");
+  const minted = await access.mint({ repo: "acme/widgets", installation: 777 });
+  assert.equal(minted.ok, true, JSON.stringify(minted));
+  assert.ok(!cut(`the token is ${minted.token}`).includes(minted.token), "the minted token is cut from what the runner writes");
+});
+
+test("a run's process whose runner's cut cannot hold a key gets no GitHub token: the mint fails rather than hand out one nothing the runner writes would cut", async (t) => {
+  const { keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  const launch = { input: { content: PULL }, inputOrigin: { kind: "trigger", source: "github" } };
+  const access = await heldOf(store, { githubApi: github.api, revision: { kind: "agentic", body: { checkout: "pull_request" } }, launch, cut: keepText }).githubAppAccess();
+  const minted = await access.mint({ repo: "acme/widgets", installation: 777 }).catch((error) => ({ ok: false, error }));
+  assert.notEqual(minted.ok, true, `no token handed: ${JSON.stringify(minted)}`);
 });
 
 const judgeFlow = (name, provider) => ({
@@ -521,6 +546,28 @@ test("where runs have users of their own, a claude-agent run on this machine's o
   assert.equal(await stays(staysDeps(data, "agentic", "machine"), "claude-agent", launch, "run-keyed", PER_RUN_USERS), false, "its caller's own model key: never refused");
 });
 
+test("where runs have users of their own and the login is this machine's own, a run that sends no model key (a --faux runner's, a faux-pinned one, a held one) claims with no login and is never refused for it; off faux, unpinned and not held, the same claim is refused", async (t) => {
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-keyless-claim-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const launch = { input: {}, place: { mode: "runner" } };
+  const claimOf = (env, own) => host.staysInRunner({ ...staysDeps(data, "agentic", "machine"), env }, "claude-agent", { ...launch, ...own }, "run-own", PER_RUN_USERS);
+  await assert.rejects(claimOf({}, {}), (error) => {
+    assert.equal(error.name, "ClaimRefused", `refused for good: ${error.stack}`);
+    assert.equal(error.message, host.LOGIN_MACHINE_NEEDS_SERVER_USER);
+    return true;
+  }, "off faux, unpinned and not held: refused at the claim in LOGIN_MACHINE_NEEDS_SERVER_USER's words");
+  const claimed = {};
+  for (const [where, env, own] of SENDS_NO_MODEL_KEY) claimed[where] = await claimOf(env, own).then((place) => place, (error) => ({ refused: error.message }));
+  assert.deepEqual(claimed, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { stays: false, login: undefined }])), "a run that sends no model key reads no login at its claim: a process of its own, no login, never refused for one");
+  // Where every run is the runner's own user (AGENTRUN_RUN_USER=same): the same claim off faux stays in the runner, on the
+  // machine's login; one that sends no model key reads no login either, so it is a process of its own, not the runner's.
+  const sameUser = (env, own) => host.staysInRunner({ ...staysDeps(data, "agentic", "machine"), env }, "claude-agent", { ...launch, ...own }, "run-own", SAME_USER);
+  assert.deepEqual(await sameUser({}, {}), { stays: true }, "AGENTRUN_RUN_USER=same, off faux: it stays in the runner, on the machine's login");
+  const placed = {};
+  for (const [where, env, own] of SENDS_NO_MODEL_KEY) placed[where] = await sameUser(env, own);
+  assert.deepEqual(placed, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { stays: false, login: undefined }])), "AGENTRUN_RUN_USER=same: a run that sends no model key is a process of its own, with no login, never in the runner on it");
+});
+
 // The runners on a data folder say at their start whether their runs on the login stay in their own process
 // (claude-login-token.ts sayLoginRunner); a name the module does not export reads as undefined below.
 const loginToken = await import("../dist/claude-login-token.js").catch(() => ({}));
@@ -772,7 +819,7 @@ test("the install a run's process asks for is readable by every user and writabl
   const asked = [];
   const deps = { store, sealKey: KEY, env: {}, data, installForClaim: async (entry, at) => void asked.push([entry.id, at]) };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." }, harness: "claude-agent" }, revision: { kind: "agentic", body: {} }, claimed: {} };
-  const held = host.heldFor(deps, reads, (text) => text, () => {}).held;
+  const held = host.heldFor(deps, reads, heldRedactor((text) => text), () => {}).held;
   await held.install("claude-agent");
   assert.deepEqual(asked, [["claude-agent", dir]], "the runner installed (or found) the harness");
   const mode = (path) => statSync(path).mode & 0o777;
@@ -789,7 +836,7 @@ test("the computer the runner made for a run is released by the runner at the cl
   const released = [];
   const deps = { store, sealKey: KEY, env: {}, data, computerForClaim: async () => ({ release: async (why) => void released.push(why ?? "released") }) };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision: { kind: "agentic", body: {} }, claimed: {} };
-  const side = host.heldFor(deps, reads, (text) => text, () => {});
+  const side = host.heldFor(deps, reads, heldRedactor((text) => text), () => {});
   const got = await side.held.computer({ hadComputer: async () => false });
   assert.equal(typeof got.release, "function");
   // The run's process ends (a crash, a broken channel) without calling the computer's release.
@@ -874,7 +921,7 @@ test("a Mode 2 run's process writes a file bigger than its channel's frame throu
   // pieces a quarter of a frame.
   const FRAME = 1024 * 1024;
   const bigs = bigWrites.runBigWrites?.({ gate: saveSlots(4), piece: FRAME / 4 });
-  const side = bigs ? host.heldFor(deps, reads, (text) => text, () => {}, bigs) : host.heldFor(deps, reads, (text) => text, () => {});
+  const side = bigs ? host.heldFor(deps, reads, heldRedactor((text) => text), () => {}, bigs) : host.heldFor(deps, reads, heldRedactor((text) => text), () => {});
   const [runnerEnd, childEnd] = duplexPair();
   const runner = host.runChannel(runnerEnd, () => {}, saveSlots(4), { ...(bigs ? { bigs } : {}), maxFrame: FRAME });
   runner.expose("held", (method, args) => side.held[method](...args));

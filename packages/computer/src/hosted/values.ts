@@ -24,6 +24,10 @@ export function dateOf(value: unknown, unit: "ms" | "s" = "ms"): Date | undefine
 export const PACKED_NAME = "agentrun";
 /** The packed map's parts: agentrun-0, agentrun-1, and on. */
 const PART = `${PACKED_NAME}-`;
+/** A key the packed map stores under: PACKED_NAME, or agentrun-<n>. A caller's label is refused under one (labelProblem). */
+export function isPackedKey(key: string): boolean {
+	return key === PACKED_NAME || new RegExp(`^${PART}[0-9]+$`).test(key);
+}
 /** The most bytes of a packed map's JSON: unpackLabels inflates no more. */
 const PACKED_JSON_MAX = 1 << 20;
 

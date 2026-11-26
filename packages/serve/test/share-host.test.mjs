@@ -417,6 +417,16 @@ test("a workflow call's output is read knowing its call: a credential file's pla
   await screenShare(body, []);
 });
 
+test("LVI (11-26): the host reads a bundle's /run/title as the export cuts it, lines flattened onto one: a transcript's env dump there is refused", async () => {
+  // An export from before the title was cut flattened, or one built by hand, carries the transcript's output uncut.
+  const doc = JSON.parse(await bundleOf());
+  const title = `Say: $ printenv HOME=/root SYNTH_UNHELD=quarry${nonce()}tallow $ ls`;
+  await assert.rejects(screenShare(resigned({ ...doc, run: { ...doc.run, title } }), []), (error) => error.code === "input_invalid" && (error.extra.details.counts["env-dump"] ?? 0) >= 1);
+  // In any other string the same words are a message, not a title: no prompt mid-line is read there. (In a title,
+  // `$ env NAME=value command` is the flattened read's documented over-cut, the export's as well.)
+  await screenShare(await bundleOf({ answer: "Run $ env SYNTH_MODE=dev node app.js" }), []);
+});
+
 test("a workflow call's output is read knowing its call at any index: one past a million empty effects still refuses", { timeout: 900_000 }, async () => {
   // An effect's index is any number of digits: a pointer the host reads as no call's would leave the call's output to the
   // context-free rules, and a bare .pgpass line passes those.

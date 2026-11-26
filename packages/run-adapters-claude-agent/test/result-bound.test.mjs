@@ -23,12 +23,12 @@ const BIG = 'x'.repeat(1024 * 1024 - Buffer.byteLength(SKILL_MD));
 const SCHEMA = { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } };
 
 /** The end the host heard of `name`'s one call: the text the CLI got, and whether it was cut. */
-async function reached({ tools = [], skills, call }) {
+async function reached({ tools = [], skills, call, contextWindow }) {
   process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   try {
     const dir = mkdtempSync(join(ROOT, 'n-'));
-    const adapter = claudeAgentAdapter({ model: 'claude-test', provider: { origin: provider.url, credential: () => 'k' }, sessionsDir: join(dir, 's'), standIn: { command: process.execPath }, ...(skills ? { skills } : {}), sdk: fakeSdk({ script: [call, 'call submit {"value":{"answer":"ok"}}'] }) });
+    const adapter = claudeAgentAdapter({ model: 'claude-test', provider: { origin: provider.url, credential: () => 'k' }, sessionsDir: join(dir, 's'), standIn: { command: process.execPath }, ...(skills ? { skills } : {}), ...(contextWindow ? { contextWindow } : {}), sdk: fakeSdk({ script: [call, 'call submit {"value":{"answer":"ok"}}'] }) });
     const events = [];
     const store = memorySessionStore();
     const runNode = kernel.createHarnessRunner(adapter, { store, tools, onEvent: (e) => events.push(e) });
@@ -57,4 +57,16 @@ test("a skill file of the most a skill holds (1 MiB) reaches the CLI cut at the 
   cut(ended.result, BIG);
   assert.equal(ended.truncated, true);
   assert.equal(kernel.HOST_RESULT_MAX_CHARS, BOUND, 'the kernel states the bound');
+});
+
+/** The per-model bound of a 16,384-token window (the kernel's resultMaxChars): a quarter of it at three characters a token. */
+const SMALL_MAX = 12_288;
+const SMALL_MD = 'x'.repeat(50_000);
+
+test("a model with a 16k window: a 50k result reaches the CLI cut to the per-model bound, not the host's, saying why", async () => {
+  const ended = await reached({ contextWindow: 16_384, skills: [{ name: 'research', files: { 'SKILL.md': SKILL_MD, 'big.md': SMALL_MD } }], call: 'call read_skill_file {"skill":"research","path":"big.md"}' });
+  assert.ok(ended.result.length <= SMALL_MAX, `${ended.result.length} characters, past ${SMALL_MAX}`);
+  assert.match(ended.result, /\n\[kept \d+ of 50000 characters: the result was cut to fit this model's context window\./);
+  assert.equal(ended.result.slice(0, 1_000), SMALL_MD.slice(0, 1_000), 'its start kept');
+  assert.equal(ended.truncated, true);
 });

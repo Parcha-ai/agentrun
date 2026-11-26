@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -75,6 +76,45 @@ func TestArgvFollowsTheExecKey(t *testing.T) {
 		}
 		if err != nil || !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%q with url %q: %q, %v; want %q", c.exec, c.url, got, err, c.want)
+		}
+	}
+}
+
+// A url goes into the app's argv as it is, so one that starts with "-" would be a flag (Chromium's
+// --renderer-cmd-prefix runs a command) and a relative path would be a file found from the daemon's folder. A url is an
+// absolute URL with a scheme or an absolute path; anything else is refused in words, and a dash in words of its own.
+func TestArgvTakesOnlyAnAbsoluteURLOrAnAbsolutePath(t *testing.T) {
+	takes := Entry{ID: "browser", Exec: "browser --new-window %u"}
+	for _, url := range []string{
+		"https://example.com/?q=1",
+		"file:///tmp/a%20b.txt",
+		"/tmp/a b.txt",
+		"about:blank",
+		"mailto:someone@example.com",
+	} {
+		got, err := takes.Argv(url)
+		if err != nil || !reflect.DeepEqual(got, []string{"browser", "--new-window", url}) {
+			t.Errorf("url %q: %q, %v; want it opened", url, got, err)
+		}
+	}
+	for _, c := range []struct{ url, says string }{
+		{"--renderer-cmd-prefix=touch /tmp/owned", `starts with "-": the app would take it as a flag`},
+		{"-new-instance", `starts with "-": the app would take it as a flag`},
+		{"-", `starts with "-": the app would take it as a flag`},
+		{"  --renderer-cmd-prefix=touch /tmp/owned", `starts with "-": the app would take it as a flag`},
+		{"\t-private", `starts with "-": the app would take it as a flag`},
+		{"notes.txt", "is neither an absolute URL with a scheme"},
+		{"./notes.txt", "is neither an absolute URL with a scheme"},
+		{"../../etc/passwd", "is neither an absolute URL with a scheme"},
+		{"~/notes.txt", "is neither an absolute URL with a scheme"},
+		{"example.com/page", "is neither an absolute URL with a scheme"},
+		{" https://example.com", "is neither an absolute URL with a scheme"},
+		{"https:", "is neither an absolute URL with a scheme"},
+		{"  ", "is neither an absolute URL with a scheme"},
+	} {
+		got, err := takes.Argv(c.url)
+		if err == nil || !strings.Contains(err.Error(), c.says) || !strings.Contains(err.Error(), "an absolute path") {
+			t.Errorf("url %q: %q, %v; want it refused saying %q and what a url is", c.url, got, err, c.says)
 		}
 	}
 }

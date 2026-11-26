@@ -9,6 +9,7 @@ import { closeOpenSessions, hostTools, MODEL } from "./conformance-pi-adapter.mj
 import { capRun, quiet } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { WIRES } = await import("../dist/wires.js");
 after(closeOpenSessions);
 
@@ -60,7 +61,7 @@ test("a provider's error that echoes its credential leaves the credential nowher
       };
       const { row, dir, store } = await capRun(t, {
         specOf: () => (_claim, run) => ({
-          adapter: piAdapter({ run, model, provider: { api: wire, origin: "https://faux.invalid", credential: () => PLANTED }, fetch: upstream, price: () => 0 }),
+          adapter: piAdapter({ redact: heldRedactor((text) => text), run, model, provider: { api: wire, origin: "https://faux.invalid", credential: () => PLANTED }, fetch: upstream, price: () => 0 }),
           session: { key: "root", label: "root", system: ["Answer."], tools: hostTools({}), context: "fresh" },
           input: "Answer.",
           hooks: quiet,

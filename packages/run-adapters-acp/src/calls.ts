@@ -62,10 +62,11 @@ export function joinsByOne(announces: AcpAnnounces | undefined): boolean {
 }
 
 /** The name our MCP server is given to the agent under at one start: under a recipe whose prefix joins by one character
- *  (joinsByOne), `agentrun` and 8 random hex digits, no `_` or `-`, which no server set up before the start can spell
- *  (8, not more: each of our tools is named with it, under the agent's cap, TOOL_NAME_CAP); under any other, `agentrun`. */
+ *  (joinsByOne), `ar` and 6 random hex digits, no `_` or `-`, which no server set up before the start can spell; under
+ *  any other, `agentrun`. As long as `agentrun`, no longer: each of our tools is named with it, under the agent's cap
+ *  (TOOL_NAME_CAP), so a tool fits as it would under `agentrun`. */
 export function mcpServerName(announces: AcpAnnounces | undefined): string {
-  return joinsByOne(announces) ? `${MCP_SERVER}${randomBytes(4).toString("hex")}` : MCP_SERVER;
+  return joinsByOne(announces) ? `ar${randomBytes(3).toString("hex")}` : MCP_SERVER;
 }
 
 /** The most characters a tool's name may hold where the agent names it (agy's, as the model APIs' tool names: 64). */
@@ -78,6 +79,13 @@ export function namesTooLong(announces: AcpAnnounces | undefined, tools: Iterabl
   if (announces?.prefix === undefined || announces.server !== undefined) return [];
   const prefix = announces.prefix;
   return [...tools].filter((tool) => prefix.length + tool.length > TOOL_NAME_CAP);
+}
+
+/** The run's notice for the tools `label` (an agent naming ours `<prefix><tool>`) is not given at a start: those
+ *  namesTooLong names, which it could never call. */
+export function toolsLeftOut(label: string, prefix: string, tools: readonly string[]): string {
+  const one = tools.length === 1;
+  return `${label} names each of our tools ${prefix}<tool>, at most ${TOOL_NAME_CAP} characters in all, so a tool's own name may be at most ${TOOL_NAME_CAP - prefix.length}; ${tools.map((tool) => JSON.stringify(tool)).join(", ")} ${one ? "is" : "are"} longer, so ${one ? "it is" : "they are"} left out of the tools it is given at this start`;
 }
 
 /** The recipe's `announces` as one start reads them, our MCP server given to the agent as `server` (mcpServerName): its
@@ -254,6 +262,11 @@ const NOTHING = "\0*";
 /** take's word for a call torn between announcements its arguments match only without an extra. */
 const TORN = Symbol("torn");
 
+/** How long an MCP call that matches an announcement only without an extra (addAnnounced) holds for its own (take): an
+ *  MCP call can reach MCP a little before the agent's announcement of it, and in that while the other's may be the only
+ *  one there. */
+export const ANNOUNCE_GRACE_MS = 500;
+
 /** The agent's announced calls, matched to the MCP calls of our tools that reach the server. */
 export class CallIds {
   private readonly seen = new Map<string, string[]>();
@@ -286,7 +299,10 @@ export class CallIds {
    *  against a plan's limit and memoized under a key a resume never asks again. Until its call ends (settle). A tool
    *  named for an id already announced without one (a call the agent named in a later update) keys it again. `also`:
    *  the same call's arguments read another way (addAnnounced: without an extra its tool's schema declares), under
-   *  which it is kept too; the first MCP call either matches takes it, and it is gone from both. */
+   *  which it is kept too; the first MCP call either matches takes it, and it is gone from both. A call already waiting
+   *  is handed it only where it is the call's own first key, its tool and its whole arguments. One that matches it only
+   *  without the extra may be another call's, whose own announcement is on its way, and one naming no tool or reporting
+   *  no input may come second to the call's own ended one, so for those the call tries again as take says (wake). */
   add(id: string, tool: string | undefined, input: unknown, also?: unknown): void {
     if (this.used.has(id)) return;
     if (tool !== undefined) this.unnamed.delete(id);
@@ -297,14 +313,15 @@ export class CallIds {
     const keys = [...new Set([keyFor(input), ...(also === undefined ? [] : [keyFor(also)])])];
     const before = this.keyOf.get(id);
     if (before && before.length === keys.length && before.every((key, i) => key === keys[i])) return;
+    // An ended one (settle) keyed again stays ended, and is never handed to a waiting call at once.
+    const ended = this.ended.has(id);
     this.unlist(id);
-    for (const key of keys) {
-      const waiter = this.waiting.get(key)?.shift();
-      if (waiter) {
-        this.used.add(id);
-        waiter(id);
-        return;
-      }
+    const waiter = ended ? undefined : this.waiting.get(keys[0]!)?.shift();
+    if (waiter) {
+      this.used.add(id);
+      waiter(id);
+      this.wake();
+      return;
     }
     for (const key of keys) {
       const list = this.seen.get(key) ?? [];
@@ -312,6 +329,8 @@ export class CallIds {
       this.seen.set(key, list);
     }
     this.keyOf.set(id, keys);
+    if (ended) this.ended.add(id);
+    this.wake();
   }
 
   /** `id` out of every list it is kept in (keyOf), waiting for its MCP call no more. */
@@ -322,14 +341,24 @@ export class CallIds {
       if (at >= 0) list.splice(at, 1);
     }
     this.keyOf.delete(id);
+    this.ended.delete(id);
   }
 
   /** The agent's call `id` ended (completed or failed) with no MCP call having taken it: an announcement that names
-   *  nothing and reports nothing is dropped, so a call of the agent's own never takes a later MCP call's id. */
+   *  nothing and reports nothing is dropped, so a call of the agent's own never takes a later MCP call's id. Any other
+   *  is `ended`: a live announcement comes before it in every match (take), so a retry with the same arguments takes its
+   *  own id, and it holds no later MCP call; but it stays for a late MCP call of its own (a cancel can report a call
+   *  failed while its MCP call is on its way), which takes it after the hold when no live one matches. */
   settle(id: string): void {
-    if (this.keyOf.get(id)?.[0] !== NOTHING) return;
-    this.unlist(id);
+    const keys = this.keyOf.get(id);
+    if (!keys) return;
+    if (keys[0] === NOTHING) this.unlist(id);
+    else this.ended.add(id);
+    this.wake();
   }
+
+  /** The announcements whose call ended with no MCP call (settle), still listed. */
+  private readonly ended = new Set<string>();
 
   /** Whether the agent announced `id` (matched or not). */
   has(id: string): boolean {
@@ -345,90 +374,126 @@ export class CallIds {
    *  came by then. Of the announcements with the same arguments, the oldest named `tool` first, then the oldest named
    *  none; then the oldest of `tool` that reported no input. Then, already there or once the wait is over, never woken
    *  by one coming in during it (which may be the agent's own while this call's own announcement is on its way), the
-   *  oldest that named nothing and reported nothing. Where the arguments match two or more announcements only read
-   *  without an extra (addAnnounced), the call waits while one of them may yet be another call's whole arguments. */
+   *  oldest that named nothing and reported nothing. Where the arguments match announcements only read without an extra
+   *  (addAnnounced), the call holds for `grace` first, and then while one of them may yet be another call's whole
+   *  arguments. */
   async take(tool: string, args: Record<string, unknown>, signal: AbortSignal, ms: number): Promise<string | undefined> {
     const keys = [`${tool}\0${canonical(args)}`, `\0${canonical(args)}`, `${tool}\0*`];
     const key = keys[0]!;
     // Under the first of `from` that keeps one: an announcement whose own arguments are these (its first key, the form
-    // with the extra) first, then the oldest. But two or more kept under this call's own key only read without an extra
-    // (addAnnounced) are torn: which of them sent none, only their own MCP calls say, and another's may be on its way
-    // with the extra, needing its own. So while there are more of them than calls waiting on them (`waiting`, this one
-    // among them), the call waits; once there are not, each takes the oldest.
-    const pick = (from: readonly string[], waiting: number): string | undefined | typeof TORN => {
-      for (const at of from) {
-        const list = this.seen.get(at);
-        if (!list?.length) continue;
-        const id = list.find((each) => this.keyOf.get(each)?.[0] === at) ?? (at === key && list.length > 1 && list.length > waiting ? TORN : list[0]!);
-        if (id === TORN) return TORN;
+    // with the extra) at once. One kept under this call's own key only read without an extra (addAnnounced) is a guess:
+    // its call may have sent the extra, its own MCP call on its way with it, and this call's own announcement still on
+    // its way (an MCP call can reach MCP before it). So the call takes one only once it is `aged`, past the grace, and
+    // while there are no more of them than calls waiting on them (`waiting`, this one among them); then the oldest. When
+    // every call left the extra out, which of them takes which, by when its MCP call came, may not be the order they
+    // were announced in: their inputs are the same, so it changes nothing a call is given. Every rule here reads the
+    // live announcements alone; one whose call ended (settle) is taken only once the call is `aged` and no live one
+    // under any of `from` is left: then the oldest whose own arguments are these, else the oldest. One whose own
+    // arguments are these (a late MCP call of a call a cancel reported failed) also comes before a live one that matches
+    // them less closely, under a later key: one naming no tool, or reporting no input, or neither, whether it was
+    // announced before the MCP call or during its hold (add hands a waiting call only its own first key). Only an
+    // announcement whose own first key is this one counts as its own: one kept here only read without an extra
+    // (addAnnounced) is a guess, and a live one under a later key comes first, as before. So a retry announced with
+    // less than its call's whole arguments (no tool, or no input), after a call with these arguments ended, takes the
+    // ended one's id after the hold: the same tool with the same arguments, the order the two came in lost. Beyond this: an
+    // announcement that comes more than the grace after its own MCP call (that call takes the other's), and a call torn
+    // until the wait is over, more than ms behind the other's MCP call (it takes the oldest, which may be the other's);
+    // in both the other's MCP call falls back once its wait is over. Two calls with the same arguments, one ended, can
+    // swap ids when the ended one's MCP call comes after the other's announcement: their arguments cannot tell them
+    // apart. Once the wait is over, loose may take an ended announcement of the tool with other arguments, as it does a
+    // live one.
+    const pick = (from: readonly string[], waiting: number, aged: boolean): string | undefined | typeof TORN => {
+      const take = (id: string) => {
         this.unlist(id);
         this.used.add(id);
         this.wake();
         return id;
+      };
+      let gone: string | undefined;
+      let own = false;
+      for (const at of from) {
+        const list = this.seen.get(at);
+        if (!list?.length) continue;
+        const live = list.filter((each) => !this.ended.has(each));
+        if (!live.length) {
+          if (gone === undefined) {
+            const exact = list.find((each) => this.keyOf.get(each)?.[0] === at);
+            gone = exact ?? list[0]!;
+            own = exact !== undefined && (at === keys[0] || at === keys[1]);
+          }
+          continue;
+        }
+        if (own) break;
+        const id = live.find((each) => this.keyOf.get(each)?.[0] === at) ?? (at === key && (!aged || live.length > waiting) ? TORN : live[0]!);
+        return id === TORN ? TORN : take(id);
       }
-      return undefined;
+      if (gone === undefined) return undefined;
+      return aged ? take(gone) : TORN;
     };
     // Once the wait is over, the oldest announced call named `tool` whose reported input differs from what reached MCP.
     // Never one named no tool with other arguments: its arguments are all that ties it, and they differ. Then the oldest
     // that named nothing and reported nothing.
-    const loose = () => pick([...[...this.seen.keys()].filter((at) => at.startsWith(`${tool}\0`)), NOTHING], Infinity) as string | undefined;
-    // Calls already torn on this key go first, in the order they came, unless this one's arguments are an announcement's own.
-    const queued = this.torn.get(key) ?? 0;
-    const now = queued && !this.seen.get(key)?.some((id) => this.keyOf.get(id)?.[0] === key) ? TORN : pick([...keys, NOTHING], 1);
+    const loose = () => pick([...[...this.seen.keys()].filter((at) => at.startsWith(`${tool}\0`)), NOTHING], Infinity, true) as string | undefined;
+    const now = pick([...keys, NOTHING], (this.pending.get(key) ?? 0) + 1, this.grace <= 0);
     if (typeof now === "string") return now;
-    const torn = now === TORN;
     return new Promise<string | undefined>((resolve, reject) => {
-      const lists = keys.map((at) => {
-        const list = this.waiting.get(at) ?? [];
-        this.waiting.set(at, list);
-        return list;
-      });
+      let aged = this.grace <= 0;
+      // A call is handed an announcement at once (add) only under its own first key: its own arguments with its tool. One
+      // that names no tool or reports no input is listed, and wakes the call, whose retry takes it by pick's rules (its
+      // own ended announcement comes first). Never on one that named nothing: those are only kept on a recipe without
+      // announces, and an extra (the one cause to wait) needs announces.
+      const handed = this.waiting.get(key) ?? [];
+      this.waiting.set(key, handed);
       const retry = () => {
-        const id = pick(keys, this.torn.get(key) ?? 0);
+        const id = pick(keys, this.pending.get(key) ?? 0, aged);
         if (typeof id === "string") done(id);
       };
       const leave = () => {
-        for (const list of lists) {
-          const at = list.indexOf(done);
-          if (at >= 0) list.splice(at, 1);
-        }
+        clearTimeout(timer);
+        clearTimeout(held);
+        const at = handed.indexOf(done);
+        if (at >= 0) handed.splice(at, 1);
         if (!this.retries.delete(retry)) return;
-        const left = (this.torn.get(key) ?? 1) - 1;
-        if (left > 0) this.torn.set(key, left);
-        else this.torn.delete(key);
+        const left = (this.pending.get(key) ?? 1) - 1;
+        if (left > 0) this.pending.set(key, left);
+        else this.pending.delete(key);
       };
       const done = (id: string) => {
-        clearTimeout(timer);
         signal.removeEventListener("abort", stop);
         leave();
         resolve(id);
       };
       const stop = () => {
-        clearTimeout(timer);
         leave();
         reject(signal.reason instanceof Error ? signal.reason : new Error("the call was stopped"));
       };
       const timer = setTimeout(() => {
         signal.removeEventListener("abort", stop);
         leave();
-        resolve((torn ? (pick(keys, Infinity) as string | undefined) : undefined) ?? loose());
+        resolve((pick(keys, Infinity, true) as string | undefined) ?? loose());
       }, ms);
+      const held = setTimeout(() => {
+        aged = true;
+        retry();
+      }, Math.max(this.grace, 0));
       signal.addEventListener("abort", stop, { once: true });
-      for (const list of lists) list.push(done);
-      if (torn) {
-        this.torn.set(key, (this.torn.get(key) ?? 0) + 1);
-        this.retries.add(retry);
-        this.wake();
-      }
+      handed.push(done);
+      this.pending.set(key, (this.pending.get(key) ?? 0) + 1);
+      this.retries.add(retry);
+      this.wake();
     });
   }
 
-  /** The MCP calls torn between announcements (take): how many wait under each key, and each one's retry. */
-  private readonly torn = new Map<string, number>();
+  /** How long an MCP call holds before it takes an announcement it matches only without an extra (take). */
+  constructor(private readonly grace: number = ANNOUNCE_GRACE_MS) {}
+
+  /** The MCP calls waiting (take): how many under each key, and each one's retry. */
+  private readonly pending = new Map<string, number>();
   private readonly retries = new Set<() => void>();
   private waking = false;
 
-  /** Each torn call tries again, once the current one is through: an announcement was taken, or another call is torn. */
+  /** Each waiting call tries again, once the current one is through: an announcement was taken, listed or dropped, or
+   *  another call waits. */
   private wake(): void {
     if (this.waking || this.retries.size === 0) return;
     this.waking = true;

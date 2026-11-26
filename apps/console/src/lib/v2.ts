@@ -197,8 +197,13 @@ export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 /** Claude Code's login on this machine (GET /v2/settings/claude-login, a serve extension): on or off, and what the CLI
  *  says of its login, never a token. */
 export type ClaudeLoginView = Answer<"getClaudeLogin">;
-/** POST /v2/settings/claude-login/sign-out's answer: whether the CLI confirmed its own sign-out, its words when it didn't,
- *  and the login's view after it (off). */
+/** A free local model (GET /v2/settings/local-model, a serve extension): this machine, its Ollama, the model recommended
+ *  for them and the pull here with its progress. */
+export type LocalModel = Answer<"getLocalModel">;
+/** POST /v2/settings/claude-login/sign-out's answer: `confirmed`, whether all of the login is gone (false where the CLI
+ *  didn't confirm its own sign-out, a removal failed, or, with the CLI confirmed, an older Keychain item of the login
+ *  under the account "unknown" may remain on macOS), its words saying what may remain when it isn't, and the login's
+ *  view after it (off). */
 export type ClaudeLoginSignOut = Answer<"signOutClaudeLogin">;
 /** The model gateway in force (GET /v2/settings/model-gateway, a serve extension): the environment's, the one saved in the
  *  console, or none; its address, id style and models, and its key as a SecretMeta, never a value. */

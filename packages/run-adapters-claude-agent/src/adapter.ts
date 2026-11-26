@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, type AdapterSession, type AgentAdapter, type GateCall, type HostSkill, type HostTool, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, Restart, SessionHalt, type Drive, type HostTool as KernelTool } from "@parcha/agentrun-kernel/kernel";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, NativeJournal, recoveryNote, settleTurn, transcriptOf, windowBudget } from "@parcha/agentrun-kernel/process";
 import { type BinaryProbe, checkedOnce, checkedOnceAsync, hostHeaderProblems, type ModelProxyOptions, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { anthropicPolicy, isoDay, withWebSearches } from "./host/policy.js";
 import { findClaudeExecutable, platformSuffix } from "./binary.js";
@@ -103,6 +103,10 @@ export interface ClaudeAgentAdapterOptions {
   price?: ModelProxyOptions["price"];
   /** The most output tokens one request may ask for. Default 128 000, what the pinned CLI asks for on current models. */
   maxOutputTokens?: number;
+  /** The model's context window, in tokens: the host's bound on one tool result is its share of it (the kernel's
+   *  resultMaxChars), under HOST_RESULT_MAX_CHARS. A session's own (SessionSpec.contextWindow) wins. Absent, and none on
+   *  the session: the host's bound alone. */
+  contextWindow?: number;
   /** The most one image a tool answers with may be, as base64 (default 5 MB, `CLAUDE_AGENT_MAX_IMAGE_BYTES`; at most
    *  10 MB, Anthropic's API's own limit). A larger one is the call's error. */
   maxImageBytes?: number;
@@ -156,6 +160,10 @@ export interface ClaudeAgentAdapterOptions {
   /** The IANA zone a user turn's day is read in (harness.ts dateLine), the one the host's environment line names. Default UTC. */
   zone?: string;
 }
+
+/** How long the CLI waits on a silent stream from a model the host's route translates: the longest the CLI takes
+ *  (CLAUDE_STREAM_IDLE_TIMEOUT_MS, 30 minutes). */
+export const TRANSLATED_STREAM_IDLE_MS = 30 * 60_000;
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
 export type ClaudeAgentThinking = "low" | "medium" | "high" | "xhigh" | "max";
@@ -399,6 +407,9 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
       const tools: HostTool[] = skills.length ? [...spec.tools, hostedTool(io, readSkillFileTool(join(dir, "plugin", "skills"), skills.map((skill) => ({ name: skill.name, files: Object.keys(skill.files) }))))] : spec.tools;
 
       const calls = new CallsInFlight();
+      // Each tool result held to the model's share of its window (the session's, else this adapter's; none: the host's
+      // bound), and a turn's results to what the window has left, which the session's model proxy reads from each answer.
+      const budget = windowBudget(spec.contextWindow ?? options.contextWindow, spec.system);
       // The CLI's own tools offered to the model: Skill only when the session has skills, WebSearch only when it is on.
       const builtins = [...(skills.length ? ["Skill"] : []), ...(webSearch ? ["WebSearch"] : [])];
       const acquire = localMachine({
@@ -409,6 +420,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         // On a login, no proxy: the CLI calls Anthropic itself.
         ...(provider ? { proxy: {
           hooks: io.models,
+          ...(budget.resultBudget?.turn ? { turn: budget.resultBudget.turn } : {}),
           tools: tools.map((t) => t.name),
           ...(builtins.length ? { builtins } : {}),
           ...(webSearch ? { webSearch: true, ...(options.webSearchAllowance !== undefined ? { webSearchAllowance: options.webSearchAllowance } : {}) } : {}),
@@ -437,6 +449,7 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         },
         tools: tools.map((tool) => claudeTool(tool, io, maxImageBytes, calls)),
         ...(spec.deferCatalog === undefined ? {} : { deferCatalog: spec.deferCatalog }),
+        ...budget,
         builtins: false,
         // Off by name too, besides tools: []: the pinned CLI's tools that neither the harness's allowlist nor its off list
         // decide (test/tool-off.test.mjs pins the CLI's whole tool set against these lists), but WebSearch when it is on.
@@ -445,6 +458,10 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         model: modelFor(spec),
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
+        // A model the host's route translates (an Ollama model) sends nothing while it loads, reads its prompt or thinks
+        // (the route holds its thinking to redact it whole): the CLI waits its longest on it, never dropping the stream
+        // at 5 minutes to ask again without one.
+        ...(options.fetch ? { streamIdleMs: TRANSLATED_STREAM_IDLE_MS } : {}),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
         ...(provider ? { credential: async () => provider.credential(), gatewayUrl: provider.origin } : { login: { at: login!, models: io.models } }),
         executable,

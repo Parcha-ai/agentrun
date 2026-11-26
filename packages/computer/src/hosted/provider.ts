@@ -73,7 +73,7 @@ import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
 import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, untilAborted, uploadThroughExec, words } from "./process.js";
 import { downloadingConnection } from "./download.js";
-import { isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
+import { isPackedKey, isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
 import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, initFlags, installerOf } from "./scripts.js";
 
@@ -2003,6 +2003,8 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	if (key === "") return "a label name must be non-empty";
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
 	if (key === MOUNT_LABEL) return `the label ${key} is the provider's own: it records a computer's mount`;
+	// Labels stored as given (an older server's, a host that doesn't pack) under one of these would read back as a packed map.
+	if (isPackedKey(key)) return `the label ${key} is reserved: ${PACKED_NAME} and ${PACKED_NAME}-<n> (${PACKED_NAME}-0, ${PACKED_NAME}-1 and on) hold a computer's packed labels`;
 	return undefined;
 }
 

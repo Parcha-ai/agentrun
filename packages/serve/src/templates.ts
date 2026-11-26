@@ -790,7 +790,10 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   const learningIssue = f.learning === undefined ? undefined : learningSettingIssue(f.learning, "learning");
   if (learningIssue) bad(MANIFEST, learningIssue);
   if (f.approvals !== undefined && f.approvals !== "ask" && f.approvals !== "never") bad(MANIFEST, "approvals is ask (the agent asks its person before a tool runs) or never (it runs unattended; deny and pins still hold)");
-  const triggers = f.triggers === undefined ? [] : Array.isArray(f.triggers) ? (f.triggers as unknown[]) : (bad(MANIFEST, "triggers is a list of POST /v2/triggers bodies"), []);
+  const written = f.triggers === undefined ? [] : Array.isArray(f.triggers) ? (f.triggers as unknown[]) : (bad(MANIFEST, "triggers is a list of POST /v2/triggers bodies"), []);
+  // A composio trigger written with no config is for an event whose config needs no field (Slack's new channel): its
+  // config is the empty one, as POST /v2/triggers takes it.
+  const triggers = written.map((trigger) => (isObject(trigger) && isObject(trigger.source) && trigger.source.kind === "composio" && trigger.source.config === undefined ? { ...trigger, source: { ...trigger.source, config: {} } } : trigger));
   const triggerNames = new Set<string>();
   triggers.forEach((trigger, i) => {
     const target = isObject(trigger) ? trigger.target : undefined;
@@ -1251,8 +1254,9 @@ export async function choiceUnrunnable(env: NodeJS.ProcessEnv, choice: ModelChoi
 /** A computer setting as a definition names it (`definition.computer`). */
 export type PickedSetting = { kind: string; provider?: string; needs?: string[] };
 /** The shell this server can give an agent now (server.ts shellHere): the computer setting that gives it, the shell
- *  tools a run there has (tools.ts shellTools), and the shell in words; else, `none`, why it has none. */
-export type ShellHere = { computer: PickedSetting; tools: readonly string[]; words: string } | { none: string };
+ *  tools a run there has (tools.ts shellTools), and the shell in words; else, `none`, why it has none, and `fix`, what to
+ *  do where COMPUTER_FIX is not it (a Mode 2 server whose Archil region has no serverless exec). */
+export type ShellHere = { computer: PickedSetting; tools: readonly string[]; words: string } | { none: string; fix?: string };
 /** What a package's computer list picks here: the entry, the setting the agent is saved with, the shell in words (null
  *  for none), the package's shell tools that shell does not run (`dropped`, never granted), the shell tools a package
  *  that names no tools is given (`defaults`), and the words an apply says of it (`note`: a fallback, or a tool dropped). */
@@ -1277,6 +1281,7 @@ export function pickComputer(p: Pick<Package, "name" | "computer" | "tools" | "n
   const clash = found && found.computer.kind === "sandbox" && runnerOnly.length ? `${found.words} runs ${runnerOnly.join(", ")} nowhere` : undefined;
   const shell = clash ? undefined : found;
   const lack = "none" in here ? here.none : clash ?? "this server has none";
+  const fix = ("none" in here ? here.fix : undefined) ?? COMPUTER_FIX;
   // A package that needs programs (its list is [shell] alone) takes a sandbox, whose box each run checks for them: a
   // shell that is no sandbox (Archil's serverless exec runs on the runner, whose programs no run checks) is refused.
   if (p.needs && !(shell && shell.computer.kind === "sandbox")) {
@@ -1285,12 +1290,12 @@ export function pickComputer(p: Pick<Package, "name" | "computer" | "tools" | "n
     return { refused: `The ${p.name} template needs a sandbox that has ${list}, and ${why}. Nothing was created. ${NEEDS_FIX}`, fix: NEEDS_FIX };
   }
   const entry = p.computer.find((one) => one === "none" || shell);
-  if (!entry) return { refused: `The ${p.name} template needs a shell, and ${lack}. Nothing was created.` };
+  if (!entry) return { refused: `The ${p.name} template needs a shell, and ${lack}. Nothing was created.`, ...(fix === COMPUTER_FIX ? {} : { fix }) };
   const runs = entry === "shell" && shell ? shell.tools : [];
   const dropped = (p.tools ?? []).filter((tool) => toolOf(tool)?.sandboxOnly && !runs.includes(tool));
   const without = new Intl.ListFormat("en", { type: "conjunction" }).format(dropped);
   const note = entry === "none" && p.computer[0] === "shell" && !shell
-    ? `${lack.charAt(0).toUpperCase()}${lack.slice(1)}, so the agent was made with the template's next choice, no computer${dropped.length ? `, and without ${without}` : ""}. ${COMPUTER_FIX}`
+    ? `${lack.charAt(0).toUpperCase()}${lack.slice(1)}, so the agent was made with the template's next choice, no computer${dropped.length ? `, and without ${without}` : ""}. ${fix}`
     : dropped.length && shell ? `The shell here is ${shell.words}, which runs ${runs.join(", ")} alone, so the agent was made without ${without}.` : null;
   return entry === "shell" && shell
     ? { entry, computer: { ...shell.computer, ...(p.needs ? { needs: [...p.needs] } : {}) }, shell: shell.words, dropped, defaults: [...shell.tools], note }

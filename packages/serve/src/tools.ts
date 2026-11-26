@@ -4,7 +4,7 @@
 // nothing here: a run's runner binds them from its workspace's registry (workspace/run-tools.ts), each call made on the
 // run's folder or its computer. `bash` and the background tools may be named only by an agent whose place is a box
 // (runnable.ts).
-import { blurbOf, isHostTool } from "./tool-list.js";
+import { adapterBinds, blurbOf } from "./tool-list.js";
 import { EMAIL_DESCRIPTIONS, EMAIL_DRAFT, EMAIL_FILE, EMAIL_READ, EMAIL_SEARCH, EMAIL_SEND, fileSummary, sendSummary } from "./email/names.js";
 // The email tools' timeline lines (registerLabel), registered as this module loads.
 import "./email/labels.js";
@@ -152,8 +152,8 @@ export type ToolHost = {
    *  (adapter-run-spec.ts browserListed). */
   ledger?: { paid: PaidBooking; pause?: (refusal: Refusal) => Promise<void>; flush: () => Promise<void> };
   /** The run's one redactor (the runner's: every secret value the runner and the claim hold, in every form): what the
-   *  browser's answers pass through before pi stores them or the model reads them. Absent on the old per-run process. */
-  redact?: (text: string) => string;
+   *  browser's answers pass through before pi stores them or the model reads them. */
+  redact: (text: string) => string;
   /** The run's own Workspace (on the runner: the run's local folder in Mode 1, its folder on the run's disk in Mode 2),
    *  where a tool files what the run's read finds later (monid's whole answer past the model's cut). Absent, the local
    *  folder at `where.work`. */
@@ -405,6 +405,8 @@ function joinCut(joined: string, parts: readonly string[], cut: (text: string) =
  *  reads it. A web call's JSON is cut as the agentic specs' answersCut cuts it (webAnswerCut), so it still parses and
  *  keeps its links, and a held value split across its strings withholds it whole. */
 export function answersCutInside(tool: ToolRegistration, cut: Redact): ToolRegistration {
+  // Fail closed and loud: a host with no redactor would only throw inside each call, an error a model may read past.
+  if (typeof cut !== "function") throw new TypeError(`${tool.name}: the run's redactor (host.redact) is required to cut its answers`);
   return {
     ...tool,
     execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
@@ -553,7 +555,7 @@ const browserTool: ToolEntry = {
       // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound:
       // the run's own cut on the runner (host.redact: the claim's keys too, every tool's, in every form), and the secrets
       // its env holds (runnerSecrets: hostSecrets and every launcher name's value) with its sign-in's pointer.
-      redact: (text) => redactedAnswer(host.redact ? host.redact(text) : text, [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
+      redact: (text) => redactedAnswer(host.redact(text), [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
       // The Screen tab's ended state, one settings row the server reads per poll (browser-wait-ended.ts); cleared as a
       // session opens (onSessions, below).
       waitEnded: (at, why) => {
@@ -657,7 +659,7 @@ const browserTool: ToolEntry = {
     const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
     // (its result record) and what the model reads hold no value the runner or the claim holds.
-    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => (host.redact ? answersCutInside(tool, host.redact) : tool));
+    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => answersCutInside(tool, host.redact));
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {
@@ -943,7 +945,7 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
-    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), ...(entry.runnerOnly ? { runner_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...everyHarness] : [...generalSpec], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), ...(entry.runnerOnly ? { runner_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: adapterBinds(name) ? [...everyHarness] : [...generalSpec], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
   // The host tools over a run's own tools (META_TOOLS): not in the table, never granted or named by a node (`meta`), listed
   // so the owner sees them and their setting (allow or deny; a deny is not offered at all).

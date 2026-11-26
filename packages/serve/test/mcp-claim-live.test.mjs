@@ -13,6 +13,7 @@ import { queued, storeOn } from "./store-helpers.mjs";
 
 const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");const { mcpClaim } = await import("../dist/runner/mcp-claim.js");
+const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
 
 const KEY = randomBytes(32);
 const TOKEN = `not-a-secret-${"first-bearer-0123"}`;
@@ -44,7 +45,7 @@ async function claimed(t, { store, dir }, server, redact) {
   await pinnedRun(store, "run-1", [server]);
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 10 * HOUR });
   // A runner beside a local install, as the CLI's is: the fake MCP server is on loopback.
-  const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: [`mcp:${server}/add`], harness: { commit: async () => undefined }, work: () => dir, ...(redact ? { hold: redact.hold } : {}) });
+  const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: [`mcp:${server}/add`], harness: { commit: async () => undefined }, work: () => dir, redact: heldRedactor(keepText), ...(redact ? { hold: redact.hold } : {}) });
   t.after(() => mcp.release());
   const add = mcp.tools.find((tool) => tool.name === `mcp__${server}__add`);
   return (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
@@ -178,7 +179,7 @@ test("another run's refresh moves the row's token on: this run's next call, its 
   // run-2's claim on the same server: a minute left by the store's clock, it refreshes behind its call.
   await pinnedRun(on.store, "run-2", ["docs"]);
   const claimB = await on.store.claim("run-2", "runner-b", { leaseMs: 10 * HOUR });
-  const mcpB = await mcpForClaim({ loopback: true, claim: claimB, store: on.store, sealKey: KEY, grants: ["mcp:docs/add"], harness: { commit: async () => undefined }, work: () => on.dir });
+  const mcpB = await mcpForClaim({ redact: heldRedactor(keepText), loopback: true, claim: claimB, store: on.store, sealKey: KEY, grants: ["mcp:docs/add"], harness: { commit: async () => undefined }, work: () => on.dir });
   t.after(() => mcpB.release());
   const addB = mcpB.tools.find((tool) => tool.name === "mcp__docs__add");
   on.clock.now += HOUR - 60_000;

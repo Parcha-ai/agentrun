@@ -17,6 +17,7 @@ import { closeOpenSessions, hostTools } from "./conformance-pi-adapter.mjs";
 import { capRun, quiet, specCap } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 after(closeOpenSessions);
 
@@ -28,27 +29,28 @@ const SOL = "openai/gpt-6.1-sol";
 const SOL_CAP = Object.freeze({ id: SOL, api: "anthropic-messages", price: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }] }, outputCeiling: 128_000, reasoning: true });
 /** What the provider bills a usage at Sol's list price, below its long-context tier (every request here is). */
 const price = (_model, usage) => ((usage.input ?? 0) * 2 + (usage.cacheWrite ?? 0) * 2.5 + (usage.cacheRead ?? 0) * 0.1 + (usage.output ?? 0) * 10) / 1e6;
-/** A long page as a fetch returns it: some 300 KB of English, which o200k_base reads as some 60,000 tokens. */
+/** A long page as a fetch returns it: some 300 KB of English. pi holds each tool result to the kernel's 120,000-character
+ *  host bound, so step 0 reads it three times at once: the request after carries some 360 KB, which o200k_base reads as
+ *  some 72,000 tokens. */
 const PAGE = "Each party's total liability under these terms will not exceed the fees paid in the three months before the claim.\n".repeat(2_600);
 
 const BILLED_AFTER_PAGE = 58_000;
 
 const sse = (events) => new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
-/** Step 0 calls read (billed $0.10: 45,000 input tokens and 1,000 output); step 1 answers, billed for the page's tokens
- *  (58,000, under the body's o200k_base count without its margin). */
+/** Step 0 calls read three times at once (billed $0.10: 45,000 input tokens and 1,000 output); step 1 answers, billed
+ *  58,000 tokens for the three cut pages (under the body's o200k_base count without its margin). */
 function answer(body, step, usage) {
   const block = step === 0
-    ? [{ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_0", name: "read", input: {} } }, { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{}" } }]
-    : [{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "done" } }];
+    ? [0, 1, 2].flatMap((index) => [{ type: "content_block_start", index, content_block: { type: "tool_use", id: `toolu_${index}`, name: "read", input: {} } }, { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: "{}" } }, { type: "content_block_stop", index }])
+    : [{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "done" } }, { type: "content_block_stop", index: 0 }];
   return sse([
     { type: "message_start", message: { id: `msg_${step}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: usage.input_tokens, output_tokens: 1 } } },
     ...block,
-    { type: "content_block_stop", index: 0 },
     { type: "message_delta", delta: { stop_reason: step === 0 ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: usage.output_tokens } },
     { type: "message_stop" },
   ]);
 }
-/** The translation's upstream as the proxy sees it: no count of its own, step 0 calls read, step 1 answers. */
+/** The translation's upstream as the proxy sees it: no count of its own, step 0 calls read three times, step 1 answers. */
 function origin(sent) {
   return async (url, init = {}) => {
     if (String(url).includes("count_tokens")) return new Response("{}", { status: 404 });
@@ -62,7 +64,7 @@ function origin(sent) {
 const read = { name: "read", replaySafe: true, ask: false, run: async () => PAGE };
 const specOf = (fetch) => (_claim, run) => ({
   // The translation's origin: not Anthropic's, so the proxy asks no provider to count a body.
-  adapter: piAdapter({ run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch, price }),
+  adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch, price }),
   session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools({ read }), context: "fresh" },
   input: "Follow the script.",
   hooks: quiet,
@@ -141,7 +143,7 @@ test("a code review's merge step on sol: a pi parent at $2 with $0.62 spent, who
   };
   const review = { name: "review", replaySafe: true, ask: false, run: async (args) => FINDING(args.reviewer ?? 0) };
   const spec = (_claim, run) => ({
-    adapter: piAdapter({ run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch, price }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch, price }),
     session: { key: "root", label: "root", system: ["Review the pasted diff: start eight reviewers, then merge their findings."], tools: hostTools({ review }), context: "fresh" },
     input: `Review this change.\n\n${DIFF}`,
     hooks: quiet,
@@ -221,7 +223,7 @@ async function reviewRun(t, capUsd) {
   const read = { name: "read", replaySafe: true, ask: false, run: async () => SKILL };
   // codemode is pi's own tool: the script call goes to it, and its arguments never parse.
   const spec = (_claim, run) => ({
-    adapter: piAdapter({ run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch: reviewOrigin(sent), price }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: SOL, provider: { api: "anthropic-messages", origin: "https://model-route.invalid", credential: () => "model-route" }, fetch: reviewOrigin(sent), price }),
     session: { key: "root", label: "root", system: ["Review the pasted diff with eight reviewers and return the review JSON."], tools: hostTools({ read }), context: "fresh" },
     input: `Review this diff (no pull request behind it):\n\n${REVIEW_DIFF}`,
     hooks: quiet,
@@ -273,7 +275,7 @@ test("pi on GPT-6.1 Sol through OpenRouter at $1.50, $0.10 spent: a request whos
   const spent = await spentOf(store);
   t.diagnostic(`${row.state}: spent $${spent.toFixed(4)}; bodies ${JSON.stringify(sent.map((one) => one.bytes))}`);
   t.diagnostic(`asked: ${JSON.stringify(asked.map((one) => ({ inputTokensMax: one.request?.inputTokensMax, answer: one.answer && ("refuse" in one.answer ? { refuse: one.answer.refuse } : { holdUsd: Number(one.answer.holdUsd?.toFixed(4)), outputTokensMax: one.answer.outputTokensMax }) })))}`);
-  // The first request read the page; the second carries it, past the long-context tier on its bytes.
+  // The first request read the page three times; the second carries the three cut results, past the long-context tier on its bytes.
   assert.equal(sent.length >= 1, true, "the first request was sent");
   const refusals = asked.filter((one) => one.answer && "refuse" in one.answer).map((one) => one.answer.refuse);
   assert.deepEqual(refusals, [], "no request refused: the one after the page is bounded by its count, not its bytes");
