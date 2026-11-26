@@ -15,6 +15,7 @@ import { HarnessKeysOverStore, layHarnessKeys } from "../dist/harness-keys.js";
 import { planRecipesOf } from "../dist/harness-table.js";
 import { launchBody, readLaunchBody } from "../dist/run-launch.js";
 import { putSealedKey } from "../dist/server-keys.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const [{ checkedNoteOf, installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenTreeOf, signedInNoteOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
   import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
@@ -1089,7 +1090,7 @@ test("an archive is pinned by exactly one digest, its sha256 or its sha512 (as G
   assert.equal(refusalOf(pinned({ sha512: SHA512 })).code, RECIPE_CODES.binary);
 });
 
-// The Antigravity example (examples/harness-recipe/antigravity.json): Google's agy CLI 1.5.14 as its release manifests
+// The Antigravity recipe AgentRun ships (@parcha/agentrun-harness-acp's recipes/bundled/antigravity.json): Google's agy CLI 1.5.14 as its release manifests
 // list it (https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/<target>.json), each archive
 // pinned by the manifest's sha512, as T3 Code installs it. It runs on its owner's own sign-in, or a key saved for it alone.
 // The digests are the manifests' own and are read again at each bump; offline, the test holds the file to what a bump must
@@ -1102,8 +1103,8 @@ const agyTarget = (platform) => {
   return `${os}-${x64 ? "x64" : "arm"}/cli_${os === "darwin" ? "mac" : os}_${x64 ? "x64" : "arm64"}.tar.gz`;
 };
 
-test("the Antigravity example recipe loads under the five rules: agy CLI 1.5.14, each platform's archive of one build pinned by its own sha512, `agy acp`, the agent's own --login with --gemini-dir, and a key handed as GEMINI_API_KEY with gemini-api-key", () => {
-  const file = new URL("../../../examples/harness-recipe/antigravity.json", import.meta.url).pathname;
+test("the Antigravity recipe loads under the five rules: agy CLI 1.5.14, each platform's archive of one build pinned by its own sha512, `agy acp`, the agent's own --login with --gemini-dir, and a key handed as GEMINI_API_KEY with gemini-api-key", () => {
+  const file = new URL("../../run-adapters-acp/recipes/bundled/antigravity.json", import.meta.url).pathname;
   const { recipe } = loadRecipe(file);
   assert.equal(recipe.id, "antigravity");
   assert.equal(recipe.release.registry, undefined, "the agy CLI is not in the ACP registry");
@@ -1806,7 +1807,7 @@ test("a held run on a plan-billed recipe whose model was refused at its create i
     const harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
     const deps = { env, data, journal: (c) => store.journal(c), store, sealKey: seal, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
     asked.length = 0;
-    const spec = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+    const spec = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
     specs.push({ spec, harness });
     return { spec, asked: [...asked] };
   };
@@ -1872,7 +1873,7 @@ async function planClaim(t, { over = {}, installed = true, perRunProcess = false
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const deps = { env, data, journal: (c) => store.journal(c), store, sealKey: perRunProcess ? undefined : seal, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
-  spec = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  spec = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
   return spec;
 }
 

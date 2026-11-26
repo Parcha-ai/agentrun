@@ -1633,7 +1633,9 @@ unless the [launch hook](#launch-hook) is set, which hands each firing to your b
 would start runs of the agent with no hook, or message one of its runs, hook or not. A `message_run` trigger made
 before the setting was on, or while the server held the key, fails each firing with that 409 and sends nothing. An
 update apply that skips a trigger leaves the agent's trigger of that name as it was; when that one is on, it still
-fires, and the skip's warning names it and says how to turn it off.
+fires until you turn it off. A firing that would start a run of the new revision is refused 409 for the keys it owes and
+starts no run, but a `message_run` firing aimed at a run of an earlier revision that owes no keys still reaches that run,
+which may spend. The skip's warning names the trigger and says how to turn it off.
 
 `MONID_API_KEY` stays the server's even with the setting on: an agent's monid tools are checked with it when the agent
 is saved, before any run, so a template that grants them is still refused at its apply (409 at
@@ -5105,7 +5107,7 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   over a 730-hour month); a computer still open is counted up to `measured_to` (`open_computers` says how many). `usd` is
   what the run's ledger booked for it while a claim held the computer, at the operator's price ([Computer
   time](#computer-time)), so `total` stays the run's `cost.usd`. The part no claim held (`unheld_quantity`: a computer
-  kept past its claim for a follow-up, one deleted after its run, one whose delete failed) is in no cost. A resource with
+  kept past its claim for a follow-up, one deleted after its run, one whose delete failed) is in no cost; on a provider that bills nothing (`docker`) it reads 0, since none of its time costs anything. A resource with
   no price set, or whose figure no one said, is `unpriced`, its `usd` null; a provider that bills nothing (`docker`) is
   $0. A `compute_time` line that is `unpriced` and any `unheld_quantity` are outside `total`.
   ```json

@@ -11,7 +11,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { archivePlatform } from "./harness-archive.js";
-import { AGENT_VARS, installHolds, loadRecipe, recipeInstall, RecipeRefused, signedInNoteOf, signInHomeOf } from "./harness-recipe.js";
+import { AGENT_VARS, installHolds, loadRecipe, recipeInstall, RecipeRefused, recipeSaid, signedInNoteOf, signInHomeOf } from "./harness-recipe.js";
 
 /** A recipe with no signIn: it runs on its keys alone, and has nothing to sign in. */
 export const HARNESS_NO_SIGN_IN = "HARNESS_NO_SIGN_IN";
@@ -49,6 +49,7 @@ export async function signInHarness(options: SignInHarnessOptions): Promise<{ ok
     return { ok: false, code: error.code, message: error.message };
   }
   const { recipe, file } = loaded;
+  say(recipeSaid(recipe.label, file, loaded.bundled));
   if (!recipe.signIn) return refuse(HARNESS_NO_SIGN_IN, `${recipe.label}'s recipe names no signIn: it runs on its keys (${recipe.keys.join(", ") || "none"}), and has nothing to sign in`);
   // The installed binary and every file beside it, the pinned ones, as a check finds them (recipeInstall, installHolds):
   // nothing is downloaded here.

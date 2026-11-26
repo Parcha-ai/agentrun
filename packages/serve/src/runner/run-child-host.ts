@@ -1246,7 +1246,7 @@ export function runChannel(socket: Duplex, onClose: (why: Error) => void, gate: 
 /** `login`: the Claude login this run's claim read (staysInRunner), the one its runner hands the run (ClaimReads). */
 function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps, login: ClaudeAgentLogin | undefined): Loop {
   const { deps, isolation } = options;
-  const cut: RunnerCut = loopDeps.redact ?? ((text: string) => text);
+  const cut: RunnerCut = loopDeps.redact;
   const log = (line: string) => options.log(cut(line));
   let channel: Channel | undefined;
   let child: ChildProcess | undefined;
