@@ -170,7 +170,8 @@ const OPS = { "files.read": {}, "files.list": {}, "files.write": { data: "x" }, 
 /** A run's gate on a computer that mounts its folder (`computer: true`) or one that does not (`false`). */
 const mountedGate = (computer, overrides = FILED, names) => runnerGate({ settings: ALLOW, overrides, harness: "pi", root: RUN, tools: ["read", "write", "edit", "bash"], computer, ...(names ? { names } : {}) });
 const LINKS = ["/proc/self/root/workspace/stripe/pages/x", "/proc/self/cwd/stripe/pages/x", "/dev/fd/3/stripe/pages/x", "/proc/1/root/workspace/stripe/pages/x"];
-const DOWNLOADS = "/home/agentrun-tool/Downloads/x";
+/** The tool user's Downloads folder on the computer (its home is /tmp in the box image: box/install.sh). */
+const DOWNLOADS = "/tmp/Downloads/x";
 
 test("on a computer that mounts the run's folder, while a folder is filed, a script's file op outside /workspace is refused in words: a proc or fd link to the folder, and any other path", async () => {
   const gate = mountedGate(true);
