@@ -47,8 +47,9 @@ export function fauxEntries(script) {
                 // The options the harness's own adapter would be built with from the run (its web search), told to the module.
                 module.opened?.(builtin.id, nativeOptions(facts, env));
                 // The session's model proxy, as the harness's own adapter would start it. None where the harness would
-                // refuse the run (a model no key reaches).
-                const proxy = await builtin.route(env, needs).catch(() => undefined);
+                // refuse the run (a model no key reaches), or where it has no route of ours at all (Cursor's model is its
+                // owner's plan).
+                const proxy = builtin.route ? await builtin.route(env, needs).catch(() => undefined) : undefined;
                 // The module's own hooks on the harness's process (faux-harness.mjs): each session's close told to it, a
                 // slow open or close, and a close that fails.
                 const openDelayMs = module.openDelayMs?.() ?? 0;

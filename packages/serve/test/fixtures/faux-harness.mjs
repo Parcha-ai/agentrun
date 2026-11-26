@@ -254,6 +254,13 @@ export function script(spec, session = {}) {
   // A read of a link out of the workspace, which the test plants while the turn holds; a crash then resumes the turn.
   const link = /Read the link after (\S+)\./.exec(text)?.[1];
   if (link) return [{ call: "write", args: { path: "first.txt", content: "x" }, usd: 0.001 }, ...(existsSync(link) ? [] : [{ hang: true }]), { call: "read", args: { path: "out.txt" }, usd: 0.001 }, { say: "Tried.", usd: 0.001 }];
+  // The agent hands the browser to the person, and once they hand it back, snapshots the page again (they may have changed
+  // it) and clicks its Add button.
+  if (/Hand the browser to the person to sign in, then click its Add button\./.test(text)) return [{ call: "snapshot", args: {}, usd: 0.001 }, { call: "browser_request_handoff", args: { request_id: "8a6b2c1e-3f4d-4b5a-9c7e-1d2f3a4b5c6d", instruction: "Sign in for me.", completion_condition: "Signed in." }, usd: 0.001 }, { call: "snapshot", args: {}, usd: 0.001 }, { call: "run", args: { actions: [{ op: "click", id: "0-11" }] }, usd: 0.001 }, { say: "Handed back.", usd: 0.001 }];
+  // A snapshot, then a second one asked for only once <file> exists (the person may have taken the browser over by then),
+  // then a click on the page's Add button.
+  const taken = /Snapshot the browser, again once (\S+) exists, then click its Add button\./.exec(text)?.[1];
+  if (taken) return [{ call: "snapshot", args: {}, usd: 0.001 }, { call: "snapshot", args: {}, usd: 0.001, until: taken }, { call: "run", args: { actions: [{ op: "click", id: "0-11" }] }, usd: 0.001 }, { say: "Clicked after the take.", usd: 0.001 }];
   // The browser's registrations, as a CLI harness is handed them: a snapshot of the page, a click on its Add button.
   if (/Snapshot the browser and click its Add button\./.test(text)) return [{ call: "snapshot", args: {}, usd: 0.001 }, { call: "run", args: { actions: [{ op: "click", id: "0-11" }] }, usd: 0.001 }, { say: "Clicked.", usd: 0.001 }];
   const page = /Fetch (\S+) and say its title(?: with (\w+))?\./.exec(text);
