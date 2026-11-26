@@ -1020,8 +1020,14 @@ the screenshot are the tools of those names, and the rest (apps, the shell, file
 `computer_op` (`{op, args}`), a tool bound for scripts alone. Each call is held to the run's gate and recorded on the
 timeline like a tool's, and a crash rerun of the script answers a call that already ran from its record: a shell
 command (`shell.run`) is held to the agent's `bash` setting, a started process to `bash_background`, a file written to
-`write`, and a file read, listed or looked up to `read`, after the kind's own setting for `computer_op`. A script's call
-of a computer tool answers the tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
+`write`, and a file read, listed or looked up to `read`, after the kind's own setting for `computer_op`. A file op needs
+its tool among the agent's tools first, as the run's own file tools do: `files.write` needs `write`, and `files.read`,
+`files.list` and `files.stat` need `read`. An agent not given one is refused the op whatever its setting says, on every
+desktop, mounted or not, and is not offered it: `computer_op`'s op list and the script's `computer` declarations leave it
+out. Naming a desktop does not grant its file ops. The shell's ops (`shell.run`, `processes.start`) follow `bash`'s
+setting alone, not a grant. Input ops on a desktop with a terminal app can do what a shell does: to deny that, don't
+grant input ops on that desktop, or use an image without a terminal. A script's call of a computer tool answers the
+tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
 `computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as
 JSON. A run whose `codemode` is set to deny lists them the same way, so its computer stays in reach. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
 client, each answer with its value as `structuredContent`.
@@ -1033,7 +1039,7 @@ is refused in words before the computer is asked. A screenshot with `save_as` is
 it too, after the kind's deny: the stricter decides (`write` set to deny refuses it before the computer is asked, set to
 ask puts it to a person); one with no `save_as` is held to the kind's setting alone. `save_as` needs `write` among the
 agent's tools: an agent not given `write` is not offered it, and the gate refuses one anyway whatever `write`'s setting
-says. A script's `computer.files.write` needs `write` among the agent's tools the same way. `save_as` is offered only
+says, as a script's `computer.files.write` does. `save_as` is offered only
 where the gate would let a save through: not with `write` set to deny, nor set to ask on a server where no one can
 approve. On a desktop or a phone the run's folder is not mounted in (one with `exec: false`, or a provider that mounts
 none), the model is told this once in the run, as the server's note, after a due cap wrap-up; a run whose saves the

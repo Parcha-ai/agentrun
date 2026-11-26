@@ -66,8 +66,8 @@ const FAUX_DEPS = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, launch: FAUX.lau
 
 /** run-1 on --faux's desktop, run by a runner on the pi spec with `script` as its model, or with `cli` (`{ env }`) on
  *  opencode's CLI spec; `body`, the agent's; `approvers`, given, the server's approvers row. Each pi request's body is
- *  kept in `requests`. `paired`: the agent's desktop is instead this paired computer (`{ row, hub }`: its store row, and
- *  the hub its socket is on). */
+ *  kept in `requests`, and each claim's spec in `specs`. `paired`: the agent's desktop is instead this paired computer
+ *  (`{ row, hub }`: its store row, and the hub its socket is on). */
 async function desktopRun(t, { script = [], body = { tools: ["read", "write"] }, approvers, cli, paired }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-desktop-files-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -87,11 +87,17 @@ async function desktopRun(t, { script = [], body = { tools: ["read", "write"] },
   const requests = [];
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const deps = { env: cli?.env ?? {}, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps: paired ? { ...FAUX_DEPS, attached: { rows: async () => [paired.row], hub: paired.hub } } : FAUX_DEPS };
+  const specs = [];
+  const kept = async (made) => {
+    const spec = await made;
+    specs.push(spec);
+    return spec;
+  };
   runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
-    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : name === "opencode" ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
+    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop((claim, run) => kept(adapterRunSpecFromLaunch(given, run, deps, claim))) : name === "opencode" ? createAdapterLoop((claim, run) => kept(cliRunSpecFromLaunch(given, run, deps, claim))) : undefined) }),
   });
-  return { dir, server, requests };
+  return { dir, server, requests, specs };
 }
 
 /** Until the run rests in one of `states`, released; its row. */
@@ -299,5 +305,27 @@ test("a CLI harness (opencode) not given write, or given write set to ask where 
     assert.equal(noted.length, 1, `${what}: one request carries the note`);
     assert.ok(noted[0].includes(NOTE_NO_FILES.slice(0, -1)), `${what}: the note says screenshots can't be saved: ${noted[0].match(NOTES)?.[0]}`);
     assert.ok(!noted[0].includes("save_as saves the screen"), `${what}: no save_as promised`);
+  }
+});
+
+// What a claim's spec offers a script on its desktop (computer_op's op list and the script's `computer`) leaves out the
+// file ops its gate refuses for want of a tool, on the pi spec and a CLI harness's alike. The declarations those ops
+// leave out are computer-op-grants.test.mjs's; --faux's desktop has no files group to declare.
+test("the pi spec and a CLI harness's (opencode) offer a script on the desktop only the file ops the agent is given: computer_op's op list and the script's computer leave the others out", { timeout: 120_000 }, async (t) => {
+  const READS = ["files.read", "files.list", "files.stat"];
+  for (const [tools, notGiven] of [[["read", "write"], []], [["write"], READS], [["read"], ["files.write"]], [undefined, [...READS, "files.write"]]]) {
+    for (const harness of ["pi", "opencode"]) {
+      const what = `${harness}, tools ${JSON.stringify(tools)}`;
+      const cli = harness === "opencode" ? { env: (await opencodeGateway(t)).env } : undefined;
+      const one = await desktopRun(t, { script: [{ say: "done" }], body: { ...(harness === "opencode" ? { harness } : {}), ...(tools ? { tools } : {}) }, ...(cli ? { cli } : {}) });
+      const row = await rests(one, ["ended"]);
+      assert.equal(row.state, "ended", `${what}: ${JSON.stringify(row)}`);
+      const [spec] = one.specs;
+      const opTool = spec.session.tools.find((tool) => tool.name === "computer_op");
+      assert.ok(opTool, `${what}: computer_op is bound: ${JSON.stringify(spec.session.tools.map((tool) => tool.name))}`);
+      const offered = opTool.inputSchema.properties.op.enum;
+      for (const op of [...READS, "files.write"]) assert.equal(offered.includes(op), !notGiven.includes(op), `${what}: ${op} in ${JSON.stringify(offered)}`);
+      assert.deepEqual([...(spec.scriptComputer.opsNotGiven ?? [])].sort(), [...notGiven].sort(), `${what}: the script's computer leaves them out`);
+    }
   }
 });
