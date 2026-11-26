@@ -4,9 +4,10 @@
 // head shows. The two share the sequence rules (match.ts sequenceAt) but not the decoding: the views decode one layer
 // each, key-refusal decodes the units itself, so this test reads each shape through every decoding. Each padding shape
 // below is a terminal sequence (each opener, with a unit of each class below inside), written as it stands, as JSON's
-// \u escapes, as Python's \x escapes in a single-quoted dict, as HTML character references, or percent-encoded as
-// UTF-8 (and with bytes that are no UTF-8). Where the matcher withholds a short text with the padding between a held
-// value's halves, the same padding repeated past what the read takes must withhold it too.
+// escapes (as a writer writes them, as "\u" escapes throughout, and twice), as Python's escapes in a single-quoted
+// dict, as HTML character references, or percent-encoded as UTF-8 (and with bytes that are no UTF-8). Where the
+// matcher withholds a short text with the padding between a held value's halves, the same padding repeated past what
+// the read takes must withhold it too.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { redactedAnswer, redactedCall } from "../dist/key-refusal.js";
@@ -47,11 +48,19 @@ const INNERS = unique([
   ...spread(codePoints(/^\p{Me}$/u), 3).map((code) => [`${named(code)}, an enclosing mark`, String.fromCodePoint(code)]),
   ...[0xe9, 0xfffd, 0xfffe, 0xe000, 0x2800, 0x3164, 0x1f600].map((code) => [`${named(code)}, taking a cell`, String.fromCodePoint(code)]),
   ["a colon", ":"],
+  ["a quote", '"'],
+  ["an apostrophe", "'"],
   ["a private marker out of place", "?"],
   ["an intermediate then a parameter", " 0"],
 ]);
-const toJson = (text) => [...text].map((char) => (/^[\x20-\x7e]$/.test(char) && char !== '"' && char !== "\\" ? char : char.split("").map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`).join(""))).join("");
-const toPython = (text) => [...text].map((char) => (/^[\x20-\x7e]$/.test(char) && char !== "'" && char !== "\\" ? char : char.length === 1 && char.charCodeAt(0) < 0x100 ? `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}` : toJson(char))).join("");
+// JSON's escapes: each character past printable ASCII, a backslash and a quote as a "\u" escape; as a JSON writer
+// writes them (a quote as "\""); and written once more as a JSON string's text (JSON in JSON).
+const toUnicode = (text) => [...text].map((char) => (/^[\x20-\x7e]$/.test(char) && char !== '"' && char !== "\\" ? char : char.split("").map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`).join(""))).join("");
+const toJson = (text) => toUnicode(text).replaceAll("\\u0022", '\\"');
+const toJsonTwice = (text) => toJson(text).replace(/[\\"]/g, (char) => `\\${char}`);
+// Python's: "\x" and two hex digits to U+00FF, an apostrophe as "\'", past U+00FF as JSON's "\u" (the views read
+// those as JSON's).
+const toPython = (text) => [...text].map((char) => (char === "'" ? "\\'" : /^[\x20-\x7e]$/.test(char) && char !== "\\" ? char : char.length === 1 && char.charCodeAt(0) < 0x100 ? `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}` : toUnicode(char))).join("");
 const toEntities = (text) => [...text].map((char) => (/^[\x20-\x7e]$/.test(char) && char !== "&" && char !== '"' && char !== "\\" ? char : `&#x${char.codePointAt(0).toString(16)};`)).join("");
 const percent = (text) => Buffer.from(text, "utf8").toString("hex").replace(/../g, (byte) => `%${byte.toUpperCase()}`);
 
@@ -61,6 +70,8 @@ for (const [opener, intro, body] of OPENERS) {
     const sequence = `${intro}${body(inner)}`;
     SHAPES.push([`${opener}, ${what} inside, as it stands`, sequence, "json"]);
     SHAPES.push([`${opener}, ${what} inside, as JSON's escapes`, toJson(sequence), "json"]);
+    SHAPES.push([`${opener}, ${what} inside, as JSON's \\u escapes`, toUnicode(sequence), "json"]);
+    SHAPES.push([`${opener}, ${what} inside, as JSON's escapes twice`, toJsonTwice(sequence), "json"]);
     SHAPES.push([`${opener}, ${what} inside, as Python's escapes`, toPython(sequence), "python"]);
     SHAPES.push([`${opener}, ${what} inside, as HTML references`, toEntities(sequence), "json"]);
     SHAPES.push([`${opener}, ${what} inside, percent-encoded`, percent(sequence), "json"]);
@@ -70,12 +81,16 @@ for (const [opener, intro, body] of OPENERS) {
     SHAPES.push([`${opener}, ${what} inside, percent-encoded`, `${percent(intro)}${percent(body("\u0000")).replace("%00", bytes)}`, "json"]);
 }
 
+// Each padding once (an encoding that writes a shape as another does adds nothing).
+const seen = new Set();
+const UNIQUE_SHAPES = SHAPES.filter(([, pad, kind]) => !seen.has(`${kind} ${pad}`) && seen.add(`${kind} ${pad}`));
+
 const wrapped = (body, kind = "json") => (kind === "python" ? `{'a': '${body}'}` : `{"a": "${body}"}`);
 
 test("every padding shape the matcher reads past whole is read past by the read after a call's stop and by a run's tail read", () => {
   const under = [];
   let checked = 0;
-  for (const [name, pad, kind] of SHAPES) {
+  for (const [name, pad, kind] of UNIQUE_SHAPES) {
     // The matcher's reading: a short text, the padding three times between the value's halves.
     const short = wrapped(`see ${HEAD}${pad.repeat(3)} ${REST} more`, kind);
     if (redactedAnswer(short, [VALUE]).includes(REST)) continue;
@@ -88,7 +103,7 @@ test("every padding shape the matcher reads past whole is read past by the read 
     if (redactedCall(tail, [VALUE], 100_000).includes(REST)) under.push(`kr-10 call ${name}`);
     if (redactedAnswer(tail, [VALUE]).includes(REST)) under.push(`kr-10 answer ${name}`);
   }
-  assert.ok(checked > SHAPES.length / 2, `the matcher read past ${checked} of ${SHAPES.length} shapes`);
+  assert.ok(checked > UNIQUE_SHAPES.length / 2, `the matcher read past ${checked} of ${UNIQUE_SHAPES.length} shapes`);
   assert.deepEqual(under, []);
 });
 

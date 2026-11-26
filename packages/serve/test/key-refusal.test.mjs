@@ -165,6 +165,11 @@ const CONTROL_PADS = [
   ["percent-encoded CSI colours with a byte order mark inside", "%1B%5B0%EF%BB%BFm".repeat(300), "json"],
   ["percent-encoded OSC titles with a byte order mark inside", "%1B%5D0%3Bt%EF%BB%BF%07".repeat(300), "json"],
   ["percent-encoded escapes with a byte order mark inside", "%1B(%EF%BB%BFB".repeat(300), "json"],
+  // An escaped quote decodes to nothing in the view that reads a string written in a string, and a terminal sequence
+  // with one inside reads whole there.
+  ["JSON's \\u001b CSI colours with an escaped quote inside", String.raw`\u001b[0\"m`.repeat(300), "json"],
+  ["JSON's \\u001b OSC titles with escaped quotes inside", String.raw`\u001b]0;\"t\"\u0007`.repeat(300), "json"],
+  ["raw CSI colours with an escaped quote inside", '\u001b[0\\"m'.repeat(300), "json"],
   // What a join view drops inside an escape (a colon, a no-break space) leaves the escape whole there.
   ["raw escapes with a colon inside", "\u001b(:B".repeat(300), "json"],
   ["raw escapes with a no-break space inside", "\u001b(\u00a0B".repeat(300), "json"],
