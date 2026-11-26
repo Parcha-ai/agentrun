@@ -111,9 +111,11 @@ const wantsBox = (tools: readonly unknown[], flags: ToolFlags): boolean => {
  *  tool that runs only in a box) and this server does not have Docker's box, and where the runner has no shell
  *  (`runnerShell` false: Mode 1). On Mode 2 the runner's exec is a shell, and such a definition saves for the runner as
  *  it always did, its tools checked there (runnable.ts); on a Mode 2 region with no exec (`noExec`) there is no shell
- *  for it, Docker answering or not: it names a sandbox computer (noExecIssue). Undefined for one that saves. */
+ *  for a shell tool it names, Docker answering or not: it names a sandbox computer (noExecIssue). One that names no tools
+ *  is saved on Mode 2's runner with none (server.ts defaultToolsAt), so it has no shell tool to refuse. Undefined for one
+ *  that saves. */
 export function noBoxRefusal(tools: readonly unknown[] | undefined, registry: readonly BoxOffer[], flags: ToolFlags, runnerShell: RunnerShell): InputIssue | undefined {
-  if (runnerShell === true || !wantsBox(tools ?? NEW_AGENT_TOOLS, flags)) return undefined;
+  if (runnerShell === true || !wantsBox(tools ?? (runnerShell === false ? NEW_AGENT_TOOLS : []), flags)) return undefined;
   if (runnerShell !== false) return noExecIssue(runnerShell.noExec);
   const fresh = newAgentPlace(registry);
   return "reason" in fresh ? noPlaceIssue(registry) : undefined;

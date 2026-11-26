@@ -3711,7 +3711,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  and would be given Docker's box (no tools named, `toolsUnnamed`, or a shell tool), where this server has none and the
    *  runner has no shell (Mode 1), is refused, naming a box or the runner, never given another box (place.ts
    *  noBoxRefusal). On Mode 2 it saves for the runner, as it always did, except on an Archil region with no serverless
-   *  exec, where it is refused, naming a sandbox computer, Docker answering or not (runnerShellNow). Native,
+   *  exec, where one that names a shell tool is refused, naming a sandbox computer, Docker answering or not
+   *  (runnerShellNow); one that names no tools saves on the runner with none (defaultToolsAt). Native,
    *  CLI-learning and SDK agents run elsewhere. */
   async function noPlaceOf(revision: NewRevision, toolsUnnamed: boolean): Promise<InputIssue | undefined> {
     const body = revision.body as AgenticBody;
