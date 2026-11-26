@@ -449,6 +449,10 @@ const ENCODED_SEEN = /%26|%20/i;
 const ENCODED_SEMI_BREAK = /[&\s]+|%3B/i;
 const ENCODED_SEMI_SEEN = /%3B/i;
 
+/** A pair's value in quotes, raw or written `%22` or `%27` (QUOTED), and a quote opening one (OPEN_QUOTE). */
+const QUOTED = /^(["']|%22|%27)(.*)\1$/;
+const OPEN_QUOTE = /^(?:["']|%22|%27)/;
+
 /** What a credential's value whose part before its first `;` is empty (`;<key>`) holds after that `;`, whole and up to
  *  its next `;`, as a reader that skips an empty part reads it; nothing for any other value. */
 const afterEmpty = (value: string): string[] => {
@@ -458,8 +462,11 @@ const afterEmpty = (value: string): string[] => {
 };
 
 /** The value of each `name=value` pair of `text` split at `breaks` whose name says it is a credential (credentialNamed),
- *  out of any quotes around it, raw or written `%22` or `%27`, as written and decoded. A name is what follows the last
- *  `/`, `?`, `#` or `:` before its `=` (a URL's query or fragment, `https://relay/v1?region=us`, names `region`). A
+ *  out of any quotes around it, raw or written `%22` or `%27`, as written and decoded. A value that opens with a quote
+ *  and has no closing one is taken without that quote too: a read that ends a quoted key at a comma or `%2C` in it
+ *  (`api_key=%22<head>%2C<rest>%22`) gives its head with the quote alone, and a line may quote the head without it. A
+ *  name is what follows the last `/`, `?`, `#` or `:` before its `=` (a URL's query or fragment,
+ *  `https://relay/v1?region=us`, names `region`). A
  *  value whose part before its first `;` is empty, as written or decoded (`token=;<key>` read whole, `token=%3B<key>`),
  *  is taken after that `;` too (afterEmpty). A value of only `=`, `;` and quotes, as written or decoded (a base64 credential's padding read as a
  *  pair, `token=;` before a space, a lone `'` or its `%27`), is not taken: otlpHeaderCut has no length floor, and it
@@ -470,8 +477,11 @@ const pairValues = (text: string, breaks: RegExp): string[] =>
     if (at <= 0) return [];
     const name = pair.slice(0, at).split(/[/?#:]/).at(-1) ?? "";
     if (!credentialNamed(decoded(name) ?? name)) return [];
-    const inner = pair.slice(at + 1).replace(/^(["']|%22|%27)(.*)\1$/, "$2");
-    return [inner, ...afterEmpty(inner)]
+    const written = pair.slice(at + 1);
+    const inner = written.replace(QUOTED, "$2");
+    const unclosed = inner === written ? written.replace(OPEN_QUOTE, "") : inner;
+    return [...new Set([inner, unclosed])]
+      .flatMap((value) => [value, ...afterEmpty(value)])
       .flatMap((value) => [value, decoded(value) ?? value])
       .concat(afterEmpty(decoded(inner) ?? inner))
       .filter((value) => /[^=;"']/.test(value));
