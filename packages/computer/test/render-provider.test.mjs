@@ -632,6 +632,27 @@ test("a create's sweeps by name, its run and epoch known, ask Render for the san
 	assert.deepEqual([...new Set(listings.map(({ url }) => `${url.searchParams.get("name")} ${url.searchParams.get("cursor")}`))], [`${whole} null`], "every sweep asks for the whole name, one page each");
 });
 
+test("a request made already, asked again with another epoch or run, finds its sandbox by the request's name and is refused as exists: no second sandbox", async () => {
+	const dial = dialServer();
+	const daemonPath = fileURLToPath(import.meta.url);
+	const render = fakeRender({ start: (sandbox, script) => bootDial({ ...sandbox.env, AGENTRUN_ATTACH_URL: /AGENTRUN_ATTACH_URL='([^']*)'/.exec(script)[1] }, dial, { daemon: readFileSync(daemonPath) }) });
+	const options = { dial, daemonPath, timeouts: { pollMs: 1, listedStableMs: 0 } };
+	const spec = (run, epoch) => ({ image: BUILD, lifetimeMs: 600_000, network: "none", labels: { "agentrun.run": run, "agentrun.epoch": epoch } });
+	const first = await provider(render, options).create(spec("run-1", "2"), { requestId: "render-asked-again" });
+	assert.equal(first.ok, true, first.ok ? "" : `${first.error.code}: ${first.error.message}`);
+	const live = () => [...render.sandboxes.values()].filter(({ record }) => record.status !== "terminated").map(({ record }) => record.name);
+	for (const [what, run, epoch] of [
+		["another epoch", "run-1", "3"],
+		["another run", "run-2", "2"],
+	]) {
+		// Another server, or this one after a restart: nothing of the first create is in its memory.
+		const again = await provider(restarted(render), options).create(spec(run, epoch), { requestId: "render-asked-again" });
+		assert.equal(again.ok, false, `${what}: refused, never a second sandbox`);
+		assert.equal(again.error.code, "exists", `${what}: ${again.error.message}`);
+		assert.deepEqual(live(), [`${first.value.name}-r${runHash("run-1")}-e2`], `${what}: the first sandbox alone, still running`);
+	}
+});
+
 test("a sweep by name whose run and epoch are known, of a sandbox whose guest can't answer, reads no file: the name proves them", async () => {
 	const render = fakeRender({ answer: (method, path) => (path === "/runs/sync" ? json(200, { stdout: "", stderr: "fork: out of memory", exit_code: 1 }) : undefined) });
 	plant(render, SBX, `${NAME}-r${runHash("run-1")}-e3`, { labels: { ...LABELS, "agentrun.epoch": "3" } });
