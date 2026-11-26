@@ -746,8 +746,19 @@ type View = { readonly text: string; readonly covered: readonly Span[] };
 
 const HEX = only("0123456789abcdefABCDEF");
 const BLANKS = /[\t-\r ]+/y;
-/** A character that renders as nothing (a zero-width space, a soft hyphen, a byte order mark, a variation selector). */
-const IGNORABLE = /\p{Default_Ignorable_Code_Point}+/gu;
+/** Whether a UTF-16 unit is a control character that is no whitespace: U+0000-0008, U+000E-001F, U+007F-009F (a NUL,
+ *  an escape, a delete, a C1 control). It renders as nothing, so the views drop it as they drop whitespace. Tab, line
+ *  feed, vertical tab, form feed and carriage return (U+0009-000D) are whitespace (isSpace) and read as such. */
+const isControl = (code: number): boolean => code <= 0x08 || (code >= 0x0e && code <= 0x1f) || (code >= 0x7f && code <= 0x9f);
+/** What ends each pass of a join (joinOf). Every view keeps it, and no needle holds it, so no held value reads across
+ *  it. It cannot be a NUL, as the views drop control characters wherever they come from (the text, or an escape or an
+ *  encoding that decodes to one), and a separator they dropped would join the passes. U+FFFF is a noncharacter: viewOf
+ *  copies it where it stands, never squeezing it, and squeeze, which every plain and joined needle is made with,
+ *  drops it, while a hex, folded or base64 needle is ASCII. One in the text itself separates there too: it shows. */
+export const SEPARATOR = "￿";
+/** A character that renders as nothing (a zero-width space, a soft hyphen, a byte order mark, a variation selector, a
+ *  control character that is no whitespace: isControl), and SEPARATOR. */
+const IGNORABLE = /[\p{Default_Ignorable_Code_Point}\u0000-\u0008\u000e-\u001f\u007f-\u009f￿]+/gu;
 const GONE = /[\s\p{Default_Ignorable_Code_Point}]+/gu;
 
 /** Combining marks: an accent, a cedilla, an enclosing circle. */
@@ -756,9 +767,11 @@ const MARKS = /\p{M}+/gu;
 /** `text` as a view reads it, and as a held value's needles are read: decomposed (NFKD), its combining marks dropped,
  *  then NFKC, with its whitespace and its characters that render as nothing gone, before (so one between a letter and
  *  its accent hides neither) and after. A held value with a zero-width space or a soft hyphen between its characters
- *  reads as itself; so does one with a combining mark after a letter, which NFKC alone composes into another letter
+ *  reads as itself, and so does one with a control character between them (a NUL, an escape); so does one with a
+ *  combining mark after a letter, which NFKC alone composes into another letter
  *  ("Z" and U+0301 into "Ź"), and one written with a precomposed letter in place of its own ("Ź" for "Z"). A held
- *  value's accents are dropped the same way, so it reads as itself with them or without: more cutting, never less. */
+ *  value's accents are dropped the same way, so it reads as itself with them or without: more cutting, never less.
+ *  SEPARATOR goes too, so no needle holds it (viewOf keeps it, never squeezing it). */
 export const squeeze = (text: string): string => text.replace(IGNORABLE, "").normalize("NFKD").replace(MARKS, "").normalize("NFKC").replace(GONE, "");
 
 /** What a view decodes where its trigger character stands: given the text and that place, the end of what it decoded,
@@ -960,7 +973,7 @@ function familiesOf(text: string): Families {
  *  `quoted`, as `strings`, with a string opened by an apostrophe too and closed by the next one (a Python repr's
  *  {'alice': 'secretpw'}); `again`, the text of each value written in quotes that `quoted` reads, read as `quoted` one
  *  level down, and nothing else (a dict written in a JSON string: a call's arguments); `both`, the `quoted` join then the
- *  `again` join, each as holds builds it once, the first's closing NUL between them. */
+ *  `again` join, each as holds builds it once, the first's closing SEPARATOR between them. */
 type JoinKind = "nested" | "strings" | "quoted" | "again" | "both";
 /** A view the whole-text check reads: the text decoded by `decoders`, then squeezed (viewOf), read only where `when`
  *  says the text holds what a decoder decodes (familiesOf). `special`: where viewOf stops to do more than copy. `join`:
@@ -969,7 +982,7 @@ type ViewSpec = { readonly when: (has: Families) => boolean; readonly decoders: 
 const viewSpec = (when: (has: Families) => boolean, decoders: readonly Decoder[], join?: JoinKind): ViewSpec => ({
   when,
   decoders,
-  special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0080-\\uffff]`, "g"),
+  special: new RegExp(`[\\s${decoders.map((decoder) => `\\${decoder.trigger}`).join("")}\\u0000-\\u0008\\u000e-\\u001f\\u007f-\\uffff]`, "g"),
   ...(join ? { join } : {}),
 });
 /** The views of a text read for each held value, in order:
@@ -1109,7 +1122,7 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
 
 /** `text`'s join of `kind` (JoinKind): its parts (partsOf) read three times over, each time joined, each part followed by a space (gone
  *  from the view, and no escape reads past it): the values and the runs outside strings; the property names; then all
- *  of them. Each pass is closed by a NUL, which the view keeps and no held value holds, so no value reads across two
+ *  of them. Each pass is closed by SEPARATOR, which every view keeps and no needle holds, so no value reads across two
  *  passes. A held value split across two values with a name between them ({"title":"see <H>","snippet":"<R> more"}),
  *  across two names, across a name and its value, across a quote of JSON written in a string, or across a string and
  *  the line after the JSON reads whole in one of them. A view decodes and squeezes the join as any text (viewOf), each
@@ -1149,7 +1162,7 @@ function joinOf(text: string, kind: Exclude<JoinKind, "both">, cuts?: readonly S
       pieces.push(text.slice(part.from, part.to), " ");
       length += part.to - part.from + 1;
     }
-    pieces.push("\u0000");
+    pieces.push(SEPARATOR);
     length++;
   }
   // The join written once.
@@ -1169,7 +1182,9 @@ function bothOf(first: { text: string; cuts?: Span[] }, second: { text: string; 
 /** `text` as the whole-text check reads it: decoded by `spec`'s decoders, then squeezed (squeeze: NFKC, its whitespace
  *  and its characters that render as nothing gone), as a held value's needles are. The squeeze is applied to each
  *  stretch of non-ASCII characters with the ASCII character before it, which gives what it gives over the whole text (an
- *  ASCII character is a starter nothing composes onto), and each character it makes comes from that whole stretch. With `cuts` (merged spans of `text`), the view's
+ *  ASCII character is a starter nothing composes onto), and each character it makes comes from that whole stretch. A
+ *  control character (isControl), as it stands or as a decoder made it, is dropped; SEPARATOR is copied as it stands.
+ *  With `cuts` (merged spans of `text`), the view's
  *  covered stretches: where every character comes from inside one cut. */
 function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
   const out: string[] = [];
@@ -1240,7 +1255,18 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[]): View {
     group = undefined;
   };
   const unit = (char: string, from: number, to: number) => {
-    if (char.charCodeAt(0) >= 128) {
+    const code = char.charCodeAt(0);
+    // A control character, as it stands or decoded, is nothing: dropped before anything is flushed, so the characters
+    // either side of it compose as they would with it gone (as squeeze drops it before NFKD).
+    if (isControl(code)) return;
+    // SEPARATOR is copied as it stands, never squeezed, and nothing composes across it.
+    if (char === SEPARATOR) {
+      flushGroup();
+      flushHeld();
+      emit(char, from, to);
+      return;
+    }
+    if (code >= 128) {
       if (group) {
         group.chars += char;
         group.to = to;

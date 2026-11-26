@@ -257,7 +257,8 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
  *  single-quoted dict through them does) and HTML's character references (named and numeric), so a "+", an encoded
  *  byte, an escape and a reference that decode to whitespace count no more than whitespace does, and any other escape
  *  counts as what the view keeps of the character it decodes to. A character that renders as nothing (a zero-width
- *  space, a soft hyphen) or a combining mark counts as nothing too: the views drop it. So does a quote, an apostrophe
+ *  space, a soft hyphen, a control character that is no whitespace: a NUL, an escape, a delete, as it stands or as
+ *  "\u0001", "\x01", "%01" or "&#1;" decodes) or a combining mark counts as nothing too: the views drop it (kept). So does a quote, an apostrophe
  *  or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join views drop between a text's strings, and, with
  *  `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-", "_", ":", "."), which the fold view
  *  drops. Padding of any of them never hides the rest of a value split before it. Undefined, so the caller withholds
@@ -271,7 +272,7 @@ function peek(text: string, from: number, count: number, fold: boolean): string 
 /** The end of the run text[start, to) the pass reads for the head of a value whose rest comes after the run: as few of
  *  its last characters as hold `count` characters the matcher sees (at most a piece's worth), counted as peek counts
  *  them (with `fold` as peek's), so padding the views read as nothing (whitespace, a zero-width space, a soft hyphen, a
- *  quote or JSON's punctuation, a separator a folded value drops, an escape, a character reference or encoded bytes
+ *  control character, a quote or JSON's punctuation, a separator a folded value drops, an escape, a character reference or encoded bytes
  *  that decode to any of them) between that head and the run's end never pushes the head out of it. Read forward from
  *  a start moved back from `to`, twice as far each time, so it reads at most two pieces in all. Undefined, so the
  *  caller withholds the text, when that takes more than a piece of text. */
@@ -345,8 +346,9 @@ const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
 const JOIN_DROPS = new Set(['"', "'", "{", "}", "[", "]", ",", ":"]);
 /** What the fold view drops: the separators of a hex identifier. */
 const FOLD_DROPS = new Set(["-", "_", ":", "."]);
-/** How many characters the views keep of `chars` at the least (peek): squeezed, less each the join view drops, and,
- *  with `fold`, each the fold view drops. */
+/** How many characters the views keep of `chars` at the least (peek): squeezed (a control character that is no
+ *  whitespace, as the views drop it, counts 0), less each the join view drops, and, with `fold`, each the fold view
+ *  drops. */
 function kept(chars: string, fold: boolean): number {
   let count = 0;
   for (const char of squeeze(chars)) if (!JOIN_DROPS.has(char) && !(fold && FOLD_DROPS.has(char))) count += char.length;

@@ -12,6 +12,7 @@ secretLintProfiler.setEnabled(false);
 import { keyShaped } from "./secret-name.js";
 import { secretValues } from "./api-token.js";
 import { MIN_SECRET, valueMatcher } from "./learn/secrets.js";
+import { SEPARATOR } from "./redact/match.js";
 import { userInfo } from "node:os";
 import { commandReadPath, type Cut, type CutKind, decodedTimes, type Hit, inputSpan, isPlaceholder, KEY_RUN_MAX, lineBounds, lineCount, type LintFind, RESTORABLE, SCRUB_RULES, type ScrubContext, type ScrubRule, shapeOf, type View, viewsOf } from "./secret-rules.js";
 
@@ -405,7 +406,8 @@ function contextOf(view: View, opts: ScrubOptions): ScrubContext {
 /** Whether a cut text holds nothing the scrub must cut: no known format the format rules still find in any view of any
  *  chunk of it (each marker read as a blank, so a marker is never one), and no held value in any form (valueMatcher:
  *  split by whitespace, partly encoded) in the text as written or in any decoding of it, each marker read as a
- *  character no form holds. The time budget holds here too (a throw). */
+ *  character no form holds and every view keeps (SEPARATOR: a NUL would not do, as the views drop control characters).
+ *  The time budget holds here too (a throw). */
 async function clean(rules: readonly ScrubRule[], out: string, opts: ScrubOptions, run: Run): Promise<boolean> {
   const blanked = out.replace(MARKER, (found) => " ".repeat(found.length));
   const formats = rules.filter((rule) => rule.kind === "format");
@@ -421,7 +423,7 @@ async function clean(rules: readonly ScrubRule[], out: string, opts: ScrubOption
   const held = heldOf(opts);
   if (!held.length) return true;
   const matches = valueMatcher(held);
-  for (const view of viewsOf(out.replace(MARKER, "\u0000"))) {
+  for (const view of viewsOf(out.replace(MARKER, SEPARATOR))) {
     if (matches(view.source)) return false;
     inTime(run);
   }
