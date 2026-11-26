@@ -14,6 +14,7 @@ import { setImmediate as macrotask } from "node:timers/promises";
 import { test } from "node:test";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 /** A pi-durable Harness with one root conversation, as far as the adapter's session reads it, whose submissions wait as
  *  pi-durable 1.5.0's do (see above). `read` holds each wait's line read until released. */
@@ -65,7 +66,7 @@ test("a pi turn whose claim's signal aborts while its wait registers ends interr
   t.after(() => process.off("unhandledRejection", onUnhandled));
   const { harness, release, registered, close } = harnessLike();
   const run = { harness, registry: { install: () => {} }, setModels: () => {} };
-  const adapter = piAdapter({ run, model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" } });
+  const adapter = piAdapter({ redact: heldRedactor((text) => text), run, model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" } });
   const claim = new AbortController();
   const events = [];
   const session = await adapter.open(
@@ -95,7 +96,7 @@ test("a pi turn's wait asked after the claim's signal aborted ends interrupted a
   const { harness, release, registered, close } = harnessLike();
   release();
   const run = { harness, registry: { install: () => {} }, setModels: () => {} };
-  const adapter = piAdapter({ run, model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" } });
+  const adapter = piAdapter({ redact: heldRedactor((text) => text), run, model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" } });
   const claim = new AbortController();
   const session = await adapter.open({ key: "root", label: "root", system: [], tools: [], context: "fresh" }, { signal: claim.signal, models: {}, onEvent: () => {} });
   t.after(() => session.close());
@@ -119,7 +120,7 @@ test("a pi turn's wait that settles before any abort answers as before: complete
       commit: async (work) => work({ submissionByRequest: () => undefined }),
     },
   };
-  const adapter = piAdapter({ run, model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" } });
+  const adapter = piAdapter({ redact: heldRedactor((text) => text), run, model: "claude-sonnet-5-5", provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" } });
   const claim = new AbortController();
   const session = await adapter.open({ key: "root", label: "root", system: [], tools: [], context: "fresh" }, { signal: claim.signal, models: {}, onEvent: () => {} });
   t.after(() => session.close());

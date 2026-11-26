@@ -116,7 +116,7 @@ export function personHands(options: {
   /** For tests: the clock the person's time is measured by. */
   now?: () => number;
   /** The run's held values cut from the ask's words, whole, before they are cut to their bound and written. */
-  redact?: (text: string) => string;
+  redact: (text: string) => string;
   /** The person's time on a session that just ended, `seconds` of it, to hold until a charge books it (browser-cost.ts
    *  carry): the up-front holds go as it ends, the time it took stays counted. */
   carry?(tag: string, seconds: number): void;
@@ -489,7 +489,7 @@ export function personHands(options: {
         const hold = { drop: () => release(ask.sessionTag, user) };
         const at = Date.now();
         // Redacted whole, then cut to their bound: a held value the cut would split never leaves its head in the record.
-        const shown = (text: string) => (options.redact ? options.redact(text) : text).slice(0, MAX_TEXT);
+        const shown = (text: string) => options.redact(text).slice(0, MAX_TEXT);
         const record: PendingAsk = { id, tag: ask.sessionTag, instruction: shown(ask.instruction), completion_condition: shown(ask.completionCondition), asked_at: new Date(at).toISOString(), expires_at: new Date(at + holdMs).toISOString() };
         open.set(id, { tag: ask.sessionTag, expiresAt: at + holdMs, drop: () => hold.drop() });
         watch();

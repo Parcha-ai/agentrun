@@ -1,5 +1,6 @@
 // The search step: a search's results sifted under a policy.
 import { clip } from "../page.js";
+import { kindOf } from "../providers/keyed.js";
 import { QUERY_MAX, type Search } from "../search.js";
 import type { Verdict, WebDecider } from "./decider.js";
 import { bounded, byScore, droppedOf, drops, failed, ran, relevanceOf, type Scored, type Sifted, since, skipped, type StepOptions } from "./record.js";
@@ -14,7 +15,7 @@ export type DecidePolicy = "drop" | "label" | "rerank+label";
 const POLICIES: readonly DecidePolicy[] = ["drop", "label", "rerank+label"];
 /** `policy`, "drop" when none is given; any other value throws. */
 export function policyOf(policy: unknown = "drop"): DecidePolicy {
-  if (!POLICIES.includes(policy as DecidePolicy)) throw new RangeError(`the classifier's policy must be "drop", "label" or "rerank+label" (it was ${JSON.stringify(policy)})`);
+  if (!POLICIES.includes(policy as DecidePolicy)) throw new RangeError(`the classifier's policy must be "drop", "label" or "rerank+label" (it was ${kindOf(policy)})`);
   return policy as DecidePolicy;
 }
 

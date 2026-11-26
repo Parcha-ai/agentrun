@@ -506,16 +506,19 @@ export const costStopOverStore = async (store: Store, agentId: string): Promise<
  *  new answer is the agent's, with its digest. Else, for a run its launch offered a learned workflow, its timeline
  *  (runner/learning-end.ts runPathOf, the agent calling the tool itself): `workflow` when its job did only that,
  *  `handed_back` when the agent went on, with the workflow it called last that ran (its call's record,
- *  runner/workflow-calls.ts workflowCallsOf). Any other run's path is `agent`. Both read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's
+ *  runner/workflow-calls.ts workflowCallsOf). Any other run's path is `agent`, one whose learned calls were all refused
+ *  included. Both read the run's rows less its feedback rounds' (withoutFeedbackRounds): a grade's
  *  round never moves the path. `cut` on a hand-back a restart cut (servedOf: the workflow's call ended `interrupted`),
  *  never one the workflow made itself. `entries`: the run's (runEntries), when the caller read them already. */
-export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact?: (text: string) => string, entries?: readonly EntryLike[]): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number; cut?: true }> {
+export async function runPathOverStore(store: Store, runId: string, started: RunLaunch["learning"], redact: (text: string) => string, entries?: readonly EntryLike[]): Promise<{ path: RunPath; workflow: string | null; digest?: string; promotion?: number; cut?: true }> {
   entries ??= await runEntries(store, runId, BACKGROUND_CONTEXT);
   // A platform call refused before it ran anything (at its gate, or by the tool: its record's `refused`) served nothing:
   // the run is classified as the agent's own calls say.
   const calls = workflowCallsOf(entries);
   const served = calls.some((call) => call.caller === "platform" && call.outcome === "refused") ? undefined : servedOf(entries);
-  if (!served && !started?.workflows?.length) return { path: "agent", workflow: null };
+  // A run offered no workflow, or whose every learned call was refused (none ran a node), is the agent's, whatever its
+  // timeline shows of the refused calls (runPathOf reads a call and the agent going on after it as a hand-back).
+  if (!served && (!started?.workflows?.length || (calls.length > 0 && calls.every((call) => call.outcome === "refused")))) return { path: "agent", workflow: null };
   // The path is who wrote the run's final answer, read on the job's own rows: a grade's feedback round asks the agent no
   // turn of the job's, so its words and its rows never change it (withoutFeedbackRounds).
   const rows = withoutFeedbackRounds(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false, caps: { text: Number.POSITIVE_INFINITY } }));
@@ -525,7 +528,7 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
     // The workflow's answer as it produced it (its journal's), and as a follow-up showed it to the agent (cut by the
     // runner's `redact`, adapter-loop.ts servedAnswerText): an agent that says it again leaves the path the workflow's.
     const answer = servedAnswerOf(entries)?.answer ?? "";
-    const alone = served.outcome === "answered" && servedAnswerStands(answer, rows, redact ? redact(answer) : undefined);
+    const alone = served.outcome === "answered" && servedAnswerStands(answer, rows, redact(answer));
     return { path: alone ? "workflow" : "handed_back", workflow: served.workflow, ...(served.digest ? { digest: served.digest } : {}), ...(served.promotion !== undefined ? { promotion: served.promotion } : {}), ...(served.cut ? { cut: true as const } : {}) };
   }
   const path = runPathOf(rows);
@@ -543,7 +546,7 @@ export async function runPathOverStore(store: Store, runId: string, started: Run
  *  classified (runPathOverStore, for a run that learns) and kept with its calls (`workflow_calls`) and why its ending
  *  claim's first choice did or did not serve (`choice`, firstChoice's reason). `redact`: the run's cut, as its
  *  follow-up showed a served answer. */
-export async function runPathMetricsOverStore(store: Store, runId: string, launch: RunLaunch, { redact, choice }: { readonly redact?: (text: string) => string; readonly choice?: FirstReason } = {}): Promise<ReturnType<typeof pathMetrics>> {
+export async function runPathMetricsOverStore(store: Store, runId: string, launch: RunLaunch, { redact, choice }: { readonly redact: (text: string) => string; readonly choice?: FirstReason }): Promise<ReturnType<typeof pathMetrics>> {
   if (!launch.learning && !launch.audit) return {};
   const entries = await runEntries(store, runId, BACKGROUND_CONTEXT);
   const classified = launch.learning ? await runPathOverStore(store, runId, launch.learning, redact, entries) : undefined;

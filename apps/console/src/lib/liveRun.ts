@@ -4,7 +4,8 @@ import { harnessSteers, type MessageFeatures, NO_MESSAGES } from "./runState";
 export type HarnessRead = { state: "loading" } | { state: "read"; id: string | undefined; outputSchema?: Record<string, unknown> } | { state: "failed" };
 
 /** What of the server's capabilities a message offer reads: its message features and each harness's `steer`. */
-export type MessageCaps = { features: { messages: MessageFeatures }; harnesses: { id: string; available?: boolean; steer?: boolean }[] };
+/** `limits.free_model_requests`: the server's free-model request limit a run, which a free run's receipt says. */
+export type MessageCaps = { features: { messages: MessageFeatures }; harnesses: { id: string; available?: boolean; steer?: boolean }[]; limits?: { free_model_requests?: number; [limit: string]: unknown } };
 
 /** What the run page may offer as a message, from the run's harness and the server's capabilities. While the harness is
  *  not known, nothing is offered. Once read, a steer only where that harness steers mid-turn. When the agent could not be
