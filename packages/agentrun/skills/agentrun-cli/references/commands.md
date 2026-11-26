@@ -749,6 +749,12 @@ The model gateway in force: the environment's, the one saved here, or none.
 
 Route: `GET /settings/model-gateway`.
 
+### `agentrun local get-prices`
+
+The prices this server meters computer time and browser time at, with where each comes from.
+
+Route: `GET /settings/prices`.
+
 ### `agentrun local get-suggestion SUGGESTION_ID`
 
 One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it.

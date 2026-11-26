@@ -2271,6 +2271,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "get-prices"
+    ],
+    "operationId": "getPrices",
+    "method": "GET",
+    "path": "/settings/prices",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The prices this server meters computer time and browser time at, with where each comes from"
+  },
+  {
+    "command": [
+      "local",
       "get-suggestion"
     ],
     "operationId": "getSuggestion",
