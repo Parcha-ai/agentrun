@@ -1920,7 +1920,7 @@ test("a run's process on its owner's sign-in (a plan-billed recipe, no key saved
 test("a run's process on its owner's sign-in, its run stopped while queued: a trigger's message that reopens it is written refused in the sign-in's words, claimed once for it and never again on each poll", { skip: linux, timeout: 240_000 }, async (t) => {
   const { RECIPE_TURN_PERSON_ONLY } = await import("../dist/harness-keys.js");
   const { sendCommand } = await import("../dist/runner/commands.js");
-  const { data, file } = await installed(t, (o) => signingIn(o));
+  const { data, file, origin } = await installed(t, (o) => signingIn(o));
   assert.equal((await signIn(file, data)).status, 0);
   await noteChecked(data, file);
   const lines = [];
@@ -1935,11 +1935,19 @@ test("a run's process on its owner's sign-in, its run stopped while queued: a tr
     for (let row = await server.store.runs.get(person.run_id); !(row.state === "stopped" && row.runner === null); row = await server.store.runs.get(person.run_id)) await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal((await server.store.runs.get(person.run_id)).outcome, "stopped");
     const before = (await server.store.runAttempts.forRun(person.run_id)).length;
+    const heard = origin.messages().length;
     const message = await server.store.runs.reopen(person.run_id, { kind: "steer", body: TRIGGER_MESSAGE });
     const { claims, row, run } = await claimsAfterRow(server.store, person.run_id, message.id, before, runner.beats);
     assert.equal(claims, 1, `claimed once for the message, never again: ${claims} claims; the row ${JSON.stringify(row)}; ${lines.join("\n")}`);
     assert.equal(row?.refused, RECIPE_TURN_PERSON_ONLY, JSON.stringify(row));
+    assert.equal(run.runner, null, JSON.stringify(run));
     assert.notEqual(run.state, "running", JSON.stringify(run));
+    // A known gap, not this case's: the reopen's claim sends the launch's own input to the vendor, and the run ends ended
+    // with no outcome, not at the stop it had. Once that is fixed, these hold and the todo comes off.
+    await t.test("the run is back at the end it had, stopped by the person, and no turn reached the vendor", { todo: "a refused reopen of a run stopped while queued still works the launch's input" }, () => {
+      assert.equal(origin.messages().length, heard, "no turn of it reached the vendor");
+      assert.deepEqual([run.state, run.outcome], ["stopped", "stopped"], JSON.stringify(run));
+    });
   } finally {
     await runner();
   }
