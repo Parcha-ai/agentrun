@@ -68,10 +68,11 @@ async function replayStoreOf({ graded = 6, rows: given = [], records = [], newes
     // writes: the claimed run's learning work names it first (learning-work.ts).
     settings: memorySettings(),
     runs: {
-      get: async (id) => rows.get(id),
-      // Newest first, filtered and limited as the store's list is.
-      list: async ({ state, archived, limit } = {}) => [...rows.values()].reverse().map((row) => ({ agentId: "a", outcome: null, importedFrom: null, ...row }))
-        .filter((row) => (state === undefined || row.state === state) && (archived === undefined || ((row.archivedAt ?? null) !== null) === archived)).slice(0, limit),
+      // Each row is agent a's unless it names its own agent, as a given row may.
+      get: async (id) => (rows.has(id) ? { agentId: "a", ...rows.get(id) } : undefined),
+      // Newest first, the agent's own, filtered and limited as the store's list is.
+      list: async ({ agentId, state, archived, limit } = {}) => [...rows.values()].reverse().map((row) => ({ agentId: "a", outcome: null, importedFrom: null, ...row }))
+        .filter((row) => (agentId === undefined || row.agentId === agentId) && (state === undefined || row.state === state) && (archived === undefined || ((row.archivedAt ?? null) !== null) === archived)).slice(0, limit),
       launch: async (id) => (launches.has(id) ? { runId: id, body: launchBody(launches.get(id)), sealed: null } : Promise.reject(new Error(`no run ${id}`))),
       // A run id is the row's key: a second create under it is refused, as the store's primary key does. `raced`: ids
       // another claim creates at the same moment, its row written first.
@@ -242,6 +243,23 @@ test("runs a workflow answered alone are no check input; the agent's own complet
   assert.deepEqual([...record.inputs].sort(), Array.from({ length: 6 }, (_, i) => `graded-${i}`), "every completed run of the agent's own is an input");
   assert.deepEqual([...created].sort(), [...record.runs].sort());
   assert.match(record.replay_id, /^[0-9a-f-]{36}$/, "the reservation mints the replay's id");
+});
+
+// Review on #3914 (tenancy): a check's inputs are the agent's own runs. Its audit hold's disagreeing shadow runs are read
+// by bare id, so one that names another agent's run (a record no write of the agent's makes) never makes that run an input.
+test("an audit hold naming another agent's run never makes it a check input: only the agent's own shadow run is one", async () => {
+  const text = flowOf();
+  const digest = workflowDigest({ workflow: text });
+  const shadow = (id, agentId) => ({ id, agentId, state: "ended", metrics: { path: "agent" }, archivedAt: null, launch: { input: { question: id }, title: id, place: { mode: "runner" }, learning: LEARNING } });
+  const disagreed = (run) => ({ run, served: `served-${run}`, input: run, agent: "the agent's", draft: "the workflow's" });
+  const hold = { workflow: "answer", digest: "d-held", at: new Date(0).toISOString(), decided: "hold", reason: "its audits disagreed with the agent on 2 of 2",
+    audit: { window: 2, disagree: 2, rows: 2, disagreements: [disagreed("audit.own"), disagreed("audit.other")] } };
+  const { learning, logs, gateOf } = await replayStoreOf({ graded: 2, rows: [shadow("audit.own", "a"), shadow("audit.other", "b")], records: [hold] });
+  assert.deepEqual((await promotionsOf(learning, "a")).map((one) => one.digest), ["d-held"], "the audit hold is the agent's record");
+  assert.equal(await gateOf()({ name: "answer", workflow: text }, digest), undefined);
+  const record = (await promotionsOf(learning, "a")).at(-1);
+  assert.equal(record.decided, "replaying", `${JSON.stringify(record)}\n${logs.join("\n")}`);
+  assert.deepEqual([...record.inputs].sort(), ["audit.own", "graded-0", "graded-1"], "the agent's own runs and its own shadow, never another agent's");
 });
 
 // The check's inputs: the agent's last compile_after completed runs (its definition's), newest first, never the claimed
