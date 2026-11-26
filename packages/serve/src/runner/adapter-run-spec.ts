@@ -791,8 +791,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The run's adapter is its runner's (runner/adapters/index.ts RunnerHarness: pi's, or the one a harness module's entry
   // brings), made from the run's launch on its route. Its private files, where it keeps any, go in this claim's folder of
   // the run's scratch (the CLI spec's layout), swept at the claim's end with the earlier claims' and any parent left empty.
-  // pi's own options (its extensions, tools, redactor, the model's catalog entry, hosted search, tiers, and the route's
-  // whole provider) are the harness's own options (`extra`), passed on as given.
+  // The run's one redactor is the launch's (HarnessLaunch.redact). pi's own options (its extensions, tools, the model's
+  // catalog entry, hosted search, tiers, and the route's whole provider) are the harness's own (`extra`), passed on as given.
   const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
   const harnesses = join(scratch, "harness");
   holds.hold({ scratch: { sweep: async () => (await import("./cli-run-spec.js")).sweepScratch(harnesses, claim.epoch, [harnesses, scratch, dirname(scratch)]) } });
@@ -803,12 +803,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(route.price ? { price: route.price as never } : {}),
     sessionsDir: join(harnesses, String(claim.epoch)),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    redact: cut,
   }, {
     // Read when the session opens (pi.ts), so the browser's extension pushed by bindNonHandTools below is in it.
     extensions: native,
     tools: piTools,
     provider: route.provider,
-    redact: cut,
     ...(route.like ? { like: route.like } : {}),
     // The run's web_search is its provider's hosted search (the launch's plane, as its start resolved it): the session's
     // proxy admits that search's one request (it goes through the session's port: buildToolHost's `search`) and books it
