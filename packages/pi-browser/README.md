@@ -373,7 +373,12 @@ as background tasks, which `waitForIdle` skips and closing the harness aborts: b
 releases gets them at the provider all the same: `handle.close()` waits, 30 s at most, for every one no drain since covered.
 A host that stops waiting on a release calls `handle.charge(conversation, ctx)` to book the time known so far: each session
 still open (live, held, or releasing) is billed through now, not final, its `chargedThrough` moved in the same commit, and
-the release's own charge, when it lands, bills only the time after it. A release the store cannot record (a storage error)
+the release's own charge, when it lands, bills only the time after it. A record with no session id yet (its create under
+way, or its answer lost and the session not yet found by its tag) is not charged: its release's charge bills the whole
+session once it is found. A session already charged through now gets no $0 charge. The row `onSession` is told at a
+release is the session as its release confirmed it: a `handle.charge` taken after that confirm and before its commit
+bills past it, and is in the charges (`onCharge`, the bill) but not in that row, whose `spent` is then short of the
+record's by that charge. A release the store cannot record (a storage error)
 is still made at the provider, and the record is left for the next run's reconcile; once the store has failed,
 `handle.close()` releases every session the process still holds, and over a healthy store it releases nothing. At run open,
 after the extensions are installed and

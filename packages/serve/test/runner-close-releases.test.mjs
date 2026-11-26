@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
@@ -113,13 +114,23 @@ const compute = (records) => {
 };
 /** The cuts of the run's release on its root (KINDS.releaseCut). */
 const cutsOf = (records) => records.entries.filter((entry) => entry.kind === "agentrun.release.cut").map((entry) => entry.data);
+/** The model of a run whose own conversation hands the browser to a subagent, whose child opens a session with its
+ *  snapshot and then holds its next request, as holdingOrigin does. */
+function subagentOrigin(requests) {
+  const root = holdingOrigin([{ call: "subagent", args: { prompt: "Browse.", tools: ["browser"] } }], requests);
+  const child = holdingOrigin([{ call: "snapshot" }], requests);
+  return (url, init = {}) => (String(init.body ?? "").includes("You are a subagent.") ? child : root)(url, init);
+}
+
 /** A pi run with the browser (the faux browser, as Browserbase) whose turn is in flight after its snapshot opened a
  *  session, under runner-a of `runnerOptions`; `launch` adds to the run's launch, `env` to the process's for the test.
- *  `again()` starts runner-b, of the same options, on the same store. */
-async function piRun(t, prefix, { runnerOptions = {}, launch = {}, env = {} } = {}) {
+ *  `origin` is its model (the run's own conversation's snapshot, by default), `tools` its agent's, and `ready` how many
+ *  requests have been asked once the snapshot's session is open. `again(name)` starts another runner (runner-b), of the
+ *  same options, on the same store. */
+async function piRun(t, prefix, { runnerOptions = {}, launch = {}, env = {}, origin = (requests) => holdingOrigin([{ call: "snapshot" }], requests), tools = ["browser"], ready = 2 } = {}) {
   const { dir, server, store } = await stores(t, prefix);
   for (const [name, value] of Object.entries(BROWSERBASE)) await putSealedKey(server, SEAL_KEY, name, value);
-  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Browse.", tools: ["browser"] } });
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Browse.", tools } });
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Browse." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, plane: { browser: "browserbase" }, ...launch } });
   await server.flush?.();
   // The vendor's sessions (FAUX_BROWSER_STATE: each live one) and its every call (FAUX_BROWSER_LOG: its releases).
@@ -132,7 +143,7 @@ async function piRun(t, prefix, { runnerOptions = {}, launch = {}, env = {} } = 
     for (const [name, value] of Object.entries(before)) value === undefined ? delete process.env[name] : (process.env[name] = value);
   });
   const requests = [];
-  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: holdingOrigin([{ call: "snapshot" }], requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
+  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: origin(requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const deps = { env: { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
   const start = (name) => {
     const runner = startRunner({
@@ -144,11 +155,11 @@ async function piRun(t, prefix, { runnerOptions = {}, launch = {}, env = {} } = 
   };
   const runner = start("runner-a");
   // The snapshot opened a session, and the turn's next request is in flight.
-  await until(() => requests.length >= 2, "the request after the snapshot is in flight");
+  await until(() => requests.length >= ready, "the request after the snapshot is in flight");
   const live = () => (existsSync(state) ? JSON.parse(readFileSync(state, "utf8")) : []);
   assert.equal(live().length, 1, "the snapshot opened one session");
   const releases = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((row) => row.op === "release") : []);
-  return { dir, server, store, runner, live, releases, requests, again: () => start("runner-b") };
+  return { dir, server, store, runner, live, releases, requests, again: (name = "runner-b") => start(name) };
 }
 
 /** The browser's charges the run's root records (BROWSER_CHARGED), in order. */
@@ -214,8 +225,68 @@ test("pi: a vendor's release that never answers is cut at the release's bound: t
   const left = browserHolds(after);
   for (const held of heldAtClose) assert.ok(!left.some((one) => JSON.stringify(one) === JSON.stringify(held)), `the cut's claim's hold was given back: ${JSON.stringify({ heldAtClose, left })}`);
   assert.equal(releases().length >= 1 && live().length, 0, "the session was let go");
-  assert.ok(final.seconds <= (Date.parse(final.at) - Date.parse(cut.at)) / 1000 + 1, `the release billed only the time after the cut: ${JSON.stringify({ cut, final })}`);
+  // Every second once: the charges add up to the session's time, or to Browserbase's one-minute minimum when that is
+  // more, the release's own charge being the time after the cut and the top-up to the minimum.
+  const all = chargesOf(after);
+  const billedS = Math.round(all.reduce((total, charge) => total + charge.seconds, 0) * 1000) / 1000;
+  const lifeS = (Date.parse(final.at) - Date.parse(all[0].at) + all[0].seconds * 1000) / 1000;
+  assert.ok(billedS === 60 || (billedS > 60 && Math.abs(billedS - lifeS) < 1), `each second billed once: ${JSON.stringify({ billedS, lifeS, all })}`);
+  assert.equal(all.filter((charge) => charge.final).length, 1, "one final charge");
   await next.close();
+});
+
+test("pi: a cut reaches every conversation of the run: a subagent's browser session, its release never answering, is charged through the cut", { timeout: 120_000 }, async (t) => {
+  const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
+  const { server, runner, live } = await piRun(t, "runner-close-subagent-cut-", { runnerOptions: { cleanupMs: CLEANUP_MS }, launch: { max_cost_usd: 1 }, env: { FAUX_BROWSER_RELEASE_HOLD: hold }, origin: subagentOrigin, tools: ["browser", "subagent"], ready: 3 });
+  t.after(() => writeFileSync(hold, ""));
+
+  await runner.close();
+
+  assert.ok(existsSync(`${hold}.asked`), "the vendor was asked to release the subagent's session");
+  const records = await recordsOf(server);
+  assert.equal(cutsOf(records).length, 1, `the release was cut: ${JSON.stringify(cutsOf(records))}`);
+  const charges = chargesOf(records);
+  const asked = statSync(`${hold}.asked`).mtimeMs;
+  const cut = charges.filter((charge) => !charge.final && Date.parse(charge.at) >= asked);
+  assert.equal(cut.length, 1, `the subagent's session was charged through the cut: ${JSON.stringify({ charges, asked: new Date(asked).toISOString() })}`);
+  assert.notEqual(cut[0].conversation, ROOT_CONVERSATION_ID, "its conversation is the subagent's, not the run's own");
+  assert.equal(charges.filter((charge) => charge.conversation === ROOT_CONVERSATION_ID).length, 0, "the run's own conversation opened no session");
+  assert.equal(live().length, 1, "the vendor still holds the session");
+});
+
+test("pi: the reserve a cut's charge holds again on a claim that reopened the session is given back, never booked, when that claim ends before the release's charge lands", { timeout: 180_000 }, async (t) => {
+  // runner-a's close is cut: the session's time to the cut is charged. runner-b reopens the run, holding the session's
+  // reserve from its reopen (its time since the cut and a stretch), and its close is cut too: its charge books that time
+  // and holds the reserve again, at one stretch, owed. runner-c's claim then finds that hold open, with no charge of the
+  // session's release on the ledger yet.
+  const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
+  const { server, runner, again } = await piRun(t, "runner-close-reserve-cut-", { runnerOptions: { cleanupMs: CLEANUP_MS }, launch: { max_cost_usd: 1 }, env: { FAUX_BROWSER_RELEASE_HOLD: hold } });
+  t.after(() => writeFileSync(hold, ""));
+  await runner.close();
+  const second = again("runner-b");
+  await until(async () => (await server.runs.get(RUN)).runner === "runner-b", "runner-b claimed the run");
+  const reopened = await until(async () => {
+    const records = await recordsOf(server);
+    return records.entries.some((entry) => entry.kind === "runner.request" && entry.data?.tool === "browser" && entry.data.hold === true && entry.data.owed === true) && records;
+  }, "runner-b's reopen held the session's reserve");
+  const heldBefore = new Set(reopened.entries.filter((entry) => entry.kind === "runner.request").map((entry) => `${entry.conversationId}:${entry.data.turn}`));
+  await second.close();
+
+  const atClose = await recordsOf(server);
+  assert.equal(cutsOf(atClose).length, 2, `both closes were cut: ${JSON.stringify(cutsOf(atClose))}`);
+  const heldAgain = atClose.entries.filter((entry) => entry.kind === "runner.request" && entry.data?.tool === "browser" && entry.data.hold === true && entry.data.owed === true && !heldBefore.has(`${entry.conversationId}:${entry.data.turn}`));
+  assert.equal(heldAgain.length, 1, `runner-b's cut held the session's reserve again, owed: ${JSON.stringify(heldAgain.map((entry) => entry.data))}`);
+  const key = `${heldAgain[0].conversationId}:${heldAgain[0].data.turn}`;
+  assert.ok(browserHolds(atClose).some((data) => data.turn === heldAgain[0].data.turn), "still held when runner-b's claim ended");
+
+  const third = again("runner-c");
+  await until(async () => (await server.runs.get(RUN)).runner === "runner-c", "runner-c claimed the run");
+  const settled = await until(async () => (await recordsOf(server)).entries.find((entry) => entry.kind === "runner.turn" && `${entry.conversationId}:${entry.data.turn}` === key), "runner-c's reopen settled the hold");
+  assert.deepEqual([settled.data.usd, settled.data.givenBack, settled.data.rule], [0, true, undefined], `given back at $0, not booked: ${JSON.stringify(settled.data)}`);
+  writeFileSync(hold, "");
+  const final = await until(async () => chargesOf(await recordsOf(server)).find((charge) => charge.final), "the release was billed");
+  assert.equal(typeof final.usd, "number");
+  await third.close();
 });
 
 /** A vendor of --faux's desktops: create starts one, connect finds it, delete ends it. */
@@ -377,28 +448,20 @@ test("the close's window runs from its start: a drain, then a release that never
   assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS), releaseBy + window.stopMarginMs);
   const { dir, server, runner } = await cliRun(t, "runner-close-window-", { runnerOptions: window, hooks: (registered) => [...registered, () => new Promise(() => {})] });
   const other = await bystander(t, dir, "runner-b");
-  const holders = [];
-  let watching = true;
-  const watched = (async () => {
-    while (watching) {
-      const row = await server.runs.get(RUN);
-      if (holders.at(-1) !== row.runner) holders.push(row.runner);
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  })();
 
   const began = Date.now();
   await runner.close();
   const took = Date.now() - began;
-  watching = false;
-  await watched;
 
   assert.ok(took >= window.drainMs && took < releaseBy + window.stopMarginMs + 1_500, `the close ended inside its window from its start (${releaseBy + window.stopMarginMs} ms): ${took} ms`);
   const cuts = cutsOf(await recordsOf(server));
   assert.equal(cuts.length, 1, `the release was cut, once: ${JSON.stringify(cuts)}`);
   assert.ok(cuts[0].bound_ms <= releaseBy - window.drainMs + 200, `cut where the window from the close's start ends, not a whole bound after the drain: ${JSON.stringify(cuts[0])}`);
-  assert.deepEqual(other.claims, [], `no other runner claimed the run before close() resolved: ${JSON.stringify(other.claims)}`);
-  assert.ok(!holders.includes("runner-b"), `the run's row named only runner-a while it closed: ${JSON.stringify(holders)}`);
+  // runner-a hands the run back once its loop ends, after the cut: runner-b may claim it then, never before. A claim
+  // before the cut is one taken from a lease runner-a let lapse while it was still closing.
+  const handedBack = began + releaseBy - 200;
+  const early = other.claims.filter((claim) => claim.at < handedBack);
+  assert.deepEqual(early, [], `no other runner claimed the run while runner-a held it (before ${handedBack - began} ms): ${JSON.stringify(other.claims.map((claim) => ({ ...claim, after: claim.at - began })))}`);
 });
 
 test("a lost create's recovery under way when a runner's close begins is waited for: the browser it finds is released before close() resolves", { timeout: 30_000 }, async (t) => {
