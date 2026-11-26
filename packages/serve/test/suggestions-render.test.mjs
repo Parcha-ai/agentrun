@@ -249,8 +249,9 @@ test("no client follows a redirect: a start or a read answered with one is refus
   const python = spawnSync("python3", ["--version"]).status === 0;
   const elsewhere = [];
   const other = createServer((req, res) => {
-    // The client's requests alone, by the path the redirect names: a probe of a new loopback listener asks for / alone.
-    if (req.url.startsWith("/elsewhere/")) elsewhere.push(`${req.method} ${req.url} ${req.headers.authorization ?? "no key"}`);
+    // The client's requests alone, by the path the redirect names (its base URL's /v2 after /elsewhere): a probe of a new
+    // loopback listener asks for / alone, and one that follows the redirect it gets reaches /elsewhere/ alone.
+    if (req.url.startsWith("/elsewhere/v2/")) elsewhere.push(`${req.method} ${req.url} ${req.headers.authorization ?? "no key"}`);
     req.resume();
     req.on("end", () => {
       res.setHeader("content-type", "application/json");
