@@ -1028,10 +1028,17 @@ command (`shell.run`) is held to the agent's `bash` setting, a started process t
 `write`, and a file read, listed or looked up to `read`, after the kind's own setting for `computer_op`. A file op needs
 its tool among the agent's tools first, as the run's own file tools do: `files.write` needs `write`, and `files.read`,
 `files.list` and `files.stat` need `read`. An agent not given one is refused the op whatever its setting says, on every
-desktop, mounted or not, and is not offered it: `computer_op`'s op list and the script's `computer` declarations leave it
-out. Naming a desktop does not grant its file ops. The shell's ops (`shell.run`, `processes.start`) follow `bash`'s
-setting alone, not a grant. Input ops on a desktop with a terminal app can do what a shell does: to deny that, don't
-grant input ops on that desktop, or use an image without a terminal. A script's call of a computer tool answers the
+desktop, mounted or not. Naming a desktop does not grant its file ops. The shell's ops (`shell.run`, `processes.start`)
+follow `bash`'s setting alone, not a grant. An op the gate refuses whatever its arguments is not offered:
+`computer_op`'s op list and the script's `computer` declarations leave out an op whose tool the agent is not given, one
+held to a tool set to deny, one held to a tool set to ask on a server where no one can approve, and one `bash`'s policy
+refuses whatever its command (`processes.start` under the read-only policy). Leaving `read` out
+keeps no file from an agent that has the shell, paired machines included: on a desktop with exec on,
+`computer.shell.run` reads and writes any file the desktop's user can, held to `bash`'s setting alone, which allows by
+default. To keep files from such an agent, set `bash` to deny or turn the desktop's exec off. Input ops on a desktop
+with a terminal app or a GUI file manager, and `apps.open` with a `file://` URL, can do what a shell or the file ops
+do, whatever `bash`'s, `read`'s or `write`'s setting: to deny that, don't grant input ops or apps on that desktop, or
+use an image with neither a terminal nor a file manager. A script's call of a computer tool answers the
 tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
 `computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as
 JSON. A run whose `codemode` is set to deny lists them the same way, so its computer stays in reach. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
@@ -3861,6 +3868,10 @@ serves these routes alone:
 - a run's usage lines (`GET /runs/{id}/usage`): what its `cost.usd` joins, by meter, cut of the host's secrets as the
   run's read is;
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
+- an ended run's share bundle (`GET /runs/{id}/export`, with its `?restore=`), the `agentrun.share/1` document the full
+  server answers, cut by the same scrubber: `409` before the run ends. A workflow run's bundle carries its graph, cut,
+  where `GET /runs/{id}/graph` stays refused. The share preview page (`/share/{run}`) is the console's, refused here:
+  `agentrun share RUN --out FILE` writes the bundle;
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
   the backend whose inline runs made it;

@@ -139,6 +139,9 @@ export type OpenComputerView = (args: {
 export interface ComputerForClaimDeps {
   /** The server's folder mode: 1, a folder of this machine; 2, Archil. */
   readonly mode: 1 | 2;
+  /** In Mode 2, the server's Archil region where it has no serverless exec (archil-settings.ts noExecRegionOf): a run
+   *  with no computer that mounts its folder has no shell there (resolve-computer.ts shellPlaceOf). */
+  readonly noExec: string | undefined;
   /** The computer module's kind registry (or --faux's). */
   readonly kinds: KindRegistry;
   /** The server's seal key: absent, no key is opened, so a provider that needs one is refused in words. */
@@ -1297,7 +1300,7 @@ export async function computerForClaim(
   }
   // A computer every tool of which is set to deny (tool-gate.ts computerDenied) serves the run nothing: none is started,
   // nothing is rented or checked, and the run goes on without it, its timeline saying why.
-  const denied = setting && (await deniedKind(launch, setting, store, runShellOf(setting, deps.mode, kinds)));
+  const denied = setting && (await deniedKind(launch, setting, store, runShellOf(setting, deps.mode, kinds, deps.noExec)));
   if (denied) {
     deps.onComputerNote?.(computerDeniedWords(denied));
     await endKeptNow();

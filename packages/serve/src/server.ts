@@ -80,7 +80,7 @@ import type { DraftDecisions } from "./learn/workflow-draft.js";
 import { purgedRun } from "./purged-workflow.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
-import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, noBoxRefusal, type Place, placesOf, resolvePlace } from "./place.js";
+import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, noBoxRefusal, type Place, placesOf, resolvePlace, type RunnerShell } from "./place.js";
 import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
@@ -249,7 +249,7 @@ import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
-import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, runDiskKept, runDiskKey } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, noExecRegionOf, noExecWords, runDiskKept, runDiskKey } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { runningComputers } from "./computers-running.js";
@@ -1109,16 +1109,20 @@ export function forCaller<T extends { learning: LearningCaps }>(caps: T, ownerSe
 
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
  *  offers: cheap, made again after each key or tool-settings write with the offers the server holds; and `needs` as
- *  needsOf says it for a revision that names no model (null when it runs). `runnerShell`: the sandbox-only tools a run
- *  on the runner has a shell for here (tools.ts shellTools; bash in Mode 2), available with no box. `switched`: the two
- *  start-time switches the server takes as options (switchedOnBy reads them from `env`, as the CLI sets them). */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced, learning_model }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>, isolation: "uid" | "process" = "process", switched: SwitchedOn = switchedOnBy(env)) {
+ *  needsOf says it for a revision that names no model (null when it runs). `runner`: where a revision that names no
+ *  place has its shell (place.ts RunnerShell): on the runner, whose sandbox-only tools (tools.ts shellTools; bash in
+ *  Mode 2) are available with no box; on a Mode 2 region with no serverless exec, nowhere, so they are unavailable,
+ *  saying why, Docker answering or not. `switched`: the two start-time switches the server takes as options
+ *  (switchedOnBy reads them from `env`, as the CLI sets them). */
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced, learning_model }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], refused: Readonly<Record<string, string>> = {}, runner: RunnerShell = false, isolation: "uid" | "process" = "process", switched: SwitchedOn = switchedOnBy(env)) {
+  const runnerShell = runner === true ? shellTools("local") : new Set<string>();
+  const noBox = typeof runner === "object" ? `${noExecWords(runner.noExec)}, so a run with no computer has no shell, and the docker box can't mount Archil: give the agent a sandbox computer (a box), or leave bash out of its tools` : noBoxReason(boxes, enabledBoxes(env));
   const models = { ...modelSource(env), ready: needs === null, needs, priced };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
   // The browser's key is its vendor's row: Kernel's where Kernel is picked or resolved (tool-plane.ts browserKeyRow).
   const keyFor = (tool: { name: string; provider?: string; resolves?: Record<string, string> }) => (tool.name === "browser" ? browserKeyRow(tool.provider, tool.resolves?.[DEFAULT_HARNESS]) : keyOf(tool.name));
-  const tools = toolsView(env, toolSettings, noBoxReason(boxes, enabledBoxes(env)), refused, runnerShell).map((tool) => (keyFor(tool) ? { ...tool, key: keyFor(tool) } : tool));
+  const tools = toolsView(env, toolSettings, noBox, refused, runnerShell).map((tool) => (keyFor(tool) ? { ...tool, key: keyFor(tool) } : tool));
   const browser = tools.find((tool) => tool.name === "browser");
   return {
     backend: "local",
@@ -1138,7 +1142,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     harnesses: harnesses.map(({ keys: _keys, noModelRuns, ...offer }) => ({ ...offer, available: offer.available && !noModelRuns, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory, env)) })),
     /** The places a revision may name (`definition.place`), this host's default (null where a new agent must name one),
      *  and whether this server has each box. */
-    places: placesOf(boxes, boxAllowOf(env), !!runnerShell?.size),
+    places: placesOf(boxes, boxAllowOf(env), runner),
     models,
     learning_model,
     /** `pending`: a workflow draft with a call no price covers is kept to wait for its owner's OK, served to no run;
@@ -1731,7 +1735,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The start-time switches as this server was started: its options, else the CLI's variables. mcpLoopback is the
   // option alone, as everywhere it is read here (localInstall): the CLI sets it from AGENTRUN_MCP_ALLOW_LOOPBACK.
   const switched: SwitchedOn = { mcpLoopback: options.mcpLoopback === true, webhookPrivateTargets: switchedOnBy(process.env, options).webhookPrivateTargets, apiOnlyMcpOrigins };
-  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
+  const compose = (runner: RunnerShell = false) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runner, isolation, switched));
   const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
@@ -2098,7 +2102,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const computersOf = (): ComputerRoutes => (computerRoutes ??= createComputerRoutes({
     // A provider's key set where the server starts is one of its secrets, held off process.env (secrets.ts): read by name
     // from what the server was started with, as computerReady below reads it.
-    store, sealKey, tools: kindTools, mode: folderModeOf(store, process.env), env: withSecrets(process.env, "own"),
+    store, sealKey, tools: kindTools, mode: folderModeOf(store, process.env), noExec: () => noExecNow(), env: withSecrets(process.env, "own"),
     // Each with its route (who holds it, on which runner, and why a route was refused), and online while relayed.
     paired: { rows: () => store.pairedComputers.list(), viewOf: async (row, serves, runsRefused) => pairedView(row, attachHub, serves, runsRefused, await readRoute(store.settings, row.id), attach.relayedTo(row.id) !== undefined) },
     runnerApart: options.runnerApart === true,
@@ -2125,6 +2129,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  provider's program is on this machine is hostWhy's, read at the start. */
   /** The server's folder mode now: 2 when the owner's Archil settings are saved (the run's folder on the disk), else 1. */
   const modeNow = async (): Promise<1 | 2> => ((await folderModeOf(store, process.env)()) === "disk" ? 2 : 1);
+  /** In Mode 2, this server's Archil region now where it has no serverless exec (archil-settings.ts noExecRegionOf), read
+   *  as the claim reads it (the environment's settings, else the saved ones); else undefined. */
+  const noExecNow = async (): Promise<string | undefined> => noExecRegionOf(await loadArchilSettings(store, process.env));
   /** The registry a run's claim resolves against (claimKinds), as its runner composes it. */
   const claimRegistry = () => claimKinds(options.faux ? { faux: fauxOf() } : {});
   /** A key as the runner reads it: the secrets this process was started with (withSecrets "own"), else the saved one. */
@@ -2140,18 +2147,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   /** Where a run of an agent with computer `setting` has its shell here now (resolve-computer.ts runShellOf, in the
    *  folder mode of now, over the registry the claim reads): what runnable.ts lets a sandbox-only tool on the runner by,
-   *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec. */
+   *  and capabilities show bash by. In Mode 2 a run with no computer has bash on Archil's serverless exec, where the
+   *  server's Archil region has it (noExecNow). */
   const shellOf = async (setting: { kind: string; provider?: string; image?: string }) =>
-    runShellOf(setting, await modeNow(), await registryHere(setting.provider === undefined ? claimRegistry() : withPaired(claimRegistry(), await store.pairedComputers.list()), runnerKeys()));
+    runShellOf(setting, await modeNow(), await registryHere(setting.provider === undefined ? claimRegistry() : withPaired(claimRegistry(), await store.pairedComputers.list()), runnerKeys()), await noExecNow());
+  /** Where a revision that names no place has a shell now, besides a box (place.ts RunnerShell): on the runner where a
+   *  run with no computer has one here (shellOf); else, in Mode 2 on a region with no exec, nowhere (Docker's box can't
+   *  mount Archil), naming the region; else (Mode 1) in Docker's box. */
+  const runnerShellNow = async (): Promise<RunnerShell> => {
+    if ((await shellOf({ kind: "none" })) === "local") return true;
+    const noExec = await noExecNow();
+    return noExec === undefined ? false : { noExec };
+  };
   /** The shell this server can give a template's agent now (templates.ts pickComputer's `shell`), by the rules a run
    *  has it by (shellOf): Archil's serverless exec on the runner in Mode 2 (bash alone); else the box a new agent is saved
    *  with (Docker), where it answers now (computerReady asks the daemon, not the start's offers: a Docker stopped since
    *  is no shell), whose shell runs the shell tools; else none, and why. A package that needs programs (`sandbox`) asks
    *  for a sandbox alone, whose box a run checks for them: Archil's exec is none, so in Mode 2 it is told why no sandbox
-   *  answers (the Docker box can't mount Archil's workspaces), never given the exec. */
+   *  answers (the Docker box can't mount Archil's workspaces), never given the exec. In Mode 2 on a region with no
+   *  serverless exec there is neither: none, saying why and the fix. */
   const shellHere = async (wants: { sandbox?: boolean } = {}): Promise<ShellHere> => {
     const exec = (await shellOf({ kind: "none" })) === "local";
     if (exec && !wants.sandbox) return { computer: { kind: "none" }, tools: [...shellTools("local")], words: "Archil's serverless exec" };
+    const noExec = exec ? undefined : await noExecNow();
+    if (noExec !== undefined) return { none: `this server has no shell to give an agent now: ${noExecWords(noExec)}, and the docker box can't mount Archil`, fix: "Give the agent a sandbox computer (a box) to run bash, or leave bash out of its tools." };
     const fresh = newAgentPlace(boxOffers);
     let why = "why" in fresh ? fresh.why : "it is not set up";
     if ("place" in fresh && fresh.place.mode === "sandbox") {
@@ -3570,7 +3589,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const owed = options.runKeys ? keysOwed(revision, env, carried) : [];
     if (owed.length) throw keysOwedRefusal(owed);
     // Claude Code's login on this machine is a runner place's alone: a sandbox run is checked for a key, as it runs.
-    const blockers = await blockersOf(withCarried(envAtPlace(env, shape.place), carried), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
+    const blockers = await blockersOf(withCarried(envAtPlace(env, shape.place), carried), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, noExec: await noExecNow(), offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
     if (!blockers.length) return;
     // An agent refused for its model in a box while its harness runs on the login at the runner, on a model the login
     // runs: the words say so, and how to run it there (details.login_on_runner, the console's offer to move it). Its
@@ -3604,8 +3623,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** Where a revision of `kind` naming `tools` and no place runs here: the place a new agent would be saved with, in the
-   *  folder mode of now (Mode 2, where the runner's shell is Archil's exec: the runner, never Docker's box). */
-  const fallbackPlace = async (kind: "agentic" | "workflow", tools: readonly unknown[]): Promise<Place> => defaultPlaceOf(kind, tools, boxOffers, toolOf, (await modeNow()) === 2);
+   *  folder mode of now (Mode 2: the runner, never Docker's box, which can't mount Archil; on a region with no exec its
+   *  shell tools are refused there, runnerShellNow). */
+  const fallbackPlace = async (kind: "agentic" | "workflow", tools: readonly unknown[]): Promise<Place> => defaultPlaceOf(kind, tools, boxOffers, toolOf, await runnerShellNow());
 
   /** What a save of `revision` pins of the MCP tools it grants (an agentic revision's: a workflow's nodes bind none): each
    *  granted server listed once, now, with its saved credential (McpServersOverStore.pinListing), as `tools` each server's
@@ -3707,14 +3727,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const listing = await mcpListingOf(revision, previous?.mcpPin);
     const mcp = listing.tools;
     const { monid, warnings: usage = [] } = (await monidPinOf(revision, previous)) ?? {};
-    const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { boxes: boxOffers, computerReady, shellOf, offers, mcp, monid });
+    const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { boxes: boxOffers, computerReady, shellOf, noExec: await noExecNow(), offers, mcp, monid });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
     // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
     if ((body.maxCostUsd ?? 0) > 0) {
       const key = (b: Blocker) => `${b.field}\n${b.message}`;
-      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, computerReady, shellOf, offers, mcp, monid })).map(key));
-      const capped = await blockersOf(env, shape, {}, { capped: true, capUsd: body.maxCostUsd, boxes: boxOffers, computerReady, shellOf, offers, mcp, monid, decisionPrice });
+      const plain = new Set((await blockersOf(env, shape, {}, { boxes: boxOffers, computerReady, shellOf, noExec: await noExecNow(), offers, mcp, monid })).map(key));
+      const capped = await blockersOf(env, shape, {}, { capped: true, capUsd: body.maxCostUsd, boxes: boxOffers, computerReady, shellOf, noExec: await noExecNow(), offers, mcp, monid, decisionPrice });
       // A model with no price (`unpriced`) is a setting this host fixes (AGENT_MODEL_PRICE): a warning, as it is; the
       // agent saves and updates, and only a run under the cap is refused (409). So is a cap below what the model needs for
       // one more step and an answer (`short`): the agent saves, and its runs wrap up at their first tool call. A tool's
@@ -3738,12 +3758,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (planTemplate) both make, so a plan never says a create the apply refuses: an agentic revision that names no place
    *  and would be given Docker's box (no tools named, `toolsUnnamed`, or a shell tool), where this server has none and the
    *  runner has no shell (Mode 1), is refused, naming a box or the runner, never given another box (place.ts
-   *  noBoxRefusal). On Mode 2 it saves for the runner, as it always did. Native, CLI-learning and SDK agents run elsewhere. */
+   *  noBoxRefusal). On Mode 2 it saves for the runner, as it always did, except on an Archil region with no serverless
+   *  exec, where one that names a shell tool is refused, naming a sandbox computer, Docker answering or not
+   *  (runnerShellNow); one that names no tools saves on the runner with none (defaultToolsAt). Native,
+   *  CLI-learning and SDK agents run elsewhere. */
   async function noPlaceOf(revision: NewRevision, toolsUnnamed: boolean): Promise<InputIssue | undefined> {
     const body = revision.body as AgenticBody;
     if (revision.kind !== "agentic" || nativeOf(body) || cliLearningOf(body) || sdkOf(body)) return undefined;
     if (body.place !== undefined || body.computer !== undefined) return undefined;
-    return noBoxRefusal(toolsUnnamed ? undefined : body.tools ?? [], boxOffers, toolOf, (await shellOf({ kind: "none" })) === "local");
+    return noBoxRefusal(toolsUnnamed ? undefined : body.tools ?? [], boxOffers, toolOf, await runnerShellNow());
   }
 
   /** An agentic `revision`'s monid pin (monid.ts pinMonid) and a warning per endpoint priced by usage; a grant that
@@ -5160,12 +5183,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (found.name === "getCapabilities") {
       // features.computers: the computer kinds this server offers now (computers.ts), read at each answer, since turning
       // Archil on or off, or saving a key, changes them. So does a shell on the runner (bash on Archil's serverless exec
-      // in Mode 2): where there is one, the document is made again with it (cheap), its tools available with no box.
-      const runnerShell = shellTools(await shellOf({ kind: "none" }));
+      // in Mode 2): where there is one, the document is made again with it (cheap), its tools available with no box; and
+      // so does a Mode 2 region with no exec, where there is none and Docker's box is no default (runnerShellNow).
+      const runner = await runnerShellNow();
       await planNow();
       await ollamaNow();
       await loginNow();
-      const answer = forCaller(runnerShell.size ? compose(runnerShell) : caps, byOwnerSession(req));
+      const answer = forCaller(runner !== false ? compose(runner) : caps, byOwnerSession(req));
       // features.triggers.public_url: whether Composio (or any sender) has a public address to reach, never the address.
       // runner_refused: why no runner here can take a run, in their words, while every runner there refused to claim
       // (runner/presence.ts); null while one can, or none is there yet.
@@ -7505,7 +7529,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     tokenMade: stored?.made ?? false,
     ...(setupUrl ? { setupUrl, setupOpen: openSetup } : {}),
     ...(consoleSessions ? { launchCode: consoleSessions.code } : {}),
-    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env), (await shellOf({ kind: "none" })) === "local"),
+    boxesLine: boxesLine(boxOffers, enabledBoxes(env), boxAllow, boxesByDefault(env), await runnerShellNow()),
     attachHub,
     beside,
     dial: { ...(options.publicUrl ? { url: options.publicUrl.replace(/\/+$/, "") } : {}), tokens: attach.machineTokens, hub: attachHub },
