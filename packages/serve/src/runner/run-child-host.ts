@@ -1310,6 +1310,8 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
   };
   return {
     start(claim) {
+      // However its start ends, a throw before its process is up among them (a store read, the server's settings, its
+      // keys), a command or stop handed over waits no longer: it finds no channel and says so.
       return (started ??= (async (): Promise<LoopEnd> => {
         const runRow = await deps.store.runs.get(claim.runId);
         if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
@@ -1499,7 +1501,7 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
           await hold?.settle();
           await letGo(slot, reaped, claim.runId);
         }
-      })());
+      })().finally(() => ready()));
     },
     async command(command: Command): Promise<CommandOutcome> {
       // A row handed over before the run's process is up waits for it (never `later`: an approve that comes as the claim
