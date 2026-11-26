@@ -1043,8 +1043,10 @@ const VIEWS: readonly ViewSpec[] = [
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
 
 /** A stretch of a text the join view reads: a string's contents (a property name's, `name`), or a run of characters
- *  outside any string (a number, a word, a line after the JSON). */
-type Part = { from: number; to: number; name: boolean };
+ *  outside any string (a number, a word, a line after the JSON). `joins`: a run that is one "+", or one "\" (Python's
+ *  line continuation), between two strings with nothing but whitespace and such runs around it, the operator that
+ *  joins them in code (`"ab" + "cd+ef"`). */
+type Part = { from: number; to: number; name: boolean; joins?: boolean };
 
 /** JSON's punctuation between its values. */
 const STRUCTURE = only("{}[],:");
@@ -1079,20 +1081,36 @@ function unitAt(text: string, at: number, to: number, level: 0 | 1): { char: str
  *  and in the whitespace after a string looking for a ":"). */
 function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], kind: JoinKind = "nested", written?: Span[]): void {
   let bare = -1;
+  // The run's one character ("" once it has two), whether the last part added here is a string (or an operator after
+  // one), and the operators after it that a string will make `joins` (any other run, or JSON's punctuation, ends them).
+  let lone = "";
+  let string = false;
+  let operators: Part[] = [];
   const endBare = (end: number) => {
-    if (bare >= 0) out.push({ from: bare, to: end, name: false });
+    if (bare >= 0) {
+      const part: Part = { from: bare, to: end, name: false };
+      out.push(part);
+      if (string && (lone === "+" || lone === "\\")) operators.push(part);
+      else [string, operators] = [false, []];
+    }
     bare = -1;
   };
   for (let at = from; at < to; ) {
     const { char, end } = unitAt(text, at, to, level);
     const code = char.charCodeAt(0);
     if (char !== '"' && !(kind === "quoted" && char === "'")) {
-      if (isSpace(code) || STRUCTURE(code)) endBare(at);
-      else if (bare < 0) bare = at;
+      if (isSpace(code)) endBare(at);
+      else if (STRUCTURE(code)) {
+        endBare(at);
+        [string, operators] = [false, []];
+      } else if (bare < 0) [bare, lone] = [at, char];
+      else lone = "";
       at = end;
       continue;
     }
     endBare(at);
+    const before = operators;
+    [string, operators] = [true, []];
     // The string: to its closing quote, each escape (a "\" and the character after it) passed over whole.
     let close = end;
     while (close < to) {
@@ -1112,6 +1130,8 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
       }
       ahead = unit.end;
     }
+    // The operators before it join two values; before a name, none.
+    if (next !== ":") for (const operator of before) operator.joins = true;
     if (next === ":") out.push({ from: end, to: close, name: true });
     else if (level === 0 && kind === "nested") partsOf(text, end, close, 1, out);
     else {
@@ -1144,7 +1164,9 @@ function joinOf(text: string, kind: Exclude<JoinKind, "both">, cuts?: readonly S
   const pieces: string[] = [];
   const moved: Span[] = [];
   let length = 0;
-  const passes: readonly ((part: Part) => boolean)[] = [(part) => !part.name, (part) => part.name, () => true];
+  // The values' pass leaves out the operators that join two strings, so a held value split across them reads whole with
+  // its own "+"; the pass over all of them reads them as they stand.
+  const passes: readonly ((part: Part) => boolean)[] = [(part) => !part.name && !part.joins, (part) => part.name, () => true];
   for (const pass of passes) {
     let cut = 0;
     for (const part of parts) {
