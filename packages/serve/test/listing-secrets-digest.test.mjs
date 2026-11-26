@@ -22,16 +22,19 @@ async function listedUnder(t, title, held) {
 }
 
 const cases = [
-  { why: "two values that differ only in a lone surrogate", built: [`${KEY}\ud800`], now: [`${KEY}\ud801`], shown: `${KEY}\ud801` },
-  { why: "two reversed pairs (a low surrogate before a high)", built: [`${KEY}\udc00\ud800`], now: [`${KEY}\udfff\udbff`], shown: `${KEY}\udfff\udbff` },
+  // A lone surrogate shows as a box at most and the views drop it, so the first set reads as KEY and already cuts the
+  // other's value: its digest still differs, and the listing is still built again under the other set.
+  { why: "two values that differ only in a lone surrogate", built: [`${KEY}\ud800`], now: [`${KEY}\ud801`], shown: `${KEY}\ud801`, cutByBoth: true },
+  { why: "two reversed pairs (a low surrogate before a high)", built: [`${KEY}\udc00\ud800`], now: [`${KEY}\udfff\udbff`], shown: `${KEY}\udfff\udbff`, cutByBoth: true },
   // The two values sorted and joined by a NUL, as one value: the old digest's own input for the pair.
   { why: "one value holding a NUL against the two it joins", built: [[KEY, LATER].sort().join("\0")], now: [KEY, LATER], shown: KEY },
 ];
 
-for (const { why, built, now, shown } of cases) {
+for (const { why, built, now, shown, cutByBoth = false } of cases) {
   test(`a listing cut of one set is cut again under another: ${why}`, async (t) => {
     const listing = await listedUnder(t, `say ${shown} now`, built);
-    assert.ok(String(listing.item.title).includes(shown), "built under the first set, which does not hold it, the title shows it");
+    if (cutByBoth) assert.ok(!String(listing.item.title).includes(KEY), "built under the first set, which reads as the same value, the title is cut");
+    else assert.ok(String(listing.item.title).includes(shown), "built under the first set, which does not hold it, the title shows it");
     assert.equal(builtOfNow(listing, built), true, "under the set it was cut of, it is current");
     assert.equal(builtOfNow(listing, [...built, ...built].reverse()), true, "the same set in another order, a value twice: the same digest");
     const item = listedItem(listing, ORIGIN, null, now);
