@@ -227,7 +227,7 @@ describe("AgentPage overview and run workspace", () => {
     expect(page.fact("Live jobs")?.textContent).toBe("0");
   });
 
-  it.each([
+  it.each<[string, Partial<Agent["definition"]>]>([
     ["native", { native: { runtime: "claude-code", project: "/workspace/app", selector: { kind: "project" }, machine_id: "workstation", version: null, model: null, fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, capabilities: { launch: true, learning: false, workflows: false, approval: "native", usage: true } } satisfies NativeBinding }],
     ["SDK", { sdk: { runtime: "external", platform: "OpenClaw" } }],
   ])("a %s agent's empty state still points to Run agent and its two destinations", async (_kind, binding) => {

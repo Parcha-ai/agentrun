@@ -22,31 +22,34 @@ function card(a: Agent, archived = false) {
   return { host, actions, labelled: (label: string) => actions.querySelector<HTMLElement>(`[aria-label="${label}"]`) };
 }
 
+// jsdom follows a link's fragment in a task after the click, as a browser queues a navigation: wait for that task.
+const follow = async (link: HTMLElement) => { await act(async () => { link.click(); await new Promise((done) => setTimeout(done, 0)); }); };
+
 describe("an agent card's Run and Edit", () => {
-  it("for an agent this server runs, Run opens its page, where the Run box is, with no coding-agent menu", () => {
+  it("for an agent this server runs, Run opens its page, where the Run box is, with no coding-agent menu", async () => {
     const c = card(agent);
     const run = c.labelled("Run Hello")!;
     expect(run.tagName).toBe("A");
     expect(run.querySelector("svg.lucide-play")).not.toBeNull();
     expect(c.labelled("Choose coding agent for Run Hello")).toBeNull();
     expect(c.labelled("Run Hello options")).toBeNull();
-    act(() => run.click());
+    await follow(run);
     expect(location.hash).toBe("#/agents/hello");
     expect(document.querySelector('[role="menu"]')).toBeNull();
   });
 
-  it("for an agent this server runs, Edit opens its settings in the console, with no coding-agent menu", () => {
+  it("for an agent this server runs, Edit opens its settings in the console, with no coding-agent menu", async () => {
     const c = card(agent);
     const edit = c.labelled("Edit Hello")!;
     expect(edit.tagName).toBe("A");
     expect(edit.querySelector("svg.lucide-pencil")).not.toBeNull();
     expect(c.labelled("Choose coding agent for Edit Hello")).toBeNull();
-    act(() => edit.click());
+    await follow(edit);
     expect(location.hash).toBe("#/agents/hello/settings");
     expect(document.querySelector('[role="menu"]')).toBeNull();
   });
 
-  it.each([
+  it.each<[string, Partial<Agent["definition"]>]>([
     ["native", { native }],
     ["SDK", { sdk: { runtime: "external", platform: "OpenClaw" } }],
     ["CLI learning", { cli_learning: { runtime: "codex", connection_id: "connection-a", project: "/workspace/shop" } }],
