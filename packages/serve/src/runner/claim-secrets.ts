@@ -193,7 +193,8 @@ export async function hostDecisionKeys(deps: ClaimSecretsDeps, providers: readon
  *  sign-in is given for the host's models of `tiers`, as before (a revision's own model on the plan reaches the sign-in
  *  through its claim: claimSecrets reachesPlan). */
 export async function tierModelKeys(deps: ClaimSecretsDeps, tiers: readonly Tier[], refs: Readonly<Partial<Record<Tier, string>>> = {}): Promise<NodeJS.ProcessEnv> {
-  if (!tiers.length) return {};
+  // On a --faux runner every tier's model is the faux model (model.ts chooseModel), which sends no key: none is read.
+  if (!tiers.length || deps.env?.[FAUX_ENV]) return {};
   // A run's own process holds no seal key: its runner reads them, the plan's reader with them (held.ts).
   const at = deps.sealKey ? undefined : held();
   if (at) {
