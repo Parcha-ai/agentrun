@@ -130,6 +130,9 @@ const CONTROL_PADS = [
   ["raw U+0001 to U+001F and DEL", Array.from({ length: 300 }, (_, i) => String.fromCharCode([1, 8, 14, 27, 31, 127][i % 6])).join(""), "json"],
   ["JSON's \\u0001", String.raw`\u0001`.repeat(300), "json"],
   ["Python's \\x01", String.raw`\x01`.repeat(250), "python"],
+  // U+FFFF, a noncharacter, shows as a box at most: the views drop it in the text (only a join's own separator is one).
+  ["raw U+FFFF", "\uffff".repeat(300), "json"],
+  ["JSON's \\uffff", String.raw`\uffff`.repeat(300), "json"],
 ];
 const wrapped = (kind, body) => (kind === "python" ? `{'a': '${body}'}` : `{"a": "${body}"}`);
 

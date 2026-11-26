@@ -105,6 +105,18 @@ test("held: a marker the cut leaves between two halves of a held value still sep
   assert.deepEqual(await scrub(`printed ${head}\u0000${rest} end`, { mode: "cut", held: [HELD] }), { ok: false, counts: {} });
 });
 
+test("held: U+FFFF in the imported text is no marker: between two halves of a held value, as it stands or escaped, the final check reads the value and the scrub fails closed", async () => {
+  // Only the marker the cut leaves separates in the final check; a U+FFFF the text brought is nothing there, as it
+  // shows as a box at most and a reader reads the value through it.
+  const [head, rest] = [HELD.slice(0, 14), HELD.slice(14)];
+  assert.deepEqual(await scrub(`printed ${head}\uffff${rest} end`, { mode: "cut", held: [HELD] }), { ok: false, counts: {} });
+  assert.deepEqual(await scrub(`{"t":"printed ${head}\\uffff${rest} end"}`, { mode: "cut", held: [HELD] }), { ok: false, counts: {} });
+  // Control: a marker between the halves still separates them with a U+FFFF elsewhere in the text.
+  const other = ["Zq8V", "bN3x", "LmT6", "pR2w"].join("");
+  const out = await cutOf(`printed ${head}${other}${rest} end \uffff`, [HELD, other]);
+  assert.equal(out.text, `printed ${head}[redacted:held-value]${rest} end \uffff`);
+});
+
 test("held: a value left in the text in a form the pass cannot cut in place fails closed", async () => {
   // Partly percent-encoded: valueMatcher's decoded view sees it, no held form stands in place (a split by a blank is
   // cut whole since ruling XIV).

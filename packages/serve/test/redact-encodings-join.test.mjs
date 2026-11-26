@@ -107,6 +107,19 @@ test("the joins' separators still separate where the views drop control characte
   assert.equal(withheldWhole(`{'a': 'abcd\\x00efgh'}`, ["abcdefgh"]), true);
 });
 
+test("only a join's own separator separates: U+FFFF in a part's text, as it stands or escaped, is nothing, and the passes and the two quoted joins stay apart", () => {
+  for (const sep of ["\uffff", "\\uffff"]) {
+    // Inside one part, U+FFFF hides no held value.
+    for (const text of [`{"x":"abcd${sep}efgh"}`, `{"x":"{'a': 'abcd${sep}efgh'}"}`, `abcd${sep}efgh`]) assert.equal(withheldWhole(text, ["abcdefgh"]), true, text);
+    // At a part's edge it joins nothing across a seam: each pass, and the quoted and the again joins, stay apart.
+    for (const [text, value] of [
+      [`{"don't":"${sep}abcd${sep}","x":"${sep}efgh${sep}"}`, "efghabcd"],
+      [`{"x":"{'a': '${sep}efgh${sep}'} ${sep}abcd${sep}"}`, "abcdefgh"],
+      [`{"abcd":"x","y":"z ${sep}efgh${sep}"}`, "efghabcd"],
+    ]) assert.equal(withheldWhole(text, [value]), false, text);
+  }
+});
+
 test("a dict in a call's arguments with no Python escape is read through both levels of JSON's: \\\\t between a held value's halves", () => {
   // The source of a dict with a tab written "\t", in a JSON string: "\\t" on the wire, a tab two levels down. withheldWhole
   // reads the text as JSON only, never each argument string by itself.

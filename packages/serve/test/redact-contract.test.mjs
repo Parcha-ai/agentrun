@@ -798,6 +798,60 @@ const CASES = [
       exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
     }));
   })(),
+  // U+FFFF, a noncharacter, shows as a box at most, so a reader still reads a held value split by one: as it stands, in
+  // a JSON string (JSON.stringify keeps it as it is; once, and twice: JSON in JSON), as JSON's \uffff escape in prose
+  // and in a JSON string, percent-encoded (its UTF-8 bytes), as an HTML character reference, and between each of the
+  // value's characters, it withholds the text. Only the separator a join puts between its passes separates (match.ts
+  // SEPARATOR). A text with U+FFFF and no held value shows as it came; so does one with U+FFFF after a held value's head
+  // and no rest; and a held value whole beside U+FFFF, or two finds with U+FFFF between them, in prose or in JSON
+  // strings, is cut in place, the U+FFFF kept where it stood.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const N = "\uffff";
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    return [
+      ["as it stands", `x ${H}${N}${R} y`],
+      ["in a JSON string as JSON.stringify writes it", JSON.stringify({ note: `see ${H}${N}${R} more` })],
+      ["in JSON written in a JSON string", JSON.stringify({ out: JSON.stringify({ note: `see ${H}${N}${R} more` }) })],
+      ["as JSON's \\u escape in prose", `x ${H}${B}uffff${R} y`],
+      ["as JSON's \\u escape in a JSON string", `{"note":"see ${H}${B}uFFFF${R} more"}`],
+      ["percent-encoded", `x ${H}%EF%BF%BF${R} y`],
+      ["as an HTML character reference", `x ${H}&#xffff;${R} y`],
+      ["as a decimal HTML character reference", `x ${H}&#65535;${R} y`],
+      ["between each of its characters", `v=${[...H, ...R].join(N)} ok`],
+      ["in one of a dict's values written in a JSON string", JSON.stringify({ args: `{'a': 'see ${H}${N}${R} more'}` })],
+    ].map(([what, text]) => ({ name: `a held value split by U+FFFF, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
+  ...(() => {
+    const [H] = P24;
+    const N = "\uffff";
+    return [
+      ["U+FFFF between words and no held value", `a${N}b c${N}${N}d end`],
+      ["U+FFFF after a held value's head with no rest after it", `x ${H}${N}zzzzzzzz y`],
+      ["U+FFFF after a held value's head with no rest after it, in a JSON string", JSON.stringify({ note: `see ${H}${N}zzzzzzzz more` })],
+    ].map(([what, text]) => ({
+      name: `a text with ${what} shows as it came (control)`,
+      text,
+      values: [P24.join("")],
+      hides: [],
+      exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
+    }));
+  })(),
+  ...(() => {
+    const V = P24.join("");
+    const N = "\uffff";
+    return [
+      ["in prose", `see ${V}${N}${V} and a${N}b`, `see [redacted]${N}[redacted] and a${N}b`],
+      ["in JSON strings", `{"a":"${V}${N}${V}","b":"${N}${V}"}`, `{"a":"[redacted]${N}[redacted]","b":"${N}[redacted]"}`],
+    ].map(([what, text, out]) => ({
+      name: `a held value whole beside U+FFFF, ${what}, is cut in place and the U+FFFF kept (control)`,
+      text,
+      values: [V],
+      hides: [P24[0].slice(0, 8), P24[1].slice(0, 8)],
+      exact: { redacted: out, redactedAnswer: out, redactSecrets: out, runFile: out },
+    }));
+  })(),
   // The #3626 review's escaped splits, each a named guard: a held value split by one of JSON's one-character escapes
   // written as its two characters ("\n", "\t", "\""), a held value written as JSON's \u escapes twice (JSON in JSON),
   // and one split by a zero-width space or a soft hyphen, as it is or escaped. Each withholds the text.
@@ -1081,6 +1135,9 @@ const adversarial = (size) => {
     // Control characters the views drop, as they stand, between letters, escaped (JSON's, twice, Python's in a
     // single-quoted dict), percent-encoded, as character references, and inside JSON strings.
     f("\u0000"), f("a\u0001"), f("\u007f\u0085"), f(`${B}u0000`), f(`${B}${B}u001f`), f(`'a${B}x01`), f("%00%C2%85"), f("&#1;&#x7f;"), f('"a\u0000",'),
+    // U+FFFF, which the views drop in the text and keep only as a join's separator: as it stands, between letters and
+    // inside JSON strings, escaped, percent-encoded, as a reference.
+    f("\uffff"), f("a\uffff"), f('"a\uffff",'), f(`${B}uffff`), f("%EF%BF%BF"), f("&#xffff;"),
   ];
   return [
     ...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })),
@@ -1100,6 +1157,8 @@ const adversarial = (size) => {
     // A held value found every 9 characters with a control between each two finds: the views drop it, so they read the
     // finds glued together, each still cut in place.
     { text: f(`${DENSE}\u0000`), values: [DENSE] },
+    { text: f(`${DENSE}\uffff`), values: [DENSE] },
+    { text: f(`"${DENSE}\uffff",`), values: [DENSE] },
     { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
     { text: f(`${RSA_PEM}\n`), values: [RSA_PEM] },
     { text: f(`${RSA_PEM.split("\n").slice(1, -1).reverse().join("\n")}\n`), values: [RSA_PEM] },
