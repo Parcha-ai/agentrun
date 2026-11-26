@@ -62,12 +62,12 @@ function freeWords(reason: FreeReason, freeRequests: number | undefined): string
  *  nothing left out of it. `cost.free` speaks of model requests only, so a run that also used computer or browser time,
  *  or tool calls, that nothing priced or booked is no free run: a line with no figure (`usd` null, `basis` unpriced:
  *  computer time no price was set for, or a paid computer's time no claim booked), MCP calls no price meters
- *  (`not_metered_calls`), or model requests none meters (`unmetered_requests`). A computer that bills nothing (Docker)
- *  is $0 for all its time, booked or not, so its `unheld_quantity` is no charge. */
+ *  (`not_metered_calls`), or model requests none meters (`unmetered_requests`), or computer time no claim held
+ *  (`unheld_quantity`; the server reads it 0 for a computer that bills nothing, Docker, whose time is $0 held or not). */
 export function usageAllFree(usage: Pick<RunUsage, "lines" | "total"> | undefined): boolean {
   if (!usage || usage.total?.usd !== 0 || (usage.total.unpriced ?? 0) > 0) return false;
   return (usage.lines ?? []).every((line: UsageLine) => line.usd === 0 && line.basis !== "unpriced" && !(line.unpriced ?? 0)
-    && !(line.not_metered_calls ?? 0) && !(line.unmetered_requests ?? 0));
+    && !(line.not_metered_calls ?? 0) && !(line.unmetered_requests ?? 0) && !(line.unheld_quantity ?? 0));
 }
 
 /** The receipt's facts from the run, its usage (the model, its requests and tokens, every attempt's line summed) and its
