@@ -74,6 +74,14 @@ for (const docker of [true, false]) {
     assert.deepEqual([fromTemplate.place, fromTemplate.computer, fromTemplate.tools], [undefined, undefined, []], JSON.stringify(fromTemplate));
   });
 
+  test(`Mode 2 on gcp-us-central1, ${label}: a new agent with several shell tools and no computer is refused once at definition.computer, not once per tool`, async (t) => {
+    const api = await server(t, { region: "gcp-us-central1", docker });
+    const made = await api("POST", "/agents", fresh("gcp-shells", ["read", "bash", "bash_background", "bash_output"]));
+    assert.equal(made.status, 422, JSON.stringify(made.body));
+    assert.deepEqual(made.body.error.fields.map((one) => one.field), ["definition.computer"], JSON.stringify(made.body.error.fields));
+    assert.match(made.body.error.fields[0].message, NO_EXEC);
+  });
+
   test(`Mode 2 on gcp-us-central1, ${label}: an agent that names no computer and bash on the runner is refused for bash, in words that name the region and a sandbox computer`, async (t) => {
     const api = await server(t, { region: "gcp-us-central1", docker });
     for (const setting of [{ computer: { kind: "none" } }, { place: { mode: "runner" } }]) {

@@ -16,6 +16,7 @@ import * as place from "../dist/place.js";
 import * as resolve from "../dist/workspace/resolve-computer.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
+import { blockersOf } from "../dist/runnable.js";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
 const GCP = "gcp-us-central1";
@@ -120,4 +121,16 @@ test("the start's Boxes line says a new agent with bash names a sandbox computer
   }
   assert.equal(place.boxesLine(docker, new Set(), "none", true, true), "Boxes: docker (on by default; set AGENTRUN_BOXES to change). New agents run on the runner: Mode 2 keeps workspaces on Archil, which the docker box can't mount.");
   assert.equal(place.boxesLine(noDocker, new Set(), "none", true, true), "Boxes: none, so new agents run on the runner. Docker isn't running on this machine.");
+});
+
+test("a run's check on a no-exec region: an agent saved with several shell tools and no place or computer is refused once at definition.computer, not once per tool", async () => {
+  // As a run of it resolves (server.ts runnable): no place named, so the runner (defaultPlaceOf), `unnamed`.
+  const shape = { kind: "agentic", instructions: "Answer.", tools: ["read", "bash", "bash_background", "bash_output"], place: { mode: "runner" }, unnamed: true };
+  for (const boxes of [docker, noDocker]) {
+    const blockers = await blockersOf({}, shape, {}, { boxes, offers: [{ id: "pi", available: true }], shellOf: async () => "none", noExec: GCP });
+    const computer = blockers.filter((one) => one.field === "definition.computer");
+    assert.equal(computer.length, 1, JSON.stringify(computer));
+    assert.match(computer[0].message, /gcp-us-central1 has no serverless exec/);
+    assert.deepEqual(blockers.filter((one) => one.field.startsWith("definition.tools")), [], "no tool refused on its own beside it");
+  }
 });
