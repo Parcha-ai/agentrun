@@ -615,10 +615,16 @@ by its rectangle), so a longer one ends the connection before anything is alloca
   desktop files of `$XDG_DATA_HOME/applications` and each of `$XDG_DATA_DIRS` (default `~/.local/share`, then
   `/usr/local/share` and `/usr/share`), as the Desktop Entry spec says: the apps there are, by their desktop file ids
   (`org.xfce.mousepad`), with their names; hidden and `NoDisplay` entries, and a `TryExec` that is not there, are left
-  out. Its `foreground` is the app of the window manager's active window, else of the top window. `apps.launch({ id,
-  url? })` takes an id, a name (`Mousepad`) or a program (`mousepad`), starts the entry's `Exec` (`url` in its `%u`/`%f`
-  field; an entry with none refuses a `url` as `invalid`) as `process.start` does with orphans `keep`, with `DISPLAY`,
-  and answers `{}` once a new window of the app shows, raised and focused (through the window manager's
+  out. So is an app whose desktop file computerd's own user could change: the user owns the file or a folder above it,
+  or the mode bits let it write one (a sticky folder only where it owns what is in it), or computerd runs as root. An
+  app runs what its desktop file says, so such a file, written through `files`, would run any command with exec off:
+  `apps.launch` and `apps.terminate` refuse such an app as `denied`, naming the file and why. Its `foreground` is the
+  app of the window manager's active window, else of the top window. `apps.launch({ id, url? })` takes an id, a name
+  (`Mousepad`) or a program (`mousepad`), starts the entry's `Exec` (`url` in its `%u`/`%f` field; an entry with none
+  refuses a `url` as `invalid`; a `url` is an absolute URL with a scheme, `https://…` or `file:///…`, or an absolute
+  path, `/…`, and anything else, such as a leading `-` or a relative path, is refused `invalid` and nothing starts; the
+  surface refuses a leading `-` itself, before the call leaves it) as `process.start` does with orphans `keep`, with
+  `DISPLAY`, and answers `{}` once a new window of the app shows, raised and focused (through the window manager's
   `_NET_ACTIVE_WINDOW` when one runs, waiting up to 2 s for it to be the active window), so keys typed right after
   reach it; none within 10 s is `timeout`, "no window within 10 s", and the app runs on. An
   app already running with a window is brought to the front and answers at once, unless a `url` is given. A

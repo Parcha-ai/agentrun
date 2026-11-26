@@ -1037,8 +1037,8 @@ read-only policy). Apps and raw input are held to no tool, so they stay in the l
 keeps no file from an agent that has the shell, paired machines included: on a desktop with exec on,
 `computer.shell.run` reads and writes any file the desktop's user can, held to `bash`'s setting alone, which allows by
 default. To keep files from such an agent, set `bash` to deny or turn the desktop's exec off. Input ops on a desktop
-with a terminal app or a GUI file manager, and `apps.open` with a URL or a path, can do what a shell or the file ops
-do, whatever `bash`'s, `read`'s or `write`'s setting: to deny that, don't grant input ops or apps on that desktop, or
+with a terminal app or a GUI file manager, and `apps.open` with a URL or a path, including a file the agent wrote
+where `write` is granted, can do what a shell or the file ops do, whatever `bash`'s, `read`'s or `write`'s setting: to deny that, don't grant input ops or apps on that desktop, or
 use an image with neither a terminal nor a file manager. A script's call of a computer tool answers the
 tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
 `computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as

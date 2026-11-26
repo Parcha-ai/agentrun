@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-computer, @parcha/agentrun-kernel, @parcha/agentrun-serve
+kind: fix
+---
+On a Linux desktop, `apps.list` leaves out, and `apps.launch` and `apps.terminate` refuse as `denied` naming the file and why, an app whose desktop file computerd's own user could change: the user owns the file or a folder above it (`~/.local/share/applications` among them), the mode bits let it write one, or computerd runs as root. An app runs what its desktop file says, so before, an agent given `write` and the apps group, with bash denied and exec off, could write a desktop file there and `apps.launch` it, or shadow a system app's id, and run any command. Apps installed under the user's home, as on a paired machine's `~/.local/share/applications`, are no longer listed, and a computerd that runs as root lists none.
+
+The surface's `apps.open` (a script's `computer.apps.open`) refuses a `url` that starts with `-`, after leading whitespace too, as `invalid` before the call leaves it, in computerd's words, so a paired Linux machine on an older computerd doesn't hand it to the app as a flag. The computer README and `AppsLaunchParams.url`'s comment say what a `url` is on Linux. The words every offer of a computer's ops carries (`GUI_REACH`) and the desktop kind skill say that `apps.open` with a path reaches what a shell does for a file the agent wrote too, where `write` is granted.

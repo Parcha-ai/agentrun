@@ -672,7 +672,11 @@ export interface AppsInstallParams {
 export interface AppsLaunchParams {
 	/** A bundle id or a package name: "com.apple.Notes", "com.android.settings". */
 	id: string;
-	/** Open this in the app: a deep link, or a page in a browser. */
+	/**
+	 * Open this in the app: a deep link, or a page in a browser. On Linux, an absolute URL with a scheme (https://…,
+	 * file:///…) or an absolute path (/…); anything else, such as a leading "-" or a relative path, is refused `invalid`
+	 * and nothing starts.
+	 */
 	url?: string;
 	/** Open it without bringing it to the front (feature apps.background). Without the feature, refused as `unsupported`. */
 	background?: boolean;

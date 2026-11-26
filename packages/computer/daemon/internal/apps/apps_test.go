@@ -231,7 +231,8 @@ func setup(t *testing.T, window time.Duration) *world {
 	d := desktop.New(display)
 	t.Cleanup(d.Close)
 	table := process.NewTable(process.Options{})
-	handlers := Handlers(d, table, Options{Dirs: []string{dir}, Window: window})
+	// The test wrote the apps' desktop files, so they are held out of reach of a stranger, not of the test's own user.
+	handlers := Handlers(d, table, Options{Dirs: []string{dir}, Window: window, Writer: &stranger})
 	conn, err := x11.Dial(display)
 	if err != nil {
 		t.Fatal(err)

@@ -13,12 +13,13 @@ import (
 )
 
 // Entry is one app a desktop file describes (the freedesktop.org Desktop Entry Specification 1.5): its desktop file id,
-// its name, the command line that opens it, and the window class its windows have when it says so.
+// its name, the command line that opens it, the window class its windows have when it says so, and the desktop file.
 type Entry struct {
 	ID      string
 	Name    string
 	Exec    string
 	WMClass string
+	Path    string
 }
 
 // ApplicationDirs is where desktop files are, first first (XDG Base Directory Specification): $XDG_DATA_HOME, else
@@ -64,7 +65,7 @@ func Entries(dirs []string) []Entry {
 			}
 			seen[id] = true
 			if e, ok := readEntry(path); ok {
-				e.ID = id
+				e.ID, e.Path = id, path
 				out = append(out, e)
 			}
 			return nil
