@@ -122,9 +122,9 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 
 /** A desktop's or a phone's computer as a codemode script gets it bound (runner/meta-tools.ts): its card, the agent's
  *  own (no exec or processes group where its exec is off: `exec` false then, which a script's reach for computer.shell
- *  is told), and the ops its declarations leave out, which the run's gate refuses for a tool the agent is not given
- *  (`opsNotGiven`, set by the run's spec: RunGate.opsNotGiven). */
-export type ScriptComputer = { readonly card: Card; readonly exec?: false; readonly opsNotGiven?: readonly string[] };
+ *  is told), and the ops its declarations leave out, which the run's gate refuses whatever their arguments
+ *  (`opsRefused`, set by the run's spec: RunGate.opsRefused). */
+export type ScriptComputer = { readonly card: Card; readonly exec?: false; readonly opsRefused?: readonly string[] };
 
 /** A desktop's or a phone's port, over its surface, the kind whose tools the run gets, its groups, and its computer as a
  *  script gets it bound; none for any other computer. Its shell gets the run's bash policy (`shell`). */
@@ -260,17 +260,17 @@ const SAYS_PATH: ReadonlySet<string> = new Set(["write", "edit"]);
  * the agent's surface "code" a desktop's or a phone's step tools, are deferred: bound for a script's nested calls
  * (codemode's `computer` and `tools.<name>`), never listed to the model (scriptsOnly). Unless `writes` (the run's gate
  * lets it write a file: RunGate.writeBar, read by the spec), computer_screenshot offers no save_as, which the gate would
- * refuse; computer_op offers none of the ops in `opsNotGiven` (the gate refuses them for a tool the agent is not given:
- * RunGate.opsNotGiven).
+ * refuse; computer_op offers none of the ops in `opsRefused` (the gate refuses them whatever their arguments:
+ * RunGate.opsRefused).
  */
-export function bindTools(run: RunHands, registry: RunRegistry, names: readonly string[], options: { readonly results?: ToolResults; readonly writes?: boolean; readonly opsNotGiven?: readonly string[] } = {}): HostTool[] {
+export function bindTools(run: RunHands, registry: RunRegistry, names: readonly string[], options: { readonly results?: ToolResults; readonly writes?: boolean; readonly opsRefused?: readonly string[] } = {}): HostTool[] {
   const defs = new Map(registry.list().map((def) => [def.name, def] as const));
   const works = [...new Set(run.names.flatMap((name) => [name, realOf(name)]))];
   const brought: ReadonlySet<string> = new Set(COMPUTER_TOOLS);
   return names.flatMap((name): HostTool[] => {
     const listed = defs.get(name);
     if (!listed) return [];
-    const def = name === "computer_screenshot" && options.writes !== true ? unsavedScreenshot(listed) : name === COMPUTER_OP_TOOL && options.opsNotGiven?.length ? withoutOps(listed, options.opsNotGiven) : listed;
+    const def = name === "computer_screenshot" && options.writes !== true ? unsavedScreenshot(listed) : name === COMPUTER_OP_TOOL && options.opsRefused?.length ? withoutOps(listed, options.opsRefused) : listed;
     return [{
       name: def.name,
       description: def.description,
@@ -323,8 +323,8 @@ export type RunTools = {
   readonly apart?: { readonly kind: "desktop" | "phone"; readonly screenshot: boolean };
   /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each call through the
    *  run's gate decided before its intent, each answer kept in `results`; `writes`, the gate lets the run write a file, so
-   *  computer_screenshot offers save_as; `opsNotGiven`, the ops computer_op leaves out (bindTools). */
-  hostTools(names: readonly string[], options?: { readonly results?: ToolResults; readonly writes?: boolean; readonly opsNotGiven?: readonly string[] }): HostTool[];
+   *  computer_screenshot offers save_as; `opsRefused`, the ops computer_op leaves out (bindTools). */
+  hostTools(names: readonly string[], options?: { readonly results?: ToolResults; readonly writes?: boolean; readonly opsRefused?: readonly string[] }): HostTool[];
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
    *  no computer), then bash's full outputs and TMPDIR swept. */
   end(): Promise<void>;
