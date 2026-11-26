@@ -41,6 +41,8 @@ const UNKNOWN_READS = 5;
 /** Passes of the sweep after a claim answered Unanswered: the commit may still be on its way when the first read comes back
  *  empty, so the read is repeated, waiting twice as long each time, before the lease is left to settle it. */
 const UNKNOWN_SWEEPS = 4;
+/** The longest wait one timer takes (a 32-bit signed count of ms): a longer one fires at once. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
 
 /** Most runs a runner holds at once, unless told (RunnerOptions.loops). */
 /** A final run's status as its end line says it: the store holds a cancel as state 'stopped' with outcome 'cancelled', so
@@ -280,6 +282,10 @@ interface Held {
   mib: number;
   /** A learning child's deadline (ms), read from its launch at its claim; undefined for any other run. */
   learningDeadline?: number;
+  /** Aborted at that deadline: its loop's request gate sends no model request after it (LoopDeps.pastDeadline). */
+  pastDeadline?: AbortController;
+  /** The timer that cancels it at that deadline (armLearningDeadline). */
+  learningTimer?: NodeJS.Timeout;
   /** Its cancel at that deadline is written (or being written): never twice. */
   overdue?: boolean;
 }
@@ -870,6 +876,7 @@ export function startRunner(options: RunnerOptions): Runner {
     const stoppedBefore = held.stopping;
     held.ending = true;
     clock.clearTimeout(held.deadline);
+    clearTimeout(held.learningTimer);
     const { claim } = held;
     // The runner's own end of the run, once its write lands: the claim is renewed until then (renewAll), no further.
     const landed = () => {
@@ -999,10 +1006,12 @@ export function startRunner(options: RunnerOptions): Runner {
   };
 
   /** Holds `claim` and starts its loop. `learningDeadline`: a learning child's deadline, read at its claim
-   *  (learningDeadlinesOf), at which the runner cancels it if still at work (endOverdue). */
+   *  (learningDeadlinesOf), at which its loop sends no model request more and the runner cancels it if still at work
+   *  (cancelOverdue). */
   const hold = (claim: Claim, sentAt: number, mib = 0, learningDeadline?: number) => {
     const fence = { lost: false };
     const abort = new AbortController();
+    const pastDeadline = learningDeadline === undefined ? undefined : new AbortController();
     let firstDelivered!: () => void;
     const delivered = new Promise<void>((resolve) => (firstDelivered = resolve));
     // Set below, once held is made: the loop's end commit lands only after start(), well after.
@@ -1016,6 +1025,7 @@ export function startRunner(options: RunnerOptions): Runner {
       journal: (forClaim) => fenced(store.journal(forClaim), fence, forClaim.runId, () => ending()),
       flush: () => store.flush(),
       signal: abort.signal,
+      ...(pastDeadline ? { pastDeadline: pastDeadline.signal } : {}),
       delivered,
       // A delivery under way first (its rows are the loop's already), then one more read of the run's new rows.
       deliverNow: async () => {
@@ -1025,16 +1035,18 @@ export function startRunner(options: RunnerOptions): Runner {
       },
       redact,
     });
-    const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib, ...(learningDeadline !== undefined ? { learningDeadline } : {}) };
+    const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib, ...(learningDeadline !== undefined && pastDeadline ? { learningDeadline, pastDeadline } : {}) };
     heldNow = held;
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
     ending = () => {
       held.ending = true;
       held.landed = true;
       clock.clearTimeout(held.deadline);
+      clearTimeout(held.learningTimer);
     };
     runs.set(claim.runId, held);
     armDeadline(held, deadlineOf(claim, sentAt));
+    armLearningDeadline(held);
     emit({ type: "claimed", claim });
     void announceStart(claim);
     held.done = (async () => {
@@ -1302,23 +1314,46 @@ export function startRunner(options: RunnerOptions): Runner {
       return { unread: message(error) };
     }
   };
-  /** Each held learning child at its deadline on the learning clock is cancelled as a person's cancel is (a cancel row,
-   *  its loop's ordinary stop: its spend booked once at its end, its copy of a key erased by that end's write). Serve has
-   *  no run deadline, so this is what bounds a learning child's spend on its run's key (learning_work.deadline_at). */
-  const endOverdue = () => {
+  /** Held learning child `held` at its deadline on the learning clock: its loop sends no model request more (its
+   *  pastDeadline signal, which its request gate reads before each), and it is cancelled as a person's cancel is (a cancel
+   *  row, its loop's ordinary stop: its spend booked once at its end, its copy of a key erased by that end's write), that
+   *  row handed to its loop at once, never at the next command tick. Serve has no run deadline, so this is what bounds a
+   *  learning child's spend on its run's key (learning_work.deadline_at). A cancel not written is tried again at the next
+   *  poll (endOverdue); its gate stays shut meanwhile. */
+  const cancelOverdue = (held: Held) => {
+    if (held.overdue || held.ending || held.fence.lost) return;
+    held.overdue = true;
+    held.pastDeadline?.abort();
+    emit({ type: "learning-deadline", runId: held.claim.runId });
     if (!store.command) return;
-    const at = learningClock();
-    for (const held of runs.values()) {
-      if (held.learningDeadline === undefined || held.overdue || held.ending || held.fence.lost || at < held.learningDeadline) continue;
-      held.overdue = true;
-      emit({ type: "learning-deadline", runId: held.claim.runId });
-      void sendCommand(store as CommandSink, held.claim.runId, { kind: "cancel", body: {} }).catch((error: unknown) => {
+    void sendCommand(store as CommandSink, held.claim.runId, { kind: "cancel", body: {} }).then(
+      () => {
+        if (held.sealed || !delivering()) return;
+        if (held.delivering) held.deliverAgain = true;
+        else void deliver(held);
+      },
+      (error: unknown) => {
         // Final already: it ended on its own.
         if (error instanceof RunFinal) return;
         held.overdue = false;
         emit({ type: "error", runId: held.claim.runId, step: "learning deadline", message: message(error) });
-      });
-    }
+      },
+    );
+  };
+  /** Held learning child `held`'s deadline, on the learning clock: cancelOverdue at it, by a timer on its own (re-armed
+   *  while the deadline is past a timer's longest wait), so neither waits for a poll. */
+  const armLearningDeadline = (held: Held) => {
+    if (held.learningDeadline === undefined || held.ending || held.sealed) return;
+    const wait = held.learningDeadline - learningClock();
+    if (wait <= 0) return cancelOverdue(held);
+    // Unref'd: a runner killed with the child held (a crash) leaves nothing that keeps its process up.
+    held.learningTimer = setTimeout(() => armLearningDeadline(held), Math.min(wait, MAX_TIMER_MS)).unref();
+  };
+  /** Every held learning child at its deadline on the learning clock (cancelOverdue), swept at each poll: the timer's
+   *  backstop, and a cancel that was not written tried again. */
+  const endOverdue = () => {
+    const at = learningClock();
+    for (const held of runs.values()) if (held.learningDeadline !== undefined && at >= held.learningDeadline) cancelOverdue(held);
   };
   const poll = () => {
     if (closed || killed) return;

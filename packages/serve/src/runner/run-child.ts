@@ -37,6 +37,8 @@ interface ChildInit {
   readonly claim: Claim;
   readonly data: string;
   readonly signal: AbortSignal;
+  /** A learning child's deadline (LoopDeps.pastDeadline), aborted by its runner. */
+  readonly pastDeadline?: AbortSignal;
   readonly where?: unknown;
   readonly mcpLoopback?: true;
   readonly mcpOwn?: readonly string[];
@@ -247,6 +249,7 @@ channel.expose("loop", async (method, args) => {
         journal: () => journal,
         flush: () => channel.call("runner", "flush", []) as Promise<void>,
         signal: init.signal,
+        ...(init.pastDeadline ? { pastDeadline: init.pastDeadline } : {}),
         delivered: (channel.call("runner", "delivered", []) as Promise<void>).catch(() => undefined),
         deliverNow: () => channel.call("runner", "deliverNow", []) as Promise<void>,
         live: (reader) => void (read = reader),

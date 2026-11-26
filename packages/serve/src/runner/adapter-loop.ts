@@ -325,6 +325,9 @@ type TurnEnd = Awaited<ReturnType<AdapterSession["turnEnd"]>>;
 /** What a CLI's request held at a cut turn (TurnCut) is refused with: the turn ended at the person's question. */
 const TURN_CUT_AT_QUESTION = "the turn ended at its question to the person";
 
+/** What a learning child's request after its deadline (LoopDeps.pastDeadline) is refused with, once its cancel stopped it. */
+const PAST_LEARNING_DEADLINE = "this learning run reached its deadline: nothing more is sent";
+
 /** What a run that waits on no one (AdapterRunSpec.neverWaits) would have waited on, by its park's cause: its end says so. */
 const WAITS_ON: Readonly<Record<ParkCause, string>> = {
   approval: "a person's approval of a tool call",
@@ -2016,6 +2019,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           return { ...pending, refuse: text, figures };
         };
         const beforeRequest: BeforeRequest = async (request) => {
+          // A learning child past its deadline (LoopDeps.pastDeadline) sends nothing more on its run's key: the request
+          // waits here, unsent, for the cancel its runner hands the loop at that deadline, and leaves refused at that stop.
+          if (deps.pastDeadline?.aborted) {
+            const stop = AbortSignal.any([deps.signal, stopAbort.signal]);
+            if (!stop.aborted) await new Promise<void>((resolve) => stop.addEventListener("abort", () => resolve(), { once: true }));
+            return { refuse: PAST_LEARNING_DEADLINE, forGood: true };
+          }
           // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
           // whatever else would pause it (a paid call's refusal, pendingPause). One a paid call stopped for good
           // (paid-calls.ts stopRun) ends in that call's words, which say why, past its cap too.

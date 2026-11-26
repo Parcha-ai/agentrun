@@ -1444,6 +1444,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           const reach = await mcpReachOf(deps);
           const init = {
             claim, data: deps.data, signal: loopDeps.signal, where: deps.store.where, ...(traced ? { traced: true } : {}),
+            // A learning child's deadline, its abort posted across (run-channel.ts) to the process's request gate.
+            ...(loopDeps.pastDeadline ? { pastDeadline: loopDeps.pastDeadline } : {}),
             ...(reach.loopback ? { mcpLoopback: true, mcpOwn: reach.own ?? [] } : {}),
             ...(deps.githubApi ? { githubApi: deps.githubApi } : {}),
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),
