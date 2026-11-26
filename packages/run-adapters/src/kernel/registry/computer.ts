@@ -61,8 +61,8 @@ export const unsavedScreenshot = <T extends { readonly description: string; read
   ({ ...def, description: SCREENSHOT_ALONE, parameters: COMPUTER_TOOL_SCHEMAS.computer_screenshot });
 
 /** `given` as a path in the run's folder a screenshot is saved to (relative, inside it, ending .png), normalized; any
- *  other is refused in words. */
-function savePathOf(given: unknown): string {
+ *  other is refused in words. Exported so a host's gate holds a save_as as it is saved, not by a reading of its own. */
+export function savePathOf(given: unknown): string {
   if (typeof given !== "string" || given === "" || posix.isAbsolute(given) || given.includes("\\")) throw new Error(`save_as is a path relative to the run's folder (shots/home.png): not ${JSON.stringify(given)}`);
   const path = posix.normalize(given);
   if (path === ".." || path.startsWith("../")) throw new Error(`save_as must stay inside the run's folder: ${JSON.stringify(given)} leaves it`);

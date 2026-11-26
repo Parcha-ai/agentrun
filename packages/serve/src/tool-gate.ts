@@ -27,7 +27,7 @@
 // a token. A cancel marks pending approvals canceled. Where no one can approve (accounts off), an ask is refused at once
 // in words, never parked.
 
-import { COMPUTER_OP_TOOL, COMPUTER_TOOLS, computerToolDefs, defaultPermissionOf, hostToolDefs, SHELL_FAMILY, SHELL_WATCHERS, type ShellPlace, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
+import { COMPUTER_OP_TOOL, COMPUTER_TOOLS, computerToolDefs, defaultPermissionOf, hostToolDefs, savePathOf, SHELL_FAMILY, SHELL_WATCHERS, type ShellPlace, shellPermission, shellToolOf } from "@parcha/agentrun-kernel/kernel";
 import { type AdapterFacts, READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { COMPUTER_ROOT, piToolPath, portPath } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
@@ -119,8 +119,9 @@ export function heldAs(name: string, args: unknown): { readonly tool: string; re
 }
 /** The path a computer_screenshot call saves the screen to in the run's folder (its `save_as`), held to write's setting
  *  as a file the write tool writes is; undefined for any other call, a screenshot with no save_as included. */
+const SCREENSHOT_TOOL = "computer_screenshot";
 function savedAs(name: string, args: unknown): { readonly path: unknown } | undefined {
-  if (name !== "computer_screenshot" || args === null || typeof args !== "object") return undefined;
+  if (name !== SCREENSHOT_TOOL || args === null || typeof args !== "object") return undefined;
   const path = (args as { save_as?: unknown }).save_as;
   return path === undefined ? undefined : { path };
 }
@@ -154,12 +155,16 @@ const BROWSER_UPLOAD = "browser_upload";
 type NamedFiles = { tool: string; paths: string[]; opens?: (given: string) => string[] };
 /** The run-file paths the call `name` (held to `key`) with `args` names, which filedRefusal holds: the agent's own read,
  *  write and edit (by key; every PATH_ARGS it gives, as given), web_save's `path` as where it saves (savePath: a bare name
- *  under media/), browser_upload's `path`, and a workflow call node's pdf_pages `path` as pdf_pages opens it
- *  (pdfWorkPath). Undefined for any other call, and for read_skill_file, which reads the agent's skill, not the run's
+ *  under media/), browser_upload's `path`, a workflow call node's pdf_pages `path` as pdf_pages opens it
+ *  (pdfWorkPath), and a screenshot's `save_as`, held as write, as the kernel saves it (savePathOf). Undefined for any other call, and for read_skill_file, which reads the agent's skill, not the run's
  *  files. */
 function runFilePaths(key: string, name: string, args: unknown): NamedFiles | undefined {
   if (args === null || typeof args !== "object") return undefined;
   const given = args as Record<string, unknown>;
+  // A screenshot's save_as, held as write (the save_as branch of decide asks it as write's), as the kernel saves it: its
+  // own savePathOf, the one function its executor calls. A save_as it refuses (absolute, leaving the folder, no .png)
+  // names no file here: the kernel's own refusal.
+  if (key === "write" && name === SCREENSHOT_TOOL) return typeof given.save_as === "string" ? { tool: key, paths: [given.save_as], opens: (path) => { try { return [savePathOf(path)]; } catch { return []; } } } : undefined;
   if (FILE_KEYS.has(key)) return name === READ_SKILL_FILE ? undefined : { tool: key, paths: PATH_ARGS.flatMap((arg) => (typeof given[arg] === "string" ? [given[arg]] : [])) };
   if (key === WEB_SAVE_TOOL) return typeof given.path === "string" && given.path !== "" ? { tool: key, paths: [savePath(given.path)] } : undefined;
   if (name === BROWSER_UPLOAD) return typeof given.path === "string" ? { tool: name, paths: [given.path] } : undefined;
@@ -633,6 +638,10 @@ export class RunGate {
       if (refused) return refused;
       const write = await this.decide("write", saved, options);
       if (typeof write === "object") return { deny: `${write.deny} ${SAVED_AS_WORDS}` };
+      // And at the path the kernel saves it at (runFilePaths: savePathOf), which write's check above reads as a path the
+      // agent's write takes: refused in the same words, held as write.
+      const kept = this.filedRefusal("write", name, args, ran);
+      if (kept) return { deny: `${kept} ${SAVED_AS_WORDS}` };
       if (write === "ask") return "ask";
     }
     if (verdict === "allow") return "allow";
@@ -767,7 +776,7 @@ export class RunGate {
    *  pdf_pages) at or under a folder the revision's own `mcp:` setting files answers in, by its words against the run's
    *  folder by every name of it (`work`, the computer's root and the names its file tools take: RunTools.names, a CLI's
    *  scratch folder among them; `..` and ./ resolved), as given and as pi's file tools take it (a leading `@` dropped), or,
-   *  for a tool with a rule of its own (pdf_pages), as that rule opens it, each segment folded as a disk that folds names
+   *  for a tool with a rule of its own (pdf_pages, a screenshot's save_as), as that rule opens it, each segment folded as a disk that folds names
    *  takes it. An ancestor, a sibling and a path outside the run's folder are not refused; bash is not gated
    *  by path. */
   private filedRefusal(key: string, name: string, args: unknown, ran: "no" | "unknown"): string | undefined {
