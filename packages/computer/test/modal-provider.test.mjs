@@ -464,34 +464,66 @@ test("a hosted Modal computer with the server's labels (an Archil mount for the 
 	noToken(tags, "the tags");
 });
 
-test("a sandbox made before Modal's tags were packed, its labels as tags: list finds it by a label and by its name", async () => {
-	const name = "computer-0123456789ab";
-	const before = { [COMPUTER]: "1", [NAME]: name, "agentrun.computer.deadline": new Date(Date.now() + 600_000).toISOString(), "agentrun.computer.image": SPEC.image, "agentrun.run": RUN, "agentrun.epoch": "1" };
-	const sandbox = { sandboxId: "sb-before", poll: async () => null, getTags: async () => ({ ...before }) };
-	const asked = [];
+test("a sandbox made before Modal's tags were packed, its labels as tags, is still the adapter's: list finds it by a label and by its name, attach by its id reads it, a reap by its run's label ends it, and a create of its name finds it and makes none", async () => {
+	const requestId = "req-modal-before";
+	const name = computerNameFor(requestId);
+	const before = { [COMPUTER]: "1", [NAME]: name, "agentrun.computer.deadline": new Date(Date.now() + 600_000).toISOString(), "agentrun.computer.image": SPEC.image, "agentrun.computer.network": "none", "agentrun.run": RUN, "agentrun.epoch": "1" };
+	let finished = null;
+	const calls = [];
+	const sandbox = {
+		sandboxId: "sb-before",
+		poll: async () => finished,
+		getTags: async () => ({ ...before }),
+		terminate: async () => {
+			calls.push(["terminate"]);
+			finished = 0;
+		},
+		exec: async () => {
+			calls.push(["exec"]);
+			throw Object.assign(new Error("400: refused by the test"), { name: "InvalidError" });
+		},
+	};
 	const sdk = {
 		apps: { fromName: async (app) => ({ appId: `ap-${app}` }) },
-		images: { fromRegistry: () => assert.fail("no image"), fromId: async () => assert.fail("no image") },
+		images: { fromRegistry: (tag) => ({ tag, dockerfileCommands: () => ({ tag }) }), fromId: async (id) => ({ id, dockerfileCommands: () => ({ id }) }) },
 		sandboxes: {
-			create: async () => assert.fail("no create"),
+			create: async () => {
+				calls.push(["sandboxes.create"]);
+				throw Object.assign(new Error("400: refused by the test"), { name: "InvalidError" });
+			},
 			fromId: async (id) => (id === sandbox.sandboxId ? sandbox : Promise.reject(Object.assign(new Error("Sandbox not found"), { name: "NotFoundError" }))),
 			// Modal's list filters by tags: the sandbox's own, as they were stored.
 			list: ({ tags }) => {
-				asked.push(tags);
-				const shown = Object.entries(tags).every(([key, value]) => before[key] === value) ? [sandbox] : [];
+				calls.push(["sandboxes.list", tags]);
+				const shown = finished === null && Object.entries(tags).every(([key, value]) => before[key] === value) ? [sandbox] : [];
 				return { async *[Symbol.asyncIterator]() { yield* shown; } };
 			},
 		},
 	};
 	const provider = new ModalProvider({ sdk, app: APP, daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
-	const byRun = await provider.list({ "agentrun.run": RUN });
-	assert.equal(byRun.ok, true, JSON.stringify(byRun));
-	assert.deepEqual(byRun.value.map(({ ref }) => ref), [{ id: "sb-before", name }], "found by its run's label");
-	assert.equal(byRun.value[0].labels["agentrun.run"], RUN);
-	asked.length = 0;
+	const lists = () => calls.filter(([what]) => what === "sandboxes.list").map(([, tags]) => tags);
+
 	const byName = await provider.list({ [NAME]: name });
 	assert.deepEqual(byName.value?.map(({ ref }) => ref.id), ["sb-before"], "found by its name");
-	assert.deepEqual(asked, [{ agentrun: name }, { [NAME]: name, [COMPUTER]: "1" }], "the packed name finds none, so the labels as given are asked for");
+	assert.deepEqual(lists(), [{ agentrun: name }, { [NAME]: name, [COMPUTER]: "1" }], "the packed name finds none, so the labels as given are asked for");
+
+	// attach by id: the read gives its labels, so it is the adapter's, and the attach goes on to connect (here refused).
+	const attached = await provider.attach({ id: "sb-before" });
+	assert.notEqual(attached.error?.code, "not_found", JSON.stringify(attached.error));
+
+	// create of its name: the listing by the request's name finds it, so no sandbox is made.
+	calls.length = 0;
+	await provider.create(SPEC, { requestId });
+	assert.ok(lists().some((tags) => tags[NAME] === name), "the create asked for the name's labels as given");
+	assert.ok(!calls.some(([what]) => what === "sandboxes.create"), `the create made no sandbox: ${JSON.stringify(calls.map(([what]) => what))}`);
+
+	// a reap: the run's computers by its label, each released.
+	const byRun = await provider.list({ "agentrun.run": RUN });
+	assert.deepEqual(byRun.value?.map(({ ref }) => ref), [{ id: "sb-before", name }], "found by its run's label");
+	assert.equal(byRun.value[0].labels["agentrun.run"], RUN);
+	const released = await provider.release(byRun.value[0].ref, "delete");
+	assert.equal(released.ok, true, JSON.stringify(released));
+	assert.ok(calls.some(([what]) => what === "terminate"), "the reap ended it");
 });
 
 test('the Modal conformance module: mountFor("archil") gives a fresh run folder on the disk COMPUTER_ARCHIL_* name, read and written outside through the disk\'s object API', async () => {
