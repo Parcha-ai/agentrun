@@ -501,8 +501,7 @@ const spacedHeads = (value: string): string[] => {
  *  and has no closing one is taken without that quote too, at the floor or longer (atFloor): a read that ends a quoted
  *  key at a comma or `%2C` in it (a key in quotes written `%22`, `<head>%2C<rest>`) gives its head with the opening
  *  quote alone, and a line may quote the head without it; a shorter rest (`token=%27a`) would cut ordinary words from
- *  the tracer's lines. A
- *  name is what follows the last `/`, `?`, `#` or `:` before its `=` (a URL's query or fragment,
+ *  the tracer's lines. A name is what follows the last `/`, `?`, `#` or `:` before its `=` (a URL's query or fragment,
  *  `https://relay/v1?region=us`, names `region`). A value is taken up to each `%20` in it too (spacedHeads). A value
  *  whose part before its first `;` is empty, as written or decoded (`token=;<key>` read whole, `token=%3B<key>`), is
  *  taken after that `;` too (afterEmpty). A value whose decoded form is only `=`, `;`, quotes, commas and spaces (a
