@@ -6,10 +6,41 @@ export const FAILED = "failed";
 
 export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 export const str = (value: unknown): string | undefined => (typeof value === "string" && value !== "" ? value : undefined);
+/** The latest (and, negated, earliest) time a Date holds, in ms from the epoch: a number past it is no time. */
+const DATE_RANGE = 8.64e15;
+/** A record's time in ms: a number as it is, a string as Date.parse reads it; undefined for none a Date holds. */
 export const timeOf = (value: unknown): number | undefined => {
-  const at = typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : Number.NaN;
-  return Number.isFinite(at) ? at : undefined;
+  const at = typeof value === "number" ? value : typeof value === "string" ? (isoTime(value) ?? Date.parse(value)) : Number.NaN;
+  return Number.isFinite(at) && Math.abs(at) <= DATE_RANGE ? at : undefined;
 };
+
+/** The digits of `s` from `from` to `to` as a number, -1 when one is not a digit. */
+function digits(s: string, from: number, to: number): number {
+  let n = 0;
+  for (let i = from; i < to; i += 1) {
+    const d = s.charCodeAt(i) - 48;
+    if (d < 0 || d > 9) return -1;
+    n = n * 10 + d;
+  }
+  return n;
+}
+
+/** A time written as every record writes one, "YYYY-MM-DDTHH:MM:SS.sssZ", without Date.parse: what it gives for it.
+ *  Anything else, a day past the 28th (whether the month has it is Date.parse's to say) and a year under 100, is
+ *  undefined. */
+function isoTime(s: string): number | undefined {
+  if (s.length !== 24 || s.charCodeAt(4) !== 45 || s.charCodeAt(7) !== 45 || s.charCodeAt(10) !== 84 || s.charCodeAt(13) !== 58 || s.charCodeAt(16) !== 58 || s.charCodeAt(19) !== 46 || s.charCodeAt(23) !== 90) return undefined;
+  const year = digits(s, 0, 4);
+  const month = digits(s, 5, 7);
+  const day = digits(s, 8, 10);
+  const hour = digits(s, 11, 13);
+  const minute = digits(s, 14, 16);
+  const second = digits(s, 17, 19);
+  const ms = digits(s, 20, 23);
+  // Date.UTC takes a year under 100 for 1900 and more.
+  if (year < 100 || month < 1 || month > 12 || day < 1 || day > 28 || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59 || ms < 0) return undefined;
+  return Date.UTC(year, month - 1, day, hour, minute, second, ms);
+}
 /** Text from a string or a list of blocks; a block that is not text says what it was. */
 export const textOf = (value: unknown): string => {
   if (typeof value === "string") return value;

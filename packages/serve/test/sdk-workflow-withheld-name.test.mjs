@@ -23,8 +23,8 @@ const start = (name) => tool("workflow", "learned_workflow", "started", { input:
 async function endedRunOf(t, events) {
   const server = await serve(t, { runner: false });
   assert.equal((await server.api("POST", "/agents", { definition: { id: "sdk-held", name: "SDK held", instructions: "Read release status.", sdk: { runtime: "claude-agent-sdk" }, learning: true, tools: [] } })).status, 201);
-  await landWorkflows(server.data, "sdk-held", [{ name: "release", description: "Read release status.", workflow }]);
-  await promoteChecked(server.store.settings, "sdk-held", [{ name: "release", workflow }]);
+  await landWorkflows(server.store, "sdk-held", [{ name: "release", description: "Read release status.", workflow }]);
+  await promoteChecked(server.store, "sdk-held", [{ name: "release", workflow }]);
   const started = await server.api("POST", "/agents/sdk-held/sdk-runs", { runtime: "claude-agent-sdk", input: "Read release status.", instructions: "Read release status.", workflow_tools: [{ name: STATUS, description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 }] }, { "Idempotency-Key": "held" });
   assert.equal(started.status, 201, JSON.stringify(started.body));
   const id = started.body.run_id;

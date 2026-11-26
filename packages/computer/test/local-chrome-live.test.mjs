@@ -10,6 +10,10 @@ import test, { after } from "node:test";
 import { checkChrome, findChrome } from "../dist/chrome.js";
 import { LocalBrowserProvider } from "../dist/local-chrome.js";
 
+/** A create's context with a request id of its own: each create here is a new request. */
+let requests = 0;
+const newRequest = (context = {}) => ({ requestId: `local-chrome-live-${++requests}`, ...context });
+
 const chrome = findChrome({ PATH: process.env.PATH, CHROME_PATH: process.env.CHROME_PATH });
 const checked = chrome ? await checkChrome(chrome) : undefined;
 const skip = chrome === null ? "no Chrome or Chromium on PATH (or CHROME_PATH)" : checked.ok ? false : `Chrome is here but cannot start a local browser: ${checked.error.message}`;
@@ -46,7 +50,7 @@ async function cdp(url) {
 
 test("a real Chrome: create, connect over CDP, open about:blank, the fence holds, release leaves nothing", { skip, timeout: 120_000 }, async () => {
 	const provider = new LocalBrowserProvider({ executablePath: chrome, root });
-	const made = await provider.create({ image: "chromium", lifetimeMs: 120_000, network: "open", labels: { "agentrun.test": "live" } });
+	const made = await provider.create({ image: "chromium", lifetimeMs: 120_000, network: "open", labels: { "agentrun.test": "live" } }, newRequest());
 	assert.ok(made.ok, made.ok ? "" : made.error.message);
 	const dir = join(root, made.value.id);
 	try {

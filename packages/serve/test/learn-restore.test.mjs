@@ -1,14 +1,12 @@
 // A retired workflow draft can be read whole and brought back. The learning view says of each retired draft when, and by
 // whom, it was retired (`retired: {at, by}`); its files' GET serves their whole text, read-only. A restore (POST
 // .../restore on its README.md) gives it back the status it had before its retire (learn-restore-keeps-hold.test.mjs), in
-// one commit on main, its owner's password session alone, as an approval is; and it checks the draft again as a run's
+// one save, its owner's password session alone, as an approval is; and it checks the draft again as a run's
 // draft is checked, so a value a retire took out of every run (a secret, a hidden character) never comes back through it.
 import assert from "node:assert/strict";
-import { writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { ended, git, LEARN, learnedOnMain, learner, made, repoOf, resnap, started } from "./learn-support.mjs";
+import { ended, LEARN, learnedOnMain, learner, learningAt, made, putLearning, savesOf, started } from "./learn-support.mjs";
 import { call, cookieOf, serve, withEnv } from "./support.mjs";
 
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
@@ -18,14 +16,15 @@ const priceReadme = (extra = "", description = "Sums the three shop prices; use 
 const README = "workflows/price-report/README.md";
 const FLOW = "workflows/price-report/workflow.json";
 
-/** A server with accounts and the owner's session, agent `keeper` (its definition's `extra` fields) with a folder;
- *  `files` committed on main; `env`, more of the server's environment. */
+/** A server with accounts and the owner's session, agent `keeper` (its definition's `extra` fields) with its learning;
+ *  `files` saved on it as a run's merge; `env`, more of the server's environment. `put(files)` saves more by hand;
+ *  `newest()` is the newest save's version id. */
 async function keeper(t, files, extra = {}, before = async () => {}, env = {}) {
   withEnv(t, {}, ["AGENTRUN_TEST_FAUX_CALLS", "TYPESAFE_API_KEY"]);
   // `env`: what the server starts with beside that (a decision provider's key, its faux), set after the clear.
   withEnv(t, env);
   const server = await serve(t, { learning: "on", faux: LEARN, accounts: true, openSetup: true });
-  const { api, data, port } = server;
+  const { api, port } = server;
   const origin = `http://127.0.0.1:${port}`;
   const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
   assert.equal(setup.status, 201, setup.text);
@@ -33,14 +32,10 @@ async function keeper(t, files, extra = {}, before = async () => {}, env = {}) {
   await before({ port, cookie, origin }, t);
   await made(api, learner("keeper", extra));
   await ended(api, await started(api, "keeper"));
-  const repo = repoOf(data, "keeper");
-  for (const [file, text] of Object.entries(files)) {
-    mkdirSync(join(repo, file, ".."), { recursive: true });
-    writeFileSync(join(repo, file), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "the folder as runs left it"]);
-  await resnap(data, "keeper");
+  let hand = 0;
+  const put = (more) => putLearning(server, "keeper", more, { runId: `run-hand-${++hand}`, reason: "the learning as runs left it" });
+  await put(files);
+  const newest = async () => (await learningAt(server, "keeper")).view.main;
   const etag = async (file) => (await api("GET", `/agents/keeper/learning/files/${encodeURIComponent(file)}`)).headers.get("etag");
   const restore = async (file, headers) => call(port, { method: "POST", path: `/v2/agents/keeper/learning/files/${encodeURIComponent(file)}/restore`, headers: { "if-match": await etag(file), ...headers }, body: {} });
   const retire = async (file) => {
@@ -48,11 +43,11 @@ async function keeper(t, files, extra = {}, before = async () => {}, env = {}) {
     assert.equal(res.status, 200, JSON.stringify(res.body));
   };
   const flowOf = async (name) => (await api("GET", "/agents/keeper/learning")).body.workflows.find((item) => item.name === name);
-  return { ...server, server, repo, cookie, origin, restore, retire, etag, flowOf };
+  return { ...server, server, put, newest, cookie, origin, restore, retire, etag, flowOf };
 }
 
-test("a retired draft is read whole and restored by its owner by its README.md: the view says when and that a person retired it, its files serve their text, a token is refused, the owner's session makes it active again in one commit", { timeout: 150_000 }, async (t) => {
-  const { api, repo, cookie, origin, restore, retire, server, flowOf } = await keeper(t, { [FLOW]: PRICE, [README]: priceReadme() });
+test("a retired draft is read whole and restored by its owner by its README.md: the view says when and that a person retired it, its files serve their text, a token is refused, the owner's session makes it active again in one save", { timeout: 150_000 }, async (t) => {
+  const { api, newest, cookie, origin, restore, retire, server, flowOf } = await keeper(t, { [FLOW]: PRICE, [README]: priceReadme() });
   await retire(README);
   const shown = await flowOf("price-report");
   assert.equal(shown?.status, "retired", JSON.stringify(shown));
@@ -71,12 +66,13 @@ test("a retired draft is read whole and restored by its owner by its README.md: 
   const byJson = await restore(FLOW, { ...json, cookie, origin });
   assert.equal(byJson.status, 400, byJson.text);
   assert.match(byJson.text, /restored by its README\.md/);
-  const before = git(repo, ["rev-parse", "main"]).trim();
+  const before = (await savesOf(server, "keeper")).length;
   const restored = await restore(README, { ...json, cookie, origin });
   assert.equal(restored.status, 200, restored.text);
   assert.doesNotMatch(restored.text, /status: retired/);
-  assert.equal(git(repo, ["rev-list", "--count", `${before}..main`]).trim(), "1", "one commit");
-  assert.match(git(repo, ["log", "-1", "--format=%s%n%b", "main"]), new RegExp(`^learning: restored by a person: ${README.replace(/[./]/g, "\\$&")}[\\s\\S]*Changed-By: user`));
+  const saves = await savesOf(server, "keeper");
+  assert.equal(saves.length, before + 1, "one save");
+  assert.deepEqual([saves[0].id, saves[0].by, saves[0].reason], [await newest(), { person: "restored", file: README }, `restored by a person: ${README}`]);
   const again = await flowOf("price-report");
   assert.deepEqual([again.status, again.retired, again.last_change?.kind, again.last_change?.by], ["checking", undefined, "restored", "person"], JSON.stringify(again));
   // An active draft is not retired: 400, nothing written.
@@ -85,28 +81,24 @@ test("a retired draft is read whole and restored by its owner by its README.md: 
   assert.match(active.text, /is not retired: it is active/);
 });
 
-test("a restore checks the draft again as a run's draft is checked: a retired README holding a secret's shape, a hidden character or the server's own secret is refused, and nothing is committed", { timeout: 150_000 }, async (t) => {
+test("a restore checks the draft again as a run's draft is checked: a retired README holding a secret's shape, a hidden character or the server's own secret is refused, and nothing is saved", { timeout: 150_000 }, async (t) => {
   const shaped = ["s", "k-", "Zx9".repeat(10)].join("");
   const hidden = `Sums the shop prices${String.fromCodePoint(0x202e)} in a table`;
   const draft = (name, description) => ({ [`workflows/${name}/workflow.json`]: PRICE.replace('"price-report"', `"${name}"`), [`workflows/${name}/README.md`]: `---\nname: ${name}\ndescription: ${description}\nstatus: retired\nretired_from: active\n---\n` });
-  const { repo, cookie, origin, restore, server, data } = await keeper(t, { ...draft("shaped", `Signs in with ${shaped}`), ...draft("hidden", hidden) });
+  const { put, newest, cookie, origin, restore, server } = await keeper(t, { ...draft("shaped", `Signs in with ${shaped}`), ...draft("hidden", hidden) });
   // The server's own token, written into a retired draft after the fact (as a value made secret later would be).
-  mkdirSync(join(repo, "workflows", "token"), { recursive: true });
-  for (const [file, text] of Object.entries(draft("token", `Calls it with ${server.token}`))) writeFileSync(join(repo, file), text);
-  git(repo, ["add", "--", "workflows/token"]);
-  git(repo, ["commit", "-q", "-m", "a draft now holding a secret"]);
-  await resnap(data, "keeper");
-  const before = git(repo, ["rev-parse", "main"]).trim();
+  await put(draft("token", `Calls it with ${server.token}`));
+  const before = await newest();
   for (const [name, rule] of [["shaped", "secret_shape"], ["hidden", "invisible_unicode"], ["token", "secret_value"]]) {
     const res = await restore(`workflows/${name}/README.md`, { ...json, cookie, origin });
     assert.ok(res.status >= 400 && res.status < 500, `${name}: ${res.status} ${res.text}`);
     assert.match(res.text, new RegExp(rule), `${name}: ${res.text}`);
     assert.ok(!res.text.includes(server.token) && !res.text.includes(shaped), `${name}: never printed`);
   }
-  assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
+  assert.equal(await newest(), before, "nothing saved");
 });
 
-test("every draft in the learning view says its last change, from the newest commit on its files: learned by a run, then approved, retired and restored by a person, each with when", { timeout: 200_000 }, async (t) => {
+test("every draft in the learning view says its last change, from the newest save of its files: learned by a run, then approved, retired and restored by a person, each with when", { timeout: 200_000 }, async (t) => {
   const { api, data, cookie, origin, port, restore, retire, etag, flowOf } = await keeper(t, { [FLOW]: PRICE, [README]: priceReadme("status: pending\n") });
   // A draft a run's compile kept: learned, by the run.
   await made(api, learner("learnt", { learning: { compile_after: 1 } }));
@@ -130,29 +122,26 @@ test("every draft in the learning view says its last change, from the newest com
   assert.ok(!Number.isNaN(Date.parse(last.at)));
 });
 
-test("restoring a workflow draft checks its workflow.json too: one holding the server's own secret stays retired, and nothing is committed", { timeout: 150_000 }, async (t) => {
-  const { repo, cookie, origin, restore, server, data } = await keeper(t, { [FLOW]: PRICE, [README]: priceReadme("status: retired\n") });
+test("restoring a workflow draft checks its workflow.json too: one holding the server's own secret stays retired, and nothing is saved", { timeout: 150_000 }, async (t) => {
+  const { put, newest, cookie, origin, restore, server } = await keeper(t, { [FLOW]: PRICE, [README]: priceReadme("status: retired\n") });
   const draft = (secret) => JSON.stringify({ v: 2, name: "price-report", schemas: { In: { type: "object" }, Out: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "out" }, root: { node: "extract", label: "sum", instructions: `Sum the prices; sign in with ${secret}.`, out: "Out", as: "out" } });
-  writeFileSync(join(repo, FLOW), draft(server.token));
-  git(repo, ["add", "--", FLOW]);
-  git(repo, ["commit", "-q", "-m", "a retired draft now holding a secret"]);
-  await resnap(data, "keeper");
-  const before = git(repo, ["rev-parse", "main"]).trim();
+  await put({ [FLOW]: draft(server.token), [README]: priceReadme("status: retired\n") });
+  const before = await newest();
   const res = await restore(README, { ...json, cookie, origin });
   assert.ok(res.status >= 400 && res.status < 500, `${res.status} ${res.text}`);
   assert.match(res.text, /secret_value/);
   assert.ok(!res.text.includes(server.token), "never printed");
-  assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
+  assert.equal(await newest(), before, "nothing saved");
 });
 
-test("a retired draft whose workflow.json the learning checker refuses is not restored: it stays retired, nothing committed", { timeout: 150_000 }, async (t) => {
+test("a retired draft whose workflow.json the learning checker refuses is not restored: it stays retired, nothing saved", { timeout: 150_000 }, async (t) => {
   const BAD = JSON.stringify({ v: 2, name: "price-report", schemas: { In: { type: "object" }, Out: { type: "object", properties: { total: { type: "number" } } } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "out" }, root: { node: "extract", label: "sum", instructions: "Sum.", out: "Out", as: "out", tools: ["web_fetch"] } });
-  const { repo, cookie, origin, restore } = await keeper(t, { [FLOW]: BAD, [README]: priceReadme("status: retired\n") });
-  const before = git(repo, ["rev-parse", "main"]).trim();
+  const { newest, cookie, origin, restore } = await keeper(t, { [FLOW]: BAD, [README]: priceReadme("status: retired\n") });
+  const before = await newest();
   const refused = await restore(README, { ...json, cookie, origin });
   assert.equal(refused.status, 400, refused.text);
   assert.match(refused.text, /"rule":"workflow","path":"workflows\/price-report\/workflow\.json"/, refused.text);
-  assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
+  assert.equal(await newest(), before, "nothing saved");
 });
 
 test("a retired workflow draft with a judge node is restored when the server has the decision provider it asks, as a run's learning end checks it (LS-07)", { timeout: 150_000 }, async (t) => {
@@ -186,11 +175,11 @@ async function saveFakeMcp({ port, cookie, origin }, t) {
 test("a retired draft calling an MCP tool the agent's tool settings deny is not restored: the refusal says it is set to deny for this agent", { timeout: 150_000 }, async (t) => {
   const TICKET = "---\nname: file-ticket\ndescription: Files a ticket; use when asked to file one\nstatus: retired\n---\n";
   const DRAFT = JSON.stringify({ v: 2, name: "file-ticket", schemas: { Q: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] }, R: { type: "object" } }, input: { schemaId: "Q" }, output: { schemaId: "R", path: "r" }, root: { node: "call", label: "Add them", via: "tool", tool: "mcp:fake/add", args: { a: "{a}", b: "{b}" }, out: "R", as: "r", deadline_s: 30 } });
-  const { repo, cookie, origin, restore } = await keeper(t, { "workflows/file-ticket/workflow.json": DRAFT, "workflows/file-ticket/README.md": TICKET }, { tools: ["mcp:fake/add"], tool_settings: { "mcp:fake/add": { permission: "deny" } } }, saveFakeMcp);
-  const before = git(repo, ["rev-parse", "main"]).trim();
+  const { newest, cookie, origin, restore } = await keeper(t, { "workflows/file-ticket/workflow.json": DRAFT, "workflows/file-ticket/README.md": TICKET }, { tools: ["mcp:fake/add"], tool_settings: { "mcp:fake/add": { permission: "deny" } } }, saveFakeMcp);
+  const before = await newest();
   const refused = await restore("workflows/file-ticket/README.md", { ...json, cookie, origin });
   assert.equal(refused.status, 400, refused.text);
   const problem = JSON.parse(refused.text).error.problems.find((one) => one.rule === "workflow");
   assert.equal(problem?.detail, "This workflow's call node calls mcp:fake/add, which is set to deny for this agent. (the call node at /root)", refused.text);
-  assert.equal(git(repo, ["rev-parse", "main"]).trim(), before, "nothing committed");
+  assert.equal(await newest(), before, "nothing saved");
 });

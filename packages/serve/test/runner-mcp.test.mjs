@@ -554,10 +554,12 @@ test("R16: a per_run server is called with the credential the run was handed, wh
   await assertNowhere(RUN_TOKEN, run, lines);
 });
 
-test("R17: a per_run server's call in a run handed no credential for it is refused unsent, in UNUSABLE.perRunMissing's words", async (t) => {
+test("R17: a per_run server's call in a run handed no credential for it is refused unsent, in UNUSABLE.perRunMissing's words, and the claim names the server (ClaimMcp.unconnected) for its builder to leave out", async (t) => {
   const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
-  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "per_run", fakeToken: RUN_TOKEN, launchSealed: (url) => sealRunMcpAuth(KEY, "run-1", { other: { headers: { authorization: "Bearer x" }, origin: new URL(url).origin } }) });
+  const opened = [];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "per_run", fakeToken: RUN_TOKEN, opened, launchSealed: (url) => sealRunMcpAuth(KEY, "run-1", { other: { headers: { authorization: "Bearer x" }, origin: new URL(url).origin } }) });
   assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.deepEqual(opened.map((mcp) => mcp.unconnected), [["fake"]], "named by the claim");
   assert.equal(lastResult(run.sent), `The MCP server fake's credential can't be used right now: ${UNUSABLE.perRunMissing}.`);
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
 });

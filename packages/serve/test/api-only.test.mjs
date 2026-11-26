@@ -1,7 +1,8 @@
 // The API-only profile (api-only.ts, AGENTRUN_API_ONLY=1): the server serves the run routes and a deploy's routes alone
 // (api-only-deploy.test.mjs), for a caller's backend, and refuses every other address with a 404 before the request is
-// read further: the console, the store page's data, sign-in, setup, settings writes, the MCP endpoint, triggers and their
-// webhook hooks, the agents list and their writes, and a live view's WebSocket. It has no owner. Its token saves a
+// read further: the console, the store page's data, sign-in, setup, settings writes, the MCP endpoint, the trigger routes
+// but their reads and turn on or off (api-only-deploy.test.mjs) and a firing's release, their webhook hooks, the agents
+// list and their writes, and a live view's WebSocket. It has no owner. Its token saves a
 // Composio server by api_key_env and a per_run server at an origin AGENTRUN_API_ONLY_MCP_ORIGINS lists, deletes a server,
 // and lists the servers' names (GET /settings/mcp-server-names); their list, read, any other save, previews, refreshes
 // and sign-ins are refused (api-only-mcp.test.mjs). The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
@@ -27,13 +28,14 @@ const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 /** A password or key for a request the profile refuses before reading it, plainly no secret (as mcp.test.mjs makes them). */
 const notSecret = (name) => `not-a-secret-${name}`;
 /** The learning reads the profile serves, for the backend whose inline runs made the agent: the loop, the promotions,
- *  the cost per run and a run's learning ({agent}, {run} filled in by each test). */
-const LEARNING_READS = ["/v2/agents/{agent}/learning/loop", "/v2/agents/{agent}/learning/promotions", "/v2/agents/{agent}/learning/cost", "/v2/runs/{run}/learning"];
+ *  the cost per run, a run's learning and the audits, which its Learning tab reads ({agent}, {run} filled in by each
+ *  test). */
+const LEARNING_READS = ["/v2/agents/{agent}/learning/loop", "/v2/agents/{agent}/learning/promotions", "/v2/agents/{agent}/learning/cost", "/v2/runs/{run}/learning", "/v2/agents/{agent}/learning/audits"];
 /** The learning routes it still refuses: every write but the reset (served, with the agent's delete), and every read that serves the learning's own text (corrections,
- *  files, the log, a workflow's revisions, the audits, a run's diff). */
+ *  files, the log, a workflow's revisions, a run's diff). */
 const LEARNING_REFUSED = [
   ["GET", "/v2/agents/{agent}/learning"], ["GET", "/v2/agents/{agent}/learning/corrections"], ["PUT", "/v2/agents/{agent}/learning/corrections"],
-  ["GET", "/v2/agents/{agent}/learning/log"], ["GET", "/v2/agents/{agent}/learning/audits"],
+  ["GET", "/v2/agents/{agent}/learning/log"],
   ["GET", "/v2/agents/{agent}/learning/files/answer"], ["POST", "/v2/agents/{agent}/learning/files/answer/approve"],
   ["POST", "/v2/agents/{agent}/learning/files/answer/retire"], ["POST", "/v2/agents/{agent}/learning/files/answer/restore"],
   ["GET", "/v2/agents/{agent}/learning/workflows/answer/revisions"], ["POST", "/v2/agents/{agent}/learning/workflows/answer/revisions/d1/replays"],
@@ -78,6 +80,9 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     // The MCP servers a deploy's agents need: a Composio server saved through the preset, and a server deleted. Their
     // names are listed by GET /settings/mcp-server-names, above.
     ["PUT", "/v2/settings/mcp-servers/x/composio"], ["DELETE", "/v2/settings/mcp-servers/x"],
+    // A trigger's reads and its turn on or off (PATCH takes `enabled` alone here), for one auto-paused to be seen and
+    // turned on again: an API-only server has no console to do it in.
+    ["GET", "/v2/triggers"], ["HEAD", "/v2/triggers"], ["GET", "/v2/triggers/trg_1"], ["GET", "/v2/triggers/trg_1/firings"], ["PATCH", "/v2/triggers/trg_1"],
     // The launch hook's host releases a firing it took and will start no run for.
     ["POST", "/v2/triggers/trg_1/firings/fir_1/release"],
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
@@ -90,12 +95,12 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     // No list or read of the MCP servers (their names route is the listing), and no save of a server at an address or
     // with headers of the caller's own.
     ["GET", "/v2/settings/mcp-servers"], ["GET", "/v2/settings/mcp-servers/x"], ["HEAD", "/v2/settings/mcp-servers/x"], ["PUT", "/v2/settings/mcp-servers/x"],
-    ["POST", "/v2/mcp"], ["GET", "/v2/triggers"], ["POST", "/v2/triggers"], ["POST", "/v2/hooks/trg_1"],
+    ["POST", "/v2/mcp"], ["POST", "/v2/triggers"], ["POST", "/v2/hooks/trg_1"],
     ["GET", "/v2/agents"], ["POST", "/v2/agents"], ["POST", "/v2/runs/run_1/approvals/a"], ["GET", "/v2/runs/run_1/browser"], ["POST", "/v2/runs/run_1/kill"],
     ["GET", "/v2/runs/run_1/browser/live/v/x"], ["POST", "/v2/runs/run_1/computer/live/v/x"], ["POST", "/v2/runs/run_1/computer/call"], ["POST", "/v2/runs/run_1/computer/release"],
     ["GET", "/v2/openapi.json"], ["GET", "/v2/v2/runs"],
     ["GET", "/v2/templates"], ["DELETE", "/v2/templates/x"], ["PUT", "/v2/agents/a1/definition"],
-    ["GET", "/v2/triggers/trg_1"], ["PATCH", "/v2/triggers/trg_1"], ["DELETE", "/v2/triggers/trg_1"], ["GET", "/v2/triggers/trg_1/firings"],
+    ["DELETE", "/v2/triggers/trg_1"], ["PUT", "/v2/triggers/trg_1"],
     ["POST", "/v2/triggers/trg_1/fire"], ["POST", "/v2/triggers/trg_1/secret"], ["POST", "/v2/hooks/composio/p1"],
     ["GET", "/v2/triggers/trg_1/firings/fir_1/release"], ["POST", "/v2/triggers/trg_1/firings/fir_1"],
     ["POST", "/v2/computers/pairings"], ["POST", "/v2/computers/pair"], ["GET", "/v2/computers/attach"],
@@ -296,13 +301,13 @@ test("an API-only server answers 409 run_not_final to DELETE of a live run of an
   purged(await send(server, "GET", `/v2/runs/${run}`), run, "the cancelled run");
 });
 
-test("an API-only server serves an inline-run agent's learning reads with the token (loop, promotions, cost, a run's learning), and refuses its learning's writes and texts", { timeout: 120_000 }, async (t) => {
+test("an API-only server serves an inline-run agent's learning reads with the token (loop, promotions, cost, a run's learning, audits), and refuses its learning's writes and texts", { timeout: 120_000 }, async (t) => {
   const server = await serve(t, { apiOnly: true, learning: "on" });
   const { agent_id: agent, run_id: run } = await inlineRun(server, "learner-1", "What is six times seven.", { learning: true });
   // The run ends, then its learning (the look-back the runner beside the server runs): both read by the token.
   await ended(server.api, run);
 
-  const [loop, promotions, cost, learning] = await Promise.all(LEARNING_READS.map((path) => send(server, "GET", at(path, agent, run))));
+  const [loop, promotions, cost, learning, audits] = await Promise.all(LEARNING_READS.map((path) => send(server, "GET", at(path, agent, run))));
   assert.equal(loop.status, 200, JSON.stringify(loop.body));
   assert.deepEqual([loop.body.agent, loop.body.completed_runs, Array.isArray(loop.body.compiles)], [agent, 1, true], "the loop: its one completed run");
   assert.deepEqual([promotions.status, promotions.body], [200, { agent, promotions: [], serving: [] }], "the promotions: none yet");
@@ -311,6 +316,7 @@ test("an API-only server serves an inline-run agent's learning reads with the to
   assert.equal(learning.status, 200, JSON.stringify(learning.body));
   assert.equal(learning.body.run, run, "the run's learning");
   assert.ok(["merged", "dropped"].includes(learning.body.state), JSON.stringify(learning.body));
+  assert.deepEqual([audits.status, audits.body], [200, { agent, audits: [] }], "the audits: none yet");
   const csv = await fetch(`${server.url}${at(LEARNING_READS[2], agent, run)}?format=csv`, { headers: { authorization: `Bearer ${server.token}` } });
   assert.deepEqual([csv.status, csv.headers.get("content-type"), (await csv.text()).includes(run)], [200, "text/csv; charset=utf-8", true], "the cost per run as CSV");
 
@@ -411,7 +417,6 @@ const REFUSED = [
   ["a settings write", "PUT", "/v2/settings/tools", { body: { web_search: "parallel" } }],
   ["a tool key write", "PUT", "/v2/settings/tool-keys/monid", { body: { fields: { MONID_API_KEY: notSecret("key") } } }],
   ["MCP", "POST", "/v2/mcp", { body: { jsonrpc: "2.0", id: 1, method: "ping" }, headers: { accept: "application/json, text/event-stream" } }],
-  ["triggers", "GET", "/v2/triggers", {}],
   ["a trigger made", "POST", "/v2/triggers", { body: { agent_id: "a1" } }],
   ["a webhook hook", "POST", "/v2/hooks/trg_1", { token: false, body: {} }],
   ["agents", "GET", "/v2/agents", {}],
@@ -462,6 +467,6 @@ test("off by default: the same routes are served without the profile", async (t)
 
 test("the banner says the server is API-only in place of the console's link", () => {
   const lines = banner({ url: "http://127.0.0.1:7340", baseUrl: "http://127.0.0.1:7340/v2", data: "/data", token: "x".repeat(32), source: "env", apiOnly: true });
-  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes, the MCP server names, a Composio server's save, a per_run server's save at an origin AGENTRUN_API_ONLY_MCP_ORIGINS lists and a server's delete are served; the console, sign-in, setup, other settings, the MCP endpoint, triggers and hooks are refused."), lines.join("\n"));
+  assert.ok(lines.includes("API only (AGENTRUN_API_ONLY=1): the run and deploy routes, a trigger's reads and its turn on or off, the MCP server names, a Composio server's save, a per_run server's save at an origin AGENTRUN_API_ONLY_MCP_ORIGINS lists and a server's delete are served; the console, sign-in, setup, other settings, the MCP endpoint, the other trigger routes and hooks are refused."), lines.join("\n"));
   assert.ok(!lines.some((line) => line.startsWith("Open ")), "no console link");
 });

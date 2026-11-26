@@ -355,7 +355,7 @@ export const personHome = (login: ClaudeAgentLogin): string => login.userHome ??
 /** How long the delete of an "unknown" item may take before it is killed (SIGKILL, which a `security` or a wrapper on
  *  PATH cannot ignore, as it can SIGTERM) and left (dropUnknownItem): the sign-in's end and the status check wait on it. */
 const DROP_MS = 5_000;
-/** The items dropUnknownItem has dealt with in this process, by home and service: each is deleted once. */
+/** The items dropUnknownItem has dealt with in this process, by home and service: deleted, or found gone. */
 const dropped = new Set<string>();
 
 /** On macOS, at AgentRun's own folder (`own`) alone, delete the login's Keychain item under the account "unknown", which
@@ -364,8 +364,9 @@ const dropped = new Set<string>();
  *  Code-credentials-<first 8 hex of the folder's sha256>`), in the person's home (personHome), whose login keychain holds
  *  it. Called once the item under the person's account is there (the sign-in exited 0, a status check read signed in).
  *  Never at the person's own CLI's places, whose "unknown" item may be theirs, never the item with no suffix, never an
- *  item of any other account, and never where the user this server runs as is named "unknown" itself. "Not found" is
- *  done, as is any other end: nothing is thrown, and it is asked once per item in this process. */
+ *  item of any other account, and never where the user this server runs as is named "unknown" itself. Nothing is thrown.
+ *  An item deleted, or found gone ("not found", exit 44), is not asked again in this process; one whose delete was killed
+ *  at its limit, failed or never started is still there, so the next call asks again. */
 export async function dropUnknownItem(login: ClaudeAgentLogin, options: { path: string; platform?: NodeJS.Platform }): Promise<void> {
   if ((options.platform ?? process.platform) !== "darwin" || login.own !== true) return;
   const folder = loginEnv(login, "darwin").CLAUDE_SECURESTORAGE_CONFIG_DIR;
@@ -375,12 +376,14 @@ export async function dropUnknownItem(login: ClaudeAgentLogin, options: { path: 
   const HOME = personHome(login);
   const key = JSON.stringify([HOME, service]);
   if (dropped.has(key)) return;
-  dropped.add(key);
   await new Promise<void>((resolve) => {
     try {
       const child = spawn("security", ["delete-generic-password", "-a", "unknown", "-s", service], { env: { PATH: options.path, HOME, ...user }, stdio: "ignore", timeout: DROP_MS, killSignal: "SIGKILL" });
       child.once("error", () => resolve());
-      child.once("close", () => resolve());
+      child.once("close", (code) => {
+        if (code === 0 || code === 44) dropped.add(key);
+        resolve();
+      });
     } catch {
       resolve();
     }
@@ -631,8 +634,10 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
   child.once("close", (code, signal) => {
     const result: ClaudeSignInEnd = ending ? { end: ending } : { end: "exited", code, signal };
     // Signed in: the item under the person's account is there, so one a sign-in left under "unknown" goes first
-    // (AgentRun's own folder alone).
-    if (result.end === "exited" && code === 0) void dropUnknownItem(login, { path, ...(options.platform ? { platform: options.platform } : {}) }).then(() => finish(result));
+    // (AgentRun's own folder alone). The end settles however the drop ends: it throws nothing of its own, and should it
+    // throw all the same, the sign-in still ended as the CLI exited (a `finally` here would leave that throw unhandled).
+    const finished = () => finish(result);
+    if (result.end === "exited" && code === 0) void dropUnknownItem(login, { path, ...(options.platform ? { platform: options.platform } : {}) }).then(finished, finished);
     else finish(result);
   });
   return { ended, stop: () => end("stopped") };
