@@ -1520,7 +1520,7 @@ class SqliteStore implements Store {
         return row && runOf(row);
       },
       launch: (runId) => readLaunch(db, runId),
-      reseedLearning: (runId, learning) => db.transaction((tx) => writeLaunchLearning(tx, runId, learning)),
+      reseedLearning: (runId, learning, epoch) => db.transaction((tx) => writeLaunchLearning(tx, runId, learning, epoch, d.shareLock)),
       learningDeadlines: async (runIds) => {
         const out = new Map<string, number>();
         if (runIds.length === 0) return out;

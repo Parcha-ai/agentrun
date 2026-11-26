@@ -10,8 +10,9 @@ import { runLearningEnd } from "./store-reads/learning.js";
 import { lookingBackEnd } from "./store-view.js";
 import type { RunRow, Store } from "./store/index.js";
 
-/** The most runs still going that openRoundsOf reads of an agent. */
-const OPEN_ROUNDS_READ = 50;
+/** A page of an agent's running runs, as openRoundsOf reads them, and the most pages it reads. */
+const OPEN_ROUNDS_PAGE = 50;
+const OPEN_ROUNDS_PAGES = 10;
 
 /** Whether run `row`'s learning round is going: running (never queued, parked or ended), and either looking back after its
  *  job's end or running again after an earlier round of it ended (a follow-up turn). */
@@ -24,9 +25,17 @@ export async function roundOpen(store: Pick<Store, "readJournal" | "commands" | 
 /** The agent's runs on the default disk that hold a steer, learn from a seed (a learning start that is no `use`) and
  *  whose learning round is going now (roundOpen): a run started now names them in its learning start (`after`), and its
  *  claim waits for them, bounded, then reads its seed again. Cheapest read first: only a running run's commands are
- *  read, and only one holding a steer is read past them. Newest first. */
+ *  read, and only one holding a steer is read past them. Only running runs are listed (Runs.list `state`), page by page
+ *  (bounded: OPEN_ROUNDS_PAGES of OPEN_ROUNDS_PAGE), so newer queued or parked runs never hide an older running one. Newest
+ *  first. */
 export async function openRoundsOf(store: Pick<Store, "runs" | "readJournal" | "commands" | "learning">, agentId: string): Promise<string[]> {
-  const going = await store.runs.list({ agentId, disk: null, scope: "active", limit: OPEN_ROUNDS_READ });
+  const going: RunRow[] = [];
+  for (let page = 0; page < OPEN_ROUNDS_PAGES; page++) {
+    const last = going.at(-1);
+    const rows = await store.runs.list({ agentId, disk: null, state: "running", limit: OPEN_ROUNDS_PAGE, ...(last ? { before: { startedAt: last.startedAt, id: last.id } } : {}) });
+    going.push(...rows);
+    if (rows.length < OPEN_ROUNDS_PAGE) break;
+  }
   const open: string[] = [];
   for (const run of going) {
     if (run.state !== "running") continue;

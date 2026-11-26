@@ -49,12 +49,17 @@ export async function writeLaunchSealed(tx: Pick<SqliteExecutor, "run" | "get">,
 }
 
 /** Run `runId`'s launch body with its `learning` member replaced by `learning`, read and written inside `tx` (Runs
- *  reseedLearning). StoreLaunchMissing when the run has no launch row. */
-export async function writeLaunchLearning(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, learning: unknown): Promise<void> {
+ *  reseedLearning), fenced by the claim: only while the run's epoch is still `epoch`, its row held shared (`shareLock`) so
+ *  a claim, release or end that moves it waits for this write or comes first. False, nothing written, when it moved (the
+ *  claim was lost) or the run is gone. StoreLaunchMissing when the run has no launch row. */
+export async function writeLaunchLearning(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, learning: unknown, epoch: number, shareLock: string): Promise<boolean> {
+  const run = await tx.get<{ epoch: number | string }>(`SELECT epoch FROM runs WHERE id = ?${shareLock}`, runId);
+  if (!run || Number(run.epoch) !== epoch) return false;
   const row = await tx.get<{ body: string }>("SELECT body FROM run_launch WHERE run_id = ?", runId);
   if (!row) throw new StoreLaunchMissing(runId);
   const body = JSON.parse(row.body) as Record<string, unknown> | null;
   await tx.run("UPDATE run_launch SET body = ? WHERE run_id = ?", JSON.stringify({ ...(body ?? {}), learning }), runId);
+  return true;
 }
 
 /** The run's launch row, read by the runner at its claim (and the server for views). StoreLaunchMissing when the run has

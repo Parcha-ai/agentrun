@@ -15,8 +15,8 @@ import { mustHold } from "./redact.js";
 /** What the dispatch reads of a run at its claim, and how it picks the harness's loop. */
 export interface DispatchDeps {
   /** The run's launch row (store.runs.launch): its body names the harness. It throws (StoreLaunchMissing) when the run
-   *  was not started with one, which fails the run in words. */
-  launchOf(runId: string): Promise<{ readonly body: unknown }>;
+   *  was not started with one, which fails the run in words. `epoch`: the claim's (a write it makes is fenced by it). */
+  launchOf(runId: string, epoch: number): Promise<{ readonly body: unknown }>;
   /** The loop factory for a run launched with `harness`, built from its `launch` record and its run id (so the resolver may
    *  read the run's revision — a workflow revision runs on the workflow loop whatever its harness name), or undefined when
    *  this runner does not run it (the run fails in words). pi is the adapter loop with adapterRunSpecFromLaunch; the CLI
@@ -76,7 +76,7 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
   const innerDeps: LoopDeps = { ...loopDeps, delivered: Promise.all([loopDeps.delivered ?? Promise.resolve(), earlyReplayed]).then(() => undefined) };
 
   async function begin(claim: Claim): Promise<LoopEnd> {
-    const row = await deps.launchOf(claim.runId);
+    const row = await deps.launchOf(claim.runId, claim.epoch);
     // The launch as this run runs it: on a named disk, with nothing learned on another disk (launchOnItsDisk).
     const read = readLaunchBody(row.body);
     const launch = read && launchOnItsDisk(read);

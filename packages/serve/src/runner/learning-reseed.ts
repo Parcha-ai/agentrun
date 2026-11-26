@@ -48,25 +48,33 @@ const said = (error: unknown): string => (error instanceof Error ? error.message
 export const runnerShown = (deps: { readonly env: NodeJS.ProcessEnv; readonly store: Store; readonly sealKey: Buffer | undefined; readonly data: string }) => async (): Promise<Shown> =>
   secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
 
-/** Whether run `runId` (its row `epoch`) has taken no turn yet: its first claim (epoch 1) and nothing in its journal. */
+/** Whether run `runId` (its claim's `epoch`) has taken no turn yet: its first claim (epoch 1) and nothing in its journal. */
 async function beforeFirstTurn(store: ReseedDeps["store"], runId: string, epoch: number): Promise<boolean> {
   if (epoch > 1) return false;
   return (await journalEntries(store.readJournal(runId), BACKGROUND_CONTEXT)).length === 0;
 }
 
-/** A claim's read of run `runId`'s launch (the dispatch's launchOf): the stored row, but for a run whose learning start
- *  names open rounds (`after`) and that has taken no turn yet, whose start is first read again once they end, bounded,
- *  and written in place. A read that fails writes the start it had, without `after`; a learning fault never stops a run. */
-export function reseededLaunchOf(deps: ReseedDeps): (runId: string) => Promise<RunLaunchRow> {
+/** A pending stop or cancel of the run (a person's, not yet taken): the dispatch buffers it until its launch is read. */
+const stopAsked = (commands: readonly { readonly kind: string; readonly takenAt: number | null; readonly refused: string | null }[]): boolean =>
+  commands.some((command) => (command.kind === "stop" || command.kind === "cancel") && command.takenAt === null && command.refused === null);
+
+/** A claim's read of run `runId`'s launch (the dispatch's launchOf, under the claim at `epoch`): the stored row, but for a
+ *  run whose learning start names open rounds (`after`) and that has taken no turn yet, whose start is first read again
+ *  once they end, bounded, and written in place, fenced by the claim. A read that fails writes the start it had, without
+ *  `after`; a learning fault never stops a run. The wait ends at once, the row returned as it is, when the run is no
+ *  longer this claim's (its epoch moved: the lease was lost and another runner may hold it), when it ended, or when a
+ *  person asked it to stop or cancel (the dispatch then applies that stop). The runner keeps renewing the claim's lease
+ *  while this waits (runner.ts holds the claim before its loop's start, which reads this). */
+export function reseededLaunchOf(deps: ReseedDeps): (runId: string, epoch: number) => Promise<RunLaunchRow> {
   const now = deps.now ?? Date.now;
-  return async (runId) => {
+  return async (runId, epoch) => {
     const row = await deps.store.runs.launch(runId);
     const start = readLaunchBody(row.body)?.learning;
     if (!start?.after?.length) return row;
     const { after, ...started } = start;
     const run = await deps.store.runs.get(runId);
     // A run that took a turn already keeps the start it ran on, whatever its body still names.
-    if (!run || !(await beforeFirstTurn(deps.store, runId, run.epoch).catch(() => false))) return row;
+    if (!run || run.epoch !== epoch || !(await beforeFirstTurn(deps.store, runId, epoch).catch(() => false))) return row;
     const until = now() + deps.waitMs;
     const open = new Set(after);
     for (;;) {
@@ -75,20 +83,22 @@ export function reseededLaunchOf(deps: ReseedDeps): (runId: string) => Promise<R
         if (!other || !(await roundOpen(deps.store, other).catch(() => false))) open.delete(id);
       }
       if (!open.size || now() >= until) break;
-      // The run's own end (a person's cancel while it waited) ends the wait too: its start is left as it is.
+      // The run's own end, a claim lost (its epoch moved) or a person's stop or cancel asked while it waited ends the
+      // wait too: its start is left as it is, and nothing is written under a claim this runner may no longer hold.
       const own = await deps.store.runs.get(runId).catch(() => undefined);
-      if (!own || own.state !== "running") return row;
+      if (!own || own.state !== "running" || own.epoch !== epoch) return row;
+      if (stopAsked(await deps.store.commands(runId, 0).catch(() => []))) return row;
       await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     }
     const waited: SeedWaited = open.size ? "timed_out" : "ended";
     if (open.size) deps.log(`run ${runId}: starts from its agent's learning as it is now: its open round${open.size === 1 ? "" : "s"} (${[...open].join(", ")}) did not end within ${Math.round(deps.waitMs / 1000)} s`);
     const own: Pick<NonNullable<RunLaunch["learning"]>, "use" | "noWorkflows" | "model"> = { ...(start.noWorkflows ? { noWorkflows: true as const } : {}), ...(start.use ? { use: true as const } : {}), ...(start.model ? { model: start.model } : {}) };
     try {
-      await deps.store.runs.reseedLearning(runId, { ...startOfSeed(await seedOf(deps.data, deps.store, run.agentId), await deps.shown(), own), waited });
+      if (!(await deps.store.runs.reseedLearning(runId, { ...startOfSeed(await seedOf(deps.data, deps.store, run.agentId), await deps.shown(), own), waited }, epoch))) return row;
     } catch (error) {
       deps.log(`run ${runId}: starts from the learning its start read: its agent's could not be read again: ${said(error)}`);
       // The start it had, without `after`: a later claim never waits on those rounds again.
-      await deps.store.runs.reseedLearning(runId, started).catch(() => undefined);
+      if (!(await deps.store.runs.reseedLearning(runId, started, epoch).catch(() => false))) return row;
     }
     return deps.store.runs.launch(runId).catch(() => row);
   };
