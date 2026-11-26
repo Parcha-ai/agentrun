@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { PROTOCOL_VERSION, type ContentBlock, type InitializeResponse, type McpServer as AcpMcpServer, type PermissionOption, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification, type SystemPrompt } from "@agentclientprotocol/sdk";
 import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
-import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
+import { askGate, journalRecords, journalTurn, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ResultBudget, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
 import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, mcpServerName, nameCall, namesTooLong, ourTool, permissionCallId, toolsLeftOut, type AcpAnnounces } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
@@ -94,6 +94,9 @@ export interface AcpHarnessOptions {
   env?: Readonly<Record<string, string | undefined>>;
   /** The host's gate (SessionIO.gate). Absent: every call runs. */
   gate?: (call: GateCall) => Promise<GateAnswer>;
+  /** What the session's model can take of one tool result (its context window): the tool bridge holds every result to
+   *  it (boundResult's budget). Absent: the host's bound alone (HOST_RESULT_MAX_CHARS). */
+  resultBudget?: ResultBudget;
   /** Proxy billing: what each agent process gets to reach the host's model proxy (its variables), closed with it.
    *  `halt` ends the drive the process serves. */
   proxy?: (drive: { halt(reason: unknown): void }) => Promise<{ env: Record<string, string>; close(): Promise<void> }>;
@@ -842,11 +845,14 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
 
   async function driveOnce(ctx: DriveContext): Promise<void> {
     const journal = new NativeJournal(ctx);
+    // The turn's budget kept on this drive's journal: a resume answers the calls it left on its answer's facts.
+    journalTurn(options.resultBudget?.turn, journal);
     const gate = options.gate;
     // The gate is asked once the call's `seen` record is in the log: a call the gate parks is found again on a resume.
     const bridge = toolBridge(ctx, options.tools, {
       ...(gate ? { gate: async (call: GateCall) => (await journal.flush(), gate(call)) } : {}),
       beforeNever: () => journal.flush(),
+      ...(options.resultBudget ? { budget: options.resultBudget } : {}),
     });
     const cur: Current = { ctx, journal, bridge, signal: ctx.signal, inflight: new Set() };
 

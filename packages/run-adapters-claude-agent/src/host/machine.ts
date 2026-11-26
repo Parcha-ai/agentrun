@@ -51,6 +51,8 @@ export interface LocalMachineOptions {
    *  runs on a person's own login (login.ts): the machine then starts no proxy, and holds no model URL or key. */
   proxy?: {
     hooks: ModelProxyHooks;
+    /** The session's turn budget (ResultBudget.turn), which the proxy opens with each answer's facts. */
+    turn?: ModelProxyOptions["turn"];
     tools: readonly string[];
     /** The CLI's own tools the session has (`Skill`, with skills; `WebSearch`), offered beside its tools. */
     builtins?: readonly string[];
@@ -200,6 +202,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         onThinkingDisabled: ({ model: main }) => po.log?.("claude-agent: thinking.disabled", { model: main }),
       }),
       hooks: po.hooks,
+      ...(po.turn ? { turn: po.turn } : {}),
       model: route.models.model,
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",

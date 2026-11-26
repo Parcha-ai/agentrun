@@ -170,6 +170,15 @@ function chosenCapModel(entry: HarnessEntry, env: NodeJS.ProcessEnv, chosen: Awa
   return priced.provider === OLLAMA_PROVIDER ? { ...capped, local: true } : capped;
 }
 
+/** The context window of the run's model (modelsOf), in tokens, from its catalog entry, or the entry that bills it (its
+ *  entry's priceModel) where the chosen one is not listed: the session's window (SessionSpec.contextWindow), which the
+ *  kernel's tool bridge holds each result to its share of. Undefined where neither names one: the host's bound alone. */
+function chosenWindow(entry: HarnessEntry, env: NodeJS.ProcessEnv, chosen: Awaited<ReturnType<typeof modelsOf>>): number | undefined {
+  const windowOf = (ref: ModelRef) => (chosen.models.getModel(ref.provider, ref.modelId) as { contextWindow?: unknown } | undefined)?.contextWindow;
+  const window = windowOf(chosen.model) ?? windowOf(entry.priceModel(env, chosen.model));
+  return typeof window === "number" && Number.isFinite(window) && window > 0 ? window : undefined;
+}
+
 /** The model a run of the CLI harness `entry` on `ref` (a revision's model; none, this host's default for it) is capped
  *  at here, as its run's spec prices it (modelsOf, chosenCapModel), before any run: a save's cap warning (cap-short.ts)
  *  prices its least step on it. */
@@ -563,6 +572,8 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // no key saved for its harness, above) and takes no learning step (below), so it holds the computer on a host with no
   // key for its model, and a key saved since runs a new run, never this one.
   const chosen = heldRefusal !== undefined ? heldChoice(body.model) : await modelsOf(entry, env, modelAskOf(launch.model, body.model));
+  // A held run starts no model, so it has no window to hold results to.
+  const window = heldRefusal === undefined ? chosenWindow(entry, env, chosen) : undefined;
   if (heldRefusal === undefined) {
     await planBeforeRun(env, chosen.model);
     if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
@@ -800,6 +811,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     tools: inGrantOrder([...tools.hostTools(withKindTools(granted, tools), { results, writes: gate.writes(), opsRefused: gate.opsRefused() }),...[...webTools, ...browserTools, ...(askTool ? [askTool] : []), ...(learnedTool ? [learnedTool] : [])].map((tool) => answersCut(tool, held))], granted),
     context: "fresh",
     ...(thinking ? { thinking } : {}),
+    // The run's model's window, from its catalog: the CLI adapter holds each tool result to its share (and Codex and
+    // OpenCode are told it in place of their 272,000 guess).
+    ...(window ? { contextWindow: window } : {}),
   };
 
   // A typed input's other fields follow its content as one json block (inputMessage).

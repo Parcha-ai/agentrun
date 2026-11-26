@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { READ_SKILL_FILE, hostedTool, readSkillFileTool, skillProblems, toolSchemaProblems, type HostSkill } from "@parcha/agentrun-kernel";
 import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, HostTool, SessionSpec, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive } from "@parcha/agentrun-kernel/kernel";
-import { bridgeTool, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
+import { bridgeTool, recoveryNote, settleTurn, transcriptOf, windowBudget } from "@parcha/agentrun-kernel/process";
 import { serialWriter, startModelProxy, type ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import { openCodeHarness, sentSubmissions, type DriveControl } from "./harness.js";
 import { openCodePolicy, TOOL_PREFIX } from "./host/policy.js";
@@ -49,7 +49,9 @@ export interface OpenCodeAdapterOptions {
   price?: ModelProxyOptions["price"];
   /** The most output tokens one request may ask for. Default 32 000. */
   maxOutputTokens?: number;
-  /** The model's context window. Default 272 000. */
+  /** The model's context window, in tokens: OpenCode is told it (its model's `limit.context`), and the host's bound on one
+   *  tool result is its share of it (the kernel's resultMaxChars). A session's own (SessionSpec.contextWindow) wins. With
+   *  neither, OpenCode is told 272 000 and the host's bound alone holds a result. */
   contextWindow?: number;
   /** Where sessions keep their private directories when the host lends none (`io.dir`): one per session key. */
   sessionsDir?: string;
@@ -162,6 +164,7 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
       }
       const instructions = [...spec.system, ...(skills.length ? [skillsNote(skills)] : [])].join("\n\n");
       const effort = spec.effort ?? spec.thinking;
+      const window = spec.contextWindow ?? options.contextWindow;
       let control: DriveControl | undefined;
       const harness = openCodeHarness({
         tools: tools.map((tool) => bridgeTool(tool)),
@@ -177,7 +180,10 @@ export function openCodeAdapter(options: OpenCodeAdapterOptions): AgentAdapter {
         hooks: io.models as never,
         ...(options.price ? { price: options.price } : {}),
         ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}),
-        contextWindow: options.contextWindow ?? 272_000,
+        // The window the host knows (the session's, from its catalog; else this adapter's). Only with neither is OpenCode
+        // told 272,000, a guess, and then no tool result is held to it: the host's bound alone.
+        contextWindow: window ?? 272_000,
+        ...windowBudget(window, spec.system),
         ...(options.eventConnectMs ? { eventConnectMs: options.eventConnectMs } : {}),
         ...(options.log ? { log: options.log } : {}),
         ...(options.fetch ? { fetch: options.fetch } : {}),
