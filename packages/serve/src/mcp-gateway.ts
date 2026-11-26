@@ -31,7 +31,7 @@ import { saveOnce } from "./save-once.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
-import { valueLeft } from "./learn/secrets.js";
+import { secretShapes, valueLeft } from "./learn/secrets.js";
 import { capped, mcpClient, scrub } from "./mcp-wire.js";
 import { resourceResult, resourceToolOperation, resourceToolProblem } from "./mcp-resources.js";
 import { mcpNameOf, mcpToolName } from "./tool-names.js";
@@ -254,6 +254,23 @@ export interface McpGatewayOptions {
 /** A run's journal commit. */
 export type McpCommit = <T>(change: (tx: unknown) => Promise<T>) => Promise<T>;
 
+/** A binary payload of an answer filed whole (an image's or an audio's data, a resource's blob), as it is filed: scrubbed
+ *  of the call's own credentials (`own`) and kept whole, unless it holds one of `values` (what the run's redactor holds),
+ *  as written, in any form the matcher finds, or in the bytes it decodes to, or those bytes hold a secret's shape (a JWT,
+ *  a private key: SECRET_SHAPES, which the run's redactor cuts in text). Then it is "[redacted]" whole: a cut inside it
+ *  would leave no payload a reader could open either. Its base64 text is not read for a shape: the MCP client takes no
+ *  payload that is not base64, and in base64 a shape stands only by chance (a Google API key's run, about once in 50 MiB)
+ *  or as a server's deliberate encoding, which no redactor stops. `values` undefined (a redactor that names none): the
+ *  payload is cut as the rest is, by `clean`. */
+export function binaryKept(payload: string, clean: (text: string) => string, own: (text: string) => string, values: readonly string[] | undefined): string {
+  if (!values) return clean(payload);
+  const scrubbed = own(payload);
+  const bytes = Buffer.from(scrubbed, "base64").toString("latin1");
+  if (secretShapes(bytes).length > 0) return "[redacted]";
+  if (!values.length) return scrubbed;
+  return valueLeft(scrubbed, values, []) || valueLeft(bytes, values, []) ? "[redacted]" : scrubbed;
+}
+
 /** The gateway: a session's servers, and their calls. `credentials` is read at every call and every request, never
  *  copied: a change the claim step makes after (a token refreshed behind the claim, a server removed) reaches it, even
  *  through a client already connected. */
@@ -371,9 +388,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   /** `result` as the JSON filed for an answer with blocks that are not text, every text in it cut by `clean`. An image's
    *  or an audio's data and a resource's blob are base64, one run with no whitespace, which the run's redactor would show
    *  as "[redacted]" past a piece (key-refusal.ts redactedAnswer), and a screenshot is far longer than one: each is
-   *  scrubbed of the call's own credentials (`own`) and kept whole unless it holds one of `values` (what the run's
-   *  redactor holds), as written, in any form the matcher finds, or in the bytes it decodes to; then it is "[redacted]"
-   *  alone. `values` undefined (a redactor that names none): the payload is cut as the rest is. */
+   *  filed as binaryKept keeps it, at its own block. */
   const filedJson = (result: Record<string, unknown>, clean: (text: string) => string, own: (text: string) => string, values: readonly string[] | undefined): string => {
     const blocks = Array.isArray(result.content) ? (result.content as unknown[]) : [];
     const payloads: { at: number; key: "data" | "blob"; text: string }[] = [];
@@ -399,17 +414,11 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     } catch {
       return filed;
     }
-    const kept = (payload: string) => {
-      const scrubbed = own(payload);
-      if (!values) return clean(payload);
-      if (!values.length) return scrubbed;
-      return valueLeft(scrubbed, values, []) || valueLeft(Buffer.from(scrubbed, "base64").toString("latin1"), values, []) ? "[redacted]" : scrubbed;
-    };
     const content = Array.isArray(doc.content) ? (doc.content as unknown[]) : [];
     for (const { at, key, text } of payloads) {
       const block = content[at] as Record<string, unknown> | undefined;
       const into = key === "data" ? block : (block?.resource as Record<string, unknown> | undefined);
-      if (into && typeof into === "object" && into[key] === "") into[key] = kept(text);
+      if (into && typeof into === "object" && into[key] === "") into[key] = binaryKept(text, clean, own, values);
     }
     return JSON.stringify(doc);
   };
