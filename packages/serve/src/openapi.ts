@@ -5131,6 +5131,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   ];
   readFileOp.responses["413"] = ref("responses/PayloadTooLarge");
   readFileOp.responses["415"] = ref("responses/UnsupportedMediaType");
+  // Its cut is made in a worker under a deadline (cut-pool.ts): past it, or when the worker fails, 503, never uncut.
+  readFileOp.responses["503"] = ref("responses/Unavailable");
   readFile["x-agentrun-serve-changed"] = { ...(readFile["x-agentrun-serve-changed"] as Json), parameters: "filecut/1" };
   // filecut/2: `?cut=run` on the listing names each file under the run's cut (RunFile.name), so a grader is told of every
   // file a run left, media included, without a path that holds a held value.

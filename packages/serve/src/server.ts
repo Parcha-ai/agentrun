@@ -481,6 +481,9 @@ export type ServeOptions = {
   console?: string;
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
+  /** How long a cut read of a run's file waits for its cut (cut-pool.ts) before it is refused 503 (default CUT_MS). For
+   *  tests. */
+  cutMs?: number;
   /** How often the runs' listings' builder looks again when it found nothing to build (run-listing.ts; default
    *  LISTER_IDLE_MS). `Infinity`: it builds only when Serve.listingSettled asks, so a test reads what a list builds alone. */
   listerIdleMs?: number;
@@ -1954,7 +1957,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (let round = 1; ; round++) {
       const n = await refreshOnce();
       const latest = () => handed.n === n && !handed.failed;
-      if (latest() && !offersMadeFrom(offersInputs(env))) await offersNow();
+      // The inputs moved on with no key changed (a new Ollama listing, the login): what a revision that names no model
+      // needs is made again from them first, as ollamaNow does, or the offers come back with a default it never read.
+      if (latest() && !offersMadeFrom(offersInputs(env))) {
+        await needsNow();
+        await offersNow();
+      }
       if (latest() && offersMadeFrom(offersInputs(env))) return;
       if (round >= LOGIN_ROUNDS) throw new ApiError("unavailable", `Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, ${LOGIN_ROUNDS} times: ask again.`);
     }
@@ -2527,6 +2535,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     context: ctx,
     sealKey,
     liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers(runId)),
+    ...(options.cutMs !== undefined ? { cutMs: options.cutMs } : {}),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
