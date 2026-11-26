@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-harness-claude
-kind: fix
----
-A claude-agent run no longer ends with no answer when the Claude CLI gives up a silent stream and asks again without streaming. AgentRun only heard the streamed text, so the run completed with `final_answer: null` and no answer on its timeline. The text of a message that comes whole is now said once, as the turn's answer, and a message whose text did stream is never said twice. Where the stream stalled partway and the whole answer begins with what streamed, only the rest is said, so the timeline shows the answer once. This holds on any model, a provider's own Anthropic model included. A local model (an Ollama model) hits it most: on a slow machine it can send nothing for over five minutes while it loads, reads its prompt or thinks. On a local model the CLI now waits up to 30 minutes on a silent stream (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`), so the first request is no longer thrown away. Every other route, a paid one AgentRun translates included, keeps the CLI's own five-minute limit, so a hung stream holds the run's slot and cap no longer than that.

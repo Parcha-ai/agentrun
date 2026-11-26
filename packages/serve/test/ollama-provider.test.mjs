@@ -453,8 +453,17 @@ test("a run on the host default books the Ollama model it ran on: its usage line
   assert.equal(view.status, "completed", JSON.stringify(view.error));
   assert.equal(view.cost.tokens.requests, 1, "the run view's request count, which the run header reads the usage again on");
   assert.equal(ollama.got.chat[0].model, TOOLS, "it ran on the default");
-  const lines = (await api("GET", `/runs/${started.body.run_id}/usage`)).body.lines.filter((line) => line.meter === "tokens");
+  const usage = (await api("GET", `/runs/${started.body.run_id}/usage`)).body;
+  const lines = usage.lines.filter((line) => line.meter === "tokens");
   assert.deepEqual(lines.map((line) => [line.provider, line.model, line.requests, line.usd]), [["ollama", TOOLS, 1, 0]], "provider/model is the id the console labels: ollama/<tag>");
+  // The console's $0 receipt shows only for usage it reads as all free (apps/console/src/lib/receipt.ts usageAllFree):
+  // a total of $0 with nothing unpriced, and no line above $0, unpriced, or with calls or requests no meter took or time
+  // no claim held. A real local run's usage reads so; every receipt test of the console's builds its usage by hand.
+  assert.deepEqual([usage.total?.usd, usage.total?.unpriced ?? 0], [0, 0], JSON.stringify(usage.total));
+  for (const line of usage.lines) {
+    const off = { usd: line.usd, basis: line.basis, unpriced: line.unpriced ?? 0, not_metered_calls: line.not_metered_calls ?? 0, unmetered_requests: line.unmetered_requests ?? 0, unheld_quantity: line.unheld_quantity ?? 0 };
+    assert.ok(off.usd === 0 && off.basis !== "unpriced" && !off.unpriced && !off.not_metered_calls && !off.unmetered_requests && !off.unheld_quantity, `a line the receipt would read as not free: ${JSON.stringify(line)}`);
+  }
 });
 
 test("with no key and Ollama up, the default is the first Ollama model that calls tools, listed in the picker and its free models, on pi and on every harness of a wire the route translates them onto (Anthropic's Messages, a harness module's too; OpenAI's Responses); any key wins", { timeout: 120_000 }, async (t) => {
@@ -546,6 +555,31 @@ test("an Ollama started after the server, with a model pulled, shows in capabili
   assert.equal(caps.models.default, `ollama/${TOOLS}`, JSON.stringify(caps.models));
   assert.equal(caps.models.ready, true);
   assert.ok(caps.harnesses.find((harness) => harness.id === "pi").models.includes(`ollama/${TOOLS}`));
+});
+
+test("a listing that lands before a request that refreshes only the login reaches both the default and whether a run is ready: never the listing's default with ready false", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, KEYS);
+  const clock = 1_000_000;
+  ollamaClock(() => clock);
+  t.after(() => ollamaClock());
+  const port = await freePort();
+  const env = { OLLAMA_HOST: `127.0.0.1:${port}` };
+  withEnv(t, env);
+  const { api } = await serve(t, { faux: undefined });
+  assert.equal((await api("GET", "/capabilities")).body.models.default, null, "Ollama down: nothing listed");
+  await ollamaAsking(env);
+  await fakeOllama(t, { port, models: [SYNTH_MODELS.find((model) => model.name === TOOLS)] });
+  // The listing lands between requests, as one asked behind an answer does on a loaded machine (the flake this was): the
+  // down answer kept is answered at once, and the listing asked behind it.
+  await ollamaModels(env);
+  await ollamaAsking(env);
+  // A save refreshes the login, not the listing, and makes the offers again from the new listing. Before, it left what a
+  // run needs as it was, so every later answer listed the Ollama model as the default with ready false.
+  const made = await api("POST", "/agents", { definition: { id: "desk", version: 1, name: "desk", instructions: "Answer.", skills: [], tools: [] } });
+  assert.ok(made.status < 300, JSON.stringify(made.body));
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.equal(caps.models.default, `ollama/${TOOLS}`, JSON.stringify(caps.models));
+  assert.equal(caps.models.ready, true, JSON.stringify(caps.models));
 });
 
 // OLLAMA_HOST as the ollama CLI reads it: a scheme or none (http), a port or the default (11434 with no scheme; the

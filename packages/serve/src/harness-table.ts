@@ -508,8 +508,9 @@ async function gooseLaunch(launch: ModuleLaunch): Promise<AgentAdapter> {
  *  (`ownKeys`), its model one Cursor lists for that key (`cursor/<model-id>`, `cursor/default` for Cursor's own). Listed
  *  only once its owner has installed it (`agentrun harness install cursor`): `missing` is its release, looked up and
  *  verified (harness-cursor.ts cursorMissing), and `beforeStart` checks its launcher and every file beside it again
- *  before each process starts. Stopped by its owner's turn and tool-call limits (cursorLimitsOf), which its card says. */
-function cursorOptions(facts: AdapterFacts): AcpPlanEntryOptions {
+ *  before each process starts. Stopped by its owner's turn and tool-call limits (cursorLimitsOf), which its card says.
+ *  Exported for its tests, which read its recipe on a host with no Cursor release installed. */
+export function cursorOptions(facts: AdapterFacts): AcpPlanEntryOptions {
   /** Cursor's launcher, or the HarnessUnavailable that says why it is not here, with the fix (install, pins) it names. */
   const launcher = async (env: NodeJS.ProcessEnv): Promise<string> => {
     const found = await cursorMissing(env);
@@ -524,7 +525,9 @@ function cursorOptions(facts: AdapterFacts): AcpPlanEntryOptions {
     card: cursorCardOf,
     missing: async (env) => void (await launcher(env)),
     recipe: async (launch) => {
-      if (!launch.env[CURSOR_KEY]) throw new HarnessUnavailable(`${facts.label} runs on your Cursor API key, and ${CURSOR_KEY} is not set where AgentRun starts: set it there (it is handed to Cursor's runs alone), then restart AgentRun.`);
+      // A held run its model kept from running is laid no key (claim-secrets.ts) and never starts Cursor (acpPlanEntryOf),
+      // so it is never refused for the key: its claim holds its computer.
+      if (!launch.held && !launch.env[CURSOR_KEY]) throw new HarnessUnavailable(`${facts.label} runs on your Cursor API key, and ${CURSOR_KEY} is not set where AgentRun starts: set it there (it is handed to Cursor's runs alone), then restart AgentRun.`);
       const acp = acpPackage()!;
       let limits: { maxTurns: number; maxToolCalls: number };
       try {

@@ -46,6 +46,8 @@ interface ChildInit {
   readonly composioMcpOrigin?: string;
   /** The runner traces its runs: this run's trace is posted to it (tracer.ts postedTracing). */
   readonly traced?: true;
+  /** The plane the runner capped and chose this process's keys by (run-child-host.ts): the claim's, as it is. */
+  readonly plane?: AdapterSpecDeps["claimedPlane"];
 }
 
 registerRunErrors();
@@ -214,6 +216,7 @@ function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held):
     installForClaim: heldInstall as AdapterSpecDeps["installForClaim"],
     // web_save's download slots are the runner's, shared by all its runs (save-slots.ts).
     saveSlots: remoteSaveSlots(channel),
+    ...(init.plane ? { claimedPlane: init.plane } : {}),
     ...(init.githubApi ? { githubApi: init.githubApi } : {}),
     ...(init.githubWeb ? { githubWeb: init.githubWeb } : {}),
     ...(init.githubMcpOrigin ? { githubMcpOrigin: init.githubMcpOrigin } : {}),
