@@ -170,6 +170,10 @@ const CONTROL_PADS = [
   ["JSON's \\u001b CSI colours with an escaped quote inside", String.raw`\u001b[0\"m`.repeat(300), "json"],
   ["JSON's \\u001b OSC titles with escaped quotes inside", String.raw`\u001b]0;\"t\"\u0007`.repeat(300), "json"],
   ["raw CSI colours with an escaped quote inside", '\u001b[0\\"m'.repeat(300), "json"],
+  // Written in JSON twice, an escaped quote inside a CSI opened by HTML's or percent's ESC: only the view that decodes
+  // percent, JSON and HTML escapes in the text as a whole reads each CSI whole.
+  ["HTML's &#x1b; CSI colours with an escaped quote written in JSON twice inside", String.raw`&#x1b;[0\\"m`.repeat(300), "json"],
+  ["percent-encoded CSI colours with an escaped quote written in JSON twice inside", String.raw`%1B[0\\"m`.repeat(250), "python"],
   // What a join view drops inside an escape (a colon, a no-break space) leaves the escape whole there.
   ["raw escapes with a colon inside", "\u001b(:B".repeat(300), "json"],
   ["raw escapes with a no-break space inside", "\u001b(\u00a0B".repeat(300), "json"],

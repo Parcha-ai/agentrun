@@ -426,17 +426,17 @@ const LAYER_READS = SEQUENCE_LAYERS.map(({ names, strings }) => {
  *  (match.ts sequenceAt); or `at` where it opens none (the views then read on from there). `from` is where the opener
  *  starts. It counts as nothing, and a backspace inside it, which still moves back, as one would outside it: `found`
  *  comes back with it taken off (counted). It is read through each decoding and the read that ends furthest is taken:
- *  - each unit as charAt or percentAt decodes it (every layer at once, JSON's two levels among them), a unit that
- *    decodes to nothing (an escaped quote, which the view that reads a string written in a string drops) passed over;
- *  - the same, with what the join views drop passed over too (match.ts joinDrops: a ":" or a blank they drop can make
- *    a whole escape of the rest);
+ *  - each unit as charAt or percentAt decodes it (every layer at once, JSON's two levels among them), with what the
+ *    join views drop passed over (match.ts joinDrops: a ":" or a blank they drop can make a whole escape of the rest);
  *  - each unit as each view decodes it (SEQUENCE_LAYERS), where that view reads the opener as an opener too (a view
  *    that reads "\u001b" as six characters opens no sequence there, and its read would only run to the bound). A
- *    view that decodes fewer layers can read an ST where the first two read its backslash with what follows as one
- *    escape: a JSON writer's "\u001b" and two backslashes before a quote, a letter of JSON's escapes, or "u" and four
- *    hex digits; Python's before "x" and two hex digits; a raw ESC and backslash before any of them.
- *  Where the end taken falls inside a unit (as the first two read units), the read past it resumes at that unit's
- *  start, where those reads resume, never inside an escape they read whole. Not at its end: what a view that decodes
+ *    view that decodes fewer layers can read an ST where one that decodes more reads its backslash with what follows
+ *    as one escape: a JSON writer's "\u001b" and two backslashes before a quote, a letter of JSON's escapes, or "u"
+ *    and four hex digits; Python's before "x" and two hex digits; a raw ESC and backslash before any of them.
+ *  Every read passes over a unit that decodes to nothing (an escaped quote, which the view that reads a string written
+ *  in a string drops). Where the end taken falls inside a unit (as charAt or percentAt read units), the read past it
+ *  resumes at that unit's start, where the views' own reads resume, never inside an escape they read whole. Not at
+ *  its end: what a view that decodes
  *  fewer layers reads after its sequence can be the rest of the next sequence's opener (a percent-encoded ESC in a
  *  title, the BEL after it and the backslash of the next "\u001b" read as an ST), and that opener must still open.
  *  Read no further than a piece of text.
@@ -459,7 +459,7 @@ function sequenceEnd(text: string, from: number, at: number, to: number, intro: 
   // A unit decoded to nothing (an escaped quote: jsonEscapeAt) has no code; the view it comes from records nothing
   // there, so every read passes over it.
   const empty = (unit: number): boolean => Number.isNaN(unit);
-  const reads = [sequenceAt(units, code, at, empty), sequenceAt(units, code, at, (unit) => empty(unit) || joinDrops(unit))];
+  const reads = [sequenceAt(units, code, at, (unit) => empty(unit) || joinDrops(unit))];
   for (const read of LAYER_READS) {
     const layer = unitsOf((k) => read(text, k, to));
     if (layer.next(from) === at && layer.char(from) === intro) reads.push(sequenceAt(layer, code, at, empty));
