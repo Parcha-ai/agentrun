@@ -1151,6 +1151,40 @@ test("a 16 KB OTLP header value of 900 pairs joined by %20, or a 30 KB one of 1,
   assert.equal(secretRedactor(runnerSecrets(spent))(line), "401 from relay: key [redacted] refused", "the last pair after a spent budget: the runner's redactor takes its key whole");
 });
 
+// Keys longer than the 4,096 characters the prefixes past a pair's first separator take in all, each holding one
+// separator and ended by another kind: each row [what, the X-Relay header value, the key as written].
+const LONG_KEY_HEAD = "a".repeat(4096);
+const LONG_KEY_ENDS = ["&", "%26", ";", "%3B", ",", "%2C", " ", "%20"];
+const LONG_KEY_ROWS = [
+  ["a key with a %3B in it, before an & pair", `api_key=${LONG_KEY_HEAD}%3Btail-${"dummy"}&region=us`, `${LONG_KEY_HEAD}%3Btail-${"dummy"}`],
+  ["a key with a %3B in it, before an & pair written %26", `api_key=${LONG_KEY_HEAD}%3Btail-${"dummy"}%26region=us`, `${LONG_KEY_HEAD}%3Btail-${"dummy"}`],
+  ...LONG_KEY_ENDS.flatMap((end) => {
+    const key = `${LONG_KEY_HEAD}${end === "%2C" ? "%3B" : "%2C"}tail-${"dummy"}`;
+    return [
+      [`a key ended by ${JSON.stringify(end)}, first`, `api_key=${key}${end}region=us-east-1`, key],
+      [`a key ended by ${JSON.stringify(end)}, after a pair joined by the same`, `region=us-east-1${end}api_key=${key}${end}theme=dark`, key],
+      [`a key ended by ${JSON.stringify(end)}, before a credential pair`, `api_key=${key}${end}token=other-${"dummy"}-value`, key],
+    ];
+  }),
+];
+
+test("an OTLP header value's credential key longer than the prefix budget is held whole, whichever separator ends it, and a line quoting it is cut with no piece left", () => {
+  const missed = [];
+  for (const [what, header, key] of LONG_KEY_ROWS) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=${header}` };
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      for (const value of [key, decodeURIComponent(key)]) if (!values.includes(value)) missed.push(`${what}: ${value.slice(4090)} not held (${list})`);
+    }
+    for (const [redactor, redact] of [["the [otel] cut", otlpHeaderCut(env)], ["the runner's redactor", secretRedactor(runnerSecrets(env))]]) {
+      for (const form of [key, decodeURIComponent(key)]) {
+        const shown = redact(`401 from relay: key ${form} refused`);
+        if (shown !== "401 from relay: key [redacted] refused") missed.push(`${what}: ${redactor} shows ${shown.replace(LONG_KEY_HEAD, "<4096 a>")}`);
+      }
+    }
+  }
+  assert.deepEqual(missed, [], "every key past the budget is held whole, written and decoded, and cut with nothing after its separator left");
+});
+
 test("after a header value's first URL query, a later URL's query is read while 4,096 characters of them in all fit: one that fits has its + read as a space, and a longer one's key is still held as written by the pair read", () => {
   // A key of `length` characters with a + in it; the second URL's query is `api_key=` and the key.
   const key = (length) => `dummy+key-${"x".repeat(length - 10)}`;
