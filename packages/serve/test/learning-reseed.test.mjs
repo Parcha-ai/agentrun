@@ -15,6 +15,7 @@ const refused = (what) => () => {
   throw new Error(`${what} was read`);
 };
 const EMPTY_JOURNAL = { scanConversations: async () => ({ items: [] }) };
+const EMPTY_RECORDS = { scanConversations: async () => ({ items: [] }), scanTasks: async () => ({ items: [] }), scanSubmissions: async () => ({ items: [] }) };
 const TURNED_JOURNAL = { scanConversations: async () => ({ items: [{ id: 1 }] }), scanEntries: async () => ({ items: [{ id: 1, conversationId: 1, kind: "agentrun.message", data: {} }] }) };
 
 test("a run queued or parked on a person is no open round, whatever it holds: a run started beside it names none", async () => {
@@ -25,6 +26,23 @@ test("a run queued or parked on a person is no open round, whatever it holds: a 
     learning: { proposal: refused("its learning") },
   };
   assert.deepEqual(await openRoundsOf(store, "agent-1"), []);
+});
+
+/** An agent with one running run whose round is going (an earlier round of it ended: learning-rounds.ts roundOpen) and
+ *  whose launch learns from a seed, holding `commands`. */
+const goingRound = (commands) => ({
+  runs: { list: async () => [{ id: "run-1", state: "running", epoch: 1 }], launch: async () => ({ runId: "run-1", body: launchBody({ input: {}, title: "t", place: { mode: "runner" }, learning: { seed: "save-1", section: "" } }) }) },
+  commands: async () => commands,
+  readJournal: () => EMPTY_RECORDS,
+  learning: { proposal: async () => ({ createdAt: 1, proposal: {} }) },
+});
+
+test("a running run whose round is going but holds no person's words is no open round: its round merges no correction", async () => {
+  assert.deepEqual(await openRoundsOf(goingRound([{ id: 1, kind: "message" }]), "agent-1"), []);
+});
+
+test("the same run holding a steer (a follow-up, a grade's words) is named", async () => {
+  assert.deepEqual(await openRoundsOf(goingRound([{ id: 1, kind: "message" }, { id: 2, kind: "steer" }]), "agent-1"), ["run-1"]);
 });
 
 /** A store with one run (`run-2`) at `epoch`, whose launch names `after`, its journal `journal`; its seed read throws. */
