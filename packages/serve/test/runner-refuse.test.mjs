@@ -6,8 +6,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
+import { sendCommand } from "../dist/runner/commands.js";
 import { Fenced } from "../dist/store/store.js";
-import { fauxLoops, queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { commandRow, fauxLoops, queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 /** A row id no run has: the store wrapper below answers for it, so the faux loop never takes it. */
 const ROW = 1_000_000;
@@ -82,4 +83,45 @@ test("a refusal whose write the store fences loses the claim, as the runner's de
   assert.deepEqual(lost.map((event) => [event.runId, event.why]), [["run-1", "fenced"]], `the claim is lost as fenced: ${JSON.stringify(events.map((event) => event.type))}`);
   await until(() => loop.stopCalls.some((stop) => stop.kind === "claim-lost"), "the loop is stopped for the lost claim");
   assert.ok(!events.some((event) => event.type === "refused"), "nothing said refused");
+});
+
+test("a refusal that lands after a failed resume's end sealed its claim writes nothing: the row that woke the run keeps its try, and the run is released parked with a backoff", { timeout: 60_000 }, async (t) => {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  // The parked run's resume throws before its loop can start. Its replay's refusal of the waking row lands in the window
+  // after the end sealed the claim, once the failed resume has read the run's untaken rows and before it counts the try.
+  let refuseLate;
+  let raiseId;
+  const reads = overriding(store, {
+    retry: async (claim, commandId) => {
+      const late = refuseLate;
+      refuseLate = undefined;
+      if (late) await late();
+      return store.retry(claim, commandId);
+    },
+  });
+  const faux = fauxLoops({ park: true, turns: 2, turnMs: 10 });
+  const createLoop = (deps) => {
+    const loop = faux.createLoop(deps);
+    const start = loop.start;
+    loop.start = async (claim) => {
+      if (claim.from !== "parked") return start(claim);
+      refuseLate = () => deps.refuse(raiseId, "A cap is only raised: name more than the run's cap.");
+      throw new Error("the harness could not start");
+    };
+    return loop;
+  };
+  const events = [];
+  const runner = startRunner({ store: reads, createLoop, name: "runner-a", ...STEADY_LEASE, pollMs: 20, commandPollMs: 30, resumeTries: 3, resumeBackoffMs: 30_000, onEvent: (event) => void events.push(event) });
+  t.after(() => runner.close());
+  await queue(server, "run-1");
+  await until(async () => { const run = await server.runs.get("run-1"); return run.state === "parked" && run.runner === null; }, "the run parks and is released");
+  raiseId = (await sendCommand(server, "run-1", { kind: "raise", body: { capUsd: 5 } })).id;
+  await until(() => events.some((event) => (event.type === "released" && event.epoch > 1) || event.type === "error"), "the failed resume let go of the run, or failed to", 20_000);
+  assert.equal(refuseLate, undefined, "the late refusal was asked for");
+  const row = await commandRow(server, "run-1", raiseId);
+  assert.deepEqual([row.takenAt, row.refused, row.tries], [null, null, 1], `the raise is untaken with one try counted, never written refused: ${JSON.stringify(row)}`);
+  const run = await server.runs.get("run-1");
+  assert.equal(run.state, "parked", JSON.stringify(run));
+  assert.ok(run.backoffUntil > Date.now(), `released parked with a backoff before its next try: ${JSON.stringify(run)}`);
+  assert.ok(!events.some((event) => event.type === "refused" || event.type === "error"), `nothing refused, no error: ${JSON.stringify(events.filter((event) => event.type === "refused" || event.type === "error"))}`);
 });
