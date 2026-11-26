@@ -4022,8 +4022,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Composio was made from that part. Read before the revision is written; neither holds a sealed value.
     const resent = new Map<number, Source>();
     const remade = new Set<number>();
+    // Whether a webhook source's secret is its sender's to give (Stream's), never made here.
+    const givesSecret = (source: unknown) => Boolean(adapters.find((one) => one.id === "webhook")?.givenSecret?.(source as Source));
     for (const [i, trigger] of made.triggers.entries()) {
       const was = unmade(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      // A webhook whose secret moves between one made here and one its sender gives (standard or github to stream, or
+      // back): no PATCH moves it (triggers.ts), so it is made again, as a trigger of another kind is.
+      if (was && isObject(trigger.source) && trigger.source.kind === "webhook" && isObject(was.source) && was.source.kind === "webhook") {
+        if (givesSecret(trigger.source) !== givesSecret(was.source)) remade.add(i);
+        continue;
+      }
       if (!was || !isObject(trigger.source) || trigger.source.kind !== "composio" || !isObject(was.source) || was.source.kind !== "composio") continue;
       try {
         resent.set(i, composioTriggers.resent(was.source as Source, was.id, trigger.source as Source));
@@ -4046,7 +4054,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (was.templateId === null && kind === wasKind && !remade.has(i)) return [];
       const why = was.templateId !== null
         ? `is another template package's (${was.templateId}), not the ${pkg.name} template's`
-        : `is not the ${pkg.name} template's, and keeping it would mean removing it and making it again: ${kind === wasKind ? "its Composio server, event or config differs from the package's" : `it is a ${wasKind} trigger, and the package's is a ${kind} one`}`;
+        : `is not the ${pkg.name} template's, and keeping it would mean removing it and making it again: ${kind === wasKind ? (kind === "webhook" ? "its secret would move between one this server makes and one its sender gives" : "its Composio server, event or config differs from the package's") : `it is a ${wasKind} trigger, and the package's is a ${kind} one`}`;
       return [{ field: `triggers.${i}.name`, reason: "not_allowed", message: `The agent's trigger ${was.name} ${why}. Nothing was changed: rename or delete that trigger, then apply the template again.` }];
     });
     if (notOurs.length) throw new ApiError("name_taken", notOurs.length === 1 ? notOurs[0]!.message : `${notOurs.length} of the agent's triggers have the names of the ${pkg.name} template's and are not its own. Nothing was changed: rename or delete each, then apply the template again.`, { fields: notOurs });
@@ -4181,10 +4189,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const hooks: InputIssue[] = made.triggers.flatMap((trigger, i): InputIssue[] => {
       if (hostless.has(i) || !isObject(trigger.source) || trigger.source.kind !== "webhook") return [];
       const given = adapters.find((one) => one.id === "webhook")?.givenSecret?.(trigger.source as Source);
-      if (!given) return [templateTriggerSecret(i)];
+      // Made again (its secret moved between one made here and its sender's): a new trigger, so its hook URL is new too.
+      const moved: InputIssue[] = remade.has(i) ? [{ field: `triggers.${i}`, reason: NOT_SET_UP, message: `The trigger ${String(trigger.name).trim()} was made again, since its secret now ${given ? `comes from ${given.sender}` : "is made here"}: its hook URL is new, so point its sender at the new one.` }] : [];
+      if (!given) return [...moved, templateTriggerSecret(i)];
       const kept = answered.find((one) => one.name === String(trigger.name).trim());
       const held = kept ? (withSecretOf({ id: kept.trigger_id, source: trigger.source as { kind: string } }) as { secret?: { set?: boolean } }).secret?.set === true : false;
-      return held ? [] : [templateTriggerGivenSecret(i, given)];
+      return held ? moved : [...moved, templateTriggerGivenSecret(i, given)];
     });
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
     const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "github"

@@ -76,6 +76,8 @@ const mintedField = (adapter: TriggerAdapter | undefined): string | undefined =>
 /** What a trigger's view says of a secret its sealed settings keep but that does not open here (sealed under another seal
  *  key): unset, and why. */
 export const TRIGGER_SECRET_UNOPENED = "Its signing secret does not open under this server's seal key: rotate it in the console.";
+/** The same words for a trigger whose sender makes its secret (Stream's): none is made here, so it is given again. */
+export const givenSecretUnopened = (given: { sender: string }) => `Its signing secret does not open under this server's seal key: give it ${given.sender}'s secret again with Set secret (PUT /v2/triggers/{id}/secret).`;
 
 /** Where a trigger's minted secret stands here: held and open, kept but not opening under this seal key, or none. */
 export type SecretHeld = "set" | "unopened" | "unset";
@@ -88,7 +90,8 @@ export function withTriggerSecret<T extends { id: string; source: { kind: string
   const field = mintedField(adapter);
   if (field === undefined) return view;
   const state = held(adapter!.id, view.id, field);
-  return { ...view, secret: triggerSecretMeta(view.id, state === "set"), ...(state === "unopened" ? { note: TRIGGER_SECRET_UNOPENED } : {}) };
+  const given = adapter!.givenSecret?.(view.source as Parameters<NonNullable<TriggerAdapter["givenSecret"]>>[0]);
+  return { ...view, secret: triggerSecretMeta(view.id, state === "set"), ...(state === "unopened" ? { note: given ? givenSecretUnopened(given) : TRIGGER_SECRET_UNOPENED } : {}) };
 }
 
 /** The words a replayed apply says of each webhook trigger it made: its secret was in the first answer alone. */
