@@ -10,6 +10,9 @@ const gate = process.env.SPAWN_HELD_UNTIL;
 const tick = new Int32Array(new SharedArrayBuffer(4));
 childProcess.spawn = (...args) => {
   const child = spawn(...args);
+  // <gate>.held: the hold began (this preload is in the shim and its spawn reached it), so a test can tell its signal
+  // met a held shim, not one this preload never reached.
+  if (gate) writeFileSync(`${gate}.held`, '');
   // Synchronous, as the shim's own lines after spawn are: nothing of the shim runs until the gate opens. A hold that
   // runs out leaves <gate>.expired, so a test can tell its signal came after the hold rather than during it.
   for (const end = Date.now() + 25_000; gate && !existsSync(gate); Atomics.wait(tick, 0, 0, 10)) {
