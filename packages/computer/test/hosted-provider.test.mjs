@@ -128,6 +128,17 @@ test("check() refuses, with no host call, what no hosted computer is: open, an a
 	assert.deepEqual(fake.calls, []);
 });
 
+test("check() refuses a caller's label under a packed map's own keys (agentrun, agentrun-<n>) in words naming them, with no host call; agentrun-tool, agentrun.run and my-agentrun-0 are taken", () => {
+	const { provider, fake } = setup();
+	for (const key of ["agentrun", "agentrun-0", "agentrun-1", "agentrun-12"]) {
+		const refusals = provider.check({ ...SPEC, labels: { run: "r1", [key]: "pforged" } });
+		assert.deepEqual(refusals.map((r) => r.field), ["labels"], key);
+		assert.equal(refusals[0].message, `the label ${key} is reserved: agentrun and agentrun-<n> (agentrun-0, agentrun-1 and on) hold a computer's packed labels`);
+	}
+	for (const key of ["agentrun-tool", "agentrun.run", "my-agentrun-0", "agentrun-0x", "agentrun-"]) assert.deepEqual(provider.check({ ...SPEC, labels: { [key]: "v" } }), [], key);
+	assert.deepEqual(fake.calls, []);
+});
+
 test("a host's own rules (check) are held at check()", () => {
 	const fake = fakeHost();
 	const strict = new HostedProvider({ ...fake.host, check: (spec) => (spec.image === "bad" ? [{ field: "image", message: "not a vendor image" }] : []) }, { daemonPath: DAEMON_PATH });

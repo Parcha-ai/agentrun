@@ -15,6 +15,7 @@ import { queue, stores, until } from "./runner-support.mjs";
 
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { journalRecords, messagesOf } = await import("../dist/runner/journal-reader.js");
@@ -131,7 +132,7 @@ test("a pi run through the adapter on the faux route goes through the kernel's m
   let read = 0;
   const tools = [{ name: "read", description: "Reads.", inputSchema: { type: "object", properties: {} }, replay: "safe", call: async () => ((read += 1), { text: "42" }) }];
   const loop = createAdapterLoop(async (_claim, run) => ({
-    adapter: piAdapter({ run, model: route.model, provider: route.provider, ...(route.fetch ? { fetch: route.fetch } : {}), ...(route.price ? { price: route.price } : {}) }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: route.model, provider: route.provider, ...(route.fetch ? { fetch: route.fetch } : {}), ...(route.price ? { price: route.price } : {}) }),
     session: { key: "root", label: "root", system: ["Answer."], tools, context: "fresh" },
     input: "read it",
     runCap: { capUsd: () => undefined, modelOf: () => undefined },

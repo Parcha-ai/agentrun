@@ -1,12 +1,29 @@
 // GET /v2/wrapped: a year of the work under this machine's home (Claude Code, Codex, pi and every other source the import
 // package reads), as numbers. The import package's wrappedHome does the reading; this is its answer in the API's words,
 // with the runs imported here beside it. Numbers and names only: no prompt, title, path or project is in it.
-import { HARNESS_OF, type Wrapped } from "@parcha/agentrun-import";
+import { CACHE_CAUSES, HARNESS_OF, type Wrapped } from "@parcha/agentrun-import";
+import type { StoreAnalytics } from "./store-reads/analytics.js";
 
 const total = ({ input, output, cacheRead, cacheWrite }: Wrapped["tokens"]) => input + output + cacheRead + cacheWrite;
 
-/** `wrapped` (the import package's) as GET /v2/wrapped serves it, and the runs imported from each source (`imported`). */
-export function wrappedView(wrapped: Wrapped, imported: readonly { source: string; runs: number }[], unreadFiles = 0) {
+/** The year's imported runs' cache (the store's sums, StoreAnalytics.cache) as GET /v2/wrapped serves it: null when no
+ *  run of the year was analyzed. Each cause there, 0 where none. Only runs imported here are in it: a session the owner
+ *  left out of the import, or imported before the import analyzed caches, is not. */
+export function cacheView(cache: StoreAnalytics["cache"] | undefined) {
+  if (!cache?.runs) return null;
+  const byCause = (counts: Record<string, number>) => Object.fromEntries(CACHE_CAUSES.map((cause) => [cause, counts[cause] ?? 0]));
+  return {
+    runs: cache.runs,
+    hit_rate: cache.prompt > 0 ? Math.round((cache.read / cache.prompt) * 1e4) / 1e4 : null,
+    breaks: byCause(cache.breaks),
+    extra_cost_usd: byCause(cache.extraCost),
+    unpriced_breaks: cache.unpriced,
+  };
+}
+
+/** `wrapped` (the import package's) as GET /v2/wrapped serves it, the runs imported from each source (`imported`), and
+ *  their cache (`cache`, cacheView). */
+export function wrappedView(wrapped: Wrapped, imported: readonly { source: string; runs: number }[], unreadFiles = 0, cache?: StoreAnalytics["cache"]) {
   const { input, output, cacheRead, cacheWrite } = wrapped.tokens;
   return {
     year: wrapped.year,
@@ -27,6 +44,7 @@ export function wrappedView(wrapped: Wrapped, imported: readonly { source: strin
     sources: wrapped.sources,
     imported: imported.map(({ source, runs }) => ({ source, runs })),
     unread_files: unreadFiles,
+    cache: cacheView(cache),
   };
 }
 

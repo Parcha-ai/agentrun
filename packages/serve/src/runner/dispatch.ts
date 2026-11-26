@@ -10,6 +10,7 @@
 import { harnessOfBody } from "../harness.js";
 import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import type { Claim, Command, CommandOutcome, Loop, LoopDeps, LoopEnd, LoopFactory, StopReason } from "./loop-contract.js";
+import { mustHold } from "./redact.js";
 
 /** What the dispatch reads of a run at its claim, and how it picks the harness's loop. */
 export interface DispatchDeps {
@@ -55,6 +56,7 @@ export function createDispatchLoop(deps: DispatchDeps): LoopFactory {
 }
 
 function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
+  mustHold(loopDeps.redact, "A dispatch loop");
   /** The harness's loop, once the launch read has chosen it. */
   let inner: Loop | undefined;
   /** Commands handed over before the inner loop was chosen: replayed through it once it is. */
@@ -100,7 +102,7 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     if (earlyStop) {
       inner.stop(earlyStop).catch((error: unknown) => {
         const text = (error as Error)?.message ?? String(error);
-        console.warn(`[runner] run ${claim.runId}: its stop failed: ${loopDeps.redact ? loopDeps.redact(text) : text}`);
+        console.warn(`[runner] run ${claim.runId}: its stop failed: ${loopDeps.redact(text)}`);
       });
     }
     return end;
@@ -125,7 +127,7 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     // What went wrong, cut of the values the run holds (LoopDeps.redact), as the log may not show them.
     const why = () => {
       const text = (lastError as Error)?.message ?? String(lastError);
-      return loopDeps.redact ? loopDeps.redact(text) : text;
+      return loopDeps.redact(text);
     };
     const failed: Command[] = [];
     try {

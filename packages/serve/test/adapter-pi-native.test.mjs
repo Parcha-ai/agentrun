@@ -13,6 +13,7 @@ import { queue, stores, until } from "./runner-support.mjs";
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 const TIMING = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
@@ -36,7 +37,7 @@ async function nativeRun(t, { script, extension, gate, lifecycle, sessionTools =
   const requests = [];
   const asked = [];
   const loop = createAdapterLoop(async (_claim, run) => ({
-    adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: origin(script, requests), price: () => 0, extensions: [extension] }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: origin(script, requests), price: () => 0, extensions: [extension] }),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: sessionTools, context: "fresh" },
     input: "Follow the script.",
     hooks: quiet,

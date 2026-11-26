@@ -26,7 +26,7 @@ import { createWorkflowExtension, type WorkflowTaskHost } from "../workflow/task
 import { readWorkflowRun, startWorkflowRevision, workflowCarry } from "../workflow-run.js";
 import { type BudgetData, type EndData, type EndReview, KINDS, type RaiseData } from "./journal-kinds.js";
 import { type Claim, type Command, type CommandOutcome, type Journal, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
-import type { HeldRedact } from "./redact.js";
+import { type HeldRedact, mustHold } from "./redact.js";
 import type { RunOutcome, RunPatch } from "../store/store.js";
 import { END_PATCH_MS, END_PATCH_UNKNOWN, readAgain } from "./loop.js";
 
@@ -134,6 +134,7 @@ export function createWorkflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) 
 }
 
 function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRunSpec | Promise<WorkflowRunSpec>, deps: LoopDeps): Loop {
+  mustHold(deps.redact, "A workflow loop");
   let harness: Harness | undefined;
   let workflows: ReturnType<typeof createWorkflowExtension> | undefined;
   let runId: string | undefined;
@@ -289,7 +290,7 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
       const patch = await readAgain(() => endPatch(data), late, (error, tries, last) => {
         // Cut of every secret the runner holds (LoopDeps.redact): an error's text may echo one.
         const text = (error as Error)?.message ?? String(error);
-        const cut = deps.redact ? deps.redact(text) : text;
+        const cut = deps.redact(text);
         console.warn(last ? `[runner] ${runId}: its end's patch failed ${tries} times, last: ${cut}; the end is written with its cost and metrics unknown` : `[runner] ${runId}: its end's patch failed: ${cut}; read again`);
       });
       if (patch === "late") {

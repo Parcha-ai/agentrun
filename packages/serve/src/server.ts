@@ -36,7 +36,7 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { API_ONLY_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly } from "./api-only.js";
-import { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
+import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
 import { capacityOverStore, capacityWindowOf } from "./capacity.js";
@@ -118,6 +118,7 @@ import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelO
 import { exportReadsOverStore } from "./run-export-store.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { type CutScrub, ExportFailed, restoreIdsOf, runExport } from "./run-export.js";
+import { shareHost } from "./share-host.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
@@ -141,7 +142,8 @@ import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { forgetLegacyRunLearning, legacyGradesKey, legacyPromotionsKey } from "./learn/legacy/scrub.js";
 import { runModelRef } from "./model.js";
-import { ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels, ollamaReading } from "./ollama-provider.js";
+import { fullTag, type LocalModelDeps, localModelView, localPulls, type Machine, pullLocalModel, pullThrough, readMachine } from "./local-model.js";
+import { ollamaForget, ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels, ollamaReading } from "./ollama-provider.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -382,6 +384,11 @@ export type ServeOptions = {
    *  (the console, sign-in, setup, settings, MCP, triggers, hooks, ...) with a 404 before anything reads the request.
    *  It has no owner: accounts and open setup are off, there being no page to sign in to. */
   apiOnly?: boolean;
+  /** The share host (`--share-host`, AGENTRUN_SHARE_HOST=1, share-host.ts): serve shares under /r/ alone (a share's page,
+   *  its stored bundle, the page's assets, /r/v2/shares and /r/v2/health) and refuse every other address with a 404
+   *  before anything reads the request. No runner beside it, no owner (accounts and open setup are off), and its share
+   *  URLs on `publicUrl` (AGENTRUN_PUBLIC_URL): a start on an address other than loopback without one is refused. */
+  shareHost?: boolean;
   /** AGENTRUN_API_ONLY_MCP_ORIGINS, read as the environment's is (the serve README's API-only section); only with apiOnly. */
   apiOnlyMcpOrigins?: readonly string[];
   /** The launch hook (AGENTRUN_LAUNCH_HOOK_URL and _SECRET, trigger-launch-hook.ts): each trigger firing that would start
@@ -480,12 +487,21 @@ export type ServeOptions = {
   console?: string;
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
+  /** How long a cut read of a run's file waits for its cut (cut-pool.ts) before it is refused 503 (default CUT_MS). For
+   *  tests. */
+  cutMs?: number;
   /** How often the runs' listings' builder looks again when it found nothing to build (run-listing.ts; default
    *  LISTER_IDLE_MS). `Infinity`: it builds only when Serve.listingSettled asks, so a test reads what a list builds alone. */
   listerIdleMs?: number;
   /** How often a timeline page that waits (`wait_ms`) reads the store again while nothing changed (default 1000 ms,
    *  run-reads-over-store.ts). A test's server reads sooner, so a change is served without the rest of a second's wait. */
   timelinePollMs?: number;
+  /** For tests: this machine as GET /settings/local-model reads it (local-model.ts Machine), in place of the real one, so no
+   *  test reads the hardware it runs on. */
+  machine?: () => Promise<Machine>;
+  /** For tests: how long a local model pull may go with no byte from Ollama before it stops (ollama-provider.ts
+   *  PULL_STALL_MS, two minutes, by default). */
+  pullStallMs?: number;
   /** No runner beside this server in its process (the CLI's --no-runner, the image's server-and-runner): a paired
    *  computer's socket is held here while no run holds it, and relayed to the runner that holds a run of it
    *  (workspace/paired-route.ts); while no runner relays, a pairing code, the pair answer and each paired computer say no
@@ -538,7 +554,8 @@ export type ServeOptions = {
    *  command row is written, with the run's id and the message's text, so a test can hold a message at the run's door while
    *  the run's state changes under it (runs-over-store.ts message). */
   beforeSubmit?: (runId: string, content: string) => Promise<void> | void;
-  /** A test's seam: the scrubber GET /runs/{id}/export cuts with (run-export.ts), in place of secret-cut.ts scrub. */
+  /** A test's seam: the scrubber GET /runs/{id}/export cuts with (run-export.ts), and a share host scrubs an upload with
+   *  (share-host.ts), in place of secret-cut.ts scrub. */
   shareScrub?: CutScrub;
   /** A test's seam: step 2 of DELETE /agents/{id} (agent-delete.ts) in place of the learning module's deleteLearning over
    *  the agent's learning (learn/delete.ts), the server's own. */
@@ -844,6 +861,9 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/model-gateway$/, name: "saveModelGateway" },
   { method: "DELETE", pattern: /^\/settings\/model-gateway$/, name: "deleteModelGateway" },
   { method: "POST", pattern: /^\/settings\/model-gateway\/test$/, name: "testModelGateway" },
+  // A free local model (local-model.ts): this machine and its recommended model, and one pull of it, the owner's alone.
+  { method: "GET", pattern: /^\/settings\/local-model$/, name: "getLocalModel" },
+  { method: "POST", pattern: /^\/settings\/local-model\/pull$/, name: "pullLocalModel" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
   { method: "GET", pattern: /^\/settings\/mcp-server-names$/, name: "listMcpServerNames" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
@@ -1304,6 +1324,12 @@ export function harnessSignInRefusal(options: Pick<ServeOptions, "host" | "publi
 export async function startServe(options: ServeOptions): Promise<Serve> {
   // API-only: no console, so no owner to sign in to it (and no setup code printed for a page that is refused).
   if (options.apiOnly) options = { ...options, accounts: false, openSetup: false };
+  // The share host: no console, owner or runner either, and its share URLs on its public address alone.
+  if (options.shareHost) {
+    if (options.apiOnly) throw new Error(`a server is a share host (--share-host) or API-only (${API_ONLY_ENV}=1), not both`);
+    if (!options.publicUrl && !isLoopback(options.host ?? DEFAULT_HOST)) throw new Error("a share host on an address other than loopback names its shares' address in AGENTRUN_PUBLIC_URL (the origin people open its /r/ links at): a request's Host header never names it");
+    options = { ...options, accounts: false, openSetup: false, runnerApart: true };
+  }
   // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
   // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
   delete process.env[HARNESS_TABLE_ENV];
@@ -1323,7 +1349,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
   // The Ollama this server asks, and its runner beside it: OLLAMA_HOST, else the default address on one owner's own machine
   // alone (ollamaHostOf). Read once, at the start: a refused one is said once, here, in the base rule's words.
-  const ollamaHost = ollamaHostOf(process.env, whyNotOwnMachine(options, data, ownUser).length === 0);
+  const notOwn = whyNotOwnMachine(options, data, ownUser);
+  const ollamaHost = ollamaHostOf(process.env, notOwn.length === 0);
   const tokenRefused = options.token === undefined ? undefined : tokenProblem(options.token);
   if (tokenRefused) throw new Error(tokenRefused);
   for (const entry of options.tokens ?? []) {
@@ -1360,7 +1387,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // would write the next server's outbox.
   const stops: Array<() => Promise<void>> = [];
   try {
-    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost }, stops);
+    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost, notOwn }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     throw error;
@@ -1387,8 +1414,8 @@ async function whileReplaced<T>(take: () => Promise<T> | T, held: (error: unknow
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[]; ollamaHost: string | undefined }, stops: Array<() => Promise<void>>): Promise<Serve> {
-  const { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost } = checked;
+async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[]; ollamaHost: string | undefined; notOwn: readonly string[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
+  const { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost, notOwn } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
    *  read (the view never fails for it). */
@@ -1810,6 +1837,27 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await needsNow();
     await offersNow();
   };
+  /** How many times a pull's end reads the Ollama listing for its tag before it fails (ollamaPulled). */
+  const PULL_LISTED_TRIES = 6;
+  /** After a pull of `tag` here ends (local-model.ts): the kept listing dropped and read again at once until it lists
+   *  `tag` (a listing whose ask of one model failed lists it not), and the reading made again where it differs, so the
+   *  model is in the picker and is the default with no wait for OLLAMA_TTL_MS before the pull says done. Never listed
+   *  after PULL_LISTED_TRIES reads, the pull fails in words, so the card never runs a template on another model. */
+  const ollamaPulled = async (tag: string) => {
+    for (let tries = 1; ; tries++) {
+      ollamaForget(env);
+      const listed = await ollamaModels(env);
+      if (listed.some((model) => model.name === fullTag(tag))) break;
+      if (tries >= PULL_LISTED_TRIES) throw new Error(`Ollama finished pulling ${tag} but does not list it yet. Press Pull again.`);
+      await new Promise((resolve) => setTimeout(resolve, 250 * tries));
+    }
+    await ollamaNow();
+  };
+  /** This machine, read once (local-model.ts readMachine), or a test's. */
+  let machineRead: Promise<Machine> | undefined;
+  const machineOf = () => (machineRead ??= (options.machine ?? readMachine)());
+  const pulls = localPulls({ pull: pullThrough(() => env, options.pullStallMs), finished: ollamaPulled, ...(log ? { log } : {}), signal: stopping.signal });
+  const localModelDeps = (): LocalModelDeps => ({ env, notOwn, machine: machineOf, pulls });
   /** After a harness key is saved or removed (harness-keys.ts): the listings built again, cut of it, and the offers probed
    *  again, as a recipe is offered once every key it runs on is saved here (harnessKeysSavedHere). No environment changes. */
   const harnessKeysChanged = async () => {
@@ -1922,7 +1970,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (let round = 1; ; round++) {
       const n = await refreshOnce();
       const latest = () => handed.n === n && !handed.failed;
-      if (latest() && !offersMadeFrom(offersInputs(env))) await offersNow();
+      // The inputs moved on with no key changed (a new Ollama listing, the login): what a revision that names no model
+      // needs is made again from them first, as ollamaNow does, or the offers come back with a default it never read.
+      if (latest() && !offersMadeFrom(offersInputs(env))) {
+        await needsNow();
+        await offersNow();
+      }
       if (latest() && offersMadeFrom(offersInputs(env))) return;
       if (round >= LOGIN_ROUNDS) throw new ApiError("unavailable", `Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, ${LOGIN_ROUNDS} times: ask again.`);
     }
@@ -2210,7 +2263,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   });
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   stops.push(() => webhooks.close());
-  await webhooks.load();
+  // A share host sends no message: a data folder it reuses may hold a webhook, a Slack URL and messages left queued, about
+  // runs it neither runs nor answers for. Its outboxes are never read, so nothing is resumed or sent; their saved secrets
+  // are, so they stay held values its uploads are scrubbed with.
+  await (options.shareHost ? webhooks.readSecrets() : webhooks.load());
   // Where an earlier version kept the webhook: no longer read.
   if (existsSync(join(data, WEBHOOK_FILE))) log?.(logLine("webhook", { condition: "webhook_left_over", file: join(data, WEBHOOK_FILE), effect: "not read: the webhook is kept in the store now; set it again with PUT /v2/settings/webhook" }));
   secretStores.add("webhook", () => webhooks.signingSecrets());
@@ -2225,7 +2281,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     serverSecrets: () => serverSecrets(),
   });
   stops.push(() => slack.close());
-  await slack.load();
+  await (options.shareHost ? slack.readSecrets() : slack.load());
   secretStores.add("slack", () => slack.urlForms());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
@@ -2380,8 +2436,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }).finally(() => { localSourceBusy = false; });
     return localSourceSweep;
   };
-  const localSourceTimer = setInterval(() => void sweepLocalSources(), 30_000);
-  localSourceTimer.unref();
+  // A share host publishes no agent's sources: a reused folder's agent with source sync on would get new revisions there,
+  // and the host answers none of the routes that show or stop that sync.
+  const localSourceTimer = options.shareHost ? undefined : setInterval(() => void sweepLocalSources(), 30_000);
+  localSourceTimer?.unref();
   // As close() does: aborted first, so a sync in flight stops instead of being waited out.
   stops.unshift(async () => {
     stopping.abort();
@@ -2495,6 +2553,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     context: ctx,
     sealKey,
     liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers(runId)),
+    ...(options.cutMs !== undefined ? { cutMs: options.cutMs } : {}),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
@@ -2569,6 +2628,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (key !== undefined && req) keyUsed.set(req, key);
     return started || key !== undefined;
   };
+  // The share host's routes (share-host.ts), with its own store under DIR/shares: a token's id owns each share, and the
+  // values it holds (its keys, its tokens) refuse an upload that carries one.
+  const shareRoute = options.shareHost ? shareHost({
+    data,
+    who: (req) => (bearer(req.headers.authorization, req) ? tokenUsed.get(req) : undefined),
+    authFailed,
+    held: () => [...serverSecrets(), ...tokens.map((entry) => entry.token)],
+    // AGENTRUN_PUBLIC_URL, else (a loopback start alone, as the start checked) the address this server listens at.
+    origin: () => options.publicUrl ?? urlOf(server, host),
+    console: options.console,
+    version: VERSION,
+    ...(options.shareScrub ? { scrub: options.shareScrub } : {}),
+  }) : undefined;
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
   // A key's fingerprint is an HMAC of its request's body (stable JSON) under a key derived from the server's seal key:
@@ -2637,6 +2709,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A saved key is read by name from here, past the checks that refuse a start and before any run (a recovered one too)
   // is launched: each launch hands over what is saved then. One server in a process reads them: the last started.
   await probe("start");
+  // What a stop left in the ChatGPT sign-in's row (a sign-in saved, its models unlisted or the sign-in it replaced not
+  // yet revoked) is settled now, out of the start's way, once the first offers are made: models it lists make them
+  // again (keysChanged). The server's alone: a runner's reader never settles.
+  plan.settleLeft();
   // Under faux, a key the server starts with is checked only against a check's own fake (fauxBrowserbase,
   // fauxMonidCheck, fauxKernel): the fakes the runs use (monid, Parallel, Jev) see the runs' calls alone, and a key with no check fake
   // is not checked.
@@ -2894,10 +2970,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   stops.push(async () => triggers.close());
   // The firing loop runs against the server's own opened store: due firings start their runs through the run write half,
   // times missed while it was down are recorded, and the timer is armed for the next. (A test may inject its own store.)
-  void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
-  // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down. It
-  // never rejects, and close (or a start that fails) aborts it and waits for it before it closes.
-  void githubConnect.reconcile((detail) => triggers.turnOff("github", detail), { force: true });
+  // A share host runs none of them: a data folder it reuses may hold enabled schedules and feeds, whose runs it can
+  // neither run nor answer for, and it reads no GitHub installation.
+  if (!options.shareHost) {
+    void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
+    // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down.
+    // It never rejects, and close (or a start that fails) aborts it and waits for it before it closes.
+    void githubConnect.reconcile((detail) => triggers.turnOff("github", detail), { force: true });
+  }
 
   // Setup's import of this machine's sessions: offered by a server on this machine only (no public address, listening
   // on loopback), counted once (a listing, no transcript kept), run once, each on a worker thread (import-worker.ts) so
@@ -3983,10 +4063,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // agent has by its name is left as it is, never removed. One left on still fires, so its skip says so and how to stop it.
     const hooked = options.launchHook !== undefined;
     const hostless = new Map(made.triggers.flatMap((trigger, i) => {
-      const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
+      const apiOnlySkip = options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined;
+      const skip = apiOnlySkip ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
       if (!skip) return [];
       const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
-      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name is kept as it was, and still fires: PATCH /v2/triggers/${keptOn.id} with {"enabled": false} turns it off.` } : skip] as const];
+      // Under the run-keys setting the kept one's firings bring no keys. One that starts a run of this revision is refused
+      // for the keys it owes, but the kept trigger's target is not checked here: a message_run trigger whose run is pinned
+      // to an earlier revision that owes no keys still messages it, and that run may spend. So the warning promises no refusal.
+      const kept = apiOnlySkip
+        ? `is kept as it was, and still fires: PATCH /v2/triggers/${keptOn?.id} with {"enabled": false} turns it off`
+        : `is kept as it was and still fires until you turn it off (PATCH /v2/triggers/${keptOn?.id} with {"enabled": false}): a firing that would start a run of this revision is refused 409 for the keys it owes, but one aimed at a run of an earlier revision that owes none still reaches that run, which may spend`;
+      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name ${kept}.` } : skip] as const];
     }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
     const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
@@ -6143,7 +6230,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         });
         if (!read) throw new ApiError("unavailable", `This machine's session history for ${year} is still being read: ask again in a few seconds.`, { retry_after_ms: 5_000 });
         const analytics = await analyticsOverStore(store, { from: new Date(year, 0, 1).toISOString(), to: new Date(year + 1, 0, 1).toISOString() });
-        return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread));
+        return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread, analytics.cache));
       }
       case "getStats": {
         const filter = analyticsFilter(url);
@@ -6276,6 +6363,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer = await modelGatewayRoute({ store, sealKey: seal.key, env: own(withSecrets(base, "own")), changed: gatewayChanged }, found.name, { ...(body !== undefined ? { body } : {}), signal: stopping.signal });
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
+      // A free local model (local-model.ts): never through `idempotent`, as a pull is one at a time and says so itself.
+      case "getLocalModel":
+        return send(res, 200, await localModelView(localModelDeps()), { "cache-control": "no-store" });
+      case "pullLocalModel":
+        return send(res, 202, await pullLocalModel(localModelDeps(), await bodyOf(req)), { "cache-control": "no-store" });
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":
         return send(res, 200, await mcpServers.list());
@@ -6947,6 +7039,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     // Routed on the path as sent: a parsed URL folds `..` and `%2E%2E` segments away, and a file path must see them.
     const raw = (req.url ?? "/").split("?")[0]!;
+    // The share host (share-host.ts): /r/ alone, before the page, the owner's routes, the MCP endpoint, the token-less
+    // hooks or the token check read anything of the request; every other address is its 404.
+    if (shareRoute) return void shareRoute(req, res, raw).catch(fail);
     // API-only (api-only.ts): any address but the run routes is refused here, before the page, the owner's routes, the
     // MCP endpoint, the token-less hooks or the token check read anything of the request.
     if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw, apiOnlyMcpOrigins.length > 0)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
@@ -6978,6 +7073,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
     // away. Its name alone, on any port, as the HTTP routes check it.
     if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
+    // A share host takes no upgrade: it has no live view, computer or paired machine.
+    if (options.shareHost) return deny("404 Not Found");
     // API-only: paired computers are the console's (Settings), and refused with it, whose tokens the attach socket takes as
     // unknown there (machinesOnly). A run's hosted machine that dials still reaches it, and a run's computer live view takes
     // its viewer credential (below); a browser's live view stays the console's.
@@ -7320,7 +7417,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A run that stands at a person's stop waits too (tellWait reads its view: one its stop ended reads no wait).
     for (const row of rows) if (!closing && (letGo(row) || stopRow(row)) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
   };
-  followChanges();
+  // Nor does a share host follow the runs' changes: it tells no one of a run's end or wait.
+  if (!options.shareHost) followChanges();
   const setupUrl = owner && !owner.hasPassword() ? owner.setupLink() : undefined;
   /** The server's stop: once (`close` keeps its promise). */
   let stopped: Promise<void> | undefined;

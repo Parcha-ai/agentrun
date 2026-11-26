@@ -33,6 +33,8 @@ import { COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { LOOP_COMPILES_MAX } from "./store-reads/loop.js";
 import { GRADE_SOURCES, GRADES_KEPT, LABEL_MAX } from "./learn/promote.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
+// Also registers its operations as the owner's alone (secret-writes.ts).
+import { INKLING, INKLING_OLLAMA, LOCAL_MODEL_TAGS, QWEN3_DEFAULT } from "./local-model.js";
 import { MAX_MODEL_KEY_CHARS } from "./run-model-key.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { HANDED_SECRET } from "./handed-secret.js";
@@ -183,6 +185,8 @@ const closed = (properties: Json, description?: string) => ({ type: "object", ad
 const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
 /** wrapped/1: GET /wrapped's answer (wrapped.ts). */
 const WRAPPED_TOKENS = closed({ input: COUNT, output: COUNT, cache_read: COUNT, cache_write: COUNT });
+/** One figure per cache cause (the import package's CACHE_CAUSES), each always there. */
+const CACHE_BY_CAUSE = (value: Record<string, unknown>) => closed(Object.fromEntries(["model", "idle", "compaction", "edited", "sidechain", "unknown"].map((cause) => [cause, value])));
 const WRAPPED: Json = closed({
   year: { type: "integer", minimum: 1000, maximum: 9999 },
   sessions: { ...COUNT, description: "Sessions whose first request falls in the year." },
@@ -200,6 +204,19 @@ const WRAPPED: Json = closed({
   sources: { type: "array", items: closed({ source: { type: "string" }, sessions: COUNT, requests: COUNT }), description: "By the tool the sessions were read from." },
   imported: { type: "array", items: closed({ source: { type: "string" }, runs: COUNT }), description: "The runs imported here in the year, by source (never `live`)." },
   unread_files: { ...COUNT, description: "Session files that could not be read (gone since listed, or not openable by this user), so the numbers are short by them. A count only: no path." },
+  cache: {
+    oneOf: [
+      closed({
+        runs: { ...COUNT, description: "The year's imported Claude Code, Codex and pi runs whose cache the import analyzed. A session left out of the import, or imported before it analyzed caches, is not among them." },
+        hit_rate: { type: ["number", "null"], minimum: 0, maximum: 1, description: "Cache read over the whole prompt (input, cache read and cache write) of those runs' requests and their subagents'; null when they sent none." },
+        breaks: { ...CACHE_BY_CAUSE(COUNT), description: "Cache breaks by cause: a turn whose cache read dropped more than 80% against the turn before it." },
+        extra_cost_usd: { ...CACHE_BY_CAUSE({ type: "number", minimum: 0 }), description: "By cause, what the breaks' re-sent tokens cost above a cache read, at list prices (USD); unpriced breaks are not in it." },
+        unpriced_breaks: { ...COUNT, description: "Breaks on a model with no list price: in `breaks`, not in `extra_cost_usd`." },
+      }),
+      { type: "null" },
+    ],
+    description: "The cache of the runs imported here in the year, from what the import kept of each (numbers only); null when none was analyzed.",
+  },
 }, "A year of the work under this machine's home, bucketed by each request's time in the server's local zone.");
 /** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
 const GROUP = {
@@ -392,7 +409,7 @@ const RUN_USAGE_LINE = {
     not_metered_calls: { type: "integer", minimum: 1, description: "On `tools`: calls with no price set (an MCP tool its owner set none for), as GET /usage counts them. They ran outside the run's cost and its cap, so they are in neither `quantity` nor `usd`: a line of such calls alone has `quantity` 0 and `usd` 0." },
     resource: { enum: ["vcpu", "memory", "gpu", "disk"], description: "On `compute_time`: the resource the line counts." },
     gpu_type: { type: ["string", "null"], description: "On `compute_time` for `gpu`: the provider's own name for the GPU type. Null on the other resources." },
-    unheld_quantity: { type: ["number", "null"], minimum: 0, description: "On `compute_time`: the part of `quantity` no claim of the run held, so no cap held and nothing booked: a computer kept past its claim for a follow-up, one deleted after its run ended, one whose delete failed, one still open. Its cost is in neither `usd` nor `total`. Null when `quantity` is." },
+    unheld_quantity: { type: ["number", "null"], minimum: 0, description: "On `compute_time`: the part of `quantity` no claim of the run held, so no cap held and nothing booked: a computer kept past its claim for a follow-up, one deleted after its run ended, one whose delete failed, one still open. Its cost is in neither `usd` nor `total`. 0 for a provider that bills nothing (Docker): its time costs nothing, held or not. Null when `quantity` is." },
     open_computers: { type: "integer", minimum: 0, description: "On `compute_time`: how many of the line's computers no delete has ended yet (still running, or their delete failed), counted up to `measured_to`." },
     measured_to: { type: "string", format: "date-time", description: "On `compute_time` with an open computer: the moment its time is counted to, this read's." },
   },
@@ -1139,6 +1156,35 @@ const MODEL_GATEWAY_VIEW = closed({
   set_at_start: { type: "array", items: { type: "string" }, description: "The variables of these fields set where AgentRun starts (AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_FAST, AGENT_MODEL_STRONG, AGENT_MODEL_API_KEY): each wins over what is saved here, and is changed only where AgentRun starts. A key set there goes only to the gateway AGENT_MODEL_BASE_URL names, never to a saved one." },
   secret: { ...SECRET_ITEM("\"model:gateway\": the gateway's key, which PUT /settings/model-gateway takes as api_key and AGENT_MODEL_API_KEY sets with AGENT_MODEL_BASE_URL."), description: "The gateway's key as its SecretMeta: never a value." },
   problem: { type: ["string", "null"], description: "Why the gateway in force runs no model, in words: an address the one rule refuses (https only, or http to this machine; no user, query, fragment or dot segment). Null when none." },
+});
+/** GET /settings/local-model's answer (local-model.ts localModelView): this machine, its Ollama, the model recommended for
+ *  them and the pull here. */
+const LOCAL_MODEL_VIEW = closed({
+  machine: closed({
+    platform: { type: "string", description: "The operating system as Node names it: `darwin`, `linux`, `win32`." },
+    arch: { type: "string", description: "The CPU architecture as Node names it: `arm64`, `x64`." },
+    ram_bytes: { type: "integer", minimum: 0, description: "Total memory, in bytes (on Apple silicon, its unified memory)." },
+    gpu: { oneOf: [
+      closed({ kind: { const: "apple" }, unified: { const: true } }, "Apple silicon (darwin on arm64): the GPU shares the unified memory."),
+      closed({ kind: { const: "nvidia" }, name: { type: "string" }, memory_bytes: { type: "integer", minimum: 0 } }, "The first NVIDIA GPU nvidia-smi names, with its memory."),
+      closed({ kind: { const: "unknown" } }, "No GPU read cheaply here."),
+    ] },
+  }, "This machine, read once when the server started."),
+  ollama: closed({ asked: { type: "boolean", description: "Whether this server asks an Ollama at all: false under the faux model or a model gateway (AGENT_MODEL_BASE_URL), where `reachable` is false, `version` null, and `recommended.why` is the refusal's words." }, reachable: { type: "boolean", description: "Whether the Ollama here answered GET /api/version." }, version: { type: ["string", "null"], description: "The version it says; null when it did not answer." } }),
+  recommended: closed({
+    tag: { type: ["string", "null"], description: `The Ollama tag recommended here: ${INKLING} on Apple silicon with Ollama ${INKLING_OLLAMA} or later, else ${QWEN3_DEFAULT} or a smaller qwen3 that fits in memory (one of ${LOCAL_MODEL_TAGS.join(", ")}). Null where none fits or no Ollama answers.` },
+    why: { type: "string", description: "Why, in words: the memory each tag needs and this machine has, an Ollama to update or install, or that the tag is already pulled." },
+    pulled: { type: "boolean", description: "Whether the Ollama here has the tag already: no pull needed." },
+  }),
+  pull: { oneOf: [{ type: "null" }, closedWith({
+    tag: { type: "string" },
+    state: { enum: ["pulling", "done", "failed"], description: "`done` once the model is in the server's listing too, so the picker has it." },
+    status: { type: "string", description: "Ollama's last status line (`pulling manifest`, `pulling <digest>`, `success`)." },
+    completed_bytes: { type: "integer", minimum: 0 },
+    total_bytes: { type: "integer", minimum: 0, description: "The bytes of every layer Ollama has named so far." },
+  }, { error: { type: "string", description: "With `failed`: why, in Ollama's words." } })], description: "The last pull made here since the server started, or null." },
+  can_pull: { type: "boolean", description: "Whether POST /settings/local-model/pull may pull here." },
+  refused: { type: ["string", "null"], description: "Why not, in words, with `can_pull` false: the faux model or a model gateway takes every model here, or this server is not one owner's own on their own machine. Null with `can_pull` true." },
 });
 /** POST /settings/model-gateway/test's answer: the model ids the gateway lists, or why it could not be asked. */
 const MODEL_GATEWAY_TEST = {
@@ -3169,6 +3215,27 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "modelgateway/1",
     },
   },
+  "/settings/local-model": {
+    get: {
+      operationId: "getLocalModel", tags: ["local"], summary: "This machine, its Ollama, the free local model recommended for them, and the pull here",
+      description: `What the console's Free local model card reads: the machine (platform, arch, memory, a GPU where it is cheap to read), whether the Ollama here answers and its version, the model recommended (${INKLING} on Apple silicon with Ollama ${INKLING_OLLAMA} or later; else ${QWEN3_DEFAULT}, or a smaller qwen3 that fits in memory, or none, with why), and the pull here with its progress. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.`,
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(LOCAL_MODEL_VIEW, "This machine and its model."), ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "localmodel/1",
+    },
+  },
+  "/settings/local-model/pull": {
+    post: {
+      operationId: "pullLocalModel", tags: ["local"], summary: "Pull a recommended model into the Ollama here",
+      description: `Starts pulling \`tag\` through this server's own Ollama (POST /api/pull) and answers at once; GET /settings/local-model shows its progress, and once it is \`done\` the model is in capabilities' models with no restart. Only a tag the recommendation can name, ${LOCAL_MODEL_TAGS.join(", ")} (422 input_invalid for any other). Only on one owner's own server on their own machine, and never under the faux model or a model gateway: 403 forbidden in words otherwise. One pull at a time: 409 local_model_pulling while one is under way. The owner's signed-in session alone (ownerSession).`,
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["tag"], properties: { tag: { enum: [...LOCAL_MODEL_TAGS], description: "The tag to pull: the recommendation's (`recommended.tag`), one of the tags a recommendation names (any other: 422)." } } } } } },
+      responses: { "202": json(LOCAL_MODEL_VIEW, "The pull started: `pull` is under way."), ...errors(401, 403, 409, 415, 422, 429, 500) },
+      "x-agentrun-serve": "localmodel/1",
+    },
+  },
   "/auth/session": {
     get: {
       operationId: "getAuthSession", tags: ["local"], summary: "Whether this browser has accounts, is signed in, and may save a secret",
@@ -3471,7 +3538,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/settings/tools": {
     get: {
       operationId: "getToolSettings", tags: ["capabilities"], summary: "The server's tool settings",
-      description: "Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (Parallel where the server holds its key, which bills it, else Firecrawl's keyless search with Exa's behind it, on every harness), native (the harness's own search, claude-agent's or codex's, or on pi the model provider's hosted one: that alone), firecrawl-keyless (Firecrawl's, Exa's behind it), exa-keyless (that alone) or parallel; web_fetch auto (Parallel's extract where the server holds a Parallel key, which bills it, with the guarded direct fetch behind it, else Firecrawl's keyless fetch, which is sent each URL read, never a private or local one, with the guarded direct fetch behind it), firecrawl-keyless (that, whatever the key), kernel (the guarded direct fetch alone) or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these, except a permission set to deny here: a server deny is absolute and refuses the tool on this server whatever the agent sets. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent. An MCP tool's own key may carry its pin, the arguments its calls must carry.",
+      description: "Each capability that has a choice, and its provider, and each tool's permission that is set (an MCP server's wildcard mcp:<server>/* among them): web_search auto (Parallel where the server holds its key, which bills it, else Firecrawl's keyless search with Exa's behind it, on every harness), native (the harness's own search, claude-agent's or codex's, or on pi the model provider's hosted one: that alone), firecrawl-keyless (Firecrawl's, Exa's behind it), exa-keyless (that alone) or parallel; web_fetch auto (Parallel's extract where the server holds a Parallel key, which bills it, with the guarded direct fetch behind it, else Firecrawl's keyless fetch, which is sent each URL read, never a private or local one, with the guarded direct fetch behind it), firecrawl-keyless (that, whatever the key), kernel (the guarded direct fetch alone) or parallel; browser auto (Browserbase where the server holds its keys, else Kernel where it holds Kernel's), browserbase, kernel (each that alone) or chrome (a Chrome on the server's host, not set up on any server yet: unavailable). An agent's definition.tool_settings is over these, except a permission set to deny here: a server deny is absolute and refuses the tool on this server whatever the agent sets; and web_fetch kernel, or web_search native or off, a ceiling: an agent's firecrawl-keyless, exa-keyless, auto or parallel resolves as the setting does, and under off so does its native. Every other provider set here is a default an agent's pick replaces. A setting applies at a run's next claim; a claim keeps the plane it began with to its end. capabilities.tools say what each resolves to on each harness, and GET /agents/{agent_id} for that agent. An MCP tool's own key may carry its pin, the arguments its calls must carry.",
       responses: { "200": json(TOOL_SETTINGS_ANSWER, "Each capability's provider."), ...errors(401, 429, 500) },
       "x-agentrun-serve": "providers/1",
     },
@@ -4411,7 +4478,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, the image it starts from, a sandbox's GPUs, whether the agent keeps it between runs, and, for a desktop or a phone, how the agent drives it, whether it may run programs on it and whether its runs record its screen. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
       "x-agentrun-serve": "computer/1",
     },
-    tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
+    tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; and the server's kernel for web_fetch, or native or off for web_search, a ceiling: this agent's pick of firecrawl-keyless, exa-keyless, auto or parallel resolves as the server's setting does, and under off so does its native; every other provider the server sets is a default this agent's pick replaces; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     approvals: { enum: ["ask", "never"], default: "ask", description: "Whether the agent's runs ask a person or run unattended. `ask`, the default: a tool set to ask parks the run for an approval, as its tool settings say. `never`: the agent runs unattended, and each tool that would ask is allowed instead, decided by the tool gate at each call, so a tool granted later and an MCP tool (`mcp:<server>/<tool>`, which asks by default) are covered on every harness. It never lifts a deny, whether set on this server or in the agent's own tool_settings, nor a pin, nor anything else the gate refuses before it decides between running and asking. A workflow's call node on a tool set to ask runs under `never`. Absent on a request: ask. An edit that leaves it out asks, so no edit makes an agent unattended by saying nothing. Every answer names it.", "x-agentrun-serve": "unattended/1" },
     learning: { oneOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: {
       compile_after: { type: "integer", minimum: 1, maximum: 200, default: 20, description: "The job compiles into a learned workflow once the agent has this many completed runs of its own." },
@@ -5079,6 +5146,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   ];
   readFileOp.responses["413"] = ref("responses/PayloadTooLarge");
   readFileOp.responses["415"] = ref("responses/UnsupportedMediaType");
+  // Its cut is made in a worker under a deadline (cut-pool.ts): past it, or when the worker fails, 503, never uncut.
+  readFileOp.responses["503"] = ref("responses/Unavailable");
   readFile["x-agentrun-serve-changed"] = { ...(readFile["x-agentrun-serve-changed"] as Json), parameters: "filecut/1" };
   // filecut/2: `?cut=run` on the listing names each file under the run's cut (RunFile.name), so a grader is told of every
   // file a run left, media included, without a path that holds a held value.

@@ -63,8 +63,10 @@ describe("AgentEditor, where the agent runs", () => {
     expect(saved()).toMatchObject({ computer: { kind: "sandbox", provider: "docker" }, tools: ["read", "bash"] });
   });
 
-  it("going back to the server turns bash off and says so; bash's tick is then greyed with why", async () => {
-    const { host, click, step, input, saved } = mount({ agent: agent({ mode: "sandbox", box: "docker" }, ["read", "bash"]), caps, step: "computer" });
+  it("Mode 1: going back to the server turns bash off and says so; bash's tick is then greyed with why", async () => {
+    // Mode 1 with Docker: Docker's box is the default place, and the runner has no shell.
+    const mode1 = placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "sandbox", box: "docker" }, boxes: [{ id: "docker", available: true }] } });
+    const { host, click, step, input, saved } = mount({ agent: agent({ mode: "sandbox", box: "docker" }, ["read", "bash"]), caps: { ...caps, places: mode1 }, step: "computer" });
     click(input('input[name="place"][value="runner"]'));
     expect(host.textContent).toContain("Bash runs only in a sandbox, so it's turned off for this agent.");
     step(/Tools/);

@@ -117,3 +117,22 @@ test("a setting's refused value is named by its type, never echoed: a key pasted
   }
   assert.throws(() => web.createWeb({ order: { search: ["exa"], fetch: ["direct"] }, settings: { exa: { type: pasted } } }), (error) => !String(error.message).includes(pasted.slice(0, 8)), "createWeb's error does not carry the value either");
 });
+
+test("createWeb's own refused options, pageGuard and the classifier's policy, are named by their kind, never echoed", () => {
+  const pasted = "pasted-value-0123456789abcdef".repeat(40);
+  const order = { search: ["exa"], fetch: ["direct"] };
+  const cases = [
+    [{ order, pageGuard: pasted }, TypeError, /^pageGuard must be true or false \(it was a string\)$/],
+    [{ order, pageGuard: { key: pasted } }, TypeError, /^pageGuard must be true or false \(it was an object\)$/],
+    [{ order, policy: pasted }, RangeError, /^the classifier's policy must be "drop", "label" or "rerank\+label" \(it was a string\)$/],
+    [{ order, policy: [pasted] }, RangeError, /^the classifier's policy must be "drop", "label" or "rerank\+label" \(it was a list\)$/],
+  ];
+  for (const [config, type, said] of cases) {
+    assert.throws(() => web.createWeb(config), (error) => {
+      assert.ok(error instanceof type, `a ${type.name}`);
+      assert.ok(!error.message.includes(pasted.slice(0, 8)), `the refused value is not in the error: ${error.message.slice(0, 200)}`);
+      assert.match(error.message, said, "the error names the option, what it must be, and the value's kind");
+      return true;
+    });
+  }
+});

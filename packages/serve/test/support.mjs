@@ -86,6 +86,9 @@ export const SECRET_WRITE_PATHS = [
   // The model gateway saved in the console (model-gateway.ts): its save, removal and test.
   { methods: ["PUT", "DELETE"], path: /^\/settings\/model-gateway$/ },
   { methods: ["POST"], path: /^\/settings\/model-gateway\/test$/ },
+  // A free local model (local-model.ts): the owner's machine read, and a pull into their Ollama.
+  { methods: ["GET"], path: /^\/settings\/local-model$/ },
+  { methods: ["POST"], path: /^\/settings\/local-model\/pull$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
@@ -374,7 +377,7 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  disk's file API (`makeDisk`, AdapterSpecDeps.makeArchilDisk) and the control plane (`control`,
  *  AdapterSpecDeps.mountControl). `ownData`: a data directory of the runner's own, apart from the server's, for its
  *  scratch and everything a run's claim reads or writes on this machine (the store and the seal key stay the server's). */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, composioMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, failAgentsGet, fauxVendorApi, evalFakes, childRuns, archil, ownData, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, composioMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, failAgentsGet, fauxVendorApi, evalFakes, childRuns, census, archil, ownData, ...switches } = {}) {
   const opened = await openStore({ dataDir: data, role: "runner" });
   // A runner commits to this store from this thread as a server does: the store is a live one from here until the runner
   // has closed (fixtures/sqlite-guard.mjs), also when its server closed before it.
@@ -463,8 +466,9 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
-      // Each end's census of what its caller handed the run, as the CLI's runner beside it makes it (runner/beside.ts).
-      census: runCensus(store, { data: deps.data, sealKey, env }),
+      // Each end's census of what its caller handed the run, as the CLI's runner beside it makes it (runner/beside.ts);
+      // `census` (a test's) in its place, as a census that fails or never comes.
+      census: census ?? runCensus(store, { data: deps.data, sealKey, env }),
       // Where each run is a user of its own, no more runs at once than its slots, as the CLI's runners hold them
       // (run-child-host.ts isolationLoops): a run that reads completed while its claim still gives its slot back leaves the
       // next run queued, never claimed onto the held slot and refused for it.
@@ -517,7 +521,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   );
 }
 
-export async function serve(t, { harnesses: asked, runner: wantRunner = true, computerForClaim, evalFakes, childRuns, ...options } = {}) {
+export async function serve(t, { harnesses: asked, runner: wantRunner = true, computerForClaim, evalFakes, childRuns, census, ...options } = {}) {
   const harnesses = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
@@ -537,7 +541,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   // A --faux-github server's fake GitHub (Serve.fauxGitHub), its API and its repository's site, given to this test's runner
   // through the runner's one way in, a test runner's option: no run of a test reaches GitHub. A test's own githubApi or
   // githubWeb wins.
-  const runnerOptions = { ...(server.fauxGitHub ? { githubApi: server.fauxGitHub.api, ...(server.fauxGitHub.web ? { githubWeb: server.fauxGitHub.web } : {}) } : {}), ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, mcpOwn: server.own, ...(computerForClaim ? { computerForClaim } : {}), ...(evalFakes ? { evalFakes } : {}), ...(childRuns ? { childRuns } : {}) };
+  const runnerOptions = { ...(server.fauxGitHub ? { githubApi: server.fauxGitHub.api, ...(server.fauxGitHub.web ? { githubWeb: server.fauxGitHub.web } : {}) } : {}), ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, mcpOwn: server.own, ...(computerForClaim ? { computerForClaim } : {}), ...(evalFakes ? { evalFakes } : {}), ...(childRuns ? { childRuns } : {}), ...(census ? { census } : {}) };
   // The store is a live server's from here until it closes: a test writes it through raw(), never a DatabaseSync of its own
   // (fixtures/sqlite-guard.mjs).
   const release = holdStore(data);

@@ -507,8 +507,11 @@ const TYPES: readonly { name: string; uses: readonly string[]; text: string }[] 
     "text": "interface FileInfo { path: string; type: FileType; size: number; mtimeMs: number; }"
   }
 ];
-/** Computer's members, each with the groups it needs one of and the types it names. */
-const MEMBERS: readonly { groups?: readonly string[]; uses: readonly string[]; text: string }[] = [
+/** One op of a member that is an object of methods: its name as computer_op names it, the types it names, its text. */
+type Op = { readonly op: string; readonly uses: readonly string[]; readonly text: string };
+/** Computer's members, each with the groups it needs one of: one that is an object of methods as its ops, put back
+ *  together after `open` (its text up to the object's `{`); any other with the types it names and its text. */
+const MEMBERS: readonly ({ groups?: readonly string[]; open: string; ops: readonly Op[] } | { groups?: readonly string[]; uses: readonly string[]; text: string })[] = [
   {
     "uses": [
       "Card"
@@ -519,10 +522,21 @@ const MEMBERS: readonly { groups?: readonly string[]; uses: readonly string[]; t
     "groups": [
       "apps"
     ],
-    "uses": [
-      "AppInfo"
-    ],
-    "text": "readonly apps: { list(): Promise<{ apps: AppInfo[]; foreground: string | null; }>; open(id: string, options?: { url?: string; background?: boolean; }): Promise<void>; };"
+    "open": "readonly apps: {",
+    "ops": [
+      {
+        "op": "apps.list",
+        "uses": [
+          "AppInfo"
+        ],
+        "text": "list(): Promise<{ apps: AppInfo[]; foreground: string | null; }>;"
+      },
+      {
+        "op": "apps.open",
+        "uses": [],
+        "text": "open(id: string, options?: { url?: string; background?: boolean; }): Promise<void>;"
+      }
+    ]
   },
   {
     "groups": [
@@ -537,11 +551,17 @@ const MEMBERS: readonly { groups?: readonly string[]; uses: readonly string[]; t
     "groups": [
       "screen"
     ],
-    "uses": [
-      "Rect",
-      "Image"
-    ],
-    "text": "readonly screen: { shot(options?: { region?: Rect; }): Promise<Image>; };"
+    "open": "readonly screen: {",
+    "ops": [
+      {
+        "op": "screen.shot",
+        "uses": [
+          "Rect",
+          "Image"
+        ],
+        "text": "shot(options?: { region?: Rect; }): Promise<Image>;"
+      }
+    ]
   },
   {
     "groups": [
@@ -549,43 +569,90 @@ const MEMBERS: readonly { groups?: readonly string[]; uses: readonly string[]; t
       "input.touch",
       "input.keys"
     ],
-    "uses": [
-      "InputAction",
-      "InputResult"
-    ],
-    "text": "readonly input: { act(actions: InputAction[]): Promise<InputResult>; };"
+    "open": "readonly input: {",
+    "ops": [
+      {
+        "op": "input.act",
+        "uses": [
+          "InputAction",
+          "InputResult"
+        ],
+        "text": "act(actions: InputAction[]): Promise<InputResult>;"
+      }
+    ]
   },
   {
     "groups": [
       "exec"
     ],
-    "uses": [
-      "RunResult"
-    ],
-    "text": "readonly shell: { run(command: string | string[], options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; }): Promise<RunResult>; };"
+    "open": "readonly shell: {",
+    "ops": [
+      {
+        "op": "shell.run",
+        "uses": [
+          "RunResult"
+        ],
+        "text": "run(command: string | string[], options?: { cwd?: string; timeoutMs?: number; env?: Record<string, string>; }): Promise<RunResult>;"
+      }
+    ]
   },
   {
     "groups": [
       "processes"
     ],
-    "uses": [],
-    "text": "readonly processes: { start(command: string | string[], options?: { cwd?: string; env?: Record<string, string>; }): Promise<{ pid: number; }>; };"
+    "open": "readonly processes: {",
+    "ops": [
+      {
+        "op": "processes.start",
+        "uses": [],
+        "text": "start(command: string | string[], options?: { cwd?: string; env?: Record<string, string>; }): Promise<{ pid: number; }>;"
+      }
+    ]
   },
   {
     "groups": [
       "files"
     ],
-    "uses": [
-      "FileInfo"
-    ],
-    "text": "readonly files: { read(path: string, options?: { encoding?: \"utf8\" | \"base64\"; }): Promise<string>; write(path: string, data: string, options?: { encoding?: \"utf8\" | \"base64\"; }): Promise<void>; list(path: string): Promise<FileInfo[]>; stat(path: string): Promise<FileInfo>; };"
+    "open": "readonly files: {",
+    "ops": [
+      {
+        "op": "files.read",
+        "uses": [],
+        "text": "read(path: string, options?: { encoding?: \"utf8\" | \"base64\"; }): Promise<string>;"
+      },
+      {
+        "op": "files.write",
+        "uses": [],
+        "text": "write(path: string, data: string, options?: { encoding?: \"utf8\" | \"base64\"; }): Promise<void>;"
+      },
+      {
+        "op": "files.list",
+        "uses": [
+          "FileInfo"
+        ],
+        "text": "list(path: string): Promise<FileInfo[]>;"
+      },
+      {
+        "op": "files.stat",
+        "uses": [
+          "FileInfo"
+        ],
+        "text": "stat(path: string): Promise<FileInfo>;"
+      }
+    ]
   }
 ];
 
 /** The declarations a script on a computer with these groups reads: the types its members reach, Computer with only
- *  the members its groups offer, and `declare const computer`, one line each. */
-export function computerDeclarations(groups: readonly string[]): string {
-  const members = MEMBERS.filter((member) => member.groups === undefined || member.groups.some((group) => groups.includes(group)));
+ *  the members its groups offer, less each op in `without` (a member left with none goes), and
+ *  `declare const computer`, one line each. */
+export function computerDeclarations(groups: readonly string[], without: readonly string[] = []): string {
+  const members = MEMBERS.flatMap((member): { uses: readonly string[]; text: string }[] => {
+    if (member.groups !== undefined && !member.groups.some((group) => groups.includes(group))) return [];
+    if (!("ops" in member)) return [member];
+    const kept = member.ops.filter((one) => !without.includes(one.op));
+    return kept.length === 0 ? [] : [{ uses: kept.flatMap((one) => one.uses), text: `${member.open} ${kept.map((one) => one.text).join(" ")} };` }];
+  });
   const uses = new Map(TYPES.map((type) => [type.name, type.uses]));
   const reached = new Set<string>();
   const visit = (name: string): void => {
