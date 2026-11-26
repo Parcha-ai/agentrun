@@ -15,7 +15,9 @@
 // it names a box or the runner, and no other box that answers is picked for it. A revision that names no place resolves
 // the same way at each run (defaultPlaceOf): with a shell tool, this server's default_place, so where docker is there
 // now it runs in the Docker box, and where it is not its run is refused in the same words. A workflow, a revision whose
-// tools need no shell, and one with a tool the box refuses run on the runner.
+// tools need no shell, and one with a tool the box refuses run on the runner. In Mode 2 (the runner's shell is Archil's
+// serverless exec) the default is the runner, Docker answering or not: Mode 2 keeps the run's folder on Archil, which
+// Docker's box can't mount, so a run given that box would only be refused.
 import { BOX_IDS, BOXES_ENV, type BoxOffer, DEFAULT_BOX } from "./place-offers.js";
 import { type InputIssue, sentence } from "./errors.js";
 
@@ -65,9 +67,10 @@ export function newAgentPlace(registry: readonly BoxOffer[]): { place: Place } |
  *  (newAgentPlace) for an agentic revision with a tool that runs only in a box (`flags`, tools.ts: bash and the
  *  background tools); the runner for a workflow, which is never given a box, for one whose tools need no shell (none, or
  *  only read and write: a container would only hold up its start), and for one that names a tool the box refuses (the
- *  browser, runner-only for now). */
-export function defaultPlaceOf(kind: "agentic" | "workflow", tools: readonly unknown[], registry: readonly BoxOffer[], flags: ToolFlags): Place {
-  if (kind === "workflow" || !wantsBox(tools, flags)) return { mode: "runner" };
+ *  browser, runner-only for now). Where the runner has a shell (`runnerShell`: Mode 2's Archil exec), the runner for
+ *  every revision: Docker's box can't mount the folder Mode 2 keeps on Archil. */
+export function defaultPlaceOf(kind: "agentic" | "workflow", tools: readonly unknown[], registry: readonly BoxOffer[], flags: ToolFlags, runnerShell: boolean): Place {
+  if (kind === "workflow" || runnerShell || !wantsBox(tools, flags)) return { mode: "runner" };
   const fresh = newAgentPlace(registry);
   return "place" in fresh ? fresh.place : { mode: "runner" };
 }
@@ -141,20 +144,20 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<str
   if (byDefault) {
     const box = defaultBox(registry);
     if (!box?.available) return `Boxes: none, so ${runnerShell ? "new agents run on the runner" : "a new agent must name its place: a box, or the runner"}. ${sentence(box?.reason ?? NO_REASON)}`;
-    return [`Boxes: ${box.id} (on by default; set ${BOXES_ENV} to change).`, ...reach].join(" ");
+    return [`Boxes: ${box.id} (on by default; set ${BOXES_ENV} to change).`, ...(runnerShell ? [`New agents run on the runner: Mode 2 keeps workspaces on Archil, which the ${box.id} box can't mount.`] : []), ...reach].join(" ");
   }
   return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...reach, ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`)), ...(rest ? [sentence(rest)] : [])].join(" ");
 }
 
 /** `places` in capabilities: the modes a revision may name, the place a new agent is saved with and a revision that
  *  names none runs in (`default_place`), each box, and the hosts a box whose `network` is `allowlist` reaches (`allow`,
- *  box-settings.ts boxAllowOf; empty for `none`). `default_place` is Docker's box where this server has it; else, where
- *  the runner has a shell (`runnerShell`: Mode 2's Archil exec), the runner; else null, no default: a new agent names its
- *  place, and `default_reason` is the words a no-place create is refused in (noBoxRefusal). `default_reason` is there
- *  exactly when `default_place` is null. */
+ *  box-settings.ts boxAllowOf; empty for `none`). `default_place` is the runner where it has a shell (`runnerShell`:
+ *  Mode 2's Archil exec), Docker answering or not (defaultPlaceOf); else Docker's box where this server has it; else
+ *  null, no default: a new agent names its place, and `default_reason` is the words a no-place create is refused in
+ *  (noBoxRefusal). `default_reason` is there exactly when `default_place` is null. */
 export const placesOf = (registry: readonly BoxOffer[], allow: readonly string[] | "none" = "none", runnerShell = false) => {
   const fresh = newAgentPlace(registry);
-  const byDefault = "place" in fresh ? { default_place: fresh.place } : runnerShell ? { default_place: { mode: "runner" } as Place } : { default_place: null, default_reason: fresh.reason };
+  const byDefault = runnerShell ? { default_place: { mode: "runner" } as Place } : "place" in fresh ? { default_place: fresh.place } : { default_place: null, default_reason: fresh.reason };
   return { modes: [...PLACE_MODES], ...byDefault, boxes: boxAvailability(registry).map(stated), allow: allow === "none" ? [] : [...allow] };
 };
 /** A box with its state, `ready` when it is available and `unavailable` when not; and, on an available box, its network as the server set it, with

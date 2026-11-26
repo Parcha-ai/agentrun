@@ -35,7 +35,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_HOOKED_KINDS, API_ONLY_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
+import { API_ONLY_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly } from "./api-only.js";
 import { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
@@ -141,7 +141,8 @@ import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { forgetLegacyRunLearning, legacyGradesKey, legacyPromotionsKey } from "./learn/legacy/scrub.js";
 import { runModelRef } from "./model.js";
-import { ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels, ollamaReading } from "./ollama-provider.js";
+import { fullTag, type LocalModelDeps, localModelView, localPulls, type Machine, pullLocalModel, pullThrough, readMachine } from "./local-model.js";
+import { ollamaForget, ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels, ollamaReading } from "./ollama-provider.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
 const STATUSES = ["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] as const;
@@ -486,6 +487,12 @@ export type ServeOptions = {
   /** How often a timeline page that waits (`wait_ms`) reads the store again while nothing changed (default 1000 ms,
    *  run-reads-over-store.ts). A test's server reads sooner, so a change is served without the rest of a second's wait. */
   timelinePollMs?: number;
+  /** For tests: this machine as GET /settings/local-model reads it (local-model.ts Machine), in place of the real one, so no
+   *  test reads the hardware it runs on. */
+  machine?: () => Promise<Machine>;
+  /** For tests: how long a local model pull may go with no byte from Ollama before it stops (ollama-provider.ts
+   *  PULL_STALL_MS, two minutes, by default). */
+  pullStallMs?: number;
   /** No runner beside this server in its process (the CLI's --no-runner, the image's server-and-runner): a paired
    *  computer's socket is held here while no run holds it, and relayed to the runner that holds a run of it
    *  (workspace/paired-route.ts); while no runner relays, a pairing code, the pair answer and each paired computer say no
@@ -844,6 +851,9 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/model-gateway$/, name: "saveModelGateway" },
   { method: "DELETE", pattern: /^\/settings\/model-gateway$/, name: "deleteModelGateway" },
   { method: "POST", pattern: /^\/settings\/model-gateway\/test$/, name: "testModelGateway" },
+  // A free local model (local-model.ts): this machine and its recommended model, and one pull of it, the owner's alone.
+  { method: "GET", pattern: /^\/settings\/local-model$/, name: "getLocalModel" },
+  { method: "POST", pattern: /^\/settings\/local-model\/pull$/, name: "pullLocalModel" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
   { method: "GET", pattern: /^\/settings\/mcp-server-names$/, name: "listMcpServerNames" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
@@ -1323,7 +1333,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   }
   // The Ollama this server asks, and its runner beside it: OLLAMA_HOST, else the default address on one owner's own machine
   // alone (ollamaHostOf). Read once, at the start: a refused one is said once, here, in the base rule's words.
-  const ollamaHost = ollamaHostOf(process.env, whyNotOwnMachine(options, data, ownUser).length === 0);
+  const notOwn = whyNotOwnMachine(options, data, ownUser);
+  const ollamaHost = ollamaHostOf(process.env, notOwn.length === 0);
   const tokenRefused = options.token === undefined ? undefined : tokenProblem(options.token);
   if (tokenRefused) throw new Error(tokenRefused);
   for (const entry of options.tokens ?? []) {
@@ -1360,7 +1371,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // would write the next server's outbox.
   const stops: Array<() => Promise<void>> = [];
   try {
-    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost }, stops);
+    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost, notOwn }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     throw error;
@@ -1387,8 +1398,8 @@ async function whileReplaced<T>(take: () => Promise<T> | T, held: (error: unknow
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[]; ollamaHost: string | undefined }, stops: Array<() => Promise<void>>): Promise<Serve> {
-  const { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost } = checked;
+async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[]; ollamaHost: string | undefined; notOwn: readonly string[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
+  const { maxRuns, minFreeBytes, learning, boxAllow, templates, ollamaHost, notOwn } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
    *  read (the view never fails for it). */
@@ -1713,7 +1724,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // probe that fails never lands; when it is the latest, it clears this as it fails, so no probe is out after it.
   let probing: readonly (string | undefined)[] | undefined;
   // The latest probe's turn: it ends as that probe lands or fails, or as a later probe starts and overtakes it, whichever
-  // is first, and never fails. A change that waits for the probe out waits for its turn (keysChanged), so a dropped
+  // is first, and never fails. A change that waits for the probe out waits for its turn (offersNow), so a dropped
   // probe holds no one up and its failure is no one else's.
   let turn: Promise<void> = Promise.resolve();
   let endTurn: () => void = () => {};
@@ -1758,15 +1769,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   });
   /** Whether the offers held now were made from `inputs` (offersInputs). */
   const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && sameInputs(inputs, offersFrom);
-  const keysChanged = async () => {
-    // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
-    // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
-    // name a refused key by the keys and settings, so those listings are built again.
-    await lister.keysChanged();
-    env = readEnv(base);
+  /** What a revision that names no model needs (needsOf), made again from env as it is now: the latest ask's stands. */
+  const needsNow = async () => {
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
+  };
+  /** The offers made again from the inputs read now (offersInputs), with no listing built again and env not read again:
+   *  the end of a key's change (keysChanged), and all of a refresh of the login, or of a new Ollama listing, whose offers
+   *  are not made from the inputs now, since no key changed there. */
+  const offersNow = async () => {
     // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
     // lands: a probe of these overtakes it. Only a change starts one, at most one per change, so nothing loops. While the
     // probe out has read these inputs, a change starts none: with the offers held made from them too it recomposes at
@@ -1789,14 +1801,47 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return;
     }
   };
+  const keysChanged = async () => {
+    // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
+    // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
+    // name a refused key by the keys and settings, so those listings are built again.
+    await lister.keysChanged();
+    env = readEnv(base);
+    await needsNow();
+    await offersNow();
+  };
   /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and
-   *  the reading made again, as a key's save does, once a listing differs from the one the offers were made from. So a
+   *  once a listing differs from the one the offers were made from, what a revision that names no model needs (its
+   *  default is the listing's: needsOf) and the offers made again from it. No key changed, so no run is relisted. So a
    *  model pulled, or Ollama started after this server, shows in a later answer with no restart. */
   const ollamaNow = async () => {
     if (!asksOllama(env)) return;
     void ollamaModels(env);
-    if (offersFrom && !offersMadeFrom(offersInputs(env))) await keysChanged();
+    if (!offersFrom || offersMadeFrom(offersInputs(env))) return;
+    await needsNow();
+    await offersNow();
   };
+  /** How many times a pull's end reads the Ollama listing for its tag before it fails (ollamaPulled). */
+  const PULL_LISTED_TRIES = 6;
+  /** After a pull of `tag` here ends (local-model.ts): the kept listing dropped and read again at once until it lists
+   *  `tag` (a listing whose ask of one model failed lists it not), and the reading made again where it differs, so the
+   *  model is in the picker and is the default with no wait for OLLAMA_TTL_MS before the pull says done. Never listed
+   *  after PULL_LISTED_TRIES reads, the pull fails in words, so the card never runs a template on another model. */
+  const ollamaPulled = async (tag: string) => {
+    for (let tries = 1; ; tries++) {
+      ollamaForget(env);
+      const listed = await ollamaModels(env);
+      if (listed.some((model) => model.name === fullTag(tag))) break;
+      if (tries >= PULL_LISTED_TRIES) throw new Error(`Ollama finished pulling ${tag} but does not list it yet. Press Pull again.`);
+      await new Promise((resolve) => setTimeout(resolve, 250 * tries));
+    }
+    await ollamaNow();
+  };
+  /** This machine, read once (local-model.ts readMachine), or a test's. */
+  let machineRead: Promise<Machine> | undefined;
+  const machineOf = () => (machineRead ??= (options.machine ?? readMachine)());
+  const pulls = localPulls({ pull: pullThrough(() => env, options.pullStallMs), finished: ollamaPulled, ...(log ? { log } : {}), signal: stopping.signal });
+  const localModelDeps = (): LocalModelDeps => ({ env, notOwn, machine: machineOf, pulls });
   /** After a harness key is saved or removed (harness-keys.ts): the listings built again, cut of it, and the offers probed
    *  again, as a recipe is offered once every key it runs on is saved here (harnessKeysSavedHere). No environment changes. */
   const harnessKeysChanged = async () => {
@@ -1900,15 +1945,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  that fails is answered to it. A probe with no hand-over (a key's save, a harness key's, a new Ollama listing) can
    *  drop the hand-over's too, and then fail or still be out: the hand-over is still the latest and did not fail, yet the
    *  offers held were made before it. So the request also goes on only where the offers held are made from the inputs
-   *  now (offersMadeFrom); where not, it makes them as a key's save does (keysChanged: it waits for the probe out of
-   *  these inputs, or probes itself, and a probe of its own that fails is answered to it). It looks at most LOGIN_ROUNDS
+   *  now (offersMadeFrom); where not, it makes them again as a key's save ends (offersNow: it waits for the probe out of
+   *  these inputs, or probes itself, and a probe of its own that fails is answered to it), with no run relisted, as no
+   *  key changed. It looks at most LOGIN_ROUNDS
    *  times, then is refused (unavailable, retryable), so turns that keep coming never hold it for ever. */
   const loginNow = async (): Promise<void> => {
     if (loginOff !== undefined) return;
     for (let round = 1; ; round++) {
       const n = await refreshOnce();
       const latest = () => handed.n === n && !handed.failed;
-      if (latest() && !offersMadeFrom(offersInputs(env))) await keysChanged();
+      if (latest() && !offersMadeFrom(offersInputs(env))) await offersNow();
       if (latest() && offersMadeFrom(offersInputs(env))) return;
       if (round >= LOGIN_ROUNDS) throw new ApiError("unavailable", `Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, ${LOGIN_ROUNDS} times: ask again.`);
     }
@@ -2116,7 +2162,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  list reads it, so a tool of bash's family the run would not have shows unavailable (tool-plane.ts shellUnavailable). */
   const shellOfRevision = async (revision: Revision): Promise<ShellPlace> => {
     const body = revision.body as { computer?: ComputerSetting; place?: Place; tools?: readonly unknown[] };
-    return shellOf(settingOfDefinition(body)?.computer ?? computerOfPlace(fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : [])));
+    return shellOf(settingOfDefinition(body)?.computer ?? computerOfPlace(await fallbackPlace(revision.kind, revision.kind === "agentic" ? (body.tools ?? []) : [])));
   };
   /** The run read's costs (A8, store-reads/learning.ts runAllInOverStore): `cost.usd` its own spend, the
    *  job's (its compile turn is learning's), null while unknown; what learning spent for it
@@ -3399,7 +3445,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const tools = revision.kind === "agentic" ? (body.tools ?? []) : [];
     if (!(revision as { mcpPin?: unknown }).mcpPin && tools.some((tool) => mcpToolOf(tool))) return null;
     try {
-      await runnable(revision, resolvePlace(body.place as Place | undefined, fallbackPlace(revision.kind, tools)), { capped: body.maxCostUsd !== undefined, price: readDecisionPrice });
+      await runnable(revision, resolvePlace(body.place as Place | undefined, await fallbackPlace(revision.kind, tools)), { capped: body.maxCostUsd !== undefined, price: readDecisionPrice });
       return null;
     } catch (error) {
       if (error instanceof ApiError && error.code === "agent_not_runnable") return { message: error.message, fields: error.extra.fields ?? [] };
@@ -3512,8 +3558,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     throw new ApiError("agent_not_runnable", message, { fields, details: { adapters: [...new Set(blockers.flatMap((b) => (b.adapter ? [b.adapter] : [])))], unbound, missing, code: blockers.some((b) => b.codeNodes || b.shell), ...(tier ? { tier } : {}), ...(Object.keys(decisions).length ? { decisions } : {}), ...(denied.length ? { denied } : {}), ...(asks.length ? { asks } : {}), ...named } });
   }
 
-  /** Where a revision of `kind` naming `tools` and no place runs here: the place a new agent would be saved with. */
-  const fallbackPlace = (kind: "agentic" | "workflow", tools: readonly unknown[]): Place => defaultPlaceOf(kind, tools, boxOffers, toolOf);
+  /** Where a revision of `kind` naming `tools` and no place runs here: the place a new agent would be saved with, in the
+   *  folder mode of now (Mode 2, where the runner's shell is Archil's exec: the runner, never Docker's box). */
+  const fallbackPlace = async (kind: "agentic" | "workflow", tools: readonly unknown[]): Promise<Place> => defaultPlaceOf(kind, tools, boxOffers, toolOf, (await modeNow()) === 2);
 
   /** What a save of `revision` pins of the MCP tools it grants (an agentic revision's: a workflow's nodes bind none): each
    *  granted server listed once, now, with its saved credential (McpServersOverStore.pinListing), as `tools` each server's
@@ -3611,7 +3658,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       void install.ensure().catch((error: Error) => log?.(logLine("harness_install_failed", { harness: install.entry.id, message: error.message })));
     }
     const named = (revision.kind === "agentic" ? { kind: "agentic" as const, ...(body as AgenticBody) } : workflowShape(body as never)) as unknown as RevisionShape;
-    const shape = named.place ? named : { ...named, place: fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
+    const shape = named.place ? named : { ...named, place: await fallbackPlace(named.kind, named.tools ?? []), unnamed: true as const };
     const listing = await mcpListingOf(revision, previous?.mcpPin);
     const mcp = listing.tools;
     const { monid, warnings: usage = [] } = (await monidPinOf(revision, previous)) ?? {};
@@ -3691,7 +3738,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     let warnings: InputIssue[] = [];
     const definition = checkDefinitionBody(body, { harnesses });
     const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
-    const place = fallbackPlace("agentic", definition.definition.tools === undefined ? NEW_AGENT_TOOLS : named);
+    const place = await fallbackPlace("agentic", definition.definition.tools === undefined ? NEW_AGENT_TOOLS : named);
     const tools = defaultToolsAt(place);
     const entry = await agents.create(definition, async (revision) => {
       // A template's apply says whether its package named its tools (applyWith): one that named none, and no computer
@@ -3949,7 +3996,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The model of each tier its subagents run on (packageTiers): the package's where this server runs it.
     const tiers = await packageTiers(env, pkg.model, harness ?? DEFAULT_HARNESS, model);
     const modelWarnings: InputIssue[] = [...("warning" in picked && picked.warning ? [picked.warning] : []), ...(tiers.warning ? [tiers.warning] : [])].map((message) => ({ field: "model", reason: "not_an_option", message }));
-    const defaultTools = "place" in newAgentPlace(boxOffers) ? NEW_AGENT_TOOLS : [];
+    // A package that names no tools gets a new agent's where a new agent goes (fallbackPlace): the box's shell tools in
+    // Docker's box; none on the runner, Mode 2's included.
+    const defaultTools = defaultToolsAt(await fallbackPlace("agentic", NEW_AGENT_TOOLS)) ?? [];
     // A grant never lifts a deny the owner set on this server: that tool keeps it, and the answer says so.
     const server = settings.get() as Parameters<typeof permissionFrom>[1];
     const denied = grants.filter((tool) => { const set = permissionFrom(tool, server); return set.from === "server" && set.permission === "deny"; });
@@ -3972,9 +4021,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
       if (!skip) return [];
       const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
-      // An API-only server serves no trigger route: its archive is what turns the agent's triggers off.
-      const off = options.apiOnly ? "archiving the agent turns it off" : `PATCH /v2/triggers/${keptOn?.id} with {"enabled": false} turns it off`;
-      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name is kept as it was, and still fires: ${off}.` } : skip] as const];
+      // Under the run-keys setting the kept one's firings bring no keys. One that starts a run of this revision is refused
+      // for the keys it owes, but the kept trigger's target is not checked here: a message_run trigger whose run is pinned
+      // to an earlier revision that owes no keys still messages it, and that run may spend. So the warning promises no refusal.
+      const kept = options.apiOnly
+        ? `is kept as it was, and still fires: PATCH /v2/triggers/${keptOn?.id} with {"enabled": false} turns it off`
+        : `is kept as it was and still fires until you turn it off (PATCH /v2/triggers/${keptOn?.id} with {"enabled": false}): a firing that would start a run of this revision is refused 409 for the keys it owes, but one aimed at a run of an earlier revision that owes none still reaches that run, which may spend`;
+      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name ${kept}.` } : skip] as const];
     }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
     const refusedTriggers = madeTriggerIssues(made.triggers, options.triggerClock?.now() ?? Date.now(), pkg.inputSchema).filter((issue) => !unmade(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])));
@@ -5633,9 +5686,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
         // In the agent's delete turn (agentWrite): an unarchive sent while its purge runs waits for it and is 410, so no
         // run of it starts between the purge's live check and its tombstone.
-        // On an API-only server with the launch hook, which serves no trigger route to turn one on, the unarchive turns its
-        // schedule and feed triggers on again (the ones its apply makes there).
-        const turnOn = options.apiOnly && options.launchHook ? (source: { kind: string }) => API_ONLY_HOOKED_KINDS.has(source.kind) : undefined;
+        // On an API-only server with the launch hook the unarchive turns its schedule and feed triggers on again (the ones
+        // its apply makes there), so a backend's redeploy needs no PATCH of each.
+        const turnOn = options.apiOnly && options.launchHook ? (trigger: { source: { kind: string }; target: { kind: string } }) => apiOnlyTurnsOn(trigger.source.kind, trigger.target.kind, true) : undefined;
         const triggersOff = await agentWrite(id, () => (found.name === "archiveAgent" ? triggers.agentArchived(id) : triggers.agentUnarchived(id, turnOn)));
         // An archived agent's own computer is deleted (an unarchived one gets a new one at its next persistent run).
         if (found.name === "archiveAgent") reconcileComputer(id);
@@ -6264,6 +6317,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer = await modelGatewayRoute({ store, sealKey: seal.key, env: own(withSecrets(base, "own")), changed: gatewayChanged }, found.name, { ...(body !== undefined ? { body } : {}), signal: stopping.signal });
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
+      // A free local model (local-model.ts): never through `idempotent`, as a pull is one at a time and says so itself.
+      case "getLocalModel":
+        return send(res, 200, await localModelView(localModelDeps()), { "cache-control": "no-store" });
+      case "pullLocalModel":
+        return send(res, 202, await pullLocalModel(localModelDeps(), await bodyOf(req)), { "cache-control": "no-store" });
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":
         return send(res, 200, await mcpServers.list());
@@ -6466,7 +6524,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const records = await promotionsOf(store.learning, id);
         const costStop = await costStopOverStore(store, id);
         const body = entry.revision?.body as AgenticBody | undefined;
-        const modelEnv = !body || sdkOf(body) || nativeOf(body) ? env : envAtPlace(env, resolvePlace(body.place as Place | undefined, fallbackPlace(entry.revision!.kind === "workflow" ? "workflow" : "agentic", body.tools ?? [])));
+        const modelEnv = !body || sdkOf(body) || nativeOf(body) ? env : envAtPlace(env, resolvePlace(body.place as Place | undefined, await fallbackPlace(entry.revision!.kind === "workflow" ? "workflow" : "agentic", body.tools ?? [])));
         return send(res, 200, { ...await agentLearning(store, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow, costStop)), learning_model: await learningModelOf(modelEnv, entry.revision) });
       }
       case "getLearningCost": {
@@ -6771,9 +6829,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret, new Date().toISOString()));
       case "getTrigger":
         return send(res, 200, withSecretOf(await triggers.get(id)));
-      case "updateTrigger":
+      case "updateTrigger": {
+        const body = await bodyOf(req);
+        // On an API-only server, `enabled` alone, and on only where its apply would make the trigger (api-only.ts).
+        if (options.apiOnly) {
+          const trigger = await triggers.get(id);
+          const refused = apiOnlyTriggerEdit(body, trigger.source.kind, options.launchHook !== undefined, trigger.target.kind);
+          if (refused.length) throw invalid(refused);
+        }
         // Its secret's metadata as a read answers it, so a page showing the changed trigger keeps saying it is set.
-        return send(res, 200, withSecretOf(await triggers.update(id, await bodyOf(req))));
+        return send(res, 200, withSecretOf(await triggers.update(id, body)));
+      }
       case "deleteTrigger": {
         // Deleted here whatever its sender says; what could not be removed there is answered (Composio's instance).
         const said = await triggers.remove(id);

@@ -73,15 +73,17 @@ function codexFailed(output: unknown): boolean | undefined {
   return undefined;
 }
 
-function readRecord(value: Record<string, unknown>, at: number, { state, keep, add }: ReadContext<Own>): void {
+function readRecord(value: Record<string, unknown>, at: number, { state, keep, add, chain }: ReadContext<Own>): void {
   const { session, names, turns, own: codex, counts } = state;
   const payload = isObject(value.payload) ? value.payload : {};
   // One request's output items are one turn; its usage, when it comes, is that turn's. A usage with no request (a
   // compaction's, one whose output is no item read here) is a turn of its own. Each is held by its index: in the read's
-  // answers, or a totals read's counts, each request its model, usage and time alone.
+  // answers, or a totals read's counts, each request its model, usage and time alone. A read's request is in the chain
+  // too (a totals read keeps none).
   const answer = (): number => {
     if (counts) return addRequest(counts, session.model, undefined, at);
     add({ role: "assistant", text: "", calls: [], at, ...(session.model ? { model: session.model } : {}), ...(state.effort ? { effort: state.effort } : {}) });
+    chain?.push({ request: state.answers.length - 1 });
     return state.answers.length - 1;
   };
   const request = (): number => {
@@ -100,6 +102,12 @@ function readRecord(value: Record<string, unknown>, at: number, { state, keep, a
     if (response && !counts) state.answers[i]!.key = response;
     codex.openAt = codex.unpaidAt = undefined;
   };
+  // A rollout's prompt only grows, but for a compaction, which replaces the history with its summary: the chain holds the
+  // requests and the compactions, in their order, and no record ids (a rollout names none to rewind to).
+  if (value.type === "compacted") {
+    chain?.push({ compact: true });
+    return;
+  }
   if (value.type === "session_meta") {
     // A fork writes its parent's session_meta after its own (Codex 0.154): one whose id is the thread this rollout forked
     // from is that copy, and says nothing of this rollout. Any other later session_meta still counts, as Codex writes it.

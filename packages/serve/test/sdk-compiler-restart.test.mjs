@@ -7,6 +7,7 @@ import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { journalEntries } from "../dist/runner/journal-reader.js";
 import { reflectRequestId } from "../dist/runner/end-of-run.js";
 import { SHAPE_LINE } from "../dist/learn/compile.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const tool = { name: "mcp:backend/status", description: "Takes release and returns its ready boolean.", input_schema: { type: "object", properties: { release: { type: "string" } }, required: ["release"] }, output_schema: { type: "object", properties: { ready: { type: "boolean" } }, required: ["ready"] }, permission: "allow", price_usd: 0 };
 const workflow = { v: 2, name: "release-status", schemas: { Input: tool.input_schema, Status: tool.output_schema }, input: { schemaId: "Input" }, output: { schemaId: "Status", path: "status" }, root: { node: "call", label: "status", via: "tool", tool: tool.name, args: { release: "{release}" }, out: "Status", as: "status", deadline_s: 5 } };
 const answer = '````workflow release-status\n---\ndescription: Return release readiness using the existing backend tool.\nexample: {"release":"current"}\n---\n' + JSON.stringify(workflow) + '\n````';
@@ -37,7 +38,7 @@ for(const runtime of ["claude-agent-sdk","codex-sdk"])test(`${runtime} real comp
    if(batches.flat().some(w=>w.type==="entry"&&w.value.kind==="agentrun.end")){cut=true;abort.abort();throw new Error("crash after durable compiler answer before atomic end");}
    return value.call(target,batches,...rest);
   };return typeof value==="function"?value.bind(target):value;}});
-  const loop=createSdkLoop(launch,{store:s.store,data:s.data,env:{},sealKey:Buffer.alloc(32,7)},async()=>grader)({journal:()=>guarded,flush:()=>s.store.flush(),signal:abort.signal});
+  const loop=createSdkLoop(launch,{store:s.store,data:s.data,env:{},sealKey:Buffer.alloc(32,7)},async()=>grader)({redact: heldRedactor((text) => text), journal:()=>guarded,flush:()=>s.store.flush(),signal:abort.signal});
   const result=await loop.start(claim);assert.equal(result.state,crash?"interrupted":"ended",JSON.stringify(result));
   if(crash){assert.ok(cut);await s.store.release(claim);}
  };

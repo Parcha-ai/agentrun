@@ -8,7 +8,7 @@ import type { AgentLearning, Corrections, LearningChange, LearningDiff, Learning
 import type { ComposioToolkit, ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ApiKeyMade, ApiKeys, Wrapped, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginSignOut, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, MarketplaceList, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunningComputers, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ApiKeyMade, ApiKeys, Wrapped, Capabilities, HarnessKeys, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginSignOut, ClaudeLoginView, LocalModel, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubRepositories, GitHubStatus, ScanStarted, Suggestion, SuggestionCreated, SuggestionDetail, SuggestionsList, InputIssue, McpPrivateHosts, MarketplaceList, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunningComputers, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, RunUsage, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 // The refusal type lives in its own module (clientError.ts), so a page that only reads a refusal (the share page, through
 // the Timeline) loads none of the client's routes.
@@ -333,6 +333,11 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     removeModelGateway: () => call<ModelGateway>("DELETE", "/settings/model-gateway"),
     /** Asks a gateway which models it lists: the form's address and key when given, else the one in force. */
     testModelGateway: (body: { base_url?: string; api_key?: string | null }) => call<ModelGatewayTest>("POST", "/settings/model-gateway/test", { body }),
+    /** This machine, its Ollama, the free local model recommended for them and the pull here (the owner's session alone; 404
+     *  on a server without it). */
+    localModel: () => call<LocalModel>("GET", "/settings/local-model"),
+    /** Starts pulling the recommended `tag` into the Ollama here; its progress is on localModel. */
+    pullLocalModel: (tag: string) => call<LocalModel>("POST", "/settings/local-model/pull", { body: { tag } }),
     /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
      *  value. */
     computers: () => call<Computers>("GET", "/computers"),

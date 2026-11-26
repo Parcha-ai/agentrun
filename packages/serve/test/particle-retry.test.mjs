@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import { piAdapter } from "../dist/runner/adapters/pi.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 import { routeOf } from "../dist/runner/model-route.js";
 import { modelRetryOf } from "../dist/runner/adapter-run-spec.js";
 import { capRun, quiet } from "./adapter-pi-cap-support.mjs";
@@ -33,7 +34,7 @@ for (const failure of ["503", "cut-stream"]) {
     const route = await routeOf("particle/particle-1", { PARTICLE_API_KEY: KEY }, "default", undefined, upstream);
     const { row } = await capRun(t, {
       specOf: () => (_claim, run) => ({
-        adapter: piAdapter({ run, model: route.model, provider: route.provider, like: route.like, price: route.price, fetch: route.fetch }),
+        adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: route.model, provider: route.provider, like: route.like, price: route.price, fetch: route.fetch }),
         session: { key: "root", label: "root", system: ["Answer briefly."], tools: [], context: "fresh" },
         input: "Hello.", hooks: quiet, gate: () => "allow",
         ...modelRetryOf([route]),

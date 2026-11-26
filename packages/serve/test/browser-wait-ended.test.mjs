@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { clearWaitEnded, markWaitEnded, readWaitEnded, screenWaitEnded } from "../dist/browser-wait-ended.js";
 import { computerView } from "../dist/computer-view.js";
 import { personHands } from "../dist/browser-person.js";
+import { secretRedactor } from "../dist/runner/redact.js";
 
 /** A store seam over a Map, counting settings reads; its journal throws if anything reads it. */
 function storeOf() {
@@ -79,6 +80,7 @@ test("the wait's end hands its row's words and time to the ended state, once; an
   const person = personHands({
     gates: () => ({ give: () => false }), pollMs: 60_000, holdMs: 15 * 60_000, timers, now: () => clock,
     personTime: async () => ({ drop: () => {} }), note: async () => {}, asks: async () => [], answered: async () => undefined,
+    redact: secretRedactor([]),
     waitEnded: (at, why) => ended.push({ at: new Date(at).toISOString(), why }),
   });
   t.after(() => person.close());

@@ -100,7 +100,7 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     if (earlyStop) {
       inner.stop(earlyStop).catch((error: unknown) => {
         const text = (error as Error)?.message ?? String(error);
-        console.warn(`[runner] run ${claim.runId}: its stop failed: ${loopDeps.redact ? loopDeps.redact(text) : text}`);
+        console.warn(`[runner] run ${claim.runId}: its stop failed: ${loopDeps.redact(text)}`);
       });
     }
     return end;
@@ -125,7 +125,7 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     // What went wrong, cut of the values the run holds (LoopDeps.redact), as the log may not show them.
     const why = () => {
       const text = (lastError as Error)?.message ?? String(lastError);
-      return loopDeps.redact ? loopDeps.redact(text) : text;
+      return loopDeps.redact(text);
     };
     const failed: Command[] = [];
     try {
