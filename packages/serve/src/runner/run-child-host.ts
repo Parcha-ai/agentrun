@@ -675,7 +675,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   const store = deps.store;
   const granted = ((revision.body as { tools?: unknown }).tools as readonly string[] | undefined) ?? [];
   const admitAuxiliary = sourceAuxiliaryAdmitter(store, { data: deps.data, sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
-  const keys = { store, sealKey, env: deps.env };
+  // No hand-back on these readers: a plan they give the run's process is wrapped as it crosses (handed, below).
+  const keys = { store, sealKey, env: deps.env, handBack: undefined, signal: undefined };
   const releases: (() => Promise<void> | void)[] = [() => bigs.close()];
   const source = sourceSyncOf(revision.body), placed = launch.sourceProject;
   const moved = !!source && !!placed && source.id === placed.sourceId && source.project === placed.digest && placed.baselineRevision === run.revisionId;

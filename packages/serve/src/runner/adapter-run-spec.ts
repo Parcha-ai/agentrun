@@ -58,7 +58,7 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, keyedNow, hostDecisionKeys, learnedDecisionKeys, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, keyedNow, hostDecisionKeys, learnedDecisionKeys, type PlanHandBack, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { atRunEnd } from "../learning-work.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
@@ -346,14 +346,14 @@ export async function graderRouteOf(
   claimed: NodeJS.ProcessEnv,
   cut: HeldRedact,
   log: (line: string) => void,
-  deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf">,
+  deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf"> & PlanHandBack,
   holds: readonly HeldRedact[] = [cut],
   claim?: Pick<Claim, "runId" | "turn" | "attempt">,
 ): Promise<ModelRoute | undefined> {
   if (agreeOnOf(body.learning)?.length) return undefined;
   const { tiers, refs } = routedSubagentTiers(body, deps.env ?? {});
   if (!tiers.includes("fast")) return undefined;
-  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, ["fast"], refs);
+  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env, handBack: deps.handBack, signal: deps.signal }, ["fast"], refs);
   for (const redact of new Set(holds)) holdClaimed(redact, savedKeys);
   // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
   const env = claimModelEnv(deps.env, [claimed, savedKeys], runKey, claim);
@@ -378,13 +378,13 @@ export async function subagentTierRoutes(
   runKey: ClaimModelKey | undefined,
   toolEnv: NodeJS.ProcessEnv,
   cut: HeldRedact,
-  deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf">,
+  deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf"> & PlanHandBack,
   claim?: Pick<Claim, "runId" | "turn" | "attempt">,
 ): Promise<{ readonly routes: Map<string, ModelRoute>; readonly why: Map<SubagentTier, string> }> {
   const routes = new Map<string, ModelRoute>();
   const why = new Map<SubagentTier, string>();
   const { tiers, refs } = routedSubagentTiers(body, deps.env ?? {});
-  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, tiers, refs);
+  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env, handBack: deps.handBack, signal: deps.signal }, tiers, refs);
   holdClaimed(cut, savedKeys);
   const tierEnv = claimModelEnv(deps.env, [toolEnv, savedKeys], runKey, claim);
   for (const tier of tiers) {
@@ -799,7 +799,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const tierWhy = new Map<SubagentTier, string>();
   if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL) && heldRefusal === undefined) {
     // A run with its own model key: its subagents' models carry that key too, and no saved key is read.
-    const subagent = await subagentTierRoutes(body, keyed, runKey, toolEnv, cut, deps, claim);
+    const subagent = await subagentTierRoutes(body, keyed, runKey, toolEnv, cut, { ...deps, handBack: run.handBack, signal: run.signal }, claim);
     for (const [key, at] of subagent.routes) tierRoutes.set(key, at);
     for (const [tier, why] of subagent.why) tierWhy.set(tier, why);
   }
@@ -924,7 +924,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // run's own model), held by the run's one redactor, on the tiers' route env alone (withModelKeys, never enumerable),
     // never on the tools' (toolEnv).
     // A run with its own model key: its learned nodes' tiers carry that key too, and no saved key is read.
-    const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
+    const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env, handBack: run.handBack, signal: run.signal }, learnedTiers(workflows));
     holdClaimed(cut, tierKeys);
     const tierEnv = claimModelEnv(deps.env, [tierKeys, toolEnv], runKey, claim);
     for (const [tier, routed] of await learnedTierRoutes(workflows, tierEnv, (tier) => deps.routeOf(undefined, tierEnv, tier, PI_WIRES, undefined, cut))) {
@@ -938,7 +938,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a route of its own beside the session's, on the
   // session's booking under the run's one cap. None: the pair is compared whole, in words saying so. None for a held run
   // its model kept from running, whose model runs nowhere.
-  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, deps, [cut], claim) : undefined;
+  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, { ...deps, handBack: run.handBack, signal: run.signal }, [cut], claim) : undefined;
   if (graderRoute) tierRoutes.set(GRADER, graderRoute);
 
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the
