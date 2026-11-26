@@ -293,3 +293,32 @@ test("the gateway itself: with a run's redactor that names none of its values (n
   assert.equal(filed.shot.content[0].data, "[redacted]", "a payload past a piece");
   assert.equal(filed.small.content[0].data, "iVBORw0KGgo=", "a payload within a piece is read as text is");
 });
+
+test("binaryKept: the bytes a payload decodes to are read for a held value and a shape through their runs of text alone, so a large image's random bytes cost a bounded read; a value or a shape in a text file's bytes is still found", async () => {
+  const { binaryKept } = await import("../dist/mcp-gateway.js");
+  const { scanned } = await import("../dist/redact/match.js");
+  const { randomBytes } = await import("node:crypto");
+  const values = Array.from({ length: 8 }, (_, i) => `not-a-secret-${i}-${"0123456789abcdef".repeat(2)}`);
+  const keep = (payload) => binaryKept(payload, (text) => text, (text) => text, values);
+  const image = randomBytes(48 * 1024).toString("base64");
+  scanned.chars = 0;
+  assert.equal(keep(image), image, "random bytes holding nothing are kept whole");
+  const per = scanned.chars / image.length;
+  // Eight values: the base64 text's own check reads about 110 characters per payload character, and the whole decoded
+  // view read through every view about 550 more; 300 is between.
+  assert.ok(per < 300, `the check reads ${per.toFixed(1)} characters per payload character`);
+  const { MAX_RESPONSE } = await import("../dist/mcp-wire.js");
+  const screenshot = randomBytes((MAX_RESPONSE / 4) * 3).toString("base64");
+  scanned.chars = 0;
+  assert.equal(keep(screenshot), screenshot, "a clean payload at the wire's cap is kept byte for byte");
+  assert.ok(scanned.chars / screenshot.length < 300, `at the cap too: ${(scanned.chars / screenshot.length).toFixed(1)} per character`);
+  const lines = (inside) => Buffer.from(`${Array.from({ length: 2000 }, (_, i) => `line ${i} of a text file`).join("\n")}\n${inside}\n`).toString("base64");
+  const found = {
+    hex: keep(lines(`key = ${Buffer.from(values[3]).toString("hex")}`)),
+    escaped: keep(lines(JSON.stringify({ key: values[5] }).replace(/-/g, "\\u002d"))),
+    split: keep(lines(`${values[1].slice(0, 12)}\n${values[1].slice(12)}`)),
+    shape: keep(lines(PEM)),
+    "hex between binary bytes": keep(Buffer.concat([randomBytes(4096), Buffer.from(` ${Buffer.from(values[6]).toString("hex")} `), randomBytes(4096)]).toString("base64")),
+  };
+  assert.deepEqual(Object.entries(found).filter(([, kept]) => kept !== "[redacted]").map(([what]) => what), [], "each is withheld");
+});
