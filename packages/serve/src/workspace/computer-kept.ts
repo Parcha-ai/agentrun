@@ -93,6 +93,11 @@ export const computerLostWords = (kind: string): string => `The ${kind} wasn't k
  *  names the runner. */
 export const computerHeldWords = (kind: string): string => `The ${kind} wasn't kept: another runner kept it and couldn't take the run, so that runner ends it.`;
 
+/** Why the run's computer at its resume is a new one: the one kept at its park was found, but its provider refused to
+ *  attach it again (it no longer matches how the provider makes one here). The provider's own words name host paths and
+ *  its settings, so they go to the runner's log alone (computer-for-claim.ts reattach), never to the person. */
+export const computerRefusedWords = (kind: string): string => `The ${kind} wasn't kept: it couldn't be taken back.`;
+
 /** The live view's words once the kept computer's time passed, the run still parked. */
 export const lapsedWords = (kind: string): string => `${computerLapsedWords(kind)} A new one starts when the run goes on.`;
 
@@ -383,7 +388,9 @@ export async function keptTaken(settings: Pick<KeptSettings, "removeIf">, runId:
  *  holds it): the row turned ending, whoever kept it and whether that runner is there or not, so no claim takes that
  *  machine back as the run's (nor does the claim rule pin the run to it). Its runner's end at its time (endKept, which
  *  finishes a row its park wrote that reads ending) or its janitor's next pass deletes it; once it is gone, or where any
- *  runner reaches it, any janitor's pass does. A row this claim took the mark off (it reached the machine, then failed
+ *  runner reaches it, any janitor's pass does. Where the claim's own launch deletes it (its provider lists it: an
+ *  attach it refused, a Docker engine both runners share), that delete marks the row ended (finishedKept,
+ *  computer-for-claim.ts keptDeletes), and the run's end removes it. A row this claim took the mark off (it reached the machine, then failed
  *  before it could use it) is put back so, only while the key has none. A write the store fails is tried again. True when
  *  the row reads ending (or ended) after; false when it does not (the store failed every try, and the row is left marked
  *  taking, which is ended at its time all the same). */

@@ -516,6 +516,34 @@ func TestAppsLaunchRefusesInWords(t *testing.T) {
 	}
 }
 
+// A url that is a flag or a relative path is refused before anything starts: no launch is in the process table, and the
+// command a flag would have run never ran.
+func TestAppsLaunchRefusesAFlagOrARelativePathAndStartsNothing(t *testing.T) {
+	w := setup(t, time.Second)
+	ran := filepath.Join(t.TempDir(), "ran")
+	for _, c := range []struct{ url, says string }{
+		{"--renderer-cmd-prefix=touch " + ran, `starts with "-": the app would take it as a flag`},
+		{" \t-new-instance", `starts with "-": the app would take it as a flag`},
+		{"notes.txt", "is neither an absolute URL with a scheme"},
+		{"../etc/passwd", "is neither an absolute URL with a scheme"},
+	} {
+		_, err := w.call("apps.launch", map[string]any{"id": "single.hand", "url": c.url})
+		if kindOf(err) != rpc.KindInvalid || !strings.Contains(fmt.Sprint(err), c.says) {
+			t.Errorf("apps.launch single.hand with url %q: %v (%q), want invalid saying %q", c.url, err, kindOf(err), c.says)
+		}
+	}
+	listed, err := w.table.List(process.ListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Processes) != 0 {
+		t.Errorf("refused launches started %d processes: %+v", len(listed.Processes), listed.Processes)
+	}
+	if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the flag's command ran: %v", err)
+	}
+}
+
 // A launch that showed no window runs on (the timeout says terminate ends it), and terminate ends it before it answers,
 // though there is no window of it to go.
 func TestAppsTerminateEndsALaunchWithNoWindow(t *testing.T) {

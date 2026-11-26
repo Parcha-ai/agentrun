@@ -9,8 +9,8 @@
 // serverless one, a fresh container holding the run's folder alone ("local": bash only, asking first, and the background
 // tools refused in words); in Mode 1 nowhere ("none"): the folder is one of this server's own, and a command there would
 // run on the server with everything it can read (its data, its keys), so the run gets the file tools alone, confined to
-// the folder, and no bash family at all. The longest command is 600 s, or 295 s on Archil's serverless exec; bash's
-// words follow it.
+// the folder, and no bash family at all; nor in Mode 2 where the server's Archil region has no serverless exec
+// (`noExec`). The longest command is 600 s, or 295 s on Archil's serverless exec; bash's words follow it.
 //
 // The shell's environment is fixed (hands.ts shellEnv): never a variable of this server's. Under a bash policy
 // (`bashPolicy`, the revision's tool_settings.bash.policy) it adds the policy's (bash-read-only.ts policyEnv): git's
@@ -122,9 +122,9 @@ function mountedIn(computer: RunComputer | undefined): { readonly computer: Atta
 
 /** A desktop's or a phone's computer as a codemode script gets it bound (runner/meta-tools.ts): its card, the agent's
  *  own (no exec or processes group where its exec is off: `exec` false then, which a script's reach for computer.shell
- *  is told), and the ops its declarations leave out, which the run's gate refuses for a tool the agent is not given
- *  (`opsNotGiven`, set by the run's spec: RunGate.opsNotGiven). */
-export type ScriptComputer = { readonly card: Card; readonly exec?: false; readonly opsNotGiven?: readonly string[] };
+ *  is told), and the ops its declarations leave out, which the run's gate refuses whatever their arguments
+ *  (`opsRefused`, set by the run's spec: RunGate.opsRefused). */
+export type ScriptComputer = { readonly card: Card; readonly exec?: false; readonly opsRefused?: readonly string[] };
 
 /** A desktop's or a phone's port, over its surface, the kind whose tools the run gets, its groups, and its computer as a
  *  script gets it bound; none for any other computer. Its shell gets the run's bash policy (`shell`). */
@@ -176,7 +176,7 @@ export type RunHands = {
  *  phone's ports and answering them wrapped, so a call made while the person holds it waits, and an action then is
  *  refused; never the shell's, the files' or a browser's (its take-over is pi-browser's own). `replaced`: the computer
  *  replaced an earlier claim's (ClaimComputer.replaced), so a desktop's or a phone's act is held to what it showed. */
-export async function runHands(workspace: Workspace, claimed: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; readonly replaced?: boolean }): Promise<RunHands> {
+export async function runHands(workspace: Workspace, claimed: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; readonly replaced?: boolean }): Promise<RunHands> {
   // The folder's own path on this machine, Mode 1's bind. A Mode 2 folder (Archil) has none, and asking its mount would
   // mint the run's mount credential: only a computer that mounts the folder asks it (attach, below).
   const spec = options.mode === 1 ? await workspace.mountSpec() : undefined;
@@ -185,7 +185,7 @@ export async function runHands(workspace: Workspace, claimed: RunComputer | unde
   // folder in it, and the run has no shell at all (no bash family, not even Archil's exec).
   const computer = agentsOwn(claimed);
   const mounted = mountedIn(computer);
-  const shell = noPrograms(computer) ? "none" : shellPlaceOf(mounted !== undefined, options.mode);
+  const shell = noPrograms(computer) ? "none" : shellPlaceOf(mounted !== undefined, options.mode, options.noExec);
   const attached = mounted === undefined ? workspace : await workspace.attach(mounted.computer, mounted.check);
   // The folder's name: /workspace in a computer (and on Archil's exec, which has no path of this machine), its own path here.
   const cwd = mounted === undefined && here !== undefined ? here : COMPUTER_ROOT;
@@ -260,17 +260,17 @@ const SAYS_PATH: ReadonlySet<string> = new Set(["write", "edit"]);
  * the agent's surface "code" a desktop's or a phone's step tools, are deferred: bound for a script's nested calls
  * (codemode's `computer` and `tools.<name>`), never listed to the model (scriptsOnly). Unless `writes` (the run's gate
  * lets it write a file: RunGate.writeBar, read by the spec), computer_screenshot offers no save_as, which the gate would
- * refuse; computer_op offers none of the ops in `opsNotGiven` (the gate refuses them for a tool the agent is not given:
- * RunGate.opsNotGiven).
+ * refuse; computer_op offers none of the ops in `opsRefused` (the gate refuses them whatever their arguments:
+ * RunGate.opsRefused).
  */
-export function bindTools(run: RunHands, registry: RunRegistry, names: readonly string[], options: { readonly results?: ToolResults; readonly writes?: boolean; readonly opsNotGiven?: readonly string[] } = {}): HostTool[] {
+export function bindTools(run: RunHands, registry: RunRegistry, names: readonly string[], options: { readonly results?: ToolResults; readonly writes?: boolean; readonly opsRefused?: readonly string[] } = {}): HostTool[] {
   const defs = new Map(registry.list().map((def) => [def.name, def] as const));
   const works = [...new Set(run.names.flatMap((name) => [name, realOf(name)]))];
   const brought: ReadonlySet<string> = new Set(COMPUTER_TOOLS);
   return names.flatMap((name): HostTool[] => {
     const listed = defs.get(name);
     if (!listed) return [];
-    const def = name === "computer_screenshot" && options.writes !== true ? unsavedScreenshot(listed) : name === COMPUTER_OP_TOOL && options.opsNotGiven?.length ? withoutOps(listed, options.opsNotGiven) : listed;
+    const def = name === "computer_screenshot" && options.writes !== true ? unsavedScreenshot(listed) : name === COMPUTER_OP_TOOL && options.opsRefused?.length ? withoutOps(listed, options.opsRefused) : listed;
     return [{
       name: def.name,
       description: def.description,
@@ -323,8 +323,8 @@ export type RunTools = {
   readonly apart?: { readonly kind: "desktop" | "phone"; readonly screenshot: boolean };
   /** The registry's tools `names` names, as the kernel's HostTool an adapter's session takes, each call through the
    *  run's gate decided before its intent, each answer kept in `results`; `writes`, the gate lets the run write a file, so
-   *  computer_screenshot offers save_as; `opsNotGiven`, the ops computer_op leaves out (bindTools). */
-  hostTools(names: readonly string[], options?: { readonly results?: ToolResults; readonly writes?: boolean; readonly opsNotGiven?: readonly string[] }): HostTool[];
+   *  computer_screenshot offers save_as; `opsRefused`, the ops computer_op leaves out (bindTools). */
+  hostTools(names: readonly string[], options?: { readonly results?: ToolResults; readonly writes?: boolean; readonly opsRefused?: readonly string[] }): HostTool[];
   /** The run's end, before the computer is let go: its background processes ended (TERM, then KILL 3 s later; none with
    *  no computer), then bash's full outputs and TMPDIR swept. */
   end(): Promise<void>;
@@ -341,7 +341,7 @@ export type RunTools = {
  * their executors to the run. A browser computer brings none of the registry's: the run's browser tool (tools.ts,
  * pi-browser's durable extension) drives it.
  */
-export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The computer replaced an earlier claim's (runHands). */ readonly replaced?: boolean }): Promise<RunTools> {
+export async function runTools(workspace: Workspace, computer: RunComputer | undefined, options: { readonly mode: 1 | 2; readonly noExec: string | undefined; readonly context: Context; readonly aliases?: readonly string[]; readonly hold?: RunHold; readonly bashPolicy?: string; /** The computer replaced an earlier claim's (runHands). */ readonly replaced?: boolean }): Promise<RunTools> {
   const run = await runHands(workspace, computer, options);
   const registry = createRegistry({ maxExecS: run.maxExecS, shell: run.shell, kinds: run.kinds, groups: run.groups, executors: run.executors });
   const brought: ReadonlySet<string> = new Set(COMPUTER_TOOLS);
