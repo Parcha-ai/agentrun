@@ -3915,8 +3915,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const next = new Promise<TurnEnd | "lapsed">((resolve, reject) => {
       let done = false;
       let lapsed = false;
-      /** Ended by a message left for the run's next turn (endWaitNow), no hold having lapsed. */
-      let cut = false;
       const finish = (value: Promise<TurnEnd> | "lapsed") => {
         if (done) return;
         done = true;
@@ -3935,13 +3933,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }, () => undefined);
       // So does a message left for the run's next turn (steer), the same way; one left while the wait was starting ends it
       // as soon as it holds.
-      if (waitTurn === mine) {
-        endWaitNow = () => {
-          cut = true;
-          if (!mine.sent) finish("lapsed");
-        };
-        if (leftForNextTurn) endWaitNow();
-      }
+      endWaitNow = () => {
+        if (!mine.sent) finish("lapsed");
+      };
+      if (leftForNextTurn) endWaitNow();
       void (async () => {
         for (;;) {
           await placing;
@@ -3952,7 +3947,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // Not placed (the steer was refused): the next message may be.
             mine.sent = undefined;
             placing = new Promise<void>((resolve) => (mine.placed = resolve));
-            if (lapsed || cut) return finish("lapsed");
+            if (lapsed) return finish("lapsed");
           }
         }
       })().catch(reject);
