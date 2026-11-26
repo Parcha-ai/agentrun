@@ -16,7 +16,7 @@ import { agent, follow, journalOf, scratch, serve, withEnv } from "./support.mjs
 const { chooseModel, hostModel, providerModels, runModels } = await import("../dist/model.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { factsOf, HARNESS_MODULES_ENV } = await import("../dist/harness-table.js");
-const { listOllama, ollamaAsking, ollamaBase, ollamaClock, ollamaKept, ollamaModels, ollamaShown, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
+const { listOllama, ollamaAsking, ollamaBase, ollamaClock, ollamaForget, ollamaKept, ollamaModels, ollamaShown, OLLAMA_NUM_CTX, OLLAMA_TTL_MS } = await import("../dist/ollama-provider.js");
 
 // The suites turn every Ollama off (support.mjs, OLLAMA_OFF_ENV); this file asks its own fakes alone.
 delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
@@ -34,6 +34,25 @@ async function eventsOf(route) {
   const response = await route.fetch(`${route.provider.origin}/v1/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(REQUEST) });
   return (await response.text()).split("\n").filter((line) => line.startsWith("data: ")).map((line) => JSON.parse(line.slice(6)));
 }
+
+// A pull ends while a listing asked before it is still under way: the forget after the pull (local-model.ts) must not
+// be undone by that listing landing, or the pulled model stays out of the picker for OLLAMA_TTL_MS.
+test("a listing asked before ollamaForget answers its caller but is never kept: the next ollamaModels asks again and has the pulled model", async (t) => {
+  const pulled = { name: "synth-pulled:3b", capabilities: ["completion", "tools"], family: "synthpulled", context_length: 32_768 };
+  const ollama = await fakeOllama(t, { pullable: { [pulled.name]: pulled } });
+  const env = { OLLAMA_HOST: ollama.host };
+  ollama.slowTags(400);
+  const before = ollamaModels(env);
+  while (ollama.got.tags < 1) await new Promise((r) => setTimeout(r, 10));
+  const pull = await fetch(`${ollama.url}/api/pull`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: pulled.name }) });
+  assert.match(await pull.text(), /"success"/);
+  ollamaForget(env);
+  assert.ok(!(await before).some((m) => m.name === pulled.name), "the listing from before the pull answers as it was");
+  ollama.slowTags(0);
+  const after = await ollamaModels(env);
+  assert.ok(after.some((m) => m.name === pulled.name), JSON.stringify(after.map((m) => m.name)));
+  assert.equal(ollama.got.tags, 2, "asked again after the forget");
+});
 
 test("providerModels lists exactly the chat models the Ollama here lists, from /api/tags and /api/show; a down Ollama lists none and throws nothing", async (t) => {
   const ollama = await fakeOllama(t);
@@ -173,8 +192,13 @@ test("an Ollama cloud model (remote_model and remote_host, run on ollama.com) is
 test("an Ollama that takes the request and never answers lists nothing once its timeout passes; that answer is never kept fresh, and no caller waits on it again", async (t) => {
   const ollama = await fakeOllama(t, { hang: true });
   const env = { OLLAMA_HOST: ollama.host };
-  assert.deepEqual(await listOllama(env, { timeoutMs: 50 }), [], "no models, no throw");
-  assert.equal(ollama.got.tags, 1, "it was asked");
+  // Counted where listOllama sends, not where the fake receives: on a loaded machine the 50 ms deadline can abort the
+  // request before it reaches the fake, and the answer is the same either way.
+  const asked = [];
+  const send = (url, init) => (asked.push(new URL(url).pathname), globalThis.fetch(url, init));
+  assert.deepEqual(await listOllama(env, { fetch: send, timeoutMs: 50 }), [], "no models, no throw");
+  assert.deepEqual(asked, ["/api/tags"], "it was asked once");
+  assert.ok(ollama.got.tags <= 1, "and the fake saw at most that one request");
   const models = await providerModels(env);
   assert.deepEqual(models.getModels("ollama"), [], "providerModels takes the kept answer at once");
   assert.ok(ollamaAsking(env), "and asks the stuck Ollama again behind it, never waiting on it");

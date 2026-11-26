@@ -24,6 +24,7 @@ import { connect as wsConnect } from "./fixtures/ws-client.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
+const { secretRedactor } = await import("../dist/runner/redact.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
@@ -179,7 +180,7 @@ const CLI = Object.keys(CLI_HARNESSES);
  *  tools `tools`, on run-adapters' faux harness (fauxTable) whose model is a faux gateway: `start(name, timing)` starts a runner on
  *  it through the runner's dispatch, `rested()` waits for the run's row to rest and reads its timeline and the tool lists
  *  its harness was handed. */
-async function cliClaim(t, harness, cdpUrl, record, tools, instructions = "Snapshot the browser and click its Add button.", table = fauxTable(FAUX_HARNESS)) {
+async function cliClaim(t, harness, cdpUrl, record, tools, instructions = "Snapshot the browser and click its Add button.", table = fauxTable(FAUX_HARNESS), runnerOptions = {}) {
   const gw = await startFauxGateway();
   t.after(() => gw.close());
   const { model, env: gatewayEnv } = CLI_HARNESSES[harness];
@@ -192,7 +193,7 @@ async function cliClaim(t, harness, cdpUrl, record, tools, instructions = "Snaps
   const deps = { env, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim, computerDeps: computerDepsOver(cdpUrl, record) };
   const start = (name, timing = {}) => {
     const runner = startRunner({
-      store: opened.store, name, ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000, ...timing,
+      store: opened.store, name, ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000, ...runnerOptions, ...timing,
       createLoop: createDispatchLoop({ launchOf: (runId) => opened.store.runs.launch(runId), resolve: (id, given) => (id === harness ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
     });
     t.after(() => runner.close().catch(() => {}));
@@ -207,8 +208,11 @@ async function cliClaim(t, harness, cdpUrl, record, tools, instructions = "Snaps
       throw new Error(`${error.message}: ${JSON.stringify({ row: last, created: record.created, released: record.released, cdp: page.calls.map((call) => call.method) })}`);
     });
     const timeline = await runTimeline(opened.server, RUN, ctx);
-    const lists = existsSync(handed) ? readFileSync(handed, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.tools).map((line) => line.tools) : [];
-    return { row, timeline, lists };
+    const lines = existsSync(handed) ? readFileSync(handed, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
+    const lists = lines.filter((line) => line.tools).map((line) => line.tools);
+    // Each tool answer as the harness was handed it (faux-table.mjs answersKept).
+    const answers = lines.filter((line) => line.answer).map((line) => line.answer);
+    return { row, timeline, lists, answers };
   };
   return { opened, start, rested };
 }
@@ -308,6 +312,30 @@ for (const [harness, on, table] of RUNS_ON) for (const [how, tools] of [["grante
     assert.ok(!JSON.stringify(timeline).includes("SECRET-signed-url-token"), "the signed URL reaches no row of the run's");
     await until(() => record.released.length > 0, "the session is released");
     assert.deepEqual(record.released, [["bb-1", "delete"]], "the session was released once, when the tool let it go at the run's end");
+  });
+}
+
+// A browser call's answer on a CLI harness is the page's own text, and a page can show a value the run must not leak (a key
+// the runner holds, shown back in a form field or a title): the answer the harness is handed passes through the run's
+// redactor (LoopDeps.redact, the runner's one), as every other host tool answer does, so the value reaches the CLI only as
+// "[redacted]", on the faux harness and on goose and cursor's own ACP adapter.
+const PAGE_VALUE = "page-value-7f3a9c2e5b1d4a6f0c8e";
+for (const [harness, on, table] of RUNS_ON) {
+  test(`${harness}${on}: a value the run's redactor holds, shown on the page, reaches the harness only as [redacted] in the browser's answers`, { timeout: 120_000 }, async (t) => {
+    const page = await fakeAxPage({ title: `Account ${PAGE_VALUE}` });
+    t.after(() => page.close());
+    const record = { created: [], released: [], connects: 0 };
+    const claim = await cliClaim(t, harness, `${page.url}?${SIGNED}`, record, ["read", "browser"], undefined, table, { redact: secretRedactor([PAGE_VALUE]) });
+    claim.start("runner-a");
+    const { row, timeline, answers } = await claim.rested(page);
+
+    assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+    assert.ok(page.calls.some((call) => call.method === "Accessibility.getFullAXTree"), "the snapshot read the page, whose title holds the value");
+    const browser = answers.filter((one) => ["snapshot", "run"].includes(one.tool));
+    assert.ok(browser.some((one) => one.tool === "snapshot"), `the harness was handed the snapshot's answer: ${JSON.stringify(answers)}`);
+    for (const one of browser) assert.ok(!JSON.stringify(one).includes(PAGE_VALUE), `the harness is never handed the value raw, in its text or its value: ${JSON.stringify(one)}`);
+    assert.match(browser.find((one) => one.tool === "snapshot").text, /Account \[redacted\]/, "the snapshot's answer shows the page with the value cut");
+    assert.ok(!JSON.stringify(timeline).includes(PAGE_VALUE), "nor does any row of the run's");
   });
 }
 

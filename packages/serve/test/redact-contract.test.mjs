@@ -756,6 +756,102 @@ const CASES = [
       exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
     };
   })(),
+  // A control character that is no whitespace (U+0000-0008, U+000E-001F, U+007F-009F: a NUL, an escape, a delete, a
+  // C1 control) renders as nothing too: between a held value's halves it hides the value from no view, as it stands, in
+  // a JSON string as JSON.stringify writes it (once, and twice: JSON in JSON), as JSON's \u escape in prose,
+  // percent-encoded, as an HTML character reference, as Python's \x escape in a single-quoted dict, and between each of
+  // the value's characters. A text that holds such characters and no held value shows as it came, and so does one whose
+  // control stands after a held value's head with no rest after it.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const hex = (code, width) => code.toString(16).padStart(width, "0");
+    return [0x00, 0x01, 0x08, 0x0e, 0x1b, 0x1f, 0x7f, 0x85, 0x9f].flatMap((code) => {
+      const control = String.fromCharCode(code);
+      const at = `U+${hex(code, 4).toUpperCase()}`;
+      return [
+        [`${at} as it stands`, `x ${H}${control}${R} y`],
+        [`${at} in a JSON string as JSON.stringify writes it`, JSON.stringify({ note: `see ${H}${control}${R} more` })],
+        [`${at} in JSON written in a JSON string`, JSON.stringify({ out: JSON.stringify({ note: `see ${H}${control}${R} more` }) })],
+        [`${at} as JSON's \\u escape in prose`, `x ${H}${B}u${hex(code, 4)}${R} y`],
+        [`${at} percent-encoded`, `x ${H}${encodeURIComponent(control)}${R} y`],
+        [`${at} as Python's \\x escape in a single-quoted dict`, `{'a': 'see ${H}${B}x${hex(code, 2)}${R} more'}`],
+        [`${at} between each of its characters`, `v=${[...H, ...R].join(control)} ok`],
+        // A browser reads "&#0;" as U+FFFD, which shows, so it is no control (match.ts entityAt).
+        ...(code > 0 ? [[`${at} as an HTML character reference`, `x ${H}&#x${code.toString(16)};${R} y`]] : []),
+      ].map(([what, text]) => ({ name: `a held value split by a control character, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+    });
+  })(),
+  ...(() => {
+    const [nul, soh, esc, us, del, nel] = [0x00, 0x01, 0x1b, 0x1f, 0x7f, 0x85].map((code) => String.fromCharCode(code));
+    const [H] = P24;
+    return [
+      ["controls between words and no held value", `a${nul}b${soh}c ${esc}[0m d${us}e${del} f${nel}g end`],
+      ["controls after a held value's head with no rest after them", `x ${H}${nul}${soh}zzzzzzzz y`],
+      ["a control after a held value's head with no rest after it, in a JSON string", JSON.stringify({ note: `see ${H}${nul}zzzzzzzz more` })],
+    ].map(([what, text]) => ({
+      name: `a text with ${what} shows as it came (control)`,
+      text,
+      values: [P24.join("")],
+      hides: [],
+      exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
+    }));
+  })(),
+  // U+FFFF, a noncharacter, shows as a box at most, so a reader still reads a held value split by one: as it stands, in
+  // a JSON string (JSON.stringify keeps it as it is; once, and twice: JSON in JSON), as JSON's \uffff escape in prose
+  // and in a JSON string, percent-encoded (its UTF-8 bytes), as an HTML character reference, and between each of the
+  // value's characters, it withholds the text. Only the separator a join puts between its passes separates (match.ts
+  // SEPARATOR). A text with U+FFFF and no held value shows as it came; so does one with U+FFFF after a held value's head
+  // and no rest; and a held value whole beside U+FFFF, or two finds with U+FFFF between them, in prose or in JSON
+  // strings, is cut in place, the U+FFFF kept where it stood.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const N = "\uffff";
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    return [
+      ["as it stands", `x ${H}${N}${R} y`],
+      ["in a JSON string as JSON.stringify writes it", JSON.stringify({ note: `see ${H}${N}${R} more` })],
+      ["in JSON written in a JSON string", JSON.stringify({ out: JSON.stringify({ note: `see ${H}${N}${R} more` }) })],
+      ["as JSON's \\u escape in prose", `x ${H}${B}uffff${R} y`],
+      ["as JSON's \\u escape in a JSON string", `{"note":"see ${H}${B}uFFFF${R} more"}`],
+      ["percent-encoded", `x ${H}%EF%BF%BF${R} y`],
+      ["as an HTML character reference", `x ${H}&#xffff;${R} y`],
+      ["as a decimal HTML character reference", `x ${H}&#65535;${R} y`],
+      ["between each of its characters", `v=${[...H, ...R].join(N)} ok`],
+      ["in one of a dict's values written in a JSON string", JSON.stringify({ args: `{'a': 'see ${H}${N}${R} more'}` })],
+    ].map(([what, text]) => ({ name: `a held value split by U+FFFF, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
+  ...(() => {
+    const [H] = P24;
+    const N = "\uffff";
+    return [
+      ["U+FFFF between words and no held value", `a${N}b c${N}${N}d end`],
+      ["U+FFFF after a held value's head with no rest after it", `x ${H}${N}zzzzzzzz y`],
+      ["U+FFFF after a held value's head with no rest after it, in a JSON string", JSON.stringify({ note: `see ${H}${N}zzzzzzzz more` })],
+    ].map(([what, text]) => ({
+      name: `a text with ${what} shows as it came (control)`,
+      text,
+      values: [P24.join("")],
+      hides: [],
+      exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
+    }));
+  })(),
+  ...(() => {
+    const V = P24.join("");
+    const N = "\uffff";
+    return [
+      ["in prose", `see ${V}${N}${V} and a${N}b`, `see [redacted]${N}[redacted] and a${N}b`],
+      ["in JSON strings", `{"a":"${V}${N}${V}","b":"${N}${V}"}`, `{"a":"[redacted]${N}[redacted]","b":"${N}[redacted]"}`],
+    ].map(([what, text, out]) => ({
+      name: `a held value whole beside U+FFFF, ${what}, is cut in place and the U+FFFF kept (control)`,
+      text,
+      values: [V],
+      hides: [P24[0].slice(0, 8), P24[1].slice(0, 8)],
+      exact: { redacted: out, redactedAnswer: out, redactSecrets: out, runFile: out },
+    }));
+  })(),
   // The #3626 review's escaped splits, each a named guard: a held value split by one of JSON's one-character escapes
   // written as its two characters ("\n", "\t", "\""), a held value written as JSON's \u escapes twice (JSON in JSON),
   // and one split by a zero-width space or a soft hyphen, as it is or escaped. Each withholds the text.
@@ -987,7 +1083,8 @@ const RSA_PEM = generateKeyPairSync("rsa", { modulusLength: 4096, privateKeyEnco
  *    JSON's escapes at one level and two (each kind, back to back), a second level that starts and fails, Python's
  *    escapes ("\'", "\x41") and a single-quoted dict opened and never closed, named and numeric references (a name
  *    never closed, zeros as long as the text, no ";"), non-ASCII
- *    stretches for NFKC, characters that render as nothing (zero-width spaces, soft hyphens, both between letters);
+ *    stretches for NFKC, characters that render as nothing (zero-width spaces, soft hyphens, both between letters),
+ *    control characters (as they stand, escaped, percent-encoded, as references);
  *  - the join view over JSON, well formed and malformed: strings never closed, nesting as deep as the text, strings of
  *    nothing but backslashes;
  *  - a held value found every 9 characters, each find cut in place, and one in every string of a JSON text; and every
@@ -1035,6 +1132,12 @@ const adversarial = (size) => {
     // one, one string holding a dict opened and never closed, and Python's escapes at both levels, back to back.
     f(`"{'a': 'b'}",`), `"{'a': '${fill("ab ", size - 9)}`, `"${fill(`${B}${B}x41${B}${B}'`, size - 1)}"`, f(`"'${B}${B}x4${B}${B}'",`),
     f(`'${B}${B}${B}${B}x41`),
+    // Control characters the views drop, as they stand, between letters, escaped (JSON's, twice, Python's in a
+    // single-quoted dict), percent-encoded, as character references, and inside JSON strings.
+    f("\u0000"), f("a\u0001"), f("\u007f\u0085"), f(`${B}u0000`), f(`${B}${B}u001f`), f(`'a${B}x01`), f("%00%C2%85"), f("&#1;&#x7f;"), f('"a\u0000",'),
+    // U+FFFF, which the views drop in the text and keep only as a join's separator: as it stands, between letters and
+    // inside JSON strings, escaped, percent-encoded, as a reference.
+    f("\uffff"), f("a\uffff"), f('"a\uffff",'), f(`${B}uffff`), f("%EF%BF%BF"), f("&#xffff;"),
   ];
   return [
     ...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })),
@@ -1051,6 +1154,11 @@ const adversarial = (size) => {
     { text: `{"k":"${fill(`${DENSE} `, size - 6)}`, values: [DENSE] },
     { text: f(`${BACKSLASH}"${DENSE}${BACKSLASH}",`), values: [DENSE] },
     { text: f(`${DENSE} x `), values: [DENSE] },
+    // A held value found every 9 characters with a control between each two finds: the views drop it, so they read the
+    // finds glued together, each still cut in place.
+    { text: f(`${DENSE}\u0000`), values: [DENSE] },
+    { text: f(`${DENSE}\uffff`), values: [DENSE] },
+    { text: f(`"${DENSE}\uffff",`), values: [DENSE] },
     { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
     { text: f(`${RSA_PEM}\n`), values: [RSA_PEM] },
     { text: f(`${RSA_PEM.split("\n").slice(1, -1).reverse().join("\n")}\n`), values: [RSA_PEM] },

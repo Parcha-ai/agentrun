@@ -15,6 +15,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { setHeld } = await import("../dist/runner/held.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { MACHINE_ID_FILE, settingFor } = await import("../dist/claude-login.js");
 const { runFolder, recordingsFolder, scratchFolder } = await import("../dist/workspace/paths.js");
@@ -62,7 +63,7 @@ async function childClaim(t, handed, asked) {
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const deps = { env: { PATH: process.env.PATH }, data, journal: (c) => store.journal(c), store, sealKey: undefined, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }), installSettled: async () => "installed" };
-  built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  built = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
   return built;
 }
 

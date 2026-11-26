@@ -248,7 +248,9 @@ AgentRun polls `get`. The exception is a vendor that applies a machine's setting
 its egress allowlist (`["none"]`, network none) and its idle hibernation timer: there `create` may wait until the
 machine is ready, within `ctx.timeoutMs`, set them, and answer then. Store `req.labels` on the machine, since `list`
 finds machines by them. Where your API keeps fewer or shorter labels than AgentRun writes, declare
-`labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
+`labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`. Packed,
+a machine's labels are stored as `agentrun` (its name) and `agentrun-0`, `agentrun-1` and on, and a caller's label
+under one of those names is refused at `check()`. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
 `HostError("exists", …)`: AgentRun lists that name and adopts the machine, as a retry of the request does. `req.egress` is `false` for a computer whose network is `none`, except with an Archil storage
 mount. There AgentRun asks `true` so its root can reach Archil, and the agent's programs still have no network. It is
 `true` under `open` or a list: the egress proxy init starts goes out through the machine's network, and the agent's
@@ -434,7 +436,7 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   the tool user. Where the host's facts say `windowManager`, computerd starts xfwm4 itself (init `--window-manager`;
   see `daemon/internal/windowmanager`); hello's `windowManager` says how it went, and create waits on it. A machine
   minted a desktop may say `linux` (same os and arch) until its display answers; a `connect` while it says `linux`
-  fails as drift, as on exec. Every dial provider takes one, from the box image, whose
+  fails as drift, as on exec. Every dial provider but Render (linux alone, for now) takes one, from the box image, whose
   `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad, firefox-esr and thunar. A desktop gets the
   sandbox's size, 2 CPUs and 4 GiB by default, which holds Xvfb at 1280x800, xfwm4 and a browser:
   - **E2B**: its default on either connect, from the box template (the template's own size).
@@ -484,6 +486,14 @@ starts it once more in the same machine. Their conformance
 modules' `dialKit()` refuse, since a machine dials the server that minted its token: the Core run happens inside the
 public server's process.
 
+Render ([`src/render.ts`](src/render.ts)) dials alone and starts `agentrun-dial` itself the same way. Its runs take a
+command and no stdin, and its API names no command a sandbox runs at boot, so create posts the sandbox with the boot env
+(the attach URL left out), waits for it to read `running`, and starts `agentrun-dial` under `setsid` in one `runs/sync`
+call, which also writes the launch script and the computer's labels to files only root can read. Render keeps no
+labels: a sandbox's name gives the computer's own two, and `get` and `list` read the rest from that file. `dialLog`,
+`dialExit` and `redial` read and rerun the same files. The image is the box image as a sandbox build of the workspace
+(`agentrun-box-<tag>`), which `prepareImage()` imports once.
+
 #### Worked example: Fly Machines
 
 [`src/fly.ts`](src/fly.ts) is a dial host on the [Machines API](https://fly.io/docs/machines/api/machines-resource/).
@@ -511,6 +521,10 @@ hello's `windowManager`, so a live run shows that computerd started the manager
 COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=agentrun-computers-<org slug> AGENTRUN_PUBLIC_URL=https://… PORT=8080 \
   node packages/serve/scripts/dial-conformance.mjs --provider fly
 ```
+
+Render's is `COMPUTER_RENDER_API_KEY=… COMPUTER_RENDER_WORKSPACE_ID=tea-… AGENTRUN_PUBLIC_URL=https://… PORT=8080 node
+packages/serve/scripts/dial-conformance.mjs --provider render`, with `COMPUTER_RENDER_IMAGE` naming a build of your own
+in place of the box build.
 
 `COMPUTER_FLY_KIND=desktop` runs the desktop suite (unset, linux); Cloudflare, Modal and Daytona's modules read `COMPUTER_CLOUDFLARE_KIND`, `COMPUTER_MODAL_KIND` and `COMPUTER_DAYTONA_KIND` the same way.
 

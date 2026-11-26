@@ -7,7 +7,7 @@
 // script: startServer({ harnessTable: fauxTable(FAUX_HARNESS) }). The table module loads in the server too, so the script
 // module is imported only when a run's adapter is made, in its process.
 import { createHash } from "node:crypto";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -17,6 +17,30 @@ const DIST = new URL("../../dist/", import.meta.url);
 const FAUX_ENV = "AGENTRUN_SERVE_FAUX";
 
 const pathOf = (script) => (script instanceof URL ? fileURLToPath(script) : String(script).startsWith("file:") ? fileURLToPath(script) : String(script));
+
+/** `spec` with each tool's answer, as the harness is handed it, appended to AGENTRUN_TEST_FAUX_HARNESS_OPENED (one
+ *  {answer: {tool, text, structured?}} line each) where a test sets it: what reaches the harness, at the adapter's own edge. */
+function answersKept(spec) {
+  const file = process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED;
+  if (!file) return spec;
+  const kept = (tool, text, structured) => appendFileSync(file, `${JSON.stringify({ answer: { tool, text: String(text ?? ""), ...(structured === undefined ? {} : { structured }) } })}\n`);
+  return {
+    ...spec,
+    tools: spec.tools.map((tool) => ({
+      ...tool,
+      call: async (args, context) => {
+        try {
+          const answer = await tool.call(args, context);
+          kept(tool.name, answer.text, answer.structured);
+          return answer;
+        } catch (error) {
+          kept(tool.name, error instanceof Error ? error.message : String(error));
+          throw error;
+        }
+      },
+    })),
+  };
+}
 
 /** The entries over `builtins` that run each adapter harness on the faux harness `script` scripts. */
 export function fauxEntries(script) {
@@ -55,7 +79,10 @@ export function fauxEntries(script) {
                 const openDelayMs = module.openDelayMs?.() ?? 0;
                 const closeDelayMs = module.closeDelayMs?.() ?? 0;
                 const closeError = module.closeError?.();
-                return fauxAdapter({ script: module.script, ...(proxy ? { proxy } : {}), ...(module.closed ? { onClose: module.closed } : {}), ...(openDelayMs > 0 ? { openDelayMs } : {}), ...(closeDelayMs > 0 ? { closeDelayMs } : {}), ...(closeError ? { closeError } : {}) });
+                const faux = fauxAdapter({ script: module.script, ...(proxy ? { proxy } : {}), ...(module.closed ? { onClose: module.closed } : {}), ...(openDelayMs > 0 ? { openDelayMs } : {}), ...(closeDelayMs > 0 ? { closeDelayMs } : {}), ...(closeError ? { closeError } : {}) });
+                const open = faux.open.bind(faux);
+                faux.open = (spec, io) => open(answersKept(spec), io);
+                return faux;
               },
             },
           ];
@@ -106,7 +133,7 @@ export function acpFakeEntries(script) {
               const config = join(io.dir, "fake-agent.json");
               const steps = module.script(spec).map((step) => ("call" in step ? { call: step.call, args: step.args ?? {} } : { say: step.say ?? "" }));
               writeFileSync(config, JSON.stringify({ script: steps, load: own.declares.load, http: own.declares.mcp === "http", style: id }));
-              return made(config).open(spec, io);
+              return made(config).open(answersKept(spec), io);
             },
           };
         },

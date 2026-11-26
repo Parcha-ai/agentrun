@@ -7,6 +7,7 @@ import { capRun, quiet, SONNET } from "./adapter-pi-cap-support.mjs";
 import { specFor } from "./runner-spec-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { subagentTool } = await import("../dist/runner/subagent.js");
 after(closeOpenSessions);
 
@@ -17,7 +18,7 @@ async function bodiesAt(t, thinking) {
   const requests = [];
   const fetch = scriptedOrigin([{ say: "done" }], requests);
   const specOf = () => (_claim, run) => ({
-    adapter: piAdapter({ run, model: MODEL, like: { reasoning: true, maxTokens: 64_000 }, provider, fetch, price: () => 0 }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, like: { reasoning: true, maxTokens: 64_000 }, provider, fetch, price: () => 0 }),
     session: { key: "root", label: "root", system: ["Answer."], tools: hostTools({}), context: "fresh", ...(thinking ? { thinking } : {}) },
     input: "Answer.",
     hooks: quiet,
@@ -54,7 +55,7 @@ async function subagentBodies(t, args) {
   const fetch = scriptedOrigin(script, requests);
   const tool = subagentTool({ granted: [], sessionNames: () => [], tier: () => ({ why: "none here" }) });
   const specOf = () => (_claim, run) => ({
-    adapter: piAdapter({ run, model: MODEL, like: { reasoning: true, maxTokens: 64_000 }, provider, fetch, price: () => 0, tools: [tool] }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, like: { reasoning: true, maxTokens: 64_000 }, provider, fetch, price: () => 0, tools: [tool] }),
     session: { key: "root", label: "root", system: ["Answer."], tools: hostTools({}), context: "fresh", thinking: "low" },
     input: "Answer.",
     hooks: quiet,

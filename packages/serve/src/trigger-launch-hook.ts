@@ -28,8 +28,8 @@ export const LAUNCH_HOOK_LATE_START_MS = 10 * 60_000;
  *  IPv6 in brackets and shortest form). */
 const loopback = (hostname: string): boolean => hostname === "localhost" || hostname === "[::1]" || /^127(\.\d{1,3}){3}$/.test(hostname);
 
-/** The hook a server hands its firings to: where, and the secret it signs with. `bound`: a test's seam, the signal for a
- *  POST's bound (LAUNCH_HOOK_TIMEOUT_MS) in place of AbortSignal.timeout. */
+/** The hook a server hands its firings to: where, and the secret it signs with. `bound`: a test's seam, a signal that can
+ *  cut a POST before LAUNCH_HOOK_TIMEOUT_MS, never after: the 10 s bound is always set as well. */
 export type LaunchHook = { readonly url: string; readonly secret: string; readonly bound?: (ms: number) => AbortSignal };
 
 /** What the host is sent for a firing: its id (the message's webhook-id too), its trigger, the agent and the revision a
@@ -88,7 +88,7 @@ export async function handToHost(hook: LaunchHook, firing: HookFiring, stop: Abo
   const body = JSON.stringify(firing);
   const timestamp = String(Math.floor(now() / 1000));
   const headers = signedRequest(hook.secret, firing.firing_id, timestamp, body, "agentrun-serve-launch-hook/1");
-  const signal = AbortSignal.any([hook.bound ? hook.bound(LAUNCH_HOOK_TIMEOUT_MS) : AbortSignal.timeout(LAUNCH_HOOK_TIMEOUT_MS), stop]);
+  const signal = AbortSignal.any([AbortSignal.timeout(LAUNCH_HOOK_TIMEOUT_MS), ...(hook.bound ? [hook.bound(LAUNCH_HOOK_TIMEOUT_MS)] : []), stop]);
   let res: Awaited<ReturnType<typeof undiciFetch>>;
   try {
     res = await undiciFetch(hook.url, { method: "POST", redirect: "manual", signal, headers, body });

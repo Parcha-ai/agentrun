@@ -30,7 +30,7 @@ import { modelWire, routedId, wireOf, WIRES } from "./wires.js";
 import type { SkillCheck } from "./skills.js";
 import type { RunnerHarness } from "./runner/adapters/index.js";
 import { PLAN_PROVIDER, signedIn } from "./chatgpt-plan.js";
-import { loadRecipe } from "./harness-recipe.js";
+import { loadRecipe, resolveRecipe } from "./harness-recipe.js";
 import { recipeServerEntry } from "./harness-recipe-entry.js";
 
 /** A module of entries a test merges over the built-in ones (HarnessTableModule), by absolute path. */
@@ -650,14 +650,16 @@ function recipesOf(env: NodeJS.ProcessEnv): { data: string; files: string[]; sig
 /** The owner's setting that names harness recipes when no option does: recipe files, comma-separated. */
 export const HARNESS_RECIPES_SETTING = "AGENTRUN_SERVE_HARNESS_RECIPES";
 
-/** The recipe files `given` names (a server's or a runner's `--harness-recipe`, else HARNESS_RECIPES_SETTING). */
+/** The recipe files `given` names (a server's or a runner's `--harness-recipe`, else HARNESS_RECIPES_SETTING): each a
+ *  file, or the name of a recipe AgentRun ships (harness-recipe.ts resolveRecipe). */
 export const harnessRecipesOf = (given: readonly string[] | undefined, env: NodeJS.ProcessEnv): string[] =>
   given?.length ? [...given] : (env[HARNESS_RECIPES_SETTING] ?? "").split(",").map((name) => name.trim()).filter(Boolean);
 
-/** HARNESS_RECIPES_ENV for the recipe files `files` names, installed into `data`: none for none. `signIn` only where the
- *  server's start proved --harness-sign-in. */
+/** HARNESS_RECIPES_ENV for the recipes `files` names (each resolved by resolveRecipe: a shipped one's name to its file, a
+ *  name a file here also holds refused), installed into `data`: none for none. `signIn` only where the server's start
+ *  proved --harness-sign-in. */
 export const harnessRecipesEnv = (files: readonly string[], data: string, { signIn = false }: { signIn?: boolean } = {}): NodeJS.ProcessEnv =>
-  (files.length ? { [HARNESS_RECIPES_ENV]: JSON.stringify({ data: resolve(data), files: files.map((file) => resolve(file)), ...(signIn ? { signIn: true } : {}) }) } : {});
+  (files.length ? { [HARNESS_RECIPES_ENV]: JSON.stringify({ data: resolve(data), files: files.map((file) => resolveRecipe(file).file), ...(signIn ? { signIn: true } : {}) }) } : {});
 
 /** The table `env` runs on: the built-in entries; then, only under a test runner (node --test's NODE_TEST_CONTEXT, which a
  *  server's and a run's processes there carry), a test's module's (HARNESS_TABLE_ENV) merged over them by id; then the

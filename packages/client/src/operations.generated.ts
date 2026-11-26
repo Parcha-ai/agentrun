@@ -181,7 +181,7 @@ export type DefinitionInput = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
   };
   computer?: {
     kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -819,7 +819,7 @@ export type Run = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
   };
   computer?: {
     kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -1181,7 +1181,7 @@ export type Capabilities = {
   places: {
     modes: Array<"runner" | "sandbox">;
     boxes: Array<{
-      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
       available: boolean;
       state: "ready" | "unavailable";
       reason?: string;
@@ -1193,7 +1193,7 @@ export type Capabilities = {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
     } | null;
     default_reason?: string;
     allow: Array<string>;
@@ -3507,6 +3507,45 @@ export type GetGitHubConnectionResponse = {
   }>;
 };
 
+/** This machine, its Ollama, the free local model recommended for them, and the pull here (GET /settings/local-model). */
+export type GetLocalModelResponse = {
+  machine: {
+    platform: string;
+    arch: string;
+    ram_bytes: number;
+    gpu: {
+      kind: "apple";
+      unified: true;
+    } | {
+      kind: "nvidia";
+      name: string;
+      memory_bytes: number;
+    } | {
+      kind: "unknown";
+    };
+  };
+  ollama: {
+    asked: boolean;
+    reachable: boolean;
+    version: string | null;
+  };
+  recommended: {
+    tag: string | null;
+    why: string;
+    pulled: boolean;
+  };
+  pull: null | {
+    tag: string;
+    state: "pulling" | "done" | "failed";
+    status: string;
+    completed_bytes: number;
+    total_bytes: number;
+    error?: string;
+  };
+  can_pull: boolean;
+  refused: string | null;
+};
+
 /** The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway). */
 export type GetModelGatewayResponse = {
   source: "env" | "console" | null;
@@ -3949,6 +3988,48 @@ export type ListSuggestionsResponse = {
       pull_error: string | null;
     };
   }>;
+};
+
+/** Pull a recommended model into the Ollama here (POST /settings/local-model/pull). */
+export type PullLocalModelBody = {
+  tag: "inkling-2-mini" | "qwen3:8b" | "qwen3:4b";
+};
+export type PullLocalModelResponse = {
+  machine: {
+    platform: string;
+    arch: string;
+    ram_bytes: number;
+    gpu: {
+      kind: "apple";
+      unified: true;
+    } | {
+      kind: "nvidia";
+      name: string;
+      memory_bytes: number;
+    } | {
+      kind: "unknown";
+    };
+  };
+  ollama: {
+    asked: boolean;
+    reachable: boolean;
+    version: string | null;
+  };
+  recommended: {
+    tag: string | null;
+    why: string;
+    pulled: boolean;
+  };
+  pull: null | {
+    tag: string;
+    state: "pulling" | "done" | "failed";
+    status: string;
+    completed_bytes: number;
+    total_bytes: number;
+    error?: string;
+  };
+  can_pull: boolean;
+  refused: string | null;
 };
 
 /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
@@ -7680,6 +7761,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getClaudeLogin: {"method":"GET","path":"/settings/claude-login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getEmailAccount: {"method":"GET","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getGitHubConnection: {"method":"GET","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getLocalModel: {"method":"GET","path":"/settings/local-model","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getModelGateway: {"method":"GET","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getSuggestion: {"method":"GET","path":"/suggestions/{suggestion_id}","pathParams":["suggestion_id"],"multiSegment":[],"query":["name"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getWorkspaceArchil: {"method":"GET","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7696,6 +7778,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listMcpServerNames: {"method":"GET","path":"/settings/mcp-server-names","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRunningComputers: {"method":"GET","path":"/computers/running","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listSuggestions: {"method":"GET","path":"/suggestions","pathParams":[],"multiSegment":[],"query":["repo","status"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  pullLocalModel: {"method":"POST","path":"/settings/local-model/pull","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putWorkspaceArchil: {"method":"PUT","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   receiveHook_composio: {"method":"POST","path":"/hooks/composio/{hook}","pathParams":["hook"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   restoreSuggestion: {"method":"POST","path":"/suggestions/{suggestion_id}/restore","pathParams":["suggestion_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7999,6 +8082,8 @@ export function resources(call: Call) {
       getEmailAccount: (options?: RequestOptions): Promise<GetEmailAccountResponse> => call("getEmailAccount", [], undefined, undefined, options),
       /** Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github). */
       getGitHubConnection: (options?: RequestOptions): Promise<GetGitHubConnectionResponse> => call("getGitHubConnection", [], undefined, undefined, options),
+      /** This machine, its Ollama, the free local model recommended for them, and the pull here (GET /settings/local-model). */
+      getLocalModel: (options?: RequestOptions): Promise<GetLocalModelResponse> => call("getLocalModel", [], undefined, undefined, options),
       /** The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway). */
       getModelGateway: (options?: RequestOptions): Promise<GetModelGatewayResponse> => call("getModelGateway", [], undefined, undefined, options),
       /** One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id}). */
@@ -8027,6 +8112,8 @@ export function resources(call: Call) {
       listRunningComputers: (options?: RequestOptions): Promise<ListRunningComputersResponse> => call("listRunningComputers", [], undefined, undefined, options),
       /** Suggested agents: each repository's scan and the agents it suggests (GET /suggestions). */
       listSuggestions: (params?: ListSuggestionsParams, options?: RequestOptions): Promise<ListSuggestionsResponse> => call("listSuggestions", [], undefined, params, options),
+      /** Pull a recommended model into the Ollama here (POST /settings/local-model/pull). */
+      pullLocalModel: (body: PullLocalModelBody, options?: RequestOptions): Promise<PullLocalModelResponse> => call("pullLocalModel", [], body, undefined, options),
       /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
       putWorkspaceArchil: (body: PutWorkspaceArchilBody, options?: RequestOptions): Promise<PutWorkspaceArchilResponse> => call("putWorkspaceArchil", [], body, undefined, options),
       /** Fire a Composio trigger: a request it checks, no token (POST /hooks/composio/{hook}). */

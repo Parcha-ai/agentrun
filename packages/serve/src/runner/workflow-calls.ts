@@ -5,10 +5,10 @@
 // read: a run the platform served first counts on that workflow's served side alone, one only the agent called on the
 // side of each workflow it ran (workflow-first.ts costLineOf), and a call refused before any node ran on none.
 import { type WorkflowCall, type WorkflowCallOutcome, WORKFLOW_CALLERS, type WorkflowCaller } from "../learning-cost.js";
-import { learnedCallEntries } from "../learned-nodes.js";
+import { LEARNED_ALLOWED, LEARNED_NODES, learnedCallEntries } from "../learned-nodes.js";
 import type { EntryLike } from "../timeline/index.js";
 import { type CallStartData, KINDS } from "./journal-kinds.js";
-import { callCostOf } from "./metrics.js";
+import { callCostOf, callTurnsOf } from "./metrics.js";
 import { WORKFLOW_FIRST, WORKFLOW_FIRST_CALL } from "./workflow-first.js";
 
 type CallRecord = { readonly call?: unknown; readonly workflow?: unknown; readonly digest?: unknown; readonly caller?: unknown; readonly ended?: unknown; readonly refused?: unknown };
@@ -81,21 +81,20 @@ function piShared(entries: readonly EntryLike[], from: number, to: number): bool
   return false;
 }
 
-/** What call `callId` booked (runner/metrics.ts callCostOf), over the window from its start (its call start entry, or on
- *  pi the answer that asked for it) to the later of its end (its call end, or pi's tool result) and its record
- *  (`recordAt`); null when the window is not its alone: no start, a pi answer that asked for another call beside it,
- *  another conversation's tool at work in it on pi (piShared: a sibling subagent's), or another call (none of its own)
- *  started within it or still open at its start (a nesting tool's, or the call it runs inside, is its own). Never a
- *  guess: a cost that can't be told apart is unknown. */
-function callUsdOf(entries: readonly EntryLike[], callId: string, recordAt: number): number | null {
+/** Call `callId`'s window in `entries`, from its start (its call start entry, or on pi the answer that asked for it) to
+ *  the later of its end (its call end, or pi's tool result) and its record (`recordAt`); none when the window is not its
+ *  alone: no start, a pi answer that asked for another call beside it, another conversation's tool at work in it on pi
+ *  (piShared: a sibling subagent's), or another call (none of its own) started within it or still open at its start (a
+ *  nesting tool's, or the call it runs inside, is its own). */
+function callWindowOf(entries: readonly EntryLike[], callId: string, recordAt: number): { from: number; to: number } | undefined {
   const started = entries.findIndex((entry) => entry.kind === KINDS.callStart && callIdOf(entry) === callId);
   const asked = started < 0 ? entries.findIndex((entry) => piCallsOf(entry).includes(callId)) : -1;
   const from = started >= 0 ? started : asked;
-  if (from < 0 || from > recordAt) return null;
-  if (asked >= 0 && piCallsOf(entries[asked]!).length > 1) return null;
+  if (from < 0 || from > recordAt) return undefined;
+  if (asked >= 0 && piCallsOf(entries[asked]!).length > 1) return undefined;
   const start = (started >= 0 ? entries[from]!.data : {}) as CallStartData;
   const to = Math.max(recordAt, entries.findLastIndex((entry) => (entry.kind === KINDS.callEnd && callIdOf(entry) === callId) || piResultOf(entry) === callId));
-  if (asked >= 0 && piShared(entries, from, to)) return null;
+  if (asked >= 0 && piShared(entries, from, to)) return undefined;
   // A call that holds this one (a nesting tool's: its id a prefix of this one's, or the harness's own call it runs in).
   const holds = (id: string) => callId.startsWith(`${id}/`) || start.parent === id || start.parentCallId === id;
   const open = new Set<string>();
@@ -106,13 +105,50 @@ function callUsdOf(entries: readonly EntryLike[], callId: string, recordAt: numb
     if (entry.kind === KINDS.callStart) open.add(id);
     else if (entry.kind === KINDS.callEnd) open.delete(id);
   }
-  if ([...open].some((id) => !holds(id))) return null;
+  if ([...open].some((id) => !holds(id))) return undefined;
   for (let at = from + 1; at <= to; at++) {
     const entry = entries[at]!;
     const id = callIdOf(entry);
-    if (entry.kind === KINDS.callStart && id !== undefined && !within(id, callId)) return null;
+    if (entry.kind === KINDS.callStart && id !== undefined && !within(id, callId)) return undefined;
   }
-  return callCostOf(entries, callId, from, to);
+  return { from, to };
+}
+
+/** What call `callId` booked (runner/metrics.ts callCostOf) over its window (callWindowOf); null with none. Never a
+ *  guess: a cost that can't be told apart is unknown. */
+function callUsdOf(entries: readonly EntryLike[], callId: string, recordAt: number): number | null {
+  const window = callWindowOf(entries, callId, recordAt);
+  return window ? callCostOf(entries, callId, window.from, window.to) : null;
+}
+
+/** Whether anything was booked under call `callId` (runner/metrics.ts callTurnsOf, as proof): a request named under it,
+ *  or one of host work in its window while that window is its alone, never the harness's own side request there. */
+function bookedUnder(entries: readonly EntryLike[], callId: string, recordAt: number): boolean {
+  const window = callWindowOf(entries, callId, recordAt);
+  return callTurnsOf(entries, callId, window?.from ?? -1, window?.to ?? -1, true).size > 0;
+}
+
+/** The attempts of an agent's learned_workflow call `callId` its gate let go (each allow mark, LEARNED_ALLOWED) that no
+ *  refused record of it closed. A mark is closed by the call's next record before its next mark when that record is
+ *  `refused` (refused at runLearned's check: it ran nothing); a record that says it ran, a next mark first (a crash cut
+ *  the attempt before it kept a record) or none at all leaves it open: that attempt may have run and spent. `open`:
+ *  any is. `cut`: the newest is open with no record after it, so what it spent lies past every record's window. The
+ *  marks need no window, so this holds where a sibling call shares the call's window and its model nodes' spend, booked
+ *  under a host label and no call id, can't be told for its own. */
+function openAttempts(entries: readonly EntryLike[], callId: string): { open: boolean; cut: boolean } {
+  let open = false;
+  let pending = false;
+  for (const entry of entries) {
+    if (dataOf(entry).call !== callId) continue;
+    if (entry.kind === LEARNED_ALLOWED) {
+      open ||= pending;
+      pending = true;
+    } else if (entry.kind === LEARNED_NODES && pending) {
+      open ||= dataOf(entry).refused !== true;
+      pending = false;
+    }
+  }
+  return { open: open || pending, cut: pending };
 }
 
 /** Each learned workflow call run `entries` show (every conversation's, in log order: store-reads/journal.ts runEntries),
@@ -120,7 +156,11 @@ function callUsdOf(entries: readonly EntryLike[], callId: string, recordAt: numb
  *  crash keeps one each time: learnedCallEntries): its workflow, digest and caller, how it ended, and what it booked (callUsdOf). The
  *  platform's call ends as the run's WORKFLOW_FIRST entry says (its answer shaped, or taken back to the agent); one a
  *  crash cut before its record was kept is that entry's alone, its cost unknown. A call its record says was refused
- *  before any node ran (`refused`) is `refused`, whoever called it. A record that names no digest or caller is left out. */
+ *  before any node ran (`refused`) is `refused`, whoever called it, and booked $0, while nothing was booked under its
+ *  call id (bookedUnder) and every attempt of it its gate let go was closed by a refusal (openAttempts); one an attempt
+ *  ran or spent under (a crash cut it, and its rerun was refused: at its gate, at runLearned's check of its call nodes'
+ *  tools, or the platform's at serveFirst) is `failed`, at what it booked (callUsdOf: null on a shared or unpriced
+ *  window, and null for an attempt cut past its record). A record that names no digest or caller is left out. */
 export function workflowCallsOf(entries: readonly EntryLike[]): WorkflowCall[] {
   // The record that counts for each call (learned-nodes.ts learnedCallEntries): a rerun refused before any node ran leaves
   // the attempt that ran standing, as the call's timeline row does.
@@ -131,9 +171,16 @@ export function workflowCallsOf(entries: readonly EntryLike[]): WorkflowCall[] {
   const served = entries.findLast((entry) => entry.kind === WORKFLOW_FIRST && ["answered", "handed_back"].includes(String((entry.data as { outcome?: unknown } | undefined)?.outcome)))?.data as { workflow?: unknown; digest?: unknown; outcome: "answered" | "handed_back" } | undefined;
   const calls = [...newest].map(([call, at]): WorkflowCall => {
     const data = dataOf(entries[at]!);
-    // Refused before any node ran (its record's `refused`): it ran nothing, whatever the run did after.
-    const outcome = data.refused === true ? "refused" : call === WORKFLOW_FIRST_CALL && served ? served.outcome : outcomeOf(data.ended);
-    return { workflow: data.workflow as string, digest: data.digest as string, caller: data.caller as WorkflowCaller, outcome, usd: callUsdOf(entries, call, at) };
+    // Refused before any node ran (its record's `refused`) with nothing booked under its id and every attempt its gate let
+    // go closed by a refusal: it ran nothing, whatever the run did after. Refused with something booked, or with an
+    // attempt left open (openAttempts): that attempt ran and may have spent, so it failed.
+    const attempts = data.refused === true ? openAttempts(entries, call) : { open: false, cut: false };
+    const refused = data.refused === true && !bookedUnder(entries, call, at) && !attempts.open;
+    const outcome = refused ? "refused" : data.refused === true ? "failed" : call === WORKFLOW_FIRST_CALL && served ? served.outcome : outcomeOf(data.ended);
+    // A refused call ran nothing: its $ is 0, never a shared window's unknown (two denied calls in one pi answer). One an
+    // attempt cut past its record failed at a cost its record's window can't hold: unknown.
+    const usd = refused ? 0 : attempts.cut ? null : callUsdOf(entries, call, at);
+    return { workflow: data.workflow as string, digest: data.digest as string, caller: data.caller as WorkflowCaller, outcome, usd };
   });
   if (served && !newest.has(WORKFLOW_FIRST_CALL) && typeof served.workflow === "string" && typeof served.digest === "string") {
     calls.unshift({ workflow: served.workflow, digest: served.digest, caller: "platform", outcome: served.outcome, usd: null });

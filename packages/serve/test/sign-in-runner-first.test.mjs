@@ -20,6 +20,7 @@ import { toolLedger, withEnv } from "./support.mjs";
 
 const signIns = await import("../dist/sign-ins-store.js");
 const tools = await import("../dist/tools.js");
+const { heldRedactor, runnerSecrets, secretRedactor } = await import("../dist/runner/redact.js");
 const { FAUX_ENV } = await import("../dist/model.js");
 const { TOOL_PLANE_ENV } = await import("../dist/tool-plane.js");
 const { vendorsOver } = await import("../dist/sign-ins.js");
@@ -52,7 +53,8 @@ async function runner(t) {
     const root = join(s.dir, "runs", run);
     mkdirSync(join(root, "work"), { recursive: true });
     const env = { [FAUX_ENV]: "faux", [tools.FAUX_BROWSER_ENV]: FAUX_BROWSER, [tools.FAUX_VENDOR_API_ENV]: FAUX_VENDORS, [TOOL_PLANE_ENV]: JSON.stringify({ browser: vendor }), ...keysOf(run) };
-    return { where: { root, work: join(root, "work"), ref: { id: run } }, env, install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {}, store: s.store, claim: claims[run], sealKey: KEY, ...more };
+    // The runner's one redactor, as the run's spec hands its ToolHost (run.redact): held, over the env's secrets.
+    return { where: { root, work: join(root, "work"), ref: { id: run } }, env, redact: heldRedactor(secretRedactor(runnerSecrets(env))), install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {}, store: s.store, claim: claims[run], sealKey: KEY, ...more };
   };
   const saved = async (agent, vendor) => {
     const row = await s.store.signIns.get(`agent-${agent}`, vendor);

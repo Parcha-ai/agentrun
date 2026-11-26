@@ -13,6 +13,7 @@ import { learningOf, readAt } from "../dist/learn/rows.js";
 import { recordPromotion } from "../dist/learn/promote.js";
 import { workflowDigest } from "../dist/runner/workflow-first.js";
 import { seedOf } from "../dist/learning.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const tool = {
   name: "mcp:backend/status", description: "Read release readiness from the existing backend.",
@@ -108,7 +109,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) for (const moved of [fa
         };
         return typeof value === "function" ? value.bind(target) : value;
       } });
-      const loop = createSdkLoop(launch, { store: s.store, data: s.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => route)({ journal: () => guarded, flush: () => s.store.flush(), signal: abort.signal });
+      const loop = createSdkLoop(launch, { store: s.store, data: s.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => route)({ redact: heldRedactor((text) => text), journal: () => guarded, flush: () => s.store.flush(), signal: abort.signal });
       assert.equal((await loop.start(claim)).state, crash ? "interrupted" : "ended");
       if (crash) { assert.ok(cut); await s.store.release(claim); }
     };
