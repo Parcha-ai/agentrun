@@ -2,7 +2,7 @@
 // latest answer carried. Pure: no binary, no network.
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { boundResult } from '@parcha/agentrun-kernel/process';
+import { boundResult, boundTo, resultMaxChars } from '@parcha/agentrun-kernel/process';
 import { callKey, completedNested, execRecoveryOutput, NESTED_CALL, recoveryFacts, Scripts, settle, UNWATCHED } from '../dist/scripts.js';
 
 const line = (payload) => JSON.stringify({ timestamp: '2026-10-29T23:00:00Z', type: 'response_item', payload });
@@ -203,13 +203,47 @@ test("a finished script that prints the running phrase is still finished: only C
   assert.deepEqual(ended.tie(undefined), { kind: 'none' });
 });
 
+/** The store's record of `whole` with the bridge's record of its cut at `max` (its kept and whole lengths), and the cut. */
+const cutAt = (whole, max) => {
+  const { text, bound } = boundTo(whole, max);
+  return { store: { ...done(whole), bound: { kept: bound.kept, whole: bound.whole } }, text };
+};
+
 test("a completed call's result past the host's bound: the store keeps it whole, Codex got it cut, and the two still agree", () => {
-  // The bridge hands Codex boundResult(result); the session keeps the whole result. Both records of one completed call
-  // agree when the rollout's text is the store's text cut by that same rule.
+  // The bridge hands Codex boundResult(result) and records the cut's lengths; the session keeps the whole result. Both
+  // records of one completed call agree when the rollout's text starts with what the record says was kept.
   const whole = `charged ${'x'.repeat(130_000)}`;
-  assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(boundResult(whole).text))), { kind: 'completed', text: whole }, 'both, the rollout holding the cut of the stored result');
+  const { store, text } = cutAt(whole, resultMaxChars());
+  assert.equal(text, boundResult(whole).text);
+  assert.deepEqual(settle(nested('e1', 'charge', store, rolled(text))), { kind: 'completed', text: whole }, 'both, the rollout holding the cut of the stored result');
+  assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(text))), { kind: 'completed', text: whole }, "a session written before the bridge recorded its cuts: the host's bound's cut still agrees");
   const other = `charged ${'y'.repeat(130_000)}`;
-  assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(boundResult(other).text))), { kind: 'interrupted' }, 'a cut of another text still disagrees');
+  assert.deepEqual(settle(nested('e1', 'charge', store, rolled(boundResult(other).text))), { kind: 'interrupted' }, 'a cut of another text still disagrees');
+});
+
+test("a completed call's result cut to a small model's window: the store keeps it whole, Codex got the per-model cut, and the two still agree", () => {
+  // The bridge cuts to the model's window (boundResult's budget), which settle is never told: any bound of the stored
+  // text agrees with it, and a cut of another text still does not.
+  const whole = `charged ${'x'.repeat(50_000)}`;
+  for (const budget of [{ contextWindow: 16_384 }, { contextWindow: 100 }]) {
+    const { store, text } = cutAt(whole, resultMaxChars(budget));
+    assert.deepEqual(settle(nested('e1', 'charge', store, rolled(text))), { kind: 'completed', text: whole }, JSON.stringify(budget));
+  }
+  const other = `charged ${'y'.repeat(50_000)}`;
+  assert.deepEqual(settle(nested('e1', 'charge', cutAt(whole, resultMaxChars({ contextWindow: 16_384 })).store, rolled(boundResult(other, { contextWindow: 16_384 }).text))), { kind: 'interrupted' }, 'a cut of another text still disagrees');
+});
+
+test("a cut nested result agrees with the store on the cut's recorded lengths (the bridge's bound:<callId>), whatever its note's words", () => {
+  // The bridge records each cut it hands Codex (its kept and whole lengths): settle compares on those, so the note's
+  // wording is free to change, and a cut with no record of it is no proof the two records are one call's.
+  const whole = `charged ${'x'.repeat(50_000)}`;
+  const kept = 9_000;
+  const bound = { kept, whole: whole.length };
+  const reworded = `${whole.slice(0, kept)}\n[a note in other words: ${kept} of ${whole.length}]`;
+  assert.deepEqual(settle(nested('e1', 'charge', { ...done(whole), bound }, rolled(reworded))), { kind: 'completed', text: whole }, 'the lengths agree; the words are free');
+  assert.deepEqual(settle(nested('e1', 'charge', { ...done(whole), bound }, rolled(`${'y'.repeat(kept)}\n[a note]`))), { kind: 'interrupted' }, 'another start disagrees');
+  assert.deepEqual(settle(nested('e1', 'charge', { ...done(whole), bound: { kept, whole: whole.length + 1 } }, rolled(reworded))), { kind: 'interrupted' }, 'a record of another length disagrees');
+  assert.deepEqual(settle(nested('e1', 'charge', done(whole), rolled(reworded))), { kind: 'interrupted' }, 'a cut with no record of it disagrees');
 });
 
 test("a session written before the host's bound: both records hold the same uncut result past it, and the call is completed", () => {

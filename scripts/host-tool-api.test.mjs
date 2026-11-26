@@ -19,7 +19,7 @@ const SERVE_TOOLS = ["background.ts", "learned-workflow.ts", "monid.ts", "runner
 const BROWSER_TOOLS = [join(repo, "packages/pi-browser/src/durable.ts")];
 /** Members a tool reads that a host tool's hand-built api does not give, each with why. */
 const UNREACHABLE = {
-  memo: "a pi tool task's own durable memo: a host tool runs in no pi tool task, so the browser gets it by running as one (the task route), never from a faked memo",
+  memo: "a pi tool task's own durable memo: a host tool runs in no pi tool task, so it is no member every host tool's api gives; the browser's host binding runs each call once (host-tools.ts RUNS_ONCE) and gives that call's own memo, the one invocation's",
 };
 
 /** The members host-tools.ts gives, read from its HOST_API_MEMBERS literal. */

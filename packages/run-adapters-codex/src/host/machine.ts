@@ -77,6 +77,8 @@ export interface LocalMachineOptions {
    *  from the harness. */
   proxy: {
     hooks: ModelProxyHooks;
+    /** The session's turn budget (ResultBudget.turn), which the proxy opens with each answer's facts. */
+    turn?: ModelProxyOptions["turn"];
     tools: readonly string[];
     price?: ModelProxyOptions["price"];
     maxOutputTokens?: number;
@@ -285,6 +287,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         },
       }),
       hooks: options.proxy.hooks,
+      ...(options.proxy.turn ? { turn: options.proxy.turn } : {}),
       model: route.models.model,
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",

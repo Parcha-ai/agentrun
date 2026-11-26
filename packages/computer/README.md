@@ -2673,9 +2673,12 @@ newer browser has ended, the lost create's is left running for that create, at o
 Otherwise the request's browsers are read again, every 2 s for up to half of `cleanupMs` (once at least, and sooner
 when that half is under 2 s). While every newer one still runs, no converge has answered it (each such create kept its
 own), and at the end it is released. On the first read as on every later one, a newer one that has ended counts before
-an older one that runs, since a converge whose list missed the older may have answered it. A read that fails, or a read again that misses the lost create's
-browser or every newer one, says nothing of who holds it and leaves it running; a first read that fails is tried again
-within the same half before that. The search's own retries, for a vendor that lists a browser late, wait within that
+an older one that runs, since a converge whose list missed the older may have answered it. That keeps one held by none
+too: where three creates of a request ran, the newest's converge may have answered the oldest and ended its own, and
+the lost create's, the middle one, then runs to the vendor's lifetime; its failure says that an older one still runs.
+A read that fails, or that misses the lost create's browser, or a read again that misses every newer one, says nothing
+of who holds it and leaves it running; a first read that fails or misses it is tried again within the same half before
+that. The search's own retries, for a vendor that lists a browser late, wait within that
 half too, so the release keeps the other half.
 Browserbase is asked status by status in a session's own order (pending, then running, then the ended ones), so a
 session that moves on while a list runs is found in a later answer, never missed, and one found in two answers reads as

@@ -177,19 +177,24 @@ export function leftToConverge(mine: string, made: ReadonlyArray<MadeBrowser>): 
 /**
  * Where a lost create's browser left to a converge (leftToConverge) stands when the request's browsers are read again:
  * "unread" when the read lists neither mine nor any newer one (the first read did, so it says nothing); "release" once
- * mine has ended; "answered" when a newer one has ended, since a converge that answers the older ends its own first, and
- * one whose list missed an older browser may have answered mine; "release" when an older one runs and every newer one
- * runs too; "running" while every newer one still runs, so no converge has answered mine yet.
+ * mine has ended; "answered" when a newer one has ended, since a converge that answers the older ends its own first;
+ * "answered-older" when an older one also runs, since that converge may have missed the older and answered mine, or
+ * answered the older and left mine held by none; "release" when an older one runs and every newer one runs too;
+ * "running" while every newer one still runs, so no converge has answered mine yet.
  */
-export function convergeSettled(mine: string, made: ReadonlyArray<MadeBrowser>): "answered" | "running" | "release" | "unread" {
+export function convergeSettled(mine: string, made: ReadonlyArray<MadeBrowser>): Settled {
 	const own = made.find((one) => one.id === mine);
 	if (own === undefined) return "unread";
 	if (!own.live) return "release";
 	const newer = made.filter((one) => one.id !== mine && oldestBrowserFirst(own, one) < 0);
 	if (newer.length === 0) return "unread";
-	if (newer.some((one) => !one.live)) return "answered";
-	return made.some((one) => one.id !== mine && one.live && oldestBrowserFirst(one, own) < 0) ? "release" : "running";
+	const olderRuns = made.some((one) => one.id !== mine && one.live && oldestBrowserFirst(one, own) < 0);
+	if (newer.some((one) => !one.live)) return olderRuns ? "answered-older" : "answered";
+	return olderRuns ? "release" : "running";
 }
+
+/** What a read of a lost create's request says of its browser (convergeSettled). */
+type Settled = "answered" | "answered-older" | "running" | "release" | "unread";
 
 /**
  * Whether a create that threw may still have made a browser: anything but the vendor's own 4xx answer (a refusal, which
@@ -214,10 +219,10 @@ const RECOVER_GAP_MS = 2_000;
  * of the recovery's own, `ms` in all (the caller's may be what ended the create). The search, its retries for a vendor
  * that lists late and the reads below wait at most until half of `ms` has passed, each wait RECOVER_GAP_MS or what is
  * left of that half, so the release keeps the other half. Where `made` reads the request's browsers (ended ones
- * included), each found browser's request is read, again after a failed read, and one that cannot be read is kept: a
- * failed read says nothing of who holds it. One older than a browser of its request that has ended (convergeSettled) is
- * kept at once, even when an older one runs, as a converge that answers it ends its own first and one whose list missed
- * the older may have answered it. One left to another create's converge (leftToConverge) is otherwise read again,
+ * included), each found browser's request is read, again after a read that failed or did not list it, and one no read
+ * lists is kept: such a read says nothing of who holds it. One older than a browser of its request that has ended
+ * (convergeSettled) is kept at once, even when an older one runs, as a converge that answers it ends its own first and
+ * one whose list missed the older may have answered it; where an older one runs, the words say it may be held by none. One left to another create's converge (leftToConverge) is otherwise read again,
  * every RECOVER_GAP_MS within that half (once at least), and kept once a newer one has ended or a read fails or misses
  * a browser the first read listed. One whose newer browsers all still run at the end was answered by no converge (each
  * kept its own) and is released. The words say what became of them, for the create's failure; they never carry a URL.
@@ -245,16 +250,21 @@ export async function recoverCreate(
 	for (const id of found.value) {
 		let unanswered = false;
 		if (made !== undefined) {
-			const read = await firstRead(made, signal, sleep, settleBy, Math.max(1, Math.ceil(ms / 2 / RECOVER_GAP_MS)));
+			const read = await firstRead(id, made, signal, sleep, settleBy, Math.max(1, Math.ceil(ms / 2 / RECOVER_GAP_MS)));
 			if (read === undefined) {
-				words.push(`the ${what} it made (${id}) may be one another create of its request answered, and the request's browsers could not be read, so nothing says who holds it: it is left running, at most to its lifetime, and its labels let a sweep find it`);
+				words.push(`the ${what} it made (${id}) may be one another create of its request answered, and the request's browsers could not be read, or did not list it, so nothing says who holds it: it is left running, at most to its lifetime, and its labels let a sweep find it`);
 				continue;
 			}
-			const answered = convergeSettled(id, read) === "answered";
+			const first = convergeSettled(id, read);
+			const answered = first === "answered" || first === "answered-older";
 			if (answered || leftToConverge(id, read)) {
-				const settled = answered ? "answered" : await settle(id, made, signal, sleep, settleBy, reads);
+				const settled = answered ? first : await settle(id, made, signal, sleep, settleBy, reads);
 				if (settled === "answered") {
 					words.push(`the ${what} it made (${id}) is older than one of its request that has ended, as a create's converge ends its own when it answers an older one: it is left running for that create, and if that create did not answer it (aborted, or failed once its own had ended, or its reply lost too) it runs to its lifetime, and its labels let a sweep find it`);
+					continue;
+				}
+				if (settled === "answered-older") {
+					words.push(`the ${what} it made (${id}) is older than one of its request that has ended, and an older one of its request still runs: the create whose own ended may have missed that one and answered this, so it is left running, and if that create answered the older instead it is held by none and runs to its lifetime; its labels let a sweep find it`);
 					continue;
 				}
 				if (settled === "unread") {
@@ -285,11 +295,13 @@ async function waitWithin(sleep: (ms: number) => Promise<void>, by: number, sign
 }
 
 /**
- * The request's browsers, read at once and then again after each failed read, `retries` times at most, each after a
- * wait that ends no later than `by` (waitWithin): so a window shorter than two gaps still tries again while time is left.
- * Undefined when no read answered.
+ * The request's browsers, read at once and then again after each read that failed or did not list `mine` (which the
+ * search found, so such a read says nothing of it), `retries` times at most, each after a wait that ends no later than
+ * `by` (waitWithin): so a window shorter than two gaps still tries again while time is left. Undefined when no read
+ * listed it.
  */
 async function firstRead(
+	mine: string,
 	made: (signal: AbortSignal) => Promise<Result<MadeBrowser[]>>,
 	signal: AbortSignal,
 	sleep: (ms: number) => Promise<void>,
@@ -299,7 +311,7 @@ async function firstRead(
 	for (let read = 0; read <= retries; read++) {
 		if (read > 0 && !(await waitWithin(sleep, by, signal))) break;
 		const got = await made(signal);
-		if (got.ok) return got.value;
+		if (got.ok && got.value.some((one) => one.id === mine)) return got.value;
 	}
 	return undefined;
 }
@@ -318,7 +330,7 @@ async function settle(
 	sleep: (ms: number) => Promise<void>,
 	by: number,
 	reads: number,
-): Promise<"answered" | "running" | "release" | "unread"> {
+): Promise<Settled> {
 	let last: "running" | "unread" = "unread";
 	for (let read = 0; read < reads; read++) {
 		const left = by - Date.now();

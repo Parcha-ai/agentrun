@@ -17,11 +17,13 @@ import {
   isBrandedMachine,
   type MachineTail,
   ModelSteps,
+  journalTurn,
   Mutex,
   NativeJournal,
   placeSubmissions,
   recoveryNote,
   restartEvent,
+  type ResultBudget,
   resumeUnstartedCalls,
   type SessionMachine,
   type SessionProcess,
@@ -35,6 +37,7 @@ import {
 import { acknowledgeInDrive, attachInDrive, cliPath, CODEX_CLI, DriveFiles, SANDBOX_DOC } from './host/sandbox.js';
 import { AppServer, type RpcNotification, type RpcServerRequest } from './app-server.js';
 import { codeMode } from './code-mode.js';
+import { NESTED_CALL } from './scripts.js';
 import { danglingCalls, nextRolloutOrdinal, settleCall } from './transcript.js';
 import { BUILTINS_ON, checkConfig, codexConfig, type TomlValue, toToml } from './config.js';
 import {
@@ -166,6 +169,10 @@ export interface CodexHarnessOptions {
   name?: string;
   /** The model's context window (Gateway ids are unknown to Codex). Default 272,000. */
   contextWindow?: number;
+  /** What the session's model can take of one tool result (its context window): the tool bridge holds every result to
+   *  it (boundResult's budget), and so does each result code mode hands Codex from the log. Absent: the host's bound
+   *  alone (HOST_RESULT_MAX_CHARS). */
+  resultBudget?: ResultBudget;
   /** Extra `config.toml` settings, merged over the generated ones. The keys the harness sets itself (`RESERVED_CONFIG_KEYS`) throw. */
   config?: Record<string, TomlValue>;
   /** How often to read the inbox for steers while a turn runs, without hints. Default 500 ms (5 s with hints). */
@@ -375,6 +382,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
   /** One drive on one attach of the session's VM. */
   async function driveOn(ctx: DriveContext, spec: CodexMachine, deadline: number, invocation: Invocation, held: { lost?: boolean }): Promise<void> {
     const journal = new NativeJournal(ctx);
+    // The turn's budget kept on this drive's journal: a resume answers the calls it left on its answer's facts.
+    journalTurn(options.resultBudget?.turn, journal);
     // A rollout that keeps being tampered with (only possible under
     // danger-full-access): the turn ends, instead of a redelivery that boots
     // the VM and spends model calls again.
@@ -437,7 +446,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
     // A `never` tool waits for the journal: its call is in the log before its intent (the barrier ran first, below).
     // The host's gate first, inside the bridge: after the call's line is in the log (the barrier) and before its intent, so
     // a refused or parked call leaves no intent, and a parked one's line is there for the resume to settle it.
-    const bridge = toolBridge(ctx, tools, { beforeNever: () => journal.flush(), ...(options.gate ? { gate: options.gate } : {}) });
+    // A code-mode script's calls (Codex's own `exec-<uuid>` ids) answer the script, not the model: outside the turn's split.
+    const bridge = toolBridge(ctx, tools, { beforeNever: () => journal.flush(), ...(options.gate ? { gate: options.gate } : {}), ...(options.resultBudget ? { budget: options.resultBudget } : {}), outsideTurn: (callId) => NESTED_CALL.test(callId) });
     /** What the model must hear about this attach (a lost Drive), once per invocation, with its first message; acknowledged after that turn. */
     let notes = machine.notes.length && !invocation.notesShown ? machine.notes.map((n) => `[Sandbox] ${n}`).join('\n') : undefined;
     let proc: SessionProcess | undefined;
@@ -589,7 +599,7 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
         }
         mirror();
       };
-      const code = codeMode({ ctx, machine, journal, logged, synced, bridge, log, lines, rpc: () => rpc, guard: (p) => guard(p), threadId: () => threadId, tries: BARRIER_TRIES, declined: LAGGING_RESULT, ...(options.ownCalls ? { ownCalls: options.ownCalls } : {}) });
+      const code = codeMode({ ctx, machine, journal, logged, synced, bridge, log, lines, rpc: () => rpc, guard: (p) => guard(p), threadId: () => threadId, tries: BARRIER_TRIES, declined: LAGGING_RESULT, ...(options.ownCalls ? { ownCalls: options.ownCalls } : {}), ...(options.resultBudget ? { budget: options.resultBudget } : {}) });
       /**
        * The hard barrier before a `never` call (§5.6): its `function_call`
        * line in the log, flushed, before its intent. Codex's rollout writer is
