@@ -195,8 +195,10 @@ export async function migrate(client: pg.ClientBase, schema: string, at: number,
     if (top !== null && top > known) throw new SchemaVersionUnknown(placeOf(schema), top, known);
     for (const row of applied) {
       const mine = migrations[Number(row.version) - 1];
+      // Both files named, the schema's and this build's, so a migration renamed or renumbered on one side is plain.
       if (mine && mine.sha256 !== row.sha256) {
-        throw new Error(`${placeOf(schema)} applied migration ${String(mine.version).padStart(4, "0")}_${mine.name}.sql with other text than this build's: an applied migration is never edited, a change is a new file`);
+        const file = (version: string | number, name: string, sha256: string) => `${String(version).padStart(4, "0")}_${name}.sql (sha256 ${sha256.slice(0, 12)})`;
+        throw new Error(`${placeOf(schema)} applied ${file(row.version, row.name, row.sha256)} where this build has ${file(mine.version, mine.name, mine.sha256)}: an applied migration is never edited, renumbered or renamed, a change is a new file`);
       }
     }
     for (const migration of migrations.slice(top ?? 0)) {

@@ -128,7 +128,7 @@ describe("Slack's messages", () => {
     assert.deepEqual(byText("Trigger nightly digest"), {
       text: "Trigger nightly digest could not start its run: agent_not_runnable",
       blocks: [
-        { type: "section", text: { type: "mrkdwn", text: `Trigger <${BASE}/#/triggers/t1|nightly digest> could not start its run.\n\`agent_not_runnable\`: No model key is set.\nIt failed too many times in a row, so it is off now: turn it on again in the console.` } },
+        { type: "section", text: { type: "mrkdwn", text: `Trigger <${BASE}/#/triggers/t1|nightly digest> could not start its run.\n\`agent_not_runnable\`: No model key is set.\nIt failed too many times in a row, so it is off now: turn it on again in the console, with \`agentrun triggers update t1 --enabled\`, or with \`PATCH /v2/triggers/t1\` and \`{"enabled": true}\`.` } },
         { type: "context", elements: [{ type: "mrkdwn", text: "AgentRun · trigger.failed · firing `f1`" }] },
       ],
     });
