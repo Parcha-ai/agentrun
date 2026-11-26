@@ -23,10 +23,11 @@ after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true
 
 /** A key-shaped dummy, built here so no literal of its shape is in the source. */
 const KEY = ["ghp_", "z".repeat(36)].join("");
-const PATH = "/tmp/wsb/x/home/agent/.cache";
+/** A host path (a box's own, not a person's home: the export's machine-path check refuses those in source). */
+const PATH = "/tmp/wsb/x/box/agent/.cache";
 /** A provider's words: `lead` (its own, so each error's line can be found), then a host path, Docker-style JSON and a
  *  key-shaped string, none of which names a class by its text. */
-const RAW = (lead) => `${lead}: Error response from daemon: invalid mount config for type "bind": bind source path does not exist: ${PATH}; HostConfig.Mounts: declared [{"Type":"bind","Source":"/tmp/wsb/x/home/agent","Target":"/workspace"}]; auth ${KEY}`;
+const RAW = (lead) => `${lead}: Error response from daemon: invalid mount config for type "bind": bind source path does not exist: ${PATH}; HostConfig.Mounts: declared [{"Type":"bind","Source":"/tmp/wsb/x/box/agent","Target":"/workspace"}]; auth ${KEY}`;
 /** What must never reach a person's words. */
 const LEAKS = [PATH, "/tmp/wsb", "{", "\"Type\"", "Type", "Source", "Target", "HostConfig", KEY, "Error response from daemon"];
 
