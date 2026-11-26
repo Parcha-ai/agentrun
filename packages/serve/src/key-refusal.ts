@@ -300,7 +300,18 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
       parts.push(" ");
       span++;
     } else {
-      while (end - at <= ANSWER_PIECE && end + 3 <= to && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) end += 3;
+      // A run ends right after a terminal sequence's opener (ESC, or U+009B or U+009D as UTF-8), so the sequence, its
+      // own bytes encoded or not, is read whole by sequenceEnd and counts as nothing.
+      while (end - at <= ANSWER_PIECE && end + 3 <= to && text[end] === "%" && HEX_PAIR.test(text.slice(end + 1, end + 3))) {
+        const byte = Number.parseInt(text.slice(end + 1, end + 3), 16);
+        end += 3;
+        if (byte === 0x1b) break;
+        const c1 = byte === 0xc2 ? percentByte(text, end, to) : -1;
+        if (c1 === 0x9b || c1 === 0x9d) {
+          end += 3;
+          break;
+        }
+      }
       if (end > at) {
         const bytes = Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8");
         found = counted(found, bytes, fold);
@@ -345,11 +356,12 @@ function charAt(text: string, at: number): { char: string; end: number; raw: boo
 }
 const HIGH = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xd800 && char.charCodeAt(0) <= 0xdbff;
 const LOW = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xdc00 && char.charCodeAt(0) <= 0xdfff;
-/** `found` with what the views keep of `chars` added (kept), less one for each backspace in them: a terminal shows
- *  the character after a backspace in place of the one before it. Never below 0: counting fewer only reads further. */
+/** `found` with what the views keep of `chars` added (kept), less two for each backspace in them: a terminal shows
+ *  the character after a backspace in place of the one before it, and that one may be past U+FFFF (two UTF-16 units,
+ *  as kept counts it). Never below 0: counting fewer only reads further. */
 function counted(found: number, chars: string, fold: boolean): number {
   let count = found + kept(chars, fold);
-  for (const char of chars) if (char === "\b") count = Math.max(0, count - 1);
+  for (const char of chars) if (char === "\b") count = Math.max(0, count - 2);
   return count;
 }
 /** Whether `char` opens a terminal sequence (ESC, the 8-bit CSI or OSC): the views read one as a terminal shows it. */
@@ -362,7 +374,7 @@ function sequenceEnd(text: string, at: number, to: number, intro: string): numbe
   let k = at;
   const next = (): { code: number; end: number } | undefined => {
     while (k < to && k - at <= ANSWER_PIECE) {
-      const read = charAt(text, k);
+      const read = percentAt(text, k, to) ?? charAt(text, k);
       const code = read.char.charCodeAt(0);
       if (/\s/.test(read.char)) {
         k = read.end;
@@ -414,6 +426,18 @@ function sequenceEnd(text: string, at: number, to: number, intro: string): numbe
     }
   }
   return done(at);
+}
+/** The byte text[at] percent-encodes ("%" and two hex digits before `to`), or -1. */
+function percentByte(text: string, at: number, to: number): number {
+  return at + 3 <= to && text[at] === "%" && HEX_PAIR.test(text.slice(at + 1, at + 3)) ? Number.parseInt(text.slice(at + 1, at + 3), 16) : -1;
+}
+/** The character a percent-encoded byte at text[at] decodes to inside a terminal sequence, as the percent views decode
+ *  it: an ASCII byte, or U+0080-009F as its two UTF-8 bytes; undefined for anything else. */
+function percentAt(text: string, at: number, to: number): { char: string; end: number } | undefined {
+  const byte = percentByte(text, at, to);
+  if (byte >= 0 && byte < 0x80) return { char: String.fromCharCode(byte), end: at + 3 };
+  const c1 = byte === 0xc2 ? percentByte(text, at + 3, to) : -1;
+  return c1 >= 0x80 && c1 <= 0x9f ? { char: String.fromCharCode(c1), end: at + 6 } : undefined;
 }
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
