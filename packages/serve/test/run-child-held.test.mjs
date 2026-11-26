@@ -84,7 +84,7 @@ async function fakeGitHub(t) {
 
 /** The runner's answers for claim run-own (agent-own, rev-own) of `revision` and `launch`, over `store`; `login` the
  *  login its claim read (staysInRunner), `cut` the runner's redactor for the run. */
-function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } }, login, cut = (text) => text } = {}, lines = []) {
+function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } }, login, cut = heldRedactor((text) => text) } = {}, lines = []) {
   const deps = { store, sealKey: KEY, env, data, ...(githubApi ? { githubApi } : {}) };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision, claimed: {}, ...(login ? { login } : {}) };
   return host.heldFor(deps, reads, cut, (line) => void lines.push(line)).held;
@@ -786,7 +786,7 @@ test("the install a run's process asks for is readable by every user and writabl
   const asked = [];
   const deps = { store, sealKey: KEY, env: {}, data, installForClaim: async (entry, at) => void asked.push([entry.id, at]) };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." }, harness: "claude-agent" }, revision: { kind: "agentic", body: {} }, claimed: {} };
-  const held = host.heldFor(deps, reads, (text) => text, () => {}).held;
+  const held = host.heldFor(deps, reads, heldRedactor((text) => text), () => {}).held;
   await held.install("claude-agent");
   assert.deepEqual(asked, [["claude-agent", dir]], "the runner installed (or found) the harness");
   const mode = (path) => statSync(path).mode & 0o777;
@@ -803,7 +803,7 @@ test("the computer the runner made for a run is released by the runner at the cl
   const released = [];
   const deps = { store, sealKey: KEY, env: {}, data, computerForClaim: async () => ({ release: async (why) => void released.push(why ?? "released") }) };
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision: { kind: "agentic", body: {} }, claimed: {} };
-  const side = host.heldFor(deps, reads, (text) => text, () => {});
+  const side = host.heldFor(deps, reads, heldRedactor((text) => text), () => {});
   const got = await side.held.computer({ hadComputer: async () => false });
   assert.equal(typeof got.release, "function");
   // The run's process ends (a crash, a broken channel) without calling the computer's release.
@@ -888,7 +888,7 @@ test("a Mode 2 run's process writes a file bigger than its channel's frame throu
   // pieces a quarter of a frame.
   const FRAME = 1024 * 1024;
   const bigs = bigWrites.runBigWrites?.({ gate: saveSlots(4), piece: FRAME / 4 });
-  const side = bigs ? host.heldFor(deps, reads, (text) => text, () => {}, bigs) : host.heldFor(deps, reads, (text) => text, () => {});
+  const side = bigs ? host.heldFor(deps, reads, heldRedactor((text) => text), () => {}, bigs) : host.heldFor(deps, reads, heldRedactor((text) => text), () => {});
   const [runnerEnd, childEnd] = duplexPair();
   const runner = host.runChannel(runnerEnd, () => {}, saveSlots(4), { ...(bigs ? { bigs } : {}), maxFrame: FRAME });
   runner.expose("held", (method, args) => side.held[method](...args));
