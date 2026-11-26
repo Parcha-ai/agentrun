@@ -119,3 +119,20 @@ test("a result whose length the journal could not keep is never handed: the call
   const bridge = toolBridge(drive, [bigTool(10_000)], { budget: { contextWindow: WINDOW, turn } });
   await assert.rejects(bridge.call('lookup', { q: 'c1' }, 'c1'), /could not write/);
 });
+
+test("a journal that could not keep a length fails only its own drive: the next drive of the same budget (Codex's) hands its results", async () => {
+  // MUTATION: a failed length kept past its drive: every later drive's result fails with the old journal's error.
+  const store = memorySessionStore();
+  const turn = new TurnBudget();
+  const broken = { append: () => true, flush: () => Promise.reject(new Error('the journal could not write')), records: () => [] };
+  journalTurn(turn, broken);
+  turn.open({ inputTokens: HELD, outputTokens: 0 });
+  const first = toolBridge(await driveOf(store, 'r6'), [bigTool(1_000)], { budget: { contextWindow: WINDOW, turn } });
+  await assert.rejects(first.call('lookup', { q: 'c1' }, 'c1'), /could not write/);
+  // The store recovers; the session's next drive journals the same budget.
+  const next = await driveOf(store, 'r6');
+  journalTurn(turn, new NativeJournal(next));
+  const bridge = toolBridge(next, [bigTool(1_000)], { budget: { contextWindow: WINDOW, turn } });
+  const result = await bridge.call('lookup', { q: 'c2' }, 'c2');
+  assert.equal(result.text.length, 1_000, 'handed whole');
+});
