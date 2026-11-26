@@ -431,7 +431,11 @@ const urlSpans = (value: string): { start: number; end: number }[] => {
  *  a comma in it too (`api_key=<key;rest%2Cmore>&region=us`) is held whole, and again at their `%26` and `%20`
  *  (ENCODED_BREAK), so that key before an encoded `&` or space is held as written too, not only decoded, and again at
  *  `%26` alone (ENCODED_AMP_BREAK), so a key with a `%20` in it before a `%26` is held, as written and decoded; a text
- *  with neither (ENCODED_SEEN) splits at both as at WHOLE_BREAK, so those reads are skipped for it. All are held:
+ *  with neither (ENCODED_SEEN) splits at both as at WHOLE_BREAK, so those reads are skipped for it. And a whole read at
+ *  `&`, spaces and `%3B` (ENCODED_SEMI_BREAK), so a credential in a list joined by an encoded `;` (the SDK drops a raw
+ *  `;` and all after it, so a cookie's list is written `session=<token>%3Btheme=dark`) is held as written and decoded,
+ *  a `%20`, quotes or a `%26` in it too, where every read of the decoded text splits it at its space or `&`; a text
+ *  with no `%3B` (ENCODED_SEMI_SEEN) skips it. All are held:
  *  every redactor matches a held value exactly, so the longer reading of any never covers a line quoting the key alone.
  *  WHOLE_BREAK also holds a value with the comma that ends it (sentry's `sentry_key=<key>%2C`); the others hold the value
  *  alone. */
@@ -442,6 +446,8 @@ const WHOLE_BREAK = /[&\s]+/;
 const ENCODED_BREAK = /[&\s]+|%26|%20/i;
 const ENCODED_AMP_BREAK = /[&\s]+|%26/i;
 const ENCODED_SEEN = /%26|%20/i;
+const ENCODED_SEMI_BREAK = /[&\s]+|%3B/i;
+const ENCODED_SEMI_SEEN = /%3B/i;
 
 /** What a credential's value whose part before its first `;` is empty (`;<key>`) holds after that `;`, whole and up to
  *  its next `;`, as a reader that skips an empty part reads it; nothing for any other value. */
@@ -473,8 +479,8 @@ const pairValues = (text: string, breaks: RegExp): string[] =>
 
 /** The credentials a header value carries inside it, the union of two reads over the whole value as written: the value
  *  of each `name=value` pair whose name says it is a credential (pairValues, at each of PAIR_BREAK, PIECE_BREAK,
- *  LIST_BREAK, WHOLE_BREAK, ENCODED_BREAK and ENCODED_AMP_BREAK: a cookie's `session=<token>`, sentry's
- *  `sentry_key=<key>`, a path's `;jsessionid=<id>`, a URL query's or fragment's `session=` or `access_token=`), and the
+ *  LIST_BREAK, WHOLE_BREAK, ENCODED_BREAK, ENCODED_AMP_BREAK and ENCODED_SEMI_BREAK: a cookie's `session=<token>`,
+ *  sentry's `sentry_key=<key>`, a path's `;jsessionid=<id>`, a URL query's or fragment's `session=` or `access_token=`), and the
  *  user, password and key parameters of each URL in it (urlSpans, urlCredentials: a DSN's `https://<key>@host/1`, a
  *  relay's whole `user:pa;ss`). A URL only adds readings: the pair read covers its text too. A value that escapes its
  *  slashes (JSON's `https:\/\/`) is read again with them plain, and what that finds is held both ways. A pair named like
@@ -488,6 +494,7 @@ const innerCredentials = (value: string): string[] => {
       ...pairValues(text, LIST_BREAK),
       ...pairValues(text, WHOLE_BREAK),
       ...(ENCODED_SEEN.test(text) ? [...pairValues(text, ENCODED_BREAK), ...pairValues(text, ENCODED_AMP_BREAK)] : []),
+      ...(ENCODED_SEMI_SEEN.test(text) ? pairValues(text, ENCODED_SEMI_BREAK) : []),
       ...urlSpans(text).flatMap(({ start, end }) => urlCredentials(text, start, end, queriesRead)),
     ];
   };
