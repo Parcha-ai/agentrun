@@ -38,9 +38,11 @@ export const SHARE_ROOT = "/r/";
 export const SHARE_API = "/r/v2/";
 /** The most shares one token keeps: a delete makes room. No share expires. */
 export const SHARE_QUOTA = 100;
-/** The most distinct strings one upload's per-string scrub reads: each is a scrub of its own (about 0.1 ms), so past it
- *  the upload is 413 before any is read. With the body's cap it bounds what one upload asks of the scrubber: the whole
- *  body once, and at most this many strings, which together hold no more than the body. */
+/** The most reads one upload's per-string scrub makes, a distinct string once per context it stands under (a file's
+ *  path, a call's command): each is a scrub of its own (about 0.1 ms), so past it the upload is 413 before any is read.
+ *  With the body's cap it bounds what one upload asks of the scrubber: the whole body once, and at most this many reads,
+ *  each of a string with a place of its own in the body, so together no more than the body; each context's command is
+ *  read once (screenShare). */
 export const SHARE_STRINGS = 50_000;
 /** The rule ids of Jev's cuts (Scrubber beta 3; "jev" until its id is fixed). A share host never runs Jev (it holds no
  *  model key), so a restored record of one names a value the host can't find: it is not checked, and counted in the
@@ -298,7 +300,8 @@ function encodedOffsets(value: string): number[] {
  *  the whole body is excused when it lies in one string and overlaps an excused hit there of its rule. Any hit left is
  *  `scrub_found`; a `restored` record that excuses no hit (a stale or edited bundle) is `restored_unmatched`, unless its
  *  rule is Jev's (SHARE_JEV_RULES), which the host never runs: that one is counted in `unchecked`, by rule, and taken.
- *  The kind a record says is never read. More than `strings` distinct strings is 413 before any scrub. The cut text is
+ *  The kind a record says is never read. More than `strings` reads (each distinct string once per context it stands
+ *  under) is 413 before any scrub. The cut text is
  *  never used: the host stores what was sent or nothing. */
 export async function screenShare(text: string, held: readonly string[], cutPass: CutScrub = (body, opts) => scrub(body, opts), strings = SHARE_STRINGS): Promise<{ unchecked: Record<string, number> }> {
   const failed = () => new ApiError("input_invalid", "The share host's scrub of this bundle failed, so it is refused (the scrub fails closed). Nothing was stored.", { details: { reason: "scrub_failed" } });
@@ -314,38 +317,66 @@ export async function screenShare(text: string, held: readonly string[], cutPass
   };
   const doc = JSON.parse(text) as Record<string, unknown>;
   const { text: rebuilt, places } = placesOf(doc);
-  const distinct = new Set(places.map((place) => place.value).filter(Boolean)).size;
-  if (distinct > strings) throw new ApiError("payload_too_large", `This bundle holds ${distinct} distinct strings, over the ${strings} a share host scrubs one by one, so it is refused before any is read. Nothing was stored.`, { details: { reason: "share_strings", limit: strings, strings: distinct } });
-  const whole = await pass(text);
 
-  // Every string value alone (a value seen twice is read once: the scrub of a text is the same each time). A string is
-  // read with the context the export cut it with (run-export.ts): a file's content knowing its path, and every string
-  // in a workflow call's output knowing that call's tool and input (share-context.ts effectContext), so a .pgpass's or
-  // a .env's plain contents are a dump. A text is read once per context it stands under. A Timeline row's output is
-  // read with none: its call's context comes from the run's calls, which no bundle carries.
+  // Every string value alone, read with the context the export cut it with (run-export.ts): a file's content knowing its
+  // path, and every string in a workflow call's output knowing that call's tool and input (share-context.ts
+  // effectContext), so a .pgpass's or a .env's plain contents are a dump. A Timeline row's output is read with none: its
+  // call's context comes from the run's calls, which no bundle carries. Each context is made once, for its file or call,
+  // and named by a small id: a read is keyed by that id and its text, never by the context's own text (a call's command
+  // can be megabytes, and its output thousands of strings). A text is read once per context it stands under, and those
+  // reads are what the cap counts: more than `strings` is 413 before any scrub.
   const files = Array.isArray(doc.files) ? doc.files : [];
   const effects = isObject(doc.graph) && Array.isArray(doc.graph.effects) ? doc.graph.effects : [];
-  const contextOf = (at: string): CallContext | undefined => {
-    const fileIndex = FILE_CONTENT_AT.exec(at)?.[1];
-    if (fileIndex !== undefined) {
-      const file: unknown = files[Number(fileIndex)];
-      return isObject(file) && typeof file.path === "string" ? { path: file.path } : undefined;
-    }
-    const effectIndex = EFFECT_OUTPUT_AT.exec(at)?.[1];
-    return effectIndex === undefined ? undefined : effectContext(effects[Number(effectIndex)]);
+  const contexts: (CallContext | undefined)[] = [undefined]; // id 0: no context
+  const ids = new Map<string, number>(); // a context's id by its path and command, interned once per file or call
+  const idOfPlace = new Map<string, number>(); // "f<index>" or "e<index>": its context's id
+  const intern = (context: CallContext | undefined): number => {
+    if (context?.path === undefined && context?.command === undefined) return 0;
+    const name = JSON.stringify([context.path ?? null, context.command ?? null]);
+    let id = ids.get(name);
+    if (id === undefined) ids.set(name, (id = contexts.push(context) - 1));
+    return id;
   };
-  const byValue = new Map<string, Awaited<ReturnType<typeof pass>>>();
+  const contextIdOf = (at: string): number => {
+    const fileIndex = FILE_CONTENT_AT.exec(at)?.[1];
+    const effectIndex = fileIndex === undefined ? EFFECT_OUTPUT_AT.exec(at)?.[1] : undefined;
+    if (fileIndex === undefined && effectIndex === undefined) return 0;
+    const owner = fileIndex !== undefined ? `f${fileIndex}` : `e${effectIndex}`;
+    let id = idOfPlace.get(owner);
+    if (id === undefined) {
+      const file: unknown = fileIndex !== undefined ? files[Number(fileIndex)] : undefined;
+      const context = fileIndex !== undefined ? (isObject(file) && typeof file.path === "string" ? { path: file.path } : undefined) : effectContext(effects[Number(effectIndex)]);
+      idOfPlace.set(owner, (id = intern(context)));
+    }
+    return id;
+  };
+  // Each context's texts (every one of them read once), in the order first seen.
+  const reads = new Map<number, Map<string, Awaited<ReturnType<typeof pass>> | undefined>>();
+  const placeIds: number[] = [];
+  let distinct = 0;
+  for (const place of places) {
+    const id = place.value ? contextIdOf(place.at) : 0;
+    placeIds.push(id);
+    if (!place.value) continue;
+    let texts = reads.get(id);
+    if (!texts) reads.set(id, (texts = new Map()));
+    if (!texts.has(place.value)) {
+      texts.set(place.value, undefined);
+      distinct++;
+    }
+  }
+  if (distinct > strings) throw new ApiError("payload_too_large", `This bundle holds ${distinct} distinct strings (a text under two calls' contexts counted twice), over the ${strings} a share host scrubs one by one, so it is refused before any is read. Nothing was stored.`, { details: { reason: "share_strings", limit: strings, strings: distinct } });
+  const whole = await pass(text);
+  // A context's texts read together, so the scrubber reads that context's command once for them all (secret-rules.ts
+  // factsOf).
+  for (const [id, texts] of reads) for (const value of texts.keys()) texts.set(value, await pass(value, contexts[id]));
+
   const hits = new Map<string, StringHit>();
   const hitsAt = new Map<string, StringHit[]>();
   const key = (at: unknown, rule: unknown, start: unknown, end: unknown) => JSON.stringify([at, rule, start, end]);
-  for (const place of places) {
+  for (const [index, place] of places.entries()) {
     if (!place.value) continue;
-    const context = contextOf(place.at);
-    // Every read is keyed by its context's path and command (or null) and its text, so no text spells another read's key.
-    const read = JSON.stringify([context?.path ?? null, context?.command ?? null, place.value]);
-    let cuts = byValue.get(read);
-    if (!cuts) byValue.set(read, (cuts = await pass(place.value, context)));
-    for (const cut of cuts) {
+    for (const cut of reads.get(placeIds[index]!)!.get(place.value)!) {
       const hit: StringHit = { at: place.at, rule: cut.rule, restorable: restorable(cut.kind), start: cut.start, end: cut.end };
       hits.set(key(hit.at, hit.rule, hit.start, hit.end), hit);
       const at = hitsAt.get(place.at);
