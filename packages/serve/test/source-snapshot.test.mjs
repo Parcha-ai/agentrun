@@ -23,7 +23,8 @@ async function fixture(t, runtime = 'codex') {
     fingerprint: 'discovery-label-only', configuration: [], skills: [], mcp_servers: [], state: 'needs_verification', issues: [],
     capabilities: { launch: true, learning: true, workflows: false, approval: 'native', usage: true } };
   const put = async (path, bytes, policy = false, mode = 0o644) => {
-    await mkdir(dirname(path), { recursive: true }); await writeFile(path, bytes, { mode });
+    // writeFile's mode passes through the umask; the chmod sets the mode the assertions expect on any machine.
+    await mkdir(dirname(path), { recursive: true }); await writeFile(path, bytes, { mode }); await chmod(path, mode);
     if (policy) { target.configuration = target.configuration.filter(x => x.path !== path); target.configuration.push({ path, sha256: sha(bytes) }); }
   };
   // Explicit portable source fixtures: account integrations are disabled at the source, and
