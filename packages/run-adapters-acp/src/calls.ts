@@ -262,6 +262,11 @@ const NOTHING = "\0*";
 /** take's word for a call torn between announcements its arguments match only without an extra. */
 const TORN = Symbol("torn");
 
+/** How long an MCP call that matches an announcement only without an extra (addAnnounced) holds for its own (take): an
+ *  MCP call can reach MCP a little before the agent's announcement of it, and in that while the other's may be the only
+ *  one there. */
+export const ANNOUNCE_GRACE_MS = 500;
+
 /** The agent's announced calls, matched to the MCP calls of our tools that reach the server. */
 export class CallIds {
   private readonly seen = new Map<string, string[]>();
@@ -294,7 +299,9 @@ export class CallIds {
    *  against a plan's limit and memoized under a key a resume never asks again. Until its call ends (settle). A tool
    *  named for an id already announced without one (a call the agent named in a later update) keys it again. `also`:
    *  the same call's arguments read another way (addAnnounced: without an extra its tool's schema declares), under
-   *  which it is kept too; the first MCP call either matches takes it, and it is gone from both. */
+   *  which it is kept too; the first MCP call either matches takes it, and it is gone from both. A call already waiting
+   *  is handed it only by its own arguments: one that matches it only without the extra may be another call's, whose
+   *  own announcement is on its way, so that one tries again as take says (wake). */
   add(id: string, tool: string | undefined, input: unknown, also?: unknown): void {
     if (this.used.has(id)) return;
     if (tool !== undefined) this.unnamed.delete(id);
@@ -306,13 +313,11 @@ export class CallIds {
     const before = this.keyOf.get(id);
     if (before && before.length === keys.length && before.every((key, i) => key === keys[i])) return;
     this.unlist(id);
-    for (const key of keys) {
-      const waiter = this.waiting.get(key)?.shift();
-      if (waiter) {
-        this.used.add(id);
-        waiter(id);
-        return;
-      }
+    const waiter = this.waiting.get(keys[0]!)?.shift();
+    if (waiter) {
+      this.used.add(id);
+      waiter(id);
+      return;
     }
     for (const key of keys) {
       const list = this.seen.get(key) ?? [];
@@ -320,6 +325,7 @@ export class CallIds {
       this.seen.set(key, list);
     }
     this.keyOf.set(id, keys);
+    if (keys.length > 1) this.wake();
   }
 
   /** `id` out of every list it is kept in (keyOf), waiting for its MCP call no more. */
@@ -333,10 +339,14 @@ export class CallIds {
   }
 
   /** The agent's call `id` ended (completed or failed) with no MCP call having taken it: an announcement that names
-   *  nothing and reports nothing is dropped, so a call of the agent's own never takes a later MCP call's id. */
+   *  nothing and reports nothing is dropped, so a call of the agent's own never takes a later MCP call's id; and one kept
+   *  with and without an extra (add's `also`), so it never holds a later MCP call matching it and another only without
+   *  the extra (take) until the wait is over. */
   settle(id: string): void {
-    if (this.keyOf.get(id)?.[0] !== NOTHING) return;
+    const keys = this.keyOf.get(id);
+    if (keys?.[0] !== NOTHING && (keys?.length ?? 0) < 2) return;
     this.unlist(id);
+    this.wake();
   }
 
   /** Whether the agent announced `id` (matched or not). */
@@ -353,21 +363,24 @@ export class CallIds {
    *  came by then. Of the announcements with the same arguments, the oldest named `tool` first, then the oldest named
    *  none; then the oldest of `tool` that reported no input. Then, already there or once the wait is over, never woken
    *  by one coming in during it (which may be the agent's own while this call's own announcement is on its way), the
-   *  oldest that named nothing and reported nothing. Where the arguments match two or more announcements only read
-   *  without an extra (addAnnounced), the call waits while one of them may yet be another call's whole arguments. */
+   *  oldest that named nothing and reported nothing. Where the arguments match announcements only read without an extra
+   *  (addAnnounced), the call holds for `grace` first, and then while one of them may yet be another call's whole
+   *  arguments. */
   async take(tool: string, args: Record<string, unknown>, signal: AbortSignal, ms: number): Promise<string | undefined> {
     const keys = [`${tool}\0${canonical(args)}`, `\0${canonical(args)}`, `${tool}\0*`];
     const key = keys[0]!;
     // Under the first of `from` that keeps one: an announcement whose own arguments are these (its first key, the form
-    // with the extra) first, then the oldest. But two or more kept under this call's own key only read without an extra
-    // (addAnnounced) are torn: which of them sent none, only their own MCP calls say, and another's may be on its way
-    // with the extra, needing its own. So while there are more of them than calls waiting on them (`waiting`, this one
-    // among them), the call waits; once there are not, each takes the oldest.
-    const pick = (from: readonly string[], waiting: number): string | undefined | typeof TORN => {
+    // with the extra) at once. One kept under this call's own key only read without an extra (addAnnounced) is a guess:
+    // its call may have sent the extra, its own MCP call on its way with it, and this call's own announcement still on
+    // its way (an MCP call can reach MCP before it). So the call takes one only once it is `aged`, past the grace, and
+    // while there are no more of them than calls waiting on them (`waiting`, this one among them); then the oldest. When
+    // every call left the extra out, which of them takes which, by when its MCP call came, may not be the order they
+    // were announced in: their inputs are the same, so it changes nothing a call is given.
+    const pick = (from: readonly string[], waiting: number, aged: boolean): string | undefined | typeof TORN => {
       for (const at of from) {
         const list = this.seen.get(at);
         if (!list?.length) continue;
-        const id = list.find((each) => this.keyOf.get(each)?.[0] === at) ?? (at === key && list.length > 1 && list.length > waiting ? TORN : list[0]!);
+        const id = list.find((each) => this.keyOf.get(each)?.[0] === at) ?? (at === key && (!aged || list.length > waiting) ? TORN : list[0]!);
         if (id === TORN) return TORN;
         this.unlist(id);
         this.used.add(id);
@@ -379,64 +392,77 @@ export class CallIds {
     // Once the wait is over, the oldest announced call named `tool` whose reported input differs from what reached MCP.
     // Never one named no tool with other arguments: its arguments are all that ties it, and they differ. Then the oldest
     // that named nothing and reported nothing.
-    const loose = () => pick([...[...this.seen.keys()].filter((at) => at.startsWith(`${tool}\0`)), NOTHING], Infinity) as string | undefined;
-    // Calls already torn on this key go first, in the order they came, unless this one's arguments are an announcement's own.
-    const queued = this.torn.get(key) ?? 0;
-    const now = queued && !this.seen.get(key)?.some((id) => this.keyOf.get(id)?.[0] === key) ? TORN : pick([...keys, NOTHING], 1);
+    const loose = () => pick([...[...this.seen.keys()].filter((at) => at.startsWith(`${tool}\0`)), NOTHING], Infinity, true) as string | undefined;
+    const now = pick([...keys, NOTHING], (this.pending.get(key) ?? 0) + 1, this.grace <= 0);
     if (typeof now === "string") return now;
-    const torn = now === TORN;
     return new Promise<string | undefined>((resolve, reject) => {
+      let aged = this.grace <= 0;
       const lists = keys.map((at) => {
         const list = this.waiting.get(at) ?? [];
         this.waiting.set(at, list);
         return list;
       });
+      // The announcements that named nothing and reported nothing when this call came, which it takes once none of its
+      // own is left (those that came during its wait are never its: see above).
+      const there = new Set(this.seen.get(NOTHING) ?? []);
       const retry = () => {
-        const id = pick(keys, this.torn.get(key) ?? 0);
-        if (typeof id === "string") done(id);
+        const id = pick(keys, this.pending.get(key) ?? 0, aged) ?? this.seen.get(NOTHING)?.find((each) => there.has(each));
+        if (typeof id !== "string") return;
+        if (!this.used.has(id)) {
+          this.unlist(id);
+          this.used.add(id);
+          this.wake();
+        }
+        done(id);
       };
       const leave = () => {
+        clearTimeout(timer);
+        clearTimeout(held);
         for (const list of lists) {
           const at = list.indexOf(done);
           if (at >= 0) list.splice(at, 1);
         }
         if (!this.retries.delete(retry)) return;
-        const left = (this.torn.get(key) ?? 1) - 1;
-        if (left > 0) this.torn.set(key, left);
-        else this.torn.delete(key);
+        const left = (this.pending.get(key) ?? 1) - 1;
+        if (left > 0) this.pending.set(key, left);
+        else this.pending.delete(key);
       };
       const done = (id: string) => {
-        clearTimeout(timer);
         signal.removeEventListener("abort", stop);
         leave();
         resolve(id);
       };
       const stop = () => {
-        clearTimeout(timer);
         leave();
         reject(signal.reason instanceof Error ? signal.reason : new Error("the call was stopped"));
       };
       const timer = setTimeout(() => {
         signal.removeEventListener("abort", stop);
         leave();
-        resolve((torn ? (pick(keys, Infinity) as string | undefined) : undefined) ?? loose());
+        resolve((pick(keys, Infinity, true) as string | undefined) ?? loose());
       }, ms);
+      const held = setTimeout(() => {
+        aged = true;
+        retry();
+      }, Math.max(this.grace, 0));
       signal.addEventListener("abort", stop, { once: true });
       for (const list of lists) list.push(done);
-      if (torn) {
-        this.torn.set(key, (this.torn.get(key) ?? 0) + 1);
-        this.retries.add(retry);
-        this.wake();
-      }
+      this.pending.set(key, (this.pending.get(key) ?? 0) + 1);
+      this.retries.add(retry);
+      this.wake();
     });
   }
 
-  /** The MCP calls torn between announcements (take): how many wait under each key, and each one's retry. */
-  private readonly torn = new Map<string, number>();
+  /** How long an MCP call holds before it takes an announcement it matches only without an extra (take). */
+  constructor(private readonly grace: number = ANNOUNCE_GRACE_MS) {}
+
+  /** The MCP calls waiting (take): how many under each key, and each one's retry. */
+  private readonly pending = new Map<string, number>();
   private readonly retries = new Set<() => void>();
   private waking = false;
 
-  /** Each torn call tries again, once the current one is through: an announcement was taken, or another call is torn. */
+  /** Each waiting call tries again, once the current one is through: an announcement was taken, listed or dropped, or
+   *  another call waits. */
   private wake(): void {
     if (this.waking || this.retries.size === 0) return;
     this.waking = true;

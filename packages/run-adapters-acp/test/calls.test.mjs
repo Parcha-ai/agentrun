@@ -117,12 +117,13 @@ test("an extra our tool's input schema declares is its argument, never agy's own
   announceCall(plain, agy('call_b', { q: 'x', toolSummary: 'b' }), AGY, TOOLS);
   assert.equal(await plain.take('look_up', { q: 'x', toolSummary: 'b' }, signal, 50), 'call_a', 'the control: the ids swap');
   // The field optional and left out, agy adds a summary of its own: the call is kept without it too, so its MCP call,
-  // which carries none, takes its id at once, never after the wait's fallback; and once taken it is gone from both forms.
+  // which carries none, takes its id after a short hold (ANNOUNCE_GRACE_MS), never the wait's fallback; and once taken
+  // it is gone from both forms.
   const hurry = (taking) => Promise.race([taking, new Promise((resolve) => setTimeout(() => resolve('waited'), 2_000).unref())]);
   const omitted = new calls.CallIds();
   announceCall(omitted, agy('call_d', { q: 'd', toolSummary: 'Look d up' }), AGY, TOOLS, declared);
   announceCall(omitted, agy('call_e', { q: 'e', toolSummary: 'Look e up' }), AGY, TOOLS, declared);
-  assert.equal(await hurry(omitted.take('look_up', { q: 'e' }, signal, 60_000)), 'call_e', 'its own id, at once');
+  assert.equal(await hurry(omitted.take('look_up', { q: 'e' }, signal, 60_000)), 'call_e', 'its own id, after the hold');
   assert.equal(await hurry(omitted.take('look_up', { q: 'd', toolSummary: 'Look d up' }, signal, 60_000)), 'call_d', 'the other, by the form with it');
   for (const args of [{ q: 'd' }, { q: 'e', toolSummary: 'Look e up' }]) assert.equal(await omitted.take('look_up', args, signal, 50), undefined, `taken once, under either form: ${JSON.stringify(args)}`);
   // An MCP call already waiting when the announcement comes is woken by either form.
@@ -139,16 +140,16 @@ test("an extra our tool's input schema declares is its argument, never agy's own
   announceCall(pair, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
   const bFirst = pair.take('look_up', { q: 'x' }, signal, 60_000);
   const aNext = pair.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000);
-  assert.deepEqual(await hurry(Promise.all([bFirst, aNext])), ['call_b', 'call_a'], 'each its own id, at once');
+  assert.deepEqual(await hurry(Promise.all([bFirst, aNext])), ['call_b', 'call_a'], 'each its own id, well before the wait');
   // Both left it out: each MCP call carries { q: 'x' }. Two calls waiting for two such announcements leave none for a
-  // whole-argument call, so they take them in order, oldest first, never after the wait.
+  // whole-argument call, so past the hold they take them oldest first, never after the wait.
   const both = new calls.CallIds();
   announceCall(both, agy('call_a', { q: 'x', toolSummary: 'Look x up' }), AGY, TOOLS, declared);
   announceCall(both, agy('call_b', { q: 'x', toolSummary: 'Look x up again' }), AGY, TOOLS, declared);
   const first = both.take('look_up', { q: 'x' }, signal, 60_000);
   const second = both.take('look_up', { q: 'x' }, signal, 60_000);
-  assert.deepEqual(await hurry(Promise.all([first, second])), ['call_a', 'call_b'], 'in order, at once');
-  // Only one there: nothing to wait for, so it is taken at once, as before.
+  assert.deepEqual(await hurry(Promise.all([first, second])), ['call_a', 'call_b'], 'oldest first, after the hold');
+  // Only one there and no other call: taken after the hold, while its own announcement could still have come.
   const lone = new calls.CallIds();
   announceCall(lone, agy('call_a', { q: 'x', toolSummary: 'Look x up' }), AGY, TOOLS, declared);
   assert.equal(await hurry(lone.take('look_up', { q: 'x' }, signal, 60_000)), 'call_a');
@@ -176,17 +177,16 @@ test("an extra our tool's input schema declares is its argument, never agy's own
   stale.settle('call_s');
   announceCall(stale, agy('call_a', { q: 'x', toolSummary: 'Look x up again' }), AGY, TOOLS, declared);
   assert.equal(await hurry(stale.take('look_up', { q: 'x' }, signal, 60_000)), 'call_a', 'the live one, not the ended one');
-  // A call that finds none of its own left while another still waits on its arguments takes one named for nothing, as
-  // any call does, rather than queue behind a call with nothing left to wait for.
+  // A call that waited for its own while others took the last of them takes one named for nothing that was already
+  // there when it came, as a call that never waited does, rather than wait out the wait.
   const drained = new calls.CallIds();
   announceCall(drained, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
-  const quit = new AbortController();
-  const holding = drained.take('look_up', { q: 'x' }, quit.signal, 60_000);
-  assert.equal(await drained.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000), 'call_a');
+  announceCall(drained, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
+  const firstBare = drained.take('look_up', { q: 'x' }, signal, 60_000);
+  const whole = drained.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000);
   drained.add('call_n', undefined, undefined);
-  assert.equal(await hurry(drained.take('look_up', { q: 'x' }, signal, 60_000)), 'call_n', 'not queued behind the first');
-  quit.abort();
-  await assert.rejects(holding);
+  const lastBare = drained.take('look_up', { q: 'x' }, signal, 60_000);
+  assert.deepEqual(await hurry(Promise.all([firstBare, whole, lastBare])), ['call_b', 'call_a', 'call_n'], 'the last, by the one already there');
   // Another tool's declaration keeps nothing for this one.
   const other = new calls.CallIds();
   announceCall(other, agy('call_c', { q: 'c', toolSummary: 'Look c up' }), AGY, TOOLS, new Map([['check_echo', new Set(['toolSummary'])]]));
