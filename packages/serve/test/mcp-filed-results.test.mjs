@@ -44,7 +44,7 @@ const BY_ID = { data: { cus_NffrFeUfNV2Hib: { total: 1 }, txn_1Q0001: { total: 2
 const BUSY = { error: { type: "rate_limit_error", message: `Too many requests for ${description(3)}`, retry_after: 3 } };
 const BY_EMAIL = { results: { "jane@acme.com": { orders: 2 }, "raj@acme.com": { orders: 1 }, total_orders: 3 }, owners: { "lee@acme.com": "admin" }, count: 2, "Jane Doe": "vip", a_key_name_that_runs_well_past_32_chars: 1 };
 
-async function setup(t, { filed, work: workOf, gate } = {}) {
+async function setup(t, { filed, work: workOf, gate, fetch: send } = {}) {
   const fake = await startFakeMcp({ token: TOKEN, ...(gate ? { gate } : {}) });
   t.after(() => fake.close());
   const answers = {
@@ -68,6 +68,7 @@ async function setup(t, { filed, work: workOf, gate } = {}) {
     credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } },
     work: workOf ?? (() => localWorkspace(work)),
     ...(filed ? { filed } : {}),
+    ...(send ? { fetch: send } : {}),
   });
   const call = (tool) => gateway.call("fake", tool, {}, { signal: new AbortController().signal });
   return { fake, gateway, work, call };
@@ -252,6 +253,44 @@ test("a protocol error with HTTP 429 and Retry-After: filed, an error, the statu
   assert.match(textOf(result), /\nError: HTTP 429, retry after 2 s\.$/);
   assert.ok(!/Marisol|rate limited/.test(textOf(result)), textOf(result));
 });
+
+// Two calls of one server at once: the first's 429 reaches the gateway, and its body is held until the second call has
+// its own answer (a 200, or a 429 with another wait), which lands in between. Each summary says its own response's
+// status and wait, never the other call's.
+for (const [second, secondLine] of [[undefined, undefined], [{ status: 429, headers: { "retry-after": "7" }, body: { error: { message: "busy" } } }, "Error: HTTP 429, retry after 7 s."]]) {
+  test(`two calls at once: the first's 429 with Retry-After 2 keeps its own wait while the other's ${second ? "429 with Retry-After 7" : "200"} lands in between`, async (t) => {
+    let calls = 0;
+    const gate = (_url, message) => {
+      if (message?.method !== "tools/call") return undefined;
+      calls += 1;
+      return calls === 1 ? { status: 429, headers: { "retry-after": "2" }, body: { error: { message: `rate limited while listing ${description(9)}` } } } : second;
+    };
+    let release;
+    const released = new Promise((resolve) => (release = resolve));
+    let held;
+    const firstHeld = new Promise((resolve) => (held = resolve));
+    let tools = 0;
+    // The first tools/call's response comes back at once, its status and headers with it; its body waits for `released`.
+    const send = async (input, init) => {
+      const response = await fetch(input, init);
+      const isCall = typeof init?.body === "string" && [JSON.parse(init.body)].flat().some((one) => one?.method === "tools/call");
+      if (!isCall || ++tools !== 1) return response;
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      held();
+      return new Response(new ReadableStream({ async start(controller) { await released; controller.enqueue(bytes); controller.close(); } }), { status: response.status, headers: response.headers });
+    };
+    const { call } = await setup(t, { filed: (_server, tool) => (tool === "page" ? SETTING : undefined), gate, fetch: send });
+    const first = call("page");
+    await firstHeld;
+    const other = await call("page");
+    release();
+    const mine = await first;
+    assert.equal(mine.isError, true, textOf(mine));
+    assert.match(textOf(mine), /\nError: HTTP 429, retry after 2 s\.$/, textOf(mine));
+    if (secondLine) assert.ok(textOf(other).endsWith(`\n${secondLine}`), textOf(other));
+    else assert.notEqual(other.isError, true, textOf(other));
+  });
+}
 
 test("with no setting, a protocol error is shown as before: the server's words, cut at 300", async (t) => {
   const gate = (_url, message) => (message?.method === "tools/call" ? { status: 200, body: { jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "Internal error: try again" } } } : undefined);
