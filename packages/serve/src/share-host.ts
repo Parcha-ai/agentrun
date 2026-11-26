@@ -27,6 +27,7 @@ import { sendHostedAsset, sendHostedSharePage } from "./page.js";
 import { readCapped } from "./push-handler.js";
 import { type CutScrub, EXPORT_CAPS, SHARE_FORMAT, SHARE_RUN_FIELDS } from "./run-export.js";
 import { RESTORABLE, SCRUB_RULES, scrub } from "./secret-cut.js";
+import { type CallContext, effectContext } from "./share-context.js";
 import { isObject, stable } from "./validate.js";
 
 export { SHARE_HOST_CSP } from "./page.js";
@@ -268,6 +269,8 @@ function placesOf(doc: unknown): { text: string; places: Place[] } {
 
 /** A file's content's pointer in a bundle: its index is group 1. */
 const FILE_CONTENT_AT = /^\/files\/(\d{1,6})\/content$/;
+/** A workflow call's output in a bundle (graph.effects[i].output), or a string inside it: the effect's index is group 1. */
+const EFFECT_OUTPUT_AT = /^\/graph\/effects\/(\d{1,6})\/output(?:\/|$)/;
 
 /** For each index 0..value.length of `value`, its offset in JSON.stringify(value) less the opening quote. */
 function encodedOffsets(value: string): number[] {
@@ -299,10 +302,10 @@ function encodedOffsets(value: string): number[] {
  *  never used: the host stores what was sent or nothing. */
 export async function screenShare(text: string, held: readonly string[], cutPass: CutScrub = (body, opts) => scrub(body, opts), strings = SHARE_STRINGS): Promise<{ unchecked: Record<string, number> }> {
   const failed = () => new ApiError("input_invalid", "The share host's scrub of this bundle failed, so it is refused (the scrub fails closed). Nothing was stored.", { details: { reason: "scrub_failed" } });
-  const pass = async (body: string, path?: string) => {
+  const pass = async (body: string, context?: CallContext) => {
     let result: Awaited<ReturnType<CutScrub>>;
     try {
-      result = await cutPass(body, { mode: "cut", held, ...(path !== undefined ? { path } : {}) });
+      result = await cutPass(body, { mode: "cut", held, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.command !== undefined ? { command: context.command } : {}) });
     } catch {
       throw failed();
     }
@@ -315,14 +318,21 @@ export async function screenShare(text: string, held: readonly string[], cutPass
   if (distinct > strings) throw new ApiError("payload_too_large", `This bundle holds ${distinct} distinct strings, over the ${strings} a share host scrubs one by one, so it is refused before any is read. Nothing was stored.`, { details: { reason: "share_strings", limit: strings, strings: distinct } });
   const whole = await pass(text);
 
-  // Every string value alone (a value seen twice is read once: the scrub of a text is the same each time). A file's
-  // content is read knowing its path, as the export cut it (a .pgpass's or a .env's plain contents are a dump), and a
-  // text is read once per path it stands under.
+  // Every string value alone (a value seen twice is read once: the scrub of a text is the same each time). A string is
+  // read with the context the export cut it with (run-export.ts): a file's content knowing its path, and every string
+  // in a workflow call's output knowing that call's tool and input (share-context.ts effectContext), so a .pgpass's or
+  // a .env's plain contents are a dump. A text is read once per context it stands under. A Timeline row's output is
+  // read with none: its call's context comes from the run's calls, which no bundle carries.
   const files = Array.isArray(doc.files) ? doc.files : [];
-  const pathOf = (at: string): string | undefined => {
-    const index = FILE_CONTENT_AT.exec(at)?.[1];
-    const file: unknown = index === undefined ? undefined : files[Number(index)];
-    return isObject(file) && typeof file.path === "string" ? file.path : undefined;
+  const effects = isObject(doc.graph) && Array.isArray(doc.graph.effects) ? doc.graph.effects : [];
+  const contextOf = (at: string): CallContext | undefined => {
+    const fileIndex = FILE_CONTENT_AT.exec(at)?.[1];
+    if (fileIndex !== undefined) {
+      const file: unknown = files[Number(fileIndex)];
+      return isObject(file) && typeof file.path === "string" ? { path: file.path } : undefined;
+    }
+    const effectIndex = EFFECT_OUTPUT_AT.exec(at)?.[1];
+    return effectIndex === undefined ? undefined : effectContext(effects[Number(effectIndex)]);
   };
   const byValue = new Map<string, Awaited<ReturnType<typeof pass>>>();
   const hits = new Map<string, StringHit>();
@@ -330,11 +340,11 @@ export async function screenShare(text: string, held: readonly string[], cutPass
   const key = (at: unknown, rule: unknown, start: unknown, end: unknown) => JSON.stringify([at, rule, start, end]);
   for (const place of places) {
     if (!place.value) continue;
-    const path = pathOf(place.at);
-    // Every read is keyed by its path (or null) and its text, so no text spells another read's key.
-    const read = JSON.stringify([path ?? null, place.value]);
+    const context = contextOf(place.at);
+    // Every read is keyed by its context's path and command (or null) and its text, so no text spells another read's key.
+    const read = JSON.stringify([context?.path ?? null, context?.command ?? null, place.value]);
     let cuts = byValue.get(read);
-    if (!cuts) byValue.set(read, (cuts = await pass(place.value, path)));
+    if (!cuts) byValue.set(read, (cuts = await pass(place.value, context)));
     for (const cut of cuts) {
       const hit: StringHit = { at: place.at, rule: cut.rule, restorable: restorable(cut.kind), start: cut.start, end: cut.end };
       hits.set(key(hit.at, hit.rule, hit.start, hit.end), hit);
