@@ -6,6 +6,7 @@ import { getAgent } from "../dist/agents-store.js";
 import { SdkRuns } from "../dist/sdk/runs.js";
 import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { runEntries } from "../dist/store-reads/journal.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const manifest = { workflow_tools: [{ name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 }] };
 const disabled = { enabled: false, revision: null, context: "", workflows: [] };
@@ -42,7 +43,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk", "eve"]) {
       const loop = createSdkLoop(launch, { store, data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => {
         modelCalls++;
         assert.fail("Off must not ask a learning turn of completed SDK work");
-      })({ journal: () => journal, flush: () => store.flush(), signal: new AbortController().signal });
+      })({ redact: heldRedactor((text) => text), journal: () => journal, flush: () => store.flush(), signal: new AbortController().signal });
       assert.deepEqual(await loop.start(claim), { state: "ended" });
       assert.equal(modelCalls, 0);
       const read = (await api("GET", `/runs/${receipt.run_id}`)).body;

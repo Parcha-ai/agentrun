@@ -4021,7 +4021,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
       if (!skip) return [];
       const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
-      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name is kept as it was, and still fires: PATCH /v2/triggers/${keptOn.id} with {"enabled": false} turns it off.` } : skip] as const];
+      // Under the run-keys setting the kept one's firings bring no keys. One that starts a run of this revision is refused
+      // for the keys it owes, but the kept trigger's target is not checked here: a message_run trigger whose run is pinned
+      // to an earlier revision that owes no keys still messages it, and that run may spend. So the warning promises no refusal.
+      const kept = options.apiOnly
+        ? `is kept as it was, and still fires: PATCH /v2/triggers/${keptOn?.id} with {"enabled": false} turns it off`
+        : `is kept as it was and still fires until you turn it off (PATCH /v2/triggers/${keptOn?.id} with {"enabled": false}): a firing that would start a run of this revision is refused 409 for the keys it owes, but one aimed at a run of an earlier revision that owes none still reaches that run, which may spend`;
+      return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name ${kept}.` } : skip] as const];
     }));
     const unmade = (i: number) => emptyFeeds.has(i) || hostless.has(i);
     // A workflow package's triggers start its workflow's runs, so each input is checked against the workflow's own input,

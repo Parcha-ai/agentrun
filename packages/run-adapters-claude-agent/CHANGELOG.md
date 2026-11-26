@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.61 (2026-11-26)
+
+- On macOS, when `security` hangs on the delete of the Keychain item a sign-in left under the account `unknown`, signed-in status checks no longer wait on it each time: checks at once share one delete, and after a delete is killed or fails, status checks leave the item for ten minutes (a sign-in still asks at once). The CLI's own sign-out at AgentRun's own folder now removes that leftover item too. <!-- changes/claude-keychain-drop-backoff.md -->
+- On macOS, a delete of the Keychain item a sign-in left under the account `unknown` that is killed at its limit, or fails, is asked again at the next sign-in or status check, until the item is deleted or found gone. Before, the item was marked dealt with before the delete started, so it stayed for the life of the server. The sign-in's end also settles now should that delete throw before it starts. <!-- changes/claude-keychain-drop-retry.md -->
+
 ## 0.1.0-beta.60 (2026-11-26)
 
 - Sign out of Claude on this machine: `POST /v2/settings/claude-login/sign-out` (operation `signOutClaudeLogin`), and a Sign out button on Settings → Model keys' Claude login row. Before, the row had no way to sign out or switch accounts: Turn off kept the login as the CLI holds it, so Turn on read the same account again with no sign-in page. <!-- changes/claude-login-sign-out.md -->
