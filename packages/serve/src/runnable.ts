@@ -12,7 +12,8 @@ import { capShortOf } from "./cap-short.js";
 import { chooseModel } from "./model.js";
 import { llmTiers, MODEL_NODES, type ModelNeeds, type ModelRef, nodeTiers, type Tier, unpricedModels, workflowNodes } from "./model.js";
 import type { BoxOffer } from "./place-offers.js";
-import { boxAvailability, newAgentPlace, noPlaceIssue, placeFix } from "./place.js";
+import { noExecWords } from "./archil-settings.js";
+import { boxAvailability, newAgentPlace, noExecIssue, noPlaceIssue, placeFix } from "./place.js";
 import { allows, BOUND_TOOLS, CALL_TOOLS, grantedTools, missingEnv, NODE_TOOLS, shellTools, toolOf, workflowTools } from "./tools.js";
 import { DENIED, isUnavailable, NO_PARALLEL_KEY, type Pickable, planeFor, type ToolSettingsMap, whyUnavailable } from "./tool-plane.js";
 import { computerDenied, denyPlace, permissionFrom, permissionKeys, permissionOf } from "./tool-gate.js";
@@ -96,9 +97,11 @@ export async function deniedComputer(revision: RevisionShape, settings: ToolSett
  *  setting can be had here now, or its refusal (resolve-computer.ts computerReadiness); none given, the box check.
  *  `shellOf`: where a run of an agent with that computer setting has its shell here now (resolve-computer.ts
  *  runShellOf, in the server's mode): a sandbox-only tool on the runner is let by it (Mode 2's Archil exec runs bash);
- *  none given, the runner has no shell. `capUsd`: a save's cap (with `capped`), whose shortfall for one more step and an
- *  answer is a warning of its own (`short`, cap-short.ts); a run's check never names one. */
-export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, capUsd, boxes = [], offers, mcp, monid, decisionPrice, computerReady, shellOf }: { capped?: boolean; capUsd?: number; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; monid?: MonidPinBody; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: RevisionComputer) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }>; shellOf?: (setting: RevisionComputer) => Promise<ShellPlace> } = {}): Promise<Blocker[]> {
+ *  none given, the runner has no shell. `noExec`: in Mode 2, the server's Archil region where it has no serverless exec
+ *  (archil-settings.ts noExecRegionOf), so a sandbox-only tool on the runner names a sandbox computer, never Docker's box,
+ *  which can't mount Archil. `capUsd`: a save's cap (with `capped`), whose shortfall for one more step and an answer is
+ *  a warning of its own (`short`, cap-short.ts); a run's check never names one. */
+export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape, settings: ToolSettingsMap = {}, { capped = false, capUsd, boxes = [], offers, mcp, monid, decisionPrice, computerReady, shellOf, noExec }: { capped?: boolean; capUsd?: number; boxes?: readonly BoxOffer[]; offers?: readonly HarnessCapability[]; mcp?: (server: string) => readonly (McpTool & { grantable?: false; reason?: string })[] | undefined; monid?: MonidPinBody; decisionPrice?: (model: string) => Promise<unknown>; computerReady?: (setting: RevisionComputer) => Promise<{ readonly ok: true } | { readonly refused: string; readonly box?: string }>; shellOf?: (setting: RevisionComputer) => Promise<ShellPlace>; noExec?: string } = {}): Promise<Blocker[]> {
   const out: Blocker[] = [];
   /** A web tool its run would resolve unavailable (tool-plane.ts): a warning at save, a 409 at a run, never another
    *  provider in its place. One set to deny is not: its run starts, and the gate refuses each call. */
@@ -144,6 +147,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
    *  Docker's box is not here and both ways out, fixing that or keeping the agent on the runner without the tool. Where
    *  the runner has a shell that runs others (Mode 2's Archil exec runs bash), it says which. */
   const shellOnRunner = (tool: string, field: string, named: boolean): Blocker => {
+    // On a Mode 2 region with no exec the runner has no shell and Docker's box can't mount Archil: a sandbox computer is
+    // the one way to run the tool. With no place named, in the words its save is refused in (noExecIssue).
+    if (noExec !== undefined && !named) return { ...noExecIssue(noExec), host: false, tool };
+    if (noExec !== undefined) return { field, reason: "not_an_option", message: `${tool} runs only in a box, and this agent's place is the runner, which has no shell here: ${noExecWords(noExec)}, and the docker box can't mount Archil. Give it a sandbox computer (a box), or remove "${tool}" from definition.tools.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool };
     const fresh = newAgentPlace(boxes);
     if (!named && !runnerShell.size && "reason" in fresh) {
       // A tool the box refuses (the browser) keeps this agent out of every box, so naming one is no way out: its words

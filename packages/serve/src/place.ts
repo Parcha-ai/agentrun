@@ -17,9 +17,30 @@
 // now it runs in the Docker box, and where it is not its run is refused in the same words. A workflow, a revision whose
 // tools need no shell, and one with a tool the box refuses run on the runner. In Mode 2 (the runner's shell is Archil's
 // serverless exec) the default is the runner, Docker answering or not: Mode 2 keeps the run's folder on Archil, which
-// Docker's box can't mount, so a run given that box would only be refused.
+// Docker's box can't mount, so a run given that box would only be refused. In Mode 2 on an Archil region with no
+// serverless exec there is no default at all: the runner has no shell and Docker's box can't mount Archil, so a new
+// agent with a shell tool names a sandbox computer (noExecIssue), Docker answering or not.
+import { noExecWords } from "./archil-settings.js";
 import { BOX_IDS, BOXES_ENV, type BoxOffer, DEFAULT_BOX } from "./place-offers.js";
 import { type InputIssue, sentence } from "./errors.js";
+
+/** Where a revision that names no place has a shell, besides a box it names (server.ts runnerShellNow): `true`, on the
+ *  runner, Archil's serverless exec (Mode 2); `false`, in Docker's box where this server has it (Mode 1); `{ noExec }`,
+ *  nowhere: Mode 2 on Archil region `noExec`, which has no serverless exec (archil-settings.ts noExecRegionOf), where a
+ *  run with no computer has no shell and Docker's box can't mount Archil. */
+export type RunnerShell = boolean | { readonly noExec: string };
+
+/** What a new agent with a shell tool and no computer sets on a Mode 2 server whose Archil region has no exec. */
+const NO_EXEC_FIX = "Give the agent a sandbox computer (a box): set computer to {kind: sandbox, provider: <a sandbox provider in Settings → Computers>}; or leave bash out of its tools.";
+
+/** The refusal of a new agent with a shell tool and no computer, at its save or deploy, on a Mode 2 server whose Archil
+ *  region `region` has no serverless exec (RunnerShell `noExec`): it names a sandbox computer, never Docker's box. */
+export const noExecIssue = (region: string): InputIssue => ({
+  field: "definition.computer",
+  reason: "missing",
+  message: `name a sandbox computer: ${noExecWords(region)}, so a run with no computer has no shell, and the docker box can't mount Archil. ${NO_EXEC_FIX}`,
+  fix: NO_EXEC_FIX,
+});
 
 export const PLACE_MODES = ["runner", "sandbox"] as const;
 export type PlaceMode = (typeof PLACE_MODES)[number];
@@ -67,10 +88,11 @@ export function newAgentPlace(registry: readonly BoxOffer[]): { place: Place } |
  *  (newAgentPlace) for an agentic revision with a tool that runs only in a box (`flags`, tools.ts: bash and the
  *  background tools); the runner for a workflow, which is never given a box, for one whose tools need no shell (none, or
  *  only read and write: a container would only hold up its start), and for one that names a tool the box refuses (the
- *  browser, runner-only for now). Where the runner has a shell (`runnerShell`: Mode 2's Archil exec), the runner for
- *  every revision: Docker's box can't mount the folder Mode 2 keeps on Archil. */
-export function defaultPlaceOf(kind: "agentic" | "workflow", tools: readonly unknown[], registry: readonly BoxOffer[], flags: ToolFlags, runnerShell: boolean): Place {
-  if (kind === "workflow" || runnerShell || !wantsBox(tools, flags)) return { mode: "runner" };
+ *  browser, runner-only for now). In Mode 2 (`runnerShell` not false), the runner for every revision: Docker's box can't
+ *  mount the folder Mode 2 keeps on Archil. Where the runner has no shell there either (`noExec`), a shell tool's agent
+ *  is refused at its save (noBoxRefusal) and its run (runnable.ts), never given Docker's box. */
+export function defaultPlaceOf(kind: "agentic" | "workflow", tools: readonly unknown[], registry: readonly BoxOffer[], flags: ToolFlags, runnerShell: RunnerShell): Place {
+  if (kind === "workflow" || runnerShell !== false || !wantsBox(tools, flags)) return { mode: "runner" };
   const fresh = newAgentPlace(registry);
   return "place" in fresh ? fresh.place : { mode: "runner" };
 }
@@ -88,9 +110,11 @@ const wantsBox = (tools: readonly unknown[], flags: ToolFlags): boolean => {
  *  save it, where it would be given the default box (it names no tools, `tools` undefined, so it would get a shell, or a
  *  tool that runs only in a box) and this server does not have Docker's box, and where the runner has no shell
  *  (`runnerShell` false: Mode 1). On Mode 2 the runner's exec is a shell, and such a definition saves for the runner as
- *  it always did, its tools checked there (runnable.ts). Undefined for one that saves. */
-export function noBoxRefusal(tools: readonly unknown[] | undefined, registry: readonly BoxOffer[], flags: ToolFlags, runnerShell: boolean): InputIssue | undefined {
-  if (runnerShell || !wantsBox(tools ?? NEW_AGENT_TOOLS, flags)) return undefined;
+ *  it always did, its tools checked there (runnable.ts); on a Mode 2 region with no exec (`noExec`) there is no shell
+ *  for it, Docker answering or not: it names a sandbox computer (noExecIssue). Undefined for one that saves. */
+export function noBoxRefusal(tools: readonly unknown[] | undefined, registry: readonly BoxOffer[], flags: ToolFlags, runnerShell: RunnerShell): InputIssue | undefined {
+  if (runnerShell === true || !wantsBox(tools ?? NEW_AGENT_TOOLS, flags)) return undefined;
+  if (runnerShell !== false) return noExecIssue(runnerShell.noExec);
   const fresh = newAgentPlace(registry);
   return "reason" in fresh ? noPlaceIssue(registry) : undefined;
 }
@@ -129,8 +153,10 @@ export function noBoxReason(registry: readonly BoxOffer[], listed: ReadonlySet<s
  *  AGENTRUN_BOXES lists (`listed`), and, when none is ready, the boxes it does not list, with what to do.
  *  `byDefault`, with AGENTRUN_BOXES not set at all: short, the local box alone, said to be on by default, or why it is
  *  not, and where a new agent with no place goes then: it names its place, or, where the runner has a shell
- *  (`runnerShell`: Mode 2), it runs on the runner (placesOf). */
-export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<string>, allow: readonly string[] | "none" = "none", byDefault = false, runnerShell = false): string {
+ *  (`runnerShell`: Mode 2), it runs on the runner (placesOf). On a Mode 2 region with no exec (`noExec`), every form says
+ *  a new agent with bash names a sandbox computer, and why. */
+export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<string>, allow: readonly string[] | "none" = "none", byDefault = false, runnerShell: RunnerShell = false): string {
+  const noExec = typeof runnerShell === "object" ? [`A new agent with bash names a sandbox computer (a box), or leaves bash out: ${noExecWords(runnerShell.noExec)}, and Mode 2 keeps workspaces on Archil, which the docker box can't mount.`] : [];
   const boxes = boxAvailability(registry);
   const ready = boxes.filter((box) => box.available).map((box) => box.id);
   const said = ready.length ? [`${and(ready)} ${ready.length === 1 ? "is" : "are"} ready, so sandbox agents run their tools there.`] : [];
@@ -143,10 +169,11 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<str
     box.network === "allowlist" ? sentence(`${box.id} boxes reach only ${hosts}`) : sentence(`${box.id} boxes have no network${box.network_reason ? `: ${box.network_reason}` : ""}`));
   if (byDefault) {
     const box = defaultBox(registry);
+    if (!box?.available && noExec.length) return [`Boxes: none.`, ...noExec, sentence(box?.reason ?? NO_REASON)].join(" ");
     if (!box?.available) return `Boxes: none, so ${runnerShell ? "new agents run on the runner" : "a new agent must name its place: a box, or the runner"}. ${sentence(box?.reason ?? NO_REASON)}`;
-    return [`Boxes: ${box.id} (on by default; set ${BOXES_ENV} to change).`, ...(runnerShell ? [`New agents run on the runner: Mode 2 keeps workspaces on Archil, which the ${box.id} box can't mount.`] : []), ...reach].join(" ");
+    return [`Boxes: ${box.id} (on by default; set ${BOXES_ENV} to change).`, ...(runnerShell === true ? [`New agents run on the runner: Mode 2 keeps workspaces on Archil, which the ${box.id} box can't mount.`] : noExec), ...reach].join(" ");
   }
-  return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...reach, ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`)), ...(rest ? [sentence(rest)] : [])].join(" ");
+  return ["Boxes:", ...(none ? ["none is ready, so sandbox agents do not run here."] : said), ...noExec, ...reach, ...why.map((box) => sentence(`${box.id}: ${box.reason ?? "not available"}`)), ...(rest ? [sentence(rest)] : [])].join(" ");
 }
 
 /** `places` in capabilities: the modes a revision may name, the place a new agent is saved with and a revision that
@@ -154,10 +181,13 @@ export function boxesLine(registry: readonly BoxOffer[], listed: ReadonlySet<str
  *  box-settings.ts boxAllowOf; empty for `none`). `default_place` is the runner where it has a shell (`runnerShell`:
  *  Mode 2's Archil exec), Docker answering or not (defaultPlaceOf); else Docker's box where this server has it; else
  *  null, no default: a new agent names its place, and `default_reason` is the words a no-place create is refused in
- *  (noBoxRefusal). `default_reason` is there exactly when `default_place` is null. */
-export const placesOf = (registry: readonly BoxOffer[], allow: readonly string[] | "none" = "none", runnerShell = false) => {
+ *  (noBoxRefusal). On a Mode 2 region with no exec (`noExec`) it is null, Docker answering or not, and `default_reason`
+ *  says to name a sandbox computer (noExecIssue). `default_reason` is there exactly when `default_place` is null. */
+export const placesOf = (registry: readonly BoxOffer[], allow: readonly string[] | "none" = "none", runnerShell: RunnerShell = false) => {
   const fresh = newAgentPlace(registry);
-  const byDefault = runnerShell ? { default_place: { mode: "runner" } as Place } : "place" in fresh ? { default_place: fresh.place } : { default_place: null, default_reason: fresh.reason };
+  const byDefault = runnerShell === true ? { default_place: { mode: "runner" } as Place }
+    : runnerShell !== false ? { default_place: null, default_reason: noExecIssue(runnerShell.noExec).message }
+    : "place" in fresh ? { default_place: fresh.place } : { default_place: null, default_reason: fresh.reason };
   return { modes: [...PLACE_MODES], ...byDefault, boxes: boxAvailability(registry).map(stated), allow: allow === "none" ? [] : [...allow] };
 };
 /** A box with its state, `ready` when it is available and `unavailable` when not; and, on an available box, its network as the server set it, with
