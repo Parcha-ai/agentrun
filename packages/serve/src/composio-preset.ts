@@ -42,14 +42,15 @@ export const COMPOSIO_OWNERS_USER_WORDS = `it is a Composio user this server's o
  *  another user (a Composio answering every user's, whatever user_ids asks), or with no user_id, is never. */
 const accountOf = (user: string) => (one: unknown): one is Json => isObject(one) && one.user_id === user;
 
-/** Whether Composio lists the connected account `account` under `user` for `toolkit`: `listed`, `unlisted`, or
- *  `unbounded` when it lists more than the lookup's bound (MAX_PAGES of ACCOUNT_PAGE, as the save's), so it can't be
+/** Whether Composio lists the connected account `account` as an ACTIVE one under `user` for `toolkit`: `listed`,
+ *  `unlisted` (none, or one started, expired or turned off: only an ACTIVE account calls as its user), or `unbounded`
+ *  when it lists more ACTIVE ones than the lookup's bound (MAX_PAGES of ACCOUNT_PAGE, as the save's), so it can't be
  *  checked. Any failure to read throws (asking): the caller refuses, never assumes. */
 export async function composioListsAccount(ask: Ask, user: string, toolkit: string, account: string): Promise<"listed" | "unlisted" | "unbounded"> {
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
-    const listed = await ask("checking the run's connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
-    if ((Array.isArray(listed.items) ? listed.items : []).filter(accountOf(user)).some((one) => one.id === account)) return "listed";
+    const listed = await ask("checking the run's connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&statuses=ACTIVE&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+    if ((Array.isArray(listed.items) ? listed.items : []).filter(accountOf(user)).some((one) => one.id === account && one.status === "ACTIVE")) return "listed";
     cursor = text(listed.next_cursor) || undefined;
     if (!cursor) return "unlisted";
   }
@@ -66,7 +67,10 @@ export const COMPOSIO_USER_ID = /^[A-Za-z0-9._@:-]{1,128}$/;
 export const COMPOSIO_USER_ID_WORDS = "letters, digits and . _ @ : - (1 to 128)";
 const USER_ID = COMPOSIO_USER_ID;
 /** The `user_id` a save names for a per-run server, reserved for that and never a Composio user: the server keeps no user
- *  and no connected account, and each run names its own (mcp_auth.<server> = {composio_user_id, connected_account_id?}). */
+ *  and no connected account, and each run names its own (mcp_auth.<server> = {composio_user_id, connected_account_id?}).
+ *  The server lends its Composio key to each run's binding, so the API token never binds a user the owner connects here
+ *  (composio-owners.ts): refused at the request (422) and, for a binding sealed before the owner connected it, at the
+ *  claim. A user the owner connected directly at Composio, which no record here names, is not refused. */
 export const COMPOSIO_PER_RUN = "per_run";
 /** A Composio connected account's id, as a run's binding names one: Composio's are `ca_` and a short random id. At least
  *  8 characters in all, so the run's redactors (which hold a value of 8 or more) hold every one. */
@@ -436,9 +440,10 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     // One made just now is no other's.
     if (authConfig && !madeConfig && !ownConfig && standsOn) await standsOn(authConfig);
     // Only an account under this server's auth config serves it: one ACTIVE under another config (a custom one) doesn't.
-    // Looked for before anything is made, so the caller's check (accountOn) leaves nothing made. It checks every ACTIVE
-    // one, on every page: Composio may serve any of them for this user and config. Past MAX_PAGES a save with that check
-    // is refused, since it can't check them all; one without it (the owner's) goes on with what it read.
+    // Looked for before anything is made, so the caller's check (accountOn) leaves nothing made. It asks Composio for ACTIVE
+    // ones alone, so the bound counts only them, and checks every one, on every page: Composio may serve any of them for
+    // this user and config. Past MAX_PAGES a save with that check is refused, since it can't check them all; one without
+    // it (the owner's) goes on with what it read.
     let active: Json | undefined;
     if (authConfig && !perRun) {
       const actives: Json[] = [];
@@ -448,7 +453,7 @@ export async function composioSave<T extends { tools?: readonly { name: string }
           if (accountOn) throw new ApiError("forbidden", `Composio lists more than ${MAX_PAGES} pages of connected accounts for the user_id ${given} under the auth config ${authConfig} (${ACCOUNT_PAGE} a page), so this save can't check that each ACTIVE one is one a server the API token saved connected: an API token's server never stands on one it can't check. Name another user_id. Nothing was saved.`);
           break;
         }
-        const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+        const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}&statuses=ACTIVE&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
         // Only this save's user's (the mapped one): an account Composio answers under another user, or with no user_id, is
         // never counted.
         actives.push(...((Array.isArray(listed.items) ? listed.items : []).filter((a) => isObject(a) && a.user_id === user && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig) as Json[]));

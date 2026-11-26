@@ -8,6 +8,7 @@ import { Duplex, PassThrough } from "node:stream";
 import type { HostCall, MachineProcess } from "../host.js";
 import { boundOf, redact } from "./process.js";
 import { PID_WRAPPER, pidKill, pidStderr, shellLine } from "./scripts.js";
+import { sshString } from "./ssh-key.js";
 
 /** A readable side of an ssh2 channel, as this provider uses it: piped, or drained. */
 export interface Ssh2Readable {
@@ -150,23 +151,34 @@ export interface SshExecOptions {
 	/** The login to machine id. */
 	loginOf: (id: string) => SshLogin;
 	tunnelOf: SshTunnelOf;
+	/**
+	 * Until when (ms since the epoch) a login machine id's sshd refuses is tried again, every DENIED_RETRY_MS within the
+	 * call's bound: a key the vendor is still handing its machines (Agent37's, minutes after its registration). Absent,
+	 * or past: a refused login fails at once.
+	 */
+	deniedUntil?: (id: string) => number;
 }
+
+/** The pause between two logins an sshd refused, while deniedUntil says the key may still reach it. */
+const DENIED_RETRY_MS = 2_000;
 
 /** MachineHost.exec over SSH: argv as the host's login, as channels on one connection per machine, shared by its execs. */
 export class SshExec {
 	readonly #ssh2: Ssh2Module;
 	readonly #loginOf: (id: string) => SshLogin;
 	readonly #tunnelOf: SshTunnelOf;
+	readonly #deniedUntil: ((id: string) => number) | undefined;
 	/**
 	 * The SSH connections to each machine, opening, open, or done and still held, until each ends: one, and a second
 	 * past CHANNELS_PER_CONNECTION channels. A done one takes no new channel; closeAll ends them all.
 	 */
 	readonly #links = new Map<string, Link[]>();
 
-	constructor({ ssh2, loginOf, tunnelOf }: SshExecOptions) {
+	constructor({ ssh2, loginOf, tunnelOf, deniedUntil }: SshExecOptions) {
 		this.#ssh2 = ssh2;
 		this.#loginOf = loginOf;
 		this.#tunnelOf = tunnelOf;
+		this.#deniedUntil = deniedUntil;
 	}
 
 	/** Ends every connection to machine id, channels and all: the vendor calls it once the machine is deleted. */
@@ -178,22 +190,27 @@ export class SshExec {
 	 * An SSH session as the host's login over the machine's tunnel, its handshake within ctx. A tunnel that fails to
 	 * open, or closes before the SSH handshake, is opened again after a pause, TUNNEL_TRIES times in all within ctx: an
 	 * instance fresh from its create can refuse the first (seen live once in eight creates, the daemon's upload
-	 * refused). Nothing has run before a handshake, so a retry repeats nothing. A refused key or a handshake past its
-	 * bound is not retried.
+	 * refused). Nothing has run before a handshake, so a retry repeats nothing. A refused key is tried again only while
+	 * deniedUntil says it may still reach the machine; a handshake past its bound is not retried.
 	 */
 	async #ssh(id: string, ctx: HostCall): Promise<Ssh2Client> {
 		const bound = boundOf(ctx.timeoutMs, ctx.signal, `the SSH connection to ${id}`);
 		// Ends the handshake in flight when this call gives up on it (its bound passed, or the caller aborted).
 		const givenUp = new AbortController();
 		try {
-			for (let attempt = 1; ; attempt++) {
+			for (let attempt = 1; ; ) {
+				let pause: number;
 				try {
 					return await Promise.race([this.#handshake(id, ctx.timeoutMs, givenUp.signal), bound.promise]);
 				} catch (error) {
-					const early = error instanceof SshTunnelError || (error as { level?: unknown }).level === "client-socket";
-					if (!early || attempt >= TUNNEL_TRIES) throw error;
+					const level = (error as { level?: unknown }).level;
+					const left = level === "client-authentication" ? (this.#deniedUntil?.(id) ?? 0) - Date.now() : 0;
+					const early = error instanceof SshTunnelError || level === "client-socket";
+					if (left > 0) pause = Math.min(DENIED_RETRY_MS, left);
+					else if (early && attempt < TUNNEL_TRIES) pause = TUNNEL_RETRY_MS * 2 ** (attempt++ - 1);
+					else throw error;
 				}
-				await Promise.race([new Promise((resolve) => setTimeout(resolve, TUNNEL_RETRY_MS * 2 ** (attempt - 1))), bound.promise]);
+				await Promise.race([new Promise((resolve) => setTimeout(resolve, pause)), bound.promise]);
 			}
 		} catch (error) {
 			givenUp.abort();
@@ -556,14 +573,6 @@ function fromPkcs8(pem: string): string | undefined {
 	if (key.asymmetricKeyType === "ed25519") return openSshEd25519(key);
 	return undefined;
 }
-
-/** An SSH string (RFC 4251 §5): its uint32 length, then its bytes. */
-const sshString = (bytes: Uint8Array | string): Buffer => {
-	const body = Buffer.from(bytes);
-	const length = Buffer.alloc(4);
-	length.writeUInt32BE(body.length);
-	return Buffer.concat([length, body]);
-};
 
 /**
  * An Ed25519 private key in OpenSSH's own format, unencrypted (openssh-portable PROTOCOL.key; sshkey.c writes it so):

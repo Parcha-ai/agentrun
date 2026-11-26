@@ -6,13 +6,9 @@
 import assert from "node:assert/strict";
 import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { test } from "node:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
-import { agentFolderOf } from "../dist/files.js";
-import { seedOf } from "../dist/learning.js";
-import { entriesOf, git, resnap } from "./learn-support.mjs";
+import { entriesOf, putLearning } from "./learn-support.mjs";
 import { agent, answerFlow, follow, serve, storeRun, withEnv } from "./support.mjs";
 
 /** A learned workflow's two files, as the merge keeps them. */
@@ -20,19 +16,6 @@ const flowFiles = (name, workflow) => ({
   [`workflows/${name}/workflow.json`]: JSON.stringify(workflow),
   [`workflows/${name}/README.md`]: `---\nname: ${name}\ndescription: Answers a question as a number; use when the person asks for the answer\n---\n`,
 });
-/** Agent `id`'s learning folder made as a first run makes it, then `files` committed on main. */
-async function folderWith(data, id, files) {
-  await seedOf(data, id);
-  const repo = join(agentFolderOf(data, id), "learning");
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
-}
-
 const ASK = "Use the learned workflow answer on What is six times seven.";
 /** The run's model's price, USD per million input, output and cache-read tokens; the gateway's usage is 10 in, 2 out. */
 const PRICE = [1, 2, 0.5];
@@ -54,9 +37,9 @@ test("a pi run's cost is its whole booking: its learned workflow node's request 
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL_API_KEY: ["not-a-secret", "gateway"].join("-"), AGENT_MODEL: "gpt-run", AGENT_MODEL_PRICE: PRICE.join(",") }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY", "AGENT_MODEL_FAST", "AGENT_MODEL_FAST_PRICE", "AGENT_MODEL_STRONG", "AGENT_MODEL_STRONG_PRICE"]);
   const { api, data, store } = await serve(t, { learning: "on", faux: undefined });
   assert.equal((await api("POST", "/agents", agent("node-cost", { learning: true, harness: "pi", instructions: ASK }))).status, 201);
-  await folderWith(data, "node-cost", flowFiles("answer", answerFlow()));
+  await putLearning(store, "node-cost", flowFiles("answer", answerFlow()));
   // The cost assertion concerns execution of an already checked workflow.
-  await promoteChecked(store.settings, "node-cost", [{ name: "answer", workflow: answerFlow() }]);
+  await promoteChecked(store, "node-cost", [{ name: "answer", workflow: answerFlow() }]);
   const started = await api("POST", "/agents/node-cost/runs", { input: { content: ASK }, max_cost_usd: 5 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;

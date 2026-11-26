@@ -81,9 +81,13 @@ const REFUSED = [
   ["a user in the namespace, with an account Composio doesn't list", { composio_user_id: TOKENS, connected_account_id: "ca_nobody_listed" }, "connected_account_id"],
   // A Composio answering every user's accounts, whatever user_ids asks: the owner's comes back under the owner's user.
   ["a user in the namespace, with the owner's account Composio answers under the owner's user", { composio_user_id: TOKENS, connected_account_id: OWNERS_ACCOUNT }, "connected_account_id", { ignoreUserIds: true }],
+  // Only an ACTIVE account calls as its user: one Composio lists as the user's own but started and never finished, or
+  // expired, is never bound, and a Composio that answers every status whatever `statuses` asks doesn't change that.
+  ["a user in the namespace, with its own account Composio lists as only started", { composio_user_id: TOKENS, connected_account_id: "ca_token_ops_started" }, "connected_account_id", { accounts: { gmail: [...ACCOUNTS.gmail, { status: "INITIATED", auth_config: MANAGED, id: "ca_token_ops_started", user: TOKENS }] } }],
+  ["a user in the namespace, with its own expired account, from a Composio answering every status", { composio_user_id: TOKENS, connected_account_id: "ca_token_ops_expired" }, "connected_account_id", { ignoreStatuses: true, accounts: { gmail: [...ACCOUNTS.gmail, { status: "EXPIRED", auth_config: MANAGED, id: "ca_token_ops_expired", user: TOKENS }] } }],
 ];
 // Each refusal says which check refused it.
-const WHICH = { composio_user_id: /Composio user this server's owner calls as here.*never calls as the owner/, connected_account_id: /not listed under this run's composio_user_id.*Composio lists/ };
+const WHICH = { composio_user_id: /Composio user this server's owner calls as here.*never calls as the owner/, connected_account_id: /not listed under this run's composio_user_id.*Composio lists no such ACTIVE account/ };
 for (const [shape, binding, field, fake] of REFUSED) {
   test(`API-only: a run bound to ${shape} is 422 not_allowed under mcp_auth.mail.${field}; no run is made and nothing reaches Composio's MCP endpoint`, async (t) => {
     withEnv(t, { [KEY_ENV]: KEY });
@@ -261,6 +265,19 @@ test("API-only: a run's account on the listing's 10th page is found (202); one p
   assert.doesNotMatch(run.body.error.fields[0].message, /not listed under/, "its own reason, not the not-listed one");
   assert.equal(await runCount(past), before, "no run made");
   nothingAsBound(past, binding);
+});
+
+test("API-only: the run's account check asks Composio for ACTIVE accounts alone, so the user's ACTIVE account behind 10 pages of accounts that are not ACTIVE is found (202)", async (t) => {
+  withEnv(t, { [KEY_ENV]: KEY });
+  const started = Array.from({ length: 10 }, (_, i) => ({ status: i % 2 ? "EXPIRED" : "INITIATED", auth_config: MANAGED, id: `ca_token_ops_not_active_${i}`, user: TOKENS }));
+  const s = await setup(t, { fake: { accountsPage: 1, accounts: { gmail: [...started, { status: "ACTIVE", auth_config: MANAGED, id: TOKENS_ACCOUNT, user: TOKENS }] } } });
+  assert.equal((await s.token("PUT", "/settings/mcp-servers/mail/composio", SAVE)).status, 200);
+  const from = s.composio.calls.length;
+  const run = await runAs(s.token, { composio_user_id: TOKENS, connected_account_id: TOKENS_ACCOUNT });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const read = lookups(s, from);
+  assert.ok(read.length > 0, "the account was looked up");
+  assert.deepEqual([...new Set(read.map((call) => call.query?.statuses))], ["ACTIVE"], "every page asks for ACTIVE accounts");
 });
 
 test("API-only: the token's save doesn't count an ACTIVE account Composio answers under another user (one answering every user's): 200 with a connect link, and its record never holds that account", async (t) => {

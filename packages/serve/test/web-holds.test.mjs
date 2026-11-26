@@ -52,6 +52,17 @@ test("a hold with no end named (out of quota for the rest of a run) holds the ho
   assert.deepEqual(activeHolds(NOW + 60 * 60_000), [], "gone at 1 h");
 });
 
+test("a hold whose end is far off (a Retry-After weeks away) is held only to 25 h from now, noted or read from a run's environment", (t) => {
+  forgetHolds();
+  t.after(forgetHolds);
+  const DAY_PLUS = 25 * 3_600_000;
+  const far = { provider: "firecrawl-keyless", tool: "search", kind: "rate", until: NOW + 30 * 24 * 3_600_000 };
+  assert.deepEqual(noteHold(far, NOW), { ...far, until: NOW + DAY_PLUS }, "a far end is held only to now + 25 h");
+  assert.equal(activeHolds(NOW + DAY_PLUS - 1).length, 1, "held just before 25 h");
+  assert.deepEqual(activeHolds(NOW + DAY_PLUS), [], "lifted at 25 h");
+  assert.deepEqual(holdsFromEnv({ [WEB_HOLDS_ENV]: JSON.stringify([far]) }, NOW), [{ ...far, until: NOW + DAY_PLUS }], "read from a run's environment, the same bound");
+});
+
 test("a run's spawn environment carries the holds, hold data alone; the run reads them back and refuses anything else", (t) => {
   forgetHolds();
   t.after(forgetHolds);

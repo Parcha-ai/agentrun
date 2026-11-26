@@ -64,5 +64,5 @@ export async function fetchPage(url: unknown, { guard, offset, maxChars, ...opti
 /** The guarded direct fetch, web_fetch only: it ends the order, answering whatever it reads (a refusal or a failure is
  *  its page). With no guard nothing is fetched. */
 export const direct = defineProvider({ id: "direct", label: "the guarded direct fetch", ops: ["fetch"], fetch: { ends: true } }, ({ guard }): ProviderRun => ({
-  read: (url, options) => readTyped(url, guard, options),
+  read: (url, { client: _client, ...options }) => readTyped(url, guard, options),
 }));

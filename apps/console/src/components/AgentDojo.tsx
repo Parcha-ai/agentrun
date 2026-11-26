@@ -13,7 +13,7 @@ import { type Agent, learningOn } from "@/lib/agentForm";
 import { type AgentLearning, type LearningModelAccess, correctionLines, givenToRuns } from "@/lib/learning";
 import { when } from "@/lib/format";
 import { problem, type Problem } from "@/lib/problem";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { cn } from "@/lib/utils";
 import { cliLearningLabel, cliLearningOf } from "@/lib/cliLearning";
 
@@ -65,7 +65,7 @@ export function AgentDojo({ v2, server, modelAccess }: { v2: Client; server?: "o
         const page = await v2.listAgents({ cursor }); next = page.next_cursor; return page;
       }, (page) => page.agents, AGENT_PAGES);
       if (!current()) return;
-      if (next) throw new Error("The agent list is too large to read in one view. Open Connected agents to inspect an agent.");
+      if (next) throw new Error("The agent list is too large to read in one view. Open Agents to inspect an agent.");
       const initial = [...new Map(agents.map((agent) => [agent.agent_id, agent])).values()].map((agent): Row => ({ agent }));
       setRows((held) => {
         const saved = new Map(held?.map((row) => [row.agent.agent_id, row]));
@@ -120,15 +120,15 @@ export function AgentDojo({ v2, server, modelAccess }: { v2: Client; server?: "o
   const stale = eligible.some((row) => row.stale);
   const changes = eligible.flatMap((row) => (row.view?.log.items ?? []).map((change) => ({ agent: row.agent, change })))
     .sort((a, b) => b.change.at.localeCompare(a.change.at)).slice(0, 8);
-  return <section className="flex min-h-full flex-col">
+  return <section className={pageClass}>
     <header className={cn(pageToolbarClass, "gap-2 px-5")}>
       <h1 className={pageTitleClass}><DojoIcon size={16} className="shrink-0" />Learning Dojo</h1>
       <Button className="ml-auto" size="icon" aria-label="Refresh Learning Dojo" disabled={loading || !server} onClick={() => void read()}><RefreshCw className="size-4" aria-hidden /></Button>
     </header>
-    <div className="mx-auto w-full max-w-page-wide space-y-7 p-5 md:p-8">
+    <div data-page-body className={pageBodyClass}><div className="mx-auto w-full max-w-page-wide space-y-7 p-5 md:p-8">
       <div><h2 className="text-xl font-semibold">What your agents learn</h2><p className="mt-2 max-w-3xl text-lead leading-relaxed text-muted-foreground">Review the corrections and workflow drafts your current agents keep for later runs. Open an agent to enable learning, inspect its changes or review pending drafts.</p><p className="mt-2 max-w-3xl text-small leading-relaxed text-muted-foreground">Imported sessions are history, not learning runs. Workflow drafts come from agentic runs started through this server; corrections are yours, given with a grade or written on an agent's Learning tab.</p></div>
       {server === undefined ? <p role="status" className="text-lead text-muted-foreground">Checking learning support…</p>
-        : server === null ? <div className="border bg-card p-5"><h3 className="font-semibold">This server does not expose learning</h3><p className="mt-2 text-lead text-muted-foreground">Use a server version with learning support to inspect or enable it here.</p><a href="#/agents" className="mt-4 inline-block text-lead text-primary-text underline underline-offset-4">Connected agents</a></div>
+        : server === null ? <div className="border bg-card p-5"><h3 className="font-semibold">This server does not expose learning</h3><p className="mt-2 text-lead text-muted-foreground">Use a server version with learning support to inspect or enable it here.</p><a href="#/agents" className="mt-4 inline-block text-lead text-primary-text underline underline-offset-4">Agents</a></div>
         : <>
           {server === "off" && <p role="status" className="border border-warning/40 bg-warning/5 p-4 text-lead text-warning-text">This server has learning turned off. Saved learning remains available; new runs will learn only after the server's learning setting is on.</p>}
           {error && <><ProblemCard problem={error} onRetry={() => void read()} className="" />{rows && <p className="text-small text-warning-text">Showing the last read. Refresh to update these counts.</p>}</>}
@@ -140,7 +140,7 @@ export function AgentDojo({ v2, server, modelAccess }: { v2: Client; server?: "o
             </Banner>}
             <dl className="grid grid-cols-2 gap-3 xl:grid-cols-4">{measures.map(({ label, of }) => <div key={label} aria-label={label} className="border bg-card p-4"><dt className="caps text-micro text-muted-foreground">{label}</dt><dd className="mt-3 font-mono text-display">{total(eligible, of)}</dd></div>)}</dl>
             <p className="text-small leading-relaxed text-muted-foreground">{loaded} of {eligible.length} agent histories read. Counts show active drafts; drafts that wait for your OK are counted under review. + means a minimum from incomplete data; — means not reported.{stale ? " Last-read totals include saved histories that may have changed; they are not current minimums." : updated && !loading ? ` Updated ${when(updated)}.` : ""}{loading ? " Loading learning…" : ""}</p>
-            {!rows.length ? <div className="border px-6 py-10 text-center"><h3 className="font-semibold">No agents yet</h3><p className="mt-2 text-lead text-muted-foreground">Create an agent, then open its Learning tab to let its runs build on what they learn.</p><a className="mt-4 inline-block text-lead text-primary-text underline underline-offset-4" href="#/agents/new">Build an agent</a><span className="mx-3 text-muted-foreground">·</span><a className="text-lead text-primary-text underline underline-offset-4" href="#/agents">Import existing agents</a></div>
+            {!rows.length ? <div className="border px-6 py-10 text-center"><h3 className="font-semibold">No agents yet</h3><p className="mt-2 text-lead text-muted-foreground">Create an agent, then open its Learning tab to let its runs build on what they learn.</p><a className="mt-4 inline-block text-lead text-primary-text underline underline-offset-4" href="#/agents/new">Open editor</a><span className="mx-3 text-muted-foreground">·</span><a className="text-lead text-primary-text underline underline-offset-4" href="#/agents">Import existing agents</a></div>
               : <section aria-label="Agents in Dojo" className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{rows.map((row) => <AgentCard key={row.agent.agent_id} row={row} server={server} />)}</section>}
             {eligible.length > 0 && <section className="overflow-hidden border" aria-label="Recent learning changes"><header className="border-b px-5 py-4"><h3 className="text-lead font-semibold">Recent learning changes</h3><p className="mt-1 text-small text-muted-foreground">Latest reported changes from the histories read above. Each agent's Learning tab has its full history and run outcomes.</p></header>
               {changes.length ? <ul className="divide-y">{changes.map(({ agent, change }) => <li key={`${agent.agent_id}:${change.commit}`}><a href={"run" in change.by ? `#/runs/${encodeURIComponent(change.by.run)}` : learningHref(agent)} className="flex items-start gap-3 px-5 py-4 hover:bg-accent"><span className="min-w-0 flex-1"><span className="block text-lead">{change.reason || "Learning updated"}</span><span className="mt-1 block text-small text-muted-foreground">{agent.definition.name || agent.agent_id} · {"run" in change.by ? "From a run" : "Edited by you"} · {when(change.at)}</span></span><ArrowUpRight className="mt-1 size-3.5 shrink-0" aria-hidden /></a></li>)}</ul>
@@ -148,7 +148,7 @@ export function AgentDojo({ v2, server, modelAccess }: { v2: Client; server?: "o
             </section>}
           </>}
         </>}
-    </div>
+    </div></div>
   </section>;
 }
 

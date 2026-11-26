@@ -35,7 +35,7 @@ import type { PairedRelay } from "./attached-computers.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
 import { computerHeldWords, computerLapsedWords, computerLostWords, KEEP_WORDS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
-import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
+import { computerProviderFactories, computerProviderMakers, type ProviderLoad, providerSecretsOf } from "./computer-providers.js";
 import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
 
 type ComputerKindOf = Exclude<ComputerSettingKind, "none">;
@@ -315,12 +315,14 @@ export const computerReplacedNote = ({ kind, folderKept }: Replaced): string => 
  *  `screenshot`, the run has computer_screenshot, whose save_as saves the screen there. `writes`: the run's gate lets it
  *  write a file (RunGate.writeBar: write given, not denied, and not an ask no one can approve); without it the run is
  *  told a screenshot can't be saved to its files, and no save_as
- *  or file tool is promised (bash may still be offered, so nothing more is claimed). */
-export const computerFilesNote = ({ kind, screenshot, writes }: { readonly kind: "desktop" | "phone"; readonly screenshot: boolean; readonly writes: boolean }): string => {
+ *  or file tool is promised (bash may still be offered, so nothing more is claimed). `outlives`: the computer is a
+ *  person's paired one or the agent's own (ClaimComputer.outlives), never deleted when the run ends, so what is saved on
+ *  it stays there. */
+export const computerFilesNote = ({ kind, screenshot, writes, outlives }: { readonly kind: "desktop" | "phone"; readonly screenshot: boolean; readonly writes: boolean; readonly outlives?: boolean }): string => {
   const keep = writes
     ? `Keep anything the user should get in the run's files, the folder your file tools work on${screenshot ? "; computer_screenshot with save_as saves the screen there as a PNG" : ""}.`
     : "Screenshots can't be saved to the run's files here (write isn't offered): put what you found in your answer.";
-  return `${SERVER_NOTE_LABEL}this ${kind}'s own disk is not this run's files: nothing saved on the ${kind} reaches the user, and it is deleted when the run ends. ${keep}`;
+  return `${SERVER_NOTE_LABEL}this ${kind}'s own disk is not this run's files: nothing saved on the ${kind} reaches the user, and ${outlives ? `it stays on the ${kind} after the run ends` : "it is deleted when the run ends"}. ${keep}`;
 };
 
 /** The claim's computer as the runner's specs call it: what the run's launch lets the computer reach (its box_allow),
@@ -387,12 +389,14 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     return { ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
   };
   /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: for a local one,
-   *  its image source and its host options; for a remote one, the server's dial. The host environment it reads is the
-   *  makers' (computerProviderMakers' `env`). */
+   *  its image source and its host options; for a remote one, the server's dial; for one that makes secrets of its own
+   *  (its `secrets`), the server's sealed store of them, with a seal key (without one, it keeps them for its process).
+   *  The host environment it reads is the makers' (computerProviderMakers' `env`). */
   const declaredOptions = async (id: string, boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const entry = kinds.PROVIDERS.find((one) => one.id === id);
     return {
       ...(entry?.local ? { image: preparedImage, ...(await localHostOptions(boxAllow)) } : options.dial ? { dial: options.dial } : {}),
+      ...(entry?.secrets && sealKey ? { [entry.secrets.option]: providerSecretsOf(store, sealKey, id) } : {}),
     };
   };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);

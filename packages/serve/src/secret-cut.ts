@@ -12,6 +12,7 @@ secretLintProfiler.setEnabled(false);
 import { keyShaped } from "./secret-name.js";
 import { secretValues } from "./api-token.js";
 import { MIN_SECRET, valueMatcher } from "./learn/secrets.js";
+import { SEPARATOR } from "./redact/match.js";
 import { userInfo } from "node:os";
 import { commandReadPath, type Cut, type CutKind, decodedTimes, type Hit, inputSpan, isPlaceholder, KEY_RUN_MAX, lineBounds, lineCount, type LintFind, RESTORABLE, SCRUB_RULES, type ScrubContext, type ScrubRule, shapeOf, type View, viewsOf } from "./secret-rules.js";
 
@@ -84,7 +85,9 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
 
 /** The recommended preset's rules, but its comment filter: a `secretlint-disable` line in what an import reads (a
  *  repository's own config a tool printed, a web page) would switch every rule off for the rest of it. The rule ids are
- *  pinned by test (secretlint-deps.test.mjs), so a bump that empties or changes the set is read before it ships. */
+ *  pinned by test (secretlint-deps.test.mjs), so a bump that empties or changes the set is read before it ships. There is
+ *  no load-time check of its own: the exact @secretlint/core pin and that test stand for it. A consumer that forces
+ *  another core through npm overrides is outside both, and could load no rules and cut nothing. */
 const FILTER_COMMENTS = "@secretlint/secretlint-rule-filter-comments";
 const SECRETLINT = { rules: recommended.filter((rule) => rule.meta.id !== FILTER_COMMENTS).map((rule) => ({ id: rule.meta.id, rule })) };
 /** The ids of the rules the scan runs, in order. Only the ids are exported: the rules' own types come from a secretlint
@@ -403,7 +406,9 @@ function contextOf(view: View, opts: ScrubOptions): ScrubContext {
 /** Whether a cut text holds nothing the scrub must cut: no known format the format rules still find in any view of any
  *  chunk of it (each marker read as a blank, so a marker is never one), and no held value in any form (valueMatcher:
  *  split by whitespace, partly encoded) in the text as written or in any decoding of it, each marker read as a
- *  character no form holds. The time budget holds here too (a throw). */
+ *  character no form holds and every view keeps (SEPARATOR, read with valueMatcher's `separated`: a NUL would not do,
+ *  as the views drop control characters). A U+FFFF the text brought is read as a NUL first, nothing to the views, so
+ *  only a marker separates. The time budget holds here too (a throw). */
 async function clean(rules: readonly ScrubRule[], out: string, opts: ScrubOptions, run: Run): Promise<boolean> {
   const blanked = out.replace(MARKER, (found) => " ".repeat(found.length));
   const formats = rules.filter((rule) => rule.kind === "format");
@@ -418,9 +423,9 @@ async function clean(rules: readonly ScrubRule[], out: string, opts: ScrubOption
   }
   const held = heldOf(opts);
   if (!held.length) return true;
-  const matches = valueMatcher(held);
-  for (const view of viewsOf(out.replace(MARKER, "\u0000"))) {
-    if (matches(view.source)) return false;
+  const matches = valueMatcher(held, { separated: true });
+  for (const view of viewsOf(out)) {
+    if (matches(view.source.replaceAll(SEPARATOR, "\u0000").replace(MARKER, SEPARATOR))) return false;
     inTime(run);
   }
   return true;

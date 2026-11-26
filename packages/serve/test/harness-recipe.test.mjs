@@ -1169,26 +1169,39 @@ async function noteChecked(data, file) {
 }
 
 test("a server takes a recipe it names only once its install is checked: hidden until then, by the code and the command that fix it, and a plan-billed one on keys saved for its harness, never the shell's", { timeout: 60_000 }, async (t) => {
-  const [{ harnessIds, harnessOf, harnessRecipesEnv, harnessTable, tableIds }, { checkedNoteOf, signedInNoteOf }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/harness-recipe.js")]);
-  // Named but not installed: in the table, so a run naming it is refused in words, and listed nowhere.
+  const [{ harnessIds, harnessOf, harnessRecipesEnv, harnessTable, offeredIds, tableIds }, { checkedNoteOf, signedInNoteOf }, { harnessOffers }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/harness-recipe.js"), import("../dist/harness.js")]);
+  // What capabilities say of it: the recipe its owner started the server with is always offered, not available until it
+  // runs, with the reason (the code and the command that fix it), never left out of the list.
+  const offerOf = async (on) => (await harnessOffers({ ...on })).find((each) => each.id === "model-agent");
+  // Named but not installed: in the table, so a run naming it is refused in words; no definition may pick it, and
+  // capabilities offer it as not available, saying why.
   const bare = join(await scratch(t), "agents");
   const bareFile = await recipeFile(t, recipeOf());
   const bareEnv = harnessRecipesEnv([bareFile], bare);
   assert.ok(tableIds(bareEnv).includes("model-agent"));
   assert.equal(harnessIds(bareEnv).includes("model-agent"), false);
   assert.match(harnessOf(bareEnv, "model-agent").hidden(bareEnv), /^HARNESS_NOT_INSTALLED: .*Install it with: agentrun harness install --recipe/);
+  assert.ok(offeredIds(bareEnv).includes("model-agent"));
+  const bareOffer = await offerOf(bareEnv);
+  assert.deepEqual([bareOffer?.label, bareOffer?.available], ["Model Agent", false], JSON.stringify(bareOffer));
+  assert.match(bareOffer.reason, /^HARNESS_NOT_INSTALLED: .*Install it with: agentrun harness install --recipe/);
 
-  // Installed, never checked: hidden, and a run is refused, naming the check.
+  // Installed, never checked: hidden, and a run is refused, naming the check; offered as not available, naming it too.
   const proxy = await installed(t, recipeOf());
   const env = harnessRecipesEnv([proxy.file], proxy.data);
   const entry = harnessOf(env, "model-agent");
   assert.match(entry.hidden(env), /^HARNESS_NOT_CHECKED: .*Check it with: agentrun harness-check --recipe/);
   assert.match((await entry.refusal(env, undefined, { atStart: false }))?.reason ?? "", /HARNESS_NOT_CHECKED/);
+  const unchecked = await offerOf(env);
+  assert.equal(unchecked?.available, false, JSON.stringify(unchecked));
+  assert.match(unchecked.reason, /^HARNESS_NOT_CHECKED: .*Check it with: agentrun harness-check --recipe/);
+  assert.deepEqual([unchecked.models, unchecked.default_model], [[], null], "no model is offered for a harness that does not run");
   // Checked for this recipe, binary and tree: listed, through this server's model proxy.
   await noteChecked(proxy.data, proxy.file);
   assert.equal(statSync(checkedNoteOf(proxy.data, "model-agent")).mode & 0o777, 0o600);
   assert.equal(entry.hidden(env), undefined);
   assert.ok(harnessIds(env).includes("model-agent"));
+  assert.notEqual((await offerOf(env))?.reason ?? "", unchecked.reason, "the check's reason is gone once it passed");
   // A pass noted for another install (its tree, the binary among it) is no pass for this one.
   const note = JSON.parse(readFileSync(checkedNoteOf(proxy.data, "model-agent"), "utf8"));
   writeFileSync(checkedNoteOf(proxy.data, "model-agent"), JSON.stringify({ ...note, tree: "0".repeat(64) }));
@@ -1436,7 +1449,7 @@ test("Settings → Harness keys: a plan-billed recipe's keys are saved by the ow
   const server = await serve(t, { harnessRecipes: [file], accounts: true, openSetup: true, runner: false, log: (line) => logs.push(line) });
   const { owner, token, cookie, origin } = await asOwnerAndToken(server);
   const caps = (await server.api("GET", "/capabilities")).body;
-  assert.deepEqual(caps.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: ["model-agent"], kept: [] });
+  assert.deepEqual(caps.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: ["model-agent"] });
   const listed = await token("GET", "/settings/harness-keys");
   assert.equal(listed.status, 200, listed.text);
   assert.deepEqual(JSON.parse(listed.text), { harnesses: [{ id: "model-agent", label: "Model Agent", named: true, ready: false, keys: [{ name: "harness:model-agent:MODEL_AGENT_API_KEY", set: false, source: null, changed_at: null }], kept: [], reenter: [] }] });
@@ -1487,34 +1500,37 @@ test("Settings → Harness keys: a plan-billed recipe's keys are saved by the ow
 
 });
 
-test("Settings → Harness keys stays offered while keys are kept: restarted without the recipe, capabilities name the id kept until its keys are removed", { timeout: 120_000 }, async (t) => {
+test("restarted without the recipe, a kept key is listed by the Harness keys page's own GET, to the owner alone; capabilities answer every caller the same, naming no kept id", { timeout: 120_000 }, async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const file = await recipeFile(t, planOn({ url: "http://127.0.0.1:9" }));
   const first = await serve(t, { harnessRecipes: [file], accounts: true, openSetup: true, runner: false });
-  assert.deepEqual((await first.api("GET", "/capabilities")).body.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: ["model-agent"], kept: [] });
+  assert.deepEqual((await first.api("GET", "/capabilities")).body.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: ["model-agent"] });
   const { owner } = await asOwnerAndToken(first);
   assert.equal((await owner("PUT", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY", { value: plantedValue("harness-key") })).status, 204);
   await first.stop();
-  // The same data, started with no recipe: the key is kept, and the page that removes it is still offered.
+  // The same data, started with no recipe: the key is kept, the page that removes it is offered on its routes, and its
+  // own GET (the owner's session alone) lists the id.
   const laterLogs = [];
   const later = await serve(t, { data: first.data, accounts: true, runner: false, log: (line) => void laterLogs.push(line) });
-  assert.deepEqual((await later.api("GET", "/capabilities")).body.features.harness_keys, { routes: true, at_rest: "sealed", harnesses: [], kept: ["model-agent"] });
+  const caps = { routes: true, at_rest: "sealed", harnesses: [] };
+  assert.deepEqual((await later.api("GET", "/capabilities")).body.features.harness_keys, caps);
   const { owner: laterOwner } = await asOwnerAndToken(later);
-  // Which harnesses hold keys is the owner's to know: a caller with no session and no token reads none.
-  assert.deepEqual((await laterOwner("GET", "/capabilities")).json.features.harness_keys.kept, ["model-agent"], "the owner's session reads the kept ids");
+  assert.deepEqual((await laterOwner("GET", "/capabilities")).json.features.harness_keys, caps, "the owner's session reads the same");
+  const listed = await laterOwner("GET", "/settings/harness-keys");
+  assert.deepEqual(listed.json.harnesses.map((h) => [h.id, h.named]), [["model-agent", false]], "the page's own GET lists the kept id");
   const anonymous = await call(later.port, { path: "/v2/capabilities", headers: { accept: "application/json" } });
   assert.equal(anonymous.status, 200, anonymous.text);
-  assert.deepEqual(anonymous.json.features.harness_keys.kept, [], "a caller with no session and no token reads no kept ids");
+  assert.deepEqual(anonymous.json.features.harness_keys, caps, "a caller with no session and no token reads the same");
   const capsRefused = () => laterLogs.filter((line) => / event=auth_failed /.test(line) && / route=\/v2\/capabilities /.test(line));
   assert.deepEqual(capsRefused(), [], "a caller that sent no credential is no failed sign-in");
   // A token the server refuses still reads the public answer, and is said in the log as any route's 401 is.
   const wrong = await call(later.port, { path: "/v2/capabilities", headers: { accept: "application/json", authorization: "Bearer not-this-servers-token" } });
   assert.equal(wrong.status, 200, wrong.text);
-  assert.deepEqual(wrong.json.features.harness_keys.kept, [], "a refused token reads no kept ids");
+  assert.deepEqual(wrong.json.features.harness_keys, caps, "a refused token reads the same");
   assert.equal(capsRefused().length, 1, `logged once: ${laterLogs.join("\n")}`);
   assert.match(capsRefused()[0], / reason=wrong_token$/);
   assert.equal((await laterOwner("DELETE", "/settings/harness-keys/model-agent/MODEL_AGENT_API_KEY")).status, 204);
-  assert.deepEqual((await later.api("GET", "/capabilities")).body.features.harness_keys.kept, [], "with nothing kept, nothing offers the page");
+  assert.deepEqual((await laterOwner("GET", "/settings/harness-keys")).json.harnesses, [], "removed, the page lists nothing");
 });
 
 test("a shared server runs a plan-billed recipe on the keys its owner saved for its harness: offered once saved with no restart, the vendor hears the saved key, the sign-in rule no longer refuses a trigger's message to its run, the key is cut from what the agent prints, and removing it stops its runs", { skip: linux, timeout: 240_000 }, async (t) => {

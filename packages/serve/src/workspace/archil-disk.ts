@@ -5,9 +5,9 @@
 //   exec) and to the disk's S3-compatible endpoint (objects). The key is an option, a function asked on every call
 //   (serve keeps keys in its sealed store); nothing here reads the environment, and every setting is passed to the SDK
 //   so it reads none of its own either. The key is never logged, returned or put in an error.
-// - Endpoints: the region names the control plane. The S3 endpoint is given here explicitly (the setting
-//   AGENTRUN_ARCHIL_S3_URL): the SDK derives it from the region internally, and no exported part of it says which it
-//   is. The same URL goes to the SDK's public `s3BaseUrl` option and to the ranged read below, so both talk to one
+// - Endpoints: the region names the control plane. The S3 endpoint is given here explicitly (the settings' s3Url: the
+//   one the owner gave, else the region's, archil-settings.ts ARCHIL_S3_URLS): the SDK derives it from the region
+//   internally, and no exported part of it says which it is. The same URL goes to the SDK's public `s3BaseUrl` option and to the ranged read below, so both talk to one
 //   endpoint. Since the account key goes to it, it must be https on an Archil host for the disk's region (the live one:
 //   s3.green.us-east-1.aws.prod.archil.com for aws-us-east-1); plain http only to this machine's loopback, in tests.
 // - Objects: putObject is one PUT up to 16 MiB, above it a multipart upload that appears whole when it completes;

@@ -3,9 +3,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { serialize } from "node:v8";
-import { parseHome, READERS, readSession } from "../dist/index.js";
+import { READERS, readSession } from "../dist/index.js";
 import { FAILED } from "../dist/readers/opencode.js";
-import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, piFile, piMeta, piUser, tempHome, writeJsonl } from "./fixtures.mjs";
+import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexAnswer, codexContext, codexFile, codexMeta, codexTokens, codexUser, openaiUsage, parseHome, piFile, piMeta, piUser, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const WORDS = "Fixture answer words, never kept.";
 
