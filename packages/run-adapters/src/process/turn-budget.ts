@@ -66,8 +66,8 @@ export class TurnBudget {
   /** An answer was read into this budget (open, or restore): a journal's records never replace it. */
   #read = false;
   #sink: ((record: TurnRecord) => void | Promise<void>) | undefined;
-  /** The last result length handed to the sink, once it is kept (the sink's promise). */
-  #kept: void | Promise<void> = undefined;
+  /** Every result length handed to the sink, once each is kept (the sinks' promises, together): rejects once one was not. */
+  #kept: Promise<void> = Promise.resolve();
 
   /** `fixed`: the session's own text every request carries (its system prompt), counted when no answer was read. */
   constructor(fixed: readonly string[] = []) {
@@ -109,7 +109,9 @@ export class TurnBudget {
     this.#held = 0;
     this.#claims.clear();
     this.#read = true;
-    this.#sink?.({ open: this.#facts ? { ...this.#facts } : null });
+    // No result waits on an answer's record: one the sink could not keep halts its drive (NativeJournal), and the
+    // lengths settled after it, which the bridge waits for, fail with it.
+    void Promise.resolve(this.#sink?.({ open: this.#facts ? { ...this.#facts } : null })).catch(() => {});
   }
 
   /** Each answer's facts and each result's length, as they happen, to `sink` (the session's journal: journalTurn), in place of any before. */
@@ -195,11 +197,15 @@ export class TurnBudget {
     if (!claimed || claimed.settled || handed === undefined) return;
     claimed.settled = true;
     this.#held += handed - claimed.max;
-    this.#kept = this.#sink?.({ settled: { callId, chars: handed } });
+    const kept = Promise.all([this.#kept, this.#sink?.({ settled: { callId, chars: handed } })]).then(() => {});
+    // Seen here, so a length no one waits for never stops the process; kept() still rejects with it.
+    kept.catch(() => {});
+    this.#kept = kept;
   }
 
-  /** Resolves once the last result length settled is kept by the sink (journalTurn: committed to the journal), so a result
-   *  goes back only once a process that stops right after cannot lose its part of the turn. */
+  /** Resolves once every result length settled is kept by the sink (journalTurn: committed to the journal), so a result
+   *  goes back only once a process that stops right after cannot lose its part of the turn. Rejects when one was not:
+   *  the result must not go back, since a resume would claim its part again. */
   async kept(): Promise<void> {
     await this.#kept;
   }
@@ -220,14 +226,15 @@ export interface TurnJournal {
  * resuming the session) first takes back the turn the journal holds, so the calls its resume answers split what their
  * answer left; then each answer's facts and each result's length go to the journal as they happen, flushed at once: an
  * answer's facts must outlast a process that stops while its calls run, and a result's length one that stops right after
- * it was handed (the bridge waits for it: TurnBudget.kept). A journal that cannot write halts its drive on its own.
+ * it was handed (the bridge waits for it: TurnBudget.kept). A journal that cannot write halts its drive on its own,
+ * and a result whose length it could not keep is never handed (kept rejects; the bridge halts and throws).
  */
 export function journalTurn(turn: TurnBudget | undefined, journal: TurnJournal): void {
   if (!turn) return;
   turn.restore(journal.records<TurnRecord>(TURN_STREAM).flatMap((r) => (r.data ? [r.data] : [])));
   turn.journal((record) => {
     journal.append(TURN_STREAM, record);
-    return journal.flush().catch(() => {});
+    return journal.flush();
   });
 }
 
