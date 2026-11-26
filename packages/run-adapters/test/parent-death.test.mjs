@@ -4,13 +4,16 @@
 // process tree is read from /proc, so the behaviour tests run on Linux.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { PARENT_WATCH_SHIM, parentWatched, parentWatchHere, SETPRIV } from '@parcha/agentrun-kernel/host';
 
 const HOST = fileURLToPath(new URL('./fixtures/parent-host.mjs', import.meta.url));
+const SPAWN_HELD = fileURLToPath(new URL('./fixtures/spawn-held.mjs', import.meta.url));
 const linux = process.platform === 'linux' && existsSync('/proc/self/stat');
 const pdeathsig = linux && parentWatchHere() === 'pdeathsig';
 /** A child that outlives the end of its stdin, as the pinned CLI does. */
@@ -144,6 +147,32 @@ test('the shim kills a child that outlasts a TERM it passed on, a grace later, w
   assert.ok(Date.now() - asked >= 1_500, `the child had its grace to go: killed ${Date.now() - asked} ms after the TERM`);
   assert.deepEqual(ended, { code: null, signal: 'SIGKILL' }, 'the shim ends as its child did');
   assert.equal(alive(child), false, 'the child is gone');
+});
+
+// A host may end its child the moment the shim has started it (a sign-in stopped as it opens): the shim takes TERM,
+// INT and HUP as its own before its child exists, so a TERM there is passed on (and the grace kept), never the end of
+// the shim alone with its child left running and no watch. The shim here is held right after its spawn returns
+// (fixtures/spawn-held.mjs) while the TERM reaches it.
+test('the shim passes on a TERM that reaches it the moment its child has started: it never ends alone, leaving the child running', { skip: !linux && 'needs /proc', timeout: 30_000 }, async (t) => {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'agentrun-shim-held-'));
+  const gate = join(dir, 'go');
+  const pidFile = join(dir, 'pid');
+  const watched = parentWatched({ command: process.execPath, args: ['-e', `process.on("SIGTERM", () => {}); require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`] }, 'shim', { termGraceMs: 500 });
+  const shim = spawn(watched.command, ['--import', SPAWN_HELD, ...watched.args], { stdio: 'ignore', env: { ...process.env, SPAWN_HELD_UNTIL: gate } });
+  let child;
+  t.after(() => {
+    for (const pid of [shim.pid, child]) if (pid && alive(pid)) try { process.kill(pid, 'SIGKILL'); } catch {}
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const closed = new Promise((resolve) => shim.on('close', (code, signal) => resolve({ code, signal })));
+  // Its pid is written once its TERM handler is on; the shim is still held in its spawn.
+  for (const end = Date.now() + 20_000; !(existsSync(pidFile) && readFileSync(pidFile, 'utf8') !== '') && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+  child = Number(readFileSync(pidFile, 'utf8'));
+  assert.ok(alive(child), 'the child runs');
+  shim.kill('SIGTERM');
+  writeFileSync(gate, '');
+  assert.deepEqual(await closed, { code: null, signal: 'SIGKILL' }, 'the shim passed the TERM on and ends as its child did, killed a grace later');
+  assert.deepEqual(await gone([child], 5_000), [], `the child (pid ${child}) still runs after the shim ended`);
 });
 
 // The grace is the caller's to ask for. A session's CLI runs under the same shim, and its host ends it with TERM to the
