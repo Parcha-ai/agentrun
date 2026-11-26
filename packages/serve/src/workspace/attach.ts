@@ -388,9 +388,11 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
     // once, at its end, where a caller (bash) needs the output as it comes and the end of a long one. The process is
     // read as it comes (process.read, each stream from its own offset), every byte given to onOutput and the first
     // maxOutput of each kept; at the deadline or an abort it is sent KILL (computerd's guard then ends everything it
-    // started), and once it ends its guard kills whatever it left, so nothing it started outlives it.
+    // started), and once it ends its guard kills whatever it left, so nothing it started outlives it. `stdin`: the process
+    // starts with its stdin open, and the bytes go by process.write, in chunks, its stdin closed after the last, so they
+    // are never in its argv or its environment (a checkout's token, pr-checkout.ts). A program that ends without reading
+    // them answers as it ended: a write it no longer takes is not the call's failure, as a closed pipe's is not.
     async exec(argv: readonly string[], options: ExecOptions): Promise<ExecResult> {
-      if (options.stdin !== undefined) throw new WorkspaceError("REFUSED", "exec with stdin runs on the run's folder, not in a computer: a computer's exec takes no stdin");
       if (options.network !== undefined) throw new WorkspaceError("REFUSED", "a command in a computer has the computer's own network: its exec takes no network of its own, and nothing ran");
       const { timeoutMs, signal } = options;
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new WorkspaceError("REFUSED", "exec's timeoutMs is a number above 0");
@@ -398,7 +400,15 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       if (!Number.isSafeInteger(cap) || cap < 0) throw new WorkspaceError("REFUSED", "exec's maxOutput is a whole number, 0 or more");
       if (signal?.aborted) throw abortError(signal);
       const { abs, rel } = at(options.cwd ?? "");
-      const { id } = await value(call("process.start", { argv: [...argv], cwd: abs, env: { ...options.env } }), rel);
+      const { stdin } = options;
+      const { id } = await value(call("process.start", { argv: [...argv], cwd: abs, env: { ...options.env }, ...(stdin !== undefined ? { stdin: true } : {}) }), rel);
+      const feed = async (bytes: Uint8Array): Promise<void> => {
+        const parts = chunks(bytes);
+        for (const [i, part] of parts.entries()) {
+          const wrote = await call("process.write", { id, data: base64(part), ...(i === parts.length - 1 ? { close: true } : {}) });
+          if (!wrote.ok) return;
+        }
+      };
       let timedOut = false;
       let aborted = false;
       let truncated = false;
@@ -431,7 +441,7 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
       };
       let exit: ProcessExit;
       try {
-        await Promise.all([readAll("stdout"), readAll("stderr")]);
+        await Promise.all([readAll("stdout"), readAll("stderr"), ...(stdin !== undefined ? [feed(stdin)] : [])]);
         exit = await value(call("process.wait", { id, timeoutMs: EXEC_EXIT_WAIT_MS }), rel);
       } catch (error) {
         kill();

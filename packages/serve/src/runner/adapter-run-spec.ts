@@ -94,7 +94,7 @@ import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
-import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
+import { type Checkout, checkoutWhereNoExec, prCheckoutForClaim } from "./pr-checkout.js";
 import type { AgenticBody } from "../store/agent-body.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
@@ -644,8 +644,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The pull request's checkout, when the revision asks for one (pr-checkout.ts): the server's own fetch before the first
   // turn, with the GitHub App's read-only token for that one repository (or none); the run is told what it holds, or why
   // there is none. Held from the fetch's start, so the release (after the tools' end) removes it however the claim ends; a
-  // person's stop ends the fetch at once (run.stopped).
-  const checkout = body.checkout ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part }), body.checkout) : undefined;
+  // person's stop ends the fetch at once (run.stopped). On an Archil region with no serverless exec (noExec) the disk runs
+  // no command: the checkout waits for the run's computer (below, checkoutWhereNoExec).
+  let checkout = body.checkout && noExec === undefined ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part }), body.checkout) : undefined;
   holds.hold({ checkout });
 
   // The run's skills and its learning seed, laid in its folder through the run's Workspace now, before its computer
@@ -730,6 +731,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   filedIn = tools.workspace;
   let remoteProjectCapture = false;
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
+  // On an Archil region with no serverless exec, the checkout now: in the computer that mounts the run's folder, through
+  // its own exec, writing through its mount; with none, the run is told why there is none (pr-checkout.ts).
+  if (body.checkout && noExec !== undefined) {
+    checkout = await checkoutWhereNoExec(deps, tools.shell === "computer" ? tools.workspace : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
+    holds.hold({ checkout });
+  }
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).

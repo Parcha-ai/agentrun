@@ -145,11 +145,12 @@ for (const docker of [true, false]) {
     await ready.stop();
     // None ready: no computer, saying why and to give it a sandbox computer.
     const none = await apply(await server(t, { region: "gcp-us-central1", docker, templates }));
-    assert.equal(none.definition.computer, undefined, JSON.stringify(none.definition));
+    assert.deepEqual(none.definition.computer, { kind: "none" }, JSON.stringify(none.definition));
+    assert.ok(!none.definition.tools.includes("bash"), JSON.stringify(none.definition.tools));
     assert.match(JSON.stringify(none.applied), NO_EXEC);
     // A region with exec: the runner's shell, Archil's exec, as before, with the same key set.
     const aws = await apply(await server(t, { region: "aws-us-east-1", docker, templates, env: { E2B_API_KEY: "fake-test-key" } }));
-    assert.equal(aws.definition.computer, undefined, JSON.stringify(aws.definition));
+    assert.deepEqual(aws.definition.computer, { kind: "none" }, JSON.stringify(aws.definition));
     assert.ok(aws.definition.tools.includes("bash"), "bash on Archil's exec");
   });
 
