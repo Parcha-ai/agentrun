@@ -4176,11 +4176,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const ticked = saved.map((need) => ({ ...need, tools: need.tools.filter((tool) => grants.includes(mcpToolName(need.server, tool))) }));
     const appShort = await appPermissionWarnings({ name: pkg.name, mcp: ticked }, (server) => mcpMeta.get(server)?.auth === "github_app", () => githubConnect.installationPermissions(stopping.signal));
     // A webhook trigger's secret is in no apply answer: each one's warning sends the person to the console for it. One
-    // whose sender makes its secret (Stream's) has none yet: its warning says to give it, and until then its hook refuses.
-    const hooks = made.triggers.flatMap((trigger, i) => {
+    // whose sender makes its secret (Stream's) has none until the owner gives it: its warning says to, and until then its
+    // hook refuses. One an update kept that already holds its sender's secret works as it is, so nothing is said of it.
+    const hooks: InputIssue[] = made.triggers.flatMap((trigger, i): InputIssue[] => {
       if (hostless.has(i) || !isObject(trigger.source) || trigger.source.kind !== "webhook") return [];
       const given = adapters.find((one) => one.id === "webhook")?.givenSecret?.(trigger.source as Source);
-      return [given ? templateTriggerGivenSecret(i, given) : templateTriggerSecret(i)];
+      if (!given) return [templateTriggerSecret(i)];
+      const kept = answered.find((one) => one.name === String(trigger.name).trim());
+      const held = kept ? (withSecretOf({ id: kept.trigger_id, source: trigger.source as { kind: string } }) as { secret?: { set?: boolean } }).secret?.set === true : false;
+      return held ? [] : [templateTriggerGivenSecret(i, given)];
     });
     // Each github trigger: what it runs on, when made (a note, never a lack); skipped, what to do about it.
     const githubTriggers: InputIssue[] = made.triggers.flatMap((trigger, i) => (!hostless.has(i) && isObject(trigger.source) && trigger.source.kind === "github"

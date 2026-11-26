@@ -127,6 +127,28 @@ test("a workflow package's workflow is checked as a save checks it, and each tri
   assert.equal(JSON.parse(ok.stdout).workflow, "triage.workflow.json");
 });
 
+test("a trigger input filled from a parameter with no default is the apply's to check: the validator takes the package whatever a sample would be, and apply refuses a value the workflow does not take", { timeout: 120_000 }, async (t) => {
+  // The workflow takes a topic of at least 3 characters; the parameter itself says only that it is text, so its sample
+  // ("x") is too short, and is no owner's value.
+  const flow = { ...FLOW, schemas: { ...FLOW.schemas, Note: { type: "object", required: ["content", "topic"], properties: { content: { type: "string" }, topic: { type: "string", minLength: 3 } } } } };
+  const manifest = MANIFEST()
+    .replace("  name: { type: string, required: false, default: Arun, description: The assistant's name. }\n", "  name: { type: string, required: false, default: Arun, description: The assistant's name. }\n  topic: { type: string, description: What each note is about. }\n")
+    .replace('input: { content: "A note arrived." }', 'input: { content: "A note arrived.", topic: "${parameters.topic}" }');
+  const dir = await pkg(t, { manifest, flow });
+  assert.deepEqual(await workflowPackageProblems(readPackage(dir)), []);
+  const cli = spawnSync(process.execPath, [CLI, "validate-template", dir], { encoding: "utf8" });
+  assert.equal(cli.status, 0, cli.stderr);
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const server = await serve(t, { templates: join(dir, "..") });
+  const owner = asOwner(server);
+  const short = await owner("POST", "/templates/triage/apply", { parameters: { topic: "ab" } });
+  assert.equal(short.status, 422, JSON.stringify(short.body));
+  assert.deepEqual(short.body.error.fields.map((f) => f.field), ["triggers.0.target.input"]);
+  assert.equal((await server.api("GET", "/agents")).body.agents.length, 0, "nothing was made");
+  const applied = await owner("POST", "/templates/triage/apply", { parameters: { topic: "release notes" } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+});
+
 test("a workflow package takes no model override or choice at apply: its nodes run on this host's models for their tiers", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const server = await serve(t, { templates: join(await pkg(t), "..") });
@@ -151,7 +173,7 @@ test("the bundled stream-router: apply makes its workflow agent and a stream tri
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
   assert.equal(applied.body.webhook_secrets, undefined, "Stream makes the secret: none is minted to show");
   const secretWarning = applied.body.warnings.find((w) => w.field === "triggers.0.secret");
-  assert.match(secretWarning.message, /^Stream makes this trigger's secret: give it on the trigger's page \(Set secret\), or with POST \/v2\/triggers\/\{id\}\/secret/);
+  assert.match(secretWarning.message, /^Stream makes this trigger's secret: give it on the trigger's page \(Set secret\), or with PUT \/v2\/triggers\/\{id\}\/secret/);
   const definition = (await server.api("GET", `/agents/${applied.body.agent_id}`)).body.definition;
   assert.equal(definition.instructions, undefined);
   assert.equal(definition.model, undefined, "no model: its nodes run on this host's models for their tiers");
@@ -162,7 +184,7 @@ test("the bundled stream-router: apply makes its workflow agent and a stream tri
   const trigger = (await server.api("GET", `/triggers/${id}`)).body;
   assert.deepEqual([trigger.source.kind, trigger.source.signature, trigger.source.accept, trigger.secret.set], ["webhook", "stream", [{ event: "interaction" }], false]);
   const secret = `swh_${randomBytes(32).toString("base64url")}`;
-  assert.equal((await owner("POST", `/triggers/${id}/secret`, { secret })).status, 200);
+  assert.equal((await owner("PUT", `/triggers/${id}/secret`, { secret })).status, 200);
   const body = JSON.stringify({ interaction_id: crypto.randomUUID().toUpperCase(), text: "Bought oat milk." });
   const at = Math.floor(Date.now() / 1000);
   const signature = `t=${at},v1=${createHmac("sha256", secret).update(`${at}.${body}`).digest("hex")}`;
@@ -176,5 +198,12 @@ test("the bundled stream-router: apply makes its workflow agent and a stream tri
     await new Promise((r) => setTimeout(r, 50));
   }
   assert.equal(run.status, "completed", JSON.stringify(run.error ?? run));
-  assert.deepEqual(run.result.output, { branch: "none", taken: "none", unsure: false }, "the faux Jev's pick, none: no agent wakes");
+  assert.deepEqual(run.result.output.route, { branch: "none", taken: "none", unsure: false }, "the faux Jev's pick, none: no agent wakes");
+  assert.equal(Object.hasOwn(run.result.output, "reply"), false, "the result carries a specialist's reply beside the route, and none ran");
+  assert.match(run.result.output.content, /Bought oat milk\./, "and the note as it arrived");
+  // An update of the agent from the template keeps its trigger, Stream's secret with it: nothing to warn of.
+  const again = await owner("POST", "/templates/stream-router/apply", { parameters: { assistant: "Kai" }, agent_id: applied.body.agent_id });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.warnings.find((w) => w.field === "triggers.0.secret"), undefined, JSON.stringify(again.body.warnings));
+  assert.equal((await server.api("GET", `/triggers/${id}`)).body.secret.set, true);
 });

@@ -52,7 +52,7 @@ export const templateTriggerSecret = (i: number) => ({ field: `triggers.${i}.sec
 /** The warning an apply says of a webhook trigger whose sender makes its secret (Stream's, trigger-signatures.ts
  *  givenSecret): it was made with none, so it refuses every request until the owner gives it. Not set up here, never a
  *  secret not shown, so the first answer that shows every minted secret keeps it (templateApplied). */
-export const templateTriggerGivenSecret = (i: number, given: { sender: string; prefix: string }) => ({ field: `triggers.${i}.secret`, reason: "not_set_up_here" as const, message: `${given.sender} makes this trigger's secret: give it on the trigger's page (Set secret), or with POST /v2/triggers/{id}/secret and the body {"secret": "${given.prefix}..."}. Until then every request to its hook is refused (401).` });
+export const templateTriggerGivenSecret = (i: number, given: { sender: string; prefix: string }) => ({ field: `triggers.${i}.secret`, reason: "not_set_up_here" as const, message: `${given.sender} makes this trigger's secret: give it on the trigger's page (Set secret), or with PUT /v2/triggers/{id}/secret and the body {"secret": "${given.prefix}..."}. Until then every request to its hook is refused (401).` });
 
 /** The outbound webhook's secret's metadata, named webhook:outbound: set or not, made by this server at a save (source
  *  console), and when. */

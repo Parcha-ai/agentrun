@@ -1123,7 +1123,17 @@ export async function workflowPackageProblems(p: Package): Promise<string[]> {
   const { workflowIssues } = await import("./workflow-run.js");
   const { issues } = await workflowIssues(workflow);
   if (issues.length) return issues.map(({ path, message }) => `${p.workflowFile}${path}: ${message}`);
-  return (await workflowTriggerInputIssues(workflow, made.triggers)).map((issue) => `${MANIFEST}: ${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
+  // A trigger whose input takes a parameter with no default holds a sample here, never the owner's value: what hangs on
+  // the value (a length, a pattern, a choice) is the apply's, which checks the input again with the value given. So only
+  // a trigger whose input this check knows whole is refused here.
+  const fields = fieldsOf(p.parameters);
+  const sampled = (i: number) => {
+    const target = p.triggers[i]?.target;
+    return strings(isObject(target) ? target.input : undefined).some((text) => [...text.matchAll(PLACEHOLDER)].some((m) => Object.hasOwn(fields, m[1]!) && fields[m[1]!]!.default === undefined));
+  };
+  return (await workflowTriggerInputIssues(workflow, made.triggers))
+    .filter((issue) => !sampled(Number(/^triggers\.(\d+)\./.exec(issue.field)?.[1])))
+    .map((issue) => `${MANIFEST}: ${issue.field.replace(/^triggers\.(\d+)\./, "triggers[$1].")}: ${issue.message}`);
 }
 
 /** readPackage's refusal for what workflowPackageProblems finds: every place that reads a package to keep or apply it
