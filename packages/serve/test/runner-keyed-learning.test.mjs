@@ -438,6 +438,70 @@ test("a replay that booked spend and lost its runner, claimed again past its dea
   await assertNowhere(w);
 });
 
+// Review on #3914 (round 5, runner.ts at the claim past a deadline): a replay that spent and lost its runner, claimed
+// again past its deadline, only ends (endRetried, no loop), at what its journal booked (bookedOf); its check row is read
+// from its launch (replay.paid_by), its end naming none. Here nothing is in flight when the runner dies: each node's one
+// request is answered (booked, a figure) past the deadline, and the request that would follow it is never sent (the
+// gate), while its cancel cannot be written. So its cost is a figure, and the paying run's check is the sum of those
+// figures, counted once, the same in its view and in the agent's ledger.
+test("a replay that spent before its runner went, claimed again past its deadline, ends with no loop at the figure it booked: the paying run's check_usd is those figures once, in its view and in the agent's ledger", { timeout: 240_000 }, async (t) => {
+  const refused = ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: "not a number", sure: true } } } : undefined);
+  const LEAD = 8_000;
+  let commandsDown = false;
+  // The runner's store, its command writes refused while the test says so: the first runner's cancel is never written.
+  const wrap = (store) => new Proxy(store, {
+    get(target, prop) {
+      if (prop === "command") return async (...args) => {
+        if (commandsDown) throw new Error("the store did not answer");
+        return target.command(...args);
+      };
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const w = await world(t, { prior: 6, call: refused, wrap, hold: (body) => body.includes('"name":"submit"') && !body.includes('"tool_result"'), learningClock: () => Date.now() + LEARNING_CHILD_MS - LEAD, lease: { leaseMs: 8_000, renewEveryMs: 500, stopMarginMs: 2_000 } });
+  await w.keyed("run-1", "What is six times seven", 5);
+  await w.ended("run-1");
+  const replays = await until(async () => {
+    const rows = await w.children("replay");
+    return rows.length === 6 && w.front.waiting.size === 6 && rows;
+  }, "six replay runs, each held at its node's first request");
+  const ids = replays.map((row) => row.id);
+  const due = await realDeadline(w, LEAD);
+  commandsDown = true;
+  await until(async () => Date.now() > due + 1_000, "past every replay's deadline", LEAD + 10_000);
+  // Each held request goes on and is answered past the deadline: booked, a figure. The tool's result never follows.
+  w.front.release();
+  const results = () => w.gw.requests.filter((request) => offers(request.body, "submit") && hasResult(request.body)).length;
+  const spentOf = async (id) => (await w.view(id))?.cost?.usd;
+  await until(async () => (await Promise.all(ids.map(spentOf))).every((usd) => typeof usd === "number" && usd > 0), "each replay booked its answered request");
+  for (const id of ids) assert.ok(!FINAL.includes((await w.server.runs.get(id)).state), `replay ${id} not ended while its cancel was not written`);
+  // The runner dies; the next starts past each replay's deadline, and can write a cancel.
+  w.restart(() => Date.now() + LEARNING_CHILD_MS + 60_000);
+  commandsDown = false;
+  for (const id of ids) {
+    const row = await w.ended(id);
+    assert.deepEqual([row.state, row.outcome], ["stopped", "cancelled"], `replay ${id} cancelled at its claim past its deadline: ${JSON.stringify([row.state, row.outcome, row.summary])}`);
+  }
+  assert.equal(results(), 0, "no loop ran a replay again: the tool's result never reached the gateway");
+  // Its end stored what it booked: a figure, no bound.
+  const rows = await Promise.all(ids.map((id) => w.server.runs.get(id)));
+  assert.ok(rows.every((row) => typeof row.costUsd === "number" && row.costUsd > 0 && row.costAtMostUsd === null), `each replay ends at the figure it booked: ${JSON.stringify(rows.map((row) => [row.costUsd, row.costAtMostUsd]))}`);
+  await until(async () => (await w.view("run-1")).learning_work.state === "ended", "the run's learning work settles");
+  // One check row a replay, on the paying run, at that replay's figure.
+  const { spend } = await w.server.learning.ledger("agent-1", ids);
+  const byRun = new Map(rows.map((row) => [row.id, row.costUsd]));
+  assert.deepEqual(spend.filter((one) => one.kind === "check").map((one) => [one.runId, one.ofRun, one.usd]).sort(), ids.map((id) => [id, "run-1", byRun.get(id)]).sort(), JSON.stringify(spend));
+  // The paying run's check is their sum, once: in its view and in the agent's ledger alike.
+  const micro = (usd) => Math.round(usd * 1e6);
+  const sum = rows.reduce((total, row) => total + micro(row.costUsd), 0);
+  const cost = await runAllInOverStore(w.server, "run-1");
+  assert.ok(Math.abs(micro(cost.check_usd ?? -1) - sum) <= ids.length, `the run's check_usd is its replays' figures, once (${sum} micro-$): ${JSON.stringify(cost)}`);
+  const agent = (await agentCostOverStore(w.server, "agent-1")).runs.find((run) => run.run_id === "run-1");
+  assert.deepEqual([agent?.check_usd, agent?.learning_usd], [cost.check_usd, cost.learning_usd], `the agent's ledger reads it as the run's view does: ${JSON.stringify(agent)}`);
+  await assertNowhere(w);
+});
+
 test("a keyed run its promoted workflow served gets its shadow audit on the run's own key: the shadow's copy sealed for it alone, erased at its end; the run reads ended once it ends", { timeout: 240_000 }, async (t) => {
   const w = await world(t, { learning: { audit_every: 1 }, promoted: true, hold: (body) => !body.includes('"name":"submit"') });
   const before = w.gw.requests.length;
