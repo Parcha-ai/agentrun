@@ -192,8 +192,13 @@ test("an Ollama cloud model (remote_model and remote_host, run on ollama.com) is
 test("an Ollama that takes the request and never answers lists nothing once its timeout passes; that answer is never kept fresh, and no caller waits on it again", async (t) => {
   const ollama = await fakeOllama(t, { hang: true });
   const env = { OLLAMA_HOST: ollama.host };
-  assert.deepEqual(await listOllama(env, { timeoutMs: 50 }), [], "no models, no throw");
-  assert.equal(ollama.got.tags, 1, "it was asked");
+  // Counted where listOllama sends, not where the fake receives: on a loaded machine the 50 ms deadline can abort the
+  // request before it reaches the fake, and the answer is the same either way.
+  const asked = [];
+  const send = (url, init) => (asked.push(new URL(url).pathname), globalThis.fetch(url, init));
+  assert.deepEqual(await listOllama(env, { fetch: send, timeoutMs: 50 }), [], "no models, no throw");
+  assert.deepEqual(asked, ["/api/tags"], "it was asked once");
+  assert.ok(ollama.got.tags <= 1, "and the fake saw at most that one request");
   const models = await providerModels(env);
   assert.deepEqual(models.getModels("ollama"), [], "providerModels takes the kept answer at once");
   assert.ok(ollamaAsking(env), "and asks the stuck Ollama again behind it, never waiting on it");

@@ -17,6 +17,16 @@ export type Places = { modes: string[]; boxes: BoxOffer[]; defaultPlace: Place |
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** What the runner's own shell runs in Mode 2, Archil's serverless exec: bash alone (serve's tools.ts shellTools). The
+ *  background tools still need a box. */
+const RUNNER_SHELL: ReadonlySet<string> = new Set(["bash"]);
+const NO_SHELL: ReadonlySet<string> = new Set();
+/** The box-only tools a run on the runner keeps where its shell is `shell`, a computer's run shell as the server serves it
+ *  (GET /v2/computers `shell`, serve's runShellOf): bash where it is the runner's own ("local"); none where it is in a
+ *  computer that mounts the run's folder ("computer"), which the server lets on a runner place with no shell tool, or
+ *  where there is none. */
+export const shellToolsOf = (shell: unknown): ReadonlySet<string> => (shell === "local" ? RUNNER_SHELL : NO_SHELL);
+
 /** The computer a place is, as the server keeps place as computer's view: the runner is the computer none, a sandbox box
  *  is a sandbox on that box's provider. */
 export const computerOfPlace = (place: Place): Computer => (place.mode === "sandbox" ? { kind: "sandbox", provider: place.box } : { kind: "none" });

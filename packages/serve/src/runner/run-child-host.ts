@@ -36,7 +36,7 @@ import { vendorsOver } from "../sign-ins.js";
 import { decisionProvidersIn, fauxFetch } from "../decisions.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { cutDeep, type HeldRedact, type Redact, runnerSecrets } from "./redact.js";
+import { cutDeep, type HeldRedact, mustHold, type Redact, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
@@ -656,8 +656,9 @@ interface ClaimReads {
 const grantsEmail = (granted: readonly string[]): boolean => granted.some((tool) => tool.startsWith("email_"));
 
 /** The runner's redactor as the host side of a run's process holds it (LoopDeps.redact): its cut, and the carry of a
- *  value into what it cuts from the run's journal, which a token the runner hands the run needs (claudeLogin). */
-export type RunnerCut = Redact & Partial<Pick<HeldRedact, "carry">>;
+ *  value into what it cuts from the run's journal, which a token the runner hands the run needs (claudeLogin), and the
+ *  hold of each credential the claim opens, refreshes or mints for the run. */
+export type RunnerCut = Redact & Partial<Pick<HeldRedact, "carry" | "hold">>;
 
 /** Held (held.ts) for one claim, on the runner: each answer the claim's own, read with the runner's seal key from the
  *  runner's own reads of the claim; every argument from the run's process is checked or ignored. `bigs`: the run's pieced
@@ -710,7 +711,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     return pending;
   };
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
-  const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
+  // Each credential the claim opens, refreshes or mints here (its MCP's, its GitHub App tokens) joins the runner's redactor.
+  const hold = (values: string[]) => cut.hold?.(values);
+  const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   /** The run's folder as the computer this claim made mounts it (Mode 2), where the claim's MCP files once it is made. */
   let mountedFolder: Workspace | undefined;
   /** Mode 2's Archil claim, made once for the claim on the runner, its folder the run's. */
@@ -850,7 +853,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       const disk = await archilOf();
       const overTheDisk = disk === undefined ? undefined : openedAtUse(() => openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: disk, sweep: false, log }));
       if (overTheDisk) releases.push(() => overTheDisk.end());
-      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, toolSettings: revision.body.toolSettings, work: () => (overTheDisk === undefined ? runFolder(deps.data, run.agentId, claim.runId) : mountedFolder ?? overTheDisk.workspace()), launchInput: launch.input, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
+      const made = await mcpForClaim({ claim, store, sealKey, grants: granted, harness: harness as never, toolSettings: revision.body.toolSettings, work: () => (overTheDisk === undefined ? runFolder(deps.data, run.agentId, claim.runId) : mountedFolder ?? overTheDisk.workspace()), launchInput: launch.input, hold, redact: cut, githubAppAccess: () => github(), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, undefined, launch) });
       if (!made) return undefined;
       releases.push(() => made.release());
       const exposed = heldMcpOf(made, cut);
@@ -1247,9 +1250,9 @@ export function runChannel(socket: Duplex, onClose: (why: Error) => void, gate: 
 }
 
 /** `login`: the Claude login this run's claim read (staysInRunner), the one its runner hands the run (ClaimReads). */
-function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps, login: ClaudeAgentLogin | undefined): Loop {
+export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps, login: ClaudeAgentLogin | undefined): Loop {
+  const cut: RunnerCut = mustHold(loopDeps.redact, "A run's own process's loop");
   const { deps, isolation } = options;
-  const cut: RunnerCut = loopDeps.redact;
   const log = (line: string) => options.log(cut(line));
   let channel: Channel | undefined;
   let child: ChildProcess | undefined;
