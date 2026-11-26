@@ -103,6 +103,9 @@ export function LiveRun({ v2, runId, caps, agentName, embedded, onChanged }: { v
     return () => ctl.abort();
   }, [runId, follows]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A read that follows something a person did here, which nothing waits for: whoever holds this view (the Agent
+  // Factory's board) is told once it has landed, so the run's card is read anew at once, not at the board's next read.
+  const rereadAndTell = () => { void refresh().then(() => onChanged?.()); };
   const act = async (what: "stop" | "cancel") => {
     setBusy(what);
     try { await v2[what](runId); setError(null); } catch (e) { setError(failure(e)); }
@@ -117,7 +120,7 @@ export function LiveRun({ v2, runId, caps, agentName, embedded, onChanged }: { v
       const r = await (run.archived_at ? v2.unarchiveRun(runId) : v2.archiveRun(runId));
       setRun((cur) => (cur ? { ...cur, archived_at: r.archived_at } : r)); setError(null);
     } catch (e) { setError(failure(e)); }
-    setBusy(null); void refresh();
+    setBusy(null); rereadAndTell();
   };
   // A raise is taken from its answer only by reading the run again (the pause gives way), and the timeline is followed
   // anew; a refusal goes back to the raise control, which says it there.
@@ -149,10 +152,9 @@ export function LiveRun({ v2, runId, caps, agentName, embedded, onChanged }: { v
 
   // A take-over or a hand-back of the run's computer (an ask's answer among them): its answer goes back to the Screen tab
   // (who drives, or the refusal) as soon as it comes, and the run and its timeline are read again after it either way (an
-  // answered ask moves the run on), without the tab waiting for that read. Whoever holds this view (the Agent Factory's
-  // board) is told once that read has landed, as after a message or an approval: an answered ask's card is read anew.
+  // answered ask moves the run on), without the tab waiting for that read.
   const computerMove = async <T,>(go: () => Promise<T>): Promise<T> => {
-    try { return await go(); } finally { void refresh().then(() => onChanged?.()); setFollows((n) => n + 1); }
+    try { return await go(); } finally { rereadAndTell(); setFollows((n) => n + 1); }
   };
 
   // A workflow run's graph is read here, outside the tabs, so the header's cost (its totals) stays current whichever tab is
@@ -172,7 +174,7 @@ export function LiveRun({ v2, runId, caps, agentName, embedded, onChanged }: { v
     <div className="flex h-full min-h-0 flex-col short:h-auto">
       {error && <div className="border-b p-3"><RunError title={error.title} error={error.api} /></div>}
       <RunDetail key={run.run_id} run={shown} agentName={agentName(run.agent_id)} embedded={embedded} inFlight={FINAL_RUN.has(run.status) ? [] : inFlight} messages={offer.messages} harnessSteers={offer.steers}
-        graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
+        graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={rereadAndTell} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
         outputSchema={harness.state === "read" ? harness.outputSchema : undefined}
         rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} fileUrl={(path) => v2.fileUrl(runId, path)} readTrace={() => v2.runTrace(runId)} readUsage={() => v2.runUsage(runId)} freeRequests={caps?.limits?.free_model_requests} readLearningDiff={() => v2.runLearningDiff(runId)} readLearning={() => v2.runLearning(runId)} readLearningResult={() => v2.runLearningResult(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve} onGrade={grade}

@@ -7,6 +7,7 @@ import type { Run, TimelinePage } from "@/lib/v2";
 
 // Archive's answer can describe the run as it was before a newer read landed: the page keeps the newer state and takes
 // only archived_at from the answer, then reads the run again.
+import escalated from "@/fixtures/run.escalated.graph.json";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.useRealTimers(); });
@@ -396,6 +397,40 @@ describe("LiveRun, a take-over while the run is slow to read", () => {
     await act(async () => { slow!(); });
     await settle();
     expect(changed).toHaveBeenCalledTimes(1);
+  });
+
+  // The same for every other thing a person does here that only reads the run again: a pause or a resume of a
+  // workflow from its graph, and an archive. Its card on the board says Working, Waiting or nothing by that read.
+  it("tells its holder after a workflow's pause and after an archive, once each one's re-read has landed", async () => {
+    const working = { ...at("working", false), kind: "workflow" } as Run;
+    const graph = { ...escalated.body, run: { ...escalated.body.run, status: "working", paused: false, endedAt: null } };
+    const pauses: string[] = [], archives: string[] = [];
+    const v2 = {
+      getRun: async () => working,
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      getTimeline: () => new Promise<TimelinePage>(() => {}),
+      getRunGraph: async () => graph,
+      pauseRun: async (id: string) => { pauses.push(id); return { paused: true, status: "working" }; },
+      archiveRun: async (id: string) => { archives.push(id); return { ...working, archived_at: "2026-11-26T06:00:00Z" }; },
+    };
+    const changed = vi.fn();
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Review", onChanged: changed })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    const button = (label: string) => [...host.querySelectorAll("button")].find((b) => (b.textContent ?? "").trim() === label);
+    await settle();
+    expect(changed).not.toHaveBeenCalled();
+    expect(button("Pause"), "the graph's Pause").toBeTruthy();
+    await act(async () => { button("Pause")!.click(); });
+    await settle();
+    expect(pauses).toEqual(["r1"]);
+    expect(changed).toHaveBeenCalledTimes(1);
+    await act(async () => { button("Archive")!.click(); });
+    await settle();
+    expect(archives).toEqual(["r1"]);
+    expect(changed).toHaveBeenCalledTimes(2);
   });
 });
 
