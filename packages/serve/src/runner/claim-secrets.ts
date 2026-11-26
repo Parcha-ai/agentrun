@@ -300,8 +300,8 @@ const FRESH_TRIES = 3;
 const FRESH_WAIT_MS = 50;
 
 /** Run `runId`'s own model key as its launch's sealed column holds it, opened under `deps.sealKey`: none for a launch that
- *  holds none (or no launch row: a test's, an import's), and none for a run that sends no model key (sendsNoModelKey, by
- *  its launch's body and the runner's `deps.env`), whose launch is never opened for it: a key it never sends is never
+ *  holds none (or no launch row: a test's, an import's), and none for a run none of whose routes sends a model key (held,
+ *  or on a --faux runner: sendsNoModelKey of its launch's hold and the runner's `deps.env`), whose launch is never opened for it: a key it never sends is never
  *  read, at its claim (claimModelKey), at a message's (fresh()), or for its process (held.ts runModelKey). Throws, in
  *  words, where the launch does not open. */
 export async function openRunModelKey(deps: { readonly store: { readonly runs: RunModelKeyReader }; readonly sealKey: Buffer | undefined; readonly env?: NodeJS.ProcessEnv }, runId: string): Promise<RunModelKey | undefined> {
@@ -310,7 +310,9 @@ export async function openRunModelKey(deps: { readonly store: { readonly runs: R
     throw error;
   });
   if (!row || row.sealed === null) return undefined;
-  if (sendsNoModelKey(readLaunchBody(row.body) ?? {}, deps.env ?? {})) return undefined;
+  // By its hold and the runner alone: a pin to the faux model makes the run's own model faux, while its subagent tiers,
+  // its learned workflows and a workflow's model nodes route as the runner's, by tier, on this key.
+  if (sendsNoModelKey({ hold: readLaunchBody(row.body)?.hold }, deps.env ?? {})) return undefined;
   const sealed = row.sealed;
   const opened = deps.sealKey ? openRunLaunch(deps.sealKey, runId, sealed) : undefined;
   if (!opened) throw new Error("This run's launch secrets do not open with this runner's seal key: its model key is not sent.");
