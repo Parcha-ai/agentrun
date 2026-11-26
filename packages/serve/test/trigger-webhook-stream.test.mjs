@@ -93,8 +93,10 @@ test("a stream trigger starts with no secret and refuses every request; once the
     ["unsigned", other, {}],
     ["another secret", other, { "x-stream-signature": streamSignature(streamSecret(), other) }],
     ["a changed body", other, { "x-stream-signature": streamSignature(secret, note("Arun, something else.")) }],
-    ["a stale t", other, { "x-stream-signature": streamSignature(secret, other, now - 301) }],
-    ["a future t", other, { "x-stream-signature": streamSignature(secret, other, now + 301) }],
+    // A minute past the 300 s window either way: `now` is read once, before the requests go one by one, and a slow
+    // runner's seconds between them must never bring a future t back inside it.
+    ["a stale t", other, { "x-stream-signature": streamSignature(secret, other, now - 360) }],
+    ["a future t", other, { "x-stream-signature": streamSignature(secret, other, now + 360) }],
     ["a malformed header", other, { "x-stream-signature": `t=${now},v1=nothex` }],
     ["signed as Standard Webhooks", other, { "webhook-id": standardId, "webhook-timestamp": String(now), "webhook-signature": new Webhook(`whsec_${randomBytes(32).toString("base64")}`).sign(standardId, new Date(now * 1000), other) }],
   ]) assert.equal((await post(baseUrl, id, body, headers)).status, 401, why);
