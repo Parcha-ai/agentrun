@@ -229,6 +229,19 @@ test("a protocol error (a JSON-RPC error) of a filed tool is filed too and answe
   assert.ok(!/Marisol|Internal error/.test(textOf(result)), textOf(result));
 });
 
+test("a protocol error whose JSON-RPC data names a retry time in a known field: the code and the wait, no word of the error", async (t) => {
+  for (const [data, wait] of [[{ retry_after: 3 }, 3], [{ retryAfterMs: 1500, reason: `busy with ${description(4)}` }, 2]]) {
+    const gate = (_url, message) => (message?.method === "tools/call" ? { status: 200, body: { jsonrpc: "2.0", id: message.id, error: { code: -32000, message: `Rate limited for ${description(6)}`, data } } } : undefined);
+    const { call, work } = await setup(t, { filed: (_server, tool) => (tool === "page" ? SETTING : undefined), gate });
+    const result = await call("page");
+    assert.equal(result.isError, true, textOf(result));
+    const [name] = await filedIn(work, "stripe");
+    assert.deepEqual(JSON.parse(await readFile(join(work, "stripe", name), "utf8")).error.data, data, "the error's data, filed whole");
+    assert.match(textOf(result), new RegExp(`\\nError: JSON-RPC error -32000, retry after ${wait} s\\.$`), textOf(result));
+    assert.ok(!/Marisol|Rate limited|busy/.test(textOf(result)), textOf(result));
+  }
+});
+
 test("a protocol error with HTTP 429 and Retry-After: filed, an error, the status and the wait from the header, no word of the body", async (t) => {
   const gate = (_url, message) => (message?.method === "tools/call" ? { status: 429, headers: { "retry-after": "2" }, body: { error: { message: `rate limited while listing ${description(9)}` } } } : undefined);
   const { call, work } = await setup(t, { filed: (_server, tool) => (tool === "page" ? SETTING : undefined), gate });
