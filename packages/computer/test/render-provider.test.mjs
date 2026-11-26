@@ -431,6 +431,18 @@ test("a Render sandbox over dial, as serve builds it: the sandbox boots from its
 	assert.equal(render.sandboxes.get(SBX).record.status, "terminated");
 });
 
+test("a create that fails after Render made the sandbox terminates it, in the create's own code: a run token refused by 429s past every retry (limit) or by a 401 (denied)", async () => {
+	for (const [status, code] of [[429, "limit"], [401, "denied"]]) {
+		const render = fakeRender({ answer: (method, path) => (method === "POST" && path.endsWith("/runs/sync/token") ? json(status, { message: "the workspace said no" }) : undefined) });
+		const made = provider(render, { dial: dialServer(), daemonPath: fileURLToPath(import.meta.url), timeouts: { pollMs: 1, listedStableMs: 0 } });
+		const created = await made.create({ image: BUILD, lifetimeMs: 600_000, network: "none" }, { requestId: `render-unmade-${status}` });
+		assert.equal(created.error?.code, code, String(status));
+		assert.match(created.error.message, new RegExp(`the sandbox ${SBX} it made was terminated`), String(status));
+		assert.equal(render.sandboxes.get(SBX).record.status, "terminated", `${status}: a sandbox create made is never left running`);
+		assert.deepEqual(render.runs(), [], "agentrun-dial was never started");
+	}
+});
+
 test("check holds a size to Render's plans and an image to a Render build: Render's base image has no agentrun-dial", () => {
 	const { host } = provider(fakeRender());
 	assert.deepEqual(host.check({ cpus: 2, memoryMb: 4096, image: BUILD }), []);
