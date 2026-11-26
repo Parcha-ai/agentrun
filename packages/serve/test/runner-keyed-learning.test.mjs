@@ -39,7 +39,7 @@ const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { seedOf } = await import("../dist/learning.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { openRunLaunch, sealRunLaunch } = await import("../dist/store/seal.js");
-const { runAllInOverStore } = await import("../dist/store-reads/learning.js");
+const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { purgeRun } = await import("../dist/agent-delete.js");
 const { LEARNING_CHILD_MS, RUN_CAP_MIN_USD, learningChildrenOf } = await import("../dist/learning-work.js");
 
@@ -206,6 +206,12 @@ test("a keyed run's new workflow is checked at its end on the run's own key: eac
     const launch = readLaunchBody((await w.server.runs.launch(id)).body);
     assert.ok(launch.maxCostUsd > 0 && launch.maxCostUsd <= 5 / 6, `each capped at its share of what the run's cap left: ${launch.maxCostUsd}`);
   }
+  // While its replays run, what they will cost the run is not known: the agent's cost read (the cost route's) says so as
+  // the run's own read does, never a settled $0 check.
+  const open = (await agentCostOverStore(w.server, "agent-1")).runs.find((run) => run.run_id === "run-1");
+  assert.deepEqual([open?.check_usd, open?.learning_usd, open?.total_usd], [null, null, null], `the agent's ledger reads run-1's check unknown: ${JSON.stringify(open)}`);
+  const openAllIn = await runAllInOverStore(w.server, "run-1");
+  assert.deepEqual([openAllIn.check_usd, openAllIn.learning_usd, openAllIn.all_in_usd], [null, null, null], JSON.stringify(openAllIn));
   w.front.release();
   for (const id of ids) {
     const row = await w.ended(id);
@@ -230,6 +236,8 @@ test("a keyed run's new workflow is checked at its end on the run's own key: eac
   assert.ok(near(micro(cost.check_usd ?? 0), spent.reduce((sum, usd) => sum + micro(usd), 0)), `the run's check_usd is its replays' cost (${spent}): ${JSON.stringify(cost)}`);
   assert.ok(micro(cost.learning_usd) >= micro(cost.check_usd), `in its learning_usd: ${JSON.stringify(cost)}`);
   assert.ok(near(micro(cost.all_in_usd), micro(cost.usd) + micro(cost.learning_usd)), `and its all-in: ${JSON.stringify(cost)}`);
+  const settled = (await agentCostOverStore(w.server, "agent-1")).runs.find((run) => run.run_id === "run-1");
+  assert.equal(settled?.check_usd, cost.check_usd, `once every replay ended the agent's ledger reads the run's check as its own read does: ${JSON.stringify(settled)}`);
   // A purge leaves nothing of the copies: the children's and the run's launches gone, no byte of the key kept.
   const KEPT = { meters: null, spend: { usd: 0, basis: "list" }, learning: null };
   for (const id of [...ids, "run-1"]) await w.server.runs.purge(id, KEPT);
