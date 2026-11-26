@@ -244,6 +244,10 @@ describe("the schedules list", () => {
     // xs is 28px high (h-7). A phone's is at least that: a long name takes a second line there and is never cut.
     expect(xs).toContain("h-7");
     for (const c of ["h-auto", "min-h-7", "whitespace-normal", "text-left"]) expect(phone, c).toContain(`max-sm:[&>button]:${c}`);
+    // Whole pixels, so a name and its icon share the button's middle: a 16px line for the name, and a 20px line for
+    // the bar's own name above the buttons (the triggers-bar browser flow measures both).
+    expect(phone).toContain("max-sm:[&>button]:leading-4");
+    expect(header.querySelector("h1")!.className.split(" ")).toContain("max-sm:min-h-5");
     // A press opens the kind's form, as at any width.
     await t.click(/^New GitHub trigger$/);
     expect(t.went).toEqual(["#/triggers/new-github"]);

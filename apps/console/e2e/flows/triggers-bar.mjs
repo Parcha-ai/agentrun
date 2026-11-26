@@ -2,7 +2,7 @@
 // right edge: one alone on a line, then two, then one, then two. They stand in columns instead: every row holds the same
 // number, and a column's buttons share a left edge and a width. A phone keeps all six, two columns as wide as the bar
 // under its name, in the smallest button's measures: each name on one line from 390px wide, and on a narrower phone a
-// long name takes a second line and is never cut.
+// long name takes a second line and is never cut. In each button the icon and the name share the button's middle.
 // Measured in a real browser, on phones upright and on their side, at the smallest window with the sidebar, on laptops
 // and on a wide desktop, with a trigger made so the bar has its buttons (with none yet, the panel under the bar offers
 // each kind instead).
@@ -31,7 +31,17 @@ function drawn() {
     names: buttons.map((b) => (b.textContent ?? "").trim()),
     left: Math.round(edge.left + parseFloat(style.paddingLeft)), right: Math.round(edge.right - parseFloat(style.paddingRight)),
     title: Math.round(bar.querySelector("h1").getBoundingClientRect().bottom),
-    boxes: buttons.map((b) => { const r = b.getBoundingClientRect(); return { top: Math.round(r.top), left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width), height: Math.round(r.height), cut: b.scrollWidth > b.clientWidth + 1 || b.scrollHeight > b.clientHeight + 1 }; }),
+    boxes: buttons.map((b) => {
+      const r = b.getBoundingClientRect(), icon = b.querySelector("svg").getBoundingClientRect();
+      // The name's lines, first to last: its own text, after the icon.
+      const words = document.createRange(); words.selectNodeContents([...b.childNodes].find((n) => n.nodeType === 3 && n.textContent.trim()));
+      const lines = [...words.getClientRects()], middle = (r.top + r.bottom) / 2;
+      return {
+        top: Math.round(r.top), left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width), height: Math.round(r.height), cut: b.scrollWidth > b.clientWidth + 1 || b.scrollHeight > b.clientHeight + 1,
+        // How far the icon and the name are from the button's middle, and whether the button and its icon start on a whole pixel.
+        icon: (icon.top + icon.bottom) / 2 - middle, name: (lines[0].top + lines.at(-1).bottom) / 2 - middle, whole: Number.isInteger(r.top) && Number.isInteger(icon.top),
+      };
+    }),
     sideways: Math.max(document.documentElement.scrollWidth - innerWidth, main.scrollWidth - main.clientWidth),
   };
 }
@@ -79,6 +89,10 @@ export default {
       if (rows[0][0].top < m.title) wrong.push(`${at}: the buttons start at ${rows[0][0].top}, above the end of the bar's name at ${m.title}`);
       if (Math.abs(rows[0][0].left - m.left) > 1) wrong.push(`${at}: the buttons start at ${rows[0][0].left}, the bar at ${m.left}`);
       if (new Set(m.boxes.map((b) => b.width)).size !== 1) wrong.push(`${at}: the columns are ${[...new Set(m.boxes.map((b) => b.width))].join(" and ")}px wide`);
+      // Each button's icon and name are in its middle, top to bottom, and both start on a whole pixel: on a half pixel
+      // the browser drew the name a pixel above its icon.
+      const off = m.boxes.map((b, i) => (Math.abs(b.icon) > 0.05 || Math.abs(b.name) > 0.05 || !b.whole ? `${m.names[i]} (icon ${b.icon.toFixed(2)}px, name ${b.name.toFixed(2)}px from the middle${b.whole ? "" : ", on a part of a pixel"})` : "")).filter(Boolean);
+      if (off.length) wrong.push(`${at}: not centred top to bottom: ${off.join(", ")}`);
       // From 390px wide every name is on one line.
       if (width >= 390 && m.boxes.some((b) => b.height !== ONE_LINE)) wrong.push(`${at}: the buttons are ${m.boxes.map((b) => b.height).join(", ")}px high, not ${ONE_LINE}`);
     }

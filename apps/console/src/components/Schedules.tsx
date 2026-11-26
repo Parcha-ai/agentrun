@@ -95,9 +95,14 @@ export const NO_ADDRESS_LINE = "App triggers need this server's public address: 
 /** The bar's six New buttons on a phone: a grid as wide as the bar, under its name, in the smallest button's measures
  *  (button.tsx's `xs`). Toolbar-sized, the longest is 191px and a 390px phone's column 171px; at `xs` it is 169px, so
  *  each name is one line from 386px of window. A narrower phone breaks a long name onto a second line, never cuts it.
+ *  A name's line is 16px, not the 16.5px its size gives: with a half pixel in it the browser drew the name a pixel
+ *  above its icon. Now both are in the button's middle (PHONE_NAME keeps the bar's own line whole too).
  *  Written out because Tailwind reads class names as written; a test holds them to `xs`. Each is a range (max-sm:),
  *  never a breakpoint that shows (sm:), which would be written after the bar's own widths and undo its one row. */
-export const PHONE_NEW = "max-sm:w-full max-sm:[&>button]:h-auto max-sm:[&>button]:min-h-7 max-sm:[&>button]:gap-1.5 max-sm:[&>button]:whitespace-normal max-sm:[&>button]:px-2 max-sm:[&>button]:py-1 max-sm:[&>button]:text-left max-sm:[&>button]:text-label";
+export const PHONE_NEW = "max-sm:w-full max-sm:[&>button]:h-auto max-sm:[&>button]:min-h-7 max-sm:[&>button]:gap-1.5 max-sm:[&>button]:whitespace-normal max-sm:[&>button]:px-2 max-sm:[&>button]:py-1 max-sm:[&>button]:text-left max-sm:[&>button]:text-label max-sm:[&>button]:leading-4";
+/** The bar's name on a phone, where it has a line of its own above the buttons: 20px, not its type's 19.5px, so the
+ *  buttons under it start on a whole pixel. */
+export const PHONE_NAME = "max-sm:min-h-5";
 
 function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddress }: PageProps & { every: number; now: () => number; failuresToPause?: number; noAddress: boolean }) {
   const [triggers, setTriggers] = useState<Trigger[] | null>(null);
@@ -124,7 +129,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
     // and its actions at the right, the main one last, then the content.
     <section className={pageClass} aria-label="Triggers">
       <header className={cn(pageToolbarClass, "@container flex-wrap justify-between gap-3 px-5")}>
-        <h1 className={pageTitleClass}><CalendarClock className="size-4" aria-hidden />Triggers</h1>
+        <h1 className={cn(pageTitleClass, PHONE_NAME)}><CalendarClock className="size-4" aria-hidden />Triggers</h1>
         {/* With no trigger yet the panel below offers each kind, with what it is for: the page says each once. */}
         {/* Six buttons and the bar's name are one row only where the bar has 1,138px inside (measured). Narrower, they
             wrapped as loose words: one alone, then two, then one, then two. They stand in columns instead, by the
