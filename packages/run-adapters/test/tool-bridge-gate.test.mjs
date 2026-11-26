@@ -105,6 +105,34 @@ test('a replay-safe call a crash cut, asked about again by the next drive, is as
   ]);
 });
 
+test('a nesting call a crash cut after it fixed a value, asked about again by the next drive, is asked as replayed; one that fixed nothing, or never started, is not', async () => {
+  const store = memorySessionStore();
+  // The first drive runs `outer`: its first value fixed (a model node's answer, recorded under the call), then lost in
+  // flight. `idle` is let go too, but is lost before it fixed anything.
+  const first = await openDrive({ writer: await store.open('nesting-replayed'), signal: new AbortController().signal });
+  let fixed;
+  const once = new Promise((resolve) => (fixed = resolve));
+  const nesting = (name, work) => ({ name, description: 'Nests.', inputSchema: { type: 'object' }, replay: 'safe', nests: true, execute: work });
+  void toolBridge(first, [nesting('outer', async (_args, io) => { await io.nested.memo('node:a', async () => 'answer'); fixed(); return new Promise(() => {}); })]).call('outer', {}, 'cut');
+  void toolBridge(first, [nesting('idle', () => new Promise(() => {}))]).call('idle', {}, 'idle');
+  await once;
+  const second = await openDrive({ writer: await store.open('nesting-replayed'), signal: new AbortController().signal });
+  const asked = [];
+  const gate = async (call) => (asked.push(call), { deny: 'Permission denied: set to deny.' });
+  const bridge = toolBridge(second, [nesting('outer', async () => 'ran'), nesting('idle', async () => 'ran')], { gate });
+  await bridge.call('outer', {}, 'cut');
+  await bridge.call('idle', {}, 'idle');
+  await bridge.call('outer', {}, 'fresh');
+  // A call whose id is a prefix of the cut one's (`cu`) is another call.
+  await bridge.call('outer', {}, 'cu');
+  assert.deepEqual(asked, [
+    { callId: 'cut', tool: 'outer', args: {}, replayed: true },
+    { callId: 'idle', tool: 'idle', args: {} },
+    { callId: 'fresh', tool: 'outer', args: {} },
+    { callId: 'cu', tool: 'outer', args: {} },
+  ]);
+});
+
 test('a deferred tool is not listed to the model, yet a nested call and call() run it by name', async () => {
   const { drive } = await driveOf('deferred');
   const log = [];
