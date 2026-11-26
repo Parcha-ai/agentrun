@@ -510,12 +510,16 @@ const separatorKind = (separator: string): string => (/^\s$/.test(separator) ? "
  *  each kind, until it has passed one of each kind that opens it. The kinds that open a pair are those of every
  *  separator since the last `=` before its name (with the text's start while there is none): a reader that splits at
  *  any of them finds the pair (`; session=`, `&foo;api_key=`), and one that splits at none of them never does. Each
- *  pair's walk ends at the first separator of an opening kind, or at the text's end when one never comes; a later pair
- *  that kind opens has one after this pair's `=`, so its name comes after this walk's end. So the walks that end at one
- *  kind are disjoint, all walks take at most nine passes over the separators (eight kinds and the text's start), and
- *  these prefixes hold at most eight times that, 72 times `text`'s length, in all. One past the first with a raw `&` or space at an end is held only at the
- *  floor or longer (RAW_EDGE). A prefix that ends at a `;` written as the one that opens it is not read after that `;`
- *  (sameSemicolon). */
+ *  pair's walk ends at the first separator of the last of its opening kinds to come, or at the text's end when one
+ *  never comes, and then the pair holds its whole rest too: a reader of the kind that never comes reads the value to
+ *  the end (`&token=<a>;<b>;secret=<c>` with no `&` after it). A later pair that the last kind seen opens has one of
+ *  that kind after this pair's `=`, so its name comes after this walk's end. So the walks that end at one kind are
+ *  disjoint, all walks take at most nine passes over the separators (eight kinds and the text's start), and these
+ *  prefixes hold at most eight times that, 72 times `text`'s length, in all. A later pair that a kind which never comes
+ *  opens would need one of it after this pair's `=`, so at most one pair per kind, and the text's start, holds its
+ *  whole rest this way: at most nine times `text`'s length more. One past the first with a raw `&` or space at an end
+ *  is held only at the floor or longer (RAW_EDGE). A prefix that ends at a `;` written as the one that opens it is not
+ *  read after that `;` (sameSemicolon). */
 const credentialPrefixes = (text: string): string[] => {
   const separators = [...text.matchAll(SEPARATOR)].map((found) => ({ start: found.index, end: found.index + found[0].length, kind: separatorKind(found[0]), text: found[0] }));
   const startOf = (at: number): number => (at < separators.length ? separators[at].start : text.length);
@@ -556,6 +560,8 @@ const credentialPrefixes = (text: string): string[] => {
       ends.add(next);
       if (opening.has(kind)) unseen--;
     }
+    // An opening kind that never comes: its reader reads the value to the text's end.
+    if (unseen > 0) ends.add(separators.length);
     return [...ends].flatMap((at) => {
       const prefix = text.slice(value, startOf(at));
       if (at !== first && RAW_EDGE.test(prefix) && !atFloor(prefix)) return [];
