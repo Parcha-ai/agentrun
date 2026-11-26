@@ -186,7 +186,7 @@ export type MessageMode = "steer" | "answer" | "follow_up";
  *  which may skip it, in words. A runner applies every message, so while every runner here refused to claim, any message
  *  (a person's or a trigger's) is refused in their words first, as a start is (prepareLaunch, runner/presence.ts).
  *  `said`: the person's own words, when `content` is a host's text around them (POST /runs/{id}/messages `said`): kept on
- *  the row beside its text, for the run's learning alone (runner/learning-end.ts saidOf); the run takes `content`. */
+ *  the row beside its text, for the run's learning alone (runner/learning-end.ts messagesOf); the run takes `content`. */
 export async function message(
   store: RunsStore & Pick<Store, "agents" | "runners">,
   moment: RunMoment,
