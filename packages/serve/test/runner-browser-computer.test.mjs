@@ -621,3 +621,43 @@ for (const harness of CLI) {
     assert.deepEqual(record.released, [["bb-1", "delete"]], "released once, at the run's end");
   });
 }
+
+// A CLI harness's browser_upload, a host tool under the adapter loop's gate, is held by the filed
+// folder as pi's is: a path at or under the folder an mcp file setting names is refused in the gate's words; one outside it
+// is not.
+const UPLOAD_KEY = "mcp:stripe/list_charges";
+const FILED_NOT_RUN = "It was not run: nothing was sent and nothing was charged.";
+const UPLOAD_FILED = { [UPLOAD_KEY]: { file: { folder: "stripe/pages", show: ["has_more"] } } };
+const uploadRefusal = (given) => `browser_upload can't be called: ${given} is in stripe/pages/, the folder this agent's setting for ${UPLOAD_KEY} files that tool's answers in (its file setting), so the agent's own file tools are refused there.`;
+for (const harness of CLI) {
+  test(`${harness}: browser_upload into a filed folder is refused by the gate, in its words; outside it, it is not`, { timeout: 120_000 }, async (t) => {
+    const page = await fakeAxPage();
+    t.after(() => page.close());
+    const record = { created: [], released: [], connects: 0 };
+    const calls = [
+      { call: "snapshot", args: {} },
+      { call: "browser_upload", args: { path: "stripe/pages/a.json", selector: "#f" } },
+      { call: "browser_upload", args: { path: "@Stripe/Pages/b.json", selector: "#f" } },
+      { call: "browser_upload", args: { path: "uploads/c.json", selector: "#f" } },
+    ];
+    // The revision's own settings: list_charges files its answers in stripe/pages (the filed-folder test's FILED).
+    const claim = await cliClaim(t, harness, `${page.url}?${SIGNED}`, record, ["read", "browser"], `Box calls: ${JSON.stringify(calls)}`, undefined, { body: { toolSettings: UPLOAD_FILED } });
+    claim.start("runner-a");
+    const { row, timeline, lists, answers } = await claim.rested(page);
+    const handed = lists.flat();
+    assert.ok(handed.includes("browser_upload"), `${harness} is handed browser_upload: ${JSON.stringify(lists)}`);
+    const texts = answers.map((answer) => (typeof answer === "string" ? answer : JSON.stringify(answer)));
+    const uses = timeline.filter((one) => one.kind === "tool_use" && one.tool_name === "browser_upload");
+    const results = uses.map((use) => timeline.find((one) => one.kind === "tool_result" && one.tool_use_id === use.tool_use_id));
+    const diag = JSON.stringify({ state: row.state, summary: row.summary, texts, results: results.map((r) => [r?.tool_status, r?.tool_result_preview]) });
+    assert.equal(uses.length, 3, diag);
+    // A gate's deny is the harness's answer, in the run's timeline; the tool never ran (faux-table's answersKept holds only
+    // what a tool answered).
+    assert.equal(results[0]?.tool_result_preview, `${uploadRefusal("stripe/pages/a.json")} ${FILED_NOT_RUN}`, diag);
+    assert.equal(results[1]?.tool_result_preview, `${uploadRefusal("@Stripe/Pages/b.json")} ${FILED_NOT_RUN}`, diag);
+    assert.ok(!texts.some((text) => text.includes("stripe/pages/a.json") || text.includes("b.json")), `neither refused upload reached the browser: ${diag}`);
+    // Outside the folder the gate lets it through: the browser's own tool ran and answered (no such file here).
+    assert.ok(texts.some((text) => text.includes("no file at uploads/c.json in the workspace")), `the browser ran the upload outside the folder: ${diag}`);
+    assert.ok(!String(results[2]?.tool_result_preview ?? "").includes("can't be called"), diag);
+  });
+}

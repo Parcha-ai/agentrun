@@ -954,6 +954,7 @@ export function startRunner(options: RunnerOptions): Runner {
       // loop ended interrupted on its own and the run is tried again. The next claim works its turn again.
       const cut = end.state !== "interrupted" ? undefined : closedItself ? "retry" as const : held.stoppedFor === "shutdown" ? "drain" as const : undefined;
       const wakeAt = end.state === "parked" ? parkedWake(held, end.wakeAt) : undefined;
+      // A reopen since this end's commit (the run's release) has moved the epoch: this release has nothing left to write.
       await release(claim, {
         // Parked again with nothing written (LoopEnd `again`): the release parks the row, its words left as they stood.
         ...(end.state === "parked" && end.again ? { state: "parked" as const } : {}),
@@ -961,6 +962,8 @@ export function startRunner(options: RunnerOptions): Runner {
         : inARow > 0 ? { backoffUntil: now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
         : {}),
         ...(cut ? { cut } : {}),
+      }).catch((error: unknown) => {
+        if (!held.landed || !isFenced(error)) throw error;
       });
       emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: end.state });
       // Left running for another claim: a hand-back, by its cause (this runner's close stopped its loop, or it ended so).
@@ -1024,7 +1027,11 @@ export function startRunner(options: RunnerOptions): Runner {
   /** Holds `claim` and starts its loop. `learningDeadline`: a learning child's deadline, read at its claim
    *  (learningDeadlinesOf), at which its loop sends no model request more and the runner cancels it if still at work
    *  (cancelOverdue). */
-  const hold = (claim: Claim, sentAt: number, mib = 0, learningDeadline?: number) => {
+  /** Holds `claim` and starts its loop. `after`: an earlier hold of the same run still settling (its end landed and a
+   *  message reopened the run, or its claim was lost), whose process may still be cleaning up the run's folders and its
+   *  slot: this claim is held and renewed meanwhile, and its loop starts, and its rows are delivered, only once that
+   *  hold has settled. */
+  const hold = (claim: Claim, sentAt: number, mib = 0, learningDeadline?: number, after?: Promise<void>) => {
     const fence = { lost: false };
     const abort = new AbortController();
     const pastDeadline = learningDeadline === undefined ? undefined : new AbortController();
@@ -1048,6 +1055,21 @@ export function startRunner(options: RunnerOptions): Runner {
         if (!heldNow) return;
         await heldNow.inFlight?.catch(() => undefined);
         await deliver(heldNow);
+      },
+      // A row the loop took for now and refused later (the dispatch's replay): written refused under the claim held now (its
+      // last renew's), as deliver writes a refusal the loop answered at once. As there, nothing is written once the end
+      // sealed the claim, and a fenced write loses the claim.
+      refuse: async (commandId, reason) => {
+        const held = heldNow;
+        if (!held || held.sealed || killed) return;
+        try {
+          await store.take(held.claim, commandId, "refused", reason);
+        } catch (error) {
+          if (held.sealed || killed) return;
+          if (isFenced(error)) return void loseClaim(held, "fenced");
+          throw error;
+        }
+        emit({ type: "refused", runId: held.claim.runId, commandId, reason });
       },
       redact,
       // Only in a close, and once (every reader that asks meanwhile waits on the one answer): a stop or cancel a person
@@ -1086,11 +1108,15 @@ export function startRunner(options: RunnerOptions): Runner {
     armLearningDeadline(held);
     emit({ type: "claimed", claim });
     void announceStart(claim);
+    const settled = after?.then(() => undefined, () => undefined);
     held.done = (async () => {
+      if (settled) await settled;
       let end: LoopEnd;
       let threw = false;
       try {
-        end = await loop.start(claim);
+        // A claim lost, or stopped by the runner's close, while it waited starts nothing: its process would take the run's
+        // folders back from under whoever holds the run now. Its end is a stopped loop's, with nothing written.
+        end = settled && (held.fence.lost || held.stopping || held.abort.signal.aborted || killed) ? { state: "interrupted" } : await loop.start(claim);
       } catch (error) {
         threw = true;
         // A claim refused before any loop could start (the dispatch's ClaimRefused: a harness this host never holds) is
@@ -1101,8 +1127,9 @@ export function startRunner(options: RunnerOptions): Runner {
       }
       await finish(held, end, threw);
     })();
-    // The claim's first delivery: deps.delivered resolves once it has handed on every untaken row it read.
-    void deliver(held).finally(firstDelivered);
+    // The claim's first delivery, after its loop started: deps.delivered resolves once it has handed on every untaken row
+    // it read.
+    void (settled ? settled.then(() => deliver(held)) : deliver(held)).finally(firstDelivered);
   };
 
   /** The claims this runner holds in the store, read back after a commit was answered Unanswered (it may have landed):
@@ -1253,19 +1280,23 @@ export function startRunner(options: RunnerOptions): Runner {
           continue;
         }
         const before = runs.get(claim.runId);
-        if (closed || killed || (before && !before.fence.lost)) {
+        // A hold whose end landed holds nothing: that end commit released the run, and a message may have reopened it since.
+        const holding = before !== undefined && !before.fence.lost && !before.landed;
+        if (closed || killed || holding) {
           // Closed while the batch was claimed (or a run this runner still holds, which a claim cannot be): given back.
-          if (before && !before.fence.lost) emit({ type: "error", runId: claim.runId, step: "claim", message: "claimed a run this runner still holds" });
+          if (holding) emit({ type: "error", runId: claim.runId, step: "claim", message: "claimed a run this runner still holds" });
           await release(claim, {}).then(() => emit({ type: "handed-back", runId: claim.runId, epoch: claim.epoch, cause: "give_back" }), () => {});
           continue;
         }
         try {
-          // A lost claim's loop still running keeps its place until it settles.
+          // An earlier hold of the run still settling (a lost claim's loop, or an end that landed before a reopen) keeps its
+          // place until it settles, and this claim's loop starts only then: its process's cleanup of the run's folders
+          // (a slot's reap, its scratch swept) never runs under the next one's.
           if (before?.done) {
             replaced.add(before);
             void before.done.finally(() => replaced.delete(before));
           }
-          hold(claim, sentAt, weights.get(claim.runId) ?? 0, deadline);
+          hold(claim, sentAt, weights.get(claim.runId) ?? 0, deadline, before?.done);
         } catch (error) {
           // The loop could not be made: the run fails here, so it is not claimed again and again.
           emit({ type: "error", runId: claim.runId, step: "create loop", message: message(error) });

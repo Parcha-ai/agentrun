@@ -462,33 +462,7 @@ async function parkedAtCap(t) {
 /** The run's row of command `id` once the runner answered it (taken or refused). */
 const rowOf = async (store, runId, id) => (await store.commands(runId, id - 1)).find((r) => r.id === id);
 
-test("a capped workflow paused at its cap that a refused raise wakes parks again on its pause on every claim: no second budget entry, nothing sent, and a later raise resumes it", { timeout: 120_000 }, async (t) => {
-  const { sendCommand } = await import("../dist/runner/commands.js");
-  const { server, runId, pause, events } = await parkedAtCap(t);
-  const { api, data, store } = server;
-  const words = storeRun(data, runId).summary;
-  // A raise not above the cap, as a race of two raises or a retry leaves one for the run's next claim: the row as the
-  // server writes it. Until the dispatch's refusal is written the row stays untaken and wakes the run on each poll; each
-  // of those claims parks it again on the pause it stood at.
-  await sendCommand(store, runId, { kind: "raise", body: { capUsd: 0.12 } });
-  const second = await events.nth(runId, "released", 2);
-  assert.equal(second.end, "parked", JSON.stringify(second));
-  await events.nth(runId, "released", 3);
-  const again = await view(api, runId);
-  assert.deepEqual([again.status, again.pending?.kind, again.pending?.node, again.pending?.cap_usd], ["input_required", "budget", "second", 0.12], JSON.stringify(again));
-  assert.deepEqual(await budgetsOnStore(store, runId), [pause], "the claims the refused raise woke wrote no budget entry");
-  assert.equal(storeRun(data, runId).summary, words, "parked again in the pause's words");
-  assert.equal(await answeredOnStore(store, runId), 1, "the second node's request never sent");
-  const raised = await api("PATCH", `/runs/${runId}`, { max_cost_usd: 1 });
-  assert.deepEqual([raised.status, raised.body.resumed], [200, true], JSON.stringify(raised.body));
-  await events.nth(runId, "ended", 1);
-  const run = await view(api, runId);
-  assert.deepEqual([run.status, run.result?.output], ["completed", { answer: 42 }], JSON.stringify(run));
-  assert.deepEqual(await budgetsOnStore(store, runId), [pause], "one pause in the run's life");
-  assert.equal(await answeredOnStore(store, runId), 2);
-});
-
-test("a capped workflow paused at its cap that a refused raise wakes: the raise is answered refused and the run is claimed once for it", { timeout: 120_000, skip: "the refusal of a row the runner's dispatch took for now is written by fix/refused-outcome-claim-loop (dispatch, runner, run-child); until then the row stays untaken" }, async (t) => {
+test("a capped workflow paused at its cap that a refused raise wakes: the raise is answered refused and the run is claimed once for it", { timeout: 120_000 }, async (t) => {
   const { sendCommand } = await import("../dist/runner/commands.js");
   const { server, runId, pause, events } = await parkedAtCap(t);
   const { api, data, store } = server;

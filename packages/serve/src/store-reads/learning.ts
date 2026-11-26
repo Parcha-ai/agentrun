@@ -38,7 +38,7 @@ export type RunLearningEnd = Learning;
 /** The kept row as the end-of-run hook writes it (runner/reflect-hook.ts), read as untrusted. */
 type KeptRow = {
   readonly state?: unknown; readonly reason?: unknown; readonly detail?: unknown; readonly problems?: Learning["problems"]; readonly merged?: unknown;
-  readonly workflows?: Learning["workflows"]; readonly corrections?: unknown; readonly compiled?: unknown; readonly draft_errors?: unknown;
+  readonly workflows?: Learning["workflows"]; readonly corrections?: unknown; readonly dropped_lines?: unknown; readonly compiled?: unknown; readonly draft_errors?: unknown;
   readonly answered_at?: unknown; readonly job_cost_usd?: unknown; readonly look_back_usd?: unknown;
 };
 
@@ -119,8 +119,9 @@ function endOfKept(createdAt: number, row: KeptRow): RunLearningEnd {
   const problems = Array.isArray(row.problems) && row.problems.length ? { problems: row.problems } : {};
   if (row.state === "merged" && typeof row.merged === "string") {
     const corrections = typeof row.corrections === "number" && row.corrections > 0 ? { corrections: row.corrections } : {};
+    const dropped = typeof row.dropped_lines === "number" && Number.isInteger(row.dropped_lines) && row.dropped_lines > 0 ? { dropped_lines: row.dropped_lines } : {};
     const workflows = Array.isArray(row.workflows) && row.workflows.length ? { workflows: row.workflows } : {};
-    return { state: "merged", reason: null, detail: textOrNull(row.detail), at, merged: row.merged, ...workflows, ...corrections, ...problems };
+    return { state: "merged", reason: null, detail: textOrNull(row.detail), at, merged: row.merged, ...workflows, ...corrections, ...dropped, ...problems };
   }
   return { state: "dropped", reason: textOrNull(row.reason) as Learning["reason"], detail: textOrNull(row.detail), at, ...problems };
 }
