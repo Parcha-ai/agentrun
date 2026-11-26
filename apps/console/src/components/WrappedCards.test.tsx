@@ -1,8 +1,11 @@
 import { act, createElement, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CardPicture, wrappedCards } from "./WrappedCards";
-import { renderCard } from "@/lib/cardImage";
+import { renderCard, toPng } from "@/lib/cardImage";
+
+// jsdom draws no canvas: toPng (cardImage.test.ts covers it in its own terms) answers what each test says.
+vi.mock("@/lib/cardImage", async (actual) => ({ ...(await actual<typeof import("@/lib/cardImage")>()), toPng: vi.fn() }));
 import { toBody } from "@/lib/wrappedCardBodies";
 import { WRAPPED_CARDS } from "@/lib/wrappedCards";
 import type { Wrapped } from "@/lib/v2";
@@ -10,7 +13,7 @@ import type { Wrapped } from "@/lib/v2";
 // The Wrapped page's card renderer: each card it may draw as an <img> of renderCard's data URL, its words as the alt.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
-afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
+afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.restoreAllMocks(); vi.mocked(toPng).mockReset(); });
 
 const YEAR: Wrapped = {
   year: 2025, sessions: 12, turns: 40, requests: 300, tokens: { input: 1_000_000, output: 200_000, cache_read: 5_000_000, cache_write: 100_000 },
@@ -46,8 +49,39 @@ describe("wrappedCards", () => {
     for (const c of WRAPPED_CARDS) expect(wrappedCards(c, { ...YEAR, sessions: 0 }), c.id).toBeNull();
   });
 
-  it("CardPicture shows any body's image with its alt", () => {
+  it("CardPicture shows any body's image with its alt, and offers no download without a file name", () => {
     mount(createElement(CardPicture, { body: { title: "Just a title" } }));
     expect(document.querySelector("img")?.getAttribute("alt")).toBe("Just a title");
+    expect(document.querySelector("button")).toBeNull();
+  });
+
+  it("each drawn card downloads as a PNG named for its year and card, drawn from the image shown", async () => {
+    const split = WRAPPED_CARDS.find((c) => c.id === "split")!;
+    const png = new Blob(["png"], { type: "image/png" });
+    vi.mocked(toPng).mockResolvedValue(png);
+    const made = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:card");
+    const revoked = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const saved: { href: string; download: string }[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) { saved.push({ href: this.href, download: this.download }); });
+    mount(createElement("div", null, wrappedCards(split, YEAR)));
+    const button = document.querySelector("button")!;
+    expect(button.textContent).toBe("Download PNG");
+    expect(button.getAttribute("aria-label")).toBe("Download the Harnesses and models card as a PNG");
+    await act(async () => button.click());
+    expect(vi.mocked(toPng)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(toPng).mock.calls[0]![0].dataUrl).toBe(document.querySelector("img")!.getAttribute("src"));
+    expect(made).toHaveBeenCalledWith(png);
+    expect(saved).toEqual([{ href: "blob:card", download: "wrapped-2025-split.png" }]);
+    expect(revoked).toHaveBeenCalledWith("blob:card");
+    expect(document.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("a card the browser cannot draw as a PNG says so beside its button, and nothing is saved", async () => {
+    vi.mocked(toPng).mockRejectedValue(new Error("this browser draws no canvas"));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    mount(createElement("div", null, wrappedCards(WRAPPED_CARDS.find((c) => c.id === "cover")!, YEAR)));
+    await act(async () => document.querySelector("button")!.click());
+    expect(document.querySelector('[role="status"]')?.textContent).toBe("This card could not be saved as a PNG: this browser draws no canvas.");
+    expect(click).not.toHaveBeenCalled();
   });
 });

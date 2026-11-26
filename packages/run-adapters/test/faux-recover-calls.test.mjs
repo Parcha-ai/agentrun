@@ -10,11 +10,11 @@ import { test } from 'node:test';
 import { FAUX_RECORDS, fauxAdapter, memorySessionStore } from '@parcha/agentrun-kernel/testing';
 
 const models = { beforeRequest: async () => {}, afterRequest: async () => {} };
-const spec = (key, ran) => ({
+const spec = (key, ran, nests) => ({
   key,
   label: 'faux',
   system: ['Answer.'],
-  tools: [{ name: 'lookup', description: 'Look it up.', inputSchema: { type: 'object' }, replay: 'never', call: async (args) => { ran.push(args); return { text: 'found' }; } }],
+  tools: [{ name: 'lookup', description: 'Look it up.', inputSchema: { type: 'object' }, replay: 'never', ...(nests ? { nests } : {}), call: async (args) => { ran.push(args); return { text: 'found' }; } }],
   context: 'fresh',
 });
 const until = async (done, what) => {
@@ -24,11 +24,11 @@ const until = async (done, what) => {
 };
 
 /** Opens a session of `script` on `store`, with `gate`; its io's signal is the returned controller's. The text it streams
- *  goes to `said`, when given. */
-async function opened(store, key, script, ran, gate, said) {
+ *  goes to `said`, when given. `nests`: its tool only nests calls (HostTool.nests). */
+async function opened(store, key, script, ran, gate, said, nests) {
   const controller = new AbortController();
   const onEvent = (event) => { if (event.type === 'text') said?.push(event.delta); };
-  const session = await fauxAdapter({ script: () => script }).open(spec(key, ran), { store, writer: await store.open(key), models, signal: controller.signal, onEvent, ...(gate ? { gate } : {}) });
+  const session = await fauxAdapter({ script: () => script }).open(spec(key, ran, nests), { store, writer: await store.open(key), models, signal: controller.signal, onEvent, ...(gate ? { gate } : {}) });
   return { session, controller };
 }
 
@@ -96,4 +96,67 @@ test('a reply of two calls whose first parked says each call\'s text once: the p
   await second.session.close();
   assert.deepEqual(after, ['Looking up b.'], 'the recovery says the second call\'s text, and never the parked one\'s again');
   assert.deepEqual(ran, [{ q: 'a' }, { q: 'b' }], 'both ran once, in order');
+});
+
+// A call a crash cut off mid-call (its intent in the log, no outcome), as a run's process left it.
+async function cutMidCall(store, key) {
+  const writer = await store.open(key);
+  await writer.append([
+    { kind: FAUX_RECORDS.user, data: { text: 'go' } },
+    { kind: FAUX_RECORDS.turn, data: { n: 1 } },
+    { kind: FAUX_RECORDS.request, data: { index: 0 } },
+    { kind: FAUX_RECORDS.answered, data: { index: 0 } },
+    { kind: FAUX_RECORDS.call, data: { callId: `${key}:0`, name: 'lookup' } },
+  ]);
+}
+
+test('a call a crash cut off mid-call, its action marked `again`, is issued again on the recovery, its gate asked as the bridge asks it (`replayed`, none for a tool that nests); unmarked, it is answered interrupted and never asked', async () => {
+  for (const [again, nests] of [[true, false], [true, true], [false, false]]) {
+    const key = `step:cut-${again}-${nests}`;
+    const script = [{ call: 'lookup', args: { q: 'x' }, ...(again ? { again } : {}) }, { end: true }];
+    const store = memorySessionStore();
+    await cutMidCall(store, key);
+    const ran = [];
+    const asked = [];
+    const session = (await opened(store, key, script, ran, async (call) => (asked.push(call), { deny: 'denied on the replay' }), undefined, nests || undefined)).session;
+    assert.equal(session.state, 'open_turn');
+    await session.recover();
+    assert.equal((await session.turnEnd()).status, 'completed');
+    await session.close();
+    const results = (await store.read(key)).filter((r) => r.kind === FAUX_RECORDS.result).map((r) => r.data);
+    if (again) {
+      // A tool that nests is asked again with nothing more (process/tools.ts runNesting), one that does not as replayed.
+      assert.deepEqual(asked, [{ callId: `${key}:0`, tool: 'lookup', args: { q: 'x' }, ...(nests ? {} : { replayed: true }) }], 'asked again under its id, as the bridge asks it');
+      assert.deepEqual(results, [{ callId: `${key}:0`, isError: true, refused: true }], 'the deny is its answer');
+    } else {
+      assert.deepEqual(asked, [], 'never asked again');
+      assert.deepEqual(results, [{ callId: `${key}:0`, interrupted: true }], 'answered interrupted');
+    }
+    assert.deepEqual(ran, [], 'never run again');
+  }
+});
+
+test('a call marked `dies`, its gate refusing it, leaves nothing of it written; the recovered turn issues it again as a call left unstarted, asked with nothing more, and the deny is its answer', async () => {
+  const key = 'step:dies';
+  const script = [{ call: 'lookup', args: { q: 'x' }, dies: true }, { end: true }];
+  const store = memorySessionStore();
+  const ran = [];
+  const asked = [];
+  const deny = async (call) => (asked.push(call), { deny: 'denied' });
+  const first = await opened(store, key, script, ran, deny);
+  await first.session.send('go');
+  await until(() => asked.length === 1, 'the call reached its gate');
+  first.controller.abort(new Error('the process went'));
+  await first.session.close();
+  const callRows = async () => (await store.read(key)).filter((r) => r.kind === FAUX_RECORDS.call || r.kind === FAUX_RECORDS.result).map((r) => r.data);
+  assert.deepEqual(await callRows(), [], 'nothing of the call written');
+  const second = await opened(store, key, script, ran, deny);
+  assert.equal(second.session.state, 'open_turn');
+  await second.session.recover();
+  assert.equal((await second.session.turnEnd()).status, 'completed');
+  await second.session.close();
+  const call = { callId: `${key}:0`, tool: 'lookup', args: { q: 'x' } };
+  assert.deepEqual(asked, [call, call], 'asked twice under its id, the second time as a fresh call');
+  assert.deepEqual(await callRows(), [{ callId: `${key}:0`, isError: true, refused: true }], 'the deny is its answer');
+  assert.deepEqual(ran, [], 'never run');
 });

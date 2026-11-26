@@ -98,18 +98,25 @@ describe("AgentPage, an existing workflow", () => {
 });
 
 describe("AgentsPage, where an agent's card goes", () => {
-  it("opens the agent's page and runs, while Edit offers coding agents or the definition playground", async () => {
+  it("opens the agent's page and runs; an agent run here has Run and Edit link to its page and settings, an SDK one's Edit offers coding agents", async () => {
     const went: string[] = [];
-    const v2 = { listAgents: async () => ({ agents: [agentAt("r1", "Answer.")], next_cursor: null }) };
+    const base = agentAt("r1", "Answer.");
+    const sdk: Agent = { ...base, agent_id: "ext", definition: { ...base.definition, name: "Ext", sdk: { runtime: "external", platform: "OpenClaw" } } };
+    const v2 = { listAgents: async () => ({ agents: [base, sdk], next_cursor: null }) };
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
     act(() => root!.render(createElement(AgentsPage, { v2: v2 as never, archived: false, go: (h: string) => went.push(h) })));
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
     click([...host.querySelectorAll("li button")].find((b) => b.textContent?.includes("Calc") && !b.getAttribute("aria-label")));
-    click(host.querySelector('[aria-label="Edit Calc"]'));
+    // Calc runs on this server: Run goes to its page, where the Run box is, and Edit to its settings, with no menu.
+    expect(host.querySelector('a[aria-label="Run Calc"]')?.getAttribute("href")).toBe("#/agents/calc");
+    expect(host.querySelector('a[aria-label="Edit Calc"]')?.getAttribute("href")).toBe("#/agents/calc/settings");
+    expect(host.querySelector('[aria-label="Choose coding agent for Edit Calc"]')).toBeNull();
+    // An SDK agent runs in its own backend: its Edit still offers coding agents, with no definition playground.
+    click(host.querySelector('button[aria-label="Edit Ext"]'));
     expect(document.querySelector('[role="menu"]')?.textContent).toContain("Claude Code CLI");
-    expect(document.querySelector('[role="menu"] a')?.getAttribute("href")).toBe("#/playground?operation=edit-agent&agent=calc");
+    expect(document.querySelector('[role="menu"] a[href^="#/playground"]')).toBeNull();
     click(host.querySelector('[aria-label="Runs of Calc"]'));
     expect(went).toEqual(["#/agents/calc", "#/agents/calc/runs"]);
   });

@@ -135,14 +135,20 @@ describe("AgentPage settings navigation", () => {
     expect(writes).toEqual([]);
   });
 
-  it.each([false, true])("opens Settings from an agent card (archived=%s) while keeping its prompt-based Edit action", async (archived) => {
+  // An agent this server runs edits in the console: its card's Edit links to Settings. An archived one keeps the prompt-based Edit.
+  it.each([false, true])("opens Settings from an agent card (archived=%s), Edit linking there or, archived, keeping its prompt-based action", async (archived) => {
     const copied = vi.fn(async (_text: string) => {});
     localStorage.setItem(CODING_AGENT_PREFERENCE, "other");
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copied } });
     const { host, writes } = await openApp(archived, "list");
     const cardActions = host.querySelector<HTMLElement>('[data-testid="agent-card-actions"]')!;
-    expect(button(cardActions, "Edit Inspector")).toBeTruthy();
-    expect(button(cardActions, "Choose coding agent for Edit Inspector")).toBeTruthy();
+    if (archived) {
+      expect(button(cardActions, "Edit Inspector")).toBeTruthy();
+      expect(button(cardActions, "Choose coding agent for Edit Inspector")).toBeTruthy();
+    } else {
+      expect(cardActions.querySelector('a[aria-label="Edit Inspector"]')?.getAttribute("href")).toBe("#/agents/inspect%2Fa%20%2B%20b/settings");
+      expect(button(cardActions, "Choose coding agent for Edit Inspector")).toBeUndefined();
+    }
     const card = cardActions.closest("li")!;
     const settings = button(card, "Settings for Inspector");
     expect(settings).toBeTruthy();
@@ -155,9 +161,11 @@ describe("AgentPage settings navigation", () => {
     expect(button(card, "Unarchive Inspector")).toBeUndefined();
     const title = card.querySelector("[data-agent-card-icon]")!.closest("button")!;
     expect(title.contains(settings!)).toBe(false);
-    await act(async () => button(cardActions, "Edit Inspector")!.click());
-    expect(copied).toHaveBeenCalledTimes(1);
-    expect(copied.mock.calls[0][0]).toContain(JSON.stringify(managed.agent_id));
+    if (archived) {
+      await act(async () => button(cardActions, "Edit Inspector")!.click());
+      expect(copied).toHaveBeenCalledTimes(1);
+      expect(copied.mock.calls[0][0]).toContain(JSON.stringify(managed.agent_id));
+    }
     expect(location.hash).toBe(archived ? "#/agents?archived=true" : "#/agents");
     await act(async () => settings!.click());
     await until(() => !!host.querySelector("#agent-instructions"));
@@ -168,7 +176,7 @@ describe("AgentPage settings navigation", () => {
     expect(archive).toBeTruthy();
     expect(archive?.textContent?.trim()).toBe("");
     expect(archive?.getAttribute("title")).toBe(archived ? "Unarchive" : "Archive");
-    expect(copied).toHaveBeenCalledTimes(1);
+    expect(copied).toHaveBeenCalledTimes(archived ? 1 : 0);
     expect(writes).toEqual([]);
   });
 

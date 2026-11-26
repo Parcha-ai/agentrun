@@ -217,11 +217,27 @@ describe("AgentPage overview and run workspace", () => {
     expect(page.host.querySelector('[aria-label="Live jobs"]')?.textContent).toContain("outside the loaded history");
   });
 
-  it("shows an empty state that points to both run destinations", async () => {
+  it("shows an empty state that points to the page's own Run box when the agent runs here, never a Run agent button it hides", async () => {
     const page = await open({ ...agentFixture("invoice-checker"), runs: { count: 0, live: 0 } }, { runs: [] });
-    expect(page.host.textContent).toContain("No runs of this agent yet.");
-    expect(page.host.textContent).toContain("coding agent or the API playground");
+    expect(page.host.querySelector("[data-run-here]")).not.toBeNull();
+    const empty = page.host.querySelector('section[aria-label="Agent run history"]')!.textContent!;
+    expect(empty).toContain("No runs of this agent yet.");
+    expect(empty).toContain("Start one from the Run box above.");
+    expect(empty).not.toContain("Run agent");
     expect(page.fact("Live jobs")?.textContent).toBe("0");
+  });
+
+  it.each<[string, Partial<Agent["definition"]>]>([
+    ["native", { native: { runtime: "claude-code", project: "/workspace/app", selector: { kind: "project" }, machine_id: "workstation", version: null, model: null, fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, capabilities: { launch: true, learning: false, workflows: false, approval: "native", usage: true } } satisfies NativeBinding }],
+    ["SDK", { sdk: { runtime: "external", platform: "OpenClaw" } }],
+  ])("a %s agent's empty state still points to Run agent and its two destinations", async (_kind, binding) => {
+    const base = agentFixture("invoice-checker");
+    const page = await open({ ...base, runs: { count: 0, live: 0 }, definition: { ...base.definition, ...binding } }, { runs: [] });
+    expect(page.host.querySelector("[data-run-here]")).toBeNull();
+    expect(page.button("Choose coding agent for Run agent")).toBeTruthy();
+    const empty = page.host.querySelector('section[aria-label="Agent run history"]')!.textContent!;
+    expect(empty).toContain("No runs of this agent yet.");
+    expect(empty).toContain("Choose Run agent to continue with your coding agent or the API playground.");
   });
 
   it("searches loaded agent runs without sending another request", async () => {
