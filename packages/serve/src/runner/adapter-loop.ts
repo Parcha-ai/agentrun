@@ -1101,8 +1101,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  The agent is asked no turn of the job's: the run goes to its end-of-run turn, told the grade first (feedbackAsk). */
   let feedbackNow: FeedbackData | undefined;
   /** A reopen of a run whose session is still new (a person stopped it before its first input was sent): resolved once the
-   *  person's message is placed as that first input. The claim waits on it, never sending the input they stopped, however
-   *  late the runner hands the message over. */
+   *  person's message is placed as that first input, or once the reopen's own message was answered unplaced (command):
+   *  then no message places it, and the claim goes on with nothing sent. The claim waits on it, never sending the input
+   *  they stopped, however late the runner hands the message over. */
   let firstInputPlaced: Promise<void> | undefined;
   /** Resolved once a pass of this claim has sent what its session starts on (the run's input, a follow-up, a recovery),
    *  or found nothing to send: a message handed over while the session is still new waits for it, so it lands after the
@@ -4461,7 +4462,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // never runs the message on the key held before it.
         await specNow?.modelKey?.fresh();
       }
-      if (command.kind === "steer") return steer(command);
+      if (command.kind === "steer") {
+        const outcome = await steer(command);
+        // The reopen's own message refused or left (a trigger's in a session on its owner's sign-in): no message is the
+        // claim's turn now, and a message after it is checked as any other, so a reopen of a session still new stops
+        // waiting for its first input (firstInputPlaced); a message left meanwhile reopens the run on its next claim.
+        if (!("taken" in outcome) && reopen !== undefined && reopen !== waitTurn && !reopen.sent && reopen.by === command.id) reopen.placed?.();
+        return outcome;
+      }
       if (command.kind === "approve" || command.kind === "deny") {
         // An answer names its approval: the asked call's id. One that names no call waiting for its answer (an old
         // approval, another run's) is refused, never applied to the call that waits now.
