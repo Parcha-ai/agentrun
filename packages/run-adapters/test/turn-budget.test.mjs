@@ -260,3 +260,17 @@ test("a result handed longer than its claim (whole under the always-whole floor)
   assert.equal(turn.claim('c2', WINDOW), Math.floor((900 - 380) / 2), 'the rest split over the two calls left');
   assert.deepEqual(records.at(-1), { settled: { callId: 'c1', chars: 380 } }, 'journaled at the length handed');
 });
+
+test("a failed call's long error under the least a cut keeps: refused in words, its first line kept, so the model reads what went wrong", async () => {
+  // MUTATION: an error refused like a result shows only that something too long was not shown; the model cannot tell the call failed, or why.
+  const turn = new TurnBudget();
+  const failing = { name: 'open', description: 'Opens.', inputSchema: { type: 'object' }, replay: 'safe', execute: async () => { throw new Error(`ENOENT: no such file or directory, open '/work/report.csv'\n${'    at a frame of the stack\n'.repeat(200)}`); } };
+  const bridge = toolBridge(await driveOf('error-floor'), [failing], { budget: { contextWindow: WINDOW, turn } });
+  turn.open({ inputTokens: 16_000, outputTokens: 50, calls: 1 });
+  const result = await bridge.call('open', {}, 'call-1');
+  assert.equal(result.isError, true);
+  assert.equal(result.truncated, true);
+  assert.match(result.text, /^ENOENT: no such file or directory, open '\/work\/report\.csv'\n/, `its first line first: ${result.text.slice(0, 200)}`);
+  assert.ok(!result.text.includes('a frame of the stack'), 'none of the rest');
+  assert.match(result.text, /context window/);
+});
