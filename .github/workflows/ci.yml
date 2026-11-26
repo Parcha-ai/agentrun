@@ -650,7 +650,7 @@ jobs:
 
   macos-local-run:
     # The server on macOS: it hands a workflow run its decision key over a pipe (macOS aborts the parent of a spawn with a
-    # pipe at descriptor 16 or above), and a run's folder swapped for a link reaches no host file. No other job runs on a Mac.
+    # pipe at descriptor 16 or above), and a run's folder swapped for a link reaches no host file. The binary job builds and runs the Bun binary on a Mac too.
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -673,6 +673,85 @@ jobs:
         run: |
           node --test --test-timeout=240000 --test-name-pattern="^local, resolving paths" test/workspace-local.test.mjs
           node --test test/beneath-flags.test.mjs
+
+  binary:
+    # The import CLI (packages/import, agentrun-import) compiled with Bun into one file that needs neither Node nor Bun (scripts/build-binary.mjs),
+    # for Agent Wrapped's numbers in the terminal: built on each runner for its own platform, run there on a made-up home
+    # (scripts/build-binary.test.mjs, the same lines Node prints running the CLI's tsc build), and kept as an artifact. Node stays the runtime: not in
+    # verify's needs nor a required check. It runs when a change reaches packages/import (the entry and the readers it compiles), the lockfile or the shared tsconfig it installs and builds with, the build and its helper,
+    # the Bun pin or this file: a Mac's minutes cost ten of Linux's.
+    name: binary (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: bun-linux-x64
+          - runner: ubuntu-24.04-arm
+            target: bun-linux-arm64
+          - runner: macos-latest
+            target: bun-darwin-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The merge commit and its first parent, the base branch's tip: their diff is what a pull request changes.
+          fetch-depth: 2
+      - name: Does this change reach the binary?
+        id: paths
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          case "$EVENT" in
+            pull_request) base=HEAD^1 ;;
+            merge_group) base="$GROUP_BASE" ;;
+            *) base="$PUSH_BASE" ;;
+          esac
+          # A base this clone cannot reach (a new branch, a force push) builds the binary.
+          if [ "$base" != HEAD^1 ] && ! git fetch --no-tags --depth=1 origin "$base" 2>/dev/null; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "base $base unreachable: built"; exit 0
+          fi
+          changed=$(git diff --name-only --no-renames "$base" HEAD -- packages/import/ package-lock.json tsconfig.base.json scripts/build-binary.mjs scripts/build-binary.test.mjs scripts/is-main.mjs .bun-version .github/workflows/ci.yml)
+          echo "${changed:-no path the binary is built from changed}"
+          if [ -n "$changed" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@v4
+        if: steps.paths.outputs.run == 'true'
+        with:
+          node-version: '24.22.3'
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        if: steps.paths.outputs.run == 'true'
+        with:
+          bun-version-file: .bun-version
+      # The entry prices requests with pi-ai's catalog, an optional peer it imports with a fallback: bun build leaves an
+      # import it cannot resolve to fail at run time, so without pi-ai installed the binary compiles and prices nothing.
+      # Only packages/import's dependencies and the root's (tsc) are installed: the test's Node run is the CLI built by tsc.
+      - name: packages/import's dependencies, and its build for Node
+        if: steps.paths.outputs.run == 'true'
+        run: |
+          node scripts/npm-ci-retry.mjs --ignore-scripts --workspace=packages/import --include-workspace-root
+          npm run build -w packages/import
+      - name: The binary, built
+        if: steps.paths.outputs.run == 'true'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: node scripts/build-binary.mjs --target "$TARGET" --out "$RUNNER_TEMP/binary"
+      - name: The binary on a made-up home, as Node runs the entry
+        if: steps.paths.outputs.run == 'true'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: AGENTRUN_BINARY="$RUNNER_TEMP/binary/agentrun-import-${TARGET#bun-}" node --test scripts/build-binary.test.mjs
+      - uses: actions/upload-artifact@v4
+        if: steps.paths.outputs.run == 'true'
+        with:
+          name: agentrun-import-${{ matrix.target }}
+          path: ${{ runner.temp }}/binary/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
 
   receipts-spec:
     # The TLA+ model of the recovery driver's effects (spec/receipts): TLC on both configs, then every guard mutant.
