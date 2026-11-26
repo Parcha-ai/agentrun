@@ -90,6 +90,10 @@ export interface AcpRecipe {
    *  (`gpt-5.4-nano`): chosen with session/set_model among those session/new lists, before the first prompt. One it
    *  does not list is refused with ACP_CODES.modelUnlisted. Absent: the agent's own default. */
   readonly model?: string;
+  /** What the agent is told at each session's start about how the recipe runs it, which it cannot see for itself
+   *  (Cursor: its own Write tool is refused, so a file is written with a shell command): after the session's own
+   *  instructions, by the same route (the system prompt the agent advertises, else ahead of the first prompt). */
+  readonly instructions?: string;
   /** Files written into its private HOME before it starts, by their path in HOME (`.config/goose/config.yaml`). */
   readonly files?: Readonly<Record<string, string>>;
   /** A file in HOME, written at each start from the tools that start's MCP server lists, that tells the agent to run
@@ -153,6 +157,8 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
   if (!/^[a-z][a-z0-9-]{0,62}$/.test(recipe.id ?? "")) problems.push(`the id ${JSON.stringify(recipe.id)} is not lowercase letters, digits and dashes`);
   if (typeof recipe.command !== "string" || !isAbsolute(recipe.command)) problems.push("the command must be an absolute path");
   if (!recipe.declares || typeof recipe.declares.load !== "boolean" || (recipe.declares.mcp !== "http" && recipe.declares.mcp !== "stdio")) problems.push('declares needs load (true or false) and mcp ("http" or "stdio")');
+  const told: unknown = recipe.instructions;
+  if (told !== undefined && (typeof told !== "string" || !told.trim())) problems.push("the instructions must be words, when there are any");
   const billing = recipe.billing as { kind?: unknown; maxTurns?: unknown; maxToolCalls?: unknown } | undefined;
   if (billing?.kind === "plan") {
     if (!Number.isInteger(billing.maxTurns) || (billing.maxTurns as number) < 1) problems.push("plan billing needs maxTurns, a whole number of turns of at least 1");

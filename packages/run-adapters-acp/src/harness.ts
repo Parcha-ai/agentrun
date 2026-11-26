@@ -742,7 +742,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         recipe.declares.mcp === "http"
           ? { type: "http", name: rt.server, url: mcp.url, headers: [{ name: "Authorization", value: `Bearer ${key}` }] }
           : { name: rt.server, command: process.execPath, args: [STDIO_BRIDGE], env: [{ name: "AGENTRUN_MCP_URL", value: mcp.url }, { name: "AGENTRUN_MCP_KEY", value: key }] };
-      const instructions = options.instructions?.trim() ? options.instructions : undefined;
+      // The session's own, then the recipe's (how it runs the agent, which the agent cannot see).
+      const instructions = [options.instructions, recipe.instructions].filter((each): each is string => !!each?.trim()).join("\n\n") || undefined;
       const systemPrompt: SystemPrompt | undefined = instructions && caps.sessionCapabilities?.systemPrompt ? { mode: "append", content: [{ type: "text", text: instructions }] } : undefined;
       const last = journalRecords<{ sessionId?: unknown }>(ctx.state(), SESSION_STREAM).map((r) => r.data?.sessionId).filter((id): id is string => typeof id === "string").at(-1);
       /** What session/load or session/new answered: the models it lists, for one. */
