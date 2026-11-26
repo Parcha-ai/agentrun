@@ -2972,6 +2972,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const resumes = raising.resumes;
           await takeRaises();
           if (paused) {
+            // Parking again from here (no raise resumed it, or no follow-up can be sent): a raise row that reaches this claim
+            // now waits for the run's next claim (raise), never taken by a claim that is parking, which would leave the run
+            // parked with nothing to wake it.
+            if (!resumes || raising.capUsd === undefined || !spec.cap?.followUpOf) pausing = true;
             // No raise resumed it (each refused, or a retry of one before): its pause stands as it was, its budget entry
             // unanswered, so it parks again on that entry with nothing written, never a second entry at the same cap.
             if (!resumes && (await raiseStateOf()).pause !== undefined) return await parkAgain(harness, gate);
