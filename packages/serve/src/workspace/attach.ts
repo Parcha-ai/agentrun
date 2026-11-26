@@ -406,7 +406,13 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
         const parts = chunks(bytes);
         for (const [i, part] of parts.entries()) {
           const wrote = await call("process.write", { id, data: base64(part), ...(i === parts.length - 1 ? { close: true } : {}) });
-          if (!wrote.ok) return;
+          if (wrote.ok) continue;
+          // computerd answers invalid once the program closed its stdin or ended (EPIPE, EIO, a closed file, "has ended",
+          // "stdin is closed"): the program answers as it ended. A write it did not read in time (timeout), a lost
+          // connection or any other failure fails the call, which kills the process (the catch below); after this
+          // call's own deadline or abort, that answer stands instead.
+          if (wrote.error.code === "invalid" || timedOut || aborted) return;
+          throw new WorkspaceError(CODES[wrote.error.code] ?? "UNAVAILABLE", `${JSON.stringify(rel === "" ? "." : rel)}: the program's input could not be written: ${wrote.error.message}`, { path: rel });
         }
       };
       let timedOut = false;
