@@ -18,7 +18,7 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { isIP } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { EGRESS_IMAGE } from "@parcha/agentrun-computer";
+import { dockerEnv, EGRESS_IMAGE } from "@parcha/agentrun-computer";
 import { withoutSecrets } from "./secrets.js";
 
 /** How long the read may take, its image's pull included. */
@@ -74,7 +74,7 @@ const NEVER_RAN = new Set(["ENOENT", "EACCES"]);
 
 const dockerRun = (env: NodeJS.ProcessEnv): DockerRun => (args, ms, signal) =>
   new Promise((resolve) => {
-    const child = execFile("docker", args, { env: withoutSecrets(env), timeout: ms, killSignal: "SIGKILL", maxBuffer: 64 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
+    const child = execFile("docker", args, { env: dockerEnv(withoutSecrets(env)), timeout: ms, killSignal: "SIGKILL", maxBuffer: 64 * 1024, ...(signal ? { signal } : {}) }, (error, stdout, stderr) => {
       const failed = error as (NodeJS.ErrnoException & { killed?: boolean; signal?: NodeJS.Signals | null }) | null;
       resolve({ code: !failed ? 0 : failed.name === "AbortError" ? "aborted" : failed.killed ? "timeout" : typeof failed.code === "number" ? failed.code : (failed.code ?? failed.signal ?? failed.name), stdout: String(stdout), stderr: String(stderr) });
     });
