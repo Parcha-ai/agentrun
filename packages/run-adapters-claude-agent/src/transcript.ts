@@ -78,6 +78,9 @@ export class TranscriptBuilder {
   private unclaimed = false;
   /** Text was said live since the last message boundary: a whole answer after it is a message of its own. */
   private saying = false;
+  /** The message whose whole text was said last: its next text block is more of that message, as a streamed message's
+   *  blocks are, never a message of its own. */
+  private wholeId: string | undefined;
 
   constructor(private readonly sink: TranscriptSink) {}
 
@@ -96,6 +99,7 @@ export class TranscriptBuilder {
         if (this.streaming !== undefined) this.streamed.add(this.streaming);
         this.unclaimed = true;
         this.saying = true;
+        this.wholeId = undefined;
         this.sink.live({ type: 'text', delta: ev.delta.text });
       }
       return undefined;
@@ -139,6 +143,7 @@ export class TranscriptBuilder {
       this.cutPending = false;
       this.saying = false;
       this.unclaimed = false;
+      this.wholeId = undefined;
       // The turn's final answer still cut: the CLI's recovery of it was spent.
       const output = (m.usage as { output_tokens?: unknown } | undefined)?.output_tokens;
       const cut = !isError && m.stop_reason === 'max_tokens' ? { stopReason: 'length' as const, ...(typeof output === 'number' ? { outputTokens: output } : {}) } : {};
@@ -188,15 +193,18 @@ export class TranscriptBuilder {
   /**
    * A text block of an `assistant` message, said live when none of its text streamed: the CLI asks again without
    * streaming when a streamed request stalls, and that answer comes whole. A message with an id streamed when a delta
-   * came under its `message_start`; one with none, when deltas came since the last text block.
+   * came under its `message_start`; one with none, when deltas came since the last text block. A whole message's text
+   * blocks are one message live, as a streamed one's are.
    */
   private sayUnstreamed(id: string | undefined, text: string): void {
     const streamed = id === undefined ? this.unclaimed : this.streamed.has(id);
     this.unclaimed = false;
     if (streamed) return;
-    if (this.saying || this.cutPending) this.sink.live({ type: 'text_end' });
+    const more = id !== undefined && id === this.wholeId;
+    if (this.cutPending || (this.saying && !more)) this.sink.live({ type: 'text_end' });
     this.cutPending = false;
     this.saying = true;
+    this.wholeId = id;
     this.sink.live({ type: 'text', delta: text });
   }
 
@@ -204,6 +212,7 @@ export class TranscriptBuilder {
     if (this.written.has(id)) return;
     this.written.add(id);
     this.saying = false;
+    this.wholeId = undefined;
     this.sink.message({ type: 'message', role: 'assistant', text: this.said, toolCalls: [{ id, name }] });
     this.said = '';
     for (const w of this.waiters.get(id) ?? []) w();

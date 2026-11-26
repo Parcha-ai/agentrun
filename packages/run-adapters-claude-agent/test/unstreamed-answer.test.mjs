@@ -53,6 +53,16 @@ test('a streamed answer is said once: its whole assistant message adds nothing l
   assert.deepEqual(live, [{ type: 'text', delta: 'do' }, { type: 'text', delta: 'ne' }]);
 });
 
+test('a whole answer of two text blocks (one message id) is one message live: no text_end between its blocks', () => {
+  const { b, live, entries } = builder();
+  b.observe(event({ type: 'message_start', message: { id: 'msg_streamed', role: 'assistant', content: [] } }));
+  b.observe(assistant('msg_whole', { type: 'text', text: 'The answer ' }));
+  b.observe(assistant('msg_whole', { type: 'text', text: 'is done.' }));
+  b.endTurn(b.observe(result));
+  assert.deepEqual(live, [{ type: 'text', delta: 'The answer ' }, { type: 'text', delta: 'is done.' }]);
+  assert.deepEqual(entries.filter((entry) => entry.type === 'message'), [{ type: 'message', role: 'assistant', text: 'The answer \n\nis done.' }], 'one model message, its blocks joined as the journal joins them');
+});
+
 test('a stream cut after some text, then answered whole: the whole answer is a message of its own', () => {
   const { b, live } = builder();
   b.observe(event({ type: 'message_start', message: { id: 'msg_cut', role: 'assistant', content: [] } }));
