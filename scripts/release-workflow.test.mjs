@@ -132,11 +132,19 @@ const stepAt = (job, pattern) => jobs[job].steps.findIndex(step => pattern.test(
 test('the publish job keeps the changelog its fold wrote, right after the fold, for the release notes', () => {
   const fold = stepAt('publish', /^node scripts\/changes\.mjs --fold "\$\{RELEASE_TAG#v\}"$/);
   const kept = jobs.publish.steps[fold + 1];
-  assert.match(kept.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/, 'the next step, before anything is installed or built; pinned by commit');
+  assert.match(kept.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/, 'the next step; pinned by commit');
   assert.equal(kept.with.name, 'release-changelog');
   assert.equal(kept.with.path, 'CHANGELOG.md');
   assert.equal(kept.with['if-no-files-found'], 'error');
   assert.equal(kept.with.overwrite, true, 'a re-run of publish keeps its own fold');
+});
+
+test('the publish job folds the changelog fragments the tag carries only after computerd is built, and the fold is there', () => {
+  const built = stepAt('publish', /^npm run build:daemon -w @parcha\/agentrun-computer$/);
+  const fold = stepAt('publish', /^node scripts\/changes\.mjs --fold "\$\{RELEASE_TAG#v\}"$/);
+  assert.ok(built >= 0, 'publish builds the daemon');
+  assert.ok(fold >= 0, 'publish folds the fragments');
+  assert.ok(built < fold, 'the daemon is built from the tag as it is, before the fold edits the tree');
 });
 
 test('the GitHub release is published once every publish job passed, from the folded changelog, by the only job that may write the repository', () => {

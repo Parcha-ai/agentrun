@@ -10,6 +10,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { servedGraphView } from "../dist/graph-served.js";
 import { redacted, redactedCall, withheldWhole } from "../dist/key-refusal.js";
 import { withLiveTicker } from "../dist/runner/live-ticker.js";
+import { heldRedactor } from "../dist/runner/redact.js";
 import { prepareLaunch } from "../dist/runs-over-store.js";
 import { SdkRuns, sdkInbox } from "../dist/sdk/runs.js";
 import { viewOverStore } from "../dist/store-view.js";
@@ -350,7 +351,7 @@ async function liveArgsOf(args) {
   }), { tickMs: 3_600_000 });
   let release = () => {};
   const held = new Promise((resolve) => (release = resolve));
-  const loop = ticker.createLoop({ signal: new AbortController().signal, redact: { heldValues: () => SECRETS } });
+  const loop = ticker.createLoop({ signal: new AbortController().signal, redact: heldRedactor(Object.assign((text) => text, { heldValues: () => SECRETS })) });
   const started = loop.start({ runId: "run-1" });
   await ticker.close();
   release();

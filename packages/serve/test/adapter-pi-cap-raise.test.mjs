@@ -116,6 +116,47 @@ async function openStore(dir, role, now) {
 const followUpsSent = (sent, usd) => sent.filter((body) => JSON.stringify(body.messages ?? []).includes(FOLLOW_UP(usd))).length;
 const commandOf = async (server, id) => (await server.commands("run-1", id - 1)).find((row) => row.id === id);
 
+/** Waits for `done()` to hold, failing in `what`'s words after `ms`. */
+const until = async (done, what, ms = 20_000) => {
+  for (const from = Date.now(); !(await done()); await sleep(20)) if (Date.now() - from > ms) throw new Error(`not within ${ms} ms: ${what}`);
+};
+
+/** How long a loaded machine's runner is slow, once `on()`: twice the sleep two cases once read the run after. */
+const SLOW_MS = STEADY.pollMs * 20;
+/** A runner on a loaded machine, from `on()` on: each claim and each journal commit waits SLOW_MS before it reaches the
+ *  store. A case ordered by the run's own events reads the same either way; one ordered by a sleep reads the run early. */
+const loaded = () => {
+  let slow = false;
+  const later = () => (slow ? sleep(SLOW_MS) : Promise.resolve());
+  const delayed = (target, value) => async (...args) => (await later(), value.apply(target, args));
+  const storeOf = (store) => {
+    const runs = new Proxy(store.runs, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key === "claimMany") return delayed(target, value);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    return new Proxy(store, {
+      get(target, key) {
+        if (key === "runs") return runs;
+        const value = Reflect.get(target, key, target);
+        if (key === "claim") return delayed(target, value);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  };
+  const journalOf = (journal) =>
+    new Proxy(journal, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key === "commit") return delayed(target, value);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  return { hooks: { storeOf, journalOf }, on: () => void (slow = true) };
+};
+
 // Mirrors kernel-cap-park "a parked run raised goes on: one follow-up in the server's words, under the new cap" and
 // serve cap-raise.test.mjs:53 ("a run paused at its cap, its cap raised, goes on: one follow-up turn in the server's
 // words runs under the new cap and completes").
@@ -354,33 +395,38 @@ test("a raise that reaches the loop once its pause is journaled, before the run 
 });
 
 test("a raise not above the run's cap is refused in the rule's words, and the run stays parked", async (t) => {
-  const w = await cappedRun(t, [{ say: "done" }]);
+  const load = loaded();
+  const w = await cappedRun(t, [{ say: "done" }], load.hooks);
   await w.settled("parked");
+  load.on();
   const row = await w.raise(CAP);
-  const refused = await (async () => {
-    for (const from = Date.now(); Date.now() - from < 10_000; await sleep(20)) {
-      const now = await commandOf(w.server, row.id);
-      if (now.takenAt !== null) return now;
-    }
-    return commandOf(w.server, row.id);
-  })();
+  // The raise claims the run (running) to be refused: the case reads it once that claim has let it go again, ordered by
+  // the raise row's take and the run's release, never by a sleep.
+  await until(async () => (await commandOf(w.server, row.id))?.takenAt != null, "the raise taken");
+  const refused = await commandOf(w.server, row.id);
   assert.equal(refused.refused, cap.checkRaise({ capUsd: CAP }, CAP).refused, `refused in checkRaise's words: ${JSON.stringify(refused)}`);
-  await sleep(STEADY.pollMs * 10);
-  const now = await w.server.runs.get("run-1");
-  assert.equal(now.state, "parked", "still parked");
+  const parked = await w.settled("parked");
+  const budgets = await rootEntries(w.store, "agentrun.budget");
+  assert.deepEqual(budgets.map((budget) => budget.pending.cap_usd), budgets.map(() => CAP), `still parked at the launch's cap: ${JSON.stringify(budgets)}`);
+  assert.equal(parked.summary, budgets.at(-1).words);
   assert.equal(followUpsSent(w.sent, CAP), 0, "no follow-up");
+  assert.equal(w.sent.length, 0, "no request reached the provider");
 });
 
 // Mirrors kernel-cap-park "a parked run's next step stays refused until the cap is raised, then goes": a raise above the
 // cap but short of the request's need resumes the run, and the cap refuses that request again, at the new figures.
 test("a raise above the cap but short of the request's need resumes the run once, and it parks again with a fresh pending budget", async (t) => {
-  const w = await cappedRun(t, [{ say: "done" }]);
+  const load = loaded();
+  const w = await cappedRun(t, [{ say: "done" }], load.hooks);
   await w.settled("parked");
+  load.on();
   const [first] = await rootEntries(w.store, "agentrun.budget");
   const short = Number(((CAP + first.pending.least_cap_usd) / 2).toFixed(6));
   assert.ok(short > CAP && short < first.pending.least_cap_usd, `a raise between the cap and the least cap: ${short}`);
-  await w.raise(short);
-  await sleep(STEADY.pollMs * 10);
+  const raised = await w.raise(short);
+  // Parked again once the raise is taken and the resumed claim has let the run go: before the take it is still parked at
+  // its first park.
+  await until(async () => (await commandOf(w.server, raised.id))?.takenAt != null, "the raise taken");
   const again = await w.settled("parked");
   const budgets = await rootEntries(w.store, "agentrun.budget");
   assert.equal(budgets.length, 2, `parked again with a fresh budget entry: ${JSON.stringify(budgets)}`);
@@ -388,11 +434,6 @@ test("a raise above the cap but short of the request's need resumes the run once
   assert.equal(again.summary, budgets[1].words);
   assert.equal(w.sent.length, 0, "no request reached the provider");
 });
-
-/** Waits for `done()` to hold, failing in `what`'s words after `ms`. */
-const until = async (done, what, ms = 20_000) => {
-  for (const from = Date.now(); !(await done()); await sleep(20)) if (Date.now() - from > ms) throw new Error(`not within ${ms} ms: ${what}`);
-};
 
 // The cap a raised run is held to is the raise's, at every admission, model requests included: the spec's figure is the
 // launch's, and the raise row is all the server writes.
@@ -457,4 +498,25 @@ test("a raised run taken over by another runner after its raise entry landed is 
   assert.deepEqual(budgets.map((budget) => budget.pending.cap_usd), [0.0001], "parked once, at the launch's cap, never again on the new claim");
   assert.equal(followUpsSent(w.sent, 1), 1, `the follow-up's request reached the provider, admitted under $1: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
   assert.equal(row.state, "ended", JSON.stringify(row));
+});
+
+// A raise the cap's rule refuses leaves the run's pause as it was: no second agentrun.budget entry at the same cap (and so
+// no second "Paused at the run's cap" row on its timeline), the row parked again in the pause's words, and a later raise
+// that covers the need resumes that same pause, once.
+test("a refused raise leaves the run's budget entries as they were: one pause, parked in its words, and a later raise resumes it", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }]);
+  const parked = await w.settled("parked");
+  const [pause] = await rootEntries(w.store, "agentrun.budget");
+  const refused = await w.raise(CAP);
+  await until(async () => (await commandOf(w.server, refused.id))?.takenAt != null, "the refused raise taken");
+  assert.equal((await commandOf(w.server, refused.id)).refused, cap.checkRaise({ capUsd: CAP }, CAP).refused);
+  const again = await w.settled("parked");
+  assert.deepEqual(await rootEntries(w.store, "agentrun.budget"), [pause], "the refused raise wrote no budget entry");
+  assert.equal(again.summary, parked.summary, "parked again in the pause's words");
+  assert.equal(again.summary, pause.words);
+  const raised = await w.raise(pause.pending.suggested_cap_usd);
+  await until(async () => (await commandOf(w.server, raised.id))?.takenAt != null, "the covering raise taken");
+  await w.settled("ended");
+  assert.equal(followUpsSent(w.sent, pause.pending.suggested_cap_usd), 1, `one follow-up, at the covering cap: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
+  assert.deepEqual(await rootEntries(w.store, "agentrun.budget"), [pause], "one pause in the run's life");
 });

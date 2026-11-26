@@ -70,6 +70,12 @@ export interface DurableEnvOptions {
    */
   toolDescriptionMax?: number;
   /**
+   * How long the CLI waits on a streamed answer that sends nothing (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`; the CLI's own
+   * floor is 5 minutes, its ceiling 30). Unset: the CLI's default, 5 minutes, after which it drops the stream and asks
+   * again without streaming.
+   */
+  streamIdleMs?: number;
+  /**
    * The most tokens an MCP tool's result may take (`MAX_MCP_OUTPUT_TOKENS`). Past it the CLI saves the result to a file
    * and tells the model to read it, or cuts a result that holds an image; its default is 25,000.
    */
@@ -155,6 +161,7 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
     CLAUDE_AGENT_SDK_CLIENT_APP: 'agentrun-claude-agent',
   });
   if (options.toolDescriptionMax !== undefined && options.toolDescriptionMax > MCP_DESCRIPTION_CUT) env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(options.toolDescriptionMax);
+  if (options.streamIdleMs !== undefined) env.CLAUDE_STREAM_IDLE_TIMEOUT_MS = String(Math.max(1, Math.floor(options.streamIdleMs)));
   if (options.mcpOutputTokens !== undefined) env.MAX_MCP_OUTPUT_TOKENS = String(Math.max(1, Math.floor(options.mcpOutputTokens)));
   if (options.bashTimeoutMs !== undefined) {
     const max = Math.max(1_000, Math.floor(options.bashTimeoutMs));

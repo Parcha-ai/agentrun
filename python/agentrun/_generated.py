@@ -637,6 +637,9 @@ __all__ = [
     "GetWorkspaceArchilResponse",
     "GetWorkspaceArchilResponseSecret",
     "GetWrappedResponse",
+    "GetWrappedResponseCache",
+    "GetWrappedResponseCacheBreaks",
+    "GetWrappedResponseCacheExtraCostUsd",
     "GetWrappedResponseDaysItem",
     "GetWrappedResponseHarnessesItem",
     "GetWrappedResponseImportedItem",
@@ -1629,7 +1632,7 @@ class DefinitionPlace1(TypedDict):
 
 class DefinitionPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _DefinitionComputerRequired(TypedDict):
@@ -2135,7 +2138,7 @@ class DefinitionInputPlace1(TypedDict):
 
 class DefinitionInputPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _DefinitionInputComputerRequired(TypedDict):
@@ -6094,7 +6097,7 @@ class RunPlace1(TypedDict):
 
 class RunPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _RunComputerRequired(TypedDict):
@@ -9066,7 +9069,7 @@ class CapabilitiesPlaces(_CapabilitiesPlacesRequired, total=False):
 
 
 class _CapabilitiesPlacesBoxesItemRequired(TypedDict):
-    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
     available: bool
     state: Literal["ready", "unavailable"]
 
@@ -9084,7 +9087,7 @@ class CapabilitiesPlacesDefaultPlace1(TypedDict):
 
 class CapabilitiesPlacesDefaultPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
@@ -12165,6 +12168,7 @@ class GetWrappedResponse(TypedDict):
     sources: list[GetWrappedResponseSourcesItem]
     imported: list[GetWrappedResponseImportedItem]
     unread_files: int
+    cache: GetWrappedResponseCache | None
 
 
 class GetWrappedResponseTokens(TypedDict):
@@ -12205,6 +12209,32 @@ class GetWrappedResponseSourcesItem(TypedDict):
 class GetWrappedResponseImportedItem(TypedDict):
     source: str
     runs: int
+
+
+class GetWrappedResponseCache(TypedDict):
+    runs: int
+    hit_rate: float | None
+    breaks: GetWrappedResponseCacheBreaks
+    extra_cost_usd: GetWrappedResponseCacheExtraCostUsd
+    unpriced_breaks: int
+
+
+class GetWrappedResponseCacheBreaks(TypedDict):
+    model: int
+    idle: int
+    compaction: int
+    edited: int
+    sidechain: int
+    unknown: int
+
+
+class GetWrappedResponseCacheExtraCostUsd(TypedDict):
+    model: float
+    idle: float
+    compaction: float
+    edited: float
+    sidechain: float
+    unknown: float
 
 
 # Each operation as the runtime sends it, by operationId.

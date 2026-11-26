@@ -56,6 +56,7 @@ const { learningCommit } = await import("../dist/learn/commit.js");
 const { answerAsServed, answerJson, structuredAnswer } = await import("../dist/answer-json.js");
 const { learningOf } = await import("../dist/learn/rows.js");
 const { askedForCompile } = await import("../dist/learn/compile.js");
+const { connectedLaterWords } = await import("../dist/mcp-probe.js");
 
 const SEAL_KEY = Buffer.alloc(32, 7);
 const RUN = "run-1";
@@ -109,11 +110,15 @@ const until = async (done, what, ms = 40_000) => {
 /** A pi run of an agent that learned `answer`, on `input`; the node submits `{answer, sure}` (`sure` false hands back),
  *  or `submitted` when given; the agent, when asked, answers AGENT_SAYS. `toolSettings` on the revision; `approve`: answer the run's first ask ("stop":
  *  stop the run while it waits instead). `followUp`: once the run ends, a person's follow-up (a teacher's label on its
- *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it. `maxCostUsd`:
+ *  answer) reopens it, and the run read is the follow-up's end; `first` is the row of the end before it (a message's whole
+ *  body in place of its text: a trigger's). `thenSend`: a
+ *  second message, sent as soon as the follow-up reopened the run. `mcpOf(claim)`: the n-th claim's MCP (1 first), in
+ *  place of the one its launch makes. `personOnly`: every claim's session on its owner's sign-in (a trigger's message is
+ *  refused in it), as a CLI's recipe turn's is. `maxCostUsd`:
  *  the run's cap; `settleOn`: the run states it is read at once its runner lets it go (a park for a raise is "parked").
  *  `crashInCall`: the first runner is lost while the workflow's node request is out (nothing more it writes lands), and a
  *  second runner takes the run. */
-async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions, keptBefore: earlier = [], followUp, flows = FLOWS, saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastUnreadFromSecondClaim = false, agentCall, holdNode: givenHold, agentText, beforeRun, crashBeforeEnd, crashInCall = false, onCompileAsk, maxCostUsd, settleOn = ["ended", "failed", "stopped"] } = {}) {
+async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION }, sure = true, learned = true, workflowFirst, toolSettings, approve = false, past = [], promotions, keptBefore: earlier = [], followUp, thenSend, mcpOf, personOnly, flows = FLOWS, saved = {}, answer, submitted, outputSchema, crashOnHandback = false, pastFromSecondClaim = false, pastUnreadFromSecondClaim = false, agentCall, holdNode: givenHold, agentText, beforeRun, crashBeforeEnd, crashInCall = false, onCompileAsk, maxCostUsd, settleOn = ["ended", "failed", "stopped"] } = {}) {
   const holdNode = givenHold ?? (crashInCall ? async () => crash() : undefined);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-workflow-first-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -239,8 +244,9 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   // `approve: "stop-at-gate"`: the person's stop lands while the first claim is at the step's gate (the run's own gate,
   // asked before the ask is), so the claim that parks on the ask holds the stop. `claims`: the specs built, one per claim.
   const specOf = async (claim, run) => {
-    const spec = await adapterRunSpecFromLaunch(launch, run, deps, claim);
+    const made = await adapterRunSpecFromLaunch(launch, run, deps, claim);
     claims += 1;
+    const spec = { ...made, ...(mcpOf ? { mcp: mcpOf(claims) } : {}), ...(personOnly ? { personOnly } : {}) };
     if (approve !== "stop-at-gate" || claims > 1) return spec;
     const gate = spec.gate;
     return { ...spec, gate: async (call) => {
@@ -281,7 +287,8 @@ async function piRun(t, { input = { content: `${QUESTION}?`, question: QUESTION 
   let row = await settled(settleOn);
   const first = followUp === undefined ? undefined : row;
   if (first) {
-    await server.runs.reopen(RUN, { kind: "steer", body: { text: followUp } });
+    await server.runs.reopen(RUN, { kind: "steer", body: typeof followUp === "string" ? { text: followUp } : followUp });
+    if (thenSend !== undefined) await sendCommand(server, RUN, { kind: "steer", body: { text: thenSend } });
     await server.flush?.();
     row = await until(async () => {
       const now = await server.runs.get(RUN);
@@ -745,6 +752,63 @@ test("follow-up on a handed-back run: round 1, no feedback, keeps nothing; the l
   assert.deepEqual([one.turn, one.proposal?.state, one.proposal?.detail, one.proposal?.look_back_usd], [null, "dropped", said.empty, 0], `round 1 kept nothing: ${JSON.stringify(one)}`);
   await labelKept(dir, two);
   assert.equal(row.metrics?.path, "handed_back");
+});
+
+// A run its learned workflow answered alone (its session still new) reopened by a message, on a claim that left a per_run
+// server's tools out, and a second message, sent at once, that hands that server's credential after the claim opened
+// (this claim's MCP finds it handed at every message). The reopen's message came before the claim opened, so any
+// credential it handed, the claim opened with: it is the claim's turn, never held behind the second one's. Held, the claim
+// would wait for a first input that never comes, the run working with nothing running. The second message waits for the
+// run's next turn, on a claim that opened with the credential.
+const FIRST = "First: what did the workflow answer?";
+const SECOND = "Second: call the server now.";
+/** A claim's MCP with no tools of its own here: `leftOut`, the per_run server gw's tools left out at its open, and handed
+ *  since (fresh answers no server still unconnected); otherwise opened with gw's credential. */
+const gwMcp = (leftOut) => ({ tools: [], unconnected: leftOut ? ["gw"] : [], ...(leftOut ? { leftOut: ["gw"] } : {}), catalogOf: () => undefined, argumentsOf: () => undefined, priceOf: () => undefined, effectOf: () => undefined, fresh: async () => [], release: () => {} });
+
+test("a reopen on a claim that left a server's tools out: its message is the claim's turn, never held behind a later message that handed the credential, which runs as the next turn", async (t) => {
+  const { row, first, gateway, timeline } = await piRun(t, { followUp: FIRST, thenSend: SECOND, mcpOf: (claim) => gwMcp(claim === 2) });
+  assert.equal(first.metrics?.path, "workflow", JSON.stringify(first.metrics));
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const agent = gateway.requests.filter((request) => !isNode(request)).map((request) => textOf(request.body));
+  const firstAt = agent.findIndex((text) => text.includes(FIRST));
+  const secondAt = agent.findIndex((text) => text.includes(SECOND));
+  assert.ok(firstAt >= 0 && !agent[firstAt].includes(SECOND), `the reopen's message is a turn of its own: ${JSON.stringify(agent.map((text) => text.slice(-160)))}`);
+  assert.ok(secondAt > firstAt, `the second message runs after it: ${JSON.stringify(agent.map((text) => text.slice(-160)))}`);
+  assert.equal(timeline.filter((one) => JSON.stringify(one).includes(connectedLaterWords(["gw"]))).length, 1, "the claim says once why the second message waits");
+});
+
+// A run its learned workflow answered alone (its session still new) reopened by a trigger's message into a session on its
+// owner's sign-in (personOnly; the pi spec carries it here, and the check that refuses the message reads no harness):
+// the reopen's own message is refused, so no message places the claim's first input. The claim goes on with nothing
+// sent, never waiting for an input that no message will place: with nothing after it, the run is back at its end; with a
+// message after it that hands the credential of a server the claim left out, that message waits for the run's next claim,
+// which lists the server's tools, and runs as its turn.
+const TRIGGER = { text: "A push came in.", answers: false, origin: { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false } };
+const PERSON_ONLY = "this session runs on its owner's sign-in: a trigger's message is not placed in it";
+
+test("a reopen of a run its workflow answered alone, by a trigger's message its session refuses: the claim sends nothing and the run is back at its end, never reading working", async (t) => {
+  const { row, first, gateway, server } = await piRun(t, { followUp: TRIGGER, personOnly: PERSON_ONLY });
+  assert.equal(first.metrics?.path, "workflow", JSON.stringify(first.metrics));
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const trigger = (await server.commands(RUN, 0)).find((one) => JSON.stringify(one.body ?? {}).includes(TRIGGER.text));
+  assert.equal(trigger?.refused, PERSON_ONLY, `the trigger's message is refused in the session's words: ${JSON.stringify(trigger)}`);
+  assert.deepEqual(gateway.requests.filter((request) => !isNode(request)).map((request) => textOf(request.body).slice(-160)), [], "no agent request: nothing was sent");
+});
+
+test("a reopen of a run its workflow answered alone, by a trigger's message its session refuses, then a message that hands a left-out server's credential: the claim sends nothing, and the message runs as the next claim's turn, which lists the server's tools", async (t) => {
+  let claims = 0;
+  const { row, first, gateway, timeline, server } = await piRun(t, { followUp: TRIGGER, thenSend: SECOND, personOnly: PERSON_ONLY, mcpOf: (claim) => ((claims = claim), gwMcp(claim === 2)) });
+  assert.equal(first.metrics?.path, "workflow", JSON.stringify(first.metrics));
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  assert.ok(claims >= 3, `the message ran on a claim after the one that left gw out: ${claims} claim(s)`);
+  const rows = await server.commands(RUN, 0);
+  assert.equal(rows.find((one) => JSON.stringify(one.body ?? {}).includes(TRIGGER.text))?.refused, PERSON_ONLY, "the trigger's message is refused");
+  assert.ok(rows.find((one) => JSON.stringify(one.body ?? {}).includes(SECOND))?.takenAt != null, "the message is taken");
+  const agent = gateway.requests.filter((request) => !isNode(request)).map((request) => textOf(request.body));
+  assert.ok(agent.some((text) => text.includes(SECOND)), `the message reached the agent: ${JSON.stringify(agent.map((text) => text.slice(-160)))}`);
+  assert.ok(agent.every((text) => !text.includes(TRIGGER.text)), "the trigger's message never did");
+  assert.equal(timeline.filter((one) => JSON.stringify(one).includes(connectedLaterWords(["gw"]))).length, 1, "the claim says once why the message waits");
 });
 
 test("workflow_first false: the agent takes the run from its first turn, path agent", async (t) => {
