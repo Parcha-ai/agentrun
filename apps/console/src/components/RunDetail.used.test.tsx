@@ -18,7 +18,7 @@ const run = (learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-
 });
 const LEARNS: Run["learning"] = { detail: null, at: "2026-11-11T10:00:09Z", state: "dropped", reason: "empty" };
 const answer = (used: LearnedUse): RunLearningRead => ({
-  run: "run-u", state: "dropped", reason: "empty", detail: null, at: "2026-11-11T10:00:09Z", seed: "c1", seed_failed: null, learned_chars: 0, merged: null, workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [], used,
+  run: "run-u", state: "dropped", reason: "empty", detail: null, at: "2026-11-11T10:00:09Z", seed: "c1", seed_failed: null, seed_waited: null, learned_chars: 0, merged: null, workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [], used,
 });
 const USED: LearnedUse = {
   workflows: [{ name: "check-refunds", calls: 3, failed: 1 }, { name: "find-policies", calls: 2, failed: 0 }],

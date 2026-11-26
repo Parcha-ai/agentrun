@@ -99,7 +99,7 @@ import type { ClaimComputer } from "../workspace/computer-for-claim.js";
 import { attachedIn, type RunComputer, runTools, type RunTools } from "../workspace/run-tools.js";
 import { ProjectHostGate } from "./project-host.js";
 import { runProjectCheckpoint } from "./project-checkpoint.js";
-import { reseededLaunchOf, runnerShown } from "./learning-reseed.js";
+import { reseededLaunchOf, roundWaitMsOf, runnerShown } from "./learning-reseed.js";
 
 /** The image's helper that starts a run's process as its slot's uid (packages/serve/runas). */
 export const RUNAS_HELPER = "/usr/local/bin/agentrun-runas";
@@ -1221,7 +1221,7 @@ export function childLoops(options: ChildLoopsOptions): LoopFactory {
   return createDispatchLoop({
     // A run started while its agent's learning round was open reads its seed again first, here in its runner, before
     // its process reads its launch (learning-reseed.ts).
-    launchOf: reseededLaunchOf({ store: options.deps.store, data: options.deps.data, shown: runnerShown(options.deps), log: options.log }),
+    launchOf: reseededLaunchOf({ store: options.deps.store, data: options.deps.data, shown: runnerShown(options.deps), log: options.log, waitMs: roundWaitMsOf(options.deps.env) }),
     resolve: async (harness, launch, runId) => {
       const place = await staysInRunner(options.deps, harness, launch, runId, options.isolation);
       if (place.stays) return here(harness, launch, runId);

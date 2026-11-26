@@ -116,7 +116,7 @@ for (const newVersion of [false, true]) {
 /** The host launches the next run as soon as the corrected one reads completed: the follow-up's answer is in (its job's
  *  end is kept, so the run reads completed) while its learning round still runs (here its compile turn, held open by the
  *  fake until the next run's POST has answered). The next run still starts from the correction once that round merges. */
-async function raced(t, { harness = "claude-agent", split = false } = {}) {
+async function raced(t, { harness = "claude-agent", split = false, waitMs } = {}) {
   const asks = [];
   let armed = false;
   let roundAsked;
@@ -144,7 +144,8 @@ async function raced(t, { harness = "claude-agent", split = false } = {}) {
     },
   });
   t.after(() => fake.close());
-  withEnv(t, { ANTHROPIC_API_KEY: "fake-test-key", ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${MODEL}` }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_STRONG"]);
+  const bound = waitMs === undefined ? {} : { AGENTRUN_LEARNING_ROUND_WAIT_MS: String(waitMs) };
+  withEnv(t, { ANTHROPIC_API_KEY: "fake-test-key", ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${MODEL}`, ...bound }, ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_STRONG", ...(waitMs === undefined ? ["AGENTRUN_LEARNING_ROUND_WAIT_MS"] : [])]);
   const { api } = await serve(t, { learning: "on", faux: undefined, ...(split ? { childRuns: {} } : {}) });
   const prompt = "You are the harbor expert. Answer the user's question.";
   // compile_after 1: each round of the corrected run asks a compile turn (its first fails its checks, so the follow-up
@@ -162,8 +163,8 @@ async function raced(t, { harness = "claude-agent", split = false } = {}) {
   armed = true;
   const sent = await api("POST", `/runs/${runId}/messages`, { content: FOLLOW_UP });
   assert.equal(sent.status, 202, JSON.stringify(sent.body));
-  let bound;
-  await Promise.race([asked, new Promise((_, reject) => (bound = setTimeout(() => reject(new Error("the follow-up round asked no compile turn")), 90_000)))]).finally(() => clearTimeout(bound));
+  let timer;
+  await Promise.race([asked, new Promise((_, reject) => (timer = setTimeout(() => reject(new Error("the follow-up round asked no compile turn")), 90_000)))]).finally(() => clearTimeout(timer));
   // The follow-up's answer is in and its round is under way: the run reads completed, its learning not yet merged.
   let view;
   for (let i = 0; i < 600; i++) {
@@ -178,6 +179,24 @@ async function raced(t, { harness = "claude-agent", split = false } = {}) {
   const next = await api("POST", "/runs", body());
   assert.equal(next.status, 202, JSON.stringify(next.body));
   assert.equal(next.body.agent_id, agentId, "the same agent");
+  if (waitMs === 0) {
+    // A runner that waits on no round: the next run starts at once from the learning as it is, the round still held, and
+    // its start says its wait timed out. It is never refused.
+    // Its own answer only (its round may queue behind the held one): read before the held round is let go.
+    let done;
+    for (let i = 0; i < 1800; i++) {
+      done = (await api("GET", `/runs/${next.body.run_id}`)).body;
+      if (done.status === "completed" || done.status === "failed") break;
+      await sleep(50);
+    }
+    const read = (await api("GET", `/runs/${next.body.run_id}/learning`)).body;
+    release();
+    assert.equal(done.status, "completed", JSON.stringify(done));
+    assert.deepEqual([read.seed_waited, read.seed_failed], ["timed_out", null], JSON.stringify(read));
+    await ended(api, runId);
+    await ended(api, next.body.run_id);
+    return;
+  }
   release();
 
   await ended(api, runId);
@@ -190,9 +209,10 @@ async function raced(t, { harness = "claude-agent", split = false } = {}) {
   assert.ok(laid.every((system) => system.includes("# Learned") && system.includes(CODE)), `the next run, launched while the corrected run's round ran, starts from the correction it merged: ${JSON.stringify({ learning: done.learning, system: laid[0]?.slice(-800) })}`);
   // Its learning read names the merge it started from, a seed read, and the # Learned text it was given.
   const read = (await api("GET", `/runs/${next.body.run_id}/learning`)).body;
-  assert.deepEqual([read.seed, read.seed_failed], [learning.merged, null], JSON.stringify(read));
+  assert.deepEqual([read.seed, read.seed_failed, read.seed_waited], [learning.merged, null, "ended"], JSON.stringify(read));
   assert.ok(read.learned_chars >= CODE.length, JSON.stringify(read));
 }
 
 for (const harness of ["claude-agent", "pi"]) test(`${harness}: an inline run launched while the corrected run's follow-up round runs starts from its correction`, SKIP, (t) => raced(t, { harness }));
 test("claude-agent: the same, each run in a process of its own", SKIP, (t) => raced(t, { split: true }));
+test("claude-agent: a runner whose bound is 0 starts the next run at once from the learning as it is, its wait timed out", SKIP, (t) => raced(t, { waitMs: 0 }));

@@ -3590,6 +3590,7 @@ export interface operations {
       at: string;
       seed: string | null;
       seed_failed: "unreadable" | "not_copied" | "other_disk" | null;
+      seed_waited: "ended" | "timed_out" | null;
       learned_chars: number;
       merged: string | null;
       workflows: {

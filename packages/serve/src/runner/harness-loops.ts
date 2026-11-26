@@ -36,7 +36,7 @@ import { SECRET_NAMES } from "../secrets.js";
 import { sealedKeyNames } from "../server-keys.js";
 import { toolingOf } from "../tools.js";
 import type { Revision } from "../agent-rows.js";
-import { reseededLaunchOf, runnerShown } from "./learning-reseed.js";
+import { reseededLaunchOf, roundWaitMsOf, runnerShown } from "./learning-reseed.js";
 
 /** A claimed run whose harness this host's memory never holds: its message is the host's words (neverFits). A claim
  *  refused for good, so a parked run it wakes fails too, never retried as a resume (runner.ts finish). */
@@ -187,7 +187,7 @@ async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch,
 export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
   return createDispatchLoop({
     // A run started while its agent's learning round was open reads its seed again first (learning-reseed.ts).
-    launchOf: reseededLaunchOf({ store: deps.store, data: deps.data, shown: runnerShown(deps), log: deps.log ?? (() => undefined) }),
+    launchOf: reseededLaunchOf({ store: deps.store, data: deps.data, shown: runnerShown(deps), log: deps.log ?? (() => undefined), waitMs: roundWaitMsOf(deps.env) }),
     resolve: resolveRunnerLoop(deps),
   });
 }

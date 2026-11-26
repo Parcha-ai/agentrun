@@ -37,7 +37,7 @@ import { keyTargetOf, type ModelKeyTarget, modelKeyRequired, serverKeyMissing } 
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
 import { refuseWhileNoRunner } from "./runner/presence.js";
-import { RevisionMoved, AgentDeleting, AgentPurged, AgentArchived, AnswerTaken, ExternalBodyConflict, FINAL_STATES, FiringMoved, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
+import { RevisionMoved, AgentDeleting, AgentPurged, AgentArchived, AnswerTaken, ExternalBodyConflict, FiringMoved, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { canonical } from "./store/agent-body.js";
 import { sourceSyncOf } from "./source-sync/types.js";
 import { toolingOf } from "./tools.js";
@@ -498,7 +498,7 @@ export interface StartDeps {
   /** The agent's learning seed, read now (learning-run.ts seedFor): the learning commit a run starts from, or a reason it
    *  could not be read. Only read for a run that learns. */
   seedFor?(agentId: string): Promise<{ seed: Seed } | { failed: string }>;
-  /** The agent's runs whose learning round is open now (openRoundsOf), read with its seed: a run started while one is
+  /** The agent's runs whose learning round is open now (learning-rounds.ts openRoundsOf), read with its seed: a run started while one is
    *  open names them in its learning start (`after`), and its claim reads its seed again once they end. Absent: none. */
   openRounds?(agentId: string): Promise<readonly string[]>;
   /** What the agent's GitHub triggers bind it to (run-repo.ts bindingOf), read when a person's start names or defaults a
@@ -567,28 +567,6 @@ export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revis
 export function startOfSeed(seed: Seed, shown: Shown, own: Pick<NonNullable<RunLaunch["learning"]>, "use" | "noWorkflows" | "model">): NonNullable<RunLaunch["learning"]> {
   const workflows = own.noWorkflows ? [] : chooseWorkflows(seed, shown).flows.map(({ name }) => name);
   return { seed: seed.sha, section: learnedSection(seed, shown), ...(workflows.length ? { workflows } : {}), ...(seed.at !== undefined ? { seededAt: seed.at } : {}), ...own };
-}
-
-/** The most runs still going that openRoundsOf reads of an agent. */
-const OPEN_ROUNDS_READ = 50;
-
-/** The agent's runs whose learning round may still merge its owner's words, as a run's start reads them: runs of
- *  `agentId` on the default disk still going (the store's row: a run looking back after its job's end reads completed
- *  but is still going), that learn, holding a person's message (a steer: a follow-up, a grade's words), which their round
- *  keeps as a line of corrections.md at its end (runner/reflect-hook.ts). A run started while one is open waits for it
- *  at its claim, bounded, and reads its seed again (runner/learning-reseed.ts); a run started with none open is claimed
- *  as it always was. Newest first. */
-export async function openRoundsOf(store: Pick<Store, "runs" | "commands">, agentId: string): Promise<string[]> {
-  const going = await store.runs.list({ agentId, disk: null, scope: "active", limit: OPEN_ROUNDS_READ });
-  const open: string[] = [];
-  for (const run of going) {
-    if ((FINAL_STATES as readonly string[]).includes(run.state)) continue;
-    if (!(await store.commands(run.id, 0)).some((command) => command.kind === "steer")) continue;
-    const launch = readLaunchBody((await store.runs.launch(run.id).catch(() => undefined))?.body);
-    const start = launch?.learning;
-    if (start && !start.use && start.seed !== null) open.push(run.id);
-  }
-  return open;
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made

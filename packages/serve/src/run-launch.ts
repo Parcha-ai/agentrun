@@ -73,8 +73,10 @@ export interface RunLaunch {
    *  RUN_LEARNING_USE): it starts from all of the above and keeps nothing; `seededAt`, when its seed was read (learning.ts
    *  Seed.at), which the agent's reset watermark is read against; `after`, the agent's runs whose learning round was open
    *  when the seed was read (runs-over-store.ts openRoundsOf): its claim waits for them, bounded, then reads the seed again
-   *  (runner/learning-reseed.ts). Absent when the run does not learn. */
-  readonly learning?: { readonly seed: string | null; readonly section: string; readonly workflows?: readonly string[]; readonly noWorkflows?: true; readonly model?: string; readonly seedFailed?: SeedFailed; readonly use?: true; readonly seededAt?: number; readonly after?: readonly string[] };
+   *  (runner/learning-reseed.ts), which writes the start it read without `after` and with `waited`: `ended`, every one of them
+   *  ended (or left its round: queued, parked) before it read; `timed_out`, its bound ran out first and it read main as it
+   *  was then. Absent when the run does not learn. */
+  readonly learning?: { readonly seed: string | null; readonly section: string; readonly workflows?: readonly string[]; readonly noWorkflows?: true; readonly model?: string; readonly seedFailed?: SeedFailed; readonly use?: true; readonly seededAt?: number; readonly after?: readonly string[]; readonly waited?: SeedWaited };
   /** `false`: the run never starts on a learned workflow, even one that fits its input (RunCreate `workflow_first`,
    *  runner/workflow-first.ts); its agent takes it from its first turn. Absent: a fitting one serves first. */
   readonly workflowFirst?: false;
@@ -223,7 +225,7 @@ export function launchBody(launch: RunLaunch): Json {
     ...(launch.files?.length ? { files: launch.files } : {}),
     ...(launch.filesPlaced ? { files_placed: true } : {}),
     ...(launch.sourceProject ? { source_project: launch.sourceProject } : {}),
-    ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}), ...(launch.learning.seededAt !== undefined ? { seededAt: launch.learning.seededAt } : {}), ...(launch.learning.after?.length ? { after: [...launch.learning.after] } : {}) } } : {}),
+    ...(launch.learning ? { learning: { seed: launch.learning.seed, section: launch.learning.section, ...(launch.learning.workflows?.length ? { workflows: [...launch.learning.workflows] } : {}), ...(launch.learning.noWorkflows ? { noWorkflows: true } : {}), ...(launch.learning.model ? { model: launch.learning.model } : {}), ...(launch.learning.seedFailed ? { seedFailed: launch.learning.seedFailed } : {}), ...(launch.learning.use ? { use: true } : {}), ...(launch.learning.seededAt !== undefined ? { seededAt: launch.learning.seededAt } : {}), ...(launch.learning.after?.length ? { after: [...launch.learning.after] } : {}), ...(launch.learning.waited ? { waited: launch.learning.waited } : {}) } } : {}),
     ...(launch.workflowFirst === false ? { workflow_first: false } : {}),
     ...(launch.replay ? { replay: replayBody(launch.replay) } : {}),
     ...(launch.audit ? { audit: replayBody({ of: launch.audit.of, workflow: launch.audit.workflow, digest: launch.audit.digest, ...(launch.audit.deadlineAt !== undefined ? { deadlineAt: launch.audit.deadlineAt } : {}) }) } : {}),
@@ -244,7 +246,7 @@ function readLearning(value: unknown): NonNullable<RunLaunch["learning"]> | unde
   const section = typeof value.section === "string" ? value.section : "";
   const workflows = Array.isArray(value.workflows) ? value.workflows.filter((name): name is string => typeof name === "string") : [];
   const after = Array.isArray(value.after) ? value.after.filter((id): id is string => typeof id === "string" && id !== "") : [];
-  return { seed, section, ...(workflows.length ? { workflows } : {}), ...(value.noWorkflows === true ? { noWorkflows: true as const } : {}), ...(typeof value.model === "string" && value.model !== "" ? { model: value.model } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}), ...(value.use === true ? { use: true as const } : {}), ...(typeof value.seededAt === "number" && Number.isFinite(value.seededAt) ? { seededAt: value.seededAt } : {}), ...(after.length ? { after } : {}) };
+  return { seed, section, ...(workflows.length ? { workflows } : {}), ...(value.noWorkflows === true ? { noWorkflows: true as const } : {}), ...(typeof value.model === "string" && value.model !== "" ? { model: value.model } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}), ...(value.use === true ? { use: true as const } : {}), ...(typeof value.seededAt === "number" && Number.isFinite(value.seededAt) ? { seededAt: value.seededAt } : {}), ...(after.length ? { after } : {}), ...(value.waited === "ended" || value.waited === "timed_out" ? { waited: value.waited } : {}) };
 }
 
 /** The launch a runner runs (runner/dispatch.ts, run-child-host.ts): on a disk the launch names as its own (kind
@@ -344,6 +346,8 @@ export const learningStartOfStored = (stored: unknown): RunLaunch["learning"] =>
  *  STOPPED.notCopied), or its launch names a disk of its own, whose learning the server does not read
  *  (`other_disk`, STOPPED.otherDisk): a run on a named disk learns nothing (learn/learning-of.ts). */
 export type SeedFailed = "unreadable" | "not_copied" | "other_disk";
+/** How a claim's wait on its agent's open rounds ended before it read the run's seed again (runner/learning-reseed.ts). */
+export type SeedWaited = "ended" | "timed_out";
 const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied", "other_disk"];
 
 /** A learning start with no seed (no commit of main, runs-over-store.ts learningStartFor): the run learns nothing, is
