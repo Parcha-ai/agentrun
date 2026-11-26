@@ -71,6 +71,26 @@ test("two follow-ups whose content wraps the person's words in ~1.9 KB of host t
   }
 });
 
+// A host's real follow-up is longer than a Timeline row shows (CAPS.text, 2,000 characters): ~3.5 KB here, the person's
+// words at its end, past the row's cut. The row is cut; learning reads the message whole from the run's commands and
+// pairs it with its row by the row's own rule, so `said` is still the line.
+const LONG_REPORT = Array.from({ length: 40 }, (_, i) => `Finding ${i + 1}: the walk's log lists step ${i + 1} as done, with nothing left open on it.`).join("\n");
+const longHost = (question) => [PREAMBLE, `## Previous report\n${LONG_REPORT}`, `**Follow-up question**: ${question}`, "## Turn instructions\nAnswer the follow-up question only. Cite the earlier report where it applies.", "Reply in English."].join("\n\n");
+
+test("two follow-ups whose content is ~3.5 KB of host text (past the row's 2,000-character cut), each sent with said: corrections.md holds the two said lines, no host text", SKIP, async (t) => {
+  const { api, store, runId, requests } = await learning(t);
+  for (const said of [FIRST, SECOND]) {
+    const content = longHost(said);
+    assert.ok(content.length > 3_000 && content.length < 4_000, `the host's text is about 3.5 KB (${content.length})`);
+    const sent = await api("POST", `/runs/${runId}/messages`, { content, said });
+    assert.equal(sent.status, 202, JSON.stringify(sent.body));
+    const { view } = await ended(api, runId);
+    assert.equal(view.learning?.state, "merged", `the round merged: ${JSON.stringify(view.learning)}`);
+    assert.ok(requests.some((request) => userTexts(request).some((text) => text.includes(content))), "the model got the message's content whole");
+  }
+  assert.equal((await learningAt(store, "walk")).text("corrections.md"), `${line(FIRST)}${line(SECOND)}`, "the person's two lines, no host text");
+});
+
 test("a follow-up with no said: its whole content is the correction, as before", SKIP, async (t) => {
   const { api, store, runId } = await learning(t);
   const content = host(FIRST);

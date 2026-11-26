@@ -27,7 +27,8 @@ const { secretsShown, seedOf } = await import("../dist/learning.js");
 const { said } = await import("../dist/learning-words.js");
 const { saveToolSettings } = await import("../dist/tool-plane.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
-const { learningEndOfRun, ownerWords } = await import("../dist/runner/learning-end.js");
+const { learningEndOfRun, messagesOf, ownerWords } = await import("../dist/runner/learning-end.js");
+const { CAPS, cut } = await import("../dist/timeline/index.js");
 
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 // One runner, never meant to lose its claim: a lease no stall outlasts.
@@ -495,6 +496,41 @@ test("ownerWords: a message sent with said (POST /runs/{id}/messages) is the per
   // The same content sent twice, each with its own said: each said once, in order.
   const twice = [...job, row("0:5", "user_message", { text: "Same." }), row("0:7", "user_message", { text: "Same." })];
   assert.deepEqual(ownerWords([], twice, [{ text: "Same.", said: "First." }, { text: "Same.", said: "Second." }]), ["First.", "Second."]);
+});
+
+// A host's follow-up past the row's cut (CAPS.text, 2,000 characters): ~3.5 KB of scaffolding with the person's words at
+// its end, which the row never shows.
+const longFollowUp = (words) => [`You are continuing a session.\n\n## Previous report\n${Array.from({ length: 40 }, (_, i) => `Finding ${i + 1}: step ${i + 1} is done, with nothing left open on it.`).join("\n")}`, `**Follow-up question**: ${words}`, "Reply in English."].join("\n\n");
+const shownRow = (id, text) => row(id, "user_message", { text: cut(text.trim(), CAPS.text) });
+
+test("ownerWords: a message past the row's cut (3.5 KB, no said) is its whole text from the run's commands, never the row's 2,000 characters", () => {
+  const job = [row("0:1", "user_message", { text: "Question 1" }), row("0:2", "final_answer", { text: "42" })];
+  const content = longFollowUp("Freight goes to 6400.");
+  assert.ok(content.length > 3_000 && content.length < 4_000, `about 3.5 KB (${content.length})`);
+  const [words] = ownerWords([], [...job, shownRow("0:5", content)], [{ text: content }]);
+  assert.equal(words, content, "the whole message, its last words included");
+  assert.ok(words.endsWith("Reply in English.") && words.length > CAPS.text);
+});
+
+test("ownerWords: the same 3.5 KB message sent twice with different saids: each row keeps its own said, in order; a row no message pairs keeps its text", () => {
+  const job = [row("0:1", "user_message", { text: "Question 1" }), row("0:2", "final_answer", { text: "42" })];
+  const content = longFollowUp("Mail goes to 4215.");
+  const rows = [...job, shownRow("0:5", content), row("0:7", "user_message", { text: "Why 42?" }), shownRow("0:9", content)];
+  assert.deepEqual(ownerWords([], rows, [{ text: content, said: "Mail goes to 4215." }, { text: content, said: "Never to 4216." }]), ["Mail goes to 4215.", "Why 42?", "Never to 4216."]);
+});
+
+test("messagesOf: every message a person sent, whole, in order, with its said when sent with one: a steer's text, a deny's note; a refused row, a trigger's or the server's steer and a deny with no note are left out", () => {
+  const command = (kind, body, refused = null) => ({ kind, body, refused });
+  const big = longFollowUp("Freight goes to 6400.");
+  assert.deepEqual(messagesOf([
+    command("steer", { text: `  ${big}\n` }),
+    command("steer", { text: "Refused one.", said: "x" }, "the run had ended"),
+    command("steer", { text: "A trigger fired.", origin: { kind: "trigger", source: "webhook", trigger_id: "t1" } }),
+    command("deny", { approval: "a1", note: "Do not send it.", by: "message", said: "No." }),
+    command("deny", { approval: "a2", by: "setting" }),
+    command("approve", { approval: "a3", note: "Fine." }),
+    command("steer", { text: "Short.", said: "Mine." }),
+  ]), [{ text: big }, { text: "Do not send it.", said: "No." }, { text: "Short.", said: "Mine." }]);
 });
 
 test("ownerWords: a subagent's task prompt (a child conversation's user_message) is not the owner's; a root message after the answer still is", () => {
