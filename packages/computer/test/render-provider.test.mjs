@@ -65,12 +65,16 @@ function runLine(sandbox, command, start) {
 /** A fetch answer that never comes: it fails once the call's own signal aborts (its bound, or its caller), as a wedged guest's run does. */
 const hang = (signal) => new Promise((_, reject) => (signal?.aborted ? reject(signal.reason) : signal?.addEventListener("abort", () => reject(signal.reason), { once: true })));
 
+let workspaces = 0;
+/** A workspace id of its own: what a process keeps of a workspace's sandboxes is the workspace's, so each fake has its own. */
+const freshOwner = () => `tea-fake${String(++workspaces).padStart(12, "0")}`;
+
 /**
- * A fake Render: its sandboxes by id, each walking `statuses` one GET at a time (its last held), every call kept. A
- * sandbox's data plane takes the run token its token call minted. `answer(method, path, body, { url, signal })` may
- * answer a call first. `idOf(n)` names the nth sandbox made; `lag` GETs still read a terminated sandbox running, as a
- * vendor whose terminate answers before the sandbox ends, and its runs fail meanwhile (409); `runMs` holds each run that
- * long, and `inFlight.most` is the most runs answered at once.
+ * A fake Render: its sandboxes by id, each walking `statuses` one GET at a time (its last held), every call kept, in a
+ * workspace of its own (`owner`), though it answers any. A sandbox's data plane takes the run token its token call
+ * minted. `answer(method, path, body, { url, signal })` may answer a call first. `idOf(n)` names the nth sandbox made;
+ * `lag` GETs still read a terminated sandbox running, as a vendor whose terminate answers before the sandbox ends, and
+ * its runs fail meanwhile (409); `runMs` holds each run that long, and `inFlight.most` is the most runs answered at once.
  */
 function fakeRender({ statuses = ["running"], answer = () => undefined, start = () => undefined, builds = [], idOf = (n) => (n === 0 ? SBX : `sbx-${String(n).padStart(20, "0")}`), lag = 0, runMs = 0 } = {}) {
 	const calls = [];
@@ -150,10 +154,13 @@ function fakeRender({ statuses = ["running"], answer = () => undefined, start = 
 		}
 		return json(404, { message: `no route ${init.method} ${path}` });
 	};
-	return { calls, sandboxes, builds: made, fetch, inFlight, runs: () => calls.filter(({ url }) => url.pathname === "/runs/sync") };
+	return { owner: freshOwner(), calls, sandboxes, builds: made, fetch, inFlight, runs: () => calls.filter(({ url }) => url.pathname === "/runs/sync") };
 }
 
-const provider = (render, options = {}) => new RenderProvider({ apiKey: KEY, ownerId: OWNER, fetch: render.fetch, timeouts: { pollMs: 1 }, ...options });
+/** The same fake Render seen by a server that restarted, or by another process: it knows nothing this process kept of the workspace. */
+const restarted = (render) => ({ ...render, owner: freshOwner() });
+
+const provider = (render, options = {}) => new RenderProvider({ apiKey: KEY, ownerId: render.owner ?? OWNER, fetch: render.fetch, timeouts: { pollMs: 1 }, ...options });
 
 test("create posts the workspace, the name, a plan, the lifetime as whole seconds (at least 60), no idle suspension, allow-all, the boot env but the attach URL, and the box build", async () => {
 	const render = fakeRender();
@@ -162,7 +169,7 @@ test("create posts the workspace, the name, a plan, the lifetime as whole second
 	const [post] = render.calls;
 	assert.equal(post.headers.Authorization, `Bearer ${KEY}`);
 	assert.equal(post.url.href, "https://api.render.com/v1/sandboxes");
-	assert.deepEqual(post.body, { ownerId: OWNER, name: NAME, plan: "2c-4g", timeoutSeconds: 600, idleTimeoutSeconds: 0, networkPolicy: { type: "allow-all" }, env: SANDBOX_ENV, buildName: BUILD });
+	assert.deepEqual(post.body, { ownerId: render.owner, name: NAME, plan: "2c-4g", timeoutSeconds: 600, idleTimeoutSeconds: 0, networkPolicy: { type: "allow-all" }, env: SANDBOX_ENV, buildName: BUILD });
 	await host.create({ ...REQUEST, lifetimeMs: 1_500, image: "sbb-abcdefghij0123456789" }, CTX);
 	const second = render.calls.filter(({ method, url }) => method === "POST" && url.pathname === "/v1/sandboxes")[1].body;
 	assert.equal(second.timeoutSeconds, 60, "Render's least timeout");
@@ -178,7 +185,7 @@ test("create waits for the sandbox to run, then starts agentrun-dial in one runs
 		["POST /v1/sandboxes", `GET /v1/sandboxes/${SBX}`, `GET /v1/sandboxes/${SBX}`, `POST /v1/sandboxes/${SBX}/runs/sync/token`, "POST /runs/sync"],
 	);
 	const token = render.calls[3];
-	assert.equal(token.url.searchParams.get("ownerId"), OWNER);
+	assert.equal(token.url.searchParams.get("ownerId"), render.owner);
 	const [run] = render.runs();
 	assert.equal(run.headers.Authorization, `Bearer tok-${SBX}`, "the data plane takes the run's token, never the API key");
 	assert.equal(run.url.host, `${SBX}.oregon.sandbox.onrender.com`);
@@ -392,7 +399,7 @@ test("list asks Render by name when the name is asked, every page by cursor, lea
 	assert.deepEqual(all.map(({ id }) => id), ids);
 	assert.deepEqual(all[5].labels, { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000005" });
 	assert.deepEqual(render.runs(), [], "the adapter's label is the name's: no file read");
-	assert.deepEqual(render.calls.map(({ method, url }) => [method, url.pathname, url.searchParams.get("ownerId"), url.searchParams.get("limit"), url.searchParams.get("cursor")]), [["GET", "/v1/sandboxes", OWNER, "100", null], ["GET", "/v1/sandboxes", OWNER, "100", ids[99]]]);
+	assert.deepEqual(render.calls.map(({ method, url }) => [method, url.pathname, url.searchParams.get("ownerId"), url.searchParams.get("limit"), url.searchParams.get("cursor")]), [["GET", "/v1/sandboxes", render.owner, "100", null], ["GET", "/v1/sandboxes", render.owner, "100", ids[99]]]);
 	const byName = await host.list({ "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000011" }, CTX);
 	assert.deepEqual(byName.map(({ id }) => id), [ids[17]]);
 	assert.equal(render.calls.at(-1).url.searchParams.get("name"), "computer-000000000011");
@@ -484,6 +491,67 @@ test("releaseOlder over Render fails closed on a run's sandbox it can't read: a 
 	assert.match(partial.error.message, /could not read the labels of sbx-run000000000001/);
 });
 
+/** create's request for computer-<n> of `run` at `epoch`, as the adapter makes one for a claim. */
+const runRequest = (n, run, epoch) => {
+	const name = `computer-${String(n).padStart(12, "0")}`;
+	return { ...REQUEST, name, labels: { "agentrun.computer": "1", "agentrun.computer.name": name, "agentrun.run": run, "agentrun.epoch": String(epoch) } };
+};
+
+/** A fake Render whose labels-file reads exit 1 in each sandbox `wedged` holds, as a guest out of memory; create's launch still runs. */
+function guestsRender(options = {}) {
+	const wedged = new Set();
+	const render = fakeRender({ ...options, answer: (method, path, body, { url }) => (path === "/runs/sync" && wedged.has(url.hostname.split(".")[0]) && body.command.startsWith("[ -f") ? json(200, { stdout: "", stderr: "fork: out of memory", exit_code: 1 }) : undefined) });
+	return { render, wedged };
+}
+
+const DIALED = { dial: dialServer(), daemonPath: fileURLToPath(import.meta.url), timeouts: { pollMs: 1, listedStableMs: 0 } };
+
+test("two providers of one workspace: a sandbox one terminated, which Render still reads running, is never read by the other's listing by run", async () => {
+	const render = fakeRender({ lag: 5 });
+	const ending = provider(render).host;
+	const { id: gone } = await ending.create(runRequest(1, "run-1", 1), CTX);
+	const { id: kept } = await ending.create(runRequest(2, "run-1", 2), CTX);
+	await ending.delete(gone, CTX);
+	const runs = render.runs().length;
+	// serve makes a provider per claim, and one for the run's end: the next claim's lists the run while Render still reads the old one running.
+	const listed = await provider(render).host.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX);
+	assert.deepEqual(listed.map(({ id }) => id), [kept]);
+	assert.equal(render.runs().length, runs, "the ending sandbox's guest is not read, and the one made in this process is known");
+});
+
+test("a listing by run reads only that run's sandboxes: another run's wedged guest never refuses a claim, while this run's own still fails it closed", async () => {
+	const { render, wedged } = guestsRender();
+	const maker = provider(render).host;
+	const { id: other } = await maker.create(runRequest(1, "run-2", 1), CTX);
+	const { id: mine } = await maker.create(runRequest(2, "run-1", 1), CTX);
+	wedged.add(other);
+	// A server that restarted knows no labels: the next claim of run-1, at epoch 2, releases its epoch-1 sandbox.
+	const released = await releaseOlder(provider(restarted(render), DIALED), "run-1", 2);
+	assert.equal(released.ok, true, released.ok ? "" : `another run's unreadable sandbox refused the claim: ${released.error.message}`);
+	assert.deepEqual(released.value.released.map(({ name }) => name), ["computer-000000000002"]);
+	assert.equal(render.sandboxes.get(mine).record.status, "terminated");
+	assert.equal(render.sandboxes.get(other).record.status, "running", "another run's sandbox is left as it is");
+	assert.equal(render.runs().filter(({ url, body }) => url.hostname.startsWith(`${other}.`) && body.command.startsWith("[ -f")).length, 0, "and its guest is never read");
+
+	const own = guestsRender();
+	const theirs = await provider(own.render).host.create(runRequest(1, "run-2", 1), CTX);
+	const ours = await provider(own.render).host.create(runRequest(2, "run-1", 1), CTX);
+	own.wedged.add(theirs.id).add(ours.id);
+	const fenced = await releaseOlder(provider(restarted(own.render), DIALED), "run-1", 2);
+	assert.equal(fenced.ok, false, "this run's own unreadable sandbox still fails the claim closed");
+	assert.equal(fenced.error.message.includes(`could not read the labels of ${ours.id}: reading the labels file of ${ours.id} exited 1: fork: out of memory; the listing can't tell whether it carries agentrun.run=run-1`), true, fenced.error.message);
+	assert.equal(fenced.error.message.includes(theirs.id), false, "naming this run's sandbox alone");
+	assert.equal(own.render.sandboxes.get(ours.id).record.status, "running", "nothing released");
+});
+
+test("prepareImage shares an import only between providers of one key: a wrong key's refusal is its own", async () => {
+	const render = fakeRender();
+	const [wrong, right] = await Promise.all([provider(render, { apiKey: "fake-test-key-wrong-not-a-secret" }).prepareImage(), provider(render).prepareImage()]);
+	assert.equal(wrong.ok, false, "the wrong key is refused");
+	assert.match(wrong.error.message, /401/);
+	assert.deepEqual(right, { ok: true, value: BUILD }, "the right key's import is not the wrong key's 401");
+});
+
 test("delete terminates the sandbox, which Render answers 204 even once it is terminated", async () => {
 	const render = fakeRender();
 	const { host } = provider(render);
@@ -491,7 +559,7 @@ test("delete terminates the sandbox, which Render answers 204 even once it is te
 	await host.delete(SBX, CTX);
 	await host.delete(SBX, CTX);
 	const terminates = render.calls.filter(({ url }) => url.pathname === `/v1/sandboxes/${SBX}/terminate`);
-	assert.deepEqual(terminates.map(({ method, url }) => [method, url.searchParams.get("ownerId")]), [["POST", OWNER], ["POST", OWNER]]);
+	assert.deepEqual(terminates.map(({ method, url }) => [method, url.searchParams.get("ownerId")]), [["POST", render.owner], ["POST", render.owner]]);
 	assert.equal(await host.get(SBX, CTX), undefined);
 });
 
@@ -559,7 +627,7 @@ test("prepareImage answers the box image's build in the workspace's default sand
 	assert.deepEqual(waits, []);
 	assert.deepEqual(
 		ready.calls.map(({ method, url }) => `${method} ${url.pathname}${url.search}`),
-		[`GET /v1/sandbox-groups?ownerId=${OWNER}&limit=100`, `GET /v1/sandbox-groups/${GROUP}/builds?name=${BUILD}&status=succeeded&status=pending&status=running&limit=100`],
+		[`GET /v1/sandbox-groups?ownerId=${ready.owner}&limit=100`, `GET /v1/sandbox-groups/${GROUP}/builds?name=${BUILD}&status=succeeded&status=pending&status=running&limit=100`],
 	);
 	const fresh = fakeRender();
 	const made = provider(fresh);
