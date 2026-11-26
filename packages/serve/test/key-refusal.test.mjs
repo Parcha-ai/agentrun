@@ -133,6 +133,11 @@ const CONTROL_PADS = [
   // U+FFFF, a noncharacter, shows as a box at most: the views drop it in the text (only a join's own separator is one).
   ["raw U+FFFF", "\uffff".repeat(300), "json"],
   ["JSON's \\uffff", String.raw`\uffff`.repeat(300), "json"],
+  // A terminal sequence shows as nothing in a terminal, and a backspace strikes out the character before it.
+  ["raw CSI colours", "\u001b[0m".repeat(300), "json"],
+  ["JSON's \\u001b CSI colours", String.raw`\u001b[1;31m`.repeat(300), "json"],
+  ["raw OSC titles", "\u001b]0;t\u0007".repeat(300), "json"],
+  ["backspace overstrikes", "Z\b".repeat(300), "json"],
 ];
 const wrapped = (kind, body) => (kind === "python" ? `{'a': '${body}'}` : `{"a": "${body}"}`);
 

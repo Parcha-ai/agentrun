@@ -798,6 +798,58 @@ const CASES = [
       exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
     }));
   })(),
+  // A terminal sequence shows as nothing where a terminal or a log viewer renders it: a held value split by one reads
+  // whole there, so it withholds the text, whether the sequence is a CSI (ESC "[", parameters, intermediates, a final
+  // byte: a colour, a cursor move, a private mode), an OSC (ESC "]" to a BEL or ESC and a backslash: a title, a hyperlink), the
+  // 8-bit CSI and OSC (U+009B, U+009D, to U+009C), or a two-character escape (ESC "7", ESC "(" "B"), as it stands, in a
+  // JSON string (once, and twice), as JSON's \u escape in prose, as Python's \x escape in a single-quoted dict,
+  // percent-encoded, as an HTML character reference, and before each of the value's characters. So does a backspace
+  // that strikes a character out: the terminal shows what comes after it in its place.
+  ...(() => {
+    const [H, R] = P24;
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const E = "\u001b";
+    return [
+      ["a CSI colour reset as it stands", `x ${H}${E}[0m${R} y`],
+      ["a CSI colour with parameters as it stands", `x ${H}${E}[1;38;5;196m${R} y`],
+      ["a CSI private mode as it stands", `x ${H}${E}[?25l${R} y`],
+      ["a CSI with an intermediate byte as it stands", `x ${H}${E}[2 q${R} y`],
+      ["an OSC title ended by a BEL", `x ${H}${E}]0;build log \u0007${R} y`],
+      ["an OSC hyperlink ended by ESC and a backslash", `x ${H}${E}]8;;https://example.test/a${E}\\${R} y`],
+      ["an 8-bit CSI", `x ${H}\u009b31m${R} y`],
+      ["an 8-bit OSC ended by U+009C", `x ${H}\u009d0;title\u009c${R} y`],
+      ["a two-character escape", `x ${H}${E}7${R} y`],
+      ["a character set designation", `x ${H}${E}(B${R} y`],
+      ["a CSI colour in a JSON string", JSON.stringify({ note: `see ${H}${E}[31m${R} more` })],
+      ["a CSI colour in JSON written in a JSON string", JSON.stringify({ out: JSON.stringify({ note: `see ${H}${E}[31m${R} more` }) })],
+      ["a CSI colour as JSON's \\u escape in prose", `x ${H}\\u001b[0m${R} y`],
+      ["a CSI colour as Python's \\x escape in a single-quoted dict", `{'a': 'see ${H}\\x1b[0m${R} more'}`],
+      ["a CSI colour percent-encoded", `x ${H}%1B%5B0m${R} y`],
+      ["a CSI colour with its ESC as an HTML character reference", `x ${H}&#x1b;[0m${R} y`],
+      ["a CSI colour before each of its characters", `v=${[...H, ...R].map((char, i) => `${E}[3${i % 8}m${char}`).join("")}${E}[0m ok`],
+      ["a backspace striking out a character", `x ${H}Z\b${R} y`],
+      ["two backspaces striking out two characters", `x ${H}__\b\b${R} y`],
+    ].map(([what, text]) => ({ name: `a held value split by a terminal sequence, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
+  // Controls: coloured output with no held value shows as it came; a held value coloured whole is cut in place, its
+  // colours kept; a backspace that strikes out a held value's own character leaves no held value on screen and shows as
+  // it came; and a held value split by an ESC and a letter it would read as no sequence's (as the views read any lone
+  // control) still withholds the text.
+  ...(() => {
+    const [H, R] = P24;
+    const V = P24.join("");
+    const E = "\u001b";
+    const ls = `${E}[0m${E}[01;34mbin${E}[0m  ${E}[01;32mrun.sh${E}[0m  ${E}[01;31mdata.tar.gz${E}[0m \n`;
+    const same = (text) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text]));
+    const coloured = `${E}[31m${V}${E}[0m done`;
+    const cut = `${E}[31m[redacted]${E}[0m done`;
+    return [
+      { name: "coloured output with no held value shows as it came (control)", text: ls, values: [V], hides: [], exact: same(ls) },
+      { name: "a held value coloured whole is cut in place, its colours kept (control)", text: coloured, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: { redacted: cut, redactedAnswer: cut, redactSecrets: cut, runFile: cut } },
+      { name: "a backspace striking out the last character of a held value's head, its rest after, shows as it came (control)", text: `x ${H}\b${R.slice(0, 4)}zzzz y`, values: [V], hides: [], exact: same(`x ${H}\b${R.slice(0, 4)}zzzz y`) },
+      { name: "a held value split by an ESC and its rest's first letter withholds the text (control)", text: `x ${H}${E}${R} y`, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])) },
+    ];
+  })(),
   // U+FFFF, a noncharacter, shows as a box at most, so a reader still reads a held value split by one: as it stands, in
   // a JSON string (JSON.stringify keeps it as it is; once, and twice: JSON in JSON), as JSON's \uffff escape in prose
   // and in a JSON string, percent-encoded (its UTF-8 bytes), as an HTML character reference, and between each of the
@@ -1137,6 +1189,8 @@ const adversarial = (size) => {
     f("\u0000"), f("a\u0001"), f("\u007f\u0085"), f(`${B}u0000`), f(`${B}${B}u001f`), f(`'a${B}x01`), f("%00%C2%85"), f("&#1;&#x7f;"), f('"a\u0000",'),
     // U+FFFF, which the views drop in the text and keep only as a join's separator: as it stands, between letters and
     // inside JSON strings, escaped, percent-encoded, as a reference.
+    // Terminal sequences: CSIs back to back, opened and never closed, OSCs never ended, ESCs alone, backspaces.
+    f("\u001b[0m"), f("a\u001b[1;31m"), f("\u001b["), f("\u001b[1;"), f("\u001b]0;t"), f("\u001b]0;t\u0007"), f("\u001b"), f("a\b"), f("\b"), f("\u009b1"), f("\u009d0;"), f(`${B}u001b[0m`), f("%1B[0m"), f("&#27;[0m"),
     f("\uffff"), f("a\uffff"), f('"a\uffff",'), f(`${B}uffff`), f("%EF%BF%BF"), f("&#xffff;"),
   ];
   return [
@@ -1158,6 +1212,8 @@ const adversarial = (size) => {
     // finds glued together, each still cut in place.
     { text: f(`${DENSE}\u0000`), values: [DENSE] },
     { text: f(`${DENSE}\uffff`), values: [DENSE] },
+    { text: f(`${DENSE}\u001b[0m`), values: [DENSE] },
+    { text: f(`${DENSE}Z\b`), values: [DENSE] },
     { text: f(`"${DENSE}\uffff",`), values: [DENSE] },
     { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
     { text: f(`${RSA_PEM}\n`), values: [RSA_PEM] },
