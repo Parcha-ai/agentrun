@@ -17,6 +17,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { closeOpenSessions, scriptedOrigin } from "./conformance-pi-adapter.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
@@ -122,7 +123,7 @@ test("a CLI root gets no browser tool from the runner, whatever its revision nam
   const registry = createRegistry();
   const harness = await Harness.open(opened.store.journal(claim), { models: () => undefined, registry, onReport: () => {} }, ctx);
   t.after(() => harness.close(ctx).catch(() => {}));
-  const run = { harness, registry, setModels: () => {} };
+  const run = { redact: heldRedactor((text) => text), harness, registry, setModels: () => {} };
   const deps = { env: { OPENAI_API_KEY: `not-a-secret-${"openai"}` }, data: opened.dir, journal: (c) => opened.store.journal(c), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
   const spec = await cliSpec.cliRunSpecFromLaunch(await opened.store.runs.launch(RUN).then((row) => row.body), run, deps, claim);
   assert.deepEqual(spec.session.tools.map((tool) => tool.name).filter((name) => NINE.includes(name)), [], "no browser tool");

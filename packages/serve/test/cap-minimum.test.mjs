@@ -23,6 +23,7 @@ import { capRun, quiet, specCap } from "./adapter-pi-cap-support.mjs";
 import { closeOpenSessions } from "./conformance-pi-adapter.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { computerDepsFrom } = await import("../dist/workspace/index.js");
 const { fauxComputers } = await import("../dist/faux-computers.js");
 after(closeOpenSessions);
@@ -73,7 +74,7 @@ async function desktopRun(t, capUsd, origin) {
   const provider = { api: "anthropic-messages", origin, credential: () => `not-a-secret-${"x"}` };
   assert.ok(spec.computerFilesNote, "the faux desktop mounts no folder: the run is told where its files are");
   const result = await capRun(t, {
-    specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ run, model: SONNET.id, provider, fetch: desktopOrigin(sent, counted), price: priceOf }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, computerFilesNote: spec.computerFilesNote, input: TASK, hooks: quiet, gate: () => "allow" }),
+    specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: SONNET.id, provider, fetch: desktopOrigin(sent, counted), price: priceOf }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, computerFilesNote: spec.computerFilesNote, input: TASK, hooks: quiet, gate: () => "allow" }),
     // Every step's input at the cache-write price, whatever was cached: the worst case, the one cap mode.
     runCap: { capUsd: () => capUsd, modelOf: () => SONNET },
     cap: specCap(capUsd),

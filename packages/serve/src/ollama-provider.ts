@@ -83,6 +83,9 @@ function splitHostPort(hostport: string): [string, string | undefined] {
  *  for it. */
 const kept = new Map<string, { at: number; models: readonly OllamaListed[] }>();
 const asking = new Map<string, Promise<readonly OllamaListed[]>>();
+/** Bumped by ollamaForget, per address: a listing asked before a forget answers its caller but is never kept, since it
+ *  may be from before the pull that made the forget. */
+const forgets = new Map<string, number>();
 /** The clock a listing is kept by: Date.now, or a test's (ollamaClock). */
 let now: () => number = Date.now;
 
@@ -191,6 +194,7 @@ export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalT
   if (base === undefined) return [];
   const deadline = AbortSignal.timeout(timeoutMs);
   const ask = askerOf(base, send, deadline);
+  const asked = forgets.get(base) ?? 0;
   let models: readonly OllamaListed[] = [];
   let whole = false;
   let down = false;
@@ -205,7 +209,8 @@ export async function listOllama(env: NodeJS.ProcessEnv, { fetch: send = globalT
   }
   const before = kept.get(base)?.models;
   const listing = whole ? { at: now(), models } : { at: -Infinity, models: !down && before?.length ? before : models };
-  kept.set(base, listing);
+  // A forget since this listing was asked: it answers its caller, and is never kept.
+  if ((forgets.get(base) ?? 0) === asked) kept.set(base, listing);
   return listing.models;
 }
 
@@ -245,7 +250,8 @@ export async function ollamaModels(env: NodeJS.ProcessEnv): Promise<readonly Oll
   if (known && now() - known.at < OLLAMA_TTL_MS) return known.models;
   let listing = asking.get(base);
   if (!listing) {
-    listing = listOllama(env).finally(() => asking.delete(base));
+    const mine: Promise<readonly OllamaListed[]> = listOllama(env).finally(() => { if (asking.get(base) === mine) asking.delete(base); });
+    listing = mine;
     asking.set(base, listing);
   }
   return known ? known.models : listing;
@@ -266,6 +272,97 @@ export async function ollamaRelisted(env: NodeJS.ProcessEnv): Promise<readonly O
 export function ollamaKept(env: NodeJS.ProcessEnv): readonly OllamaListed[] {
   const base = baseOf(env);
   return base === undefined ? [] : (kept.get(base)?.models ?? []);
+}
+
+/** Forgets the listing kept for the Ollama `env` names, and the one under way for it, so the next ollamaModels asks it
+ *  again at once: after a pull here (local-model.ts), the model is in the picker with no wait for OLLAMA_TTL_MS. A
+ *  listing under way when it is forgotten still answers its caller, but is never kept: it may be from before the pull. */
+export function ollamaForget(env: NodeJS.ProcessEnv): void {
+  const base = baseOf(env);
+  if (base === undefined) return;
+  forgets.set(base, (forgets.get(base) ?? 0) + 1);
+  kept.delete(base);
+  asking.delete(base);
+}
+
+/** How long the version of the Ollama here is waited for (ollamaVersion): a listing's deadline. */
+export const OLLAMA_VERSION_TIMEOUT_MS = OLLAMA_LIST_TIMEOUT_MS;
+
+/** The version the Ollama `env` names says it is (GET /api/version), or undefined where it names none, is refused, down,
+ *  hung past `timeoutMs` or answers another shape. Nothing thrown. */
+export async function ollamaVersion(env: NodeJS.ProcessEnv, { fetch: send = globalThis.fetch, timeoutMs = OLLAMA_VERSION_TIMEOUT_MS }: { fetch?: typeof fetch; timeoutMs?: number } = {}): Promise<string | undefined> {
+  const base = baseOf(env);
+  if (base === undefined) return undefined;
+  try {
+    const answer = (await askerOf(base, send, AbortSignal.timeout(timeoutMs))("/api/version")) as { version?: unknown } | null;
+    return typeof answer?.version === "string" && answer.version.length > 0 && answer.version.length <= 64 ? answer.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** One line of a pull's progress as Ollama streams it (POST /api/pull): its status, and a layer's digest with its bytes. */
+export type OllamaPullLine = { readonly status: string; readonly digest?: string; readonly total?: number; readonly completed?: number };
+
+/** How long a pull may go with no byte from Ollama before it stops (ollamaPull): a registry that stalls, or an Ollama
+ *  that wedges, frees the one pull here instead of holding it at `pulling` until the server restarts. */
+export const PULL_STALL_MS = 120_000;
+/** The longest progress line a pull takes: Ollama's are a few hundred bytes, so a stream that sends no newline ends. */
+export const PULL_LINE_MAX = 64 * 1024;
+
+/**
+ * Pulls `tag` through the Ollama `env` names (POST /api/pull, streamed as NDJSON), each line of progress to `onLine` as it
+ * comes. Resolves once Ollama says `success`; throws, in Ollama's words, on an `error` line, a refusal, a stream that ends
+ * before `success`, or `signal`; in its own, on `stallMs` with no byte from Ollama (the answer's head or a chunk of the
+ * stream) or a line past PULL_LINE_MAX. No deadline on the whole: a model is gigabytes, and a pull that moves is let run.
+ */
+export async function ollamaPull(env: NodeJS.ProcessEnv, tag: string, onLine: (line: OllamaPullLine) => void, { fetch: send = globalThis.fetch, signal, stallMs = PULL_STALL_MS }: { fetch?: typeof fetch; signal?: AbortSignal; stallMs?: number } = {}): Promise<void> {
+  const base = baseOf(env);
+  if (base === undefined) throw new Error("no Ollama is asked here");
+  const stall = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const moved = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => stall.abort(), stallMs);
+  };
+  const stopped = signal ? AbortSignal.any([signal, stall.signal]) : stall.signal;
+  moved();
+  try {
+    const response = await send(`${base}/api/pull`, { method: "POST", redirect: "error", signal: stopped, headers: { "content-type": "application/json" }, body: JSON.stringify({ model: tag, stream: true }) });
+    if (!response.ok || !response.body) {
+      const said = safeJson(await response.text().catch(() => "")) as { error?: unknown } | undefined;
+      throw new Error(typeof said?.error === "string" ? said.error : `/api/pull: ${response.status}`);
+    }
+    const decoder = new TextDecoder();
+    let rest = "";
+    let succeeded = false;
+    const take = (text: string) => {
+      const line = safeJson(text) as { status?: unknown; error?: unknown; digest?: unknown; total?: unknown; completed?: unknown } | undefined;
+      if (!line || typeof line !== "object") return;
+      if (typeof line.error === "string") throw new Error(line.error);
+      if (typeof line.status !== "string") return;
+      if (line.status === "success") succeeded = true;
+      onLine({ status: line.status, ...(typeof line.digest === "string" ? { digest: line.digest } : {}), ...(line.total !== undefined ? { total: count(line.total) } : {}), ...(line.completed !== undefined ? { completed: count(line.completed) } : {}) });
+    };
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+      moved();
+      rest += decoder.decode(chunk, { stream: true });
+      let cut: number;
+      while ((cut = rest.indexOf("\n")) >= 0) {
+        const text = rest.slice(0, cut).trim();
+        rest = rest.slice(cut + 1);
+        if (text) take(text);
+      }
+      if (rest.length > PULL_LINE_MAX) throw new Error(`Ollama sent a progress line longer than ${PULL_LINE_MAX} bytes, so the pull stopped. Press Pull again.`);
+    }
+    if (rest.trim()) take(rest.trim());
+    if (!succeeded) throw new Error("the pull ended before Ollama said success");
+  } catch (error) {
+    if (stall.signal.aborted && !signal?.aborted) throw new Error(`Ollama sent nothing for ${Math.round(stallMs / 1000)} s, so the pull stopped. Press Pull again.`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** `env`'s Ollama listing as last kept (ollamaKept), in one string: each model's tag, capabilities and trained context.

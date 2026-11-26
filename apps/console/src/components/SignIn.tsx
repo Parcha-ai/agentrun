@@ -139,7 +139,17 @@ export function SignIn({ mode, code = null, codeNeeded = false, onSubmit, onNewC
 }
 
 const count = (n: number, one: string) => `${n.toLocaleString("en-US")} ${one}${n === 1 ? "" : "s"}`;
-const SOURCE_NAMES: Record<string, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
+// The tools an import reads, by their own names, in the order setup's summary names them; one not listed here by its id.
+const SOURCE_NAMES: Record<string, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", opencode: "OpenCode", copilot: "Copilot CLI" };
+const sourceName = (source: string) => SOURCE_NAMES[source] ?? source;
+/** "a", "a and b", "a, b and c". */
+const inWords = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
+/** The tools the projects' sessions came from, each once, in SOURCE_NAMES's order (any other after, by id). */
+function sourcesOf(candidates: readonly { sources: readonly string[] }[]): string[] {
+  const order = Object.keys(SOURCE_NAMES);
+  const rank = (s: string) => (order.includes(s) ? order.indexOf(s) : order.length);
+  return [...new Set(candidates.flatMap((c) => c.sources))].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)).map(sourceName);
+}
 const IMPORT_LABEL = "Import sessions from this machine";
 
 /** Setup's list of this machine's projects, each with a box, none ticked: the owner ticks the ones to import, and only
@@ -148,7 +158,7 @@ function ImportChooser({ offer, chosen, onChange }: { offer: ImportOffer; chosen
   if ("counting" in offer) {
     return (
       <Field group label={IMPORT_LABEL}>
-        <p className="flex items-center gap-2 text-small text-muted-foreground" role="status"><Spinner />Looking for this machine's Claude Code, Codex and pi sessions…</p>
+        <p className="flex items-center gap-2 text-small text-muted-foreground" role="status"><Spinner />Looking for this machine's coding-agent sessions…</p>
       </Field>
     );
   }
@@ -163,10 +173,18 @@ function ImportChooser({ offer, chosen, onChange }: { offer: ImportOffer; chosen
   const picked = candidates.filter((c) => chosen.includes(c.id));
   const all = picked.length === candidates.length;
   const now = Date.now();
+  // The totals count every project, but the tools are known only for the listed ones: with all listed they go with the
+  // totals; with only the latest listed, with those.
+  const from = inWords(sourcesOf(candidates));
+  const tick = "Tick the projects to import: each becomes an agent, each session a run you can read. Nothing is imported unless you tick it.";
+  const totals = `${count(offer.sessions, "session")} in ${count(offer.projects, "project")}`;
+  const note = offer.projects > candidates.length
+    ? `${totals}. ${tick} The ${candidates.length.toLocaleString("en-US")} most recently active are listed, with sessions from ${from}.`
+    : `${totals}, from ${from}. ${tick}`;
   return (
     <Field group label={IMPORT_LABEL}
       aside={<Button type="button" size="xs" variant="ghost" onClick={() => onChange(all ? [] : candidates.map((c) => c.id))}>{all ? "Clear" : "Select all"}</Button>}
-      note={`${count(offer.sessions, "session")} in ${count(offer.projects, "project")}, from Claude Code, Codex and pi. Tick the projects to import: each becomes an agent, each session a run you can read. Nothing is imported unless you tick it.${offer.projects > candidates.length ? ` The ${candidates.length.toLocaleString("en-US")} most recently active are listed.` : ""}`}
+      note={note}
       hint={<span aria-live="polite">{picked.length ? `${count(picked.length, "project")}, ${count(picked.reduce((n, c) => n + c.sessions, 0), "session")} chosen.` : "None chosen: nothing will be imported."}</span>}>
       <div className="max-h-56 space-y-3 overflow-y-auto border p-3">
         {candidates.map((c) => (
@@ -174,7 +192,7 @@ function ImportChooser({ offer, chosen, onChange }: { offer: ImportOffer; chosen
             onChange={(e) => onChange(e.target.checked ? [...chosen, c.id] : chosen.filter((id) => id !== c.id))}
             label={<span className="break-all font-mono">{c.name}</span>}
             note={<>
-              <span className="block">{[count(c.sessions, "session"), c.sources.map((source) => SOURCE_NAMES[source] ?? source).join(", "), ...(c.last_active ? [`active ${ago(c.last_active, now)} ago`] : [])].join(" · ")}</span>
+              <span className="block">{[count(c.sessions, "session"), sourcesOf([c]).join(", "), ...(c.last_active ? [`active ${ago(c.last_active, now)} ago`] : [])].join(" · ")}</span>
               <span className="block break-all font-mono">{c.path}</span>
             </>} />
         ))}
