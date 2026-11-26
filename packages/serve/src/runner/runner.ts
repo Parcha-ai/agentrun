@@ -984,20 +984,20 @@ export function startRunner(options: RunnerOptions): Runner {
         await heldNow.inFlight?.catch(() => undefined);
         await deliver(heldNow);
       },
-      // A row the loop took for now and refused later (the dispatch's replay): written refused under this claim, as deliver
-      // writes a refusal the loop answered at once. As there, nothing is written once the end sealed the claim, and a
-      // fenced write loses the claim.
+      // A row the loop took for now and refused later (the dispatch's replay): written refused under the claim held now (its
+      // last renew's), as deliver writes a refusal the loop answered at once. As there, nothing is written once the end
+      // sealed the claim, and a fenced write loses the claim.
       refuse: async (commandId, reason) => {
         const held = heldNow;
         if (!held || held.sealed || killed) return;
         try {
-          await store.take(claim, commandId, "refused", reason);
+          await store.take(held.claim, commandId, "refused", reason);
         } catch (error) {
           if (held.sealed || killed) return;
           if (isFenced(error)) return void loseClaim(held, "fenced");
           throw error;
         }
-        emit({ type: "refused", runId: claim.runId, commandId, reason });
+        emit({ type: "refused", runId: held.claim.runId, commandId, reason });
       },
       redact,
     });
