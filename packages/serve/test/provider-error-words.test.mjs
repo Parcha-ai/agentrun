@@ -137,10 +137,12 @@ const STAT = ["files.stat", { path: "/workspace" }];
 /** One call of the computer's inside a tool call of the run's. */
 const inCall = (client, method, params) => bookedIn({ call: "toolu_1", pause: async () => {} }, () => client.call(method, params));
 
-for (const row of ROWS) {
+// Each error's own words begin with a marker that names the row by its number, never its class, so no row's text tells
+// the classifier its class.
+for (const [n, row] of ROWS.entries()) {
   test(`a claim whose provider fails (${row.name}) fails the run in serve's words: the ${row.cls} sentence, no path, JSON or key; the provider's words on one runner log line`, async () => {
     const { record, run } = await claim();
-    const lead = `claim-${row.cls}-${row.name.length}`;
+    const lead = `claim-row${n}`;
     record.createFails = row.error(lead);
     const error = await run().then(() => undefined, (thrown) => thrown);
     assert.ok(error, "the claim fails");
@@ -154,7 +156,7 @@ for (const row of ROWS) {
     const { record, run } = await claim();
     const answer = await run();
     const client = answer.computer.computer.client;
-    const why = `lost-${row.cls}-${row.name.length}`;
+    const why = `lost-row${n}`;
     record.lostAnswer = { code: "gone", message: RAW(why) };
     record.lost.add("c1");
     const cut = await inCall(client, ...STAT);
@@ -162,7 +164,7 @@ for (const row of ROWS) {
     assert.equal(cut.error.code, "gone", "a loss is never not_found");
     sayOnly(cut.error.message, "machine", "Docker", "sandbox", "the cut call's tool result");
     loggedOnce(record.lines, why, "run-1", "lost", "machine", "the loss");
-    const lead = `restart-${row.cls}-${row.name.length}`;
+    const lead = `restart-row${n}`;
     record.createFails = row.error(lead);
     const refused = await inCall(client, ...STAT);
     assert.equal(refused.ok, false);
@@ -224,7 +226,7 @@ const DISK_ROWS = [
   { name: "unknown", cls: "other", fail: (disk, lead) => (disk.getRange = async () => { throw new Error(RAW(lead)); }) },
 ];
 
-for (const row of DISK_ROWS) {
+for (const [n, row] of DISK_ROWS.entries()) {
   test(`a read of the run's folder on its disk that Archil fails (${row.name}), as the agent's file tools and the console's file routes read it, says it in serve's words; Archil's on one log line`, async () => {
     const disk = new FakeArchilDisk();
     const key = runKey("acme", "run-1");
@@ -232,7 +234,7 @@ for (const row of DISK_ROWS) {
     await disk.putObject(`${key}/notes.md`, new TextEncoder().encode("line one\n"));
     const lines = [];
     const workspace = archilWorkspace(disk, key, { tell: { runId: "run-1", log: (line) => void lines.push(line) } });
-    const lead = `disk-${row.cls}-${row.name.length}`;
+    const lead = `disk-row${n}`;
     row.fail(disk, lead);
     const error = await workspace.read("notes.md").then(() => undefined, (thrown) => thrown);
     assert.ok(error, "the read fails");
