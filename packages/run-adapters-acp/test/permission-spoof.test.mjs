@@ -125,7 +125,8 @@ for (const [style, title, recipeOver] of [
   ['goose-1.59', 'agentrun: write · proof.txt', { allowFile: undefined }],
   ['goose', 'agentrun__write', { allowFile: undefined }],
   ['cursor', 'agentrun-write: write', { quirks: undefined }],
-  ['antigravity', 'Run mcp_agentrun_write', { quirks: undefined }],
+  // agy is given our server under its start's own name (agentrun and 8 hex digits), which its title carries.
+  ['antigravity', 'Run mcp_agentrun<start>_write', { quirks: undefined }],
 ]) {
   test(`a recipe without the title tie never answers allow_once on the title: ${JSON.stringify(title)} (${style}) asks the host's gate, journaled; a deny answers reject_once`, async (t) => {
     // Before: each was answered allow_once, the gate asked only at the MCP call. Now Goose asks nothing for our tools
@@ -140,13 +141,95 @@ for (const [style, title, recipeOver] of [
     });
     await session.send('go');
     assert.equal((await session.turnEnd()).status, 'completed');
-    assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_other', title]], 'the host gate was asked about the request');
+    assert.deepEqual(asked.map((c) => c.tool), ['acp_other'], 'the host gate was asked about the request');
+    const titled = new RegExp(`^${title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace('<start>', '[0-9a-f]{8}')}$`);
+    assert.match(String(asked[0].args.title), titled);
     assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
     assert.equal(ran, 0, 'refused at the protocol, so the agent never made the call');
     const journaled = await streamRecords(store, 'acp.permission');
     assert.deepEqual(journaled.map((r) => r.type), ['asked', 'answered', 'given']);
   });
 }
+
+// agy names a call `mcp_<server>_<tool>`, one _ between them: a server named agentrun_look with a tool up would spell
+// our look_up under a server named agentrun. So under a recipe whose prefix joins by one character (agy's
+// `mcp_agentrun_`) our server goes by a name of its start's own, which no server set up before the start can spell.
+test("under agy's recipe the agent is given our MCP server under a name of its start's own, agentrun and 8 hex digits; under Goose's and Cursor's, agentrun", async (t) => {
+  const given = [];
+  for (const style of ['antigravity', 'antigravity', 'goose-1.59', 'cursor']) {
+    const recipe = fakeRecipe(scratch(), { script: [{ say: 'hi' }], style });
+    const { session } = await openSession(t, recipe, { tools: [tool('look_up', () => 'found')] });
+    await session.send('go');
+    assert.equal((await session.turnEnd()).status, 'completed');
+    given.push(fakeEvents(recipe).filter((e) => e.type === 'new').map((e) => e.names));
+  }
+  assert.match(given[0][0]?.[0] ?? '', /^agentrun[0-9a-f]{8}$/);
+  assert.match(given[1][0]?.[0] ?? '', /^agentrun[0-9a-f]{8}$/);
+  assert.notEqual(given[0][0][0], given[1][0][0], 'a fresh name at each start');
+  assert.deepEqual(given[2], [['agentrun']]);
+  assert.deepEqual(given[3], [['agentrun']]);
+});
+
+// agy caps a tool's name at 64 characters, and names ours mcp_agentrun<8 hex>_<tool> (21 + the tool's own): a tool of
+// ours longer than 43 could never be called, so under agy's recipe such a start is refused, naming the tool; Goose's
+// and Cursor's name ours without the per-start name, and start.
+test("under agy's recipe a tool of ours named longer than 43 characters refuses the start, naming it; 43 starts, and Goose and Cursor start with either", async (t) => {
+  const fits = 'a'.repeat(43);
+  const over = 'b'.repeat(44);
+  for (const [style, name, starts] of [['antigravity', fits, true], ['antigravity', over, false], ['goose-1.59', over, true], ['cursor', over, true]]) {
+    const recipe = fakeRecipe(scratch(), { script: [{ say: 'hi' }], style });
+    const { session } = await openSession(t, recipe, { tools: [tool(name, () => 'found')] });
+    await session.send('go');
+    const end = await session.turnEnd();
+    const label = `${style} ${name.length}`;
+    assert.equal(end.status, starts ? 'completed' : 'failed', `${label}: ${end.error ?? ''}`);
+    assert.equal(fakeEvents(recipe).some((e) => e.type === 'start'), starts, label);
+    if (!starts) {
+      assert.match(end.error, /at most 64 characters in all, so a tool's own name may be at most 43/, end.error);
+      assert.ok(end.error.includes(JSON.stringify(over)), end.error);
+      assert.match(end.error, /the agent was not started$/, end.error);
+    }
+  }
+});
+
+for (const [how, declares] of [
+  ['at its top', { type: 'object', properties: { q: { type: 'string' }, toolSummary: { type: 'string' } } }],
+  ['in allOf', { type: 'object', allOf: [{ properties: { q: { type: 'string' } } }, { properties: { toolSummary: { type: 'string' } } }] }],
+]) test(`our tool's own toolSummary argument (agy), which its schema declares ${how}, is kept: the MCP call takes the announced id at once`, async (t) => {
+  const recipe = fakeRecipe(scratch(), { script: [{ call: 'look_up', args: { q: 'x', toolSummary: 'mine' } }, { sayLastResult: true }], style: 'antigravity', askMcp: true });
+  const asked = [];
+  const { session, events } = await openSession(t, recipe, {
+    tools: [{ ...tool('look_up', (args) => `found ${args.toolSummary}`), inputSchema: declares }],
+    gate: async (call) => (asked.push(call), 'allow'),
+    // Stripped, the announced input would never match the MCP call's: matched only after the wait, past this test's end.
+    options: { callIdWaitMs: 600_000 },
+  });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['allow_once']);
+  assert.deepEqual(asked.map((c) => [c.tool, c.callId]), [['look_up', 'call_0']]);
+  assert.equal(texts(events), 'found mine');
+});
+
+test("another MCP server's tool that agy names as one of ours under agentrun (`mcp_agentrun_look_up`: a server agentrun_look, a tool up) is the agent's own: the host's gate is asked, a deny answers reject_once", async (t) => {
+  // Before: the recipe's prefix mcp_agentrun_ named it look_up, and its request, titled Run mcp_agentrun_look_up, was
+  // answered allow_once on the title tie without the host's gate.
+  const dir = scratch();
+  const nativeLog = join(dir, 'native.log');
+  const recipe = fakeRecipe(dir, { script: [{ native: 'other', toolName: 'mcp_agentrun_look_up', title: 'Run mcp_agentrun_look_up', input: { q: 'x' } }, { sayLastResult: true }], style: 'antigravity', nativeLog });
+  const asked = [];
+  let ran = 0;
+  const { session } = await openSession(t, recipe, {
+    tools: [tool('look_up', () => ((ran += 1), 'found'))],
+    gate: async (call) => (asked.push(call), { deny: 'not ours' }),
+  });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_other', 'Run mcp_agentrun_look_up']]);
+  assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
+  assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the call never ran');
+  assert.equal(ran, 0);
+});
 
 test("a permission request titled as our tool with Goose's summary, of a kind with no effects, that no tool_call announced, asks the host's gate; a deny answers reject_once", async (t) => {
   const dir = scratch();
