@@ -5,18 +5,20 @@
 // the answer's shape (keys that read as plain names and types to depth 2, array lengths), never another value; for an
 // error, a last line of what its structure gives (errorLine) (mcp-gateway.ts forward). The answer goes through neither the clip nor evidence/mcp/. So a template whose tool answers
 // hold what the model must not read (a customer's descriptions, say) hands its code the whole answer and its model the
-// values it needs to go on (the next page's cursor). The tool gate refuses the agent's own read, write and edit, and
-// web_save's and browser_upload's paths, at or under the folder (tool-gate.ts filedRefusal), by the path's words as given
-// and as pi's file tools take them, each segment folded. On a computer that mounts the run's folder, while a folder is
-// filed, a script's file ops must name a path inside /workspace (tool-gate.ts keptRefusal): the computer reaches the
-// folder by names no word check follows (/proc/self/root, /proc/self/cwd, /dev/fd), so the rest of its disk is refused
+// values it needs to go on (the next page's cursor). The tool gate refuses the agent's own read, write and edit,
+// web_save's and browser_upload's paths, and a learned workflow call node's (pdf_pages), at or under the folder (tool-gate.ts filedRefusal), by the path's words as given
+// and as pi's file tools take them (pdf_pages' as pdf_pages opens it: pdfWorkPath; a screenshot's save_as as the kernel saves it: savePathOf), each segment folded. On a computer that mounts the run's folder, while a folder is
+// filed, a script's file ops must name an absolute path inside /workspace (tool-gate.ts keptRefusal): the computer
+// reaches the folder by names no word check follows (/proc/self/root, /proc/self/cwd, /dev/fd), and is handed the path
+// as written, so a relative path, the rest of its disk, and the run folder's names on the runner's machine are refused
 // to them. Outside the gate: bash (a command, a link it made, any program the run starts), which only bash set to deny
 // stops, since shell.run and processes.start follow bash's setting, not whether bash is among the agent's tools; the
-// computer's screen (input on a terminal or file manager, apps.open with a path or file:// URL); a link already inside
+// computer's screen (input on a terminal or file manager, apps.open with a path or file:// URL), which a desktop's
+// scripts reach with no screen tools too (surface code); a link already inside
 // /workspace; a harness's own reads that never ask the host (Cursor's); and any other tool that opens the run's files.
 // Opening a script's file beneath /workspace on the computer with links refused (openat2 with RESOLVE_BENEATH and
 // RESOLVE_NO_MAGICLINKS) is a follow-up. A template that must keep the model off the answer sets bash to deny and gives
-// the run no screen, or runs its skill's code where the model can't read the output. A show path that names a free-text field shows that text:
+// the run no desktop or sets the desktop kind to deny, or runs its skill's code where the model can't read the output. A show path that names a free-text field shows that text:
 // the option holds only as far as its paths do. A stored setting that no longer reads refuses every call of its tool.
 import type { InputIssue } from "./errors.js";
 

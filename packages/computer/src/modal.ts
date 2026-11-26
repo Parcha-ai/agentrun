@@ -17,7 +17,7 @@ import { httpsBase } from "./hosted/rest.js";
 import { AGENTRUN_DIAL, PID_WRAPPER, pidKill, pidStderr } from "./hosted/scripts.js";
 import { connectOf, kindRefusal } from "./descriptor.js";
 import { isWhole } from "./hosted/values.js";
-import type { ComputerSpec, GpuSpec, Refusal } from "./provider.js";
+import type { ComputerResources, ComputerSpec, GpuSpec, Refusal } from "./provider.js";
 import { type ComputerErrorCode, ok, type Result } from "./result.js";
 import { vendorSdk } from "./vendor-sdk.js";
 
@@ -152,6 +152,17 @@ const CPU_REQUEST = 0.125;
 const MEMORY_REQUEST_MIB = 128;
 /** "1 core = 2 vCPUs" (guide/sandbox-resources): a spec's cpus are CPUs, Modal's cpu is physical cores. */
 const CPUS_PER_CORE = 2;
+
+/**
+ * A sandbox's size, as its computer is priced: the limits its create set (`cpuLimit` in cores, as vCPUs, and
+ * `memoryLimitMiB`), read from the very params the create sends. Modal reads no size back, and bills a sandbox by
+ * max(request, use) up to those limits, so the limit is the most its time can cost (ComputerResources).
+ */
+const sizeOf = (params: Pick<SandboxCreateParams, "cpuLimit" | "memoryLimitMiB">): ComputerResources => ({
+	...(params.cpuLimit === undefined ? {} : { cpus: params.cpuLimit * CPUS_PER_CORE }),
+	...(params.memoryLimitMiB === undefined ? {} : { memoryMb: params.memoryLimitMiB }),
+});
+
 /**
  * Modal's bounds over the adapter's: a create builds the image layer and waits for the sandbox to be scheduled, a
  * terminate is asynchronous, and the daemon is streamed in through exec.
@@ -183,6 +194,9 @@ class ModalHost implements MachineHost {
 	readonly #appName: string;
 	/** Each sandbox create or a read gave, by id: let go of at its delete. */
 	readonly #sandboxes = new Map<string, Sandbox>();
+	/** Each sandbox's size, by id, from the limits its create set (sizeOf): this provider's creates alone, let go of at
+	 *  its delete. A sandbox another process made has none here, and is read with no size. */
+	readonly #sizes = new Map<string, ComputerResources>();
 	#app: App | undefined;
 
 	constructor(sdk: SdkClient, app: string, connect: "exec" | "dial") {
@@ -290,13 +304,14 @@ class ModalHost implements MachineHost {
 		const image = base.dockerfileCommands([`ENV HOME=${WORK}`, `WORKDIR ${WORK}`]);
 		const sandbox = await this.#sdk.sandboxes.create((await this.#theApp(true)) as App, image, params);
 		this.#sandboxes.set(sandbox.sandboxId, sandbox);
+		this.#sizes.set(sandbox.sandboxId, sizeOf(params));
 		return { id: sandbox.sandboxId };
 	}
 
 	/**
-	 * The sandbox as a machine: running while poll reads null (sandbox.ts:2761-2771), its labels from its tags. One that
-	 * has finished, or that Modal no longer knows, is none: a finished sandbox cannot run again. Modal reads no network,
-	 * size or GPU back.
+	 * The sandbox as a machine: running while poll reads null (sandbox.ts:2761-2771), its labels from its tags, its size
+	 * the limits its create set (sizeOf) where this provider made it. One that has finished, or that Modal no longer
+	 * knows, is none: a finished sandbox cannot run again. Modal reads no network, size or GPU back.
 	 */
 	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
 		void ctx;
@@ -307,7 +322,8 @@ class ModalHost implements MachineHost {
 	async #machine(sandbox: Sandbox): Promise<Machine | undefined> {
 		try {
 			if ((await sandbox.poll()) !== null) return undefined;
-			return { id: sandbox.sandboxId, labels: await sandbox.getTags(), state: "running" };
+			const size = this.#sizes.get(sandbox.sandboxId);
+			return { id: sandbox.sandboxId, labels: await sandbox.getTags(), state: "running", ...(size === undefined ? {} : { resources: size }) };
 		} catch (error) {
 			if (codeOf(error) === "not_found") return undefined;
 			throw error;
@@ -346,7 +362,10 @@ class ModalHost implements MachineHost {
 	 */
 	async delete(id: string, ctx: HostCall): Promise<void> {
 		void ctx;
-		const sandbox = await this.#sandbox(id).finally(() => this.#sandboxes.delete(id));
+		const sandbox = await this.#sandbox(id).finally(() => {
+			this.#sandboxes.delete(id);
+			this.#sizes.delete(id);
+		});
 		try {
 			await sandbox.terminate();
 		} catch (error) {

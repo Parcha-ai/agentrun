@@ -6,9 +6,9 @@
 //   - a draft holding a value the host keeps secret, or a character a reader does not see, is refused on every attempt:
 //     nothing is saved, and the compile's failure is on its promotion record;
 //   - the owner's feedback (a message after the answer) appends one line to corrections.md, with no model turn;
-//     a line holding a value the host keeps secret is refused, and one that would take the file past its cap is refused
-//     with the cap's words; a file another write filled during the compile turn refuses the line alone, and the passing
-//     draft is saved.
+//     a line holding a value the host keeps secret is refused, and one that would take the file past its cap drops the
+//     file's oldest lines to fit (the newest correction wins), the run's learning saying how many; a file another write
+//     filled during the compile turn does the same, beside the passing draft.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -162,13 +162,15 @@ test("feedback holding a value the host keeps secret is refused: corrections.md 
   assert.ok(!w.logs.join("\n").includes(HANDED));
 });
 
-/** corrections.md a few bytes under its 2048-byte cap: 44 rules. */
-const FULL = `${Array.from({ length: 44 }, (_, i) => `- Rule ${String(i).padStart(2, "0")}: keep every answer short and plain.`).join("\n")}\n`;
+/** corrections.md a few bytes under its 8192-byte cap: 174 rules of 47 bytes. */
+const FULL = `${Array.from({ length: 174 }, (_, i) => `- Rule ${String(i).padStart(3, "0")}: keep every answer short and plain.`).join("\n")}\n`;
+/** FULL with its oldest line dropped and `line` appended: a run's correction kept at the cap (the newest wins). */
+const NEWEST = (line) => `${FULL.split("\n").slice(1).join("\n")}${line}`;
 
 /** corrections.md on agent-1's learning replaced with FULL by another run (run-0), as an owner's edit or another run's
  *  correction would fill it. */
 async function fillCorrections(store) {
-  assert.ok(Buffer.byteLength(FULL) < 2048 && Buffer.byteLength(FULL) > 2000, `setup: ${Buffer.byteLength(FULL)} bytes`);
+  assert.ok(Buffer.byteLength(FULL) < 8192 && Buffer.byteLength(FULL) > 8150, `setup: ${Buffer.byteLength(FULL)} bytes`);
   await mergeOn(store, { runId: "run-0", reason: "corrections", files: [{ path: "corrections.md", text: FULL }] });
 }
 
@@ -179,14 +181,14 @@ async function mergeOn(store, change) {
   return done;
 }
 
-test("a run whose correction-only merge landed before a crash (its end never saved) records that merge at its recovered end, even with room left for one copy only, never a refusal", async (t) => {
+test("a run whose correction-only merge landed before a crash (its end never saved) records that merge at its recovered end, even with room left for one copy only: never a second copy, no line dropped", async (t) => {
   const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true });
   await seedOf(w.dir, w.server, "agent-1");
-  // 43 rules: room for the correction's line once, never twice.
-  const rules = `${FULL.split("\n").slice(0, 43).join("\n")}\n`;
+  // 173 rules: room for the correction's line once, never twice (a second copy would drop the oldest rule).
+  const rules = `${FULL.split("\n").slice(0, 173).join("\n")}\n`;
   const TEXT = "Name the page each figure came from.";
   const line = `- ${TEXT}`;
-  assert.ok(Buffer.byteLength(rules) + Buffer.byteLength(line) <= 2048 && Buffer.byteLength(rules) + 2 * Buffer.byteLength(line) + 1 > 2048, "setup: one copy fits, two do not");
+  assert.ok(Buffer.byteLength(rules) + Buffer.byteLength(line) <= 8192 && Buffer.byteLength(rules) + 2 * Buffer.byteLength(line) + 1 > 8192, "setup: one copy fits, two do not");
   await mergeOn(w.server, { runId: "run-0", reason: "corrections", files: [{ path: "corrections.md", text: rules }] });
   // The earlier claim's merge: run-1's correction saved, then the claim stopped before the run's end was saved.
   const saved = await mergeOn(w.server, { runId: "run-1", round: 1, reason: "Its owner's correction.", files: [], correction: TEXT });
@@ -197,20 +199,23 @@ test("a run whose correction-only merge landed before a crash (its end never sav
   assert.equal(kept.proposal.merged, saved.commit, "the merge the earlier claim made");
   assert.equal(kept.proposal.corrections, 1);
   assert.equal(kept.proposal.problems, undefined, JSON.stringify(kept.proposal));
+  assert.equal(kept.proposal.dropped_lines, undefined, "no line dropped");
 });
 
-test("feedback that would take corrections.md past its cap is refused with the cap's words; the file stays as it was", async (t) => {
+test("feedback that would take corrections.md past its cap is kept: the file's oldest line is dropped to fit, and the run's learning says so", async (t) => {
   const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: true });
   await seedOf(w.dir, w.server, "agent-1");
   await fillCorrections(w.server);
-  await w.start({ feedback: "One more rule that does not fit.", script: [{ say: "The job's answer." }, { say: "Noted." }] });
-  assert.equal(await w.onMain("corrections.md"), FULL, "unchanged");
+  await w.start({ feedback: "One more rule, the newest.", script: [{ say: "The job's answer." }, { say: "Noted." }] });
+  assert.equal(await w.onMain("corrections.md"), NEWEST("- One more rule, the newest.\n"), "the oldest rule out, the newest in");
+  assert.ok(Buffer.byteLength(await w.onMain("corrections.md")) <= 8192, "within the cap");
   const kept = await w.server.learning.proposal("run-1");
-  assert.equal(kept?.proposal?.state, "dropped", JSON.stringify(kept?.proposal));
-  assert.match(kept.proposal.detail, /corrections\.md .*2048 bytes/, kept.proposal.detail);
+  assert.equal(kept?.proposal?.state, "merged", JSON.stringify(kept?.proposal));
+  assert.deepEqual([kept.proposal.corrections, kept.proposal.dropped_lines, kept.proposal.problems], [1, 1, undefined], JSON.stringify(kept.proposal));
+  assert.equal(kept.proposal.detail, "Kept your correction. Dropped the oldest line of corrections.md to make room.");
 });
 
-test("corrections.md filled during the compile turn: the correction is refused alone, in the cap's words, as the check before the compile refuses one, and the passing draft is saved", async (t) => {
+test("corrections.md filled during the compile turn: the correction is kept beside the passing draft, the file's oldest line dropped to fit", async (t) => {
   const w = await world(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 1 } });
   await seedOf(w.dir, w.server, "agent-1");
   // The correction fits when it is checked, before the compile turn; another write fills the file while the turn runs.
@@ -220,15 +225,13 @@ test("corrections.md filled during the compile turn: the correction is refused a
     filled = true;
     await fillCorrections(w.server);
   };
-  await w.start({ feedback: "One more rule that does not fit.", script: [{ say: "The job's answer." }, { say: "Noted." }, { say: compiledBlock() }], beforeAnswer });
+  await w.start({ feedback: "One more rule, the newest.", script: [{ say: "The job's answer." }, { say: "Noted." }, { say: compiledBlock() }], beforeAnswer });
   assert.ok(filled, "the compile turn was asked");
   assert.ok(await w.onMain("workflows/answer/workflow.json"), "the passing draft is saved");
-  assert.equal(await w.onMain("corrections.md"), FULL, "corrections.md as the other write left it");
+  assert.equal(await w.onMain("corrections.md"), NEWEST("- One more rule, the newest.\n"), "the other write's oldest rule out, the newest in");
   assert.ok(await w.byRun(), "saved by the run");
   const kept = await w.server.learning.proposal("run-1");
   assert.equal(kept?.proposal?.state, "merged", JSON.stringify(kept?.proposal));
-  assert.equal(kept.proposal.corrections, undefined, "no correction kept");
-  assert.deepEqual(kept.proposal.problems?.map(({ rule, path }) => [rule, path]), [["too_large", "corrections.md"]], JSON.stringify(kept.proposal));
-  assert.match(kept.proposal.problems[0].detail, /corrections\.md would hold \d+ bytes; the cap is 2048 bytes/);
-  assert.equal(kept.proposal.detail, said.merged([{ name: "answer" }], 0, kept.proposal.problems));
+  assert.deepEqual([kept.proposal.corrections, kept.proposal.dropped_lines, kept.proposal.problems], [1, 1, undefined], JSON.stringify(kept.proposal));
+  assert.equal(kept.proposal.detail, said.merged([{ name: "answer" }], 1, [], 1));
 });

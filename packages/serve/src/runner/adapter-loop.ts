@@ -1350,12 +1350,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
 
   /** A person's take-over or hand-back of the run's desktop or phone (computer-journal.ts): applied to the hold, and taken
    *  by the commit that writes the change it made (its entries carry the row's id); refused in words when it changed
-   *  nothing. One at a time, behind the browser's hand-backs' turn: each meets the hold the one before it left. */
+   *  nothing, or the run has no desktop or phone. `later` when this claim can no longer say, as a hand-back's: its pass
+   *  never opened (a resume that threw), or is over. One at a time, behind the browser's hand-backs' turn: each meets the
+   *  hold the one before it left. */
   const computerCommand = (command: Command): Promise<CommandOutcome> => {
     const turn = handing.then(async (): Promise<CommandOutcome> => {
       await Promise.race([ready, (finished ?? new Promise<never>(() => {})).then(() => undefined, () => undefined)]);
       const [theGate, journal] = [gate, computerNow];
-      if (!theGate || theGate.sealed || !journal) return { refused: "This run has no desktop or phone up now." };
+      if (!theGate || theGate.sealed) return { later: "the run is parking or ending: the row waits for its next claim" };
+      if (!journal) return { refused: "This run has no desktop or phone up now." };
       const outcome = journal.apply(command);
       if (!("taken" in outcome)) return outcome;
       // Registered before the change's commit runs (the hold's writes go out one at a time, after this turn).
