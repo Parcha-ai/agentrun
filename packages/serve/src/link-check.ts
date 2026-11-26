@@ -165,6 +165,6 @@ export function linkCheck(answer: string, calls: readonly CheckedCall[]): string
     lines.push(`${scrubUrl(link)} — ${at >= 0 ? `matches call ${at + 1}` : `no matching call${cut.length ? ` (${callsWord(cut)}'s links were cut)` : ""}`}`);
   }
   const intro =
-    "Each distinct http(s) link the answer cites, checked in code against every url its calls answered (a web_search's results and the links in a native search's text; a web_fetch's url, its final url, its page's links and the links in its text or in the chunks an objective found; any other call's URLs as its result holds them): a fragment, a trailing slash, a leading www. on the host and the order of the query are ignored, the query's keys must be the same, and a query value shown as … matches any value for its key. Links are shown with their query values elided.";
+    "Each distinct http(s) link the answer cites, checked in code against every url its calls answered (a web_search's results and text; a web_fetch's url, final url, links and text; any other call's URLs as its result holds them): a fragment, a trailing slash, a leading www. on the host and the order of the query are ignored, the query's keys must be the same, and a query value shown as … matches any value for its key. Links are shown with their query values elided.";
   return [intro, ...(lines.length ? lines : ["(the answer cites no http(s) link)"])].join("\n");
 }
