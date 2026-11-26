@@ -141,10 +141,17 @@ any address, and stopped; `AGENTRUN_START_TIMEOUT_MS` sets that wait, in millise
 overwrites that log; it is private to you, as the server's first lines name its API token. A log the disk could not hold
 all of is named with the error that cut it short.
 
-Where Docker answers on this machine, a new agent runs in a Docker box of its own with a shell, and a line on stderr,
-after the address, says so: `Boxes: docker (on by default; set AGENTRUN_BOXES to change).` Where it does not, that line says why
-and that new agents run on the runner. A Docker box's image is built on its first run, which shows that on its
-timeline. `AGENTRUN_BOXES=none` turns boxes off.
+Where a new agent that names no place goes, by mode:
+
+- Where Docker answers on this machine, it runs in a Docker box of its own with a shell, and a line on stderr, after the
+  address, says so: `Boxes: docker (on by default; set AGENTRUN_BOXES to change).`
+- Where it does not, and the runner has no shell (Mode 1), its create is refused, `name a box`: it names a box, or the
+  runner (`"place": {"mode": "runner"}`) to run without a shell. That line says why, and `capabilities.places.default_place`
+  is `null`. So is `agentrun deploy` of a package that names no `tools` and no `computer` list, at its preview: name its tools
+  (`tools: []` keeps the runner) or its computer list.
+- In Mode 2, where the runner's shell is Archil's serverless exec, it is not refused: it runs on the runner, as before.
+
+A Docker box's image is built on its first run, which shows that on its timeline. `AGENTRUN_BOXES=none` turns boxes off.
 
 pi runs every agent out of the box. The Claude Code and Codex harnesses need their own packages beside the server; when
 one is missing, AgentRun says so with the one command to paste: `npx` with this package, the server and that harness's

@@ -7,10 +7,10 @@
 // (readAheadBytes()), the pool reads large files first (BIG_FILE and over, the largest first: they set the time), then
 // the rest in the import's order; at the read-ahead it reads only the one parseHome waits for. A worker's heap is bounded (OLD_MB): one that
 // runs out gives up its file, which parseHome reads itself, and another worker takes its place.
-import { totalmem } from "node:os";
+import { availableParallelism, freemem, totalmem } from "node:os";
 import { Worker } from "node:worker_threads";
 import type { Locator, SessionRead } from "./reader.js";
-import type { RecordIndex } from "./record-index.js";
+import { indexArrays, type RecordIndex } from "./record-index.js";
 
 /** A read the pool made: its sessions, the records it added, those it asked for and did not hold. Not ok: make it again. */
 export type PoolRead = { ok: true; sessions: SessionRead[]; mine: RecordIndex; missed: RecordIndex } | { ok: false };
@@ -22,6 +22,14 @@ const YOUNG_MB = 16;
 /** Each worker's old generation. Unbounded, each grows to several times what it holds (eight workers: 0.5 GiB of heap
  *  for 0.12 GiB in use, on a 24 GB home). A worker past it ends; its file is read by parseHome. */
 export const OLD_MB = 64;
+
+/** The smallest old generation a worker may be given (parseHome's workerOldMb). On node 24.22.3, one pool worker started
+ *  at N MB to read a synthetic home of four files (one of 1.2 MB), each N in a process of its own: at 1 and 2 MB V8 ends
+ *  the whole process as the worker starts ("Fatal JavaScript out of memory: GC during deserialization"); from 3 to 6 MB
+ *  no worker read a file (5 processes each, 29 at 6); at 7, 28 of 29 processes lost a worker; at 8 to 10 (29 processes
+ *  each) and at 11 and 12 (5 each), every worker read every file. A worker under it can only end the process or lose
+ *  every read, so it is refused. */
+export const MIN_OLD_MB = 8;
 
 /** The share of a worker's old generation one line may take: a line past it is read by parseHome. A capped worker
  *  whose one native call (a line's decoding, JSON.parse) outgrows its heap does not end alone: V8 ends the process. At a
@@ -45,6 +53,34 @@ export const memoryLimit = (total = totalmem(), constrained = process.constraine
  *  at 8 GiB, 128 MiB in a 2 GiB container). */
 export const readAheadBytes = (memory = memoryLimit()): number => Math.min(READ_AHEAD_BYTES, Math.floor(memory / 16));
 
+/** The default threads' ceiling. On a 48-core machine, a 23 GB home (pooled, median of 2) took 27.5 s at 8 threads
+ *  (peak 1.13 GiB), 20.3 s at 16 (1.77 GiB), 17.2 s at 24 (2.39 GiB) and 23.3 s at 32 (2.87 GiB): 16 takes most of 24's
+ *  gain for three quarters of its memory, and past 24 the threads slow each other down. */
+export const DEFAULT_THREADS_CEILING = 16;
+
+/** The most a worker's heap holds: its young generation (YOUNG_MB) and its old one (`oldMb`), both capped at its start.
+ *  The pool's peak grew by about this, 80 MiB a worker at the default, from 8 threads to 24 (the runs DEFAULT_THREADS_CEILING cites). */
+export const workerBytes = (oldMb = OLD_MB): number => (YOUNG_MB + oldMb) * 2 ** 20;
+
+/** The memory still free to this process: the machine's (os.freemem, MemAvailable on Linux: page cache it may reclaim
+ *  counts as free), at most its container's limit (memoryLimit). Not process.availableMemory: under a cgroup it takes the
+ *  limit less memory.current, which counts the page cache as used. On a 503 GiB machine with 345 GiB free, in a cgroup
+ *  of 350 GiB whose 346 GiB in use were 250 GiB of page cache, it read 130 MiB to 3.6 GiB from one second to the next. */
+export const freeMemory = (free = freemem(), limit = memoryLimit()): number => Math.min(free, limit);
+
+/** parseHome's default threads: the fewest of
+ *  - the cores this process may run on, one left for the thread that takes the reads and totals them (two cores keep
+ *    two threads: one worker would read no faster than the calling thread alone);
+ *  - DEFAULT_THREADS_CEILING;
+ *  - the workers whose heaps (workerBytes) fit in the memory still free (freeMemory) once the read-ahead (`aheadBytes`)
+ *    is set aside, since the reads waiting are held on the calling thread;
+ *  and at least 1 (every file read on the calling thread). A caller's `threads` is taken as given, up to MOST_THREADS. */
+export const defaultThreads = (cores = availableParallelism(), available = freeMemory(), aheadBytes = readAheadBytes(), oldMb = OLD_MB): number => {
+  const byCores = cores <= 2 ? cores : cores - 1;
+  const byMemory = Math.floor(Math.max(0, available - aheadBytes) / workerBytes(oldMb));
+  return Math.max(1, Math.min(byCores, DEFAULT_THREADS_CEILING, byMemory));
+};
+
 /** Workers lost (out of memory, or ended) past this many times the threads: the pool stops, and parseHome reads the rest. */
 const LOSSES_PER_THREAD = 2;
 
@@ -54,20 +90,36 @@ const SESSION_BYTES = 1024;
 /** A string past U+00FF: V8 holds it at two bytes a UTF-16 code unit, any other at one. */
 const WIDE = /[^\u0000-\u00ff]/;
 
-/** A session's strings (its first prompt and title can run to megabytes) as V8 holds them. */
-export const stringBytes = (session: object): number =>
-  Object.values(session).reduce((sum: number, value) => sum + (typeof value === "string" ? (WIDE.test(value) ? 2 : 1) * value.length : 0), 0);
+/** A read's strings as V8 holds them (a session's first prompt and title can run to megabytes), wherever they are in its
+ *  objects and arrays (a session's turns, a read's requests and paths): each object once, on a stack of its own, so no
+ *  depth runs the call stack out and a cycle ends. A typed array holds none: heldBytes counts its bytes apart. */
+export function stringBytes(read: object): number {
+  let bytes = 0;
+  const visited = new Set<object>();
+  const stack: unknown[] = [read];
+  while (stack.length) {
+    const value = stack.pop();
+    if (typeof value === "string") bytes += (WIDE.test(value) ? 2 : 1) * value.length;
+    else if (typeof value === "object" && value !== null && !ArrayBuffer.isView(value) && !visited.has(value)) {
+      visited.add(value);
+      for (const inner of Array.isArray(value) ? value : Object.values(value)) stack.push(inner);
+    }
+  }
+  return bytes;
+}
 
 type Job = { id: number; source: string; locator: Locator; size: number; state: "queued" | "running" | "waiting" | "taken"; read?: PoolRead; bytes: number };
 
-const indexBytes = (index: RecordIndex): number =>
-  [index.uuids.slots, index.uuids.owners, index.uuids.words, index.others.slots, index.others.owners, index.others.ends, index.others.bytes].reduce((sum, a) => sum + a.byteLength, 0);
+const indexBytes = (index: RecordIndex): number => indexArrays(index).reduce((sum, a) => sum + a.byteLength, 0);
 
 /** What a read holds while it waits: its indexes' and counts' arrays, and its sessions with their strings. */
 function heldBytes(read: PoolRead): number {
   if (!read.ok) return 0;
   let bytes = indexBytes(read.mine) + indexBytes(read.missed);
-  for (const { session, counts } of read.sessions) bytes += SESSION_BYTES + stringBytes(session) + (counts ? counts.model.byteLength + counts.values.byteLength + counts.has.byteLength : 0);
+  for (const sessionRead of read.sessions) {
+    const { counts } = sessionRead;
+    bytes += SESSION_BYTES + stringBytes(sessionRead) + (counts ? counts.model.byteLength + counts.values.byteLength + counts.has.byteLength : 0);
+  }
   return bytes;
 }
 
@@ -87,10 +139,9 @@ export class ReadPool {
   private waiting = 0;
   private losses = 0;
   private broken = false;
-  /** The most bytes of reads waiting at once, and the workers lost (for measuring). The read-ahead is checked before a
-   *  read is sent, so the reads in flight then (at most `threads`) may land past it. */
+  /** The most bytes of reads waiting at once, read by the lane's measuring script alone. The read-ahead is checked before
+   *  a read is sent, so the reads in flight then (at most `threads`) may land past it. */
   peakWaiting = 0;
-  lost = 0;
 
   constructor(private readonly threads: number, private readonly aheadBytes = readAheadBytes(), private readonly oldMb = OLD_MB) {
     // A worker that cannot start (no file descriptors, no memory) stops the pool: parseHome reads every file itself.
@@ -99,11 +150,6 @@ export class ReadPool {
     } catch {
       this.fail();
     }
-  }
-
-  /** The bytes of reads waiting to be taken now. */
-  get held(): number {
-    return this.waiting;
   }
 
   /** Queues each locator; a job's id is its place in the import's order, so `items` come in that order. The ids, for take. */
@@ -218,7 +264,6 @@ export class ReadPool {
   /** A worker ended (out of memory, or crashed): its file is parseHome's to read, and another worker takes its place. */
   private gone(worker: Worker): void {
     if (!this.live.delete(worker) || this.broken) return;
-    this.lost += 1;
     const at = this.idle.indexOf(worker);
     if (at !== -1) this.idle.splice(at, 1);
     const job = this.running.get(worker);

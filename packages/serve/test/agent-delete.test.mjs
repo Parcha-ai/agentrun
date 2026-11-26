@@ -9,19 +9,20 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agentDiskKey, keepRunDisk, runDiskKey, saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
 import { LearningInFlight } from "../dist/learn/delete.js";
-import { gradesKey, promotionsKey } from "../dist/learn/promote.js";
 import { saveSignIn } from "../dist/sign-ins-store.js";
 import { archilControlFetch } from "./archil-control-fake.mjs";
 import { FakeArchilDisk, FakeDiskError } from "./fixtures/archil-fake.mjs";
 import { calls as bbCalls, contexts, deleteFailures, KEY as BB_KEY } from "./fixtures/faux-browserbase-check.mjs";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
+import { raw } from "./store-target.mjs";
 import { agent, follow, secretWritePath, serve, withEnv } from "./support.mjs";
+import { putLearning } from "./learn-support.mjs";
 
 secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
 const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import.meta.url).pathname;
@@ -44,29 +45,28 @@ function fakeLearning(order = []) {
     state.calls.push(agentId);
     order.push(`learning:${agentId}`);
     if (state.busy) throw new LearningInFlight(agentId, ["a-run-in-flight"]);
-    if (state.fails) throw new Error("the learning folder could not be read");
+    if (state.fails) throw new Error("the learning rows could not be read");
   };
   return state;
 }
 
-/** The agent's learning folder on this server's disk (workspace/paths.ts agentLearningFolder). */
-const learningDir = (data, id) => join(data, "disk", "agents", agentDir(id), "learning");
-
-/** What the agent's learning keeps: files in its learning folder (its corrections.md and a workflow), and its promotions
- *  and grades records. */
-async function learned(store, data, agentId) {
-  await mkdir(join(learningDir(data, agentId), "workflows", "multiply"), { recursive: true });
-  await writeFile(join(learningDir(data, agentId), "corrections.md"), "- Six times seven is 42.\n");
-  await writeFile(join(learningDir(data, agentId), "workflows", "multiply", "workflow.json"), "{}\n");
-  await writeFile(join(learningDir(data, agentId), "audits.jsonl"), "{}\n");
-  await store.settings.put(promotionsKey(agentId), { r1: { at: 1 } });
-  await store.settings.put(gradesKey(agentId), { r1: { correct: true } });
+/** What the agent's learning keeps: its rows (its corrections.md and a workflow saved), and a promotion, a grade and an
+ *  audit record. */
+async function learned(store, agentId) {
+  await putLearning(store, agentId, { "corrections.md": "- Six times seven is 42.", "workflows/multiply/workflow.json": "{}", "workflows/multiply/README.md": "---\nname: multiply\ndescription: Multiplies\n---\n" }, { runId: "run-learned" });
+  // Each record names the digest the saved version holds (a record of one no version holds is refused).
+  const digest = (await store.learning.versions(agentId, "workflow", "multiply"))[0].digest;
+  await store.learning.addRecord(agentId, "promotion", { runId: null, workflow: "multiply", digest, data: { workflow: "multiply", digest, decided: "promote", at: new Date(0).toISOString(), reason: "checked" } });
+  await store.learning.addRecord(agentId, "grade", { runId: "r1", workflow: null, digest: null, data: { run: "r1", correct: true } });
+  await store.learning.addRecord(agentId, "audit", { runId: "r1", workflow: "multiply", digest, data: {} });
 }
 
-/** The agent's learning records still in the store (none once its learning is deleted). */
+/** The kinds of learning row the store still keeps of the agent (none once its learning is deleted): its saves, then
+ *  each kind of record. */
 async function recordsOf(store, agentId) {
   const left = [];
-  for (const key of [promotionsKey(agentId), gradesKey(agentId)]) if ((await store.settings.get(key)) !== undefined) left.push(key);
+  if ((await store.learning.saves(agentId)).total) left.push("saves");
+  for (const kind of ["promotion", "grade", "audit"]) if ((await store.learning.records(agentId, kind)).length) left.push(kind);
   return left;
 }
 
@@ -207,43 +207,34 @@ for (const step of ["after_step_1", "after_step_2", "in_step_3_trigger", "in_ste
 
 /** Run `runId`'s state written straight into the store's file: a test's stand-in for a run of the agent open again when its
  *  learning is deleted (the store refuses every way one could open once the agent is marked, so only a write under it does).
- *  A write the server's own holds the file against is tried again once it has let go, never waited for in place (the
- *  server's transaction finishes only while this test yields). */
+ *  Through raw(): the server's transaction finishes only while this thread is free, so the write waits on a worker. */
 async function stateOf(data, runId, state) {
-  for (let tries = 1; ; tries++) {
-    const db = new DatabaseSync(join(data, "store.sqlite"));
-    try {
-      db.prepare("UPDATE runs SET state = ? WHERE id = ?").run(state, runId);
-      return;
-    } catch (error) {
-      if (!/locked|busy/i.test(error.message) || tries >= 100) throw error;
-    } finally {
-      db.close();
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  const db = await raw(join(data, "store.sqlite"), { timeout: 15_000 });
+  try {
+    await db.run("UPDATE runs SET state = ? WHERE id = ?", state, runId);
+  } finally {
+    await db.close();
   }
 }
 
-test("the server's own learning delete: the agent's learning folder emptied and its promotions and grades records gone, after its runs stopped and before its other things went; 204", { timeout: 180_000 }, async (t) => {
+test("the server's own learning delete: the agent's learning rows gone (its saves, its promotions, grades and audits), after its runs stopped and before its other things went; 204", { timeout: 180_000 }, async (t) => {
   const at = { seen: [] };
   const { api, data, store } = await serve(t, {
     agentDeleteAt: async (step, agentId) => {
       if (step !== "after_step_2") return;
-      const files = await readdir(learningDir(at.data, agentId)).catch((error) => `unread: ${error.code}`);
-      at.seen.push({ files, records: await recordsOf(at.store, agentId), agentFolder: existsSync(join(at.data, "disk", "agents", agentDir(agentId))) });
+      at.seen.push({ records: await recordsOf(at.store, agentId), agentFolder: existsSync(join(at.data, "disk", "agents", agentDir(agentId))) });
     },
   });
   Object.assign(at, { data, store });
   const { agentId, runId } = await finishedAgent(api);
-  await learned(store, data, agentId);
-  assert.equal((await recordsOf(store, agentId)).length, 2);
+  await learned(store, agentId);
+  assert.deepEqual(await recordsOf(store, agentId), ["saves", "promotion", "grade", "audit"]);
 
   const deleted = await api("DELETE", `/agents/${agentId}`);
   assert.equal(deleted.status, 204, `DELETE /agents/{id} with the server's own learning delete: ${deleted.status} ${JSON.stringify(deleted.body)}`);
-  // At step 2's end the learning module has done its part (the folder empty, the records gone), the agent's folder kept.
-  assert.deepEqual(at.seen, [{ files: [], records: [], agentFolder: true }], "the learning deleted by step 2, the rest after");
+  // At step 2's end the learning module has done its part (its rows gone), the agent's folder kept.
+  assert.deepEqual(at.seen, [{ records: [], agentFolder: true }], "the learning deleted by step 2, the rest after");
   assert.deepEqual(await recordsOf(store, agentId), [], "no learning record of the agent is left");
-  assert.ok(!existsSync(learningDir(data, agentId)), "nor its learning folder");
   assert.deepEqual(rowsOf(data, agentId, [runId]), NONE);
   assert.deepEqual([(await api("DELETE", `/agents/${agentId}`)).status], [404]);
 });
@@ -259,7 +250,7 @@ test("a run of the agent open when its learning is deleted: the learning module 
   });
   open.data = data;
   const { agentId, runs, trigger } = await populated(api);
-  await learned(store, data, agentId);
+  await learned(store, agentId);
   open.runId = runs[0];
   const busy = await api("DELETE", `/agents/${agentId}`);
   assert.deepEqual([busy.status, busy.body.error?.code, busy.body.error?.retryable], [409, "learning_busy", true], JSON.stringify(busy.body));
@@ -267,8 +258,7 @@ test("a run of the agent open when its learning is deleted: the learning module 
   assert.deepEqual(busy.body.error.details?.runs, [runs[0]], "the run in flight named");
   assert.equal((await api("GET", `/agents/${agentId}`)).status, 200, "the agent is kept");
   assert.equal((await api("GET", `/triggers/${trigger}`)).body.enabled, false);
-  assert.equal((await recordsOf(store, agentId)).length, 2, "nothing of its learning removed");
-  assert.ok(existsSync(join(learningDir(data, agentId), "corrections.md")));
+  assert.deepEqual(await recordsOf(store, agentId), ["saves", "promotion", "grade", "audit"], "nothing of its learning removed");
   const left = rowsOf(data, agentId, runs);
   assert.ok(left.agents === 1 && left.named === 2 && left.triggers === 1, JSON.stringify(left));
 
@@ -429,14 +419,14 @@ test("an agent's stored Archil disk with Archil off keeps the delete from finish
 /** Run `runId`'s launch record naming disk `diskId` as the caller's, and the run's disk with it, as POST /runs with
  *  `archil_disk` records them (run-launch.ts: archil_disk { disk_id, kind: "launch" }; runs.disk), written into the
  *  store's file. */
-function launchOnDisk(data, runId, diskId) {
-  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+async function launchOnDisk(data, runId, diskId) {
+  const db = await raw(join(data, "store.sqlite"), { timeout: 10_000 });
   try {
-    const changed = db.prepare("UPDATE run_launch SET body = json_set(body, '$.archil_disk', json(?)) WHERE run_id = ?").run(JSON.stringify({ disk_id: diskId, kind: "launch" }), runId);
-    assert.equal(Number(changed.changes), 1, "the run's launch record names the disk");
-    assert.equal(Number(db.prepare("UPDATE runs SET disk = ? WHERE id = ?").run(diskId, runId).changes), 1, "and the run its disk");
+    const changed = await db.run("UPDATE run_launch SET body = json_set(body, '$.archil_disk', json(?)) WHERE run_id = ?", JSON.stringify({ disk_id: diskId, kind: "launch" }), runId);
+    assert.equal(changed.changes, 1, "the run's launch record names the disk");
+    assert.equal((await db.run("UPDATE runs SET disk = ? WHERE id = ?", diskId, runId)).changes, 1, "and the run its disk");
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
@@ -450,14 +440,13 @@ test("a run's folder on the Archil disk its launch named (the caller's) is delet
   const made = [];
   const { api, data, store } = await serve(t, { archilControl: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: (options) => (made.push(options.disk), disk) } });
   const { agentId, runId } = await finishedAgent(api);
-  launchOnDisk(data, runId, customer);
+  await launchOnDisk(data, runId, customer);
   await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
   // What the run wrote there (its work folder and its exec spill folder, runKey's and spillFolderOf's), beside what is the
   // caller's own and another agent's run.
   const own = `agents/${agentDir(agentId)}`;
-  // Its learning folder there too (learningKey): a Mode 2 run's end writes the agent's learning on the run's disk.
-  const its = [`${own}/runs/${runId}/work/notes.md`, `${own}/runs/${runId}/work/deep/out.json`, `${own}/runs/${runId}/exec-out/spill.txt`, `${own}/learning/corrections.md`, `${own}/learning/.git/HEAD`];
-  const theirs = ["shared/customers.csv", `agents/${agentDir("another-agent")}/runs/run-other/work/kept.md`, `agents/${agentDir("another-agent")}/learning/corrections.md`];
+  const its = [`${own}/runs/${runId}/work/notes.md`, `${own}/runs/${runId}/work/deep/out.json`, `${own}/runs/${runId}/exec-out/spill.txt`];
+  const theirs = ["shared/customers.csv", `agents/${agentDir("another-agent")}/runs/run-other/work/kept.md`];
   for (const key of [...its, ...theirs]) await disk.putObject(key, Buffer.from("bytes"));
 
   // A computer still holds the run's work folder (Archil's write delegation): its files can't be deleted there yet.
@@ -500,7 +489,7 @@ async function launchedOn(t, control, disk) {
   withEnv(t, { ARCHIL_API_KEY: "fake-test-key" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
   const { api, data, store } = await serve(t, { archilControl: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: () => goneWithControl(disk, control) } });
   const { agentId, runId } = await finishedAgent(api);
-  launchOnDisk(data, runId, disk.id);
+  await launchOnDisk(data, runId, disk.id);
   await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
   await disk.putObject(`agents/${agentDir(agentId)}/runs/${runId}/work/notes.md`, Buffer.from("bytes"));
   return { api, data, store, agentId, runId };
@@ -656,15 +645,15 @@ test("a trigger that reached the agent after the delete listed its triggers stop
   // past every check would have written it, already registered at Composio.
   const race = { done: false };
   const { api, data, composio } = await withComposio(t, {
-    agentDeleteAt: (at, agentId) => {
+    agentDeleteAt: async (at, agentId) => {
       if (at !== "in_step_3" || race.done || !race.trigger) return;
       race.done = true;
-      const db = new DatabaseSync(join(race.data, "store.sqlite"), { timeout: 10_000 });
+      const db = await raw(join(race.data, "store.sqlite"), { timeout: 10_000 });
       try {
-        const moved = db.prepare("UPDATE triggers SET agent_id = ?, target = json_set(target, '$.agent_id', ?) WHERE id = ?").run(agentId, agentId, race.trigger);
-        assert.equal(Number(moved.changes), 1);
+        const moved = await db.run("UPDATE triggers SET agent_id = ?, target = json_set(target, '$.agent_id', ?) WHERE id = ?", agentId, agentId, race.trigger);
+        assert.equal(moved.changes, 1);
       } finally {
-        db.close();
+        await db.close();
       }
     },
   });

@@ -178,6 +178,7 @@ Route: `GET /agents/{agent_id}/runs`.
 - `--limit INTEGER` (integer)
 - `--cursor STRING` (string): `next_cursor` from the previous page.
 - `--status queued|working|paused|input_required|completed|failed|cancelled` (string, one of these): Only runs with this status.
+- `--scope active|review` (string, one of these): Factory active executions (including archived) or unarchived terminal escalations and failures for this agent, excluding imports. Uses keyset cursors bound to filters; incompatible with status and archived. Default scoped page size 50, maximum 100.
 - `--label STRING` (string): Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
@@ -1135,6 +1136,7 @@ Route: `GET /runs`.
 - `--agent STRING` (string): Only this agent's runs.
 - `--revision STRING` (string): Only runs of this revision.
 - `--status queued|working|paused|input_required|completed|failed|cancelled` (string, one of these): Only runs with this status.
+- `--scope active|review` (string, one of these): Factory scope: active includes every nonterminal execution and continuable stopped turn, including archived runs; review selects unarchived terminal escalations and failures separately. Both exclude imported history and use keyset cursors bound to scope, agent and revision. Cannot combine with status or archived. Page limit defaults to 50 (maximum 100). No scope preserves the ordinary history listing.
 - `--archived` (boolean): true lists only archived runs; false, the default, the others.
 - `--label STRING` (string): Only runs holding this label: `<key>:<value>`, split at the first `:` (a key holds none). Once per request; a second `label`, or one that does not read as a label, is 400.
 - `--source STRING` (string): Only runs imported from this source, a source's name as the run's `imported_from.source` holds it (`claude-code`, `codex`, ...), or `live` for the runs made here, not imported. A name no run holds lists none. Once per request; a second `source`, or one that does not read as a name, is 400.

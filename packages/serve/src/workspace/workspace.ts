@@ -1,4 +1,4 @@
-// The Workspace: the one way serve touches a run's files, or an agent's learning folder. One Workspace is scoped to ONE
+// The Workspace: the one way serve touches a run's files. One Workspace is scoped to ONE
 // root folder and takes paths relative to it only (paths.ts). Two backends answer it: Local (a folder on this machine,
 // local.ts) and, next, Archil (the owner's disk through its file API and serverless exec). Nothing on main uses it yet:
 // the writers move onto it in one cutover.
@@ -159,7 +159,7 @@ export const GREP_LINE_MAX = 500;
 /** exec's default cap on stdout, and on stderr, each. */
 export const EXEC_OUTPUT_MAX = 16 * 1024 * 1024;
 
-/** A run's folder, or an agent's learning folder: every path is relative to its root. */
+/** A run's folder: every path is relative to its root. */
 export interface Workspace {
   /** The bytes of file `path`, or `length` of them from `offset` (a range past the end gives what is there). */
   read(path: string, range?: { readonly offset?: number; readonly length?: number }): Promise<Uint8Array>;

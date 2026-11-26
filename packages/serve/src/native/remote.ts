@@ -53,6 +53,16 @@ export class RemoteConnectors {
   private async targets(id: string): Promise<Target[]> {
     return (await this.store.settings.all({prefix:keyOf('target', `${id}.`)})).map(row => row.value as Target);
   }
+  /** Connector transport health only: an online worker does not establish any external session's liveness. */
+  async health(id: string): Promise<{ status: "current" | "offline" | "revoked" | "unreported"; last_seen_at: string | null }> {
+    let row: Connector;
+    try { row = await this.connector(id); }
+    catch (error) { if (error instanceof ApiError && error.code === "not_found") return { status: "unreported", last_seen_at: null }; throw error; }
+    return {
+      status: row.revoked || row.expires <= this.now() ? "revoked" : row.last_seen + ONLINE_MS >= this.now() ? "current" : "offline",
+      last_seen_at: row.last_seen ? new Date(row.last_seen).toISOString() : null,
+    };
+  }
   private async view(row: Connector) {
     const targets = await this.targets(row.id);
     return { id: row.id, connector_id: row.id, label: row.label, created_at: row.created_at, last_seen_at: row.last_seen ? new Date(row.last_seen).toISOString() : null,

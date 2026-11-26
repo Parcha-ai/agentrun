@@ -1,21 +1,21 @@
 // A person sees and controls what an agent has learned, through the API: the agent's workflow drafts, corrections, log
 // and counts; a run's learning whole and its diff; a draft read file by file and retired by its README.md (If-Match),
-// one host commit by a person, and the next run starting from the result. A write that names no version is 428, a stale
+// one save by a person, and the next run starting from the result. A write that names no version is 428, a stale
 // one 412; a draft's workflow.json is never a write's target.
 import assert from "node:assert/strict";
-import { chmodSync, lstatSync, readdirSync, readFileSync, renameSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync } from "node:fs";
 import { test } from "node:test";
+import { blobOid } from "../dist/learn/rows.js";
 import { seedOf } from "../dist/learning.js";
-import { ended, git, LEARN, learner, made, objects, repoOf, savedOf, settled, started } from "./learn-support.mjs";
+import { ended, LEARN, learner, learningAt, made, overStore, savedOf, savesOf, settled, started } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { agent, call, follow, runsFolders, scratch, serve } from "./support.mjs";
+import { agent, follow, runsFolders, serve } from "./support.mjs";
 
 const FLOW = "workflows/answer/workflow.json";
 const README = "workflows/answer/README.md";
 const DESCRIPTION = "Answers a question; use when asked";
 const enc = encodeURIComponent;
-/** A new file's patch as git writes it, hunks only. */
+/** A new file's patch, hunks only. */
 const added = (text) => {
   const lines = text.split("\n").slice(0, -1);
   return `@@ -0,0 +1,${lines.length} @@\n${lines.map((one) => `+${one}\n`).join("")}`;
@@ -36,9 +36,10 @@ test("a person sees what the agent learned and controls it: the view, the log by
     return { status: res.status, headers: res.headers, text, body: json };
   };
   const id = "keeper";
-  const repo = repoOf(data, id);
   const files = `/agents/${id}/learning/files`;
-  const blob = (file) => `"${git(repo, ["rev-parse", `main:${file}`])}"`;
+  const mainOf = async () => (await learningAt(data, id)).view?.main;
+  const textOf = async (file) => (await learningAt(data, id)).text(file);
+  const blob = async (file) => `"${blobOid(await textOf(file))}"`;
 
   // An agent whose learning was never on has no folder: an empty view; its run has no learning and no diff.
   await made(api, agent("plain"));
@@ -58,30 +59,30 @@ test("a person sees what the agent learned and controls it: the view, the log by
   const one = await started(api, id);
   const first = await ended(api, one);
   settled(first.view, first.rows, "merged");
-  const main1 = git(repo, ["rev-parse", "main"]);
+  const main1 = await mainOf();
   const two = await started(api, id);
   const second = await ended(api, two);
   settled(second.view, second.rows, "dropped", "empty");
-  assert.equal(git(repo, ["rev-parse", "main"]), main1, "the drop moved nothing");
+  assert.equal(await mainOf(), main1, "the drop moved nothing");
 
   // The agent's view: main, its draft, the log entry by run 1, and the runs' counts.
   const view = (await api("GET", `/agents/${id}/learning`)).body;
   meets("/agents/{agent_id}/learning", view);
   assert.equal(view.main, main1);
   assert.equal(view.corrections, "");
-  const size = (path) => Number(git(repo, ["cat-file", "-s", `main:${path}`]));
-  assert.deepEqual(view.workflows, [{ name: "answer", file: FLOW, readme: README, description: DESCRIPTION, status: "checking", run: one, bytes: size(FLOW), etag: blob(README), last_change: { kind: "learned", by: "run", at: view.workflows[0]?.last_change?.at } }]);
+  const size = async (path) => Buffer.byteLength(await textOf(path), "utf8");
+  assert.deepEqual(view.workflows, [{ name: "answer", file: FLOW, readme: README, description: DESCRIPTION, status: "checking", run: one, bytes: await size(FLOW), etag: await blob(README), last_change: { kind: "learned", by: "run", at: view.workflows[0]?.last_change?.at } }]);
   assert.ok(!Number.isNaN(Date.parse(view.workflows[0].last_change.at)));
   assert.deepEqual(view.log.items.map((item) => [item.by, item.commit, item.files]), [[{ run: one }, main1, [README, FLOW]]]);
   assert.equal(view.log.total, 1);
   assert.deepEqual(view.counts, { merged: 1, dropped: { empty: 1 }, in_progress: 0 });
 
-  // Run 1's diff: its merge against its parent, as git writes it, hunks only.
+  // Run 1's diff: its merge against its parent (the agent's first save), hunks only.
   const diff1 = (await api("GET", `/runs/${one}/learning/diff`)).body;
   meets("/runs/{run_id}/learning/diff", diff1);
-  assert.deepEqual([diff1.base, diff1.head], [git(repo, ["rev-parse", `${main1}^`]), main1]);
+  assert.deepEqual([diff1.base, diff1.head], [await overStore(data, async (store) => (await store.learning.diff(id, main1)).parent.id), main1]);
   assert.deepEqual(diff1.files.map((f) => [f.path, f.status]), [[README, "added"], [FLOW, "added"]]);
-  assert.equal(diff1.files[0].patch, added(`${git(repo, ["show", `main:${README}`])}\n`));
+  assert.equal(diff1.files[0].patch, added(await textOf(README)));
   // Run 2: its learning whole shows the drop, and its diff no file, against its seed.
   const learned2 = (await api("GET", `/runs/${two}/learning`)).body;
   meets("/runs/{run_id}/learning", learned2);
@@ -90,40 +91,42 @@ test("a person sees what the agent learned and controls it: the view, the log by
   const learned1 = (await api("GET", `/runs/${one}/learning`)).body;
   assert.deepEqual([learned1.state, learned1.merged, learned1.workflows], ["merged", main1, [{ file: FLOW, name: "answer" }]]);
 
-  // A draft's files as text, each with its ETag (its blob id on main): its README.md markdown, its workflow.json JSON.
+  // A draft's files as text, each with its ETag (its text's blob id at the newest save): its README.md markdown, its workflow.json JSON.
   for (const [file, type] of [[README, "text/markdown; charset=utf-8"], [FLOW, "application/json; charset=utf-8"]]) {
     const read = await api("GET", `${files}/${enc(file)}`);
     const text = typeof read.body === "string" ? read.body : JSON.stringify(read.body);
-    assert.deepEqual([read.status, read.headers.get("etag"), read.headers.get("content-type"), read.headers.get("x-content-type-options")], [200, blob(file), type, "nosniff"], file);
-    assert.equal(typeof read.body === "string" ? text : JSON.stringify(JSON.parse(text)), typeof read.body === "string" ? readFileSync(join(repo, file), "utf8") : JSON.stringify(JSON.parse(readFileSync(join(repo, file), "utf8"))), file);
+    assert.deepEqual([read.status, read.headers.get("etag"), read.headers.get("content-type"), read.headers.get("x-content-type-options")], [200, await blob(file), type, "nosniff"], file);
+    const saved = await textOf(file);
+    assert.equal(typeof read.body === "string" ? text : JSON.stringify(JSON.parse(text)), typeof read.body === "string" ? saved : JSON.stringify(JSON.parse(saved)), file);
   }
   assert.equal((await api("GET", `${files}/${enc("workflows/missing/README.md")}`)).status, 404);
   for (const bad of ["corrections.md", "MEMORY.md", "workflows/answer/other.json", "workflows/Answer/README.md", "notes.md"]) assert.equal((await api("GET", `${files}/${enc(bad)}`)).status, 400, bad);
 
-  // A person retires the draft by its README.md, with the ETag it read: one commit by a person; the next run starts
+  // A person retires the draft by its README.md, with the ETag it read: one save by a person; the next run starts
   // without it. A draft's workflow.json is no write's target.
-  const etag1 = blob(README);
+  const etag1 = await blob(README);
   assert.equal((await retire(README)).status, 428, "no precondition");
   const star = await retire(README, { "if-match": "*" });
   assert.deepEqual([star.status, star.body?.error.code], [428, "precondition_required"], "If-Match: * names no version");
-  const byJson = await retire(FLOW, { "if-match": blob(FLOW) });
+  const byJson = await retire(FLOW, { "if-match": await blob(FLOW) });
   assert.equal(byJson.status, 400, byJson.text);
   const retired = await retire(README, { "if-match": etag1 });
   assert.equal(retired.status, 200, retired.text);
   assert.equal(retired.text, `---\nname: answer\ndescription: ${DESCRIPTION}\nstatus: retired\nretired_from: active\n---\n`);
-  assert.ok(retired.headers.get("etag") !== etag1 && retired.headers.get("etag") === blob(README), "a new ETag, the new blob's");
-  assert.deepEqual(git(repo, ["log", "-1", "--format=%an%n%s%n%b", "main"]).split("\n").filter(Boolean), ["agentrun-serve", `learning: retired by a person: ${README}`, "Changed-By: user"]);
-  assert.deepEqual(git(repo, ["show", "--name-only", "--format=", "main"]).split("\n").filter(Boolean), [README], "one file changed");
-  assert.equal(git(repo, ["status", "--porcelain"]), "");
+  assert.ok(retired.headers.get("etag") !== etag1 && retired.headers.get("etag") === await blob(README), "a new ETag, the new text's");
+  const [top, ...older] = await savesOf(data, id);
+  assert.deepEqual([top.by, top.reason, top.files], [{ person: "retired", file: README }, `retired by a person: ${README}`, [README]], "one save by a person, one file changed");
+  assert.equal(top.id, await mainOf());
+  assert.equal(older.length, 1, "run 1's merge before it");
   const stale = await retire(README, { "if-match": etag1 });
   assert.deepEqual([stale.status, stale.body?.error.code], [412, "precondition_failed"], "a stale ETag");
-  // Retiring it again answers it as it is, and commits nothing.
-  const main2 = git(repo, ["rev-parse", "main"]);
+  // Retiring it again answers it as it is, and saves nothing.
+  const main2 = await mainOf();
   assert.equal((await retire(README, { "if-match": retired.headers.get("etag") })).status, 200);
-  assert.equal(git(repo, ["rev-parse", "main"]), main2);
-  assert.deepEqual((await seedOf(data, id)).workflows, [], "no later run is given it");
+  assert.equal(await mainOf(), main2);
+  assert.deepEqual((await overStore(data, (store) => seedOf(data, store, id))).workflows, [], "no later run is given it");
 
-  // The log: every change on main, newest first, by run or by person.
+  // The log: every save, newest first, by run or by person.
   const view2 = (await api("GET", `/agents/${id}/learning`)).body;
   meets("/agents/{agent_id}/learning", view2);
   assert.deepEqual(view2.log.items.map((c) => [c.by, c.reason, c.files]), [
@@ -147,46 +150,6 @@ test("a person sees what the agent learned and controls it: the view, the log by
   assert.equal((await api("POST", `/agents/${id}/archive`)).status, 200);
   const [mine, stats] = await counted();
   assert.deepEqual(mine, stats);
-});
-
-test("a link planted at the agent's learning folder makes a person's retire an error, and its reads too: the host never follows it, writes nothing where it points and answers none of it", { timeout: 120_000 }, async (t) => {
-  const { api, data, port, token } = await serve(t, { learning: "on", faux: LEARN });
-  await made(api, learner("linked", { learning: { compile_after: 1 } }));
-  const run = await ended(api, await started(api, "linked"));
-  assert.equal(run.view.learning?.state, "merged", JSON.stringify(run.view.learning));
-  const repo = repoOf(data, "linked");
-  const files = "/v2/agents/linked/learning/files";
-  const headers = (more) => ({ authorization: `Bearer ${token}`, ...more });
-  const etag = `"${git(repo, ["rev-parse", `main:${README}`])}"`;
-
-  // The folder moved out of the data directory with a link to it left in its place.
-  const outside = join(await scratch(t), "learning");
-  renameSync(repo, outside);
-  symlinkSync(outside, repo);
-  const state = () => ({
-    main: git(outside, ["rev-parse", "main"]),
-    objects: objects(outside),
-    files: readFileSync(join(outside, README), "utf8"),
-    git: readdirSync(join(outside, ".git")).sort(),
-    host: [readdirSync(join(outside, ".agentrun")).sort(), readFileSync(join(outside, ".agentrun", "snapshot.json"), "utf8")],
-  });
-  const before = state();
-  const LINKED = /^a link in the learning folder at disk\/agents\/linked-[0-9a-f]{16}\/learning can't be followed, .*; remove the link$/;
-
-  const res = await call(port, { method: "POST", path: `${files}/${enc(README)}/retire`, headers: headers({ "if-match": etag }) });
-  assert.deepEqual([res.status, res.json?.error?.code], [500, "internal"], "a retire");
-  assert.match(res.json.error.message, LINKED);
-  assert.ok(!res.text.includes(outside), "the answer never names where the link points");
-  // The reads check the same levels, making nothing: the view, its log, the corrections and a file answer the same error,
-  // holding none of what the folder the link points at holds.
-  for (const path of ["/v2/agents/linked/learning", "/v2/agents/linked/learning/log", "/v2/agents/linked/learning/corrections", `${files}/${enc(README)}`]) {
-    const read = await call(port, { path, headers: headers() });
-    assert.deepEqual([read.status, read.json?.error?.code], [500, "internal"], path);
-    assert.match(read.json.error.message, LINKED, path);
-    for (const held of [outside, before.main, DESCRIPTION]) assert.ok(!read.text.includes(held), `${path}: the answer holds ${held}`);
-  }
-  assert.ok(lstatSync(repo).isSymbolicLink(), "the link is left where it was");
-  assert.deepEqual(state(), before, "nothing written where the link points: main, its objects, its files and its .git as they were");
 });
 
 test("a restarted server counts an agent's runs that tried to learn from the store, as GET /stats does: its view's counts read with runs/ unreadable", { timeout: 180_000 }, async (t) => {
@@ -218,7 +181,7 @@ test("each draft in the view carries its README.md's ETag, the one that file's G
   const { api, data } = await serve(t, { learning: "on", faux: LEARN });
   await made(api, learner("carded", { learning: { compile_after: 1 } }));
   await ended(api, await started(api, "carded"));
-  const repo = repoOf(data, "carded");
+  const mainOf = async () => (await learningAt(data, "carded")).view?.main;
   const path = `/agents/carded/learning/files/${enc(README)}`;
   const card = async () => (await api("GET", "/agents/carded/learning")).body.workflows.find((item) => item.name === "answer");
   const shown = await card();
@@ -230,7 +193,7 @@ test("each draft in the view carries its README.md's ETag, the one that file's G
   const after = await card();
   assert.deepEqual([after.status, after.etag], ["retired", retired.headers.get("etag")]);
   // The card shown before the retire is stale: a retire by it is 412, and nothing changes.
-  const main = git(repo, ["rev-parse", "main"]);
+  const main = await mainOf();
   assert.equal((await api("POST", `${path}/retire`, undefined, { "if-match": shown.etag })).status, 412);
-  assert.equal(git(repo, ["rev-parse", "main"]), main);
+  assert.equal(await mainOf(), main);
 });

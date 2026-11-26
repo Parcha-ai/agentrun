@@ -6,9 +6,9 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { raw } from "./store-target.mjs";
 import { agent, follow, retried, serve, startInProcessRunner, withEnv } from "./support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
@@ -124,12 +124,12 @@ const ADD_CALL = { content: 'Call mcp__fake__add with {"a":2,"b":3}' };
 const INLINE = { external: { source: "grep", kind: "expert", id: "7", version: 1 }, definition: { name: "Expert 7", instructions: "Answer.", skills: [], tools: [ADD], tool_settings: ALLOW }, input: ADD_CALL };
 
 /** Clears `revisionId`'s pin, as a server open leaves a revision an earlier build saved (store/sqlite/store.ts open). */
-function unpin(data, revisionId) {
-  const raw = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+async function unpin(data, revisionId) {
+  const db = await raw(join(data, "store.sqlite"), { timeout: 10_000 });
   try {
-    raw.prepare("UPDATE revisions SET mcp_pin = NULL WHERE id = ?").run(revisionId);
+    await db.run("UPDATE revisions SET mcp_pin = NULL WHERE id = ?", revisionId);
   } finally {
-    raw.close();
+    await db.close();
   }
 }
 
@@ -148,7 +148,7 @@ test("an earlier revision's first run pins it and completes: the run lists the s
   const { api, data, store, fake } = await setup(t);
   assert.equal((await retried(api)("POST", "/agents", agent("older", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
   const first = (await api("GET", "/agents/older")).body;
-  unpin(data, first.revision);
+  await unpin(data, first.revision);
   assert.equal((await api("GET", "/agents/older")).body.mcp_pin, null);
   const started = await api("POST", "/agents/older/runs", { input: ADD_CALL });
   assert.equal(started.status, 202, JSON.stringify(started.body));
@@ -170,7 +170,7 @@ test("an earlier revision's first run pins it and completes: the run lists the s
 test("an earlier revision's first run while its server is down is refused (409) in the words that say to save the agent again, and nothing is pinned", { timeout: 120_000 }, async (t) => {
   const { api, data, fake } = await setup(t);
   assert.equal((await retried(api)("POST", "/agents", agent("downed", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
-  unpin(data, (await api("GET", "/agents/downed")).body.revision);
+  await unpin(data, (await api("GET", "/agents/downed")).body.revision);
   await fake.close();
   const refused = await api("POST", "/agents/downed/runs", { input: ADD_CALL });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
@@ -183,7 +183,7 @@ test("two first runs of an earlier revision at once make one pin: both run on it
   const { api, data, store, fake } = await setup(t);
   assert.equal((await retried(api)("POST", "/agents", agent("raced", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
   const revision = (await api("GET", "/agents/raced")).body.revision;
-  unpin(data, revision);
+  await unpin(data, revision);
   changingAdd(fake);
   const [one, two] = await Promise.all([1, 2].map(() => api("POST", "/agents/raced/runs", { input: ADD_CALL })));
   assert.deepEqual([one.status, two.status], [202, 202], JSON.stringify([one.body, two.body]));
@@ -203,7 +203,7 @@ test("an inline agent's version stored before pins were made at save is pinned a
   assert.equal(first.status, 202, JSON.stringify(first.body));
   await completes(api, first.body.run_id);
   const revision = first.body.revision;
-  unpin(data, revision);
+  await unpin(data, revision);
   const again = await api("POST", "/runs", INLINE);
   assert.equal(again.status, 202, JSON.stringify(again.body));
   assert.equal(again.body.revision, revision, "the version's stored revision");
@@ -216,7 +216,7 @@ test("two runs at once of an inline agent's version stored with no pin make one 
   const first = await api("POST", "/runs", INLINE);
   assert.equal(first.status, 202, JSON.stringify(first.body));
   await completes(api, first.body.run_id);
-  unpin(data, first.body.revision);
+  await unpin(data, first.body.revision);
   changingAdd(fake);
   const [one, two] = await Promise.all([1, 2].map(() => api("POST", "/runs", INLINE)));
   assert.deepEqual([one.status, two.status], [202, 202], JSON.stringify([one.body, two.body]));
@@ -270,7 +270,7 @@ test("a run queued before the upgrade on a revision with no pin is pinned at its
   const started = await api("POST", "/agents/queued/runs", { input: ADD_CALL });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   // The upgrade: the run is queued, and its revision has no pin (a server open leaves an earlier one so).
-  unpin(data, started.body.revision);
+  await unpin(data, started.body.revision);
   const stopRunner = await startInProcessRunner(data, { faux: FAUX_MCP });
   try {
     await completes(api, started.body.run_id);
@@ -285,7 +285,7 @@ test("a run queued before the upgrade whose server is down at its claim fails in
   assert.equal((await retried(api)("POST", "/agents", agent("downed-queued", { tools: [ADD], tool_settings: ALLOW }))).status, 201);
   const started = await api("POST", "/agents/downed-queued/runs", { input: ADD_CALL });
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  unpin(data, started.body.revision);
+  await unpin(data, started.body.revision);
   await fake.close();
   const stopRunner = await startInProcessRunner(data, { faux: FAUX_MCP });
   try {
@@ -307,7 +307,7 @@ test("a revision with no pin that grants a tool of a server deleted since is not
   assert.equal((await retried(api)("POST", "/agents", agent("two-servers", { tools: [ADD, OTHER], tool_settings: { ...ALLOW, [OTHER]: { permission: "allow" } } }))).status, 201);
   const started = await api("POST", "/agents/two-servers/runs", { input: ADD_CALL });
   assert.equal(started.status, 202, JSON.stringify(started.body));
-  unpin(data, started.body.revision);
+  await unpin(data, started.body.revision);
   assert.equal((await api("DELETE", "/settings/mcp-servers/other")).status, 204);
   const stopRunner = await startInProcessRunner(data, { faux: FAUX_MCP });
   try {
@@ -331,7 +331,7 @@ test("a follow-up to a run that ended before the upgrade pins its revision at th
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
   assert.equal((await follow(api, runId, ["completed", "failed"], { deadlineMs: 180_000 })).last.status, "completed");
-  unpin(data, started.body.revision);
+  await unpin(data, started.body.revision);
   const sent = await api("POST", `/runs/${runId}/messages`, { content: ADD_CALL.content });
   assert.equal(sent.status, 202, JSON.stringify(sent.body));
   await completes(api, runId);

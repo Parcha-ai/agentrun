@@ -113,10 +113,12 @@ test("kind desktop declares the screen and input besides the shell, as its descr
 	assert.throws(() => restOnly({ kind: "phone" }), /kind is desktop or linux/);
 });
 
-test("the provider takes the key and the SSH key as options, a key's contents never a path, and refuses a type or region Agent37 has not", async () => {
+test("the provider takes the key and an optional SSH key as options, a key's contents never a path, and refuses a type or region Agent37 has not", async () => {
 	const ssh2 = { Client: class {} };
 	await assert.rejects(create({ sshKey: SSH_KEY, ssh2 }), /options\.apiKey/);
-	await assert.rejects(create({ apiKey: KEY, ssh2 }), /options\.sshKey/);
+	// No SSH key: the provider makes its own on first use (agent37-ssh-key.test.mjs).
+	assert.equal((await create({ apiKey: KEY, ssh2 })).id, "agent37");
+	assert.throws(() => new Agent37Provider({ apiKey: KEY, ssh2, secrets: { get: async () => undefined } }), /options\.secrets/);
 	await assert.rejects(create({ apiKey: KEY, sshKey: "~/.ssh/id_ed25519", ssh2 }), (error) => {
 		assert.match(error.message, /never a path/);
 		assert.doesNotMatch(error.message, new RegExp(KEY));
@@ -606,7 +608,7 @@ test("the conformance module reads COMPUTER_AGENT37_* alone, needs its live swit
 		{ apiKey: KEY, sshKey: SSH_KEY, type: "default", region: "us", kind: "desktop", apiUrl: API_URL, daemonPath: "/tmp/computerd", maxLifetimeMs: 3_600_000, daemonUser: "2510:2510" },
 	);
 	assert.throws(() => settingsFromEnv({ AGENT37_API_KEY: BARE, AGENT37_SSH_KEY: SSH_KEY }), (error) => /set COMPUTER_AGENT37_API_KEY/.test(error.message) && !error.message.includes(BARE));
-	assert.throws(() => settingsFromEnv({ [ENV.key]: KEY }), /set COMPUTER_AGENT37_SSH_KEY/);
+	assert.deepEqual(settingsFromEnv({ [ENV.key]: KEY }), { apiKey: KEY }, "COMPUTER_AGENT37_SSH_KEY is optional");
 	assert.throws(() => settingsFromEnv({ ...env, [ENV.maxLifetimeMs]: "1h" }), /whole number of milliseconds/);
 	const rest = fakeRest();
 	const doubles = { ssh2: { Client: class {} }, fetch: rest.fetch };

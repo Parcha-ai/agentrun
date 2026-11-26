@@ -723,6 +723,15 @@ describe("AgentPage current server settings", () => {
     expect((await open(explicit, { places })).fact("Runs")?.textContent).toBe("On the server");
   });
 
+  it("on a server with no default place, an agent that names no place and a shell tool says it has none, never that it runs on the server", async () => {
+    const fixture = agentFixture("invoice-checker");
+    const places: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: false, reason: "fixture: no docker" }], defaultPlace: null };
+    const shell = { ...fixture, definition: { ...fixture.definition, tools: ["read", "bash"] } };
+    expect((await open(shell, { places })).fact("Runs")?.textContent).toBe("No place yet: choose a box, or On the server");
+    const plain = { ...fixture, definition: { ...fixture.definition, tools: ["read"] } };
+    expect((await open(plain, { places })).fact("Runs")?.textContent).toBe("On the server (server default)");
+  });
+
   it("opens the requested tab from the keyboard and names its panel", async () => {
     const page = await open(agentFixture("invoice-checker"));
     const first = page.host.querySelector<HTMLButtonElement>('[role="tab"]')!;
