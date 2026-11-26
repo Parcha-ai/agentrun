@@ -183,6 +183,9 @@ const CONTROL_PADS = [
   // In JSON written in JSON, an HTML-escaped OSC title holding an escaped quote and ended by a raw ST that ends a
   // string: only the view that reads the inner strings, decoding percent, JSON and HTML escapes, reads it whole.
   ["HTML's &#27; OSC titles holding an escaped quote, each ended by an ST that ends a string", `${String.raw`&#27;]0;t\\"`}\u001b${String.raw`\\", \"`}`.repeat(300), "json in json"],
+  // A Python repr written in JSON: only the view that reads Python's escapes through JSON's reads each title whole (a
+  // percent-encoded ESC is three characters there, and an escaped apostrophe one).
+  ["Python's \\x1b OSC titles written in JSON, holding a percent-encoded ESC and an escaped apostrophe", String.raw`\\x1b]0;t%1B\'\u0007`.repeat(300), "json in json"],
   // Characters that show as a box or a blank: U+FFFE, the braille blank, a lone surrogate as JSON's escape.
   ["raw U+FFFE", "\ufffe".repeat(300), "json"],
   ["raw braille blanks", "\u2800".repeat(300), "json"],
