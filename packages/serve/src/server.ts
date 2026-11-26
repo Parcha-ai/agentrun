@@ -35,7 +35,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_HOOKED_KINDS, API_ONLY_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerSkipped, servedApiOnly } from "./api-only.js";
+import { API_ONLY_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly } from "./api-only.js";
 import { API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
 import { declaredKeys, keysOwed, keysOwedRefusal, type RunKeys, runKeysOf, runKeysTriggerSkipped, undeclaredKeys, withCarried } from "./run-keys.js";
@@ -70,7 +70,7 @@ import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARN
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, runsThatFit } from "./host.js";
 import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
-import { IMPORT_ASKED, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
+import { IMPORT_ASKED, IMPORT_HEAP_MB, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import { inLearningQueue, LEARNING_LABEL, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
@@ -281,9 +281,6 @@ const TEMPLATE_UPLOAD_BODY = Math.ceil((IMPORT_LIMITS.packageBytes * 4) / 3) + M
 /** The starts that may begin setup's import without ending it (a worker that failed, a process that ended) before the
  *  owner's yes is dropped: an import that fails the same way each time is not taken up at every start for good. */
 const IMPORT_STARTS = 3;
-/** The heap of the worker that counts or imports this machine's sessions. A run is read whole, at most MAX_RUN_BYTES of
- *  files (import.ts), which this holds several times over. */
-const IMPORT_HEAP_MB = 2048;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 /** A run body's fields that a launch hook's host can't set on a firing's run (RunCreate `trigger_firing`): its trigger's
@@ -1716,7 +1713,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // probe that fails never lands; when it is the latest, it clears this as it fails, so no probe is out after it.
   let probing: readonly (string | undefined)[] | undefined;
   // The latest probe's turn: it ends as that probe lands or fails, or as a later probe starts and overtakes it, whichever
-  // is first, and never fails. A change that waits for the probe out waits for its turn (keysChanged), so a dropped
+  // is first, and never fails. A change that waits for the probe out waits for its turn (offersNow), so a dropped
   // probe holds no one up and its failure is no one else's.
   let turn: Promise<void> = Promise.resolve();
   let endTurn: () => void = () => {};
@@ -1761,15 +1758,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   });
   /** Whether the offers held now were made from `inputs` (offersInputs). */
   const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && sameInputs(inputs, offersFrom);
-  const keysChanged = async () => {
-    // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
-    // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
-    // name a refused key by the keys and settings, so those listings are built again.
-    await lister.keysChanged();
-    env = readEnv(base);
+  /** What a revision that names no model needs (needsOf), made again from env as it is now: the latest ask's stands. */
+  const needsNow = async () => {
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
+  };
+  /** The offers made again from the inputs read now (offersInputs), with no listing built again and env not read again:
+   *  the end of a key's change (keysChanged), and all of a refresh of the login, or of a new Ollama listing, whose offers
+   *  are not made from the inputs now, since no key changed there. */
+  const offersNow = async () => {
     // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
     // lands: a probe of these overtakes it. Only a change starts one, at most one per change, so nothing loops. While the
     // probe out has read these inputs, a change starts none: with the offers held made from them too it recomposes at
@@ -1792,13 +1790,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return;
     }
   };
+  const keysChanged = async () => {
+    // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
+    // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
+    // name a refused key by the keys and settings, so those listings are built again.
+    await lister.keysChanged();
+    env = readEnv(base);
+    await needsNow();
+    await offersNow();
+  };
   /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and
-   *  the reading made again, as a key's save does, once a listing differs from the one the offers were made from. So a
+   *  once a listing differs from the one the offers were made from, what a revision that names no model needs (its
+   *  default is the listing's: needsOf) and the offers made again from it. No key changed, so no run is relisted. So a
    *  model pulled, or Ollama started after this server, shows in a later answer with no restart. */
   const ollamaNow = async () => {
     if (!asksOllama(env)) return;
     void ollamaModels(env);
-    if (offersFrom && !offersMadeFrom(offersInputs(env))) await keysChanged();
+    if (!offersFrom || offersMadeFrom(offersInputs(env))) return;
+    await needsNow();
+    await offersNow();
   };
   /** After a harness key is saved or removed (harness-keys.ts): the listings built again, cut of it, and the offers probed
    *  again, as a recipe is offered once every key it runs on is saved here (harnessKeysSavedHere). No environment changes. */
@@ -1903,15 +1913,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  that fails is answered to it. A probe with no hand-over (a key's save, a harness key's, a new Ollama listing) can
    *  drop the hand-over's too, and then fail or still be out: the hand-over is still the latest and did not fail, yet the
    *  offers held were made before it. So the request also goes on only where the offers held are made from the inputs
-   *  now (offersMadeFrom); where not, it makes them as a key's save does (keysChanged: it waits for the probe out of
-   *  these inputs, or probes itself, and a probe of its own that fails is answered to it). It looks at most LOGIN_ROUNDS
+   *  now (offersMadeFrom); where not, it makes them again as a key's save ends (offersNow: it waits for the probe out of
+   *  these inputs, or probes itself, and a probe of its own that fails is answered to it), with no run relisted, as no
+   *  key changed. It looks at most LOGIN_ROUNDS
    *  times, then is refused (unavailable, retryable), so turns that keep coming never hold it for ever. */
   const loginNow = async (): Promise<void> => {
     if (loginOff !== undefined) return;
     for (let round = 1; ; round++) {
       const n = await refreshOnce();
       const latest = () => handed.n === n && !handed.failed;
-      if (latest() && !offersMadeFrom(offersInputs(env))) await keysChanged();
+      if (latest() && !offersMadeFrom(offersInputs(env))) await offersNow();
       if (latest() && offersMadeFrom(offersInputs(env))) return;
       if (round >= LOGIN_ROUNDS) throw new ApiError("unavailable", `Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, ${LOGIN_ROUNDS} times: ask again.`);
     }
@@ -2910,7 +2921,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // runner's child holds many).
         ...(process.execArgv.some((arg) => arg.startsWith("--input-type")) ? { execArgv: workerArgs(process.execArgv) } : {}),
         // Its own heap, at most IMPORT_HEAP_MB whatever the machine's memory: an import that needs more ends as a failed
-        // worker (said, and counted: IMPORT_STARTS), never as a process the system ends for the memory it took.
+        // worker (said, and counted: IMPORT_STARTS). A Wrapped read also starts the import package's read threads
+        // (wrappedReading), each with a heap of its own outside this one, capped at its start: a 16 MB young generation
+        // and the import's workerOldMb (64 MB) old one. Their finished reads wait for this thread mostly as transferred
+        // ArrayBuffers (record indexes, request counts), memory outside this cap. So a Wrapped read holds IMPORT_HEAP_MB
+        // for this thread's own heap, plus threads x (workerOldMb + 16) MB, plus readAhead for the replies waiting to be
+        // taken, with up to `threads` replies in flight on top: the pool checks readAhead before it starts a read.
         resourceLimits: { maxOldGenerationSizeMb: IMPORT_HEAP_MB },
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
@@ -3282,7 +3298,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // got, and the next DELETE does it again.
     forgetCopies: async (agentId, runId) => {
       await forgetRunCopies(store.learning, agentId, runId);
-      await forgetSdkCopies(store, runId);
+      await forgetSdkCopies(store, agentId, runId);
       await notYetWith(() => forgetLegacyRunLearning(data, agentId, runId, store), ["unavailable"], "The agent's old learning folder keeps the run's text until the DELETE is sent again.");
     },
     // /usage's meters and a live read's spend, from its journal, as they read now (store-reads/cap.ts), and how its
@@ -3967,12 +3983,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const skip = (options.apiOnly ? apiOnlyTriggerSkipped(pkg.name, trigger, hooked) : undefined) ?? runKeysTriggerSkipped(pkg.name, trigger, brought, hooked);
       if (!skip) return [];
       const keptOn = had.find((row) => row.enabled && row.name === String(trigger.name).trim());
-      // An API-only server serves no trigger route: its archive is what turns the agent's triggers off. Under the run-keys
-      // setting the kept one's firings bring no keys. One that starts a run of this revision is refused for the keys it
-      // owes, but the kept trigger's target is not checked here: a message_run trigger whose run is pinned to an earlier
-      // revision that owes no keys still messages it, and that run may spend. So the warning promises no refusal.
+      // Under the run-keys setting the kept one's firings bring no keys. One that starts a run of this revision is refused
+      // for the keys it owes, but the kept trigger's target is not checked here: a message_run trigger whose run is pinned
+      // to an earlier revision that owes no keys still messages it, and that run may spend. So the warning promises no refusal.
       const kept = options.apiOnly
-        ? "is kept as it was, and still fires: archiving the agent turns it off"
+        ? `is kept as it was, and still fires: PATCH /v2/triggers/${keptOn?.id} with {"enabled": false} turns it off`
         : `is kept as it was and still fires until you turn it off (PATCH /v2/triggers/${keptOn?.id} with {"enabled": false}): a firing that would start a run of this revision is refused 409 for the keys it owes, but one aimed at a run of an earlier revision that owes none still reaches that run, which may spend`;
       return [[i, keptOn ? { ...skip, message: `${skip.message} The agent's trigger ${keptOn.id} of that name ${kept}.` } : skip] as const];
     }));
@@ -5633,9 +5648,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
         // In the agent's delete turn (agentWrite): an unarchive sent while its purge runs waits for it and is 410, so no
         // run of it starts between the purge's live check and its tombstone.
-        // On an API-only server with the launch hook, which serves no trigger route to turn one on, the unarchive turns its
-        // schedule and feed triggers on again (the ones its apply makes there).
-        const turnOn = options.apiOnly && options.launchHook ? (source: { kind: string }) => API_ONLY_HOOKED_KINDS.has(source.kind) : undefined;
+        // On an API-only server with the launch hook the unarchive turns its schedule and feed triggers on again (the ones
+        // its apply makes there), so a backend's redeploy needs no PATCH of each.
+        const turnOn = options.apiOnly && options.launchHook ? (trigger: { source: { kind: string }; target: { kind: string } }) => apiOnlyTurnsOn(trigger.source.kind, trigger.target.kind, true) : undefined;
         const triggersOff = await agentWrite(id, () => (found.name === "archiveAgent" ? triggers.agentArchived(id) : triggers.agentUnarchived(id, turnOn)));
         // An archived agent's own computer is deleted (an unarchived one gets a new one at its next persistent run).
         if (found.name === "archiveAgent") reconcileComputer(id);
@@ -6771,9 +6786,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret, new Date().toISOString()));
       case "getTrigger":
         return send(res, 200, withSecretOf(await triggers.get(id)));
-      case "updateTrigger":
+      case "updateTrigger": {
+        const body = await bodyOf(req);
+        // On an API-only server, `enabled` alone, and on only where its apply would make the trigger (api-only.ts).
+        if (options.apiOnly) {
+          const trigger = await triggers.get(id);
+          const refused = apiOnlyTriggerEdit(body, trigger.source.kind, options.launchHook !== undefined, trigger.target.kind);
+          if (refused.length) throw invalid(refused);
+        }
         // Its secret's metadata as a read answers it, so a page showing the changed trigger keeps saying it is set.
-        return send(res, 200, withSecretOf(await triggers.update(id, await bodyOf(req))));
+        return send(res, 200, withSecretOf(await triggers.update(id, body)));
+      }
       case "deleteTrigger": {
         // Deleted here whatever its sender says; what could not be removed there is answered (Composio's instance).
         const said = await triggers.remove(id);
