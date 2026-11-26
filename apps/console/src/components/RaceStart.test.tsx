@@ -187,6 +187,9 @@ describe("RaceStart", () => {
       ["a request that never got an answer", () => Promise.reject(new TypeError("Failed to fetch"))],
       ["a 5xx with no refusal in it", () => new Response("<html>Bad gateway</html>", { status: 502, headers: { "content-type": "text/html" } })],
       ["a start the server is still making", () => json(409, { error: { code: "idempotency_in_progress", message: "A request with this key is still in progress.", retryable: true } })],
+      // The server saves the run, then its read of the run's view times out: the run exists although the answer is a 409.
+      ["a busy store after the run was saved", () => json(409, { error: { code: "home_busy", message: "the agent store is busy with another write; try again", retryable: true, details: { retry_after_ms: 500 } } })],
+      ["a rate limit", () => json(429, { error: { code: "rate_limited", message: "Too many requests; try again.", retryable: true } })],
     ];
     for (const [why, answer] of lost) {
       let lose = true;
