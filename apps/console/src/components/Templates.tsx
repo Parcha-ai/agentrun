@@ -9,7 +9,7 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { formColumnsClass, Input } from "@/components/ui/field";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { ListFilter } from "@/components/ListFilter";
 import { matchesFilter } from "@/lib/filter";
@@ -72,13 +72,13 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
   // Its own page has the sections' top bar: the list names the section; a template, or a package being read, leads back to it.
   const listing = install === undefined && name === undefined;
   return (
-    <section className="flex min-h-full flex-col">
+    <section className={pageClass}>
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
         {listing
           ? <h1 className={pageTitleClass}><LayoutTemplate className="size-4" aria-hidden />Templates</h1>
           : <nav aria-label="Breadcrumb"><a href="#/templates" className={cn(pageTitleClass, "text-muted-foreground hover:text-foreground")}><ArrowLeft className="size-4" aria-hidden />Templates</a></nav>}
       </header>
-      <div className="p-5 md:p-6">{body}</div>
+      <div data-page-body className={cn(pageBodyClass, "p-5 md:p-6")}>{body}</div>
     </section>
   );
 }

@@ -491,6 +491,10 @@ export interface components {
           keys: string[];
         }>;
         pin_broken?: true;
+        file?: {
+          folder: string;
+          show: string[];
+        };
       } | {
         permission?: "allow" | "ask" | "deny";
       } | {
@@ -2387,6 +2391,7 @@ export interface operations {
     body: never;
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -2396,6 +2401,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };
@@ -4027,6 +4033,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -4293,6 +4303,7 @@ export interface operations {
     body: never;
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -4302,6 +4313,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };
@@ -4580,6 +4592,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -5542,6 +5558,10 @@ export interface operations {
             pin?: Record<string, string | number | boolean | null | (string | number | boolean | null)[] | {
               keys: string[];
             }>;
+            file?: {
+              folder: string;
+              show: string[];
+            };
           }[];
         }[];
         parameters: Record<string, unknown>;
@@ -6149,7 +6169,7 @@ export interface operations {
   putWorkspaceArchil: {
     body: {
       region: string;
-      s3Url: string;
+      s3Url?: string;
       image?: string;
       keys?: {
         ARCHIL_API_KEY?: string | null;
@@ -6157,6 +6177,7 @@ export interface operations {
     };
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -6166,6 +6187,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };
@@ -7168,6 +7190,41 @@ export interface operations {
     answer: {
       revoked: boolean;
       message?: string;
+    };
+  };
+  signOutClaudeLogin: {
+    body: never;
+    answer: {
+      confirmed: boolean;
+      message?: string;
+      login: {
+        state: "off" | "other_machine" | "refused" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+        place: "agentrun" | "machine";
+        command: string;
+        can_start: boolean;
+        refused?: string;
+        account?: {
+          method?: string;
+          email?: string;
+          organization?: string;
+          plan?: string;
+        };
+        folder: string;
+        machine: {
+          folder: string;
+          source: "CLAUDE_CONFIG_DIR" | "default";
+          credentials?: string;
+        };
+        sign_in?: {
+          state: "waiting" | "signed_in" | "timed_out" | "failed" | "not_started";
+          started_at: string;
+          ended_at?: string;
+          limit_ms: number;
+          exit_code?: number;
+          signal?: string;
+          error?: string;
+        };
+      };
     };
   };
   sourceSyncFailure: {

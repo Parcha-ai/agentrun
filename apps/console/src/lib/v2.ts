@@ -196,6 +196,9 @@ export type ClaudeLoginView = Answer<"getClaudeLogin">;
 /** A free local model (GET /v2/settings/local-model, a serve extension): this machine, its Ollama, the model recommended
  *  for them and the pull here with its progress. */
 export type LocalModel = Answer<"getLocalModel">;
+/** POST /v2/settings/claude-login/sign-out's answer: whether the CLI confirmed its own sign-out, its words when it didn't,
+ *  and the login's view after it (off). */
+export type ClaudeLoginSignOut = Answer<"signOutClaudeLogin">;
 /** The model gateway in force (GET /v2/settings/model-gateway, a serve extension): the environment's, the one saved in the
  *  console, or none; its address, id style and models, and its key as a SecretMeta, never a value. */
 export type ModelGateway = Answer<"getModelGateway">;

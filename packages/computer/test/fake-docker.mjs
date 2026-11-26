@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { checkAddress } from "../dist/docker/egress-table.js";
 import { DockerProvider } from "../dist/docker.js";
 import { PROTOCOL_VERSION } from "../dist/protocol.js";
+import { records } from "./jsonl.mjs";
 
 export const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 export const HELLO = { protocol: PROTOCOL_VERSION, version: VERSION, os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
@@ -618,12 +619,13 @@ switch (args[0]) {
 `,
 		{ mode: 0o755 },
 	);
-	const calls = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+	// The logs each call appends to are read by records(): only whole lines, never one a call is still writing.
+	const calls = () => records(log);
 	/** Each call's environment, as the program recorded it: { args, names, seen } (seen: PATH, HOME, DOCKER_HOST, DOCKER_CONFIG). */
-	const envs = () => (existsSync(join(dir, "envs.jsonl")) ? readFileSync(join(dir, "envs.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : []);
+	const envs = () => records(join(dir, "envs.jsonl"));
 	const names = () => JSON.parse(readFileSync(state, "utf8")).filter((c) => !(typeof c.RemovalEnds === "number" && c.RemovalEnds <= Date.now())).map((c) => c.Name.slice(1));
 	const proceed = (step) => writeFileSync(join(dir, `proceed-${step}`), "");
-	const started = () => (existsSync(join(dir, "started.jsonl")) ? readFileSync(join(dir, "started.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line)) : []);
+	const started = () => records(join(dir, "started.jsonl"));
 	const volumeNames =() => JSON.parse(readFileSync(volumeState, "utf8")).map((v) => v.Name);
 	const networkNames = () => JSON.parse(readFileSync(networkState, "utf8")).map((n) => n.Name);
 	/** Changes a container in the fake's state, by name: what Docker would do under the provider (a proxy that crashed). */

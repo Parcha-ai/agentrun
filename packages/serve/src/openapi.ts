@@ -76,10 +76,12 @@ import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "./run-labels.js";
 import { COST_BASES } from "./runner/metrics.js";
 import { FIRST_REASONS, PAST_RUNS } from "./runner/workflow-first.js";
 import { BASH_POLICIES } from "./bash-read-only.js";
+import { MAX_SHOW_PATHS, MAX_SHOW_SEGMENTS, SHOWN_CHARS } from "./filed-tool.js";
 // The modules that own the computer and Archil key writes: loading the document loads their secret-write predicates
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
 import "./computers.js";
 import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
+import { ARCHIL_S3_URLS } from "./archil-settings.js";
 import { RUN_FILE_CUT_MAX } from "./run-files.js";
 import { ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, MAX_LINE_BYTES, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION } from "@parcha/agentrun-computer";
 import { DAEMON_FETCHES_PER_MINUTE, PAIR_TRIES_PER_MINUTE, PAIRED_NAME_MAX } from "./computer-attach.js";
@@ -853,10 +855,20 @@ const EMAIL_SCOPE = {
   description: "An agent's own setting on email_read, email_search and email_file only, never the server's. thread (the default): on a run an email trigger started, the tool sees (and email_file files) the thread of the message that started it alone (that message, and every message whose References or In-Reply-To links it, in any mailbox), and a message outside it is answered \"outside this run's thread\" and never fetched; mailbox: the whole account. A run no email started sees the whole account either way.",
   "x-agentrun-serve": "email/1",
 };
-/** An agent's own tool settings (definition.tool_settings): the map, with bash's policy and the email read tools' scope. */
+/** filed-results/1: an MCP tool's file setting (filed-tool.ts), in an agent's own tool settings and a package's mcp need. */
+const FILE_SETTING = {
+  type: "object", additionalProperties: false, required: ["folder", "show"],
+  properties: {
+    folder: { type: "string", pattern: "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}(/[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}){0,2}$", description: "The folder of the run's files each answer is filed in: 1 to 3 segments, none starting with a dot." },
+    show: { type: "array", maxItems: MAX_SHOW_PATHS, uniqueItems: true, items: { type: "string", pattern: "^(?:[A-Za-z_$][A-Za-z0-9_$-]{0,63}|0|[1-9][0-9]{0,8}|-1)(?:\\.(?:[A-Za-z_$][A-Za-z0-9_$-]{0,63}|0|[1-9][0-9]{0,8}|-1)){0,5}$" }, description: `The paths of each answer the tool's result shows, at most ${MAX_SHOW_PATHS}, each 1 to ${MAX_SHOW_SEGMENTS} segments joined by .: a key, an index, or -1 (the last item). A path that reaches no scalar shows null; a string is cut at ${SHOWN_CHARS} characters. A path that names a free-text field shows that text, and defeats the setting.` },
+  },
+  description: `An agent's own setting on an MCP tool's own key (mcp:<server>/<tool>) only, never a server's wildcard and never the server's settings: each answer of the tool, an error answer too, is written whole (its credentials scrubbed) at <folder>/<tool>-<time>-<id>.json in the run's files before the model is answered, for the skill's code. The answer is not returned as the tool's result, and goes through neither the clip nor evidence/mcp/: the result is a summary of the answer's bytes, the file's path, the value at each show path, and the answer's shape (keys that read as short names and types to depth 2, each array's length, never a value), and it is an error when the answer is. The model's own file tools (read, grep, ls, and bash on a computer) can still open the folder, so a template that must keep the model off the answer grants none of them, or runs its skill's code where the model can't read the output. A write that fails answers an error with none of the answer. A stored setting that no longer reads refuses every call of the tool, sending nothing. Removing the setting gives the tool's answers to the model again. A template's apply writes it from the package's mcp[].file.`,
+  "x-agentrun-serve": "filed-results/1",
+};
+/** An agent's own tool settings (definition.tool_settings): the map, with bash's policy, the email read tools' scope and an MCP tool's file setting. */
 const AGENT_TOOL_SETTINGS = {
   ...TOOL_SETTINGS,
-  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN } },
+  additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN, file: FILE_SETTING } },
   properties: {
     ...TOOL_SETTINGS.properties,
     bash: { ...TOOL_SETTINGS.properties.bash, properties: { ...TOOL_SETTINGS.properties.bash!.properties, policy: BASH_POLICY } },
@@ -1363,14 +1375,17 @@ const RUNNING_COMPUTERS = closed({
     description: "The runs still going whose agent has a computer, newest first, each as GET /runs/{run_id} answers it, so each carries its `computer`. A run with no computer, and one that has ended, is not here.",
   },
 });
-/** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
+/** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). archil/2: `regions` and `s3UrlFrom`,
+ *  which a client that validates against archil/1 refuses, so they are a mark of their own. */
 const ARCHIL_VIEW = closedWith({
   on: { type: "boolean", description: "Whether Mode 2 is on: run folders on Archil disks, each agent's own (made on its first run that needs one) unless a run's launch names another. Off, they are on this server's own disk (Mode 1)." },
+  regions: { type: "object", additionalProperties: { type: "string", format: "uri" }, description: `Each Archil region this server knows, with its S3 endpoint (its control plane's host with \`control.\` made \`s3.\`, as Archil's SDK derives it): ${Object.keys(ARCHIL_S3_URLS).join(", ")}. A PUT naming one of them may leave \`s3Url\` out.`, "x-agentrun-serve": "archil/2" },
   secret: { ...SECRET_ITEM("\"workspace:archil\": the Archil account key, which PUT /workspace/archil takes as keys.ARCHIL_API_KEY and the environment variable ARCHIL_API_KEY sets."), description: "The account key as its SecretMeta: never a value." },
 }, {
   source: { enum: ["env", "console"], description: "While on, where the settings come from: `env`, the server's environment (AGENTRUN_ARCHIL_REGION, AGENTRUN_ARCHIL_S3_URL and AGENTRUN_ARCHIL_IMAGE), which wins over saved ones and is changed where the server is started; `console`, saved with PUT /workspace/archil." },
   region: { type: "string", description: "The account key's region: every disk is made, read and minted on its control plane." },
-  s3Url: { type: "string", format: "uri", description: "The region's S3 endpoint (the disks' file API)." },
+  s3Url: { type: "string", format: "uri", description: "The S3 endpoint in force (the disks' file API): the one given, else the region's (`regions`)." },
+  s3UrlFrom: { enum: ["region", "given"], description: "While on, where `s3Url` comes from: `region`, the region's own (`regions`), as saved when the PUT, or the environment, gave none; `given`, another one given.", "x-agentrun-serve": "archil/2" },
   image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, serve's default (`buildpack-deps:trixie-scm` pinned by digest, git 2.47)." },
 });
 /** archil/1: GET and DELETE /agents/{agent_id}/archil's answer (archil-routes.ts agentView). */
@@ -1657,7 +1672,7 @@ const TEMPLATE = closed({
       toolkit: { type: "string", description: "The toolkit its tools are: the package names them `mcp:<toolkit>/<tool>`, and apply maps it to a saved MCP server whose `source` and `toolkit` match, rewriting the name to `mcp:<server>/<tool>` in the agent it makes." },
       required: { type: "boolean" },
       reason: { type: ["string", "null"], description: "Why the agent needs these tools, one line, for the apply screen." },
-      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its name in the package, `mcp:<toolkit>/<tool>`: what apply's `grants` name." }, asks: { enum: ["allow", "ask"], description: "Every listed tool is one the package uses and asks the owner to grant (a consent screen shows each): only the owner's `grants` at apply grant it, with no permission written; one left out is not granted. `asks` says only how its calls run once granted: `allow`, a tool the package's manifest lists under `allow`, expected to run without asking (a read); `ask`, each call waits for the owner's OK (a write) unless the owner allowed it in tool settings or chose approvals `never`." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }, PIN_KEYS] }, description: "The arguments (each a value, a list one of which, or {keys: [...]}, the keys an object argument may hold) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets), and a call carrying an argument the tool's listing does not declare (an alias of a pinned one). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" } }) },
+      tools: { type: "array", items: closedWith({ name: { type: "string" }, tool: { type: "string", description: "Its name in the package, `mcp:<toolkit>/<tool>`: what apply's `grants` name." }, asks: { enum: ["allow", "ask"], description: "Every listed tool is one the package uses and asks the owner to grant (a consent screen shows each): only the owner's `grants` at apply grant it, with no permission written; one left out is not granted. `asks` says only how its calls run once granted: `allow`, a tool the package's manifest lists under `allow`, expected to run without asking (a read); `ask`, each call waits for the owner's OK (a write) unless the owner allowed it in tool settings or chose approvals `never`." } }, { pin: { type: "object", additionalProperties: { anyOf: [{ type: ["string", "number", "boolean", "null"] }, { type: "array", items: { type: ["string", "number", "boolean", "null"] } }, PIN_KEYS] }, description: "The arguments (each a value, a list one of which, or {keys: [...]}, the keys an object argument may hold) each call of the tool must carry, `${parameters.<name>}` unfilled: apply writes them, filled, as the tool's pin in the agent's tool_settings, so the tool gate refuses a call with any other (a send goes only to the destination the owner sets), and a call carrying an argument the tool's listing does not declare (an alias of a pinned one). A pin whose parameter apply is not given sets the tool to deny instead, with a `pins.<tool>` warning.", "x-agentrun-serve": "pins/1" }, file: { ...FILE_SETTING, description: "Where each answer of the tool is filed whole in the run's files, and the paths of it the tool's result shows (the package's mcp[].file): apply writes it as the tool's file setting in the agent's tool_settings, ticked or not, so the tool's result is a summary of each answer, never the answer. Absent when the package files none." } }) },
     }),
     description: "The MCP servers it uses, by source and toolkit, and the tools of each it may be granted: apply maps each to a saved server whose `source` and `toolkit` match (`servers` picks when several do) and grants there only those the apply's `grants` name, with no permission written (each call follows this server's tool settings: under approvals ask a write asks unless the owner allowed it there, and a read runs unasked only where the server's Allow reads is on); a tool left out of `grants` is not the agent's at all, whatever its approvals, and the owner can grant it later in the agent's tools. One no saved server matches is skipped with an `mcp.<toolkit>` warning saying how to set it up, or, `required`, refuses the apply (409, nothing made).",
   },
@@ -2865,10 +2880,11 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on Archil disks, one per agent",
-      description: "Replaces the Archil settings (the account key's region and its S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. While the server's environment sets the settings (GET's `source` is `env`), it is 409 key_set_by_server naming its variables, and nothing is saved. The answer never holds a key.",
+      description: "Replaces the Archil settings (the account key's region; its S3 URL, which for a region this server knows (GET's `regions`) may be left out and is then that region's, and a region it doesn't know needs; and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. While the server's environment sets the settings (GET's `source` is `env`), it is 409 key_set_by_server naming its variables, and nothing is saved. The answer never holds a key.",
       requestBody: {
         required: true,
-        content: { "application/json": { schema: closedWith({ region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
+        content: { "application/json": { schema: closedWith({ region: { type: "string", minLength: 1 } }, {
+          s3Url: { type: "string", format: "uri", pattern: "^https://", description: "The region's S3 endpoint. Left out for a region this server knows (GET's `regions`), that region's." },
           image: { type: "string", pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
           keys: { type: "object", additionalProperties: false, properties: Object.fromEntries(ARCHIL_KEY_NAMES.map((name) => [name, { type: ["string", "null"], minLength: 1, "x-agentrun-secret": true }])) },
         }) } },
@@ -3099,7 +3115,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "turnOnClaudeLogin", tags: ["local"], summary: "Turn on Claude Code's login on this machine for claude-agent's runs",
-      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. 403 forbidden, too, at `agentrun` when AgentRun's own login folder (`<data>/claude-login`) is a link, in words naming it and where it leads: the login a sign-out removes is always a folder of AgentRun's own. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["only_me"], properties: { place: { enum: ["agentrun", "machine"], description: "Where the login is (see the answer's `place`)." }, only_me: { const: true, description: "The owner's word that they alone run agents on this server, since its runs would use their Claude plan." } } } } } },
@@ -3122,6 +3138,19 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       responses: { "200": json(CLAUDE_LOGIN, "The sign-in started."), ...errors(401, 403, 404, 409, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+  },
+  "/settings/claude-login/sign-out": {
+    post: {
+      operationId: "signOutClaudeLogin", tags: ["local"], summary: "Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off",
+      description: "For a person to sign in fresh, or as another account: a turn-off leaves the login as the CLI keeps it, so the next turn-on reads it again. Ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` on AgentRun's own login folder (`<data>/claude-login`), which removes its credentials file and, on macOS, its Keychain item for that folder, then removes the folder (credentials, account, profiles, refresh locks), the login's signed-in note and the runner's token reader, whatever the CLI said. The next turn-on finds no login (`signed_out`) and the sign-in starts as before. Runs already going on the login are left as a turn-off leaves them: each keeps the token its CLI holds, and fails saying the login is signed out at its next read of it. `confirmed` false: signed out here and the mode off, and `message` says what may remain: the CLI didn't confirm its own sign-out, or its step failed, named (on macOS its Keychain item may remain); a removal failed, each named with its path (the others still happen); or the folder had become a link, which alone is removed, with no CLI run through it and nothing it leads to touched. 403 forbidden, with nothing touched, when the login is this machine's own (`place` `machine`: the person's `~/.claude` or CLAUDE_CONFIG_DIR): AgentRun never signs it out, and the words say to run `claude auth logout` in a terminal there. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: {
+        "200": json({ type: "object", additionalProperties: false, required: ["confirmed", "login"], properties: { confirmed: { type: "boolean", description: "Whether all of the login is gone: the CLI confirmed its own sign-out and every removal landed. The CLI's sign-out runs where the folder is already gone too, so a retry after an unconfirmed sign-out is true only where the CLI confirms." }, message: { type: "string", description: "With `confirmed` false: what may remain, in words (the CLI's step unconfirmed or failed, a removal that failed, a link left in place of the folder)." }, login: CLAUDE_LOGIN } }, "Signed out here."),
+        ...errors(401, 403, 404, 429, 500),
+      },
       "x-agentrun-serve": "claudelogin/1",
     },
   },
