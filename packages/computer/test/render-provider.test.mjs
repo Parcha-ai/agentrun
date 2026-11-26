@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AttachHub, MemoryMachineTokens, releaseOlder } from "../dist/index.js";
+import { AttachHub, MemoryMachineTokens, releaseOlder, runHash } from "../dist/index.js";
 import { boxImageRef, boxRecipeHash } from "../dist/box-image.js";
 import { codeOfError } from "../dist/hosted/process.js";
 import { dialLaunch } from "../dist/hosted/scripts.js";
@@ -160,6 +160,12 @@ function fakeRender({ statuses = ["running"], answer = () => undefined, start = 
 /** The same fake Render seen by a server that restarted, or by another process: it knows nothing this process kept of the workspace. */
 const restarted = (render) => ({ ...render, owner: freshOwner() });
 
+/** create's request for computer-<n> of `run` at `epoch`, as the adapter makes one for a claim. */
+const runRequest = (n, run, epoch) => {
+	const name = `computer-${String(n).padStart(12, "0")}`;
+	return { ...REQUEST, name, labels: { "agentrun.computer": "1", "agentrun.computer.name": name, "agentrun.run": run, "agentrun.epoch": String(epoch) } };
+};
+
 const provider = (render, options = {}) => new RenderProvider({ apiKey: KEY, ownerId: render.owner ?? OWNER, fetch: render.fetch, timeouts: { pollMs: 1 }, ...options });
 
 test("create posts the workspace, the name, a plan, the lifetime as whole seconds (at least 60), no idle suspension, allow-all, the boot env but the attach URL, and the box build", async () => {
@@ -169,12 +175,18 @@ test("create posts the workspace, the name, a plan, the lifetime as whole second
 	const [post] = render.calls;
 	assert.equal(post.headers.Authorization, `Bearer ${KEY}`);
 	assert.equal(post.url.href, "https://api.render.com/v1/sandboxes");
-	assert.deepEqual(post.body, { ownerId: render.owner, name: NAME, plan: "2c-4g", timeoutSeconds: 600, idleTimeoutSeconds: 0, networkPolicy: { type: "allow-all" }, env: SANDBOX_ENV, buildName: BUILD });
+	assert.deepEqual(post.body, { ownerId: render.owner, name: `${NAME}-r${runHash("run-1")}`, plan: "2c-4g", timeoutSeconds: 600, idleTimeoutSeconds: 0, networkPolicy: { type: "allow-all" }, env: SANDBOX_ENV, buildName: BUILD });
 	await host.create({ ...REQUEST, lifetimeMs: 1_500, image: "sbb-abcdefghij0123456789" }, CTX);
 	const second = render.calls.filter(({ method, url }) => method === "POST" && url.pathname === "/v1/sandboxes")[1].body;
 	assert.equal(second.timeoutSeconds, 60, "Render's least timeout");
 	assert.equal(second.buildId, "sbb-abcdefghij0123456789", "a build's id is sent as one");
 	assert.equal(Object.hasOwn(second, "buildName"), false);
+	await host.create(runRequest(7, "run-1", 12), CTX);
+	const named = render.calls.filter(({ method, url }) => method === "POST" && url.pathname === "/v1/sandboxes").map(({ body }) => body.name);
+	assert.equal(named[2], `computer-000000000007-r${runHash("run-1")}-e12`, "the name carries the run's hash and the epoch beside the adapter's name");
+	assert.ok(named[2].length <= 64, "within Render's 64 characters");
+	await host.create({ ...REQUEST, labels: { "agentrun.computer": "1", "agentrun.computer.name": NAME } }, CTX);
+	assert.equal(render.calls.filter(({ method, url }) => method === "POST" && url.pathname === "/v1/sandboxes")[3].body.name, NAME, "a computer of no run is named as the adapter named it");
 });
 
 test("create waits for the sandbox to run, then starts agentrun-dial in one runs/sync call: the labels file, the launch script with the attach URL and never the token, started under setsid so the call returns", async () => {
@@ -279,25 +291,26 @@ test("a sandbox id of a form Render never answered before is read and terminated
 	assert.equal(await host.get(odd, CTX), undefined);
 });
 
-test("labels: the host that made a sandbox keeps them; another reads the labels file once through runs/sync; one with no file yet carries its name's labels, and a sandbox not named as a computer none", async () => {
+test("labels: the process that made a sandbox keeps them, for every provider of the workspace; another reads the labels file once through runs/sync; one with no file yet carries its name's labels, and a sandbox not named as a computer none", async () => {
 	const render = fakeRender();
 	const maker = provider(render).host;
 	await maker.create(REQUEST, CTX);
 	const runs = render.runs().length;
 	assert.deepEqual((await maker.get(SBX, CTX)).labels, LABELS);
-	assert.equal(render.runs().length, runs, "the maker reads no file");
-	const other = provider(render).host;
+	assert.deepEqual((await provider(render).host.get(SBX, CTX)).labels, LABELS, "another provider of the workspace, as serve makes per claim");
+	assert.equal(render.runs().length, runs, "the process that made it reads no file");
+	const other = provider(restarted(render)).host;
 	assert.deepEqual((await other.get(SBX, CTX)).labels, LABELS);
 	assert.deepEqual((await other.get(SBX, CTX)).labels, LABELS);
 	assert.equal(render.runs().length, runs + 1, "read once, then kept: a sandbox's labels never change");
 	render.sandboxes.get(SBX).files.delete(LABELS_FILE);
-	assert.deepEqual((await provider(render).host.get(SBX, CTX)).labels, { "agentrun.computer": "1", "agentrun.computer.name": NAME });
+	assert.deepEqual((await provider(restarted(render)).host.get(SBX, CTX)).labels, { "agentrun.computer": "1", "agentrun.computer.name": NAME });
 	await maker.create({ ...REQUEST, name: "my-own-sandbox" }, CTX);
 	const runsNow = render.runs().length;
-	assert.deepEqual((await provider(render).host.get("sbx-00000000000000000001", CTX)).labels, {});
+	assert.deepEqual((await provider(restarted(render)).host.get("sbx-00000000000000000001", CTX)).labels, {});
 	assert.equal(render.runs().length, runsNow, "a sandbox not named as a computer is not read");
 	render.sandboxes.get(SBX).files.set(LABELS_FILE, "not json");
-	const reader = provider(render).host;
+	const reader = provider(restarted(render)).host;
 	assert.deepEqual((await reader.get(SBX, CTX)).labels, { "agentrun.computer": "1", "agentrun.computer.name": NAME }, "a file that is no labels map: the name's");
 	render.sandboxes.get(SBX).files.set(LABELS_FILE, JSON.stringify(LABELS));
 	assert.deepEqual((await reader.get(SBX, CTX)).labels, LABELS, "a read that failed is not kept: the next one reads the file");
@@ -343,7 +356,7 @@ test("a sandbox Render still reads running after its terminate is read without i
 		const render = fakeRender({ lag: 2 });
 		const maker = provider(render, { dial: dialServer(), daemonPath: fileURLToPath(import.meta.url), timeouts: { pollMs: 1, listedStableMs: 0 } });
 		await maker.host.create(REQUEST, CTX);
-		const { host } = warm ? maker : provider(render);
+		const { host } = warm ? maker : provider(restarted(render));
 		await host.delete(SBX, CTX);
 		const runs = render.runs().length;
 		const lagging = await host.get(SBX, CTX);
@@ -388,33 +401,48 @@ function plant(render, id, name, { status = "running", labels } = {}) {
 	render.sandboxes.set(id, { record, env: {}, files: new Map(labels ? [[LABELS_FILE, JSON.stringify(labels)]] : []), starts: [], reads: 0 });
 }
 
-test("list asks Render by name when the name is asked, every page by cursor, leaves out terminated sandboxes and those not named as computers, and reads a labels file only when a label asked is not its name's", async () => {
+test("list reads every page by cursor and matches the name asked itself, leaves out terminated sandboxes and those not named as computers, and reads a labels file only where a label asked is not its name's, of a sandbox whose name may be the run's", async () => {
 	const render = fakeRender();
 	const ids = Array.from({ length: 101 }, (_, i) => `sbx-${String(i).padStart(20, "0")}`);
 	ids.forEach((id, i) => plant(render, id, `computer-${i.toString(16).padStart(12, "0")}`));
 	plant(render, "sbx-mine0123456789", "my-own-sandbox");
 	plant(render, "sbx-ended0123456789", "computer-ffffffffffff", { status: "terminated" });
+	plant(render, "sbx-runs0123456789", `computer-0000000000aa-r${runHash("run-1")}-e2`);
+	plant(render, "sbx-odd00123456789", `computer-0000000000ab-rnotahash`);
 	const { host } = provider(render);
 	const all = await host.list({ "agentrun.computer": "1" }, CTX);
-	assert.deepEqual(all.map(({ id }) => id), ids);
+	assert.deepEqual(all.map(({ id }) => id), [...ids, "sbx-runs0123456789"]);
 	assert.deepEqual(all[5].labels, { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000005" });
+	assert.deepEqual(all.at(-1).labels, { "agentrun.computer": "1", "agentrun.computer.name": "computer-0000000000aa" }, "the adapter's name, without the run's hash and the epoch");
 	assert.deepEqual(render.runs(), [], "the adapter's label is the name's: no file read");
 	assert.deepEqual(render.calls.map(({ method, url }) => [method, url.pathname, url.searchParams.get("ownerId"), url.searchParams.get("limit"), url.searchParams.get("cursor")]), [["GET", "/v1/sandboxes", render.owner, "100", null], ["GET", "/v1/sandboxes", render.owner, "100", ids[99]]]);
 	const byName = await host.list({ "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000011" }, CTX);
 	assert.deepEqual(byName.map(({ id }) => id), [ids[17]]);
-	assert.equal(render.calls.at(-1).url.searchParams.get("name"), "computer-000000000011");
+	assert.deepEqual((await host.list({ "agentrun.computer": "1", "agentrun.computer.name": "computer-0000000000aa" }, CTX)).map(({ id }) => id), ["sbx-runs0123456789"], "a name asked is the adapter's, whatever run and epoch the sandbox's carries");
+	assert.equal(render.calls.slice(2).some(({ url }) => url.searchParams.has("name")), false, "Render's name filter is exact, and a sandbox's name carries more than the adapter's: every page is read");
 
 	const few = fakeRender();
-	plant(few, "sbx-one0123456789", "computer-000000000001", { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000001", "agentrun.run": "run-1" } });
-	plant(few, "sbx-two0123456789", "computer-000000000002", { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000002", "agentrun.run": "run-2" } });
-	plant(few, "sbx-new0123456789", "computer-000000000003", { status: "creating" });
+	const named = (n, run) => `computer-00000000000${n}-r${runHash(run)}-e1`;
+	plant(few, "sbx-one0123456789", named(1, "run-1"), { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000001", "agentrun.run": "run-1" } });
+	plant(few, "sbx-two0123456789", named(2, "run-2"), { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000002", "agentrun.run": "run-2" } });
+	plant(few, "sbx-new0123456789", named(3, "run-1"), { status: "creating" });
 	const other = provider(few).host;
 	const byRun = await other.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX);
 	assert.deepEqual(byRun.map(({ id }) => id), ["sbx-one0123456789"], "the adapter keeps those that carry every label; this one's file says run-1");
 	assert.equal(byRun[0].labels["agentrun.run"], "run-1");
-	assert.equal(few.runs().length, 2, "each running computer's labels file read; one still creating carries its name's");
+	assert.equal(few.runs().length, 1, "only run-1's running computer is read: run-2's name has another hash, and one still creating carries its name's");
 	await other.list({ "agentrun.computer": "1", "agentrun.run": "run-2" }, CTX);
-	assert.equal(few.runs().length, 2, "read once, then kept");
+	assert.equal(few.runs().length, 2, "run-2's, once");
+	await other.list({ "agentrun.computer": "1", "agentrun.run": "run-1", "agentrun.epoch": "2" }, CTX);
+	await other.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX);
+	assert.equal(few.runs().length, 2, "another epoch's name is never read, and one read is kept");
+});
+
+test("a sandbox whose name has no run's hash is no run's computer: a listing by run never reads it, so its guest can't fail one", async () => {
+	const render = fakeRender({ answer: (method, path) => (path === "/runs/sync" ? json(200, { stdout: "", stderr: "cat: I/O error", exit_code: 1 }) : undefined) });
+	plant(render, "sbx-bare0123456789", "computer-0000000000bb");
+	assert.deepEqual(await provider(render).host.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX), []);
+	assert.deepEqual(render.runs(), []);
 });
 
 /** sbx-run000000000003 for 3: the ids wedgedRender plants. */
@@ -433,7 +461,8 @@ function wedgedRender(count, { wedged = new Map(), epochs = [], runMs = 0 } = {}
 	});
 	ids.forEach((id, i) => {
 		const name = `computer-${i.toString(16).padStart(12, "0")}`;
-		plant(render, id, name, { labels: { "agentrun.computer": "1", "agentrun.computer.name": name, "agentrun.run": "run-1", "agentrun.epoch": String(epochs[i] ?? 1) } });
+		const epoch = String(epochs[i] ?? 1);
+		plant(render, id, `${name}-r${runHash("run-1")}-e${epoch}`, { labels: { "agentrun.computer": "1", "agentrun.computer.name": name, "agentrun.run": "run-1", "agentrun.epoch": epoch } });
 	});
 	return { render, ids };
 }
@@ -491,12 +520,6 @@ test("releaseOlder over Render fails closed on a run's sandbox it can't read: a 
 	assert.match(partial.error.message, /could not read the labels of sbx-run000000000001/);
 });
 
-/** create's request for computer-<n> of `run` at `epoch`, as the adapter makes one for a claim. */
-const runRequest = (n, run, epoch) => {
-	const name = `computer-${String(n).padStart(12, "0")}`;
-	return { ...REQUEST, name, labels: { "agentrun.computer": "1", "agentrun.computer.name": name, "agentrun.run": run, "agentrun.epoch": String(epoch) } };
-};
-
 /** A fake Render whose labels-file reads exit 1 in each sandbox `wedged` holds, as a guest out of memory; create's launch still runs. */
 function guestsRender(options = {}) {
 	const wedged = new Set();
@@ -515,7 +538,7 @@ test("two providers of one workspace: a sandbox one terminated, which Render sti
 	const runs = render.runs().length;
 	// serve makes a provider per claim, and one for the run's end: the next claim's lists the run while Render still reads the old one running.
 	const listed = await provider(render).host.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX);
-	assert.deepEqual(listed.map(({ id }) => id), [kept]);
+	assert.deepEqual(listed.map(({ id, state }) => [id, state]), [[gone, "running"], [kept, "running"]], "the listing answers, with Render's reading of each and the labels known");
 	assert.equal(render.runs().length, runs, "the ending sandbox's guest is not read, and the one made in this process is known");
 });
 

@@ -9,12 +9,14 @@
 // the machine's own token, which stays in the sandbox's env. The rest of the computer is the shared machine-host
 // adapter's (./hosted/provider.ts).
 //
-// Render's sandboxes carry no labels: a sandbox's name (computer-<12 hex>) gives the adapter's own two, and create writes
-// every label to a file in the sandbox, root's alone, which get and list read back through runs/sync where a label asked
-// is not the name's, and keep: a computer's labels never change (Render moves no timeout, so there is no extend). That
-// read needs a healthy guest, so one that fails, or has no answer within the call's own bound, gives get the name's two:
-// enough for release to find and terminate a wedged sandbox, never a reason it is left to bill to its timeout. A listing
-// by a label beyond the name's fails closed on it instead, naming the sandbox: it can't tell whether that one is a match.
+// Render's sandboxes carry no labels: a sandbox's name (computer-<12 hex>-r<run hash>-e<epoch>) gives the adapter's own
+// two and says whose run and epoch it may be, and create writes every label to a file in the sandbox, root's alone, which
+// get and list read back through runs/sync where a label asked is not the name's, and keep for the whole process: a
+// computer's labels never change (Render moves no timeout, so there is no extend). That read needs a healthy guest, so
+// one that fails, or has no answer within the call's own bound, gives get the name's two: enough for release to find and
+// terminate a wedged sandbox, never a reason it is left to bill to its timeout. A listing by a label beyond the name's
+// fails closed on it instead, naming the sandbox: it can't tell whether that one is a match. A listing by run reads only
+// the sandboxes whose name has the run's hash (and the epoch asked), so only the run's own can fail it.
 //
 // Every vendor fact below is from @renderinc/sdk 1.11.0's OpenAPI schema (dist/generated/schema.d.ts, S) or its client
 // (dist/sandboxes/index.js, C), a live probe (11-25: root, HOME=/root, a Render kernel, egress https, and a command
@@ -22,6 +24,7 @@
 // dial-conformance.mjs: the sandbox's env reaches a runs/sync command, root makes network namespaces in the microVM, the
 // builds API imports the public ghcr.io box image with no credential, and a process escaped with setsid ends with the
 // sandbox's release). One none of these settles says unverified.
+import { createHash } from "node:crypto";
 import { boxImageRef, boxRecipeHash } from "./box-image.js";
 import { RENDER } from "./descriptors/render.js";
 import { COMPUTER_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
@@ -31,6 +34,7 @@ import { HostedProvider, type HostedOptions, type HostedTimeouts, mayHaveMade, N
 import { allPages, jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
 import { dialLaunch } from "./hosted/scripts.js";
 import { dateOf, isWhole } from "./hosted/values.js";
+import { EPOCH_LABEL, RUN_LABEL, runHash } from "./labels.js";
 import type { CallContext, ComputerResources, ComputerSpec, Refusal } from "./provider.js";
 import { failFor, ok, type Result, vendorFail } from "./result.js";
 
@@ -60,12 +64,38 @@ interface BuildFlight {
 }
 
 /**
- * The box build's find-or-import under way in this process, by workspace and box image (owner id, build name, image
- * tag), never by a key: every provider of the workspace joins it, and it is dropped once it settles. Render's own POST
- * answers a build of the same name and digest already pending, running or succeeded (S, create-sandbox-build), so this
- * saves the calls, not a second build.
+ * The box build's find-or-import under way in this process, by workspace, key and box image (owner id, the key's
+ * keyTag, build name, image tag): every provider of the workspace and key joins it, one of another key (a wrong one's
+ * 401) never, and it is dropped once it settles. Render's own POST answers a build of the same name and digest already
+ * pending, running or succeeded (S, create-sandbox-build), so this saves the calls, not a second build.
  */
 const FLIGHTS = new Map<string, BuildFlight>();
+
+/** A key as a map key: the first 16 hex digits of its sha256, never the key. */
+const keyTag = (apiKey: string) => createHash("sha256").update(apiKey, "utf8").digest("hex").slice(0, 16);
+
+/** What this process keeps of a workspace's sandboxes, whichever provider made or read them (serve makes one per claim). */
+interface Kept {
+	/**
+	 * Each computer's labels once known, by sandbox id: written by create, or read from the labels file once. Let go when
+	 * get reads the sandbox terminated or not found, or a listing no longer shows it (Render ended it at its timeout).
+	 */
+	labels: Map<string, Record<string, string>>;
+	/**
+	 * The sandboxes terminated from this process, until Render reads them gone (let go as labels are): Render may read one
+	 * running for a while after its terminate, and its guest, ending, is never read for labels.
+	 */
+	ending: Set<string>;
+}
+
+/** Kept, by workspace (owner id). */
+const KEPT = new Map<string, Kept>();
+
+function keptOf(owner: string): Kept {
+	let kept = KEPT.get(owner);
+	if (kept === undefined) KEPT.set(owner, (kept = { labels: new Map(), ending: new Set() }));
+	return kept;
+}
 
 /** What runs/sync answers once its command has ended (the live probe; C reads the stream's exit event's exit_code). */
 interface RunAnswer {
@@ -97,8 +127,37 @@ const OWNER_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const BUILD_ID = /^sbb-[a-z0-9]{10,40}$/;
 /** A build's name, 1 to 255 characters (S); held to letters, digits, dots, underscores and hyphens, so an OCI path is not one. */
 const BUILD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
-/** The name the adapter gives a computer (provider.ts computerName): only a sandbox named so is one of its computers. */
-const COMPUTER_NAME = /^computer-[0-9a-f]{12}$/;
+/**
+ * A computer's sandbox name: the adapter's name for it (computer-<12 hex>, computerNameFor), then -r<its run's hash>
+ * and -e<its epoch> where its labels carry them, as Orgo's names do (orgo-names.ts): at most 57 characters of Render's 64
+ * (S, sandboxPOST name). Only a sandbox named so is one of its computers.
+ */
+const SANDBOX_NAME = /^(computer-[0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,15}))?$/;
+
+/** A computer's sandbox name for create's request: its name, then its run label's hash and its epoch label where they are one. */
+function sandboxName({ name, labels }: Pick<MachineRequest, "name" | "labels">): string {
+	const run = labels[RUN_LABEL];
+	const epoch = labels[EPOCH_LABEL];
+	return `${name}${typeof run === "string" && run !== "" ? `-r${runHash(run)}` : ""}${typeof epoch === "string" && /^(?:0|[1-9][0-9]{0,15})$/.test(epoch) ? `-e${epoch}` : ""}`;
+}
+
+/** What a sandbox's name says: the adapter's name, the run's hash and the epoch; undefined for a sandbox not named as a computer. */
+function nameParts(name: unknown): { computer: string; run?: string; epoch?: string } | undefined {
+	const match = typeof name === "string" ? SANDBOX_NAME.exec(name) : null;
+	if (match === null) return undefined;
+	return { computer: match[1] as string, ...(match[2] ? { run: match[2] } : {}), ...(match[3] !== undefined ? { epoch: match[3] } : {}) };
+}
+
+/**
+ * Whether a sandbox so named can carry these labels: one of a name, a run or an epoch other than those asked can't, so
+ * a listing never reads its guest, and a guest that can't answer refuses no listing it could not be in.
+ */
+function mayCarry(parts: NonNullable<ReturnType<typeof nameParts>>, labels: Record<string, string>): boolean {
+	const name = labels[NAME_LABEL];
+	const run = labels[RUN_LABEL];
+	const epoch = labels[EPOCH_LABEL];
+	return (name === undefined || parts.computer === name) && (run === undefined || parts.run === runHash(run)) && (epoch === undefined || parts.epoch === epoch);
+}
 /** S, sandboxPlan: the sizes a sandbox takes, smallest first. */
 const PLANS = [
 	{ plan: "1c-2g", cpus: 1, memoryMb: 2048 },
@@ -262,16 +321,9 @@ class RenderHost implements MachineHost {
 	readonly #owner: string;
 	readonly #fetch: typeof fetch;
 	readonly #pollMs: number;
-	/**
-	 * Each computer's labels once known, by sandbox id: written by create, or read from the labels file once. Let go when
-	 * get reads the sandbox terminated or not found, or a whole listing no longer shows it (Render ended it at its timeout).
-	 */
-	readonly #labels = new Map<string, Record<string, string>>();
-	/**
-	 * The sandboxes this host terminated, until Render reads them gone (let go as #labels is): Render may read one running
-	 * for a while after its terminate, and its guest, ending, is never read for labels.
-	 */
-	readonly #ending = new Set<string>();
+	/** What this process keeps of the workspace's sandboxes (KEPT): every provider of the workspace shares it. */
+	readonly #labels: Kept["labels"];
+	readonly #ending: Kept["ending"];
 	/** The box build's name once Render read it succeeded: prepareImage asks no more. */
 	#built: string | undefined;
 
@@ -281,6 +333,7 @@ class RenderHost implements MachineHost {
 		this.#fetch = options.fetch;
 		this.#pollMs = options.pollMs;
 		this.#api = this.#client(API_URL, () => this.#apiKey);
+		({ labels: this.#labels, ending: this.#ending } = keptOf(this.#owner));
 	}
 
 	/** A REST client whose every call carries `bearer()` as its Bearer token: the API key, or one run's token. */
@@ -316,19 +369,19 @@ class RenderHost implements MachineHost {
 	}
 
 	/**
-	 * A sandbox's labels: the ones this host knows, else its name's, else its labels file's, read once through runs/sync
+	 * A sandbox's labels: the ones this process knows, else its name's, else its labels file's, read once through runs/sync
 	 * and kept. `need`: a listing's labels; when the name's hold every one asked, no file is read. A sandbox not named as a
-	 * computer carries none; one not running, one this host terminated, or one with no file yet, its name's. The read is
-	 * held to `end` (epoch ms, the call's own bound): one that fails or has no answer by then gives the name's, kept for
-	 * nothing, so the next read tries again, with `unread`, why: get answers the name's (release needs no more), and a
-	 * listing fails closed on it. Only the caller's own abort throws.
+	 * computer carries none; one not running, one terminated from this process, or one with no file yet, its name's. The
+	 * read is held to `end` (epoch ms, the call's own bound): one that fails or has no answer by then gives the name's,
+	 * kept for nothing, so the next read tries again, with `unread`, why: get answers the name's (release needs no more),
+	 * and a listing fails closed on it. Only the caller's own abort throws.
 	 */
 	async #labelsOf(found: RenderSandbox, ctx: HostCall, end: number, need?: Record<string, string>): Promise<{ labels: Record<string, string>; unread?: string }> {
-		const name = found.name;
-		if (typeof name !== "string" || !COMPUTER_NAME.test(name)) return { labels: {} };
+		const parts = nameParts(found.name);
+		if (parts === undefined) return { labels: {} };
 		const known = this.#labels.get(found.id);
 		if (known !== undefined) return { labels: known };
-		const own = { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name };
+		const own = { [COMPUTER_LABEL]: "1", [NAME_LABEL]: parts.computer };
 		if ((need !== undefined && Object.keys(need).every((key) => key in own)) || found.status !== "running" || this.#ending.has(found.id)) return { labels: own };
 		const late = { labels: own, unread: `no answer within ${seconds(ctx.timeoutMs)}` };
 		const left = end - Date.now();
@@ -383,16 +436,17 @@ class RenderHost implements MachineHost {
 	}
 
 	/**
-	 * POST /v1/sandboxes (S, sandboxPOST): the workspace, the request's name, the smallest plan holding its size, the
-	 * lifetime as timeoutSeconds (at least 60), no idle suspension (0), egress allow-all (the sandbox must reach the
-	 * server; the computer's own programs keep to init's network), the boot env but AGENTRUN_ATTACH_URL as its env, and
-	 * the build. Only a 429, a refusal that made nothing, is sent again: a create that got no answer may have made a
-	 * sandbox, which the adapter finds by its name. Then, once the sandbox reads running within ctx.timeoutMs, one
-	 * runs/sync call writes the labels file and starts agentrun-dial, the URL in its launch script. A sandbox that errors
-	 * or ends first, a launch that fails, or a bound passed, throws: a create that made a machine to the adapter, which
-	 * deletes it by its name. A refusal after the sandbox exists (a run token's 429s past every retry, limit; a 401,
-	 * denied) the adapter reads as a create that made nothing (mayHaveMade), so this terminates the sandbox by its id
-	 * first and throws the refusal in its own code. req.backstopAt is left: Render's timeout ends the sandbox.
+	 * POST /v1/sandboxes (S, sandboxPOST): the workspace, the request's name with its run's hash and epoch (sandboxName),
+	 * the smallest plan holding its size, the lifetime as timeoutSeconds (at least 60), no idle suspension (0), egress
+	 * allow-all (the sandbox must reach the server; the computer's own programs keep to init's network), the boot env but
+	 * AGENTRUN_ATTACH_URL as its env, and the build. Only a 429, a refusal that made nothing, is sent again: a create that
+	 * got no answer may have made a sandbox, which the adapter finds by its name. Then, once the sandbox reads running
+	 * within ctx.timeoutMs, one runs/sync call writes the labels file and starts agentrun-dial, the URL in its launch
+	 * script. A sandbox that errors or ends first, a launch that fails, or a bound passed, throws: a create that made a
+	 * machine to the adapter, which deletes it by its name. A refusal after the sandbox exists (a run token's 429s past
+	 * every retry, limit; a 401, denied) the adapter reads as a create that made nothing (mayHaveMade), so this terminates
+	 * the sandbox by its id first and throws the refusal in its own code. req.backstopAt is left: Render's timeout ends the
+	 * sandbox.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const end = Date.now() + ctx.timeoutMs;
@@ -405,7 +459,7 @@ class RenderHost implements MachineHost {
 			{
 				json: {
 					ownerId: this.#owner,
-					name: req.name,
+					name: sandboxName(req),
 					plan: planOf(req.cpus, req.memoryMb),
 					timeoutSeconds: Math.max(LEAST_TIMEOUT_S, Math.ceil(req.lifetimeMs / 1000)),
 					idleTimeoutSeconds: 0,
@@ -459,7 +513,7 @@ class RenderHost implements MachineHost {
 
 	/**
 	 * GET /v1/sandboxes/{id}; 404 is not_found, which the adapter reads as none, and a terminated sandbox is none: either
-	 * lets go of what this host kept of it. Its labels are read within this call's own bound (#labelsOf), and a read that
+	 * lets go of what this process kept of it. Its labels are read within this call's own bound (#labelsOf), and a read that
 	 * fails gives the name's two: enough for the adapter to know its computer and release it.
 	 */
 	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
@@ -480,26 +534,27 @@ class RenderHost implements MachineHost {
 	}
 
 	/**
-	 * GET /v1/sandboxes?ownerId (S, list-sandboxes: terminated ones left out unless asked), by name where the name is
-	 * asked ("exactly this name"), every page by its last item's cursor while a page is full. Only sandboxes named as
-	 * computers; a label asked that is not the name's is read from each running one's labels file (#labelsOf), LABEL_READS
-	 * at once, all within this call's own bound, and only those that carry every label asked are answered. A file that
-	 * can't be read by then fails the listing closed, once every read has ended, naming each such sandbox and why: the
-	 * listing can't tell whether it carries the labels asked, and leaving it out would let a run's listing miss a newer
-	 * epoch's fence or call a partial cleanup whole (janitor.ts releaseOlder). A listing by the name alone reads no file,
-	 * and one this host terminated is never read, so neither fails so. What this host kept of a sandbox the listing no
-	 * longer shows (one of the name asked, or any for a listing by no name) is let go: Render ended it, at its timeout or
-	 * by another's hand.
+	 * GET /v1/sandboxes?ownerId (S, list-sandboxes: terminated ones left out unless asked), every page by its last item's
+	 * cursor while a page is full: Render filters by an exact name alone, and a sandbox's name carries its run and epoch
+	 * beside the adapter's, so the name asked is matched here. Only sandboxes named as computers whose name may carry the
+	 * labels asked (mayCarry: the adapter's name, the run's hash and the epoch); a label asked that is not the name's is
+	 * read from each running one's labels file (#labelsOf), LABEL_READS at once, all within this call's own bound, and only
+	 * those that carry every label asked are answered. A file that can't be read by then fails the listing closed, once
+	 * every read has ended, naming each such sandbox and why: the listing can't tell whether it carries the labels asked,
+	 * and leaving it out would let a run's listing miss a newer epoch's fence or call a partial cleanup whole (janitor.ts
+	 * releaseOlder). So only a sandbox that may be the run's can fail a listing by run: another run's is never read. A
+	 * listing by the name alone reads no file, and a sandbox terminated from this process is never read, so neither fails
+	 * so. What this process kept of a sandbox the listing no longer shows is let go: Render ended it, at its timeout or by
+	 * another's hand.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
 		const end = Date.now() + ctx.timeoutMs;
 		// Only what was kept before the listing began is let go: a sandbox made while it ran may not be on its pages.
 		const kept = [...new Set([...this.#labels.keys(), ...this.#ending])];
-		const name = labels[NAME_LABEL];
 		const listed = orThrow(
 			await allPages<RenderSandbox>(
 				async (cursor) => {
-					const page = await this.#api.json("GET", this.#api.url(this.#owned("/v1/sandboxes", { limit: String(PAGE), ...(name === undefined ? {} : { name }), ...(cursor === undefined ? {} : { cursor }) })), { retry: true, timeoutMs: ctx.timeoutMs }, ctx.signal);
+					const page = await this.#api.json("GET", this.#api.url(this.#owned("/v1/sandboxes", { limit: String(PAGE), ...(cursor === undefined ? {} : { cursor }) })), { retry: true, timeoutMs: ctx.timeoutMs }, ctx.signal);
 					if (!page.ok) return page;
 					if (!Array.isArray(page.value)) return vendorFail(RENDER.id, "GET /v1/sandboxes answered no list");
 					const rows = page.value as Array<{ sandbox?: RenderSandbox; cursor?: unknown } | null>;
@@ -513,8 +568,11 @@ class RenderHost implements MachineHost {
 		);
 		const live = listed.filter((found) => found.status !== "terminated");
 		const shown = new Set(live.map(({ id }) => id));
-		for (const id of kept) if (!shown.has(id) && (name === undefined || this.#labels.get(id)?.[NAME_LABEL] === name)) this.#forget(id);
-		const ours = live.filter((found) => typeof found.name === "string" && COMPUTER_NAME.test(found.name));
+		for (const id of kept) if (!shown.has(id)) this.#forget(id);
+		const ours = live.filter((found) => {
+			const parts = nameParts(found.name);
+			return parts !== undefined && mayCarry(parts, labels);
+		});
 		const read = await eachAtMost(ours, LABEL_READS, async (found) => ({ found, ...(await this.#labelsOf(found, ctx, end, labels)) }));
 		const unread = read.flatMap(({ found, unread: why }) => (why === undefined ? [] : [`${found.id}: ${why}`]));
 		if (unread.length > 0) {
@@ -527,7 +585,8 @@ class RenderHost implements MachineHost {
 
 	/**
 	 * POST /v1/sandboxes/{id}/terminate (S: 204, also for one already terminated); a 404 is done to the adapter. What this
-	 * host kept of it stays until get reads it gone: Render may read it running a while yet, and its labels still answer.
+	 * process kept of it stays until get reads it gone: Render may read it running a while yet, and its labels still
+	 * answer. It is marked ending for every provider of the workspace, so none reads its guest meanwhile.
 	 */
 	async delete(id: string, ctx: HostCall): Promise<void> {
 		try {
@@ -587,7 +646,7 @@ class RenderHost implements MachineHost {
 	/**
 	 * The box image as a build of the workspace's default sandbox group (the group a create that names none uses, S),
 	 * named agentrun-box-<recipe hash>, so a new recipe is a new build. Concurrent callers in this process share one
-	 * find-or-import per workspace and box image (FLIGHTS), whichever provider they call through (serve makes one per
+	 * find-or-import per workspace, key and box image (FLIGHTS), whichever provider they call through (serve makes one per
 	 * claim), forgotten once it settles. `building` is told once, before the wait on an import, its own or one under way
 	 * when it joined; a caller's signal ends its own wait alone: the import's wait goes on, within BUILD_MS, for the next
 	 * caller.
@@ -595,7 +654,7 @@ class RenderHost implements MachineHost {
 	async boxBuild(building: () => void, signal: AbortSignal | undefined): Promise<string> {
 		if (this.#built !== undefined) return this.#built;
 		if (signal?.aborted) throw new HostError("aborted", "the wait for the box build was aborted before it began");
-		const key = JSON.stringify([this.#owner, boxBuildName(), boxImageRef()]);
+		const key = JSON.stringify([this.#owner, keyTag(this.#apiKey), boxBuildName(), boxImageRef()]);
 		let flight = FLIGHTS.get(key);
 		if (flight === undefined) {
 			const started = this.#fly();
