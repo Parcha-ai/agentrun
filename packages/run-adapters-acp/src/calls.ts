@@ -258,6 +258,8 @@ export function nameCall(calls: CallIds, update: AcpCallUpdate, announces: AcpAn
 
 /** The key of an announcement that names no tool and reports no input (CallIds.add). */
 const NOTHING = "\0*";
+/** An MCP call's arguments match more than one announcement, each only without an extra (CallIds.claim). */
+const AMBIGUOUS: unique symbol = Symbol("ambiguous");
 
 /** The agent's announced calls, matched to the MCP calls of our tools that reach the server. */
 export class CallIds {
@@ -270,6 +272,9 @@ export class CallIds {
   private readonly keyOf = new Map<string, readonly string[]>();
   /** The calls announced naming no tool and reporting no input, held for the update that names them (hold). */
   private readonly unnamed = new Set<string>();
+  /** MCP calls waiting because their arguments matched more than one announcement only in the form without an extra
+   *  (claim): each asks again once another MCP call has taken an announcement. */
+  private readonly rechecks = new Set<() => void>();
 
   /** The agent announced call `id` naming no tool and reporting no input, on a recipe whose field names calls: held for
    *  the later update that names it (nameCall), and matched to nothing until then. */
@@ -336,6 +341,28 @@ export class CallIds {
     this.unlist(id);
   }
 
+  /** `id` matched to an MCP call: out of every list, never matched again, and each MCP call waiting on an ambiguous
+   *  match (claim) asks again. */
+  private taken(id: string): string {
+    this.unlist(id);
+    this.used.add(id);
+    for (const recheck of [...this.rechecks]) recheck();
+    return id;
+  }
+
+  /** The announcement an MCP call whose arguments are `key` takes: the oldest announced with exactly those arguments;
+   *  else the one announcement those arguments match only without an extra its tool declares (add's `also`). Where
+   *  more than one matches only so (two calls of a tool with the same other arguments, one passing the extra and one
+   *  leaving it out that the agent filled in), which one this MCP call is cannot be told yet: AMBIGUOUS, until an MCP
+   *  call that carries the extra takes its own by its full form, leaving one. Undefined when none matches. */
+  private claim(key: string): string | typeof AMBIGUOUS | undefined {
+    const list = this.seen.get(key);
+    if (!list?.length) return undefined;
+    const exact = list.find((id) => this.keyOf.get(id)?.[0] === key);
+    if (exact !== undefined) return this.taken(exact);
+    return list.length === 1 ? this.taken(list[0]!) : AMBIGUOUS;
+  }
+
   /** Whether the agent announced `id` (matched or not). */
   has(id: string): boolean {
     return this.used.has(id) || this.keyOf.has(id);
@@ -355,20 +382,20 @@ export class CallIds {
     const keys = [`${tool}\0${canonical(args)}`, `\0${canonical(args)}`, `${tool}\0*`];
     const ready = (from: readonly string[]) => {
       for (const key of from) {
-        const id = this.seen.get(key)?.shift();
-        if (id) {
-          this.unlist(id);
-          this.used.add(id);
-          return id;
-        }
+        const id = this.seen.get(key)?.[0];
+        if (id) return this.taken(id);
       }
       return undefined;
     };
     // Once the wait is over, the oldest announced call named `tool` whose reported input differs from what reached MCP.
     // Never one named no tool with other arguments: its arguments are all that ties it, and they differ. Then the oldest
     // that named nothing and reported nothing.
-    const loose = () => ready([...[...this.seen.keys()].filter((key) => key.startsWith(`${tool}\0`)), NOTHING]);
-    const now = ready([...keys, NOTHING]);
+    // An ambiguous match (claim) still unresolved then goes to the oldest of its announcements.
+    const loose = () => ready([keys[0]!, ...[...this.seen.keys()].filter((key) => key.startsWith(`${tool}\0`)), NOTHING]);
+    const first = this.claim(keys[0]!);
+    if (first !== undefined && first !== AMBIGUOUS) return first;
+    const ambiguous = first === AMBIGUOUS;
+    const now = ambiguous ? undefined : ready([...keys.slice(1), NOTHING]);
     if (now) return now;
     return new Promise<string | undefined>((resolve, reject) => {
       const lists = keys.map((key) => {
@@ -377,10 +404,15 @@ export class CallIds {
         return list;
       });
       const drop = () => {
+        this.rechecks.delete(recheck);
         for (const list of lists) {
           const at = list.indexOf(done);
           if (at >= 0) list.splice(at, 1);
         }
+      };
+      const recheck = () => {
+        const got = this.claim(keys[0]!);
+        if (got !== undefined && got !== AMBIGUOUS) done(got);
       };
       const done = (id: string) => {
         clearTimeout(timer);
@@ -400,6 +432,7 @@ export class CallIds {
       }, ms);
       signal.addEventListener("abort", stop, { once: true });
       for (const list of lists) list.push(done);
+      if (ambiguous) this.rechecks.add(recheck);
     });
   }
 }
