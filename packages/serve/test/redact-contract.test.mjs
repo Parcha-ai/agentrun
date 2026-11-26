@@ -1039,18 +1039,23 @@ const CASES = [
       },
       // A held value with two "+", one the operator between two single-quoted literals and one inside the second, its
       // rest past a property name: withheld before the operator was read as one (the values read with the operator in
-      // them), shown when the operator was left out but the "+" inside a string kept, withheld now that the values read
-      // every "+" as nothing, as the held value's `joined` needle does.
+      // them), shown when the operator was left out but the "+" inside a string kept, withheld now that main's reading
+      // of the values, with the operator, is read too.
       {
         name: 'a held value with two "+", one the operator between two single-quoted literals and one inside a literal, its rest past a property name, withholds the text',
         text: "{'a': 'Zq8VbN3x' + 'LmT6+pR2w', 'b': 'Yk9HsD4f'}", values: ["Zq8VbN3x+LmT6+pR2wYk9HsD4f"], hides: ["Zq8VbN3x", "Yk9HsD4f"], exact: all("[redacted]"),
       },
-      // Accepted, as a "," or ":" in a held value already is: the values read with no "+" match a held value with its "+"
-      // dropped, so its two sides in two strings withhold the text though the "+" is not printed.
-      ...[",", "+"].map((mark) => ({
-        name: `a held value's two sides around a "${mark}" in two strings of an array, the "${mark}" not printed, withholds the text (accepted)`,
-        text: JSON.stringify(["Zq8VbN3xLmT6", "pR2wYk9HsD4f"]), values: [`Zq8VbN3xLmT6${mark}pR2wYk9HsD4f`], hides: ["Zq8VbN3x"], exact: all("[redacted]"),
-      })),
+      // Accepted, as before: the values read with no "," match a held value with its "," dropped, so its two sides in two
+      // strings withhold the text though the "," is not printed. A "+" is no such mark: only an operator printed between
+      // the two is left out, so with none printed the text shows, as before.
+      {
+        name: `a held value's two sides around a "," in two strings of an array, the "," not printed, withholds the text (accepted)`,
+        text: JSON.stringify(["Zq8VbN3xLmT6", "pR2wYk9HsD4f"]), values: ["Zq8VbN3xLmT6,pR2wYk9HsD4f"], hides: ["Zq8VbN3x"], exact: all("[redacted]"),
+      },
+      {
+        name: `a held value's two sides around a "+" in two strings of an array, the "+" not printed, shows as it came, as before (control)`,
+        text: JSON.stringify(["Zq8VbN3xLmT6", "pR2wYk9HsD4f"]), values: ["Zq8VbN3xLmT6+pR2wYk9HsD4f"], hides: [], exact: all(JSON.stringify(["Zq8VbN3xLmT6", "pR2wYk9HsD4f"])),
+      },
       // Prose before single-quoted literals (P1-3): an apostrophe in "Here's" or "I've" opened a string, so the code's own
       // apostrophes were read the wrong way round and its literals never joined. An apostrophe with a letter or a digit
       // on both sides opens no string, and a string an apostrophe opened ends at a line break, as a literal of Python
@@ -1087,6 +1092,29 @@ const CASES = [
           text, values: [P24[0]], hides: ["Zq8VbN3x", "LmT6pR2w"], exact: all("[redacted]"),
         }));
       }),
+      // An apostrophe whose line ends before its string does: this reading ends the string there, main's read on to the
+      // next apostrophe, so the two pair the code's quotes the other way round. Main's reading cut the value's literal at
+      // its "," or ":" and read its two sides together; whatever main withheld, withheld still, with an operator on the
+      // line too (main's reading then also reads the operator, in its own join).
+      ...[
+        ["after an assignment the line ends in", "x = '\nk = 'Zq8V,bN3xLmT6pR2w'"],
+        ["after prose ending in a lone apostrophe", "the servers'\nk = 'Zq8V,bN3xLmT6pR2w'"],
+        ["at its \":\", after an assignment the line ends in", "x = '\nk = 'Zq8V:bN3xLmT6pR2w'"],
+        ["after an assignment the line ends in, with an operator on the line", "x = '\nk = 'Zq8V,bN3xLmT6pR2w' + 'a'"],
+      ].map(([how, text]) => ({
+        name: `a held value written with a "," or ":" inside a single-quoted literal ${how} withholds the text, as main did`,
+        text, values: [P24[0]], hides: ["bN3xLmT6pR2w"], exact: all("[redacted]"),
+      })),
+      // Prose with an apostrophe before a dict whose first value has a string prefix: the prose's apostrophe opens nothing
+      // and the prefix's opens its string, so the dict's values read together. Main read the prose's as opening a string
+      // and showed the held value split across them; each prefix is needed here, as main's reading finds nothing.
+      ...[
+        ...["r", "R", "b", "B", "u", "U", "f", "F", "rb", "rB", "Rb", "RB", "br", "bR", "Br", "BR", "fr", "fR", "Fr", "FR", "rf", "rF", "Rf", "RF", "ur", "UR", "Ur", "uR"],
+        ...["N", "E", "X", "L", "u8", "#13"],
+      ].map((prefix) => ({
+        name: `a held value split across two single-quoted values of a dict after prose with an apostrophe, the first with the prefix ${prefix}, withholds the text`,
+        text: `Here's the key: {'a': ${prefix}'Zq8VbN3x', 'b': 'LmT6pR2w'}`, values: [P24[0]], hides: ["Zq8VbN3x", "LmT6pR2w"], exact: all("[redacted]"),
+      })),
       // Every other prefix a language writes before a quote (Python 2's ur'...', SQL's N'...', E'...', X'...' and B'...',
       // C's L'x', u'x', U'x' and u8'x', Rust's b'x', Delphi's #13'...'): as the first of the values, in a call's
       // arguments, a list, a SQL row, and as a literal earlier on the line. Each withheld before the prose rule, and now.
