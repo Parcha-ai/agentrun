@@ -150,7 +150,9 @@ function nameParts(name: unknown): { computer: string; run?: string; epoch?: str
 
 /**
  * Whether a sandbox so named can carry these labels: one of a name, a run or an epoch other than those asked can't, so
- * a listing never reads its guest, and a guest that can't answer refuses no listing it could not be in.
+ * a listing never reads its guest, and a guest that can't answer refuses no listing it could not be in. A run's own
+ * sandboxes always have its hash, so a hash another run shares (16 base32 letters, 80 bits) only adds a sandbox to be
+ * read, whose file then says its run, or which fails the listing closed: it never leaves one of the run's out.
  */
 function mayCarry(parts: NonNullable<ReturnType<typeof nameParts>>, labels: Record<string, string>): boolean {
 	const name = labels[NAME_LABEL];

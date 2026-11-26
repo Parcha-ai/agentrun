@@ -339,16 +339,38 @@ test("a labels read that fails or never answers gives get the name's labels with
 	await assert.rejects(provider(render).host.get(SBX, { ...CTX, signal: caller.signal }), (error) => error.code === "aborted", "the caller's own abort is no failed read: it aborts");
 });
 
-test("release with no labels known and a labels read that fails still terminates the sandbox", async () => {
+test("release with no labels known and a labels read that fails still terminates the sandbox: its name, run's hash and epoch after it, still reads as the adapter's name", async () => {
 	for (const [what, fails] of [["exits 1", () => json(200, { stdout: "", stderr: "fork: out of memory", exit_code: 1 })], ["never answers", (signal) => hang(signal)]]) {
 		const render = fakeRender({ answer: (method, path, body, { signal }) => (path === "/runs/sync" ? fails(signal) : undefined) });
-		plant(render, SBX, NAME, { labels: LABELS });
+		plant(render, SBX, `${NAME}-r${runHash("run-1")}-e3`, { labels: { ...LABELS, "agentrun.epoch": "3" } });
 		// A server that restarted: this provider made nothing, so it knows no labels.
-		const restarted = provider(render, { dial: dialServer(), daemonPath: fileURLToPath(import.meta.url), timeouts: { pollMs: 1, listedStableMs: 0, requestMs: 300 } });
-		const released = await restarted.release({ id: SBX, name: NAME }, "delete");
+		const fresh = provider(render, { dial: dialServer(), daemonPath: fileURLToPath(import.meta.url), timeouts: { pollMs: 1, listedStableMs: 0, requestMs: 300 } });
+		assert.deepEqual((await fresh.host.get(SBX, { timeoutMs: 300 })).labels, { "agentrun.computer": "1", "agentrun.computer.name": NAME }, `${what}: get answers the adapter's name, which its ref carries`);
+		const released = await fresh.release({ id: SBX, name: NAME }, "delete");
 		assert.equal(released.ok, true, released.ok ? what : `${what}: ${released.error.code}: ${released.error.message}`);
 		assert.equal(render.sandboxes.get(SBX).record.status, "terminated", `${what}: terminated, not left to bill to its timeout`);
 	}
+});
+
+test("a create whose answer was lost after Render made the sandbox: the adapter's sweep by name finds it by the adapter's name and terminates it", async () => {
+	const render = fakeRender();
+	let lost = 0;
+	// Render makes the sandbox, then the answer never reaches the server.
+	const fetch = async (url, init = {}) => {
+		const answered = await render.fetch(url, init);
+		if (init.method === "POST" && new URL(url).pathname === "/v1/sandboxes") {
+			lost += 1;
+			throw new TypeError("fetch failed");
+		}
+		return answered;
+	};
+	const made = provider({ ...render, fetch }, { dial: dialServer(), daemonPath: fileURLToPath(import.meta.url), timeouts: { pollMs: 1, listedStableMs: 0, listedMs: 2_000 } });
+	const created = await made.create({ image: BUILD, lifetimeMs: 600_000, network: "none", labels: { "agentrun.run": "run-1", "agentrun.epoch": "4" } }, { requestId: "render-lost-answer" });
+	assert.equal(created.ok, false);
+	assert.equal(lost, 1, "the create was sent once");
+	const [sandbox] = render.sandboxes.values();
+	assert.match(sandbox.record.name, new RegExp(`^computer-[0-9a-f]{12}-r${runHash("run-1")}-e4$`), "the sandbox's name carries the run's hash and the epoch");
+	assert.equal(sandbox.record.status, "terminated", `found by the adapter's name and terminated, never left to bill: ${created.error.message}`);
 });
 
 test("a sandbox Render still reads running after its terminate is read without its guest: release settles, and its labels go once Render reads it gone", async () => {
