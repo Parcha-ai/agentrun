@@ -1715,7 +1715,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // probe that fails never lands; when it is the latest, it clears this as it fails, so no probe is out after it.
   let probing: readonly (string | undefined)[] | undefined;
   // The latest probe's turn: it ends as that probe lands or fails, or as a later probe starts and overtakes it, whichever
-  // is first, and never fails. A change that waits for the probe out waits for its turn (keysChanged), so a dropped
+  // is first, and never fails. A change that waits for the probe out waits for its turn (offersNow), so a dropped
   // probe holds no one up and its failure is no one else's.
   let turn: Promise<void> = Promise.resolve();
   let endTurn: () => void = () => {};
@@ -1760,15 +1760,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   });
   /** Whether the offers held now were made from `inputs` (offersInputs). */
   const offersMadeFrom = (inputs: readonly (string | undefined)[]): boolean => offersFrom !== undefined && sameInputs(inputs, offersFrom);
-  const keysChanged = async () => {
-    // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
-    // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
-    // name a refused key by the keys and settings, so those listings are built again.
-    await lister.keysChanged();
-    env = readEnv(base);
+  /** What a revision that names no model needs (needsOf), made again from env as it is now: the latest ask's stands. */
+  const needsNow = async () => {
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
+  };
+  /** The offers made again from the inputs read now (offersInputs), with no listing built again and env not read again:
+   *  the end of a key's change (keysChanged), and all of a refresh of the login, or of a new Ollama listing, whose offers
+   *  are not made from the inputs now, since no key changed there. */
+  const offersNow = async () => {
     // A probe still out from other inputs (a turn-on's, after its turn-off) would put back offers made from them as it
     // lands: a probe of these overtakes it. Only a change starts one, at most one per change, so nothing loops. While the
     // probe out has read these inputs, a change starts none: with the offers held made from them too it recomposes at
@@ -1791,13 +1792,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       return;
     }
   };
+  const keysChanged = async () => {
+    // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
+    // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
+    // name a refused key by the keys and settings, so those listings are built again.
+    await lister.keysChanged();
+    env = readEnv(base);
+    await needsNow();
+    await offersNow();
+  };
   /** The Ollama here, as capabilities read it: its listing asked again behind the answer once stale (ollamaModels), and
-   *  the reading made again, as a key's save does, once a listing differs from the one the offers were made from. So a
+   *  once a listing differs from the one the offers were made from, what a revision that names no model needs (its
+   *  default is the listing's: needsOf) and the offers made again from it. No key changed, so no run is relisted. So a
    *  model pulled, or Ollama started after this server, shows in a later answer with no restart. */
   const ollamaNow = async () => {
     if (!asksOllama(env)) return;
     void ollamaModels(env);
-    if (offersFrom && !offersMadeFrom(offersInputs(env))) await keysChanged();
+    if (!offersFrom || offersMadeFrom(offersInputs(env))) return;
+    await needsNow();
+    await offersNow();
   };
   /** After a harness key is saved or removed (harness-keys.ts): the listings built again, cut of it, and the offers probed
    *  again, as a recipe is offered once every key it runs on is saved here (harnessKeysSavedHere). No environment changes. */
@@ -1902,15 +1915,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  that fails is answered to it. A probe with no hand-over (a key's save, a harness key's, a new Ollama listing) can
    *  drop the hand-over's too, and then fail or still be out: the hand-over is still the latest and did not fail, yet the
    *  offers held were made before it. So the request also goes on only where the offers held are made from the inputs
-   *  now (offersMadeFrom); where not, it makes them as a key's save does (keysChanged: it waits for the probe out of
-   *  these inputs, or probes itself, and a probe of its own that fails is answered to it). It looks at most LOGIN_ROUNDS
+   *  now (offersMadeFrom); where not, it makes them again as a key's save ends (offersNow: it waits for the probe out of
+   *  these inputs, or probes itself, and a probe of its own that fails is answered to it), with no run relisted, as no
+   *  key changed. It looks at most LOGIN_ROUNDS
    *  times, then is refused (unavailable, retryable), so turns that keep coming never hold it for ever. */
   const loginNow = async (): Promise<void> => {
     if (loginOff !== undefined) return;
     for (let round = 1; ; round++) {
       const n = await refreshOnce();
       const latest = () => handed.n === n && !handed.failed;
-      if (latest() && !offersMadeFrom(offersInputs(env))) await keysChanged();
+      if (latest() && !offersMadeFrom(offersInputs(env))) await offersNow();
       if (latest() && offersMadeFrom(offersInputs(env))) return;
       if (round >= LOGIN_ROUNDS) throw new ApiError("unavailable", `Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, ${LOGIN_ROUNDS} times: ask again.`);
     }
