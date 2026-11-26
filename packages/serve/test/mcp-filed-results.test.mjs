@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { filedBy } from "../dist/filed-tool.js";
 import { MCP_CLIP, mcpGateway } from "../dist/mcp-gateway.js";
+import { keepText } from "../dist/runner/redact.js";
 import { localWorkspace, WORKSPACE_ERRORS } from "../dist/workspace/index.js";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 
@@ -64,6 +65,7 @@ async function setup(t, { filed, work: workOf, gate, fetch: send } = {}) {
   const work = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "mcp-filed-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   const gateway = mcpGateway({
+    redact: keepText,
     pin: { fake: { url: fake.url, tools } },
     credentials: { fake: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } },
     work: workOf ?? (() => localWorkspace(work)),

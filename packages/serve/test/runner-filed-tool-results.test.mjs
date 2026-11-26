@@ -17,6 +17,7 @@ const { sealMcpCredential } = await import("../dist/store/index.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const host = await import("../dist/runner/run-child-host.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { runFolder, runKey, scratchFolder } = await import("../dist/workspace/paths.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
@@ -132,7 +133,7 @@ test("a run's own process (its runner's MCP, heldFor), Mode 2 with no computer a
     await store.runs.create({ id: "run-own", agentId: "agent-own", revisionId: "rev-own" });
     const empty = nothingHere(data, "agent-own", "run-own");
     const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision, claimed: {} };
-    const side = host.heldFor(deps, reads, (text) => text, () => {});
+    const side = host.heldFor(deps, reads, heldRedactor((text) => text), () => {});
     t.after(() => side.release());
     const mcp = await side.held.mcp({ appendRoot: async () => {} });
     const tool = mcp?.tools.find((one) => one.catalog === GRANTS[0]);
@@ -159,7 +160,7 @@ test("a revision whose stored file setting no longer reads (a folder of ../x): t
   await store.agents.create({ id: "agent-own", name: "Own" }, { id: "rev-own", ...revision });
   await store.runs.create({ id: "run-own", agentId: "agent-own", revisionId: "rev-own" });
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision, claimed: {} };
-  const side = host.heldFor({ store, sealKey: SEAL_KEY, env: {}, data, mcpLoopback: true }, reads, (text) => text, () => {});
+  const side = host.heldFor({ store, sealKey: SEAL_KEY, env: {}, data, mcpLoopback: true }, reads, heldRedactor((text) => text), () => {});
   t.after(() => side.release());
   const mcp = await side.held.mcp({ appendRoot: async () => {} });
   const tool = mcp?.tools.find((one) => one.catalog === GRANTS[0]);

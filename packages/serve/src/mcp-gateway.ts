@@ -32,7 +32,7 @@ import { saveOnce } from "./save-once.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
-import { valueLeft } from "./learn/secrets.js";
+import { MIN_SECRET, secretShapes, valueLeft } from "./learn/secrets.js";
 import { capped, mcpClient, scrub } from "./mcp-wire.js";
 import { resourceResult, resourceToolOperation, resourceToolProblem } from "./mcp-resources.js";
 import { mcpNameOf, mcpToolName } from "./tool-names.js";
@@ -250,13 +250,49 @@ export interface McpGatewayOptions {
   /** The run's redactor (the runner's one, holding every key the run opened: its own model and tool keys, the other
    *  servers' credentials), after each call's own scrub on every text the gateway answers or files: the model's answer,
    *  a filed answer, a long answer's filed rest, a server's results and an error's words; its values (heldValues) read
-   *  in a binary payload filed whole (filedJson). Every claim's MCP gives it (mcp-run.ts); a caller the types don't reach
-   *  that gives none gets the call's scrub alone. */
+   *  in a binary payload filed whole (filedJson). Every claim's MCP gives it (mcp-run.ts); a gateway given none does not
+   *  start. */
   redact: ((text: string) => string) & { readonly heldValues?: () => readonly string[] };
 }
 
 /** A run's journal commit. */
 export type McpCommit = <T>(change: (tx: unknown) => Promise<T>) => Promise<T>;
+
+/** A binary payload of an answer filed whole (an image's or an audio's data, a resource's blob), as it is filed: scrubbed
+ *  of the call's own credentials (`own`) and kept whole, unless it holds one of `values` (what the run's redactor holds),
+ *  as written, in any form the matcher finds, or in the text of the bytes it decodes to, or that text holds a secret's shape (a JWT,
+ *  a private key: SECRET_SHAPES, which the run's redactor cuts in text). Then it is "[redacted]" whole: a cut inside it
+ *  would leave no payload a reader could open either. Its base64 text is not read for a shape: the MCP client takes no
+ *  payload that is not base64, and in base64 a shape stands only by chance (a Google API key's run, about once in 50 MiB)
+ *  or as a server's deliberate encoding, which no redactor stops. `values` undefined (a redactor that names none): the
+ *  payload is cut as the rest is, by `clean`. */
+export function binaryKept(payload: string, clean: (text: string) => string, own: (text: string) => string, values: readonly string[] | undefined): string {
+  if (!values) return clean(payload);
+  const scrubbed = own(payload);
+  const text = textRuns(Buffer.from(scrubbed, "base64").toString("latin1"));
+  if (secretShapes(text).length > 0) return "[redacted]";
+  if (!values.length) return scrubbed;
+  return valueLeft(scrubbed, values, []) || valueLeft(text, values, []) ? "[redacted]" : scrubbed;
+}
+
+/** The text in a payload's bytes, one run to a line. A run is the bytes between two that are neither text nor what the
+ *  matcher reads past in a Latin-1 decode: printable ASCII and whitespace (a no-break space among it), and the bytes it
+ *  reads as nothing (a NUL, a control character, a soft hyphen, a spacing accent: IGNORED_BYTES, which go). A held value
+ *  cut into short pieces by one of them, or written as UTF-16 or UTF-32 in either byte order, still reads whole. A run is
+ *  kept when MIN_SECRET or more printable characters are left. Both steps are linear in the bytes. Only these runs are
+ *  read: a value or a shape the bytes carry is text, and every view read over binary bytes cost about 25 s a MiB. */
+export function textRuns(bytes: string): string {
+  const runs: string[] = [];
+  for (const [found] of bytes.matchAll(RUN)) {
+    const text = found.replace(IGNORED_BYTES, "");
+    let printable = 0;
+    for (let at = 0; at < text.length && printable < MIN_SECRET; at++) if (text.charCodeAt(at) > 0x20 && text.charCodeAt(at) < 0x7f) printable++;
+    if (printable >= MIN_SECRET) runs.push(text);
+  }
+  return runs.join("\n");
+}
+const RUN = /[\x00-\xa0\xa8\xad\xaf\xb4\xb8]+/g;
+const IGNORED_BYTES = /[\x00-\x08\x0e-\x1f\x7f-\x9f\xa8\xad\xaf\xb4\xb8]+/g;
 
 /** The gateway: a session's servers, and their calls. `credentials` is read at every call and every request, never
  *  copied: a change the claim step makes after (a token refreshed behind the claim, a server removed) reaches it, even
@@ -269,6 +305,8 @@ export type McpGateway = {
 };
 
 export function mcpGateway(options: McpGatewayOptions): McpGateway {
+  if (typeof options.redact !== "function") throw new TypeError("An MCP gateway was given no redactor (the run's), so it does not start: an answer would reach the model and the run's files cut of its own server's credentials alone");
+  const runCut = options.redact;
   type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown>; request(params: unknown, options: unknown): Promise<unknown> };
   /** Each server's client, with the account query it was connected with (`query`, JSON): a message that binds the run to
    *  another account connects again, so no session made as one account carries another's calls. */
@@ -384,9 +422,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   /** `result` as the JSON filed for an answer with blocks that are not text, every text in it cut by `clean`. An image's
    *  or an audio's data and a resource's blob are base64, one run with no whitespace, which the run's redactor would show
    *  as "[redacted]" past a piece (key-refusal.ts redactedAnswer), and a screenshot is far longer than one: each is
-   *  scrubbed of the call's own credentials (`own`) and kept whole unless it holds one of `values` (what the run's
-   *  redactor holds), as written, in any form the matcher finds, or in the bytes it decodes to; then it is "[redacted]"
-   *  alone. `values` undefined (a redactor that names none): the payload is cut as the rest is. */
+   *  filed as binaryKept keeps it, at its own block. */
   const filedJson = (result: Record<string, unknown>, clean: (text: string) => string, own: (text: string) => string, values: readonly string[] | undefined): string => {
     const blocks = Array.isArray(result.content) ? (result.content as unknown[]) : [];
     const payloads: { at: number; key: "data" | "blob"; text: string }[] = [];
@@ -412,17 +448,11 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     } catch {
       return filed;
     }
-    const kept = (payload: string) => {
-      const scrubbed = own(payload);
-      if (!values) return clean(payload);
-      if (!values.length) return scrubbed;
-      return valueLeft(scrubbed, values, []) || valueLeft(Buffer.from(scrubbed, "base64").toString("latin1"), values, []) ? "[redacted]" : scrubbed;
-    };
     const content = Array.isArray(doc.content) ? (doc.content as unknown[]) : [];
     for (const { at, key, text } of payloads) {
       const block = content[at] as Record<string, unknown> | undefined;
       const into = key === "data" ? block : (block?.resource as Record<string, unknown> | undefined);
-      if (into && typeof into === "object" && into[key] === "") into[key] = kept(text);
+      if (into && typeof into === "object" && into[key] === "") into[key] = binaryKept(text, clean, own, values);
     }
     return JSON.stringify(doc);
   };
@@ -510,10 +540,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // read as the agent's own, then cut by the run's redactor: a value the run holds that the server echoed reaches
     // neither. The one place each of those texts passes.
     const own = back ? (text: string) => back(scrubbed(text)) : scrubbed;
-    const runCut = options.redact as typeof options.redact | undefined;
-    const clean = runCut ? (text: string) => runCut(own(text)) : own;
-    const heldOf = !runCut ? () => [] : (runCut.heldValues ?? (() => undefined));
-    const filedAs = (whole: Record<string, unknown>) => filedJson(whole, clean, own, heldOf());
+    const clean = (text: string) => runCut(own(text));
+    const filedAs = (whole: Record<string, unknown>) => filedJson(whole, clean, own, runCut.heldValues?.());
     hold(server, queryOf(server));
     // What this call's own request was answered with (answeredBy): read by its error, never another call's.
     const answered: Answered = {};

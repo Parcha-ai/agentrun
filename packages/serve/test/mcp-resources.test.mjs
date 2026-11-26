@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { listServer, boundTool } from "../dist/mcp-probe.js";
 import { mcpGateway, mcpPinOf } from "../dist/mcp-gateway.js";
+import { keepText } from "../dist/runner/redact.js";
 import { resourceTools, RESOURCE_LIST_MAX, RESOURCE_LIST_BYTES } from "../dist/mcp-resources.js";
 import { pinView } from "../dist/agents-store.js";
 
@@ -34,7 +35,7 @@ async function setup(t, options = {}) {
   t.after(() => rm(work, { recursive: true, force: true }));
   const pin = mcpPinOf(listed.tools.map(tool => `mcp:fixture/${tool.name}`), { server: () => ({ url: url.href, tools: listed.tools.map(boundTool) }) });
   const credentials = { fixture: { url: url.href, headers: { authorization: `Bearer ${token}` } } };
-  const gateway = mcpGateway({ pin, credentials, fetch: fake.send, work: () => work, bounds: { callMs: 1000 } });
+  const gateway = mcpGateway({ redact: keepText, pin, credentials, fetch: fake.send, work: () => work, bounds: { callMs: 1000 } });
   return { ...fake, listed, pin, credentials, gateway, work };
 }
 
@@ -99,7 +100,7 @@ test("a stored resource marker with the wrong name, schema or effect cannot be p
   const original = boundTool(resourceTools()[2]);
   for (const changed of [{ ...original, name: "ordinary" }, { ...original, resource: "delete" }, { ...original, inputSchema: { type: "object" } }, { ...original, annotations: { readOnlyHint: false } }]) {
     assert.throws(() => mcpPinOf([`mcp:fixture/${changed.name}`], { server: () => ({ url: url.href, tools: [changed] }) }), /resource/i);
-    const gateway = mcpGateway({ pin: { fixture: { url: url.href, tools: [changed] } }, credentials: f.credentials, fetch: f.send, work: () => f.work });
+    const gateway = mcpGateway({ redact: keepText, pin: { fixture: { url: url.href, tools: [changed] } }, credentials: f.credentials, fetch: f.send, work: () => f.work });
     const answer = await gateway.call("fixture", changed.name, { uri: "fixture:one" }, { signal: AbortSignal.timeout(2000) });
     assert.equal(answer.isError, true);
   }

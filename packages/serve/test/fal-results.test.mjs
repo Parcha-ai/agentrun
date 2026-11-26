@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { mcpGateway } from "../dist/mcp-gateway.js";
+import { keepText } from "../dist/runner/redact.js";
 import { saveOnce } from "../dist/save-once.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { readBackOf } from "@parcha/agentrun-computer";
@@ -82,6 +83,7 @@ async function runOn(t, answer, { wrap } = {}) {
     settle: (id, usd, options) => (booked.push({ settle: id, usd }), tools.settle(id, usd, options)),
   };
   const gateway = mcpGateway({
+    redact: keepText,
     pin: { fal: { url: FAL, tools: [{ name: "wait_for_jobs", inputSchema: { type: "object" } }], meter: "fal" } },
     credentials: { fal: { url: FAL, headers: { authorization: `Bearer ${TOKEN}` } } },
     work: () => at,

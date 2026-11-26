@@ -146,8 +146,9 @@ type PageServer = { token: string; authFailed?: (route: string, reason: string) 
 const redirect = (res: ServerResponse, location: string, headers: Record<string, string> = {}) => (res.writeHead(303, { ...SECURITY, location, "content-length": 0, ...headers }), void res.end());
 
 /** A file of the console: a known type inside `dir`, read through no link that leaves it. Vite's hashed assets are cached
- *  for a year; index.html is no-store. */
-async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir: string, rel: string, status = 200, headers: Record<string, string> = {}): Promise<void> {
+ *  for a year; index.html is no-store. `hosted`: answer headers of its own (a CSP), and for a share host the page's text
+ *  rewritten. */
+async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir: string, rel: string, status = 200, hosted?: { headers: Record<string, string>; rewrite?: (text: string) => string }): Promise<void> {
   const missing = () => refuse(req, res, new ApiError("not_found", `no file ${raw} in the console`));
   const type = CONSOLE_TYPES[extname(rel).toLowerCase()];
   if (!type || !rel.split("/").every((segment) => CONSOLE_SEGMENT.test(segment))) return missing();
@@ -157,8 +158,22 @@ async function file(req: IncomingMessage, res: ServerResponse, raw: string, dir:
     return rel === "index.html" ? send(req, res, status === 200 ? 404 : status, "text/plain; charset=utf-8", "This server was built without its console: run npm ci && npm run build at the repository's root, which builds the console first, then start the server again.\n") : missing();
   }
   if (!real.startsWith(root + sep) || !(await stat(real)).isFile()) return missing();
-  send(req, res, status, type, await readFile(real), { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store", ...headers });
+  const bytes = await readFile(real);
+  send(req, res, status, type, hosted?.rewrite ? hosted.rewrite(bytes.toString("utf8")) : bytes, { "cache-control": rel.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-store", ...hosted?.headers });
 }
+
+/** A share host's pages' CSP (share-host.ts): the local preview's, so a public page, as the owner's preview of it, makes no
+ *  outbound fetch (a graph's image URL among them). */
+export const SHARE_HOST_CSP = SHARE_PAGE_CSP;
+const HOSTED = { "content-security-policy": SHARE_HOST_CSP, "x-robots-tag": "noindex" };
+/** The page's asset URLs as Vite writes them with base "./" (`./assets/x`), moved under the share host's /r/_assets/: the
+ *  page answers at /r/<id> and /r/<id>/, where a relative URL would land elsewhere. */
+const hostedAssets = (text: string) => text.replace(/(\s(?:src|href)=["'])\.\/assets\//g, "$1/r/_assets/");
+/** A share host's page for a share (the console's share.html), its asset URLs under /r/_assets/, under SHARE_HOST_CSP. */
+export const sendHostedSharePage = (req: IncomingMessage, res: ServerResponse, dir: string | undefined) => file(req, res, "/r/<id>", dir ?? CONSOLE_DIR, "share.html", 200, { headers: HOSTED, rewrite: hostedAssets });
+/** A share host's asset at /r/_assets/`rel`: the console's assets/`rel`, the same rules as /assets/. */
+export const sendHostedAsset = (req: IncomingMessage, res: ServerResponse, raw: string, dir: string | undefined, rel: string) =>
+  rel.endsWith(".html") ? refuse(req, res, new ApiError("not_found", `no file ${raw} in the console`)) : file(req, res, raw, dir ?? CONSOLE_DIR, `assets/${rel}`, 200, { headers: HOSTED });
 
 async function answer(req: IncomingMessage, res: ServerResponse, raw: string, server: PageServer, held: boolean): Promise<void> {
   if (req.method !== "GET" && req.method !== "HEAD") return refuse(req, res, new ApiError("method_not_allowed", `the console answers GET and HEAD; ${req.method} is not one`, {}, { allow: "GET, HEAD" }));
@@ -208,7 +223,7 @@ async function share(req: IncomingMessage, res: ServerResponse, raw: string, dir
     if (given === "none") server.authFailed?.("/share", "no_session");
     return send(req, res, 401, HTML, SIGN_IN_FIRST);
   }
-  return file(req, res, raw, dir, "share.html", 200, { "content-security-policy": SHARE_PAGE_CSP });
+  return file(req, res, raw, dir, "share.html", 200, { headers: { "content-security-policy": SHARE_PAGE_CSP } });
 }
 
 /** The requests the owner's password session sends from the page (a write only from this server's own origin, with a
