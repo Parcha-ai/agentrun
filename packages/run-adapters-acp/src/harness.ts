@@ -49,6 +49,10 @@ export const REASK_LIMIT = 3;
 export const TOOLS_STREAM = "acp.tools";
 /** The model chosen for the agent's session (recipe.model, as the agent lists it), one record each time one is chosen. */
 export const MODEL_STREAM = "acp.model";
+/** The recipe's instructions as a prompt carried them ahead of its words (an agent with no system prompt), one record
+ *  each time: a loaded session is given them again only when they differ from the last (a recipe that gained or changed
+ *  them since its conversation began). */
+export const INSTRUCTIONS_STREAM = "acp.instructions";
 
 /** How long a session waits for the agent to start and answer initialize, or open its session. */
 export const START_MS = 60_000;
@@ -145,6 +149,8 @@ interface Runtime {
   fresh: boolean;
   /** What the next prompt carries ahead of its own words (the instructions, the context note), once. */
   firstBlocks: string[];
+  /** The recipe's instructions among firstBlocks, journaled (INSTRUCTIONS_STREAM) with the prompt that carries them. */
+  told?: string;
   calls: CallIds;
   /** The name our MCP server is given to the agent under at this start (mcpServerName). */
   server: string;
@@ -762,13 +768,26 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
           rt.loading = false;
         }
       }
+      // session/load carries no instructions for an agent with no system prompt: the session's own are in its history, and
+      // the recipe's too, unless they came or changed since (an upgrade), when the next prompt carries them, once.
+      const recipeTold = recipe.instructions?.trim() ? recipe.instructions : undefined;
+      if (!rt.fresh && recipeTold && !systemPrompt) {
+        const given = journalRecords<{ text?: unknown }>(ctx.state(), INSTRUCTIONS_STREAM).map((r) => r.data?.text).at(-1);
+        if (given !== recipeTold) {
+          rt.firstBlocks.push(`Instructions for this session, from the host that runs you:\n\n${recipeTold}`);
+          rt.told = recipeTold;
+        }
+      }
       if (rt.fresh) {
         const opened = await ask("session/new", () => live.connection.agent.request("session/new", { cwd: root, mcpServers: [server], ...(systemPrompt ? { systemPrompt } : {}) }));
         rt.sessionId = opened.sessionId;
         journal.append(SESSION_STREAM, { sessionId: opened.sessionId });
         mirrorInto(rt, journal);
         await journal.flush();
-        if (instructions && !systemPrompt) rt.firstBlocks.push(`Instructions for this session, from the host that runs you:\n\n${instructions}`);
+        if (instructions && !systemPrompt) {
+          rt.firstBlocks.push(`Instructions for this session, from the host that runs you:\n\n${instructions}`);
+          rt.told = recipeTold;
+        }
         const context = contextNote(ctx.state());
         if (context) rt.firstBlocks.push(context);
         opening = opened;
@@ -884,6 +903,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       }
       // The send's mark, in the log first: a crash between the two reads "marked, maybe sent", never sent twice.
       journal.append(PROMPT_STREAM, { submission, ...(covers.length ? { covers: [...covers] } : {}) });
+      if (agent.told !== undefined) journal.append(INSTRUCTIONS_STREAM, { text: agent.told });
+      agent.told = undefined;
       await journal.flush();
       const prompt: ContentBlock[] = [...agent.firstBlocks.splice(0), ...body].map((text) => ({ type: "text", text }));
       let ended!: () => void;
