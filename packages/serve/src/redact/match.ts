@@ -1125,8 +1125,8 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
 
 /** `text`'s join of `kind` (JoinKind): its parts (partsOf) read three times over, each time joined, each part followed by a space (gone
  *  from the view, and no escape reads past it): the values and the runs outside strings; the property names; then all
- *  of them. Each pass is closed by SEPARATOR, which every view keeps and no needle holds, so no value reads across two
- *  passes. A held value split across two values with a name between them ({"title":"see <H>","snippet":"<R> more"}),
+ *  of them. Each pass is closed by SEPARATOR, which a view of a join keeps and no needle holds, so no value reads across
+ *  two passes (holds reads a U+FFFF the text brought as a NUL first, so it is the only one). A held value split across two values with a name between them ({"title":"see <H>","snippet":"<R> more"}),
  *  across two names, across a name and its value, across a quote of JSON written in a string, or across a string and
  *  the line after the JSON reads whole in one of them. A view decodes and squeezes the join as any text (viewOf), each
  *  part's characters keeping their source: with `cuts` (merged spans of `text`), the spans of each part a cut covers
