@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import { packageSha256 } from "./agent-package.js";
 import { ApiError } from "./errors.js";
 import { type Cut, SCRUB_RULES, scrub, type ScrubOptions, type ScrubResult } from "./secret-cut.js";
+import { type CommandFacts, commandFacts } from "./secret-rules.js";
 import { type CallContext, callContexts, effectContext, rowOutput } from "./share-context.js";
 import { WITHHELD_SIGN_IN } from "./run-view.js";
 import { cutFileText } from "./run-file-cut.js";
@@ -205,6 +206,14 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   const restored: RestoredRecord[] = [];
   const seen = new Map<string, boolean>(); // every cut's id: whether it is restorable
   // `restoring` false: every cut stays cut, whatever the restore names (the files' choice, below).
+  // A call's command read once (commandFacts) for every string of its output: each row's or effect's context is one
+  // object for all of its strings, and this export's alone, so its facts go when the export does.
+  const facts = new WeakMap<CallContext, CommandFacts>();
+  const factsOf = (context: CallContext, command: string): CommandFacts => {
+    let made = facts.get(context);
+    if (made === undefined) facts.set(context, (made = commandFacts(command)));
+    return made;
+  };
   const cutString = async (text: string, at: string, context?: CallContext, restoring = true): Promise<string> => {
     // keep() is asked of restorable cuts alone, in the order of the string's cuts; a rule's cuts are all of one kind, so
     // counting a rule's cuts here gives the ordinals the records below are named by.
@@ -216,7 +225,7 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
     };
     let result: ScrubResult;
     try {
-      result = await cutPass(text, { mode: "cut", held: input.held, keep, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.command !== undefined ? { command: context.command } : {}) });
+      result = await cutPass(text, { mode: "cut", held: input.held, keep, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.command !== undefined ? { command: context.command, commandFacts: factsOf(context, context.command) } : {}) });
     } catch {
       throw new ExportFailed("a scrub threw");
     }

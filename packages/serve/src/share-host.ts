@@ -27,6 +27,7 @@ import { sendHostedAsset, sendHostedSharePage } from "./page.js";
 import { readCapped } from "./push-handler.js";
 import { type CutScrub, EXPORT_CAPS, SHARE_FORMAT, SHARE_RUN_FIELDS } from "./run-export.js";
 import { RESTORABLE, SCRUB_RULES, scrub } from "./secret-cut.js";
+import { type CommandFacts, commandFacts } from "./secret-rules.js";
 import { type CallContext, effectContext } from "./share-context.js";
 import { isObject, stable } from "./validate.js";
 
@@ -44,6 +45,10 @@ export const SHARE_QUOTA = 100;
  *  each of a string with a place of its own in the body, so together no more than the body; each context's command is
  *  read once (screenShare). */
 export const SHARE_STRINGS = 50_000;
+/** The most workflow calls (graph.effects) a bundle may hold: as many as an export can write. The graph view writes
+ *  each with ten keys (graph-view.ts); with one character a value, the least any takes, and a comma between, the
+ *  export's 8 MiB holds no more. A graph past it was made by hand, and is refused (400). */
+export const SHARE_EFFECTS = Math.floor(EXPORT_CAPS.documentBytes / (JSON.stringify(Object.fromEntries(["node", "executionPath", "item", "tool", "status", "input", "output", "error", "startedAt", "endedAt"].map((key) => [key, 0]))).length + 1));
 /** The rule ids of Jev's cuts (Scrubber beta 3; "jev" until its id is fixed). A share host never runs Jev (it holds no
  *  model key), so a restored record of one names a value the host can't find: it is not checked, and counted in the
  *  answer, never refused. The value itself is scrubbed as every other, and a hit there needs its own record. */
@@ -153,7 +158,9 @@ function graphShape(value: unknown): void {
   const runs = isObject(value.nodes) ? value.nodes : refuse("graph.nodes is not an object");
   for (const node of Object.values(runs)) if (!isObject(node)) refuse("graph.nodes holds a run of a node that is not an object");
   objects(array(value.decisions, "graph.decisions"), "graph.decisions");
-  objects(array(value.effects, "graph.effects"), "graph.effects");
+  const effects = array(value.effects, "graph.effects");
+  if (effects.length > SHARE_EFFECTS) refuse(`graph.effects holds more than ${SHARE_EFFECTS} effects, more than an export writes`);
+  objects(effects, "graph.effects");
   const totals = isObject(value.totals) ? value.totals : refuse("graph.totals is not an object");
   count(totals.decisions, "graph.totals.decisions");
   count(totals.effects, "graph.totals.effects");
@@ -269,10 +276,13 @@ function placesOf(doc: unknown): { text: string; places: Place[] } {
   return { text: parts.join(""), places };
 }
 
+/** A context a string is read under: a file's path, or a call's command read once into its facts. */
+type ReadContext = { readonly path?: string; readonly facts?: CommandFacts };
+
 /** A file's content's pointer in a bundle: its index is group 1. */
-const FILE_CONTENT_AT = /^\/files\/(\d{1,6})\/content$/;
+const FILE_CONTENT_AT = /^\/files\/(\d+)\/content$/;
 /** A workflow call's output in a bundle (graph.effects[i].output), or a string inside it: the effect's index is group 1. */
-const EFFECT_OUTPUT_AT = /^\/graph\/effects\/(\d{1,6})\/output(?:\/|$)/;
+const EFFECT_OUTPUT_AT = /^\/graph\/effects\/(\d+)\/output(?:\/|$)/;
 
 /** For each index 0..value.length of `value`, its offset in JSON.stringify(value) less the opening quote. */
 function encodedOffsets(value: string): number[] {
@@ -305,10 +315,10 @@ function encodedOffsets(value: string): number[] {
  *  never used: the host stores what was sent or nothing. */
 export async function screenShare(text: string, held: readonly string[], cutPass: CutScrub = (body, opts) => scrub(body, opts), strings = SHARE_STRINGS): Promise<{ unchecked: Record<string, number> }> {
   const failed = () => new ApiError("input_invalid", "The share host's scrub of this bundle failed, so it is refused (the scrub fails closed). Nothing was stored.", { details: { reason: "scrub_failed" } });
-  const pass = async (body: string, context?: CallContext) => {
+  const pass = async (body: string, context?: ReadContext) => {
     let result: Awaited<ReturnType<CutScrub>>;
     try {
-      result = await cutPass(body, { mode: "cut", held, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.command !== undefined ? { command: context.command } : {}) });
+      result = await cutPass(body, { mode: "cut", held, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.facts !== undefined ? { command: context.facts.command, commandFacts: context.facts } : {}) });
     } catch {
       throw failed();
     }
@@ -367,9 +377,12 @@ export async function screenShare(text: string, held: readonly string[], cutPass
   }
   if (distinct > strings) throw new ApiError("payload_too_large", `This bundle holds ${distinct} distinct strings (a text under two calls' contexts counted twice), over the ${strings} a share host scrubs one by one, so it is refused before any is read. Nothing was stored.`, { details: { reason: "share_strings", limit: strings, strings: distinct } });
   const whole = await pass(text);
-  // A context's texts read together, so the scrubber reads that context's command once for them all (secret-rules.ts
-  // factsOf).
-  for (const [id, texts] of reads) for (const value of texts.keys()) texts.set(value, await pass(value, contexts[id]));
+  // A context's texts read together, each handed the context's command facts (commandFacts), made once for them all.
+  for (const [id, texts] of reads) {
+    const call = contexts[id];
+    const context: ReadContext | undefined = call && { ...(call.path !== undefined ? { path: call.path } : {}), ...(call.command !== undefined ? { facts: commandFacts(call.command) } : {}) };
+    for (const value of texts.keys()) texts.set(value, await pass(value, context));
+  }
 
   const hits = new Map<string, StringHit>();
   const hitsAt = new Map<string, StringHit[]>();
