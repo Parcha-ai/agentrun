@@ -83,3 +83,65 @@ test("two filed tools: each folder is refused, and the words name the setting wh
   assert.equal(await verdictOf(gate, "read", { path: "customers/a.json" }), `read can't be called: customers/a.json is in customers/, the folder this agent's setting for mcp:stripe/list_customers files that tool's answers in (its file setting), so the agent's own file tools are refused there. ${NOT_RUN}`);
   assert.equal(await verdictOf(gate, "read", { path: "stripe/pages/a.json" }), refusal("read", "stripe/pages/a.json"));
 });
+
+test("a path with one leading @ is the path the file tools open (pi's read, write and edit strip it): @ spellings in the folder are refused, by every name of it, for read, write and edit and claude-agent's Read, Write and Edit", async () => {
+  const gate = gateOn("pi", FILED, ["/workspace", SCRATCH]);
+  const inside = ["@stripe/pages/a.json", "@/workspace/stripe/pages/a.json", `@${RUN}/stripe/pages/a.json`, `@${SCRATCH}/stripe/pages/a.json`, "@./stripe/pages/a.json", "@notes/../stripe/pages/a.json", "@stripe/pages", "@/../stripe/pages/a.json"];
+  for (const given of inside) {
+    assert.equal(await verdictOf(gate, "read", { path: given }), refusal("read", given), `read ${given}`);
+    assert.equal(await verdictOf(gate, "write", { path: given, content: "x" }), refusal("write", given), `write ${given}`);
+    assert.equal(await verdictOf(gate, "edit", { path: given, edits: [] }), refusal("edit", given), `edit ${given}`);
+  }
+  const claude = gateOn("claude-agent", FILED, ["/workspace", SCRATCH]);
+  for (const given of ["@stripe/pages/a.json", "@/workspace/stripe/pages/a.json", `@${SCRATCH}/stripe/pages/a.json`]) {
+    assert.equal(await verdictOf(claude, "Read", { file_path: given }), refusal("read", given), `Read ${given}`);
+    assert.equal(await verdictOf(claude, "Write", { file_path: given, content: "x" }), refusal("write", given), `Write ${given}`);
+    assert.equal(await verdictOf(claude, "Edit", { file_path: given, old_string: "a", new_string: "b" }), refusal("edit", given), `Edit ${given}`);
+  }
+  for (const given of ["@notes/a.json", "@stripe/other.json", "@stripe/pages-old/a.json", "@stripe", "@/tmp/stripe/pages/a.json", "@@stripe/pages/a.json"]) {
+    assert.equal(await verdictOf(gate, "read", { path: given }), "allow", `read ${given}`);
+  }
+});
+
+test("the folder in another spelling a disk that folds names opens as the same folder (case, fullwidth, a compatibility letter) is refused; a sibling in any case is not", async () => {
+  const gate = gateOn("pi", FILED, ["/workspace", SCRATCH]);
+  const inside = ["Stripe/pages/a.json", "stripe/Pages/a.json", "STRIPE/PAGES", "stripe/ＰＡＧＥＳ/a.json", "ſtripe/pages/a.json", "/workspace/Stripe/Pages/a.json", `${SCRATCH}/STRIPE/pages/a.json`, "@Stripe/Pages/a.json"];
+  for (const given of inside) {
+    assert.equal(await verdictOf(gate, "read", { path: given }), refusal("read", given), `read ${given}`);
+    assert.equal(await verdictOf(gate, "write", { path: given, content: "x" }), refusal("write", given), `write ${given}`);
+  }
+  const claude = gateOn("claude-agent");
+  assert.equal(await verdictOf(claude, "Edit", { file_path: "Stripe/PAGES/a.json", old_string: "a", new_string: "b" }), refusal("edit", "Stripe/PAGES/a.json"));
+  // A folder with a k: the Kelvin sign (U+212A) folds to it.
+  const kyc = gateOn("pi", { "mcp:verify/list_checks": { file: { folder: "kyc", show: [] } } });
+  for (const given of ["Kyc/a.json", "KYC/a.json", "Kyc"]) {
+    assert.equal(await verdictOf(kyc, "read", { path: given }), `read can't be called: ${given} is in kyc/, the folder this agent's setting for mcp:verify/list_checks files that tool's answers in (its file setting), so the agent's own file tools are refused there. ${NOT_RUN}`, `read ${given}`);
+  }
+  for (const given of ["Stripe/pages-old/a.json", "STRIPE/other.json", "Stripe-old/a.json", "stripe-old/a.json", "Stripe", "KYC-old/a.json"]) {
+    assert.equal(await verdictOf(gate, "read", { path: given }), "allow", `read ${given}`);
+  }
+});
+
+/** A gate whose agent is also given web_save and the browser, each allowed. */
+const hostGate = (overrides = FILED) => runnerGate({ settings: { ...ALLOW, web_save: { permission: "allow" }, browser: { permission: "allow" } }, overrides, harness: "pi", root: RUN, tools: ["read", "write", "edit", "bash", "web_save", "browser"] });
+
+test("web_save's path is where it writes a file in the run's files: in the folder (a bare name under media/ when the folder is media) it is refused; a sibling is not", async () => {
+  const gate = hostGate();
+  for (const given of ["stripe/pages/x.json", "Stripe/Pages/x.json", "./stripe/pages/x.json"]) {
+    assert.equal(await verdictOf(gate, "web_save", { url: "https://example.com/x.json", path: given }), refusal("web_save", given), `web_save ${given}`);
+  }
+  for (const given of ["stripe/x.json", "stripe-old/x.json", "notes/x.png", "x.png"]) {
+    assert.equal(await verdictOf(gate, "web_save", { url: "https://example.com/x", path: given }), "allow", `web_save ${given}`);
+  }
+  const media = hostGate({ "mcp:files/list": { file: { folder: "media", show: [] } } });
+  assert.equal(await verdictOf(media, "web_save", { url: "https://example.com/x.png", path: "x.png" }), `web_save can't be called: media/x.png is in media/, the folder this agent's setting for mcp:files/list files that tool's answers in (its file setting), so the agent's own file tools are refused there. ${NOT_RUN}`);
+  assert.equal(await verdictOf(media, "web_save", { url: "https://example.com/x.png", path: "pictures/x.png" }), "allow");
+});
+
+test("browser_upload's path is a run file it reads into a page: in the folder it is refused; a sibling is not", async () => {
+  const gate = hostGate();
+  for (const given of ["stripe/pages/a.json", "STRIPE/pages/a.json"]) {
+    assert.equal(await verdictOf(gate, "browser_upload", { path: given, selector: "input[type=file]" }), refusal("browser_upload", given), `browser_upload ${given}`);
+  }
+  assert.equal(await verdictOf(gate, "browser_upload", { path: "reports/q3.pdf", selector: "input[type=file]" }), "allow");
+});
