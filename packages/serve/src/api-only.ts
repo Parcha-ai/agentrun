@@ -149,3 +149,26 @@ export function servedApiOnly(routes: readonly Route[], method: string | undefin
 
 /** The refusal's words for `raw` on an API-only server. */
 export const apiOnlyRefusal = (raw: string): string => `this server serves the run API only (${API_ONLY_ENV}=1): ${raw} is not served here`;
+
+/** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs
+ *  and imported template packages, and the server's description. Every other is refused with 403 not_scoped, whatever
+ *  API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates and
+ *  getOpenapi are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. */
+export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
+  "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
+  "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
+  "importTemplate", "applyTemplate", "getTemplate", "listTemplates",
+  "createRun", "sendMessage", "stopRun", "cancelRun",
+  "getCapabilities", "getHealth", "getOpenapi",
+]);
+
+/** How a scoped request for `method` on `raw` is served: "served" for a /v2 path one of WORKSPACE_ROUTES matches,
+ *  "not_scoped" for one only another operation matches, "none" for a path no operation has. */
+export function servedScoped(routes: readonly Route[], method: string | undefined, raw: string): "served" | "not_scoped" | "none" {
+  if (!raw.startsWith("/v2/")) return "none";
+  const path = raw.slice(3);
+  const asked = method === "HEAD" ? "GET" : method;
+  const matched = routes.filter((route) => route.method === asked && route.pattern.test(path));
+  if (matched.some((route) => WORKSPACE_ROUTES.has(route.name))) return "served";
+  return matched.length || COMPUTER_LIVE.test(raw) ? "not_scoped" : "none";
+}

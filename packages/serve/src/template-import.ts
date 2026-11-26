@@ -9,6 +9,7 @@ import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { type Store, UPLOAD_PREFIX } from "./store/index.js";
 import { fetchPackageFiles, type GithubReach, type GithubSource, ImportRefused, IMPORT_LIMITS, parseSource, resolveSha } from "./template-source.js";
 import { manifestOf } from "./manifest.js";
+import { outOfScope, workspaceNow } from "./workspace-scope.js";
 import { MANIFEST, memoryFiles, type Package, PackageError, readPackage, type TemplateRegistry } from "./templates.js";
 import { isObject, type Json, unknownFields } from "./validate.js";
 
@@ -168,9 +169,9 @@ async function uploadTemplate(deps: TemplateImportDeps, raw: unknown, dryRun: bo
   } catch (error) {
     refusalOf(error);
   }
-  const replaced = deps.registry.get(pkg.id)?.origin?.sha ?? null;
+  const replaced = await replacedOf(deps, pkg.id);
   if (dryRun) return { status: 200, pkg, trusted: true, replaced };
-  await deps.store.importedTemplates.put({ id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
+  await deps.store.importedTemplates.put({ id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: "", files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) }, workspaceNow());
   deps.registry.put(pkg);
   return { status: 201, pkg, trusted: true, replaced };
 }
@@ -194,16 +195,27 @@ export async function importTemplate(deps: TemplateImportDeps, raw: unknown, sig
   } catch (error) {
     refusalOf(error);
   }
-  const replaced = deps.registry.get(source.id)?.origin?.sha ?? null;
+  const replaced = await replacedOf(deps, source.id);
   const isTrusted = await trusted(deps, source.owner);
   if (dryRun) return { status: 200, pkg, trusted: isTrusted, replaced };
   if (!isTrusted && !trustPublisher) {
     throw invalid([{ field: "trust_publisher", reason: "missing", message: `${source.owner} has published no package this server has imported yet: read the package (a dry run shows it whole), then import it again with trust_publisher: true to say you trust ${source.owner}.`, fix: "Send trust_publisher: true." }]);
   }
   if (!isTrusted) await trust(deps, source.owner);
-  await deps.store.importedTemplates.put({ id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: pkg.origin!.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) });
+  await deps.store.importedTemplates.put({ id: pkg.id, source: pkg.origin!.source, sha: pkg.origin!.sha, publisher: pkg.origin!.publisher, files: Object.fromEntries([...files].map(([path, data]) => [path, data.toString("base64")])) }, workspaceNow());
   deps.registry.put(pkg);
   return { status: 201, pkg, trusted: true, replaced };
+}
+
+/** The sha of the package an import of `id` replaces, or null. In a workspace (workspace-scope.ts), a package of that id
+ *  another workspace imported, or an unscoped request did, or one bundled here, is never replaced: the import is 409. */
+async function replacedOf(deps: Pick<TemplateImportDeps, "registry" | "store">, id: string): Promise<string | null> {
+  const held = deps.registry.get(id);
+  if (!held) return null;
+  if (workspaceNow() !== undefined && outOfScope((await deps.store.importedTemplates.workspaces()).get(id))) {
+    throw new ApiError("name_taken", `A template package named ${id} is already on this server, outside this workspace: give the package another name in its manifest.`);
+  }
+  return held.origin?.sha ?? null;
 }
 
 /** A package made into an agent here as an imported template, from files this server wrote itself (a suggested agent's,

@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: feature
+---
+An API-only server (`AGENTRUN_API_ONLY=1`) keeps each workspace of the backend in front of it to its own agents, runs and imported template packages. The backend names the workspace in the `AgentRun-Workspace` header with a server token: another workspace's row answers the same `404` as a missing one, lists hold the workspace's rows alone, what the request makes is stamped with it, and an `Idempotency-Key` is the workspace's own. A request in a workspace is served only the run, agent and template routes the serve README's API-only section lists (`403 not_scoped` for any other). `AGENTRUN_WORKSPACE_TOKENS` names the tokens that must always send the header. The header is `400` on any other server or credential, and a request without it is served as before. `agentrun-serve workspace-backfill FILE [--apply]` puts agents made earlier in a workspace. The store gains a nullable `workspace` on agents, runs and imported templates (Postgres migration 0033, additive: runners of the earlier build keep running).

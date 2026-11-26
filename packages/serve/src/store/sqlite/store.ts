@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, STORE_META_LEDGER_BACKFILLED, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, STORE_META_LEDGER_BACKFILLED, TRIGGERS_TEMPLATE_ID, WORKSPACE_ADDED, WORKSPACE_INDEXES } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunnerBelowFloor, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -641,6 +641,13 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       const ledgerNow = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_ledger')")).map((column) => column.name));
       const ledgerMissing = Object.entries(LEARNING_LEDGER_ADDED).filter(([column]) => !ledgerNow.has(column)).map(([, sql]) => ({ sql }));
       if (ledgerMissing.length > 0) await connection.write(ledgerMissing, { full: true });
+      // An agents, runs or imported_templates table an earlier build of this version made keeps no workspace (schema.ts
+      // WORKSPACE_ADDED): each added where missing, every row unscoped, then their indexes.
+      const workspaceMissing: { sql: string }[] = [];
+      for (const [table, sql] of Object.entries(WORKSPACE_ADDED)) {
+        if (!(await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).some((column) => column.name === "workspace")) workspaceMissing.push({ sql });
+      }
+      await connection.write([...workspaceMissing, ...WORKSPACE_INDEXES.map((sql) => ({ sql }))], { full: true });
       await backfillNativeCommandOwners(connection);
       // Here `found` is SCHEMA_VERSION or a version in the window (any other was refused above): each step runs for the
       // versions before the one that first kept what it adds.
@@ -893,8 +900,10 @@ class SqliteStore implements Store {
     this.#clock = clock;
     if (!d.nowSql) this.leaseClock = now;
 
-    const insertAgent = (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null }, at: number) =>
-      tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);
+    const insertAgent = async (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null; workspace?: string }, at: number) => {
+      await tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);
+      if (agent.workspace !== undefined) await tx.run("UPDATE agents SET workspace = ? WHERE id = ?", agent.workspace, agent.id);
+    };
     /** Agent `agentId`'s row, held (a writer's row lock, as its purge takes it), or undefined when there is none; refused
      *  (AgentPurged) once it is purged: a write that waited on the purge's lock reads its purge time, and one that took the
      *  lock first commits before the purge reads anything. */
@@ -1022,8 +1031,17 @@ class SqliteStore implements Store {
         const row = await db.get<RevisionRecord>(`SELECT ${REVISION_COLUMNS} FROM revisions WHERE agent_id = ? AND external_version = ?`, agentId, version);
         return row && revisionOf(row);
       },
-      list: async ({ archived = false, purged = false } = {}) =>
-        (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"}${purged ? "" : " AND purged_at IS NULL"} ORDER BY created_at, id`)).map(agentOf),
+      list: async ({ archived = false, purged = false, workspace } = {}) =>
+        (await db.all<AgentRecord>(`SELECT ${AGENT_COLUMNS} FROM agents WHERE archived_at IS ${archived ? "NOT NULL" : "NULL"}${purged ? "" : " AND purged_at IS NULL"}${workspace === undefined ? "" : " AND workspace = ?"} ORDER BY created_at, id`, ...(workspace === undefined ? [] : [workspace]))).map(agentOf),
+      workspace: async (id) => {
+        const row = await db.get<{ workspace: string | null }>("SELECT workspace FROM agents WHERE id = ?", id);
+        return row && row.workspace;
+      },
+      adoptWorkspace: async (id, workspace) => {
+        await db.write([{ sql: "UPDATE agents SET workspace = ? WHERE id = ? AND workspace IS NULL", params: [workspace, id] }]);
+        const row = await db.get<{ workspace: string | null }>("SELECT workspace FROM agents WHERE id = ?", id);
+        return row && row.workspace;
+      },
       archive: async (id, archived, why) =>
         db.transaction(async (tx) => {
           const at = now();
@@ -1454,7 +1472,7 @@ class SqliteStore implements Store {
     };
 
     this.runs = {
-      create: async ({ id, agentId, revisionId, origin, labels, expectedCurrent, settingsGuards, startedAt, firing }, launch) => {
+      create: async ({ id, agentId, revisionId, origin, labels, expectedCurrent, settingsGuards, startedAt, firing, workspace }, launch) => {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, disk, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const labelled = labelsColumn(labels);
@@ -1475,6 +1493,7 @@ class SqliteStore implements Store {
             if (source && source.purged_at !== null) throw new RunPurged(of, id);
           }
           const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, launchDiskOf(launch), startedAt ?? at);
+          if (workspace !== undefined) await tx.run("UPDATE runs SET workspace = ? WHERE id = ?", workspace, id);
           if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
           if (launch) await writeLaunch(tx, id, launch, at);
           if (firing) await startFiring(tx, firing, id, at);
@@ -1518,6 +1537,10 @@ class SqliteStore implements Store {
       get: async (id) => {
         const row = await db.get<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id = ?`, id);
         return row && runOf(row);
+      },
+      workspace: async (id) => {
+        const row = await db.get<{ workspace: string | null }>("SELECT COALESCE(runs.workspace, agents.workspace) AS workspace FROM runs JOIN agents ON agents.id = runs.agent_id WHERE runs.id = ?", id);
+        return row && row.workspace;
       },
       launch: (runId) => readLaunch(db, runId),
       reseedLearning: (runId, learning, epoch) => db.transaction((tx) => writeLaunchLearning(tx, runId, learning, epoch, d.shareLock)),
@@ -1573,7 +1596,7 @@ class SqliteStore implements Store {
       },
       // A list's page from the rows alone: filtered, ordered and cut to the page in the query, one read whatever the number
       // of runs, each row with its listing (schema.ts RUN_LISTING_COLUMNS) and its agent's archive time.
-      listed: async ({ agentId, revisionId, labels, source, startedFrom, startedBefore, model, archived, status, going, after, limit, offset = 0 }) => {
+      listed: async ({ agentId, revisionId, labels, source, startedFrom, startedBefore, model, archived, status, going, after, limit, offset = 0, workspace }) => {
         const n = clock();
         const behind = listingBehind(n.sql);
         // Neither a built-in learning run nor an audit's shadow run (learn/audit.ts SHADOW_PREFIX, matched as it is, case and all).
@@ -1581,6 +1604,8 @@ class SqliteStore implements Store {
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("runs.agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("runs.revision_id = ?"), params.push(revisionId));
+        // A run with no workspace of its own is its agent's (Runs.workspace).
+        if (workspace !== undefined) (where.push("COALESCE(runs.workspace, agents.workspace) = ?"), params.push(workspace));
         for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("runs.labels")), params.push(key, value));
         if (source === "live") where.push("runs.imported_from IS NULL");
         else if (source !== undefined) (where.push(`${d.jsonText("runs.imported_from", ["source"])} = ?`), params.push(source));
@@ -2553,12 +2578,13 @@ class SqliteStore implements Store {
         id: row.id, source: row.source, sha: row.sha, publisher: row.publisher, files: JSON.parse(row.files) as Record<string, string>, importedAt: row.imported_at,
       })),
       ids: async () => (await db.all<{ id: string }>("SELECT id FROM imported_templates ORDER BY id")).map((row) => row.id),
-      put: async ({ id, source, sha, publisher, files }) => {
+      put: async ({ id, source, sha, publisher, files }, workspace) => {
         await db.write([{
           sql: "INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET source = excluded.source, sha = excluded.sha, publisher = excluded.publisher, files = excluded.files, imported_at = excluded.imported_at",
           params: [id, source, sha, publisher, JSON.stringify(files), now()],
-        }]);
+        }, ...(workspace === undefined ? [] : [{ sql: "UPDATE imported_templates SET workspace = ? WHERE id = ?", params: [workspace, id] }])]);
       },
+      workspaces: async () => new Map((await db.all<{ id: string; workspace: string | null }>("SELECT id, workspace FROM imported_templates")).map((row) => [row.id, row.workspace])),
       remove: async (id) => {
         const [result] = await db.write([{ sql: "DELETE FROM imported_templates WHERE id = ?", params: [id] }]);
         return (result?.changes ?? 0) === 1;
