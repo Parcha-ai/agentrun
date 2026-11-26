@@ -12,6 +12,16 @@ import (
 // stranger is a user that is not the test's: it owns none of the files the test writes and is in none of their groups.
 var stranger = Writer{UID: uint32(os.Getuid()) + 1}
 
+// Changes says how w could change the desktop file at path, in words, or "" when it could not (Open).
+func (w Writer) Changes(path string) string {
+	f, err := w.Open(path)
+	if err != nil {
+		return err.Error()
+	}
+	f.Close()
+	return ""
+}
+
 // chmod sets path's mode, and sets it back to 0755 when the test ends, so the test's folder can be removed.
 func chmod(t *testing.T, path string, mode os.FileMode) {
 	t.Helper()
