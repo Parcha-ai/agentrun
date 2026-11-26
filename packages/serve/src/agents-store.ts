@@ -350,8 +350,9 @@ export async function commitAgent(
 }
 
 /** The revision an edit makes on `entry`'s current one: what the edit leaves out keeps the current revision's, its skill
- *  files, harness, place, learning switch and default cap. Absent here is unchanged, not the default. */
-function editOn(entry: AgentEntry, definition: Json, skills: Record<string, string> | undefined, note: string | undefined, fromPackage = false): NewRevision & { note?: string } {
+ *  files, harness, place, learning switch and default cap. Absent here is unchanged, not the default. An apply's plan
+ *  builds an update's revision with it too (server.ts planTemplate), as the update's commit does. */
+export function editOn(entry: AgentEntry, definition: Json, skills: Record<string, string> | undefined, note: string | undefined, fromPackage = false): NewRevision & { note?: string } {
   const current = entry.revision;
   const currentBody = (current?.body ?? {}) as Partial<AgenticBody & WorkflowBody>;
   let files = skills;

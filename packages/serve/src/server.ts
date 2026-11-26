@@ -53,7 +53,7 @@ import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
 import { agentPackage } from "./agent-package.js";
 import { uuidv7 } from "./ids.js";
-import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, editOn, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_EXA_ENV, FAUX_FIRECRAWL_ENV, FAUX_WEB_ENV, withHeld } from "./web-run.js";
@@ -3945,13 +3945,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  skipped for a connection this server lacks), and the computer it picks. Any other refusal is the apply's own. */
   async function planTemplate(template: Package, body: Json) {
     const p = await prepareApply(template, body, { plan: true });
-    // A fresh apply refused for want of a place (createAgentOf's save) is refused here, in the same words: no plan of a
-    // create the apply would refuse.
-    if (!p.onto) {
-      const { definition, skills } = checkDefinitionBody(p.made.agent, { harnesses });
-      const refused = await noPlaceOf(makeRevision(definition, skills ?? {}, undefined), p.toolsUnnamed);
-      if (refused) throw invalid([refused]);
-    }
     // A monid grant is pinned to monid's listing when the agent is saved (saveable: monidPinOf), read with the monid key:
     // with none here the apply is refused, so the plan lists the key. A grant the agent's current pin carries reads
     // nothing (pinMonid with no key answers before any request).
@@ -3960,6 +3953,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const was = p.onto?.revision?.kind === "agentic" ? p.onto.revision : undefined;
     const unread = !env[MONID_KEY_ENV]?.trim() && (await pinMonid(tools, { key: undefined, ...(was ? { previous: { grants: (was.body as AgenticBody).tools ?? [], pin: was.monidPin ?? null } } : {}) }));
     const missing = unread && "refused" in unread && !p.missing.includes(MONID_KEY_ENV) ? [...p.missing, MONID_KEY_ENV] : p.missing;
+    // An apply refused for want of a place (its save: createAgentOf's, or an update's reviseAgentOf) is refused here, in
+    // the same words: no plan of a create or a revise the apply would refuse. An update's revision is built as its commit
+    // builds it (updateDefinition, then editOn over the agent's current revision, whose place and computer it carries), and
+    // checked with its tools as named, as its save checks it. Only once the plan lists nothing the apply refuses first:
+    // the keys and required MCP servers this server lacks (409, before anything is built) and monid's key (its save's pin,
+    // before the place), which the plan lists, as the apply names them first.
+    if (!missing.length && !p.unsaved.some((need) => need.required)) {
+      let revision: NewRevision;
+      if (p.onto) {
+        const edit = checkDefinitionBody({ ...p.made.agent, definition: updateDefinition(p.onto, p.made.agent.definition as Json) }, { creating: false, harnesses });
+        revision = editOn(p.onto, edit.definition, edit.skills, edit.note, true);
+      } else {
+        const { definition: made, skills } = checkDefinitionBody(p.made.agent, { harnesses });
+        revision = makeRevision(made, skills ?? {}, undefined);
+      }
+      const refused = await noPlaceOf(revision, p.onto ? false : p.toolsUnnamed);
+      if (refused) throw invalid([refused]);
+    }
     // A skip's `code` is the apply's warning's for it: not_set_up_here for one this server makes once it is set up (a
     // connection, a feed's URLs, a launch hook), not_an_option for one it never makes.
     const planned: { name: string; kind: string; action: "create" | "update" | "remove" | "skip"; code?: string; reason?: string }[] = [];
