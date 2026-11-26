@@ -264,7 +264,10 @@ still stops a workflow that costs more than the agent by hand.
 
 ## The caps
 
-Over a cap is refused, never cut.
+Over a cap is refused, never cut, with one exception: a run's correction (a round's line, a feedback or a grade's
+words) appended to `corrections.md` that would take the file past its cap drops the file's oldest lines to fit, so the
+newest correction wins (`dropped_lines` on the run's learning). A correction whose line alone is past the cap, and a
+person's whole-file edit past it, are refused, nothing dropped.
 
 | What | Cap |
 | --- | --- |
@@ -284,7 +287,7 @@ Over a cap is refused, never cut.
 | `file_mode` | a link, a folder or anything else that is not a regular file |
 | `encoding` | not UTF-8, in a file or its name |
 | `deleted` | a draft's file that was there, gone |
-| `too_large` | a draft's JSON over 16384 bytes, its README over 1024, or `corrections.md` past 2048 |
+| `too_large` | a draft's JSON over 16384 bytes, its README over 1024, or `corrections.md` past 8192 (a person's whole-file edit, or one correction's line alone; an appended correction drops the oldest lines instead) |
 | `invisible_unicode` | a character a reader does not see, by code point |
 | `secret_shape` | text shaped like a secret, by kind, in a file or its name |
 | `secret_value` | a value the host holds as secret, in a file or its name |
