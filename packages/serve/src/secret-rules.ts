@@ -2584,8 +2584,9 @@ const ENV_TOKEN_BREAK = /[^a-z0-9_-]{1,4096}/;
 /** A dotfile `.env` (`.env`, `.env.example`, `src/.env`) named as a word or after a path's `/`, `=`, `<`, `>`, `,` or
  *  `:`, its whole name up to where a path ends: a file, which env-file reads, not the environment. `process.env`,
  *  `process?.env`, `Bun.env` keep the character before their dot and are read. A glob or a brace (`.env*`, `.env.*`,
- *  `.env.{local,production}`) names no one file env-file can test: it is no path end, so its env token stays (11-26). */
-const DOT_ENV_FILE = /(^|[ \t/=<>,:])\.env(?:\.[a-z0-9_-]{1,64}){0,8}(?=$|[\s/;|&<>),:])/gi;
+ *  `.env.{local,production}`) names no one file env-file can test: it is no path end, so its env token stays (11-26).
+ *  Its case is env-file's (ENV_FILE_NAME): `.ENV` or `.Env.local` is no file env-file cuts, so its env token stays too. */
+const DOT_ENV_FILE = /(^|[ \t/=<>,:])\.env(?:\.[A-Za-z0-9_-]{1,64}){0,8}(?=$|[\s/;|&<>),:])/g;
 /** A line break before a member access's dot (`process` then `  .env` on the next line, a chained call's formatting):
  *  dropped, so the member reads joined to what it is a member of. */
 const MEMBER_BREAK = /[ \t]{0,64}\r?\n\s{0,64}(?=\.[A-Za-z_$])/g;

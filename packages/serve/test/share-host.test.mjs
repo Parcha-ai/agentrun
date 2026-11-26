@@ -421,9 +421,9 @@ test("LVI (11-26): the host reads a bundle's /run/title as the export cuts it, l
   const doc = JSON.parse(await bundleOf());
   const title = `Say: $ printenv HOME=/root SYNTH_UNHELD=quarry${nonce()}tallow $ ls`;
   await assert.rejects(screenShare(resigned({ ...doc, run: { ...doc.run, title } }), []), (error) => error.code === "input_invalid" && (error.extra.details.counts["env-dump"] ?? 0) >= 1);
-  // The same words in another string are a message, not a title: no prompt mid-line is read there.
-  const note = "Run $ env SYNTH_MODE=dev node app.js";
-  await screenShare(resigned({ ...doc, run: { ...doc.run, title: note } }), []);
+  // In any other string the same words are a message, not a title: no prompt mid-line is read there. (In a title,
+  // `$ env NAME=value command` is the flattened read's documented over-cut, the export's as well.)
+  await screenShare(await bundleOf({ answer: "Run $ env SYNTH_MODE=dev node app.js" }), []);
 });
 
 test("a call's long command is read once per call, never once per string of its output: ≥1 MiB of command over 5,000 strings screens in bounded time", { timeout: 900_000 }, async () => {
