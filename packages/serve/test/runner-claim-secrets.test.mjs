@@ -134,6 +134,10 @@ const SENDS_NO_MODEL_KEY = [
   ["on a --faux runner", { [FAUX_ENV]: "1" }, {}],
   ["faux-pinned on a runner off faux", {}, { model: { provider: "faux", modelId: "faux-1" } }],
 ];
+/** The runs above whose every model route sends no key: held, or on a --faux runner. A faux pin makes the run's own model
+ *  faux alone; a workflow's model nodes, a run's subagent tiers and its learned workflows route as the runner's, by tier. */
+const ROUTES_SEND_NO_KEY = SENDS_NO_MODEL_KEY.filter(([where]) => !where.startsWith("faux-pinned"));
+const FAUX_PINNED = SENDS_NO_MODEL_KEY.find(([where]) => where.startsWith("faux-pinned"));
 
 test("a run that sends no model key (held, on a --faux runner, faux-pinned) is still laid its decision keys: its Jev judge's, on TypeSafe's key or on an OpenRouter gateway's, and Parallel's for a web tool on Parallel; never a model key", async (t) => {
   const workflow = { kind: "workflow", body: { workflow: JUDGE_THEN_MODEL } };
@@ -314,15 +318,18 @@ async function workflowClaim(t, own, env) {
   return { read: reads.filter((name) => MODEL_KEY_NAMES.includes(name)).sort(), runKeyHeld: held.includes(RUN_KEY) };
 }
 
-test("a workflow run that sends no model key (held, on a --faux runner, faux-pinned), with saved model keys and its own model_key, opens neither at its claim; the same run off faux, unpinned and not held opens both", async (t) => {
+test("a workflow run whose model nodes send no key (held, on a --faux runner), with saved model keys and its own model_key, opens neither at its claim; the same run off faux and not held opens both, and so does one pinned to the faux model, whose nodes route by tier as the runner's", async (t) => {
   const off = await workflowClaim(t, {}, {});
   assert.deepEqual([off.read.includes("AGENT_MODEL_API_KEY"), off.runKeyHeld], [true, true], `off faux: the gateway's saved key and the run's own key are opened: ${JSON.stringify(off)}`);
   const got = {};
-  for (const [where, env, own] of SENDS_NO_MODEL_KEY) got[where] = await workflowClaim(t, own, env);
-  assert.deepEqual(got, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { read: [], runKeyHeld: false }])), "a workflow run that sends no model key opens no saved model key and not its own");
+  for (const [where, env, own] of ROUTES_SEND_NO_KEY) got[where] = await workflowClaim(t, own, env);
+  assert.deepEqual(got, Object.fromEntries(ROUTES_SEND_NO_KEY.map(([where]) => [where, { read: [], runKeyHeld: false }])), "a workflow run whose nodes send no model key opens no saved model key and not its own");
+  const [, pinEnv, pinOwn] = FAUX_PINNED;
+  const pinned = await workflowClaim(t, pinOwn, pinEnv);
+  assert.deepEqual([pinned.read.includes("AGENT_MODEL_API_KEY"), pinned.runKeyHeld], [true, true], `faux-pinned on a runner off faux: its nodes route by tier (routeProviderOf), so the gateway's saved key and the run's own key are opened: ${JSON.stringify(pinned)}`);
 });
 
-test("claimModelKey for a run that sends no model key (held, on a --faux runner, faux-pinned) holds no key of its own, even one handed for another gateway; the same run off faux, unpinned and not held holds its key", async (t) => {
+test("claimModelKey for a run whose routes send no model key (held, on a --faux runner) holds no key of its own, even one handed for another gateway; the same run off faux and not held holds its key, and so does one pinned to the faux model, whose tiers route as the runner's", async (t) => {
   const store = await storeWith(t, {});
   await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: [] } });
   const runOf = async (id, own, origin) => store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, {
@@ -334,12 +341,16 @@ test("claimModelKey for a run that sends no model key (held, on a --faux runner,
   const off = await claimModelKey({ store, sealKey: KEY, env: { AGENT_MODEL_BASE_URL: GATEWAY_BASE } }, "run-off");
   assert.equal(off?.key(), RUN_KEY, "off faux, unpinned and not held: the run's own key is held");
   const got = {};
-  for (const [i, [where, env, own]] of SENDS_NO_MODEL_KEY.entries()) {
+  for (const [i, [where, env, own]] of ROUTES_SEND_NO_KEY.entries()) {
     await runOf(`run-${i}`, own, gateway);
     await runOf(`run-${i}-moved`, own, "https://moved.example");
     const held = await claimModelKey({ store, sealKey: KEY, env: { AGENT_MODEL_BASE_URL: GATEWAY_BASE, ...env } }, `run-${i}`);
     const moved = await claimModelKey({ store, sealKey: KEY, env: { AGENT_MODEL_BASE_URL: GATEWAY_BASE, ...env } }, `run-${i}-moved`).then((key) => key?.key() ?? "none", (error) => `threw: ${error.message}`);
     got[where] = { key: held?.key() ?? "none", everHeld: held?.everHeld() ?? false, moved };
   }
-  assert.deepEqual(got, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { key: "none", everHeld: false, moved: "none" }])), "a run that sends no model key never opens its own: none is held, and one handed for another gateway is never read to be refused");
+  assert.deepEqual(got, Object.fromEntries(ROUTES_SEND_NO_KEY.map(([where]) => [where, { key: "none", everHeld: false, moved: "none" }])), "a run whose routes send no model key never opens its own: none is held, and one handed for another gateway is never read to be refused");
+  const [, pinEnv, pinOwn] = FAUX_PINNED;
+  await runOf("run-pinned", pinOwn, gateway);
+  const pinned = await claimModelKey({ store, sealKey: KEY, env: { AGENT_MODEL_BASE_URL: GATEWAY_BASE, ...pinEnv } }, "run-pinned");
+  assert.equal(pinned?.key(), RUN_KEY, "faux-pinned on a runner off faux: its tiers route as the runner's, so the run's own key is held");
 });
