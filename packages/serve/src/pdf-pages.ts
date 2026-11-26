@@ -16,7 +16,7 @@ import { promisify } from "node:util";
 import { helperEnv } from "./helper-env.js";
 import { isWorkspaceError, READ_MAX, relativePath, type Workspace, workspaceAt } from "./workspace/index.js";
 
-export const PDF_PAGES_TOOL = "pdf_pages";
+export { PDF_PAGES_TOOL } from "./pdf-pages-name.js";
 /** The read-only directory a run's documents are read from: the server's `--documents`. */
 export const DOCUMENTS_ENV = "AGENTRUN_SERVE_DOCUMENTS";
 const TEXT_CAP = 20_000;

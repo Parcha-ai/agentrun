@@ -43,7 +43,7 @@ import { formatToolName, isCatalogName, mcpNameOf, mcpToolName, monidNameOf } fr
 import { filedFolders } from "./filed-tool.js";
 import { foldName } from "./home-path.js";
 import { savePath, WEB_SAVE_TOOL } from "./web-save-path.js";
-import { PDF_PAGES_TOOL } from "./pdf-pages.js";
+import { PDF_PAGES_TOOL } from "./pdf-pages-name.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
