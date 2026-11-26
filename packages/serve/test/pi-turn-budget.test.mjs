@@ -268,3 +268,34 @@ test("pi, two answers in the conversation: a call of the second's four that wait
   const chars = texts.reduce((sum, text) => sum + text.length, 0);
   assert.ok(chars <= ROOM, `the four together (${texts.map((x) => x.length).join(", ")}) fit what the second answer left (${ROOM})`);
 });
+
+test("pi, a session that read its own answer: its calls never read the turn back, so a store that cannot read blocks none of them", async (t) => {
+  // MUTATION: every first call of a conversation reads its turn back: a read that fails blocks a call whose turn this
+  // process already holds.
+  const tool = { name: "read_big", description: "Answers ten thousand characters.", inputSchema: { type: "object", properties: { n: { type: "number" } } }, replay: "safe", call: async (args) => ({ text: `START-${args?.n ?? 0} ${"r".repeat(SIZE - 8)}` }) };
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  await queue(server, "run-1");
+  const requests = [];
+  const script = [{ calls: [0, 1, 2, 3].map((n) => ({ call: tool.name, args: { n } })) }, { say: "done" }];
+  const inputOf = (body) => ((body.messages ?? []).some((m) => m.role === "assistant") ? 100 : HELD);
+  const failures = { count: 0 };
+  const loop = createAdapterLoop(async (_claim, run) => ({
+    adapter: piAdapter({ run: failingFirstRead(run, failures), redact: run.redact, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script, requests, { inputOf }), price: () => 0 }),
+    session: { key: "root", label: "root", system: ["Follow the script."], tools: [tool], context: "fresh", contextWindow: WINDOW },
+    input: "Follow the script.",
+    hooks: { beforeIntent: async () => {}, beforeResult: async () => {} },
+    gate: () => "allow",
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
+  }));
+  const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  await until(async () => {
+    const now = await server.runs.get("run-1");
+    return ["ended", "failed"].includes(now.state) && now.runner === null && now;
+  }, "the run's end", 30_000);
+  assert.equal(failures.count, 0, "no read of the turn");
+  const texts = lastResults(requests);
+  assert.equal(texts.length, 4, "the four results");
+  for (const text of texts) assert.match(text, /^START-\d /, `each ran: ${text.slice(0, 120)}`);
+  assert.ok(texts.reduce((sum, text) => sum + text.length, 0) <= ROOM, "together within what the turn left");
+});

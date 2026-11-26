@@ -18,7 +18,7 @@ import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claud
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { conversationLabel, type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
-import { boundTo, RESULT_ALWAYS_WHOLE_CHARS, resultMaxChars, TurnBudget, type TurnRecord } from "@parcha/agentrun-kernel/process";
+import { boundTo, resultMaxChars, TurnBudget, type TurnRecord } from "@parcha/agentrun-kernel/process";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
@@ -418,14 +418,17 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
     if (!turn) turns.set(key, (turn = new TurnBudget(spec.system)));
     return turn;
   };
-  // A session opened again in a turn (a park, a lost claim) has a budget that has read no answer: before its first claim
-  // it takes the turn back from the conversation's own entries (turnRecordsOf), once per conversation, so the calls this
-  // process answers split what their answer left beside the results handed before it. A budget that has read an answer
-  // here keeps its own (TurnBudget.restore). A read that fails is not the turn: it rejects, naming the failure, and is
-  // not kept, so the next call reads again; the call that met it runs no tool (piTool) and hands no result (afterTool).
+  // A session opened again in a turn (a park, a lost claim) has a budget that has read no answer: before its first call
+  // runs (beforeTool; piTool's execute for a call pi reruns without it) it takes the turn back from the conversation's
+  // own entries (turnRecordsOf), once per conversation, so the calls this process answers split what their answer left
+  // beside the results handed before it. A conversation whose answer this process read (afterResponse) has its turn
+  // already and reads nothing. A read that fails is not the turn: it rejects in plain words (the store's own error is its
+  // cause, never the model's to read) and is not kept, so the next call reads again; the call that met it never runs.
   const restoring = new Map<string, Promise<void>>();
+  const answered = new Set<string>();
   const restoreOf = (conversationId: unknown, context: Context): Promise<void> => {
     const key = String(conversationId);
+    if (answered.has(key)) return Promise.resolve();
     const known = restoring.get(key);
     if (known) return known;
     const restored = (async () => {
@@ -433,11 +436,13 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       if (conversation) turnOf(key).restore(await turnRecordsOf((cursor) => conversation.entries({}, TURN_PAGE, cursor as Cursor | undefined, context)));
     })().catch((error: unknown) => {
       if (restoring.get(key) === restored) restoring.delete(key);
-      throw new Error(`This call's turn could not be read back from its conversation, so what the turn has left for its result is unknown: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(TURN_UNREAD, { cause: error });
     });
     restoring.set(key, restored);
     return restored;
   };
+  // A call whose turn could not be read before it ran, blocked (beforeTool): its result is these words alone, an error.
+  const unread = new Set<string>();
   const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals, windowOf, turnOf, restoreOf)), ...(options.tools ?? []).map((tool) => announcing(tool, io))];
   // A refused call's words (the gate's deny, main's), by call: its result is those words alone, as main gives them.
   const refusals = refusalWords();
@@ -448,6 +453,16 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
       hook(ToolTask, {
         beforeTool: async (call, api, hookContext: Context) => {
           touched.add(call.id);
+          // A call the model made takes its turn back before it runs (restoreOf): a pi-native tool (bash, web_fetch, a
+          // subagent) has no execute of the host's to read it in, and a read after its run could only lose what it did.
+          // A read that fails blocks the call before its intent, so nothing ran and the model may ask again.
+          if (call.parent === undefined) {
+            const failed = await restoreOf(api.conversationId, hookContext).then(() => false, () => true);
+            if (failed) {
+              unread.add(call.id);
+              return { block: TURN_UNREAD };
+            }
+          }
           if (!io.gate) return undefined;
           // A nested call (one a tool made) is marked so: the cap's wrap-up lets it through, as its parent's part.
           const answer = await io.gate({ callId: call.id, tool: call.name, args: (call.arguments ?? {}) as Record<string, unknown>, ...(call.parent === undefined ? {} : { nested: true as const }) }, hookContext);
@@ -477,12 +492,13 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
         afterTool: async (call, result, api, hookContext: Context) => {
           const refused = refusals.resultOf(call.id, result, call.parent !== undefined);
           if (refused) return refused as never;
+          if (unread.delete(call.id) && result.diagnostics?.some((diagnostic) => diagnostic.code === "blocked")) return { output: [{ type: "text", text: TURN_UNREAD }], isError: true } as never;
           const agent = (await api.snapshot(AgentDoc, api.conversationId, hookContext).catch(() => undefined)) as { readonly model?: { readonly provider: string } } | undefined;
-          // A turn that could not be read: the result is not handed (a bound of a fresh budget's would take room the
-          // turn may not have), its call an error naming why.
-          const unread = call.parent === undefined ? await restoreOf(api.conversationId, hookContext).then(() => undefined, (error: unknown) => (error instanceof Error ? error.message : String(error))) : undefined;
-          if (unread !== undefined) return { output: [{ type: "text", text: boundTo(unread, RESULT_ALWAYS_WHOLE_CHARS, { error: true }).text }], isError: true } as never;
-          return (await boundPiResult(result, windowOf(agent?.model), call.parent === undefined ? { turn: turnOf(api.conversationId), callId: call.id } : undefined)) as never;
+          // A call pi reran without its beforeTool (its intent stored before a crash) reads its turn here. One that
+          // cannot be read keeps what the tool did, held to the window's bound alone: a run that may have spent is never
+          // replaced by an error the model would answer by running it again.
+          const turn = call.parent === undefined && (await restoreOf(api.conversationId, hookContext).then(() => true, () => false)) ? turnOf(api.conversationId) : undefined;
+          return (await boundPiResult(result, windowOf(agent?.model), turn ? { turn, callId: call.id } : undefined)) as never;
         },
       }),
       // An answer's cost is the runner's booking of its request, never pi's $0 for a model it has no price for: set on
@@ -492,6 +508,7 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           // The turn's facts, for its calls' results: the input its request held (cached input included), the answer's
           // output, and the calls it made.
           turnOf(api.conversationId).open(turnFactsOf(message));
+          answered.add(String(api.conversationId));
           if (!io.bookedCost) return;
           // The conversation that asked, by the id pi sends with each of its requests (its pi.provider document's), as
           // the session's client names it to the proxy (port-models.ts sessionApi).
@@ -696,6 +713,10 @@ function turnFactsOf(message: { readonly usage?: unknown; readonly content?: unk
 
 /** Entries read a page at a time when a session takes its turn back. */
 const TURN_PAGE = 32;
+
+/** A call's words when its turn could not be read back from its conversation (restoreOf): plain, the store's own error
+ *  kept off the model's transcript, and within RESULT_ALWAYS_WHOLE_CHARS, so no bound cuts them. */
+const TURN_UNREAD = "This call did not run: its turn could not be read back from its conversation, so what the turn has left for its result is unknown. Nothing it would do was done; it may be called again.";
 
 /**
  * A conversation's turn as its entries keep it (newest first, a page at a time from `page`): its last answer's facts and
