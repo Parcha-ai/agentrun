@@ -128,7 +128,7 @@ test("kr-8: a held value whose head ends a run too long to read, Python's \\x20 
 const CONTROL_PADS = [
   ["raw NULs", "\u0000".repeat(300), "json"],
   ["raw U+0001 to U+001F and DEL", Array.from({ length: 300 }, (_, i) => String.fromCharCode([1, 8, 14, 27, 31, 127][i % 6])).join(""), "json"],
-  ["JSON's \\u0001", String.raw`\u0001`.repeat(250), "json"],
+  ["JSON's \\u0001", String.raw`\u0001`.repeat(300), "json"],
   ["Python's \\x01", String.raw`\x01`.repeat(250), "python"],
 ];
 const wrapped = (kind, body) => (kind === "python" ? `{'a': '${body}'}` : `{"a": "${body}"}`);
