@@ -391,10 +391,13 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     // Its refusals are listed beside it, never counted: a port watcher's GET / is refused too.
     if (recipe.model.billing === "proxy") {
       const firstRequest = messages()[0];
-      const ours = new Set(tools.map((tool) => `agentrun__${tool.name}`));
+      // Ours by our MCP server's name at that start: `agentrun`, or a start's own (`ar` and 6 hex digits) under a recipe
+      // with the title tie (the ACP adapter's mcpServerName).
+      const names = new Set(tools.map((tool) => tool.name));
+      const ours = (name: string) => names.has(/^(?:agentrun|ar[0-9a-f]{6})__(.+)$/.exec(name)?.[1] ?? "");
       const offered = firstRequest?.tools ?? [];
       const refusals = logs.filter((l) => /refus/i.test(l.message)).map((l) => ({ message: l.message, ...(typeof l.reason === "string" ? { reason: l.reason } : {}) }));
-      stage2.tools_off = { ok: !!firstRequest, firstRequest: offered, notOurs: offered.filter((name) => !ours.has(name)), ...(refusals.length ? { proxyRefusals: refusals } : {}) };
+      stage2.tools_off = { ok: !!firstRequest, firstRequest: offered, notOurs: offered.filter((name) => !ours(name)), ...(refusals.length ? { proxyRefusals: refusals } : {}) };
     } else stage2.tools_off = { ok: null, why: "plan billing: the vendor's model requests never reach this host, so the tools it offers are not seen" };
 
     // Stage 2: the environment is the allowlist.

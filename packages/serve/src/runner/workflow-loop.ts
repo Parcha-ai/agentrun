@@ -126,6 +126,10 @@ export interface WorkflowSpecRun {
   /** A fresh journal of the claim, for what the spec reads from the run's records at its end (its decisions' booked
    *  cost): a fresh one, since the Harness closes its own before the end is written. */
   readonly journal?: () => Journal;
+  /** The claim's signal and LoopDeps.handBack: a renewal of the plan refused because the runner is closing hands the
+   *  run back to resume (claim-secrets.ts). */
+  readonly signal?: AbortSignal;
+  readonly handBack?: () => void;
 }
 
 /** Loops for workflow runs: `spec(claim)` gives each claim's run what it runs (its workflow, input, models and host). */
@@ -316,7 +320,7 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     const parkController = new AbortController();
     let heldRefusal: CapRefusal | undefined;
     const context = withAbortSignal(AbortSignal.any([deps.signal, parkController.signal]), BACKGROUND_CONTEXT);
-    spec = await specOf(claim, { redact: deps.redact, journal: () => deps.journal(claim) });
+    spec = await specOf(claim, { redact: deps.redact, journal: () => deps.journal(claim), signal: deps.signal, ...(deps.handBack ? { handBack: deps.handBack } : {}) });
     claimNow = claim;
     specReady();
     const revision = { id: spec.revisionId, kind: "workflow" as const, body: { workflow: spec.workflow, tools: [...spec.tools] } };

@@ -108,7 +108,8 @@ const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
  *  `${parameters.<name>}`), which apply writes as the tool's pin in the agent's tool settings, so a send goes only to the
  *  destination the owner set. `file`, by tool: where each of its answers is filed whole in the run's files and the paths of it
  *  the tool's result shows (filed-tool.ts), which apply writes as the tool's file setting in the agent's tool settings, so
- *  the tool's result is a summary, never the answer (the model's own file tools can still open the folder). Absent when
+ *  the tool's result is a summary, never the answer (the gate refuses the agent's own read, write and edit in the folder;
+ *  bash is not gated by path). Absent when
  *  the package files none. */
 export type McpNeed = { source: McpSource; toolkit: string; tools: string[]; required: boolean; reason?: string; allow: string[]; pin: Record<string, Record<string, PinValue>>; file?: Record<string, FileSetting> };
 /** One of a package's model choices (manifest `model.choices`): a model and the harness it runs on, which an owner picks

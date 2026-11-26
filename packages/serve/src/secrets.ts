@@ -304,7 +304,8 @@ const READINGS_BUDGET = 4096;
 
 /** How many characters of URL queries one header value's read (innerCredentials) takes after the first query it reads:
  *  a value of URLs nested each in the last's query gives each a query running to the value's end, and reading every one
- *  would hold their count times the value's length. The pair read (pairValues) still covers every query's text. */
+ *  would hold their count times the value's length. The pair reads (credentialPrefixes, pieceValues) still cover every
+ *  query's text. */
 const QUERY_BUDGET = 4096;
 
 /** The URL queries one header value's read has taken (`spans`, each its `from to`) and the QUERY_BUDGET characters left. */
@@ -423,58 +424,172 @@ const urlSpans = (value: string): { start: number; end: number }[] => {
   return spans;
 };
 
-/** The breaks between a header value's `name=value` pairs: `;`, `&`, a comma (or its `%2C`) and spaces; and, for a
- *  second, finer read, also `?`, `#` and `/`, so a pair inside a URL that is itself a pair's value
- *  (`upstream=https://relay/v1#access_token=<token>`) or a path's segment stands alone; and three whole reads, which keep
- *  a raw `;` in a value: all but `;` (LIST_BREAK), so a credential with a `;` in a list joined by `%2C`, the usual way to
- *  write one (`api_key=<key;rest>%2Cregion=us`), is held as itself, and `&` and spaces alone (WHOLE_BREAK), so one with
- *  a comma in it too (`api_key=<key;rest%2Cmore>&region=us`) is held whole, and again at their `%26` and `%20`
- *  (ENCODED_BREAK), so that key before an encoded `&` or space is held as written too, not only decoded, and again at
- *  `%26` alone (ENCODED_AMP_BREAK), so a key with a `%20` in it before a `%26` is held, as written and decoded; a text
- *  with neither (ENCODED_SEEN) splits at both as at WHOLE_BREAK, so those reads are skipped for it. All are held:
- *  every redactor matches a held value exactly, so the longer reading of any never covers a line quoting the key alone.
- *  WHOLE_BREAK also holds a value with the comma that ends it (sentry's `sentry_key=<key>%2C`); the others hold the value
- *  alone. */
-const PAIR_BREAK = /[;&,\s]+|%2C/i;
-const PIECE_BREAK = /[;&,\s?#/]+|%2C/i;
-const LIST_BREAK = /[&,\s]+|%2C/i;
-const WHOLE_BREAK = /[&\s]+/;
-const ENCODED_BREAK = /[&\s]+|%26|%20/i;
-const ENCODED_AMP_BREAK = /[&\s]+|%26/i;
-const ENCODED_SEEN = /%26|%20/i;
+/** A separator in a header value: `&`, `;`, a comma or a space, raw or percent-encoded (`%26`, `%3B`, `%2C`, `%20`, in
+ *  any case). One splits the value's `name=value` pairs, or sits inside a key: a reader can't tell which, so a
+ *  credential's value is held up to each one (credentialPrefixes). */
+const SEPARATOR = /[&;,\s]|%26|%3B|%2C|%20/gi;
 
-/** What a credential's value whose part before its first `;` is empty (`;<key>`) holds after that `;`, whole and up to
- *  its next `;`, as a reader that skips an empty part reads it; nothing for any other value. */
+/** A pair's value in quotes, raw or written `%22` or `%27` (QUOTED), a quote opening one (OPEN_QUOTE), and a quote
+ *  closing one (CLOSE_QUOTE). */
+const QUOTED = /^(["']|%22|%27)(.*)\1$/;
+const OPEN_QUOTE = /^(?:["']|%22|%27)/;
+const CLOSE_QUOTE = /(?:["']|%22|%27)$/;
+
+/** Whether `text` reaches the held lists' floor: MIN_SECRET characters or more, decoded and whitespace aside. */
+const atFloor = (text: string): boolean => (decoded(text) ?? text).replace(/\s+/g, "").length >= MIN_SECRET;
+
+/** Whether `text`, decoded, is itself a `name=value` pair named like no credential (`theme=dark-mode`): a word, `=`,
+ *  then a value that starts with no other `=` (a base64 credential's padding, `<b64>=`, makes no pair). */
+const PAIR_SHAPE = /^([A-Za-z][\w.-]*)=[^=]/;
+const plainPair = (text: string): boolean => {
+  const pair = PAIR_SHAPE.exec(decoded(text) ?? text);
+  return pair !== null && !credentialNamed(pair[1]);
+};
+
+/** What a credential's value whose part before its first `;` is empty (`;<key>`) holds after that `;`: the rest whole,
+ *  as a reader that skips an empty part reads it, and its first piece up to a `;` at the floor or longer (atFloor), so
+ *  `;a;<key>` gives `<key>`, never an `a` the tracer's cut would take from every word; neither when it is a pair named
+ *  like no credential (plainPair, `;theme=dark-mode`). Nothing for any other value. */
 const afterEmpty = (value: string): string[] => {
   if (!value.startsWith(";")) return [];
   const after = value.replace(/^;+/, "");
-  return [after, after.split(";")[0]];
+  const piece = after.split(";").find(atFloor);
+  return [after, ...(piece === undefined ? [] : [piece])].filter((taken) => !plainPair(taken));
 };
 
-/** The value of each `name=value` pair of `text` split at `breaks` whose name says it is a credential (credentialNamed),
- *  out of any quotes around it, raw or written `%22` or `%27`, as written and decoded. A name is what follows the last
- *  `/`, `?`, `#` or `:` before its `=` (a URL's query or fragment, `https://relay/v1?region=us`, names `region`). A
- *  value whose part before its first `;` is empty, as written or decoded (`token=;<key>` read whole, `token=%3B<key>`),
- *  is taken after that `;` too (afterEmpty). A value of only `=`, `;` and quotes, as written or decoded (a base64 credential's padding read as a
- *  pair, `token=;` before a space, a lone `'` or its `%27`), is not taken: otlpHeaderCut has no length floor, and it
- *  would cut that character everywhere in the tracer's lines. */
-const pairValues = (text: string, breaks: RegExp): string[] =>
-  text.split(breaks).flatMap((pair) => {
-    const at = pair.indexOf("=");
+/** What one prefix of a credential's value holds: the prefix; out of a matching pair of quotes around it, raw or written
+ *  `%22` or `%27`, at any length; without a lone opening or a lone closing quote, at the floor or longer (atFloor: a
+ *  shorter rest, `token=%27a`, would cut ordinary words from the tracer's lines); each of those after an empty first
+ *  part (afterEmpty), when `afterRead`; and each as written and decoded. Not one whose decoded form is only `=`, `;`,
+ *  `&`, quotes, commas and spaces (a base64 credential's padding read as a pair, `token=;` before a space, a lone `'` or
+ *  its `%27`, `api_key=%2C`, `api_key=&` read to its end), as written or decoded: otlpHeaderCut has no length floor, and
+ *  it would cut those characters everywhere in the tracer's lines. */
+const heldForms = (value: string, afterRead: boolean): string[] => {
+  const quoted = QUOTED.exec(value);
+  const lone = [value.replace(OPEN_QUOTE, ""), value.replace(CLOSE_QUOTE, "")].filter((form) => form !== value && atFloor(form));
+  const forms = [value, ...(quoted ? [quoted[2]] : []), ...lone];
+  const after = (form: string): string[] => (afterRead ? afterEmpty(form) : []);
+  return forms
+    .flatMap((form) => [form, ...after(form)])
+    .flatMap((form) => [form, decoded(form) ?? form])
+    .concat(forms.flatMap((form) => after(decoded(form) ?? form)))
+    .filter((form) => /[^=;&"',\s]/.test(decoded(form) ?? form));
+};
+
+/** How many characters credentialPrefixes takes in all from one text for the prefixes it budgets: each pair's value
+ *  runs to the text's end, so a text of thousands of pairs, each read up to each separator after it, would hold their
+ *  count times the text's length. */
+const PREFIX_BUDGET = 4096;
+
+/** A raw `&` or space at either end of a prefix as written: a value that opens with one (`sentry_key= @`), or a prefix
+ *  that ends inside a run of separators (`token=+  ;`, `api_key=@&` read to its end). No key is read that way by any
+ *  reader that splits pairs, so beyond a pair's first prefix such a prefix is held only at the floor or longer
+ *  (atFloor): shorter, it would cut a character or two, with that `&` or space, from every tracer line. */
+const RAW_EDGE = /^[&\s]|[&\s]$/;
+
+/** A `;` that opens a value and the separator a prefix of it ends at, written the same way (a raw `;` both, or `%3B`
+ *  both): the reader that skips the empty part before that `;` (afterEmpty) reads the piece up to the next one itself. */
+const sameSemicolon = (prefix: string, separator: string): boolean => {
+  const opening = prefix.startsWith(";") ? ";" : prefix.slice(0, 3).toLowerCase() === "%3b" ? "%3b" : "";
+  return opening !== "" && separator.toLowerCase() === opening;
+};
+
+/** A separator's kind: its text, an encoded one in any case the same (`%3b` is `%3B`), and any whitespace one kind. */
+const separatorKind = (separator: string): string => (/^\s$/.test(separator) ? " " : separator.toLowerCase());
+
+/** The value of each `name=value` pair of `text` whose name says it is a credential (credentialNamed), held at every
+ *  boundary: a pair is a run of `text` between separators (SEPARATOR) whose first `=` has a name before it, the name
+ *  being what follows the last `/`, `?`, `#` or `:` before that `=` (a URL's query, `https://relay/v1?region=us`, names
+ *  `region`); its value runs from the `=` to the end of `text`, and each prefix of it that ends just before a separator
+ *  is held, the whole rest one more, each by heldForms. A key may hold any separator, raw or encoded, and the pairs
+ *  around it may be joined by any other, so no one split finds it: one of these prefixes is the key alone, whatever
+ *  ends it. A pair's first prefix (up to its first separator) is always taken, and so is the last credential pair's
+ *  whole rest; the others are taken pair by pair, shortest first within a pair, while PREFIX_BUDGET has room for all of
+ *  one. Past the budget, a pair still holds its value as a reader that splits pairs at some kinds of separator
+ *  (separatorKind) reads it, up to the first separator of one of those kinds: its prefix up to the next separator of
+ *  each kind, until it has passed one of each kind that opens it. The kinds that open a pair are those of every
+ *  separator since the last `=` before its name (with the text's start while there is none): a reader that splits at
+ *  any of them finds the pair (`; session=`, `&foo;api_key=`), and one that splits at none of them never does. Each
+ *  pair's walk ends at the first separator of the last of its opening kinds to come, or at the text's end when one
+ *  never comes, and then the pair holds its whole rest too: a reader of the kind that never comes reads the value to
+ *  the end (`&token=<a>;<b>;secret=<c>` with no `&` after it). A later pair that the last kind seen opens has one of
+ *  that kind after this pair's `=`, so its name comes after this walk's end. So the walks that end at one kind are
+ *  disjoint, all walks take at most nine passes over the separators (eight kinds and the text's start), and these
+ *  prefixes hold at most eight times that, 72 times `text`'s length, in all. A later pair that a kind which never comes
+ *  opens would need one of it after this pair's `=`, so at most one pair per kind, and the text's start, holds its
+ *  whole rest this way: at most nine times `text`'s length more. One past the first with a raw `&` or space at an end
+ *  is held only at the floor or longer (RAW_EDGE). A prefix that ends at a `;` written as the one that opens it is not
+ *  read after that `;` (sameSemicolon). */
+const credentialPrefixes = (text: string): string[] => {
+  const separators = [...text.matchAll(SEPARATOR)].map((found) => ({ start: found.index, end: found.index + found[0].length, kind: separatorKind(found[0]), text: found[0] }));
+  const startOf = (at: number): number => (at < separators.length ? separators[at].start : text.length);
+  const pairs: { value: number; first: number; opening: Set<string> }[] = [];
+  // The kinds of the separators since the last `=`, and "" (the text's start) while no `=` has come.
+  let opening = new Set([""]);
+  let equals = -1;
+  for (let at = 0; at <= separators.length; at++) {
+    const from = at === 0 ? 0 : separators[at - 1].end;
+    if (at > 0) opening.add(separators[at - 1].kind);
+    if (equals < from) equals = text.indexOf("=", from);
+    if (equals < 0) break;
+    if (equals >= startOf(at)) continue;
+    const name = text.slice(from, equals).split(/[/?#:]/).at(-1) ?? "";
+    if (equals > from && credentialNamed(decoded(name) ?? name)) pairs.push({ value: equals + 1, first: at, opening });
+    opening = new Set();
+  }
+  let left = PREFIX_BUDGET;
+  return pairs.flatMap(({ value, first, opening }, index) => {
+    const ends = new Set([first]);
+    for (let at = first + 1; at < separators.length && separators[at].start - value <= left; at++) {
+      left -= separators[at].start - value;
+      ends.add(at);
+    }
+    if (first < separators.length) {
+      if (index === pairs.length - 1) ends.add(separators.length);
+      else if (text.length - value <= left) {
+        left -= text.length - value;
+        ends.add(separators.length);
+      }
+    }
+    const kinds = new Set<string>();
+    let unseen = opening.size;
+    for (let next = first; next < separators.length && unseen > 0; next++) {
+      const { kind } = separators[next];
+      if (kinds.has(kind)) continue;
+      kinds.add(kind);
+      ends.add(next);
+      if (opening.has(kind)) unseen--;
+    }
+    // An opening kind that never comes: its reader reads the value to the text's end.
+    if (unseen > 0) ends.add(separators.length);
+    return [...ends].flatMap((at) => {
+      const prefix = text.slice(value, startOf(at));
+      if (at !== first && RAW_EDGE.test(prefix) && !atFloor(prefix)) return [];
+      return heldForms(prefix, at === separators.length || !sameSemicolon(prefix, separators[at].text));
+    });
+  });
+};
+
+/** The breaks of the piece read (pieceValues): `;`, `&`, a comma (or its `%2C`), spaces, and `?`, `#` and `/`. */
+const PIECE_BREAK = /[;&,\s?#/]+|%2C/i;
+
+/** The value of each credential-named pair that starts inside a URL that is itself a pair's value, after a `?`, `#` or
+ *  `/` (`upstream=https://relay/v1#access_token=<token>`): `text` split at PIECE_BREAK, each piece whose first `=` has
+ *  a credential name before it held by heldForms. credentialPrefixes finds a pair only after a separator; finding one
+ *  after each `/` too would give each of thousands of `token=<a>/` its own value up to the next separator, and hold
+ *  their count times the text's length. */
+const pieceValues = (text: string): string[] =>
+  text.split(PIECE_BREAK).flatMap((piece) => {
+    const at = piece.indexOf("=");
     if (at <= 0) return [];
-    const name = pair.slice(0, at).split(/[/?#:]/).at(-1) ?? "";
-    if (!credentialNamed(decoded(name) ?? name)) return [];
-    const inner = pair.slice(at + 1).replace(/^(["']|%22|%27)(.*)\1$/, "$2");
-    return [inner, ...afterEmpty(inner)]
-      .flatMap((value) => [value, decoded(value) ?? value])
-      .concat(afterEmpty(decoded(inner) ?? inner))
-      .filter((value) => /[^=;"']/.test(value));
+    const name = piece.slice(0, at).split(":").at(-1) ?? "";
+    return credentialNamed(decoded(name) ?? name) ? heldForms(piece.slice(at + 1), true) : [];
   });
 
 /** The credentials a header value carries inside it, the union of two reads over the whole value as written: the value
- *  of each `name=value` pair whose name says it is a credential (pairValues, at each of PAIR_BREAK, PIECE_BREAK,
- *  LIST_BREAK, WHOLE_BREAK, ENCODED_BREAK and ENCODED_AMP_BREAK: a cookie's `session=<token>`, sentry's
- *  `sentry_key=<key>`, a path's `;jsessionid=<id>`, a URL query's or fragment's `session=` or `access_token=`), and the
+ *  of each `name=value` pair whose name says it is a credential, held at every boundary (credentialPrefixes), and of
+ *  each such pair inside a URL's query, fragment or path (pieceValues): a cookie's `session=<token>`, sentry's
+ *  `sentry_key=<key>`, a path's `;jsessionid=<id>`, a URL query's or fragment's `session=` or `access_token=`; and the
  *  user, password and key parameters of each URL in it (urlSpans, urlCredentials: a DSN's `https://<key>@host/1`, a
  *  relay's whole `user:pa;ss`). A URL only adds readings: the pair read covers its text too. A value that escapes its
  *  slashes (JSON's `https:\/\/`) is read again with them plain, and what that finds is held both ways. A pair named like
@@ -483,11 +598,8 @@ const innerCredentials = (value: string): string[] => {
   const read = (text: string): string[] => {
     const queriesRead: QueriesRead = { spans: new Set(), left: QUERY_BUDGET };
     return [
-      ...pairValues(text, PAIR_BREAK),
-      ...pairValues(text, PIECE_BREAK),
-      ...pairValues(text, LIST_BREAK),
-      ...pairValues(text, WHOLE_BREAK),
-      ...(ENCODED_SEEN.test(text) ? [...pairValues(text, ENCODED_BREAK), ...pairValues(text, ENCODED_AMP_BREAK)] : []),
+      ...credentialPrefixes(text),
+      ...pieceValues(text),
       ...urlSpans(text).flatMap(({ start, end }) => urlCredentials(text, start, end, queriesRead)),
     ];
   };

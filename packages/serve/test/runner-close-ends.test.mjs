@@ -119,6 +119,11 @@ test("a close with no drain tells its caller once its loops are told to stop, af
   assert.equal(plan.renewalDrainFor(now + 600_000), plan.RENEWAL_DRAIN_MS, "a longer window leaves RENEWAL_DRAIN_MS");
   assert.equal(plan.renewalDrainFor(now - 1_000), 0, "a window already over leaves none");
   assert.equal(plan.renewalDrainFor(undefined), plan.RENEWAL_DRAIN_MS, "no window (a close already made) leaves RENEWAL_DRAIN_MS");
+  // The 29 s every shipped grace holds is the renewal's own worst case after its last send, not the lease's window by
+  // chance: a longer refresh or write deadline must raise the bound (and the window that drains it), or this fails.
+  const { RUNNER_RENEWAL_BOUND_MS, RUNNER_LEASE_MS, RUNNER_STOP_MARGIN_MS } = await import("../dist/runner/runner.js");
+  assert.equal(RUNNER_RENEWAL_BOUND_MS, RUNNER_RENEWALS_SERVED_MS + plan.RENEWAL_DRAIN_MS, "the bound: renewals served, then one renewal's whole drain");
+  assert.ok(plan.RENEWAL_DRAIN_MS <= RUNNER_LEASE_MS - RUNNER_STOP_MARGIN_MS, "the window a close hands holds a renewal's whole drain");
 });
 
 test("a loop a stop row stops, still going at the end of the close's window, has its signal aborted before the close gives up its claim: nothing of it outlives the close", async (t) => {

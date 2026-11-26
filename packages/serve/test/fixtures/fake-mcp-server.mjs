@@ -28,8 +28,8 @@ export const baseTools = () => ({
 
 /** `inspect`: called with each request's headers, for a test that reads one of them (the credential a run sent, a static
  *  header beside it); the log itself never holds a header's value. `gate`: called with each request to its endpoint (its
- *  URL as sent, and its JSON-RPC message), for a server that refuses some: `{ status, body }` answers it so, nothing
- *  served; `{ toolError }` answers a tools/call with that text as an isError result, the tool never run; undefined serves
+ *  URL as sent, and its JSON-RPC message), for a server that refuses some: `{ status, body, headers? }` answers it so
+ *  (with those response headers beside its content-type), nothing served; `{ toolError }` answers a tools/call with that text as an isError result, the tool never run; undefined serves
  *  it as usual. */
 export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp", path = "/mcp", inspect, hold, gate } = {}) {
   const tools = baseTools();
@@ -72,7 +72,7 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     }
     const gated = gate?.(new URL(req.url, base), message);
     if (gated && "status" in gated) {
-      res.writeHead(gated.status, { "content-type": "application/json" });
+      res.writeHead(gated.status, { "content-type": "application/json", ...(gated.headers ?? {}) });
       return void res.end(JSON.stringify(gated.body));
     }
     if (gated && "toolError" in gated && message?.method === "tools/call") {

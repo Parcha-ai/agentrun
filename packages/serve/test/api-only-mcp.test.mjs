@@ -428,7 +428,7 @@ test("Composio's origin is one constant, and its seam is a test's alone: no envi
   assert.deepEqual(files.filter((f) => /["'`]https:\/\/backend\.composio\.dev/.test(text[f])), ["composio-made.ts"], "no second literal of it");
   // The seam: the server's option and the runner's deps, carried to the claim step and a run's own process.
   const seam = files.filter((f) => /\bcomposioMcpOrigin\b/.test(text[f])).sort();
-  assert.deepEqual(seam, ["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/mcp-claim.ts", "runner/mcp-run.ts", "runner/run-child-host.ts", "runner/run-child.ts", "server.ts"]);
+  assert.deepEqual(seam, ["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/mcp-claim.ts", "runner/mcp-run.ts", "runner/run-child-deps.ts", "runner/run-child-host.ts", "server.ts"]);
   for (const f of ["cli.ts", "runner/main.ts"]) assert.ok(!/composioMcpOrigin|composioOrigin|COMPOSIO_ORIGIN/.test(text[f]), `${f} maps nothing onto it`);
   const lines = Object.entries(text).flatMap(([f, body]) => body.split("\n").map((line) => [f, line]));
   assert.deepEqual(lines.filter(([, line]) => /composioMcpOrigin|composioOrigin/.test(line) && /process\.env|\benv\[|\bargv\b|--[a-z]/.test(line)), [], "no environment variable or flag names it");

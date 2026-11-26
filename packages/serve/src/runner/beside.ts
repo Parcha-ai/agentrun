@@ -157,18 +157,19 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   // (RUNNER_RENEWALS_SERVED_MS in, or the drain's end if sooner: a run the drain lets finish may need one), and drains
   // the ones out, within the window the close hands, before the store closes: a refresh token OpenAI spent leaves its
   // new pair saved (chatgpt-plan.ts stopRenewals, renewalDrainFor).
-  const { renewalDrainFor, stopRenewals } = await import("../chatgpt-plan.js");
+  const { closeStoreAfter, renewalDrainFor, stopRenewals } = await import("../chatgpt-plan.js");
   return {
     runner,
     close: async () => {
       gauge.stop();
       let renewalsStopped: Promise<void> | undefined;
       const stopRenewing = (by?: number) => (renewalsStopped ??= stopRenewals(store, renewalDrainFor(by)));
-      await Promise.all([swept?.close(), runner.close(stopRenewing)]);
-      paired?.stop();
-      await claimInstallsStopped();
-      await stopRenewing();
-      await store.close();
+      // The renewals' drain and the store's close run whatever the steps before them throw (closeStoreAfter).
+      await closeStoreAfter(async () => {
+        await Promise.all([swept?.close(), runner.close(stopRenewing)]);
+        paired?.stop();
+        await claimInstallsStopped();
+      }, () => stopRenewing(), store);
       seal.release();
     },
   };
