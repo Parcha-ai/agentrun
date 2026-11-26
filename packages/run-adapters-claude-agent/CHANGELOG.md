@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## 0.1.0-beta.62 (2026-11-26)
+
+- A claude-agent run on a local model (an Ollama model, or any model AgentRun's route translates onto Anthropic's Messages) no longer ends with no answer. On a slow machine such a model can send nothing on its stream for over five minutes while it loads, reads its prompt or thinks. The CLI gave the stream up at five minutes, asked again without streaming, and got the answer whole. AgentRun only heard the streamed text, so the run completed at $0 with `final_answer: null` and no answer on its timeline. The text of a message that comes whole is now said once, as the turn's answer, and a message whose text did stream is never said twice. This holds on any model: a claude-agent run whose CLI fell back to a non-streaming retry on a provider's own Anthropic model lost its answer the same way. On a translated model the CLI now waits up to 30 minutes on a silent stream (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`), so the first request is no longer thrown away. On a provider's own Messages the CLI keeps its default. <!-- changes/claude-local-answer.md -->
+
 ## 0.1.0-beta.61 (2026-11-26)
 
 - On macOS, when `security` hangs on the delete of the Keychain item a sign-in left under the account `unknown`, signed-in status checks no longer wait on it each time: checks at once share one delete, and after a delete is killed or fails, status checks leave the item for ten minutes (a sign-in still asks at once). The CLI's own sign-out at AgentRun's own folder now removes that leftover item too. <!-- changes/claude-keychain-drop-backoff.md -->
