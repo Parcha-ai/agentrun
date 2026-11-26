@@ -8,7 +8,7 @@ import { foldName, homePath, ownedBy } from "../dist/home-path.js";
 test("the fold takes a name's compatibility form, upper then lower case, and drops combining marks", () => {
   for (const [name, folded] of [["learnıng", "learning"], ["LEARNİNG", "learning"], ["ｌｅａｒｎｉｎｇ", "learning"], ["Learning", "learning"], ["ſ", "s"], ["K", "k"], ["café", "cafe"]]) assert.equal(foldName(name), folded, JSON.stringify(name));
   // A default-ignorable code point (a zero-width space, a soft hyphen, a word joiner, a byte-order mark, a variation
-  // selector, a Hangul filler NFKC makes one of) is dropped: a disk may take a name with one as the name without it.
+  // selector, a Hangul filler) is dropped: a disk may take a name with one as the name without it.
   for (const [name, folded] of [["stri\u200Bpe", "stripe"], ["pa\u00ADges", "pages"], ["pages\u2060", "pages"], ["\uFEFFstripe", "stripe"], ["stripe\uFE0F", "stripe"], ["a\u3164b", "ab"], ["\u200D\u200C", ""]]) assert.equal(foldName(name), folded, JSON.stringify(name));
   // Names with letters the long s and the Kelvin sign stand for, as host-owned names: matched in those spellings.
   assert.equal(ownedBy(["skills"], "ſkills/x"), "skills");
