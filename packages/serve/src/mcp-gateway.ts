@@ -271,16 +271,24 @@ export function binaryKept(payload: string, clean: (text: string) => string, own
   return valueLeft(scrubbed, values, []) || valueLeft(text, values, []) ? "[redacted]" : scrubbed;
 }
 
-/** The text in a payload's bytes, one run to a line: runs of MIN_SECRET or more printable ASCII characters (tabs and line
- *  breaks among them), as bytes or as UTF-16 in either byte order, its NULs dropped. Only these are read: a value or a
- *  shape the bytes carry is text, and every view read over binary bytes cost about 25 s a MiB. */
+/** The text in a payload's bytes, one run to a line. A run is the bytes between two that are neither text nor what the
+ *  matcher reads past in a Latin-1 decode: printable ASCII and whitespace (a no-break space among it), and the bytes it
+ *  reads as nothing (a NUL, a control character, a soft hyphen, a spacing accent: IGNORED_BYTES, which go). A held value
+ *  cut into short pieces by one of them, or written as UTF-16 or UTF-32 in either byte order, still reads whole. A run is
+ *  kept when MIN_SECRET or more printable characters are left. Both steps are linear in the bytes. Only these runs are
+ *  read: a value or a shape the bytes carry is text, and every view read over binary bytes cost about 25 s a MiB. */
 export function textRuns(bytes: string): string {
-  return [TEXT_RUN, UTF16_LE_RUN, UTF16_BE_RUN].flatMap((run) => (bytes.match(run) ?? []).map((found) => found.replaceAll("\0", ""))).join("\n");
+  const runs: string[] = [];
+  for (const [found] of bytes.matchAll(RUN)) {
+    const text = found.replace(IGNORED_BYTES, "");
+    let printable = 0;
+    for (let at = 0; at < text.length && printable < MIN_SECRET; at++) if (text.charCodeAt(at) > 0x20 && text.charCodeAt(at) < 0x7f) printable++;
+    if (printable >= MIN_SECRET) runs.push(text);
+  }
+  return runs.join("\n");
 }
-const PRINTABLE = "[\\t\\n\\r\\x20-\\x7e]";
-const TEXT_RUN = new RegExp(`${PRINTABLE}{${MIN_SECRET},}`, "g");
-const UTF16_LE_RUN = new RegExp(`(?:${PRINTABLE}\\x00){${MIN_SECRET},}`, "g");
-const UTF16_BE_RUN = new RegExp(`(?:\\x00${PRINTABLE}){${MIN_SECRET},}`, "g");
+const RUN = /[\x00-\xa0\xa8\xad\xaf\xb4\xb8]+/g;
+const IGNORED_BYTES = /[\x00-\x08\x0e-\x1f\x7f-\x9f\xa8\xad\xaf\xb4\xb8]+/g;
 
 /** The gateway: a session's servers, and their calls. `credentials` is read at every call and every request, never
  *  copied: a change the claim step makes after (a token refreshed behind the claim, a server removed) reaches it, even
