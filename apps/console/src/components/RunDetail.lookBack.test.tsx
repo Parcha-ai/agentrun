@@ -24,7 +24,7 @@ const run = (learning: Run["learning"] = REFLECTING): Run => ({ sha: null, updat
 } as Run);
 const graded = (feedback_status: RunGraded["feedback_status"]): RunGraded => ({ run_id: "run-g", correct: false, source: "feedback", graded_at: "2026-11-14T10:02:00.000Z", path: "agent", workflow: null, workflow_digest: null, feedback: "correction", feedback_status });
 const read = (grade?: RunGraded): RunLearningRead => ({
-  run: "run-g", state: "reflecting", reason: null, detail: null, at: "2026-11-14T10:02:01Z", seed: "c1", merged: null, workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [],
+  run: "run-g", state: "reflecting", reason: null, detail: null, at: "2026-11-14T10:02:01Z", seed: "c1", seed_failed: null, seed_waited: null, learned_chars: 0, merged: null, workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [],
   used: { workflows: [] }, ...(grade ? { graded: grade } : {}),
 });
 

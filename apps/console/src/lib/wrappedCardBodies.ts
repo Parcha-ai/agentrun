@@ -190,7 +190,7 @@ const cache: BodyOf = (data) => {
   };
 };
 
-/** The year's leak receipt: the keys and tokens the import cut out of the sessions imported here, how many sessions held
+/** The year's leak receipt: the keys and tokens the import cut out of the sessions it counted, how many sessions held
  *  one and how many were counted. Counts alone, never a key; none drawn with no run counted. Off the page until the person
  *  turns it on (its `opt-in` wait). */
 const leak: BodyOf = (data) => {
@@ -204,7 +204,7 @@ const leak: BodyOf = (data) => {
       { label: "Sessions with a key", value: count(year.runs_holding) },
       { label: "Sessions checked", value: count(year.runs) },
     ],
-    footnote: `Cut on import from the ${plural(year.runs, "run", "runs")} imported here; counts only, no key shown.`,
+    footnote: `From the ${plural(year.runs, "run", "runs")} counted on import; counts only, no key shown.`,
   };
 };
 

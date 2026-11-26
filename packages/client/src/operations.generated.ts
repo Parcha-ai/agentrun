@@ -5237,6 +5237,9 @@ export type GetRunLearningResponse = {
   detail: string | null;
   at: string;
   seed: string | null;
+  seed_failed: "unreadable" | "not_copied" | "other_disk" | null;
+  seed_waited: "ended" | "timed_out" | null;
+  learned_chars: number;
   merged: string | null;
   workflows: Array<{
     file: string;
@@ -6033,6 +6036,12 @@ export type GetTemplateResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{
@@ -6139,6 +6148,12 @@ export type ImportTemplateResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{
@@ -6238,6 +6253,12 @@ export type ListTemplatesResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{

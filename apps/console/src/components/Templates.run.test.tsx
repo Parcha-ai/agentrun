@@ -12,7 +12,7 @@ const template: TemplateView = {
   id: "review/kit", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "review/kit", display_name: "Review kit", version: "2.4.0", description: "Review a pull request.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,
-  computer: null, needs: null, computer_here: null, checkout: null, secrets: ["REVIEW_KEY"], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: ["review"], evals: [],
+  computer: null, needs: null, computer_here: null, model_tiers_here: { harness: "pi", fast: null, strong: null, note: null }, checkout: null, secrets: ["REVIEW_KEY"], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: ["review"], evals: [],
   mcp: [{ source: "github", toolkit: "github", required: true, reason: null, tools: [{ name: "read", tool: "mcp:github/read", asks: "allow" }, { name: "write", tool: "mcp:github/write", asks: "ask" }] }],
   parameters: { type: "object", additionalProperties: false, required: ["repo"], properties: { repo: { type: "string", description: "Repository" }, max_files: { type: "integer", description: "Maximum files" } } },
 };

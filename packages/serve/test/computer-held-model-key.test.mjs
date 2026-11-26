@@ -42,7 +42,8 @@ const { ApiError } = await import("../dist/errors.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { heldRefusedRoute } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
-const { claimSecrets, MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
+const { claimSecrets, MODEL_KEY_NAMES, subagentTierKeys, tierModelKeys } = await import("../dist/runner/claim-secrets.js");
+const { sdkCompileEnv } = await import("../dist/runner/harness-loops.js");
 const { childLoops, heldFor, LOGIN_MACHINE_NEEDS_SERVER_USER, staysInRunner } = await import("../dist/runner/run-child-host.js");
 const { cursorOptions } = await import("../dist/harness-table.js");
 const { cursorFacts } = await import("@parcha/agentrun-harness-acp");
@@ -587,6 +588,42 @@ test("claim secrets (claimSecrets) on a runner holding the seal key: a run that 
   assert.deepEqual(opened, { "held, its model kept from running": [], "on a --faux runner": [], "faux-pinned on a runner off faux": [] }, "a run that sends no model key reads no saved model key");
 });
 
+test("tier keys (tierModelKeys, subagentTierKeys) on a runner holding the seal key: on a --faux runner, where every tier's model is the faux model, they open no saved key at all; off faux they open the tiers' models' keys", async () => {
+  // Each saved key the runner would open, counted by name; none is saved, so nothing is opened.
+  const reads = [];
+  const depsOn = (env) => ({ store: { sealedKeys: { get: async (name) => (reads.push(name), undefined) }, settings: { get: async () => undefined } }, sealKey: Buffer.alloc(32, 7), env });
+  const host = { AGENT_MODEL_FAST: "openrouter/anthropic/claude-haiku-5.5" };
+  const calls = [
+    ["tierModelKeys", (env) => tierModelKeys(depsOn(env), ["fast"])],
+    ["subagentTierKeys", (env) => subagentTierKeys(depsOn(env), ["fast"], { fast: "openrouter/anthropic/claude-haiku-5.5" })],
+  ];
+  const off = {};
+  const faux = {};
+  for (const [what, call] of calls) {
+    reads.length = 0;
+    await call(host);
+    off[what] = reads.includes("OPENROUTER_API_KEY");
+    reads.length = 0;
+    await call({ ...host, [FAUX_ENV]: "1" });
+    faux[what] = [...reads];
+  }
+  assert.deepEqual(off, { tierModelKeys: true, subagentTierKeys: true }, "off faux, a tier's model's saved key is read");
+  assert.deepEqual(faux, { tierModelKeys: [], subagentTierKeys: [] }, "on a --faux runner no saved key is read for a tier");
+});
+
+test("an SDK run's compile turn (sdkCompileEnv) on a --faux runner, whose model is the faux model, opens no saved key and is not skipped for want of a gateway key; off faux it opens the saved model keys, and with none it is skipped", async () => {
+  const reads = [];
+  const depsOn = (env) => ({ store: { sealedKeys: { get: async (name) => (reads.push(name), undefined) }, settings: { get: async () => undefined } }, sealKey: Buffer.alloc(32, 7), env });
+  const claim = { runId: "run-1", turn: 1, attempt: 1 };
+  const gateway = { AGENT_MODEL_BASE_URL: "https://gateway.invalid/v1" };
+  const off = await sdkCompileEnv(depsOn(gateway), claim);
+  assert.ok(reads.includes(GATEWAY_KEY_ENV), `off faux, the compile turn reads the saved gateway key: ${JSON.stringify(reads)}`);
+  assert.match(off.off ?? "", /compile turn is skipped/, "off faux, with no gateway key held, the compile turn is skipped in words");
+  reads.length = 0;
+  const faux = await sdkCompileEnv(depsOn({ ...gateway, [FAUX_ENV]: "1" }), claim);
+  assert.deepEqual({ reads, off: faux.off }, { reads: [], off: undefined }, "on a --faux runner no saved key is read and the turn goes on, on the faux model");
+});
+
 /** A gateway's key saved in the console (model-gateway.ts saveGateway), a test's: never a real one. */
 const SAVED_GATEWAY_KEY = "not-a-secret-held-saved-gateway-key";
 /** A run's process as a test's stand-in: it writes the names of the keys its runner handed it on fd 3 (secrets.ts
@@ -669,7 +706,7 @@ test("claim secrets (claimSecrets): a held Cursor run its model kept from runnin
   assert.ok(reads.includes("CURSOR_API_KEY"), `a Cursor claim not held reads Cursor's saved key: ${JSON.stringify(reads)}`);
   reads.length = 0;
   await claimSecrets(sealed, revision, held);
-  assert.ok(!reads.includes("CURSOR_API_KEY"), `a held Cursor claim its model kept from running reads no saved CURSOR_API_KEY, so none is decrypted: ${JSON.stringify(reads)}`);
+  assert.ok(!reads.includes("CURSOR_API_KEY"), `a held Cursor claim its model kept from running reads no saved CURSOR_API_KEY for the run: ${JSON.stringify(reads)}`);
   // The key set where AgentRun starts: laid on a claim not held, never on a held one.
   const started = { store: { sealedKeys: { get: async () => undefined }, settings: { get: async () => undefined } }, env: { CURSOR_API_KEY: CURSOR_KEY_VALUE } };
   assert.equal((await claimSecrets(started, revision, {})).CURSOR_API_KEY, CURSOR_KEY_VALUE, "a Cursor claim not held is laid its owner's Cursor key, as before");
@@ -765,6 +802,32 @@ test("CLI (cli-run-spec), Claude login: a held run its model kept from running, 
   const heldAsked = [];
   await cliClaim(t, { minutes: 5, refused: REFUSAL }, {}, { runner: runner(heldAsked) }).catch((error) => assert.fail(`a held run its model kept from running opens its claim in a run's own process: ${error.message}`));
   assert.ok(!heldAsked.includes("claudeLogin"), `a held run its model kept from running never asks for the login: ${JSON.stringify(heldAsked)}`);
+});
+
+test("CLI (cli-run-spec), Claude login: a run that sends no model key (on a --faux runner, faux-pinned), in a run's own process, never asks its runner for the login; a run on the host's model key asks", async (t) => {
+  withEnv(t, {}, KEYLESS);
+  const answers = { learnedFirst: async () => ({ choice: {}, workflows: [] }) };
+  const runner = (asked) => new Proxy(answers, { get: (target, name) => (name === "then" || typeof name !== "string" ? undefined : async (...args) => (asked.push(name), target[name]?.(...args))) });
+  const keyedAsked = [];
+  await cliClaim(t, undefined, {}, { env: { OPENAI_API_KEY: HOST_MODEL_KEY }, runner: runner(keyedAsked) });
+  assert.ok(keyedAsked.includes("claudeLogin"), `a run on the host's model key asks its runner whether it goes on the login: ${JSON.stringify(keyedAsked)}`);
+  // Each run that sends no model key (claim-secrets.ts sendsNoModelKey) beside a held one: the runner's env, the launch's pin.
+  const asked = {};
+  const fauxModel = fileURLToPath(new URL("./fixtures/faux-model.mjs", import.meta.url));
+  for (const [where, env, own, refused] of [
+    ["on a --faux runner", { [FAUX_ENV]: fauxModel }, {}, /opencode runs OpenAI models; the run's model is faux\//],
+    ["faux-pinned on a runner off faux", {}, { model: { provider: FAUX_PROVIDER, modelId: "faux-1" } }, /faux\/faux-1 is not a model opencode runs here/],
+  ]) {
+    const names = [];
+    // opencode runs no faux model: the claim is refused at its model's choice, which comes after the login's ask, so the
+    // asks counted are all the claim made.
+    await cliClaim(t, undefined, own, { env, runner: runner(names) }).then(
+      () => assert.fail(`${where}: opencode runs no faux model`),
+      (error) => assert.match(error.message, refused, `${where}: its claim reaches its model's choice`),
+    );
+    asked[where] = names.includes("claudeLogin");
+  }
+  assert.deepEqual(asked, { "on a --faux runner": false, "faux-pinned on a runner off faux": false }, "a run that sends no model key never asks for the login");
 });
 
 test("a launch row whose hold is not an object (corrupt, or written by another version) is still held, its model refused: its start and messages are refused, and its claim is laid no model key", async () => {

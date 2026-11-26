@@ -21,7 +21,7 @@ const run = (over: Partial<Run> = {}): Run => ({ sha: null, updated_at: "2026-11
   created_at: "2026-11-14T10:00:00Z", ended_at: "2026-11-14T10:00:09Z", result: { final_answer: "6100" }, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null, learning: LEARNS, ...over,
 } as Run);
 const read = (graded?: RunGraded): RunLearningRead => ({
-  run: "run-g", state: "dropped", reason: "empty", detail: null, at: "2026-11-14T10:00:09Z", seed: "c1", merged: null, workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [],
+  run: "run-g", state: "dropped", reason: "empty", detail: null, at: "2026-11-14T10:00:09Z", seed: "c1", seed_failed: null, seed_waited: null, learned_chars: 0, merged: null, workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [],
   used: { workflows: [] }, ...(graded ? { graded } : {}),
 });
 const answer = (body: GradeBody, feedback: GradeAnswer["feedback"]): GradeAnswer => ({ run_id: "run-g", correct: body.correct, source: "feedback", graded_at: "2026-11-14T10:05:00.000Z", path: "agent", workflow: null, workflow_digest: null, feedback });

@@ -99,6 +99,7 @@ import type { ClaimComputer } from "../workspace/computer-for-claim.js";
 import { attachedIn, type RunComputer, runTools, type RunTools } from "../workspace/run-tools.js";
 import { ProjectHostGate } from "./project-host.js";
 import { runProjectCheckpoint } from "./project-checkpoint.js";
+import { reseededLaunchOf, roundWaitMsOf, runnerShown } from "./learning-reseed.js";
 
 /** The image's helper that starts a run's process as its slot's uid (packages/serve/runas). */
 export const RUNAS_HELPER = "/usr/local/bin/agentrun-runas";
@@ -1223,7 +1224,9 @@ export function childLoops(options: ChildLoopsOptions): LoopFactory {
   const slots = options.isolation.kind === "uid" ? new Slots(options.isolation.first, options.isolation.slots, slotLocks(options.deps.data)) : undefined;
   const here = resolveRunnerLoop(options.deps);
   return createDispatchLoop({
-    launchOf: (runId) => options.deps.store.runs.launch(runId),
+    // A run started while its agent's learning round was open reads its seed again first, here in its runner, before
+    // its process reads its launch (learning-reseed.ts).
+    launchOf: reseededLaunchOf({ store: options.deps.store, data: options.deps.data, shown: runnerShown(options.deps), log: options.log, waitMs: roundWaitMsOf(options.deps.env) }),
     resolve: async (harness, launch, runId) => {
       const place = await staysInRunner(options.deps, harness, launch, runId, options.isolation);
       if (place.stays) return here(harness, launch, runId);
@@ -1347,9 +1350,10 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
         const capped = await underServerCeilings(claimDeps, launch, revisionRow as never);
         const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact, handBack: loopDeps.handBack, signal: loopDeps.signal }, revisionRow as never, capped, claim.runId);
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
-        // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
+        // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys). Read
+        // over the claim's environment, so a run on a --faux runner, or held, never has that key read for it.
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
-        const keyed = (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, claim.runId)) !== undefined;
+        const keyed = (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, claim.runId)) !== undefined;
         const toProcess = keyed ? withoutModelKeys({ ...claimed }) : claimed;
         // The saved gateway's key, kept off the claim's tool keys (claimSecrets), is handed for the run's model routes alone,
         // read as the server's model keys are (savedModelKeys, over the claim's environment the gateway was laid over), as a
