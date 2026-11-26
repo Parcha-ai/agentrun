@@ -16,6 +16,9 @@ test("a seed that failed is a learning row, seed_failed, and a run that does not
   const { view, rows } = await ended(api, runId);
   settled(view, rows, "dropped", "seed_failed");
   assert.equal(reflectRows(rows).length, 0, "no turn, though a compile was due: nothing was seeded");
+  // Its learning read says why, and that it was given no # Learned text.
+  const learning = (await api("GET", `/runs/${runId}/learning`)).body;
+  assert.deepEqual([learning.reason, learning.seed, learning.seed_failed, learning.learned_chars], ["seed_failed", null, "unreadable", 0], JSON.stringify(learning));
   const plainId = await started(api, "plain");
   const plain = await follow(api, plainId, ["completed"]);
   assert.deepEqual([learningRows(plain.rows).length, reflectRows(plain.rows).length], [0, 0]);

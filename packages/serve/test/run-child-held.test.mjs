@@ -998,15 +998,42 @@ test("a run's own process never reads the login's setting itself: with the login
   const held = [];
   const hold = (values) => void held.push(...values);
   setHeld({ claudeLogin: async () => undefined });
-  assert.equal(await spec.runLoginOf({ store, data, env: {} }, false, "claude-agent", place, hold), undefined, "a run's own process whose runner handed it no login starts on none: it never reads the login's setting, turned on since its claim, itself");
+  assert.equal(await spec.runLoginOf({ store, data, env: {} }, false, "claude-agent", { place }, hold), undefined, "a run's own process whose runner handed it no login starts on none: it never reads the login's setting, turned on since its claim, itself");
   // Claimed on the login: its runner hands its reader of the access token, which the process holds before its CLI has a token.
   const token = `not-a-secret-login-access-${randomBytes(6).toString("hex")}`;
   setHeld({ claudeLogin: async () => ({ token: async () => token, refused: async () => {} }) });
-  const handed = await spec.runLoginOf({ store, data, env: {} }, false, "claude-agent", place, hold);
+  const handed = await spec.runLoginOf({ store, data, env: {} }, false, "claude-agent", { place }, hold);
   assert.equal(await handed?.token(), token, "the reader its runner handed");
   assert.deepEqual(held, [token], "each token held by the run's redactors");
-  assert.equal(await spec.runLoginOf({ store, data, env: {} }, true, "claude-agent", place, hold), undefined, "a run on its own model key starts on no login");
+  assert.equal(await spec.runLoginOf({ store, data, env: {} }, true, "claude-agent", { place }, hold), undefined, "a run on its own model key starts on no login");
   // A run in the runner itself (a seal key) reads the setting: AgentRun's own login folder.
-  const inRunner = await spec.runLoginOf({ store, data, env: {}, sealKey: KEY }, false, "claude-agent", place, hold);
+  const inRunner = await spec.runLoginOf({ store, data, env: {}, sealKey: KEY }, false, "claude-agent", { place }, hold);
   assert.equal(inRunner?.dir, join(data, "claude-login"), "a run in the runner starts on the login's folder, as the setting names it");
+});
+
+test("a run in the runner that sends no model key (held, on a --faux runner, faux-pinned) starts on no login and never reads the login's setting; the same run off those starts on the login's folder", async (t) => {
+  const spec = await import("../dist/runner/cli-run-spec.js");
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-keyless-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  await store.settings.put("claude_login", settingFor("agentrun", data));
+  // The settings the login reads, counted: a run that never sends the login never reads its setting either.
+  const reads = [];
+  const settings = new Proxy(store.settings, { get: (target, key) => (key === "get" ? (name, ...rest) => (reads.push(name), target.get(name, ...rest)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  const counted = new Proxy(store, { get: (target, key) => (key === "settings" ? settings : target[key]) });
+  const place = { mode: "runner" };
+  const hold = () => {};
+  const runs = [
+    ["held", { place, hold: { minutes: 5, refused: { message: "This run's model can't run here.", fields: [], details: {} } } }, {}],
+    ["on a --faux runner", { place }, { AGENTRUN_SERVE_FAUX: "1" }],
+    ["faux-pinned", { place, model: { provider: "faux", modelId: "faux-1" } }, {}],
+  ];
+  const control = await spec.runLoginOf({ store: counted, data, env: {}, sealKey: KEY }, false, "claude-agent", { place }, hold);
+  assert.equal(control?.dir, join(data, "claude-login"), "control: the same run in the runner, off those, starts on the login's folder");
+  assert.ok(reads.length > 0, "control: it read the login's setting");
+  for (const [what, launch, env] of runs) {
+    reads.length = 0;
+    assert.equal(await spec.runLoginOf({ store: counted, data, env, sealKey: KEY }, false, "claude-agent", launch, hold), undefined, `a run ${what} starts on no login`);
+    assert.deepEqual(reads, [], `a run ${what} never reads the login's setting`);
+  }
 });
