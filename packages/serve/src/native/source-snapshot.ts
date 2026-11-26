@@ -13,7 +13,7 @@ import type { SourceSnapshot, SourceSnapshotOptions, SourceSnapshotEntry } from 
 import { removeOwnedCaptureHooks } from "./source-capture-hooks.js";
 import { sourceRuntimeProtocol } from "./source-snapshot-types.js";
 import { isNativeRuntime } from "./runtimes.js";
-import { SOURCE_CODEX_FEATURES, sourceNativeTools } from "./source-runtime-tools.js";
+import { SOURCE_CODEX_FEATURES, SOURCE_CODEX_VERSIONS, sourceNativeTools } from "./source-runtime-tools.js";
 import { claudeMcpSelector, nativeToolNames, selectedMcpServer, sourceMcpSelection } from "./source-mcp-selection.js";
 import { sourceSnapshotDigest } from "./source-snapshot-types.js";
 import { sourceAccountContainsSecret, sourceAccountMetadata } from "./source-account.js";
@@ -36,7 +36,7 @@ const credentialPath = (path: string) => path.split(/[\\/]/).some(part => /^(?:\
 const portable = (path: string) => path.length > 0 && Buffer.byteLength(path) <= 4096 && !path.includes("\\") && !/[\x00-\x1f\x7f]/.test(path)
   && !isAbsolute(path) && path.split("/").every(part => part && part !== "." && part !== "..");
 const text = (bytes: Buffer) => new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-const signature = (s: Awaited<ReturnType<FileHandle["stat"]>>) => [s.dev, s.ino, s.size, s.mode, s.mtimeMs, s.ctimeMs].join(":");
+const signature = (s: Awaited<ReturnType<FileHandle["stat"]>>, timestamps = true) => [s.dev, s.ino, s.size, s.mode, ...(timestamps ? [s.mtimeMs, s.ctimeMs] : [])].join(":");
 
 /** Open every component with NOFOLLOW, including the authorized root. /proc fd paths anchor subsequent
  * reads to already-open directories: swapping a parent for a link cannot redirect a read outside the grant. */
@@ -71,7 +71,9 @@ async function noLinks(path: string, expectedRoots: SourceSnapshotOptions["expec
 }
 
 class Reader {
-  readonly records = new Map<string, { stamp: string; bytes?: Buffer; names?: string[] } | null>();
+  readonly records = new Map<string, { stamp: string; identity: string; bytes?: Buffer; names?: string[] } | null>();
+  readonly refreshableFiles = new Set<string>();
+  readonly refreshableDirectories = new Set<string>();
   readonly policyStamps = new Map<string, string | null>();
   private readonly accountStamps = new Map<string, string>();
   private readonly checkedContents = new Map<string, string>();
@@ -108,7 +110,7 @@ class Reader {
   }
   check() { this.options.signal?.throwIfAborted(); if (Date.now() > this.deadline) throw new SourceSnapshotError("limit", "The source snapshot exceeded its time limit."); }
   granted(path: string) { return this.options.authorizedRoots.some(root => isAbsolute(root) && within(resolve(root), resolve(path))); }
-  async read(path: string, fresh = false, fileLimit = this.limits.fileBytes): Promise<{ stamp: string; bytes?: Buffer; names?: string[] } | null> {
+  async read(path: string, fresh = false, fileLimit = this.limits.fileBytes): Promise<{ stamp: string; identity: string; bytes?: Buffer; names?: string[] } | null> {
     this.check(); path = resolve(path);
     if (this.options.secretValues?.some(secret => secret && path.includes(secret))) throw new SourceSnapshotError("source_unavailable", "A source path contains a held credential and cannot be exported.");
     if (!this.granted(path)) throw new SourceSnapshotError("source_unavailable", "A required source path is outside the authorized roots.");
@@ -122,10 +124,10 @@ class Reader {
       throw new SourceSnapshotError("source_unavailable", "A source path cannot be read safely; links and special files need an explicit portable equivalent.");
     }
     try {
-      const before = await handle.stat(); let value: { stamp: string; bytes?: Buffer; names?: string[] };
+      const before = await handle.stat(); let value: { stamp: string; identity: string; bytes?: Buffer; names?: string[] };
       if (before.isDirectory()) {
         const names = await this.names(handle);
-        value = { stamp: signature(before), names: names.sort() };
+        value = { stamp: signature(before), identity: signature(before, false), names: names.sort() };
       } else {
         if (!before.isFile() || before.nlink !== 1 || (before.mode & 0o6000)) throw new SourceSnapshotError("source_unavailable", "Special, linked or privileged files need an explicit portable equivalent.");
         if (before.size > fileLimit) throw new SourceSnapshotError("limit", "A source file exceeds the per-file byte limit.");
@@ -133,7 +135,7 @@ class Reader {
         const bytes = Buffer.alloc(before.size + 1); let offset = 0;
         while (offset < bytes.length) { const read = await handle.read(bytes, offset, bytes.length - offset, offset); if (!read.bytesRead) break; offset += read.bytesRead; this.check(); }
         if (offset !== before.size) throw new SourceSnapshotError("source_changed", "A source file changed while it was read.");
-        value = { stamp: signature(before), bytes: bytes.subarray(0, offset) };
+        value = { stamp: signature(before), identity: signature(before, false), bytes: bytes.subarray(0, offset) };
       }
       if (signature(await handle.stat()) !== value.stamp) throw new SourceSnapshotError("source_changed", "A source path changed while it was read.");
       if (!fresh) this.records.set(path, value);
@@ -176,7 +178,10 @@ class Reader {
     for (const [path, old] of this.records) {
       let current: Awaited<ReturnType<Reader["read"]>>;
       try { current = await this.read(path, true, Math.max(this.limits.fileBytes, old?.bytes?.length ?? 0)); } catch (error) { if (error instanceof SourceSnapshotError && error.code === "limit") throw error; throw new SourceSnapshotError("source_changed", "Source paths changed during export; retry from fresh discovery."); }
-      if (!old !== !current || (old && current && (old.stamp !== current.stamp || (old.bytes ? !current.bytes?.equals(old.bytes) : canonical(old.names) !== canonical(current.names)))))
+      const refreshable = this.refreshableFiles.has(path) && old?.bytes && current?.bytes
+        || this.refreshableDirectories.has(path) && old?.names && current?.names;
+      const refreshed = refreshable && old?.identity === current?.identity;
+      if (!old !== !current || (old && current && ((!refreshed && old.stamp !== current.stamp) || (old.bytes ? !current.bytes?.equals(old.bytes) : canonical(old.names) !== canonical(current.names)))))
         throw new SourceSnapshotError("source_changed", "Source content changed during export; retry from fresh discovery.");
     }
   }
@@ -581,6 +586,9 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
       block("native_account_policy", "The source account policy is managed or unresolved. Resolve it locally before Move; native sign-in is never copied.", "configuration/account_policy");
     const accountPaths = [join(home, "cloud-config-bundle-cache.json")];
     const homeNames = (await reader.read(home))?.names ?? [];
+    // Runtime bookkeeping may refresh this directory's timestamps. Its exact inventory, size, mode and identity
+    // must still match; selected files, private account metadata and managed policy keep their own strict checks.
+    reader.refreshableDirectories.add(resolve(home));
     accountPaths.push(...homeNames.filter(name => /^managed-config-.*\.json$/.test(name)).map(name => join(home, name)));
     for (const path of accountPaths) if (await reader.policyPresent(path))
       block("native_account_policy", "The source account may supply managed policy. Resolve its effective policy without copying native sign-in before Move.", "configuration/account_policy");
@@ -651,7 +659,10 @@ export async function exportSourceSnapshot(options: SourceSnapshotOptions): Prom
     }
     await tools(Object.fromEntries(toolDefinitions), "tools");
     modelCache = await config(join(home, "models_cache.json"));
-    if (target.version === "0.171.0" && result.configuration.permissions.web_search === undefined) result.configuration.permissions.web_search = "cached";
+    // A cache may refresh in place during export. Both reads must be stable and its bytes, inode and mode must agree;
+    // authored policy, account metadata and Git objects retain their stricter timestamp checks.
+    reader.refreshableFiles.add(resolve(home, "models_cache.json"));
+    if (SOURCE_CODEX_VERSIONS.includes(target.version ?? "") && result.configuration.permissions.web_search === undefined) result.configuration.permissions.web_search = "cached";
     if (target.selector.kind === "agent") block("selector", "Codex agent selectors are not supported by this exporter.");
   } else {
     const home = options.claudeHome ?? join(options.home, ".claude");

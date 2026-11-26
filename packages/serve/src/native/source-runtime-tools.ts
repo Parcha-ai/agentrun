@@ -1,5 +1,5 @@
 /** Read-only native capability evidence. This resolver never starts a session, runs hooks or connects MCP.
- * Codex facts: openai/codex rust-v0.171.0, core/src/tools/spec_plan.rs, features/src/lib.rs,
+ * Codex facts: openai/codex rust-v0.171.0 and rust-v0.172.0, core/src/tools/spec_plan.rs, features/src/lib.rs,
  * models-manager/models.json and app-server/src/extensions.rs. Claude 2.1.322's explicit agent tool
  * list is documented in code.claude.com/docs/en/{sub-agents,tools-reference,cli-reference}.
  * Default/account catalogs remain prerequisites unless their enabled closure is established. */
@@ -31,6 +31,7 @@ const CODEX_MODELS: Record<string, { agent: "v1" | "v2" | null; clock: boolean; 
   ["gpt-5.5", { agent: null, clock: false, async: [], lite: false, extra: [] }],
 ]);
 export const SOURCE_CODEX_FEATURES = ["shell_tool", "view_image", "multi_agent", "apps", "plugins", "image_generation", "tool_suggest", "goals", "memories", "current_time_reminder", "sleep_tool", "token_budget"] as const;
+export const SOURCE_CODEX_VERSIONS: readonly string[] = ["0.171.0", "0.172.0"];
 export function sourceNativeTools(input: { runtime: NativeRuntime; version: string | null; model: string | null;
   config: Record<string, any>; permissions: Record<string, unknown>; mcp: boolean; modelCache?: unknown }): { tools: SourceNativeTools; blockers: SourceSnapshotBlocker[] } {
   const enabled = new Set<Capability>(), disabled = new Set<Capability>(), blockers: SourceSnapshotBlocker[] = [];
@@ -38,7 +39,7 @@ export function sourceNativeTools(input: { runtime: NativeRuntime; version: stri
   const set = (capability: Capability, on: boolean) => (on ? enabled : disabled).add(capability);
   const tools: SourceNativeTools = { version: input.version, complete: false, source: "versioned-runtime", capabilities: [], disabled: [] };
   if (NATIVE_RUNTIME_FACTS[input.runtime].protocol === "codex-json") {
-    if (input.version !== "0.171.0") block("native_version", "This Codex version needs a verified native capability resolver before Move.");
+    if (!SOURCE_CODEX_VERSIONS.includes(input.version ?? "")) block("native_version", "This Codex version needs a verified native capability resolver before Move.");
     const features = object(input.config.features), on = (name: string, fallback: boolean) => typeof features[name] === "boolean" ? features[name] : fallback;
     const model = input.model ? CODEX_MODELS[input.model] : undefined;
     if (!model) block("native_model_tools", "Choose an exact source model with verified builtin tool metadata before Move.");
@@ -47,7 +48,9 @@ export function sourceNativeTools(input: { runtime: NativeRuntime; version: stri
     if (cache.client_version === input.version && cache.identity && cached && model) {
       const expectedExtras = [...model.async, ...(model.clock ? ["clock"] : [])];
       const actualExtras = (Array.isArray(cached.experimental_supported_tools) ? cached.experimental_supported_tools : []).filter((name: unknown) => name !== "multi_agent_v2_in_code_mode").sort();
-      if (cached.shell_type !== "shell_command" || cached.apply_patch_tool_type !== "freeform" || (cached.multi_agent_version ?? null) !== model.agent || cached.use_responses_lite !== model.lite || (cached.tool_mode ?? null) !== (model.lite ? "code_mode_only" : null) || JSON.stringify(actualExtras) !== JSON.stringify([...expectedExtras, ...model.extra].sort()))
+      // Both catalogue labels use exec_command/write_stdin under the supported versions' UnifiedExec default.
+      // The destination shell capability includes background processes, stdin, output, signals and optional TTYs.
+      if (!["shell_command", "unified_exec"].includes(cached.shell_type) || cached.apply_patch_tool_type !== "freeform" || (cached.multi_agent_version ?? null) !== model.agent || cached.use_responses_lite !== model.lite || (cached.tool_mode ?? null) !== (model.lite ? "code_mode_only" : null) || JSON.stringify(actualExtras) !== JSON.stringify([...expectedExtras, ...model.extra].sort()))
         block("native_model_catalog", "The source model cache has different builtin tools; resolve its active catalog before Move.");
     }
     set("shell", on("shell_tool", true));

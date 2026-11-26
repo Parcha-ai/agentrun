@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, symlink, rename, open, readlink, utimes, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, symlink, rename, open, readlink, utimes, stat, cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -468,6 +468,62 @@ test('a changed source file is rejected instead of committing mixed bytes', asyn
   await assert.rejects(f.snapshot(), error => error.code === 'source_changed'); assert.equal(changed, true);
 });
 
+test('a model cache refresh preserves identical content but rejects changed bytes, permissions or identity', async t => {
+  for (const change of ['timestamp', 'content', 'mode', 'identity']) await t.test(change, async t => {
+    const f = await fixture(t), cache = join(f.home, '.codex', 'models_cache.json');
+    const skill = join(f.home, '.codex', 'skills', 'refresh', 'SKILL.md');
+    await f.put(cache, '{"models":[]}'); await f.put(skill, 'Read the project files.', true);
+    const before = await f.snapshot();
+    const probe = await open(skill), prototype = Object.getPrototypeOf(probe); await probe.close();
+    const original = prototype.read; let changed = false;
+    t.mock.method(prototype, 'read', async function (...args) {
+      const result = await original.apply(this, args);
+      if (!changed && await readlink(`/proc/self/fd/${this.fd}`) === skill) {
+        changed = true;
+        if (change === 'timestamp') { await writeFile(cache, '{"models":[]}'); await utimes(cache, new Date(0), new Date(0)); }
+        if (change === 'content') await writeFile(cache, '{"models":{}}');
+        if (change === 'mode') await chmod(cache, 0o600);
+        if (change === 'identity') { await rename(cache, cache + '.old'); await writeFile(cache, '{"models":[]}'); }
+      }
+      return result;
+    });
+    if (change === 'timestamp') assert.equal((await f.snapshot()).digest, before.digest);
+    else await assert.rejects(f.snapshot(), error => error.code === 'source_changed');
+    assert.equal(changed, true);
+  });
+});
+
+test('the selected Codex metadata directory permits only an unchanged-inventory timestamp refresh', async t => {
+  for (const change of ['timestamp', 'inventory', 'mode', 'identity', 'child', 'account', 'policy', 'other-directory']) await t.test(change, async t => {
+    const f = await fixture(t), home = join(f.home, '.codex'), skill = join(home, 'skills', 'refresh', 'SKILL.md');
+    const instruction = join(home, 'AGENTS.md'), account = join(home, 'auth.json'), policy = join(home, 'cloud-config-bundle-cache.json');
+    await f.put(skill, 'Read the project files.', true); await f.put(instruction, 'Before.', true);
+    if (change === 'account') await f.put(account, JSON.stringify(authFixture()));
+    if (change === 'policy') await f.put(policy, '{}');
+    const before = await f.snapshot();
+    const probe = await open(skill), prototype = Object.getPrototypeOf(probe); await probe.close();
+    const original = prototype.read; let changed = false;
+    t.mock.method(prototype, 'read', async function (...args) {
+      const result = await original.apply(this, args);
+      if (!changed && await readlink(`/proc/self/fd/${this.fd}`) === skill) {
+        changed = true;
+        if (change === 'inventory') await writeFile(join(home, 'managed-config-new.json'), '{}');
+        if (change === 'mode') await chmod(home, 0o700);
+        if (change === 'identity') { await rename(home, home + '.old'); await cp(home + '.old', home, { recursive: true }); }
+        if (change === 'child') await writeFile(instruction, 'After!!');
+        if (change === 'account') await utimes(account, new Date(0), new Date(0));
+        if (change === 'policy') await utimes(policy, new Date(0), new Date(0));
+        if (change === 'other-directory') await utimes(f.project, new Date(0), new Date(0));
+        await utimes(home, new Date(0), new Date(0));
+      }
+      return result;
+    });
+    if (change === 'timestamp') assert.equal((await f.snapshot()).digest, before.digest);
+    else await assert.rejects(f.snapshot(), error => error.code === 'source_changed');
+    assert.equal(changed, true);
+  });
+});
+
 test('a parent swapped for an outside symlink during read cannot redirect the opened file', async t => {
   const f = await fixture(t), parent = join(f.project, 'folder'), path = join(parent, 'data.txt'), outside = join(f.root, 'outside');
   await f.put(path, 'Inside.'); await mkdir(outside); await writeFile(join(outside, 'data.txt'), 'Outside.');
@@ -661,8 +717,9 @@ test('a held credential in a packed Git branch name is withheld from snapshot me
   assert.equal(JSON.stringify(snapshot).includes(secret), false);
 });
 
-test('Codex implicit cached search and explicit tool disables are represented, not reduced to MCP', async t => {
-  const f = await fixture(t), snapshot = await f.snapshot();
+for (const version of ['0.171.0', '0.172.0']) test(`Codex ${version} implicit cached search and explicit tool disables are represented, not reduced to MCP`, async t => {
+  const f = await fixture(t); f.target.version = version;
+  const snapshot = await f.snapshot();
   assert.equal(snapshot.configuration.native_tools.complete, true, JSON.stringify(snapshot.blockers));
   assert.equal(snapshot.configuration.permissions.web_search, 'cached');
   assert.ok(snapshot.configuration.native_tools.capabilities.includes('web_search'));
@@ -677,23 +734,29 @@ test('Codex implicit cached search and explicit tool disables are represented, n
   }
 });
 
-test('unresolved default account integrations and unsupported native versions never claim complete closure', async t => {
-  const f = await fixture(t);
+for (const version of ['0.171.0', '0.172.0']) test(`Codex ${version} account integrations remain blocked and unverified versions never claim complete closure`, async t => {
+  const f = await fixture(t); f.target.version = version;
   await f.put(join(f.project, '.codex', 'config.toml'), '', true);
   const unknown = await f.snapshot();
   assert.equal(unknown.complete, false); assert.equal(unknown.configuration.native_tools.complete, false);
   assert.ok(unknown.blockers.some(x => x.code === 'native_apps'));
+  assert.ok(unknown.blockers.some(x => x.code === 'native_plugins'));
+  assert.ok(unknown.blockers.some(x => x.code === 'native_image_generation'));
   assert.ok(unknown.blockers.some(x => x.code === 'native_cloud_skills'));
-  f.target.version = '0.172.0';
+  assert.equal(unknown.blockers.some(x => x.code === 'native_version'), false);
+  f.target.version = '0.0.0-unverified';
   assert.ok((await f.snapshot()).blockers.some(x => x.code === 'native_version'));
 });
 
-test('a model cache that changes native tools cannot silently use the bundled model assumptions', async t => {
-  const f = await fixture(t);
-  await f.put(join(f.home, '.codex', 'models_cache.json'), JSON.stringify({ client_version: '0.171.0', identity: 'fixture-account-scope', models: [{ slug: 'gpt-5.5', shell_type: 'disabled', apply_patch_tool_type: null, multi_agent_version: null, use_responses_lite: false, experimental_supported_tools: [] }] }));
+for (const version of ['0.171.0', '0.172.0']) for (const shell of ['shell_command', 'unified_exec', 'disabled', 'unverified'])
+test(`Codex ${version} model cache accepts only verified shell semantics: ${shell}`, async t => {
+  const f = await fixture(t); f.target.version = version; f.target.model = 'gpt-6-astra';
+  await f.put(join(f.home, '.codex', 'models_cache.json'), JSON.stringify({ client_version: version, identity: 'fixture-account-scope', models: [{ slug: 'gpt-6-astra', shell_type: shell, apply_patch_tool_type: 'freeform', multi_agent_version: 'v2', use_responses_lite: true, tool_mode: 'code_mode_only', experimental_supported_tools: ['send_user_message_async', 'clock'] }] }));
   const snapshot = await f.snapshot();
-  assert.equal(snapshot.complete, false);
-  assert.ok(snapshot.blockers.some(x => x.code === 'native_model_catalog'));
+  const supported = ['shell_command', 'unified_exec'].includes(shell);
+  assert.equal(snapshot.complete, supported, JSON.stringify(snapshot.blockers));
+  assert.equal(snapshot.blockers.some(x => x.code === 'native_model_catalog'), !supported);
+  assert.equal(snapshot.configuration.native_tools.capabilities.includes('shell'), true);
   assert.ok(!JSON.stringify(snapshot).includes('fixture-account-scope'), 'cache identity is inspected locally, not exported');
 });
 

@@ -235,10 +235,11 @@ function savedConnector(ctx, agentId, connection, wire) {
 
 const counts = (snapshot) => ({ files: snapshot.entries.filter(item => item.type === "file").length,
   bytes: snapshot.entries.reduce((n, item) => n + item.bytes, 0), skills: snapshot.skills.length, tools: snapshot.configuration.tools.length });
-function blocked(ctx, target, status, agentId, scrub) {
-  const blockers = (status.blockers ?? []).map(item => ({ code: item.code, message: scrub.cut(item.message) }));
-  for (const blocker of blockers) say(ctx.io, `${blocker.code}: ${blocker.message}`);
-  print(ctx.io, { status: "needs_attention", target: target.base, ...(agentId ? { agent_id: agentId } : {}), state: status.state, blockers });
+function blocked(ctx, target, status, agentId, scrub, summary = {}) {
+  const blockers = (status.blockers ?? []).map(item => ({ code: item.code, message: scrub.cut(item.message),
+    ...(typeof item.path === "string" ? { path: scrub.cut(item.path) } : {}) }));
+  for (const blocker of blockers) say(ctx.io, `${blocker.code}${blocker.path ? ` (${JSON.stringify(blocker.path)})` : ""}: ${blocker.message}`);
+  print(ctx.io, { ...summary, status: "needs_attention", target: target.base, ...(agentId ? { agent_id: agentId } : {}), state: status.state, blockers });
   return 3;
 }
 
@@ -247,8 +248,8 @@ function blocked(ctx, target, status, agentId, scrub) {
 export async function deployCapturedSetup(ctx, captured, target, { fetch: fetcher, connectOnly = false, now = Date.now } = {}) {
   const wire = transport(ctx, target, fetcher), source = identity(captured.target), snapshot = captured.snapshot;
   if (!snapshot || !DIGEST.test(snapshot.digest) || canonical(snapshot.source) !== canonical(source)) throw ctx.cli.fail(2, "The exporter did not return a snapshot of the selected source.");
-  if (!snapshot.complete || snapshot.blockers.length) return blocked(ctx, target, snapshot, undefined, wire.scrub);
   const summary = { target: target.base, workspace_id: target.workspace ?? null, runtime: source.runtime, selector: source.selector, snapshot: snapshot.digest, ...counts(snapshot) };
+  if (!snapshot.complete || snapshot.blockers.length) return blocked(ctx, target, snapshot, undefined, wire.scrub, summary);
   say(ctx.io, `Selected ${source.runtime}${source.selector.name ? ` ${source.selector.name}` : " project"}: ${summary.files} files, ${summary.skills} skills, ${summary.tools} tool connections. Destination: ${target.base}.`);
   say(ctx.io, "The setup includes project files, skill assets and supported settings. Source credentials stay local; model and tool access must be configured at the destination.");
   if (ctx.values["dry-run"]) { print(ctx.io, { status: "preview", ...summary }); return 0; }

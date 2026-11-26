@@ -13,3 +13,11 @@ Move succeeds. Missing model or tool accounts, unsupported source extensions or 
 remain explicit blockers; source credentials and conversation history are not uploaded. macOS capture requires
 Python 3 for descriptor-relative reads; Linux retains its native reader. Pi skill installation is available through
 `agentrun skill install --pi`.
+
+Incomplete local captures report the affected paths and captured file, skill and tool counts without exposing held
+credentials. An in-place Codex model-cache refresh is accepted only when stable reads retain identical content,
+file identity and permissions; source policy and account changes still require a fresh capture.
+The selected Codex metadata directory may refresh its timestamps only while its identity, size, permissions and exact
+entry inventory remain unchanged; selected child files and account policy retain their independent checks.
+Codex 0.171.0 and 0.172.0 exports recognize the verified `shell_command` and `unified_exec` model-catalogue labels as
+the shell and interactive process capability. Other model-tool differences and unsupported integrations remain blockers.

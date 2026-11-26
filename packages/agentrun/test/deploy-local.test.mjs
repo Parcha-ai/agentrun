@@ -227,11 +227,23 @@ test("paused journal publication and release cannot interfere with a competing c
 test("source blockers, destination blockers and missing confirmation never cut over", async t => {
   for (const kind of ["source", "destination", "confirmation"]) {
     const local = setup(t), peer = destination({ blocker: kind === "destination" }), source = captured();
-    if (kind === "source") { source.snapshot.complete = false; source.snapshot.blockers = [{ code: "extension", message: "The extension needs an adapter." }]; }
+    if (kind === "source") { source.snapshot.complete = false; source.snapshot.blockers = [
+      { code: "extension", message: "The extension needs an adapter.", path: "skills/build/scripts/check.sh" },
+      { code: "secret_content", message: "A credential was withheld.", path: `project/${OWNER}.txt` },
+    ]; }
     if (kind === "confirmation") local.ctx.values.yes = false;
     assert.equal(await deployCapturedSetup(local.ctx, source, target, { fetch: peer.fetch }), kind === "confirmation" ? 2 : 3);
     assert.equal(peer.seen.some(x => x.path.endsWith("/move")), false);
     if (kind !== "destination") assert.equal(peer.seen.length, 0);
+    if (kind === "source") {
+      const report = JSON.parse(local.output().out);
+      assert.equal(report.blockers[0].path, "skills/build/scripts/check.sh");
+      assert.equal(report.blockers[1].path, "project/[hidden].txt");
+      assert.deepEqual({ runtime: report.runtime, files: report.files, bytes: report.bytes, skills: report.skills, tools: report.tools },
+        { runtime: "codex", files: 1, bytes: 4, skills: 1, tools: 0 });
+      assert.ok(local.output().err.includes('"skills/build/scripts/check.sh"'));
+      assert.equal((local.output().out + local.output().err).includes(OWNER), false);
+    }
   }
 });
 

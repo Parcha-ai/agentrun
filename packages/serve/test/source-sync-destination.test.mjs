@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { sourcePolicy } from '../dist/source-sync/destination.js';
 import { bindSourceTool, destinationPreparation } from '../dist/source-sync/destination.js';
 import { resourceTools } from '../dist/mcp-resources.js';
+import { sourceNativeTools } from '../dist/native/source-runtime-tools.js';
 
 function mcpFixture(tools) {
   const row = { name: 'destination', url: 'https://tools.example.invalid/mcp', tools, auth: 'none', sealed: null, credentialChangedAt: null, tokenLeftMs: null };
@@ -171,6 +172,13 @@ for (const runtime of ['codex', 'claude-code', 'pi']) test(`${runtime} shell fam
   const { settingsIssues } = await import('../dist/tool-plane.js');
   const { permissionFrom, SHELL_FAMILY, SHELL_WATCHERS } = await import('../dist/tool-gate.js');
   const source = snapshot(runtime, ['shell', 'file_read', 'file_write']);
+  if (runtime === 'codex') {
+    const resolved = sourceNativeTools({ runtime, version: '0.172.0', model: 'gpt-5.5', mcp: false, permissions: source.configuration.permissions,
+      config: { agents: { enabled: false }, features: { apps: false, plugins: false, image_generation: false, goals: false }, cloud: { skills: { enabled: false } }, tools: { experimental_request_user_input: { enabled: false } } },
+      modelCache: { client_version: '0.172.0', identity: 'fixture-account', models: [{ slug: 'gpt-5.5', shell_type: 'unified_exec', apply_patch_tool_type: 'freeform', multi_agent_version: null, use_responses_lite: false, experimental_supported_tools: [] }] } });
+    assert.deepEqual(resolved.blockers, []);
+    source.configuration.native_tools = resolved.tools;
+  }
   const resolved = sourcePolicy(source, boxes, []);
   assert.equal(resolved.blockers, undefined);
   assert.deepEqual(settingsIssues(resolved.toolSettings, 'definition.tool_settings', 'agent'), [], 'the ordinary save/prepare validator accepts every emitted setting');
