@@ -2166,12 +2166,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  is no shell), whose shell runs the shell tools; else none, and why. A package that needs programs (`sandbox`) asks
    *  for a sandbox alone, whose box a run checks for them: Archil's exec is none, so in Mode 2 it is told why no sandbox
    *  answers (the Docker box can't mount Archil's workspaces), never given the exec. In Mode 2 on a region with no
-   *  serverless exec there is neither: none, saying why and the fix. */
+   *  serverless exec there is no exec: the first sandbox of the registry that answers here now and mounts the run's
+   *  folder (a vendor's, on Archil), so a template's agent has its shell and its checkout; else none, saying why and the fix. */
   const shellHere = async (wants: { sandbox?: boolean } = {}): Promise<ShellHere> => {
     const exec = (await shellOf({ kind: "none" })) === "local";
     if (exec && !wants.sandbox) return { computer: { kind: "none" }, tools: [...shellTools("local")], words: "Archil's serverless exec" };
     const noExec = exec ? undefined : await noExecNow();
-    if (noExec !== undefined) return { none: `this server has no shell to give an agent now: ${noExecWords(noExec)}, and the docker box can't mount Archil`, fix: "Give the agent a sandbox computer (a box) to run bash, or leave bash out of its tools." };
+    if (noExec !== undefined) {
+      for (const entry of claimRegistry().PROVIDERS) {
+        const computer = { kind: "sandbox", provider: entry.id };
+        if ((await shellOf(computer)) === "computer" && "ok" in (await computerReady(computer))) return { computer, tools: [...shellTools("computer")], words: `the ${entry.id} sandbox` };
+      }
+      return { none: `this server has no shell to give an agent now: ${noExecWords(noExec)}, the docker box can't mount Archil, and no sandbox that mounts it is set up`, fix: "Give the agent a sandbox computer (a box) to run bash, or leave bash out of its tools." };
+    }
     const fresh = newAgentPlace(boxOffers);
     let why = "why" in fresh ? fresh.why : "it is not set up";
     if ("place" in fresh && fresh.place.mode === "sandbox") {
