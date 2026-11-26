@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { AttachHub, MemoryMachineTokens } from "../dist/index.js";
+import { AttachHub, MemoryMachineTokens, releaseOlder } from "../dist/index.js";
 import { boxImageRef, boxRecipeHash } from "../dist/box-image.js";
 import { codeOfError } from "../dist/hosted/process.js";
 import { dialLaunch } from "../dist/hosted/scripts.js";
@@ -410,29 +410,78 @@ test("list asks Render by name when the name is asked, every page by cursor, lea
 	assert.equal(few.runs().length, 2, "read once, then kept");
 });
 
-test("a listing reads labels files a few at a time, and one that fails or never answers fails nothing: that sandbox carries its name's labels, the rest are answered", async () => {
-	const ids = Array.from({ length: 12 }, (_, i) => `sbx-run${String(i).padStart(12, "0")}`);
-	const wedged = new Set([ids[3], ids[8]]);
+/** sbx-run000000000003 for 3: the ids wedgedRender plants. */
+const runId = (n) => `sbx-run${String(n).padStart(12, "0")}`;
+
+/** A fake Render with `count` running computers of run-1, the nth at `epochs[n]` (1 where none is given), whose runs in `wedged` (id to "exits" or "hangs") exit 1 or never answer. */
+function wedgedRender(count, { wedged = new Map(), epochs = [], runMs = 0 } = {}) {
+	const ids = Array.from({ length: count }, (_, i) => runId(i));
 	const render = fakeRender({
-		runMs: 5,
+		runMs,
 		answer: (method, path, body, { url, signal }) => {
-			const id = url.hostname.split(".")[0];
-			if (path !== "/runs/sync" || !wedged.has(id)) return undefined;
-			return id === ids[3] ? json(200, { stdout: "", stderr: "cat: Permission denied", exit_code: 1 }) : hang(signal);
+			const how = wedged.get(url.hostname.split(".")[0]);
+			if (path !== "/runs/sync" || how === undefined) return undefined;
+			return how === "exits" ? json(200, { stdout: "", stderr: "cat: Permission denied", exit_code: 1 }) : hang(signal);
 		},
 	});
 	ids.forEach((id, i) => {
 		const name = `computer-${i.toString(16).padStart(12, "0")}`;
-		plant(render, id, name, { labels: { "agentrun.computer": "1", "agentrun.computer.name": name, "agentrun.run": "run-1" } });
+		plant(render, id, name, { labels: { "agentrun.computer": "1", "agentrun.computer.name": name, "agentrun.run": "run-1", "agentrun.epoch": String(epochs[i] ?? 1) } });
 	});
-	const { host } = provider(render);
-	const listed = await host.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, { timeoutMs: 500 });
-	assert.deepEqual(listed.map(({ id }) => id), ids.filter((id) => !wedged.has(id)), "the sandboxes whose file was read; the two that could not be carry no run label");
+	return { render, ids };
+}
+
+test("a listing reads labels files a few at a time, all within its bound, and one it can't read fails it closed, naming each: it can't tell whether that sandbox carries the labels asked", async () => {
+	const { render, ids } = wedgedRender(12, { runMs: 5 });
+	const all = await provider(render).host.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, { timeoutMs: 500 });
+	assert.deepEqual(all.map(({ id }) => id), ids);
 	assert.equal(render.runs().length, ids.length, "each running computer's file read once");
 	assert.ok(render.inFlight.most <= 4, `at most 4 reads at once, not ${render.inFlight.most}`);
 	assert.ok(render.inFlight.most > 1, "reads go on side by side");
-	const byName = await host.list({ "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000003" }, CTX);
-	assert.deepEqual(byName.map(({ id, labels }) => [id, labels]), [[ids[3], { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000003" }]], "one whose file could not be read is listed by its name's labels");
+
+	const wedged = wedgedRender(12, { runMs: 5, wedged: new Map([[runId(3), "exits"], [runId(8), "hangs"]]) });
+	const { host } = provider(wedged.render);
+	const started = Date.now();
+	const error = await host.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, { timeoutMs: 500 }).catch((caught) => caught);
+	assert.ok(Date.now() - started < 3_000, "held to the listing's own bound");
+	assert.equal(error.code, "vendor");
+	assert.equal(error.message, "could not read the labels of sbx-run000000000003: reading the labels file of sbx-run000000000003 exited 1: cat: Permission denied; sbx-run000000000008: no answer within 0.5 s; the listing can't tell whether they carry agentrun.run=run-1");
+	assert.equal(wedged.render.runs().length, ids.length, "every read waited for before the listing fails");
+	assert.ok(wedged.render.inFlight.most <= 4, `at most 4 reads at once, not ${wedged.render.inFlight.most}`);
+
+	const one = wedgedRender(2, { wedged: new Map([[runId(1), "exits"]]) });
+	const alone = await provider(one.render).host.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX).catch((caught) => caught);
+	assert.equal(alone.message, "could not read the labels of sbx-run000000000001: reading the labels file of sbx-run000000000001 exited 1: cat: Permission denied; the listing can't tell whether it carries agentrun.run=run-1");
+
+	const own = { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000003" };
+	const byName = await host.list(own, CTX);
+	assert.deepEqual(byName.map(({ id, labels }) => [id, labels]), [[runId(3), own]], "a listing by the name alone reads no file and never fails so");
+	assert.deepEqual((await host.get(runId(3), CTX)).labels, own, "get keeps the name's labels");
+});
+
+test("a listing with an unreadable sandbox this host terminated, which Render still reads running, succeeds: its guest is never read", async () => {
+	const { render, ids } = wedgedRender(3, { wedged: new Map([[runId(1), "exits"]]) });
+	const { host } = provider(render);
+	render.sandboxes.get(ids[1]).ending = 5;
+	await host.delete(ids[1], CTX);
+	const runs = render.runs().length;
+	const listed = await host.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX);
+	assert.deepEqual(listed.map(({ id }) => id), [ids[0], ids[2]]);
+	assert.equal(render.runs().length, runs + 2, "the ending one's guest is not read");
+});
+
+test("releaseOlder over Render fails closed on a run's sandbox it can't read: a newer epoch's still fences the claim, and an older one's is never a success", async () => {
+	const options = { dial: dialServer(), daemonPath: fileURLToPath(import.meta.url), timeouts: { pollMs: 1, listedStableMs: 0 } };
+	const fenced = wedgedRender(2, { epochs: [1, 3], wedged: new Map([[runId(1), "exits"]]) });
+	const refused = await releaseOlder(provider(fenced.render, options), "run-1", 2);
+	assert.equal(refused.ok, false, "a newer epoch's sandbox left out would let a stale claim past the fence");
+	assert.match(refused.error.message, /could not read the labels of sbx-run000000000001/);
+	assert.equal(fenced.render.sandboxes.get(fenced.ids[0]).record.status, "running", "nothing released");
+
+	const leaky = wedgedRender(2, { wedged: new Map([[runId(1), "exits"]]) });
+	const partial = await releaseOlder(provider(leaky.render, options), "run-1", 2);
+	assert.equal(partial.ok, false, "an older sandbox left out would make a leak a success");
+	assert.match(partial.error.message, /could not read the labels of sbx-run000000000001/);
 });
 
 test("delete terminates the sandbox, which Render answers 204 even once it is terminated", async () => {
