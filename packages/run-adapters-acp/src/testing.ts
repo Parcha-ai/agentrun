@@ -12,17 +12,21 @@ export const FAKE_ACP_AGENT: string = fileURLToPath(new URL("../testing/fake-acp
 
 /** How the fake plays an agent: `load` it resumes with session/load (else a crash restarts the turn); `http` our tools
  *  reach it over HTTP (else stdio); `style` how it names our tools and what it asks permission for ("goose": every tool
- *  asks; "cursor": MCP and shell calls ask, edits do not); `askMcp` whether an MCP call asks first (default: the
+ *  asks; "cursor": MCP and shell calls ask, edits do not; "antigravity": agy's names, every tool asks); `askMcp` whether an MCP call asks first (default: the
  *  style's). */
 export interface FakeAgentPlay {
   readonly load?: boolean;
   readonly http?: boolean;
-  readonly style?: "goose" | "cursor";
+  readonly style?: "goose" | "cursor" | "antigravity";
   readonly askMcp?: boolean;
 }
 
 /** The fake agent as the recipe of harness `id`, its config written into `dir`, driven by `script` (the conformance
- *  suite's ScriptStep list). Billed `plan`: the fake calls no model, so no proxy is started. */
+ *  suite's ScriptStep list). Billed `plan`: the fake calls no model, so no proxy is started. Our tools' permission
+ *  requests are answered as each style's shipped recipe answers them: "goose" writes Goose's permission file
+ *  (allowFile), so the fake asks nothing for our tools; "cursor" and "antigravity" declare the title tie
+ *  (quirks.permissionTie), as the Antigravity example recipe does. Each
+ *  names its calls by the field its shipped recipe declares (announces). */
 export function fakeAgentRecipe(id: string, dir: string, script: readonly unknown[], play: FakeAgentPlay = {}): AcpRecipe {
   const load = play.load ?? true;
   const http = play.http ?? true;
@@ -36,5 +40,10 @@ export function fakeAgentRecipe(id: string, dir: string, script: readonly unknow
     state: [".fake-acp"],
     declares: { load, mcp: http ? "http" : "stdio" },
     billing: { kind: "plan", maxTurns: 100, maxToolCalls: 100 },
+    ...((play.style ?? "goose") === "cursor"
+      ? { announces: { tool: "rawInput.toolName", server: "rawInput.providerIdentifier", args: "rawInput.args" }, quirks: { permissionTie: "title" } }
+      : play.style === "antigravity"
+      ? { announces: { tool: "name", prefix: "mcp_agentrun_", extras: ["toolSummary"] }, quirks: { permissionTie: "title" } }
+      : { announces: { tool: "_meta.goose.toolCall.toolName" }, allowFile: { path: ".config/goose/permission.yaml", form: "goose-permission" } }),
   };
 }

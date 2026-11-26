@@ -8,10 +8,12 @@
 // The first test runs the pinned CLI: without it this skips; with AGENTRUN_CLAUDE_AGENT_REQUIRE_BINARY=1 (CI) a missing
 // or different one fails. The others use stand-in CLIs that note what they were started with beside themselves.
 import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync, writeSync } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { createServer } from 'node:net';
-import { homedir, tmpdir } from 'node:os';
+import { homedir, tmpdir, userInfo } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { after, test } from 'node:test';
 import * as claude from '@parcha/agentrun-harness-claude';
@@ -163,9 +165,9 @@ test("the pinned CLI's status check on AgentRun's own login, run in the person's
   const before = { list: listing(home), files: snapshot() };
   // AgentRun's own login: a folder in its data dir, outside the home, that no sign-in has filled yet.
   const data = scratch();
-  const login = { dir: join(data, 'claude-login'), profiles: join(data, 'claude-login', 'anthropic') };
+  const login = { dir: join(data, 'claude-login'), profiles: join(data, 'claude-login', 'anthropic'), userHome: home };
   mkdirSync(login.dir, { mode: 0o700 });
-  const status = await claude.claudeLoginStatus(pinned, login, { path: '/usr/bin:/bin', home });
+  const status = await claude.claudeLoginStatus(pinned, login, { path: '/usr/bin:/bin' });
   assert.deepEqual(status, OUT, 'the answer still reads as a status: signed out');
   assert.deepEqual(listing(home), before.list, 'nothing new under the home: no account file, settings, backup or lock');
   assert.deepEqual(snapshot(), before.files, "every file of the person's home keeps its bytes and mtime");
@@ -203,10 +205,10 @@ test("this machine's login in a CLAUDE_CONFIG_DIR folder, which the person's own
     const folder = scratch();
     const bytes = Buffer.from(`${JSON.stringify({ hasCompletedOnboarding: true, migrationVersion: 15 })}\n`);
     writeFileSync(join(folder, '.claude.json'), bytes, { mode: 0o600 });
-    const login = { dir: folder, profiles: join(folder, 'anthropic'), shared: true };
     const person = scratch();
+    const login = { dir: folder, profiles: join(folder, 'anthropic'), userHome: person };
     const fake = fakeCli();
-    assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login, { platform, home: person }), OUT);
+    assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login, { platform }), OUT);
     const [seen] = fake.seen();
     const config = seen.env.CLAUDE_CONFIG_DIR;
     assert.notEqual(config, folder, `${platform}: the status check never runs the CLI on the folder's own account file`);
@@ -231,16 +233,16 @@ test("every place's status check runs in the person's real home, never one under
     const base = scratch();
     const { login: atHome } = defaultLogin();
     const places = [
-      // AgentRun's own folder: the sign-in's variables, the folder its config dir and its credentials dir.
-      ['own', { dir: join(base, 'claude-login'), profiles: join(base, 'claude-login', 'anthropic') }, person],
+      // AgentRun's own folder: its credentials dir the folder, as its sign-in names it; the config dir a copy.
+      ['own', { dir: join(base, 'claude-login'), profiles: join(base, 'claude-login', 'anthropic'), userHome: person }, person],
       // The CLI's default folder: the login's home is the person's; the Keychain item with no suffix.
       ['home', atHome, atHome.home],
       // A CLAUDE_CONFIG_DIR folder: the item hashed from the folder, never from the copy.
-      ['shared', { dir: folder, profiles: join(folder, 'anthropic'), shared: true }, person],
+      ['folder', { dir: folder, profiles: join(folder, 'anthropic'), userHome: person }, person],
     ];
     for (const [where, login, home] of places) {
       const fake = fakeCli();
-      const { tmp, outcome } = await inOwnTmp(() => claude.claudeLoginStatus(fake.cli, login, { platform, home: person }));
+      const { tmp, outcome } = await inOwnTmp(() => claude.claudeLoginStatus(fake.cli, login, { platform }));
       assert.deepEqual(outcome.value, OUT, `${platform} ${where}: ${outcome.error}`);
       const [seen] = fake.seen();
       assert.equal(seen.env.HOME, home, `${platform} ${where}: the status check runs in the person's home`);
@@ -249,15 +251,13 @@ test("every place's status check runs in the person's real home, never one under
       const secure = seen.env.CLAUDE_SECURESTORAGE_CONFIG_DIR;
       assert.equal(secure, where === 'home' && platform === 'darwin' ? '' : login.dir, `${platform} ${where}: the place's own credentials dir`);
       assert.ok(secure === '' || outside(tmp, secure), `${platform} ${where}: the credentials dir ${secure} is never the copy's`);
-      if (where === 'own') {
-        // As the sign-in at that folder runs (signInEnv), in that home.
-        assert.deepEqual(placeVars(seen.env), { ...claude.claudeSignInEnv(login), HOME: person }, `${platform}: AgentRun's own folder is asked as it is signed in`);
-      } else {
-        assert.ok(seen.env.CLAUDE_CONFIG_DIR && !outside(tmp, seen.env.CLAUDE_CONFIG_DIR), `${platform} ${where}: the config dir is the copy, under the check's folder`);
-      }
+      // Every place, AgentRun's own included: the config dir is the copy, and the rest is a run's (claudeLoginEnv).
+      assert.ok(seen.env.CLAUDE_CONFIG_DIR && !outside(tmp, seen.env.CLAUDE_CONFIG_DIR), `${platform} ${where}: the config dir is the copy, under the check's folder`);
+      // As the user the server runs as (USER and LOGNAME): on macOS the account the login's Keychain item is under.
+      assert.deepEqual(placeVars(seen.env), { HOME: home, USER: userInfo().username, LOGNAME: userInfo().username, ...claude.claudeLoginEnv(login, platform), CLAUDE_CONFIG_DIR: seen.env.CLAUDE_CONFIG_DIR }, `${platform} ${where}: a run's variables, in the person's home, as the server's user, on a copy`);
     }
   }
-  // No home given: the server's own (os.homedir()).
+  // A login made with no home of either kind: the server's own (os.homedir()).
   const base = scratch();
   const fake = fakeCli();
   assert.deepEqual(await claude.claudeLoginStatus(fake.cli, { dir: join(base, 'claude-login'), profiles: join(base, 'claude-login', 'anthropic') }), OUT);
@@ -297,6 +297,42 @@ test("the status check's folder is gone on every way the check ends: the CLI ans
   assert.deepEqual(readdirSync(late.tmp), [], 'nothing of the check is left after the limit');
 });
 
+test("a status check the CLI outlasts throws its own kind, `timed_out`, naming the limit in seconds, apart from a CLI that answered what reads as no status: a caller can tell a slow host from a broken answer", async () => {
+  const { login } = defaultLogin();
+  const silent = fakeCli({ hang: true });
+  const started = Date.now();
+  const late = await inOwnTmp(() => claude.claudeLoginStatus(silent.cli, login, { timeoutMs: 500 }));
+  const took = Date.now() - started;
+  assert.equal(late.outcome.error?.code, 'timed_out', `a check ended at its limit says so: ${late.outcome.error}`);
+  assert.match(String(late.outcome.error?.message), /timed out after 0\.5 s/, 'its words name the limit in seconds');
+  assert.equal(late.outcome.error?.limitMs, 500, 'it carries the limit');
+  assert.ok(late.outcome.error instanceof claude.ClaudeLoginTimedOut, 'the harness exports its kind');
+  assert.ok(took < 10_000, `the CLI was ended at the limit, not waited out (${took} ms)`);
+  assert.equal(silent.seen().length, 1, 'the CLI was started once: the harness itself never asks again');
+
+  const garbled = fakeCli({ answer: 'Not logged in' });
+  const nonsense = await inOwnTmp(() => claude.claudeLoginStatus(garbled.cli, login, { timeoutMs: 10_000 }));
+  assert.match(String(nonsense.outcome.error?.message), /gave no login status/);
+  assert.notEqual(nonsense.outcome.error?.code, 'timed_out', 'a CLI that answered nonsense in time did not time out');
+  assert.ok(!(nonsense.outcome.error instanceof claude.ClaudeLoginTimedOut), 'nor is it the timed-out kind');
+  assert.doesNotMatch(String(nonsense.outcome.error?.message), /timed out/);
+
+  assert.equal(new claude.ClaudeLoginTimedOut(15_000).message, 'the claude CLI gave no login status: the check timed out after 15 s', 'the default limit reads in whole seconds');
+});
+
+test("a CLI that answers, in time, nothing that reads as a status throws its own kind, `no_status`, so a caller can tell it from a CLI that never started", async () => {
+  const { login } = defaultLogin();
+  const garbled = fakeCli({ answer: 'Not logged in' });
+  const nonsense = await inOwnTmp(() => claude.claudeLoginStatus(garbled.cli, login, { timeoutMs: 10_000 }));
+  assert.equal(nonsense.outcome.error?.code, 'no_status', `a CLI that answered no status says so: ${nonsense.outcome.error}`);
+  assert.ok(nonsense.outcome.error instanceof claude.ClaudeLoginNoStatus, 'the harness exports its kind');
+  assert.equal(nonsense.outcome.error?.message, 'the claude CLI gave no login status');
+
+  const missing = await inOwnTmp(() => claude.claudeLoginStatus(join(scratch(), 'no-such-claude'), login, { timeoutMs: 10_000 }));
+  assert.equal(missing.outcome.error?.code, 'ENOENT', `a CLI path that is no program is the spawn's own error: ${missing.outcome.error}`);
+  assert.ok(!(missing.outcome.error instanceof claude.ClaudeLoginNoStatus), 'it is not the no-status kind');
+});
+
 test("while the CLI runs, the status check's folder and its config dir are the server user's alone (0700) and the copy of the account file too (0600)", { skip: process.platform === 'win32' ? 'POSIX permission bits' : false }, async () => {
   const { login } = defaultLogin();
   const fake = fakeCli();
@@ -333,7 +369,7 @@ test("the status check's copy of the account file holds no secret: not the API k
   const folder = scratch();
   for (const [where, file, login] of [
     ['default folder', join(home, '.claude.json'), { dir: join(home, '.claude'), profiles: join(home, '.config', 'anthropic'), home }],
-    ['CLAUDE_CONFIG_DIR folder', join(folder, '.claude.json'), { dir: folder, profiles: join(folder, 'anthropic'), shared: true }],
+    ['CLAUDE_CONFIG_DIR folder', join(folder, '.claude.json'), { dir: folder, profiles: join(folder, 'anthropic') }],
   ]) {
     const bytes = Buffer.from(`${JSON.stringify(account, null, 2)}\n`);
     writeFileSync(file, bytes, { mode: 0o600 });
@@ -385,4 +421,374 @@ test('two status checks at once (two tabs) each get a folder of their own, and b
   assert.notEqual(folders[0], folders[1], 'two checks never share a folder');
   for (const s of seen) assert.deepEqual(JSON.parse(copyText(s)), JSON.parse(bytes.toString('utf8')));
   for (const folder of folders) assert.equal(existsSync(folder), false, `${folder} is gone`);
+});
+
+test("what status checks killed mid-way left (a SIGKILL runs no finally) is swept: only this user's agentrun-claude-status-* folders last changed more than twice a check's limit ago; a fresh one, which another server's live check may hold, another user's, a file and a longer name stay", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
+  assert.equal(typeof claude.sweepClaudeStatusFolders, 'function', 'the harness exports sweepClaudeStatusFolders');
+  const dir = scratch();
+  const past = new Date(Date.now() - 10 * 60_000);
+  const folder = (name, old) => {
+    const path = join(dir, name);
+    mkdirSync(join(path, 'config'), { recursive: true, mode: 0o700 });
+    writeFileSync(join(path, 'config', '.claude.json'), '{}\n', { mode: 0o600 });
+    if (old) utimesSync(path, past, past);
+    return path;
+  };
+  const stale = folder('agentrun-claude-status-Ab12Cd', true);
+  const fresh = folder('agentrun-claude-status-Ef34Gh', false);
+  // A test's own root starts so too (this file's): only mkdtemp's six characters after the prefix are a check's.
+  const longer = folder('agentrun-claude-status-test-Ij56Kl', true);
+  const file = join(dir, 'agentrun-claude-status-Mn78Op');
+  writeFileSync(file, '');
+  utimesSync(file, past, past);
+  // Swept as another user (a uid the folders are not owned by): none is theirs.
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, uid: process.getuid() + 1 }), [], "another user's sweep takes nothing of this user's");
+  assert.ok(existsSync(stale), "this user's stale folder stays under another user's sweep");
+  // Swept as this user: the stale folder alone.
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir }), [stale]);
+  assert.equal(existsSync(stale), false, 'the stale folder and the copy in it are gone');
+  for (const kept of [fresh, longer, file]) assert.ok(existsSync(kept), `${kept} stays`);
+  // Twice the check's limit (2 x 15 s) on, the fresh one is stale too.
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now: Date.now() + 31_000 }), [fresh]);
+});
+
+/** A status folder `name` in `dir` as a check leaves it (its account copy), with `ends` (a function of the `ends` file's
+ *  path that writes it) and its mtime set to `mtime` after both. */
+function statusFolder(dir, name, ends, mtime) {
+  const path = join(dir, name);
+  mkdirSync(join(path, 'config'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(path, 'config', '.claude.json'), '{}\n', { mode: 0o600 });
+  ends(join(path, 'ends'));
+  utimesSync(path, mtime, mtime);
+  return path;
+}
+
+/** Writes `ms` as a check's end into the `ends` file it is given, as a check with the server's 15 s limit writes it: at
+ *  its start, its end less the limit and 2 s, which is the file's mtime. An end can't lie before its file was written. */
+const endAt = (ms) => (file) => {
+  writeFileSync(file, String(ms), { mode: 0o600, flag: 'wx' });
+  const start = new Date(ms - 17_000);
+  utimesSync(file, start, start);
+};
+
+// Every status check writes its end in its folder as it starts, so this rule, not the mtime one, is what removes nearly
+// every folder a killed server left. The sweep's margin past that end is 15 s (a check's own limit).
+test("a status folder whose check wrote its end is swept once that end is more than 15 s past, whatever its mtime: 16 s past is swept though changed just now, 14 s past stays though changed long ago, and goes 2 s later", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
+  const dir = scratch();
+  const now = Date.now();
+  // A fresh mtime, which the mtime rule would keep: only the end can take it.
+  const ended = statusFolder(dir, 'agentrun-claude-status-Ends16', endAt(now - 16_000), new Date(now));
+  // An mtime 10 minutes old, which the mtime rule would take: only the end keeps it.
+  const ending = statusFolder(dir, 'agentrun-claude-status-Ends14', endAt(now - 14_000), new Date(now - 10 * 60_000));
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now }), [ended], 'the folder whose check ended 16 s ago is swept, and the one 14 s past its end is not');
+  assert.equal(existsSync(ended), false, 'the ended check\'s folder and the copy in it are gone');
+  assert.ok(existsSync(join(ending, 'config', '.claude.json')), 'the folder 14 s past its end stays, copy and all');
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now: now + 2_000 }), [ending], '16 s past its end, the other is swept too');
+  assert.deepEqual(readdirSync(dir), []);
+});
+
+// Both rules take a folder only when it is more than its margin past: 15 s past its end, or changed more than twice a
+// check's limit (30 s) ago. Exactly at the margin it stays, by either rule.
+test("a status folder exactly 15 s past its end, or changed exactly 30 s ago with no end, stays; 1 ms later both are swept", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
+  const dir = scratch();
+  // A whole second, so the folder's mtime set from it reads back exactly.
+  const now = Math.floor(Date.now() / 1000) * 1000;
+  const byEnd = statusFolder(dir, 'agentrun-claude-status-AtEnd1', endAt(now - 15_000), new Date(now - 10 * 60_000));
+  const byMtime = statusFolder(dir, 'agentrun-claude-status-AtMtm2', () => {}, new Date(now - 30_000));
+  assert.equal(statSync(byMtime).mtimeMs, now - 30_000, 'the folder with no end was changed exactly 30 s before the sweep');
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now }), [], 'a folder exactly at its margin, by its end or by its mtime, stays');
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now: now + 1 }), [byEnd, byMtime], '1 ms past the margin, both are swept');
+  assert.deepEqual(readdirSync(dir), []);
+});
+
+// A caller's limit is the check's timer and, plus 2 s, the end it writes for the sweep, which reads only a whole number
+// of ms: a fractional limit would leave a live check's folder to the mtime rule, which takes it after 30 s. A limit that
+// is no whole number of ms from 1 to setTimeout's most (2^31 - 1, past which it fires at once) is refused.
+test("a status check whose limit is no whole number of ms from 1 to 2^31 - 1 is refused with a RangeError before it starts the CLI or makes its folder; a whole limit is taken", async () => {
+  const { login } = defaultLogin();
+  const fake = fakeCli();
+  for (const timeoutMs of [60_000.5, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31]) {
+    const { tmp, outcome } = await inOwnTmp(() => claude.claudeLoginStatus(fake.cli, login, { timeoutMs }));
+    assert.ok(outcome.error instanceof RangeError, `a limit of ${timeoutMs} ms is refused with a RangeError, before the CLI starts: ${outcome.error ?? JSON.stringify(outcome.value)}`);
+    assert.match(String(outcome.error.message), /timeoutMs/, 'its words name the option');
+    assert.deepEqual(readdirSync(tmp), [], `a limit of ${timeoutMs} ms leaves no folder`);
+  }
+  assert.equal(fake.seen().length, 0, 'the CLI was never started for a refused limit');
+  const whole = await inOwnTmp(() => claude.claudeLoginStatus(fake.cli, login, { timeoutMs: 10_000 }));
+  assert.deepEqual(whole.outcome.value, OUT, 'a whole limit is taken');
+});
+
+test("a status folder whose end can't be read as a time (not a number, over 32 bytes, a link to a file holding one, a folder, or one before its own file was written: empty or only blanks as a check's end is between its create and its write, a partial write, a negative or hex one, a time a minute before the file) is swept by its mtime, as one with no end: it stays while changed within twice a check's limit, and is swept after", { skip: process.platform === 'win32' ? 'no uid' : false }, async () => {
+  const dir = scratch();
+  const now = Date.now();
+  // An hour on: a check reading this end would keep its folder through both sweeps below.
+  const later = String(now + 60 * 60_000);
+  const target = join(dir, 'an-end');
+  writeFileSync(target, later);
+  const unreadable = [
+    ['agentrun-claude-status-Word01', (file) => writeFileSync(file, 'soon', { mode: 0o600 })],
+    ['agentrun-claude-status-Big002', (file) => writeFileSync(file, `${' '.repeat(30)}${later}`, { mode: 0o600 })],
+    ['agentrun-claude-status-Lnk003', (file) => symlinkSync(target, file)],
+    ['agentrun-claude-status-Dir004', (file) => mkdirSync(file)],
+    // A live check's `ends` between writeFile's create (wx) and its write is empty: read as 0, it would be long past and
+    // a sweep would take the live check's folder.
+    ['agentrun-claude-status-Nil005', (file) => writeFileSync(file, '', { mode: 0o600 })],
+    ['agentrun-claude-status-Spc006', (file) => writeFileSync(file, ' \n', { mode: 0o600 })],
+    // A number no check writes, as it lies before the file holding it was written: the first byte of an end a torn
+    // write left, a negative, a hex one. Read as times, each would be long past, and a sweep would take the folder.
+    ['agentrun-claude-status-Prt007', (file) => writeFileSync(file, '1', { mode: 0o600 })],
+    ['agentrun-claude-status-Neg008', (file) => writeFileSync(file, '-5', { mode: 0o600 })],
+    ['agentrun-claude-status-Hex009', (file) => writeFileSync(file, '0x1', { mode: 0o600 })],
+    // A plausible time, but a minute before the file holding it was written: no check writes its end before its start.
+    // Read as a time, it would be 45 s past its margin, and a sweep would take the folder.
+    ['agentrun-claude-status-Ago010', (file) => writeFileSync(file, String(now - 60_000), { mode: 0o600 })],
+  ];
+  // Changed 20 s ago: inside twice a check's limit (2 x 15 s) at `now`, past it 11 s later.
+  const folders = unreadable.map(([name, ends]) => statusFolder(dir, name, ends, new Date(now - 20_000))).sort();
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now }), [], 'a folder changed 20 s ago stays whatever its end file holds');
+  for (const folder of folders) assert.ok(existsSync(folder), `${folder} stays`);
+  assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir, now: now + 11_000 }), folders, 'changed 31 s before the sweep, every one is swept: none of their ends was read');
+  for (const folder of folders) assert.equal(existsSync(folder), false, `${folder} is gone`);
+  assert.ok(existsSync(target), 'the file the link named is not touched');
+});
+
+/** A promise that rejects in `what`'s words after `ms`, and the clear() of its timer, so a regression fails the test at
+ *  its own bound rather than hanging it. */
+function within(ms, what) {
+  let timer;
+  const promise = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(what)), ms); });
+  return { promise, clear: () => clearTimeout(timer) };
+}
+
+// A harness caller may give a check a longer limit than the server's 15 s: another server starting on the host meanwhile
+// sweeps status folders, and must leave this one, which the check is still using.
+test("a live status check's folder is never swept, however long its limit: a check with a 2-minute limit, swept as if 60 s had passed, keeps its folder, and the folder goes once the check ends", { skip: process.platform === 'win32' ? 'no uid' : false, timeout: 30_000 }, async () => {
+  const { login } = defaultLogin();
+  const held = await gate(1);
+  const fake = fakeCli({ gate: held.port });
+  const tmp = scratch();
+  const saved = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
+  Object.assign(process.env, { TMPDIR: tmp, TMP: tmp, TEMP: tmp });
+  let pending;
+  try {
+    pending = claude.claudeLoginStatus(fake.cli, login, { timeoutMs: 120_000 });
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+  const outcome = pending.then((value) => ({ value }), (error) => ({ error }));
+  const early = outcome.then(() => { throw new Error('the status check ended before its CLI was running'); });
+  early.catch(() => {});
+  const bound = within(10_000, "the status check's CLI was not running within 10 s");
+  try {
+    // The CLI runs and has not answered: the check is live.
+    await Promise.race([held.arrived, early, bound.promise]);
+    const folders = readdirSync(tmp).map((name) => join(tmp, name));
+    assert.equal(folders.length, 1, `the check has one folder: ${folders}`);
+    assert.deepEqual(await claude.sweepClaudeStatusFolders({ dir: tmp, now: Date.now() + 60_000 }), [], "the sweep took a live check's folder");
+    assert.ok(existsSync(join(folders[0], 'config')), "the live check's config dir is still there");
+  } finally {
+    bound.clear();
+    held.release();
+  }
+  assert.deepEqual(await outcome, { value: OUT });
+  assert.deepEqual(readdirSync(tmp), [], "the check's folder is gone once it ends");
+});
+
+/** A stand-in CLI (a shell script) that never answers: it notes its pid, and with `holder` its background child's, then
+ *  waits. `ignoreTerm`: it ignores SIGTERM (an ignored signal stays so across exec). `holder`: a process it starts keeps
+ *  its stdout open after it is gone. */
+function stuckCli({ ignoreTerm = false, holder = false } = {}) {
+  const dir = scratch();
+  const cli = join(dir, 'claude');
+  writeFileSync(cli, [
+    '#!/bin/sh',
+    ...(ignoreTerm ? [`trap '' TERM`] : []),
+    ...(holder ? ['sleep 300 &', `echo $! > '${join(dir, 'holder')}'`] : []),
+    `echo $$ > '${join(dir, 'pid')}'`,
+    'exec sleep 300',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  const pids = () => ['pid', 'holder'].filter((name) => existsSync(join(dir, name))).map((name) => Number(readFileSync(join(dir, name), 'utf8').trim()));
+  /** The stand-in CLI's own pid (its `exec` keeps it). */
+  const pid = () => Number(readFileSync(join(dir, 'pid'), 'utf8').trim());
+  return { cli, pids, pid };
+}
+
+/** Whether `pid` is a live process (one this test may not signal still is). */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === 'EPERM';
+  }
+}
+
+for (const [what, options] of [['ignores SIGTERM', { ignoreTerm: true }], ['leaves a process holding its output open', { holder: true }]]) {
+  test(`a status check whose CLI ${what} still ends at its limit as timed_out, within the kill's grace, and never waits on it for ever`, { skip: process.platform === 'win32' ? 'a sh stand-in CLI' : false, timeout: 30_000 }, async (t) => {
+    const { login } = defaultLogin();
+    const stuck = stuckCli(options);
+    t.after(() => { for (const pid of stuck.pids()) try { process.kill(pid, 'SIGKILL'); } catch {} });
+    const limitMs = 1_000;
+    // The limit, then a 1 s grace before the kill and up to 1 s for the pipe: 3 s. The bound leaves 3 s more.
+    const bound = within(limitMs + 5_000, `the status check still ran 5 s after its ${limitMs / 1000} s limit`);
+    let ended;
+    try {
+      ended = await Promise.race([inOwnTmp(() => claude.claudeLoginStatus(stuck.cli, login, { timeoutMs: limitMs })), bound.promise]);
+    } finally {
+      bound.clear();
+    }
+    const { tmp, outcome } = ended;
+    assert.equal(outcome.error?.code, 'timed_out', `it ends as timed_out: ${outcome.error?.message ?? JSON.stringify(outcome.value)}`);
+    assert.deepEqual(readdirSync(tmp), [], "the check's folder is gone");
+    assert.equal(stuck.pids().length, options.holder ? 2 : 1, 'the stand-in reached its wait');
+    // The check ended its CLI, a TERM or the kill after it, and never left it running (a process it started is its own).
+    assert.equal(alive(stuck.pid()), false, `the status check ended at its limit, but its CLI (pid ${stuck.pid()}) still runs`);
+  });
+}
+
+/** A stand-in CLI that rewrites the account file in its config dir as it starts, as the pinned CLI does when the file's
+ *  migration number is not its own, then answers signed out. */
+function rewritingCli() {
+  const dir = scratch();
+  const cli = join(dir, 'claude');
+  writeFileSync(cli, [
+    `#!${process.execPath}`,
+    `const fs = require('node:fs');`,
+    `const path = require('node:path');`,
+    `const config = process.env.CLAUDE_CONFIG_DIR;`,
+    `if (config) fs.writeFileSync(path.join(config, '.claude.json'), JSON.stringify({ migrationVersion: 99 }));`,
+    `process.stdout.write(${JSON.stringify(SIGNED_OUT)});`,
+    `process.exit(1);`,
+    '',
+  ].join('\n'), { mode: 0o755 });
+  return cli;
+}
+
+test("a status check on a login its caller marked as nothing (no home, no flag: a CLAUDE_CONFIG_DIR folder, or AgentRun's own) still runs the CLI on a copy of the account file: the folder's .claude.json keeps its bytes and its mtime", async () => {
+  const folder = scratch();
+  const login = { dir: folder, profiles: join(folder, 'anthropic') };
+  const account = join(folder, '.claude.json');
+  writeFileSync(account, `${JSON.stringify({ hasCompletedOnboarding: true, migrationVersion: 15 })}\n`, { mode: 0o600 });
+  // An mtime in the past, so a rewrite within the same clock tick still shows.
+  const past = new Date('2026-01-01T00:00:00Z');
+  utimesSync(account, past, past);
+  const before = { sha: sha256(account), mtime: statSync(account).mtimeMs };
+  assert.deepEqual(await claude.claudeLoginStatus(rewritingCli(), login), OUT);
+  assert.equal(sha256(account), before.sha, "the folder's account file keeps its bytes: the CLI rewrote a copy, never it");
+  assert.equal(statSync(account).mtimeMs, before.mtime, "the folder's account file keeps its mtime");
+});
+
+// The account file is the person's, so it can be anything: a FIFO, a link to a device, a very big file. Reading one of
+// those whole on the server's own thread stops every request (a FIFO's open waits for a writer; /dev/zero never ends), and
+// a big one is parsed on every poll. The copy takes a regular file of at most 32 MiB, and nothing else.
+
+test("an account file that is a FIFO is copied as nothing, at once: the check never waits on it for a writer, which would stop the server's event loop", { skip: process.platform === 'win32' ? 'no mkfifo' : false, timeout: 30_000 }, async (t) => {
+  const { home, login } = defaultLogin();
+  const file = join(home, '.claude.json');
+  rmSync(file);
+  execFileSync('mkfifo', [file]);
+  // A writer that comes only after 3 s, with an account a copy would hold: a check that opens the FIFO to read waits that
+  // long for it (its thread stopped), then copies what it wrote.
+  const writer = spawn(process.execPath, ['-e', `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(file)}, '{"numStartups":1}'), 3000)`], { stdio: 'ignore' });
+  t.after(() => writer.kill('SIGKILL'));
+  const fake = fakeCli();
+  const started = Date.now();
+  assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login), OUT);
+  const took = Date.now() - started;
+  const [seen] = fake.seen();
+  assert.deepEqual([seen.folder, seen.copy], [[], null], 'a FIFO is copied as nothing');
+  assert.ok(took < 2500, `the check answered in ${took} ms, without waiting for the FIFO's writer`);
+});
+
+test("an account file over 32 MiB is copied as nothing, though it reads as a JSON object; one under it is copied", { timeout: 60_000 }, async () => {
+  const { home, login } = defaultLogin();
+  const file = join(home, '.claude.json');
+  // An object, then spaces: JSON all through, so only its size keeps it from the copy. A sparse file would hold NULs,
+  // which no JSON reading takes, and would be copied as nothing for that alone.
+  const fd = openSync(file, 'w', 0o600);
+  writeSync(fd, '{"numStartups":3}');
+  const spaces = Buffer.alloc(1024 * 1024, 0x20);
+  for (let i = 0; i < 32; i++) writeSync(fd, spaces);
+  closeSync(fd);
+  assert.ok(statSync(file).size > 32 * 1024 * 1024);
+  const big = fakeCli();
+  assert.deepEqual(await claude.claudeLoginStatus(big.cli, login), OUT);
+  const [seen] = big.seen();
+  assert.deepEqual([seen.folder, seen.copy], [[], null], 'a file over 32 MiB is copied as nothing');
+  // The same account in a small file: copied.
+  writeFileSync(file, '{"numStartups":3}\n', { mode: 0o600 });
+  const small = fakeCli();
+  assert.deepEqual(await claude.claudeLoginStatus(small.cli, login), OUT);
+  assert.deepEqual(JSON.parse(copyText(small.seen()[0])), { numStartups: 3 }, 'a regular file under the cap is copied');
+});
+
+test("an account file that is a link to a device that never ends (/dev/zero), or a folder, is copied as nothing, and the check still answers; a link to a regular file is followed", { skip: process.platform === 'win32' ? 'no /dev/zero' : false, timeout: 30_000 }, async () => {
+  for (const [what, make] of [
+    ['a link to /dev/zero', (file) => symlinkSync('/dev/zero', file)],
+    ['a folder', (file) => mkdirSync(file)],
+  ]) {
+    const { home, login } = defaultLogin();
+    const file = join(home, '.claude.json');
+    rmSync(file);
+    make(file);
+    const fake = fakeCli();
+    assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login), OUT, what);
+    const [seen] = fake.seen();
+    assert.deepEqual([seen.folder, seen.copy], [[], null], `${what}: copied as nothing`);
+  }
+  // A dotfiles manager's link: what it points to is copied.
+  const { home, login } = defaultLogin();
+  const file = join(home, '.claude.json');
+  const kept = join(scratch(), 'claude.json');
+  writeFileSync(kept, '{"numStartups":4}\n', { mode: 0o600 });
+  rmSync(file);
+  symlinkSync(kept, file);
+  const fake = fakeCli();
+  assert.deepEqual(await claude.claudeLoginStatus(fake.cli, login), OUT);
+  assert.deepEqual(JSON.parse(copyText(fake.seen()[0])), { numStartups: 4 }, 'a link to a regular file is copied as that file');
+});
+
+// After the CLI exits, the check waits at most a second for its output, which a process it started may hold. A server's
+// event loop can be held up past that second (a busy server) while the answer already sits in the pipe: the check must
+// still read it. The hold is this test's: the CLI's exit is followed, before the loop goes on, by a block that tells the
+// process holding the CLI's output to write the answer, and lasts until it has and the drain's second is past due. So
+// the answer is in the pipe, unread, when the loop next runs its timers.
+test("a status check whose event loop is held up past the drain's second just after its CLI exited still reads the answer the pipe holds by then", { skip: process.platform === 'win32' ? 'a sh stand-in CLI' : false, timeout: 30_000 }, async (t) => {
+  const { login } = defaultLogin();
+  const dir = scratch();
+  const [cli, go, wrote] = ['claude', 'go', 'wrote'].map((name) => join(dir, name));
+  writeFileSync(cli, [
+    '#!/bin/sh',
+    // The process holding the CLI's output writes the answer once the test says go, and ends.
+    `(while [ ! -e '${go}' ]; do sleep 0.05; done; printf '%s' '${SIGNED_OUT}'; : > '${wrote}') &`,
+    'exit 1',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  t.after(() => writeFileSync(go, ''));
+  const childProcess = createRequire(import.meta.url)('node:child_process');
+  const real = childProcess.spawn;
+  childProcess.spawn = function spawnHeld(command, ...rest) {
+    const child = real.call(this, command, ...rest);
+    if (command === cli) {
+      // Queued from the exit's first listener, so it runs once every listener has (the check's drain is armed by then).
+      child.once('exit', () => process.nextTick(() => {
+        writeFileSync(go, '');
+        const start = performance.now();
+        while ((!existsSync(wrote) || performance.now() - start < 1_500) && performance.now() - start < 10_000);
+      }));
+    }
+    return child;
+  };
+  syncBuiltinESMExports();
+  t.after(() => {
+    childProcess.spawn = real;
+    syncBuiltinESMExports();
+  });
+  const outcome = await claude.claudeLoginStatus(cli, login, { timeoutMs: 5_000 }).then((value) => ({ value }), (error) => ({ error: error.code ?? error.message }));
+  assert.ok(existsSync(wrote), 'the process holding the output wrote the answer while the loop was held up');
+  assert.deepEqual(outcome, { value: OUT }, 'the answer the pipe held when the held-up loop went on was dropped: the drain gave up on it unread');
 });

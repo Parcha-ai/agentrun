@@ -4,19 +4,19 @@
 // Claude Agent SDK and codex's Codex are installed on first use into the data's harnesses directory and loaded from there
 // alone (harness-install.ts); opencode's pinned CLI that is missing says so with the one line that installs it: an npm
 // install beside serve, or, when serve runs from npx, the npx line that runs it with the missing package.
-import { accessSync, constants, existsSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { accessSync, constants, existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AdapterFacts, AgentAdapter, SessionSpec } from "@parcha/agentrun-kernel";
+import type { AdapterFacts, AgentAdapter, HarnessWire, SessionSpec } from "@parcha/agentrun-kernel";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
-import { CLAUDE_SDK, codexBinaryIn, type HarnessPins, HarnessNotInstalled, installDirOf, installLine, loadSdk, type LoadedSdk } from "./harness-install.js";
+import { CLAUDE_SDK, codexBinaryIn, type HarnessPins, HarnessNotInstalled, installDirOf, installLine, loadSdk, type LoadedSdk, shellWord } from "./harness-install.js";
+import { commandData } from "./harness-owned.js";
 import { DATA_ENV, defaultData } from "./files.js";
 import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
 import type { ModelRef } from "./model.js";
-import { HarnessUnavailable, type InstallFix, providerFor } from "./provider.js";
+import { HarnessUnavailable, heldRefusedProvider, type InstallFix, type Provider, providerFor } from "./provider.js";
 import { keyShaped } from "./secret-cut.js";
 import { servedSkills } from "./learn/workflow-draft.js";
 import { runKeyOf } from "./key-refusal.js";
@@ -54,7 +54,20 @@ export function installedHere(name: string, from: string = fileURLToPath(import.
   }
 }
 
-const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`);
+/**
+ * How the person started this server, for a command that starts it the same way again: the agentrun launcher's package
+ * when it made the start (NPX_PACKAGE_ENV, `@parcha/agentrun@<version>`), npx's `-y ` as they ran it, and the flags after
+ * any --data (startedWith): the port they named, and the browser as they had it (`npx @parcha/agentrun` opens it unless
+ * --no-open, agentrun-serve only with --open).
+ */
+function startedAs(env: NodeJS.ProcessEnv): { launcher: string | undefined; yes: string; flags: string } {
+  const door = env[NPX_PACKAGE_ENV];
+  const launcher = door !== undefined && /^@parcha\/agentrun@\d[\w.+-]*$/.test(door) ? door : undefined;
+  const port = env[STARTED_PORT_ENV];
+  const open = env[STARTED_OPEN_ENV];
+  const flags = [...(port && /^\d{1,5}$/.test(port) ? [`--port ${port}`] : []), ...(launcher ? (open === "0" ? ["--no-open"] : []) : open === "1" ? ["--open"] : [])];
+  return { launcher, yes: env.npm_config_yes === "true" ? "-y " : "", flags: flags.map((flag) => ` ${flag}`).join("") };
+}
 
 /**
  * The one command that starts this same AgentRun again with `spec` beside it: the command the person ran
@@ -64,8 +77,7 @@ const shellWord = (word: string): string => (/^[\w@%+=:,./-]+$/.test(word) ? wor
  * (~/.agentrun) is not the server's default, and after the server's own command when the store is not its default.
  */
 export function npxLine(spec: string, env: NodeJS.ProcessEnv = {}, installed: (name: string) => string | undefined = installedHere): string {
-  const door = env[NPX_PACKAGE_ENV];
-  const command = door !== undefined && /^@parcha\/agentrun@\d[\w.+-]*$/.test(door) ? door : undefined;
+  const { launcher: command, yes, flags } = startedAs(env);
   const own = spec.slice(0, spec.lastIndexOf("@"));
   const kept = HARNESS_PACKAGES.filter((name) => name !== own).flatMap((name) => {
     const version = installed(name);
@@ -75,12 +87,7 @@ export function npxLine(spec: string, env: NodeJS.ProcessEnv = {}, installed: (n
   const packages = [...(command ? [command] : []), `@parcha/agentrun-serve@${SERVE_VERSION}`, ...kept, spec];
   const data = env[DATA_ENV];
   const named = data && (command || resolve(data) !== resolve(defaultData(env))) ? ` --data ${shellWord(resolve(data))}` : "";
-  // And how the person started it (startedWith): npx's -y, the port they named, and the browser as they had it:
-  // `npx @parcha/agentrun` opens it unless --no-open, agentrun-serve only with --open.
-  const yes = env.npm_config_yes === "true" ? "-y " : "";
-  const port = env[STARTED_PORT_ENV];
-  const flags = [...(port && /^\d{1,5}$/.test(port) ? [`--port ${port}`] : []), ...(command && env[STARTED_OPEN_ENV] === "0" ? ["--no-open"] : []), ...(!command && env[STARTED_OPEN_ENV] === "1" ? ["--open"] : [])];
-  return `npx ${yes}${packages.map((name) => `-p ${name}`).join(" ")} ${command ? "agentrun" : "agentrun-serve"}${named}${flags.map((flag) => ` ${flag}`).join("")}`;
+  return `npx ${yes}${packages.map((name) => `-p ${name}`).join(" ")} ${command ? "agentrun" : "agentrun-serve"}${named}${flags}`;
 }
 
 /** The first of `base`, `base-2`, `base-3`… that is not there. */
@@ -90,6 +97,43 @@ const freeName = (base: string, exists: (path: string) => boolean): string => {
   return name;
 };
 
+/** Set by the agentrun launcher (start.mjs) on the server it starts when the installer's command (install.sh's
+ *  <root>/bin/agentrun) is what runs it: that command's path. The person's login shell has that command, never npx or
+ *  the installer's Node, so a refusal names it. */
+export const INSTALLED_COMMAND_ENV = "AGENTRUN_INSTALLED_COMMAND";
+
+/** Whether `a` and `b` name one file through any symlink (a home folder reached by a link): their real paths when both
+ *  are there, else the paths as given. */
+const sameFile = (a: string, b: string): boolean => {
+  try {
+    return realpathSync(a) === realpathSync(b);
+  } catch {
+    return resolve(a) === resolve(b);
+  }
+};
+
+/** The file a shell runs for `agentrun` on `path`: the first executable one in its folders, in order, or undefined. */
+const agentrunOnPath = (path: string): string | undefined => {
+  for (const dir of path.split(":")) {
+    if (!dir) continue;
+    const found = join(dir, "agentrun");
+    try {
+      if (statSync(found).isFile()) {
+        accessSync(found, constants.X_OK);
+        return found;
+      }
+    } catch {}
+  }
+  return undefined;
+};
+
+/** The installer's command as the person types it: `agentrun` when that is what their PATH runs (the installer adds its
+ *  folder to the login shell's), else its path, so a paste never starts another install's copy found earlier on PATH. */
+const typedCommand = (command: string, env: NodeJS.ProcessEnv): string => {
+  const first = agentrunOnPath(env.PATH ?? "");
+  return first !== undefined && sameFile(first, command) ? "agentrun" : shellWord(command);
+};
+
 /**
  * A start the agentrun launcher made (NPX_PACKAGE_ENV: by npx, or by the installer's bin/agentrun and its service, the
  * same launcher) that a data directory refused because an earlier version wrote it (store.ts StoreFromEarlierVersion,
@@ -97,37 +141,50 @@ const freeName = (base: string, exists: (path: string) => boolean): string => {
  * then the two ways on as commands to paste. That command keeps its data in ~/.agentrun wherever it is run, so a new
  * folder alone is not a new AgentRun. First, the old folder moved aside whole, so the same command starts this version
  * where it was, and the earlier version still opens what it holds; then this version on a new, empty folder: the same
- * command with --data. Nothing is deleted either way. Any other error, or a start the launcher did not
- * make, is undefined: the refusal's own words stand.
+ * command with --data. Nothing is deleted either way. The command is the one that started this server, as the launcher
+ * says (INSTALLED_COMMAND_ENV): the installer's, else npx's; never read from what the folder holds.
+ *
+ * The installer keeps its Node, its packages and its command in the folder beside the data (install.sh: node/, lib/,
+ * bin/agentrun). When that command started this from the folder refused, it or its service has no npx at hand, moving
+ * the folder takes the command, and the service starts on the refused folder whatever another command says. So there the
+ * one way on is the folder moved aside, then the installer run again for this same version (by default it installs the
+ * latest). Any other error, or a start the launcher did not make, is undefined: the refusal's own words stand.
  */
 export function earlierDataRefusal(error: unknown, data: string, env: NodeJS.ProcessEnv = {}, exists: (path: string) => boolean = existsSync): string | undefined {
   const refused = error as { name?: unknown; message?: unknown; found?: unknown; known?: unknown } | undefined;
   const earlier = refused?.name === "StoreFromEarlierVersion" || (refused?.name === "SchemaVersionUnknown" && typeof refused.found === "number" && typeof refused.known === "number" && refused.found < refused.known);
-  const door = env[NPX_PACKAGE_ENV];
-  if (!earlier || typeof refused?.message !== "string" || door === undefined || !/^@parcha\/agentrun@\d[\w.+-]*$/.test(door)) return undefined;
+  const { launcher, yes, flags } = startedAs(env);
+  if (!earlier || typeof refused?.message !== "string" || launcher === undefined) return undefined;
   const dir = resolve(data);
-  const yes = env.npm_config_yes === "true" ? "-y " : "";
-  const port = env[STARTED_PORT_ENV];
-  const flags = `${port && /^\d{1,5}$/.test(port) ? ` --port ${port}` : ""}${env[STARTED_OPEN_ENV] === "0" ? " --no-open" : ""}`;
-  const command = `npx ${yes}${door}`;
+  const installed = env[INSTALLED_COMMAND_ENV] ? resolve(env[INSTALLED_COMMAND_ENV]) : undefined;
+  const command = installed === undefined ? `npx ${yes}${launcher}` : typedCommand(installed, env);
   // The launcher's own folder when --data names none (agentrun start.mjs): this same command opens `dir` again with no
   // --data only when `dir` is it.
-  const launcherData = resolve(env.HOME || homedir(), ".agentrun");
-  const again = `${command}${dir === launcherData ? "" : ` --data ${shellWord(dir)}`}${flags}`;
-  const fresh = freeName(`${dir}-new`, exists);
+  const launcherData = resolve(commandData(env));
   const aside = freeName(`${dir}-earlier`, exists);
-  // install.sh keeps its Node, its packages and the command in the folder beside the data (node/, lib/, bin/agentrun):
-  // that command, or the service that runs it, may be what started this. Moved, they go too, whichever version they are.
-  const installed = exists(join(dir, "bin", "agentrun")) ? " That takes the agentrun the installer put there with it (its Node in node/, lib/ and bin/agentrun): run the installer again to put this version's back." : "";
+  const mv = `mv ${shellWord(dir)} ${shellWord(aside)}`;
+  const back = `The earlier version opens the old data with --data ${shellWord(aside)}.`;
+  // The store's own refusal already says to add them again; an earlier release's schema says it only in the lines cut here.
+  const again = refused.name === "SchemaVersionUnknown" ? " Add your agents, MCP servers, keys and sign-ins again in this version." : "";
+  // Through real paths: a home folder reached by a link names the same command.
+  if (installed !== undefined && sameFile(installed, join(dir, "bin", "agentrun"))) {
+    const version = launcher.slice(launcher.lastIndexOf("@") + 1);
+    return [
+      refused.message.split("\n")[0],
+      `To keep all of it and start this version in ${dir}: ${mv}, then run the installer again for this version: curl -fsSL https://agentrun.ai/install | sh -s -- --version ${version}. Moving the folder takes the installer's Node, packages and command with it (node/, lib/, bin/agentrun); the installer puts this version's back.`,
+      back,
+      `Nothing is deleted.${again}`,
+    ].join("\n");
+  }
+  const fresh = freeName(`${dir}-new`, exists);
   return [
     refused.message.split("\n")[0],
-    // Moved aside first: every later command (doctor, the harness commands, the service) then finds this version where it
-    // looks with nothing more to remember; a new folder means the same --data on each of them.
-    `To keep all of it where the earlier version still opens it and start this version in ${dir}: mv ${shellWord(dir)} ${shellWord(aside)}, then ${again}. The earlier version opens the old data with --data ${shellWord(aside)}.${installed}`,
+    // Moved aside first: every later command (doctor, the harness commands) then finds this version where it looks with
+    // nothing more to remember; a new folder means the same --data on each of them.
+    `To keep all of it where the earlier version still opens it and start this version in ${dir}: ${mv}, then ${command}${dir === launcherData ? "" : ` --data ${shellWord(dir)}`}${flags}. ${back}`,
     `Or start this version on a new, empty folder: ${command} --data ${shellWord(fresh)}${flags}`,
     `  (every later agentrun command then takes the same --data: without it, they open ${launcherData})`,
-    // The store's own refusal already says to add them again; an earlier release's schema says it only in the lines cut here.
-    `Either way, nothing is deleted.${refused.name === "SchemaVersionUnknown" ? " Add your agents, MCP servers, keys and sign-ins again in this version." : ""}`,
+    `Either way, nothing is deleted.${again}`,
   ].join("\n");
 }
 
@@ -232,8 +289,28 @@ export type ConfineChild = (child: Readonly<{ command: string; args: string[] }>
 /** What a run's adapter needs of serve: its model, the catalog that prices it as it prices pi's runs, the run's
  *  confinement for the harness's own process, and the skills it loads itself (claude-agent's, codex's and opencode's,
  *  which its own check took: skills.ts), and the run's clock when a template eval case sets one (claude-agent's turn date
- *  reads it; absent, the real clock). */
-export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost> } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date; zone?: string };
+ *  reads it; absent, the real clock). `heldRefusal`: the words a held run's model was refused in at its create
+ *  (run-launch.ts hold.refused): its provider is the stand-in that refuses every request in them (providerOf). */
+export type AdapterNeeds = { model: ModelRef; models: { getModel(provider: string, id: string): { cost?: Partial<ModelCost>; contextWindow?: number; maxTokens?: number } | undefined }; confine?: ConfineChild; skills?: readonly SkillFiles[]; unpriced?: ReadonlySet<string>; now?: () => Date; zone?: string; heldRefusal?: string };
+
+/** The limits of a model the route translates onto a harness's wire (`provider.fetch`: provider.ts routedProvider), for
+ *  an adapter that takes them: its window and its most output tokens, from the model's pi-ai entry in the run's models
+ *  (`needs.models`), the entry the route's own model is. Its window is what every request asks Ollama for
+ *  (options.num_ctx: ollama-provider.ts contextOf, at most 64k), and its output ceiling half that, at most 16,384. None
+ *  for a model not routed, or one with no entry: its adapter's own defaults. */
+export function routedLimits(provider: Pick<Provider, "fetch">, needs: AdapterNeeds): { contextWindow?: number; maxOutputTokens?: number } {
+  if (!provider.fetch) return {};
+  const entry = needs.models.getModel(needs.model.provider, needs.model.modelId);
+  const whole = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+  const [window, ceiling] = [entry?.contextWindow, entry?.maxTokens];
+  return { ...(whole(window) ? { contextWindow: window } : {}), ...(whole(ceiling) ? { maxOutputTokens: ceiling } : {}) };
+}
+
+/** Where a run's adapter sends its model's requests (providerFor), or, for a held run its model kept from running at its
+ *  create, the stand-in (heldRefusedProvider): no key is read, and its proxy refuses every request in the create's words,
+ *  sending none. */
+export const providerOf = (wire: HarnessWire, env: NodeJS.ProcessEnv, needs: Pick<AdapterNeeds, "model" | "heldRefusal">, who: string): Provider =>
+  needs.heldRefusal !== undefined ? heldRefusedProvider(needs.model, needs.heldRefusal) : providerFor(wire, env, needs.model, who);
 
 /** The ConfineChild that starts a child under `prefix` (the argv pi's commands start under, ending in "--"); none when
  *  the run confines nothing (macOS), since an adapter refuses a confinement that adds nothing. */
@@ -335,12 +412,18 @@ export async function packageSkillCheck(load: () => Promise<unknown>): Promise<S
   return typeof pkg?.skillProblems === "function" ? (pkg.skillProblems as SkillCheck) : undefined;
 }
 
+/** Whether a run's web_search is its harness's own search: the run's plane resolves it native and the harness has a search
+ *  of its own (its facts' webSearch: claude-agent's, codex's). Its adapter then searches (nativeOptions), and the run is
+ *  not also handed the host's web_search (cli-run-spec.ts), which would sit beside it. */
+export const ownSearchRuns = (facts: Pick<AdapterFacts, "webSearch"> | undefined, plane: { readonly web_search?: unknown } | undefined): boolean =>
+  plane?.web_search === "native" && Boolean(facts?.webSearch);
+
 /** What a harness's adapter takes from the run's plane (tool-plane.ts) where web_search resolves native, by its own search
  *  (its facts' webSearch): `native`, the provider's search through its proxy, with the input a search request may read in
  *  beyond its body (cap.ts), which its proxy adds to that request's bound; `live`, its own live search (its adapter books
  *  each search); nothing for a harness with none. */
 export function nativeOptions(facts: AdapterFacts, env: NodeJS.ProcessEnv): { webSearch?: true | "live"; webSearchAllowance?: number } {
-  if (planeOf(env).web_search !== "native" || !facts.webSearch) return {};
+  if (!ownSearchRuns(facts, planeOf(env))) return {};
   return facts.webSearch === "native" ? { webSearch: true, webSearchAllowance: NATIVE_SEARCH_ALLOWANCE_TOKENS } : { webSearch: "live" };
 }
 
@@ -361,7 +444,7 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
   let provider: ReturnType<typeof providerFor> | undefined;
   let refused: unknown;
   try {
-    provider = providerFor(claudeFacts.wire, env, needs.model, claudeFacts.id);
+    provider = providerOf(claudeFacts.wire, env, needs, claudeFacts.id);
   } catch (error) {
     refused = error;
   }
@@ -372,6 +455,9 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // (providerFor's modelId); the key goes as the endpoint takes it, and the run is priced by the catalog entry of
     // whoever bills it (its priceModel).
     const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth, ...(provider.headers ? { headers: provider.headers } : {}) } : { origin: "", credential: () => "" };
+    // A model the route translates onto the wire (an Ollama model): its proxy forwards with the route's own fetch, and the
+    // provider's own web search (nativeOptions), which the translation cannot run, is not offered.
+    const forward = provider?.fetch ? { fetch: provider.fetch } : {};
     const priced = provider ? { ...needs, model: provider.priceModel } : native;
     // Its CLI checked off the event loop first (hashed and run as a child), so the server goes on answering: a pass is
     // kept, and the adapter's own check answers from it. A CLI that fails its pins is the adapter's to report, in its
@@ -381,7 +467,7 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // On Claude Code's login on this machine: the login's directories in place of a provider, billed to the plan, never
     // priced here.
     const source = provider?.login ? { login: provider.login, price: () => null } : { provider: endpoint, price: priceOf(priced) };
-    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, ...source, log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(needs.now ? { now: needs.now } : {}), ...(needs.zone ? { zone: needs.zone } : {}), ...nativeOptions(claudeFacts, env) });
+    adapter = claude.claudeAgentAdapter({ model: { default: provider?.modelId ?? native.model.modelId }, ...source, log: harnessLog(claudeFacts.id, env), sdk: sdk.sdk, sdkVersion: sdk.sdkVersion, cliPath: sdk.cliPath, mcp: sdk.mcp, ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(needs.now ? { now: needs.now } : {}), ...(needs.zone ? { zone: needs.zone } : {}), ...(provider?.fetch ? forward : nativeOptions(claudeFacts, env)) });
   } catch (error) {
     // The adapter's own install line is a project's; here Claude Code is installed into the data's harnesses directory.
     const message = (error as Error).message.split(claude.CLAUDE_AGENT_SDK_INSTALL).join(line);
@@ -423,9 +509,11 @@ export async function codexOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load:
   // whole (AGENT_MODEL_GATEWAY_IDS says whether it is provider-qualified), OpenAI's model id, which chooseModel has
   // already taken out of "openai/<id>", or OpenRouter's whole slug.
   // On a ChatGPT plan: the plan's rules on its route (no output limit, no input count), billed to it, never priced here.
-  const provider = providerFor(codexFacts.wire, env, needs.model, codexFacts.id);
+  const provider = providerOf(codexFacts.wire, env, needs, codexFacts.id);
   const plan = provider.billing === "plan";
-  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential, ...(plan ? { plan } : {}), ...(provider.refused ? { refused: provider.refused } : {}) }, price: plan ? () => null : priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(codexFacts.id, env), ...(nativeOptions(codexFacts, env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
+  // A model the route translates onto the wire (an Ollama model): both of its proxies forward with the route's own fetch,
+  // Codex's live web search, which the translation cannot run, is not offered, and its window and output ceiling are the route's (routedLimits).
+  return codex.codexAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential, ...(plan ? { plan } : {}), ...(provider.refused ? { refused: provider.refused } : {}) }, price: plan ? () => null : priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(codexFacts.id, env), ...routedLimits(provider, needs), ...(provider.fetch ? { fetch: provider.fetch } : nativeOptions(codexFacts, env).webSearch === "live" ? { webSearch: "live" as const } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(needs.skills?.length ? { skills: needs.skills } : {}), ...(standIn ? { standIn } : binary ? { binary } : {}) });
 }
 
 /** opencode's adapter, from `load` (this server's own, src/harness-opencode; a test gives its own). Its model goes where
@@ -447,12 +535,14 @@ export async function opencodeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, lo
   // The shared date line (environment.ts) reaches OpenCode in the session's system prompt (app.ts), as it reaches every
   // harness.
   // The id as the provider's endpoint names it (providerFor, as codexOf takes it): OpenRouter's is the whole slug.
-  const provider = providerFor(openCodeFacts.wire, env, needs.model, openCodeFacts.id);
+  const provider = providerOf(openCodeFacts.wire, env, needs, openCodeFacts.id);
   // Its instructions list each skill by the description its SKILL.md's front matter gives on one LF line, which is all the
   // adapter reads: each SKILL.md goes as servedSkill writes it (its name and description, as a prompt reads them, on one
   // line each), so a CRLF file or a folded description is listed by its own words.
   const skills = needs.skills && servedSkills(needs.skills);
-  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
+  // A model the route translates onto the wire (an Ollama model): its proxies forward with the route's own fetch, and its
+  // window and output ceiling are the route's (routedLimits).
+  return opencode.openCodeAdapter({ model: provider.modelId, provider: { origin: provider.origin, credential: provider.credential }, price: priceOf({ ...needs, model: provider.priceModel }), log: harnessLog(openCodeFacts.id, env), ...routedLimits(provider, needs), ...(provider.fetch ? { fetch: provider.fetch } : {}), ...(needs.confine ? { confine: needs.confine } : {}), ...(skills?.length ? { skills } : {}), ...(standIn ? { standIn } : {}) });
 }
 
 /** Why `harness` cannot run here, or undefined when it can (its entry's refusal): its package and pins, its provider, and

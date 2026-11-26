@@ -8,8 +8,8 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
-import { resolveOnBuiltin } from "./gate-support.mjs";
+import { autoWeb, CAPABILITIES, DEFAULT_WEB_ORDER, explainCapability, explainsView, FIRECRAWL_FETCH, planeFor, PROVIDERS, recheckPlane, relaunchPlane, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
+import { builtinFacts, resolveOnBuiltin } from "./gate-support.mjs";
 import { tableTools } from "../dist/tool-list.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
@@ -37,15 +37,17 @@ test("the capabilities a grant may name are tools the table binds, the call-only
   assert.deepEqual(PROVIDERS, { web_search: ["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"], web_fetch: ["auto", "firecrawl-keyless", "kernel", "parallel"], browser: ["auto", "browserbase", "kernel", "chrome"] });
 });
 
-test("the resolver: the agent's pick over the server's; auto is native where codex or a direct Anthropic or OpenAI model on pi has it (never on claude-agent, where Claude's own search is an explicit pick), else keyless Firecrawl (keyless Exa behind it); native is native only; web_fetch keyless Firecrawl; Parallel only with its key, never in its place", () => {
+test("the resolver: the agent's pick over the server's; auto is agentrun's own search on every harness, keyless Firecrawl (keyless Exa behind it), a harness's own search or pi's hosted one an explicit pick; native is native only; web_fetch keyless Firecrawl; Parallel only with its key, never in its place", () => {
   const search = (input) => resolveOnBuiltin("web_search", { ...base, ...input });
   assert.equal(search({ harness: "claude-agent" }), "firecrawl-keyless", "on claude-agent auto skips Claude's own search: an explicit pick");
   assert.equal(search({ harness: "claude-agent", override: "native" }), "native", "Claude's own search, picked");
-  assert.equal(search({ harness: "codex" }), "native", "Codex's own search");
+  assert.equal(search({ harness: "codex" }), "firecrawl-keyless", "codex on auto: Codex's own search an explicit pick");
+  assert.equal(search({ harness: "codex", pick: "native" }), "native", "Codex's own search, picked");
   assert.equal(search({ harness: "codex", capped: true }), "firecrawl-keyless", "under a spend cap, Codex's search request has no input bound: keyless Firecrawl");
   assert.equal(search({ harness: "claude-agent", capped: true }), "firecrawl-keyless", "under a spend cap, Claude's own search has per-use fees the cap cannot reserve: keyless Firecrawl");
-  assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-5-5" }), "native");
-  assert.equal(search({ harness: "pi", model: "openai/gpt-6.1-sol" }), "native");
+  assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-5-5" }), "firecrawl-keyless", "pi on Anthropic, auto: its hosted search an explicit pick");
+  assert.equal(search({ harness: "pi", model: "openai/gpt-6.1-sol" }), "firecrawl-keyless", "pi on OpenAI, auto: its hosted search an explicit pick");
+  assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-5-5", pick: "native" }), "native", "Anthropic's hosted search, picked");
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro" }), "firecrawl-keyless", "a provider with no hosted search here");
   assert.equal(search({ harness: "pi" }), "firecrawl-keyless", "no model named");
   assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-5-5", gateway: true }), "firecrawl-keyless", "behind a gateway");
@@ -82,7 +84,7 @@ test("the resolver: the agent's pick over the server's; auto is native where cod
   }
 });
 
-test("auto where the server holds Parallel's key: the pick, then native, then Parallel, then keyless Firecrawl; native picked is native only and a pick of exa-keyless is Exa; web_fetch is the guarded direct fetch", () => {
+test("auto where the server holds Parallel's key: the pick, then Parallel, on every harness; native picked is native only and a pick of exa-keyless is Exa; web_fetch is Parallel first, the guarded direct fetch behind it", () => {
   const search = (input) => resolveOnBuiltin("web_search", { ...base, parallelKey: true, ...input });
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro" }), "parallel", "a model with no hosted search");
   assert.equal(search({ harness: "pi" }), "parallel", "no model named");
@@ -91,33 +93,59 @@ test("auto where the server holds Parallel's key: the pick, then native, then Pa
   assert.equal(search({ harness: "codex", capped: true }), "parallel", "codex under a spend cap");
   assert.equal(search({ harness: "claude-agent", capped: true }), "parallel", "claude-agent under a spend cap: never Claude's own search");
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro", pick: "auto" }), "parallel", "auto, said");
-  // Native first, where there is one: the key changes nothing there. On claude-agent auto skips Claude's own search,
-  // an explicit pick (native), which stays native, and refused under a cap as before.
+  // A native search is never auto: the key is used on every harness. A native search is an explicit pick (native), which
+  // stays native, and refused under a cap as before.
   assert.equal(search({ harness: "claude-agent" }), "parallel", "claude-agent on auto: the key");
   assert.equal(search({ harness: "claude-agent", pick: "native" }), "native");
   assert.equal(search({ harness: "claude-agent", capped: true, pick: "native" }), "unavailable: no native search for claude-agent under a spend cap: Claude's own search has per-use fees a spend cap cannot reserve yet, so web_search works under a cap through the default provider, auto");
-  assert.equal(search({ harness: "codex" }), "native");
-  assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-5-5" }), "native");
-  assert.equal(search({ harness: "pi", model: "openai/gpt-6.1-sol" }), "native");
+  assert.equal(search({ harness: "codex" }), "parallel", "codex on auto: the key");
+  assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-5-5" }), "parallel", "pi on Anthropic, auto: the key");
+  assert.equal(search({ harness: "pi", model: "openai/gpt-6.1-sol" }), "parallel", "pi on OpenAI, auto: the key");
+  assert.equal(search({ harness: "codex", pick: "native" }), "native");
+  assert.equal(search({ harness: "pi", model: "openai/gpt-6.1-sol", pick: "native" }), "native");
   // A pick is the pick: native only, keyless Exa keyless, off off.
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro", pick: "native" }), "unavailable: no native search for google/gemini-2.5-pro");
   assert.equal(search({ harness: "codex", gateway: true, override: "native" }), "unavailable: no native search for codex behind a gateway");
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro", pick: "exa-keyless" }), "exa-keyless");
   assert.equal(search({ harness: "codex", gateway: true, override: "exa-keyless", pick: "parallel" }), "exa-keyless", "the agent's exa-keyless over the server's parallel");
   assert.equal(search({ harness: "pi", pick: "off" }), "unavailable: web_search is turned off in settings");
-  assert.equal(resolveOnBuiltin("web_fetch", { ...base, parallelKey: true, harness: "pi" }), "kernel", "web_fetch's auto with the server's Parallel key is the guarded direct fetch: no URL goes to a keyless service");
+  assert.equal(resolveOnBuiltin("web_fetch", { ...base, parallelKey: true, harness: "pi" }), "parallel", "web_fetch's auto with the server's Parallel key is Parallel first, the guarded direct fetch behind it");
 });
 
-test("capabilities say why each web tool resolves as it does on each harness, one plain sentence beside resolves, from the resolver's own reasons: the native search, the gateway or cap that leaves none, claude-agent's own search as an explicit pick, the Parallel key and where it is from, keyless Firecrawl and what web_fetch sends it, a pick, off", async (t) => {
+test("auto's order for both web tools is one table, DEFAULT_WEB_ORDER: Parallel first where the server holds its key, keyless Firecrawl else; with the key, web_fetch's why says Parallel with the guarded direct fetch behind it", () => {
+  assert.deepEqual(DEFAULT_WEB_ORDER, { web_search: ["parallel", "firecrawl-keyless"], web_fetch: ["parallel", "firecrawl-keyless"] });
+  const keyed = { ...base, parallelKey: true, parallelKeyFrom: "server", harness: "pi", facts: builtinFacts("pi") };
+  assert.deepEqual(explainCapability("web_fetch", keyed), { resolves: "parallel", why: "Parallel's extract on your Parallel key (server), the guarded direct fetch behind it" }, "auto fetch on a keyed server: Parallel first, the direct fetch its fallback");
+  assert.equal(explainCapability("web_fetch", { ...keyed, parallelKeyFrom: "saved" }).why, "Parallel's extract on your Parallel key (saved), the guarded direct fetch behind it");
+  assert.deepEqual(explainCapability("web_fetch", { ...base, harness: "pi", facts: builtinFacts("pi") }), { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH }, "no key: keyless Firecrawl, as before");
+  assert.deepEqual(explainCapability("web_fetch", { ...keyed, pick: "kernel" }), { resolves: "kernel", why: "the guarded direct fetch, picked in settings" }, "a pick of the direct fetch is still the direct fetch");
+  for (const capability of ["web_search", "web_fetch"]) for (const parallelKey of [true, false]) {
+    const input = { ...keyed, parallelKey };
+    assert.deepEqual(autoWeb(capability, input), explainCapability(capability, input), `${capability} auto${parallelKey ? " with" : " without"} the key: capabilities read the one order`);
+  }
+});
+
+test("swapping DEFAULT_WEB_ORDER's ids changes what auto resolves to: keyless Firecrawl first is Firecrawl on a keyed server too, and Parallel listed alone with no key falls to keyless Firecrawl", () => {
+  const keyed = { ...base, parallelKey: true, harness: "pi", facts: builtinFacts("pi") };
+  const firecrawlFirst = { web_search: ["firecrawl-keyless", "parallel"], web_fetch: ["firecrawl-keyless", "parallel"] };
+  assert.deepEqual([autoWeb("web_search", keyed).resolves, autoWeb("web_fetch", keyed).resolves], ["parallel", "parallel"], "the shipped order: Parallel first");
+  assert.deepEqual(autoWeb("web_fetch", keyed, firecrawlFirst), { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH }, "swapped: keyless Firecrawl first for web_fetch");
+  assert.equal(autoWeb("web_search", keyed, firecrawlFirst).resolves, "firecrawl-keyless", "swapped: keyless Firecrawl first for web_search");
+  assert.deepEqual(autoWeb("web_fetch", keyed, { ...DEFAULT_WEB_ORDER, web_fetch: ["kernel", "parallel"] }), { resolves: "kernel", why: "the guarded direct fetch" }, "the direct fetch first: the direct fetch");
+  assert.equal(autoWeb("web_fetch", { ...keyed, parallelKey: false }, { ...DEFAULT_WEB_ORDER, web_fetch: ["parallel"] }).resolves, "firecrawl-keyless", "nothing usable: keyless Firecrawl");
+});
+
+test("capabilities say why each web tool resolves as it does on each harness, one plain sentence beside resolves, from the resolver's own reasons: a native search as an explicit pick, the gateway or cap that leaves none, the Parallel key and where it is from, keyless Firecrawl and what web_fetch sends it, a pick, off", async (t) => {
   // The web tools; the browser's words are browser-pick.test.mjs'.
   const why = (env, settings = {}) => Object.fromEntries(toolsView(env, settings).filter((tool) => tool.resolves && tool.name !== "browser").map((tool) => [tool.name, tool.why]));
   const each = (text) => ({ pi: text, "claude-agent": text, codex: text, opencode: text });
   const direct = { AGENT_MODEL: "anthropic/claude-sonnet-5-5" };
   const gateway = { ...direct, AGENT_MODEL_BASE_URL: "https://gateway.example/v1" };
   const claudeKeyless = "Firecrawl's free keyless search, no key, keyless Exa behind it; Claude's own search is an explicit pick";
-  const fetchKeyless = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); set PARALLEL_API_KEY or choose kernel to fetch directly";
-  assert.deepEqual(why(direct), { web_fetch: each(fetchKeyless), web_search: { pi: "Anthropic's hosted search, for anthropic/claude-sonnet-5-5", "claude-agent": claudeKeyless, codex: "Codex's own search", opencode: "OpenCode's model requests carry no provider-hosted tool; Firecrawl's free keyless search, no key, keyless Exa behind it" } });
-  assert.deepEqual(why({ AGENT_MODEL: "openai/gpt-6.1-sol" }).web_search.pi, "OpenAI's hosted search, for openai/gpt-6.1-sol");
+  const fetchKeyless = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); choose kernel to fetch directly";
+  assert.deepEqual(why(direct), { web_fetch: each(fetchKeyless), web_search: { pi: "Firecrawl's free keyless search, no key, keyless Exa behind it; Anthropic's hosted search is an explicit pick", "claude-agent": claudeKeyless, codex: "Firecrawl's free keyless search, no key, keyless Exa behind it; Codex's own search is an explicit pick", opencode: "OpenCode's model requests carry no provider-hosted tool; Firecrawl's free keyless search, no key, keyless Exa behind it" } });
+  assert.deepEqual(why({ AGENT_MODEL: "openai/gpt-6.1-sol" }).web_search.pi, "Firecrawl's free keyless search, no key, keyless Exa behind it; OpenAI's hosted search is an explicit pick");
+  assert.deepEqual(why({ AGENT_MODEL: "openai/gpt-6.1-sol" }, { web_search: { provider: "native" } }).web_search.pi, "OpenAI's hosted search, for openai/gpt-6.1-sol", "native picked: the hosted search, for its model");
   assert.deepEqual(why({ ...gateway, PARALLEL_API_KEY: "not-a-secret" }).web_search, { pi: "behind a gateway pi has no hosted search; your Parallel key (server)", "claude-agent": "your Parallel key (server)", codex: "behind a gateway Codex has no own search; your Parallel key (server)", opencode: "OpenCode's model requests carry no provider-hosted tool; your Parallel key (server)" });
   assert.deepEqual(why(gateway).web_search, { pi: "behind a gateway pi has no hosted search; Firecrawl's free keyless search, no key, keyless Exa behind it", "claude-agent": claudeKeyless, codex: "behind a gateway Codex has no own search; Firecrawl's free keyless search, no key, keyless Exa behind it", opencode: "OpenCode's model requests carry no provider-hosted tool; Firecrawl's free keyless search, no key, keyless Exa behind it" });
   assert.deepEqual(why({ AGENT_MODEL: "google/gemini-2.5-pro" }).web_search.pi, "google/gemini-2.5-pro has no hosted search here; Firecrawl's free keyless search, no key, keyless Exa behind it");
@@ -139,6 +167,15 @@ test("capabilities say why each web tool resolves as it does on each harness, on
   assert.equal(caps.tools.filter((tool) => tool.why).length, 3, "web_search, web_fetch and browser, where resolves is");
 });
 
+// QA: the browser runs only on the runner, which the server refused at the save and never said beforehand, so the
+// console's Tools step could not say it. Capabilities mark each runner-only tool, as they mark each sandbox-only one.
+test("capabilities mark the runner-only tools runner_only (the browser, and only it), each one the save refuses in a sandbox place", () => {
+  const view = toolsView({});
+  assert.deepEqual(view.filter((tool) => tool.runner_only).map((tool) => tool.name), ["browser"], "the browser alone is runner-only");
+  assert.deepEqual(view.filter((tool) => tool.runner_only === true).map((tool) => tool.name), Object.entries(TOOLS).filter(([, entry]) => entry.runnerOnly).map(([name]) => name), "every tool the table marks runnerOnly, and no other");
+  assert.equal(view.find((tool) => tool.name === "bash").runner_only, undefined, "a sandbox-only tool is not runner-only");
+});
+
 test("with no box on the server, a sandbox-only tool reads unavailable for that reason, and each web tool keeps its resolves and its why beside it", () => {
   const noBox = "no box is set up on this server: docker is unavailable (not enabled on this server)";
   const each = (text) => ({ pi: text, "claude-agent": text, codex: text, opencode: text });
@@ -148,17 +185,19 @@ test("with no box on the server, a sandbox-only tool reads unavailable for that 
   assert.deepEqual(boxless.filter((tool) => tool.reason === noBox).map((tool) => tool.name), ["bash", "bash_background", "bash_output", "bash_input", "bash_signal", "bash_list"], "only the sandbox-only tools: bash and the background tools");
   const keyless = "Firecrawl's free keyless search, no key, keyless Exa behind it";
   assert.deepEqual(boxless.filter((tool) => tool.resolves && tool.name !== "browser").map((tool) => [tool.name, tool.available, tool.resolves, tool.why]), [
-    ["web_fetch", true, each("firecrawl-keyless"), each("Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); set PARALLEL_API_KEY or choose kernel to fetch directly")],
-    ["web_search", true, { pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless", codex: "native", opencode: "firecrawl-keyless" }, { pi: `no model is named, so there is no hosted search; ${keyless}`, "claude-agent": `${keyless}; Claude's own search is an explicit pick`, codex: "Codex's own search", opencode: `OpenCode's model requests carry no provider-hosted tool; ${keyless}` }],
+    ["web_fetch", true, each("firecrawl-keyless"), each("Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); choose kernel to fetch directly")],
+    ["web_search", true, { pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless", codex: "firecrawl-keyless", opencode: "firecrawl-keyless" }, { pi: `no model is named, so there is no hosted search; ${keyless}`, "claude-agent": `${keyless}; Claude's own search is an explicit pick`, codex: `${keyless}; Codex's own search is an explicit pick`, opencode: `OpenCode's model requests carry no provider-hosted tool; ${keyless}` }],
   ], "no box takes a web tool away, or the words for how it resolves");
   assert.equal(toolsView({}).find((tool) => tool.name === "bash").available, true, "where a box can run it, bash is available");
 });
 
-test("a run's plane: each web tool its revision names, resolved in the server's environment, with the model pi's native search asks", () => {
+test("a run's plane: each web tool its revision names, resolved in the server's environment, with the model a picked native search asks", () => {
   const env = { AGENT_MODEL: "anthropic/claude-sonnet-5-5", PARALLEL_API_KEY: "not-a-secret" };
-  assert.deepEqual(planeFor(env, { tools: ["read", "web_search", "web_fetch"] }, {}), { web_search: "native", web_fetch: "kernel", model: "anthropic/claude-sonnet-5-5" });
-  assert.deepEqual(planeFor(env, { tools: ["web_search"], model: "openai/gpt-6.1-sol" }, {}), { web_search: "native", model: "openai/gpt-6.1-sol" }, "the revision's model over the default");
-  assert.deepEqual(planeFor(env, { harness: "codex", tools: ["web_search", "web_fetch"] }, { web_fetch: { provider: "parallel" } }), { web_search: "native", web_fetch: "parallel" });
+  assert.deepEqual(planeFor(env, { tools: ["read", "web_search", "web_fetch"] }, {}), { web_search: "parallel", web_fetch: "parallel" }, "pi on auto: the server's key for both, no hosted search, so no model beside it");
+  assert.deepEqual(planeFor(env, { tools: ["read", "web_search", "web_fetch"] }, { web_search: { provider: "native" } }), { web_search: "native", web_fetch: "parallel", model: "anthropic/claude-sonnet-5-5" });
+  assert.deepEqual(planeFor(env, { tools: ["web_search"], model: "openai/gpt-6.1-sol" }, { web_search: { provider: "native" } }), { web_search: "native", model: "openai/gpt-6.1-sol" }, "the revision's model over the default");
+  assert.deepEqual(planeFor(env, { harness: "codex", tools: ["web_search", "web_fetch"] }, { web_fetch: { provider: "parallel" } }), { web_search: "parallel", web_fetch: "parallel" }, "codex on auto: the server's key, never Codex's own search");
+  assert.deepEqual(planeFor(env, { harness: "codex", tools: ["web_search", "web_fetch"] }, { web_search: { provider: "native" }, web_fetch: { provider: "parallel" } }), { web_search: "native", web_fetch: "parallel" });
   assert.deepEqual(planeFor(env, { harness: "codex", tools: ["web_search"] }, {}, { capped: true }), { web_search: "parallel" }, "a capped codex run searches through Parallel on the server's key");
   assert.deepEqual(planeFor(env, { harness: "claude-agent", tools: ["web_search"] }, {}, { capped: true }), { web_search: "parallel" }, "a capped claude-agent run searches through Parallel, never Claude's own");
   assert.deepEqual(planeFor({ AGENT_MODEL: env.AGENT_MODEL }, { harness: "claude-agent", tools: ["web_search"] }, {}, { capped: true }), { web_search: "firecrawl-keyless" }, "with no key, keyless Firecrawl");
@@ -174,15 +213,17 @@ test("a run's plane: each web tool its revision names, resolved in the server's 
 });
 
 // A model key alone (no AGENT_MODEL) gives the host its default model (model.ts hostModel): a run that names none runs on
-// it, so its search resolves on it too. Native search asks that model's provider; auto is native there, never keyless.
-test("with only a model key, a run that names no model searches on the key's default model: native asks its provider, auto is native", () => {
+// it, so its search resolves on it too. Native search, picked, asks that model's provider; auto is agentrun's own search.
+test("with only a model key, a run that names no model searches on the key's default model: native asks its provider, auto is keyless Firecrawl", () => {
   const anthropic = { ANTHROPIC_API_KEY: "not-a-secret" };
   const openai = { OPENAI_API_KEY: "not-a-secret" };
   assert.deepEqual(planeFor(anthropic, { tools: ["web_search"] }, { web_search: { provider: "native" } }), { web_search: "native", model: "anthropic/claude-sonnet-5-5" });
-  assert.deepEqual(planeFor(openai, { tools: ["web_search"] }, {}), { web_search: "native", model: "openai/gpt-6.1-sol" }, "auto: native on the key's default, not keyless Firecrawl");
-  assert.deepEqual(planeFor(openai, { tools: ["web_search"], model: "anthropic/claude-sonnet-5-5" }, {}), { web_search: "native", model: "anthropic/claude-sonnet-5-5" }, "the revision's model over the key's default");
+  assert.deepEqual(planeFor(openai, { tools: ["web_search"] }, {}), { web_search: "firecrawl-keyless" }, "auto: keyless Firecrawl, not the hosted search on the key's default");
+  assert.deepEqual(planeFor(openai, { tools: ["web_search"] }, { web_search: { provider: "native" } }), { web_search: "native", model: "openai/gpt-6.1-sol" }, "native: on the key's default");
+  assert.deepEqual(planeFor(openai, { tools: ["web_search"], model: "anthropic/claude-sonnet-5-5" }, { web_search: { provider: "native" } }), { web_search: "native", model: "anthropic/claude-sonnet-5-5" }, "the revision's model over the key's default");
   // What capabilities and the tool catalog show: per harness, on that harness's default.
-  assert.equal(explainsView(openai, {}).web_search.resolves.pi, "native");
+  assert.equal(explainsView(openai, {}).web_search.resolves.pi, "firecrawl-keyless");
+  assert.equal(explainsView(openai, { web_search: { provider: "native" } }).web_search.resolves.pi, "native");
   assert.equal(explainsView(anthropic, { web_search: { provider: "native" } }).web_search.resolves.pi, "native");
 });
 
@@ -226,7 +267,7 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   meets("/capabilities", "get", catalog);
   assert.deepEqual(catalog.tools.filter((tool) => tool.providers && tool.name !== "browser").map((tool) => [tool.name, tool.providers, tool.provider, tool.default_provider, tool.resolves]), [
     ["web_fetch", ["auto", "firecrawl-keyless", "kernel", "parallel"], "auto", "auto", { pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless", codex: "firecrawl-keyless", opencode: "firecrawl-keyless" }],
-    ["web_search", ["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"], "auto", "auto", { pi: "native", "claude-agent": "firecrawl-keyless", codex: "native", opencode: "firecrawl-keyless" }],
+    ["web_search", ["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"], "auto", "auto", { pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless", codex: "firecrawl-keyless", opencode: "firecrawl-keyless" }],
   ]);
 
   for (const [body, fields] of [
@@ -331,8 +372,9 @@ test("a run keeps the tools its first launch resolved: a PUT between its launche
   const via = (rows) => rows.filter((row) => row.kind === "tool_result").map((row) => /"via":"(\w+)"/.exec(row.tool_result_preview)?.[1]);
   const first = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify(["http://public.example/"])}` } });
   assert.equal(first.status, 202, JSON.stringify(first.body));
-  assert.deepEqual(via((await follow(api, first.body.run_id, ["completed"])).rows), ["direct"]);
-  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { provider: "parallel" } })).status, 200);
+  const asked = async () => (await readFile(files.parallel, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  assert.deepEqual(via((await follow(api, first.body.run_id, ["completed"])).rows), ["parallel"], "auto on the server's Parallel key: Parallel's extract");
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { provider: "kernel" } })).status, 200);
   // The run opens again for a follow-up: its process launches anew, on the plane it kept.
   assert.equal((await api("POST", `/runs/${first.body.run_id}/messages`, { content: "Fetch again." })).status, 202);
   let rows = [];
@@ -341,11 +383,12 @@ test("a run keeps the tools its first launch resolved: a PUT between its launche
     await new Promise((resolve) => setTimeout(resolve, 100));
     rows = (await api("GET", `/runs/${first.body.run_id}/timeline`)).body.rows;
   }
-  assert.deepEqual(via(rows), ["direct", "direct"], "its own web_fetch is still the kernel's");
+  assert.deepEqual(via(rows), ["parallel", "parallel"], "its own web_fetch is still Parallel's, as its first launch resolved it");
+  const sent = await asked();
+  assert.ok(sent.length > 0 && sent.every((call) => call.path === "/v1/extract" && call.authorized), JSON.stringify(sent));
   const next = await api("POST", "/agents/reader/runs", { input: { content: `Fetch these pages with web_fetch: ${JSON.stringify(["http://public.example/"])}` } });
-  assert.deepEqual(via((await follow(api, next.body.run_id, ["completed"])).rows), ["parallel"], "the next run takes the new setting");
-  const sent = (await readFile(files.parallel, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-  assert.deepEqual(sent.map((call) => [call.path, call.authorized]), [["/v1/extract", true]], "only the next run asked Parallel");
+  assert.deepEqual(via((await follow(api, next.body.run_id, ["completed"])).rows), ["direct"], "the next run takes the new setting");
+  assert.equal((await asked()).length, sent.length, "only the first run asked Parallel");
 });
 
 test("the run check resolves search as the run does: a workflow picking native search is refused before it starts, and so is a capped codex or claude-agent run picking it", async () => {
@@ -362,6 +405,22 @@ test("the run check resolves search as the run does: a workflow picking native s
   assert.doesNotMatch(said(await blockersOf(env, claude, {})), /web_search/, "uncapped: Claude's own search");
   assert.match(said(await blockersOf(env, claude, {}, { capped: true })), /The tool web_search does not run here on claude-agent: no native search for claude-agent under a spend cap: Claude's own search has per-use fees a spend cap cannot reserve yet/, "capped: refused, its fees never let past the cap");
   assert.doesNotMatch(said(await blockersOf(env, { ...claude, toolSettings: {} }, {}, { capped: true })), /web_search/, "capped on auto: keyless Exa, nothing to refuse");
+});
+
+test("on a model the route translates onto the harness's wire (an Ollama model on Messages), the harness's own search never runs: native is unavailable, auto goes to Parallel or keyless Firecrawl and says why, in the resolver, capabilities and the run check", async () => {
+  const ollama = "ollama/qwen3:8b";
+  const unavailable = "unavailable: no native search for claude-agent on a model the route translates";
+  const search = (input) => explainCapability("web_search", { ...base, facts: builtinFacts("claude-agent"), harness: "claude-agent", model: ollama, ...input });
+  assert.deepEqual(search({ pick: "native" }), { resolves: unavailable, why: "no native search for claude-agent on a model the route translates" }, "native picked: never Claude's own search");
+  assert.deepEqual(search({ override: "native" }).resolves, unavailable, "native picked for the agent: the same");
+  assert.deepEqual(search({}), { resolves: "firecrawl-keyless", why: "Claude's own search does not run on a model the route translates; Firecrawl's free keyless search, no key, keyless Exa behind it" }, "auto: keyless Firecrawl, never an explicit pick of a search that cannot run");
+  assert.deepEqual(search({ parallelKey: true, parallelKeyFrom: "server" }), { resolves: "parallel", why: "Claude's own search does not run on a model the route translates; your Parallel key (server)" }, "auto with the server's Parallel key");
+  assert.equal(search({ model: "anthropic/claude-sonnet-5-5", pick: "native" }).resolves, "native", "a model it asks itself: Claude's own search, as before");
+  assert.equal(explainsView({}, { web_search: { provider: "native" } }, {}, ollama).web_search.resolves["claude-agent"], unavailable, "capabilities say so");
+  const said = (blockers) => blockers.map((blocker) => blocker.message).join(" ");
+  const claude = { kind: "agentic", harness: "claude-agent", model: ollama, instructions: "Search the web.", tools: ["web_search"], toolSettings: { web_search: { provider: "native" } } };
+  assert.match(said(await blockersOf({}, claude, {})), /The tool web_search does not run here on claude-agent: no native search for claude-agent on a model the route translates\./, "the run check refuses it before it starts");
+  assert.doesNotMatch(said(await blockersOf({}, { ...claude, toolSettings: {} }, {})), /web_search/, "on auto: keyless Firecrawl, nothing to refuse");
 });
 
 test("a run relaunched while a capability is set to deny is handed it denied; launched, it is handed the provider a held call would use, and the gate refuses each call", () => {

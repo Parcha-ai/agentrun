@@ -1,6 +1,7 @@
 // An audit's shadow run (runner/audit.ts, id `audit.<run>`) is learning spend on the run it audits, never a run of its
 // own: GET /stats and its analytics count it in no run count, no state, no time or token figure and no agent's runs,
-// while its known cost stays in the dollars spent; and the money rule's read at a claim (pastRunsOverStore) finds each
+// while its known cost stays in the dollars spent, and one at work or of unknown cost leaves the run it audits of unknown
+// cost (learn/ledger.ts shadowUsdOf, the ledger's rule), never $0; and the money rule's read at a claim (pastRunsOverStore) finds each
 // run's shadow in the page of runs it already listed, never with a read of its own a run.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -90,6 +91,28 @@ test("a shadow's known $ stays in the dollars while the run it audits has no kno
   assert.deepEqual(all.cost, { usd: 2.4, known: 3, unknown: 1, basis: "estimate" }, JSON.stringify(all.cost));
 });
 
+test("a shadow at work, or one that ended at an unknown cost, leaves the run it audits of unknown cost in GET /stats and analytics, never $0; once its cost is known, the run's is", async (t) => {
+  const clock = { now: Date.parse("2026-11-17T06:00:00Z") };
+  const { store } = await storeOn(t, { clock });
+  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Go.", learning: true } });
+  const metered = { input: 0, cacheRead: 0, cacheWrite: 0, output: 100, requests: 1, activeMs: 1_000 };
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: LEARNS });
+  await store.runs.update(await store.claim("run-1", "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.1, metrics: { ...metered, path: "workflow", workflow: "answer", workflow_digest: "a".repeat(16) } });
+  await store.runs.create({ id: "audit.run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: SHADOW("run-1") });
+  const read = async () => {
+    const totals = (await analytics(store, { agent: "agent-1" })).totals;
+    return { stats: (await stats(store)).cost, analytics: [totals.runs, totals.unknownCostRuns, Math.round(totals.costUsd * 1e6)] };
+  };
+  const unknown = { stats: { usd: 0.1, known: 0, unknown: 1, basis: "estimate" }, analytics: [1, 1, 100_000] };
+  assert.deepEqual(await read(), unknown, "queued: the run's $0.10 spent, its cost with its shadow unknown");
+  const claim = await store.claim("audit.run-1", "runner-a", { leaseMs: 60_000 });
+  assert.deepEqual(await read(), unknown, "running");
+  await store.runs.update(claim, { state: "ended", costUsd: null, metrics: { ...metered, path: "audit" } });
+  assert.deepEqual(await read(), unknown, "ended at an unknown cost");
+  await store.runs.healCost("audit.run-1", await store.runs.get("audit.run-1"), { costUsd: 0.4, costUpperBound: false });
+  assert.deepEqual(await read(), { stats: { usd: 0.5, known: 1, unknown: 0, basis: "estimate" }, analytics: [1, 0, 500_000] }, "its cost known: the run's all-in is");
+});
+
 test("the money rule's read at a claim finds each run's shadow in the page it listed: no read of its own a run, its all-in the same", async (t) => {
   const store = await audited(t);
   const gets = [];
@@ -99,7 +122,7 @@ test("the money rule's read at a claim finds each run's shadow in the page it li
       return new Proxy(target.runs, { get: (runs, name) => (name === "get" ? (id) => (gets.push(id), runs.get(id)) : typeof runs[name] === "function" ? runs[name].bind(runs) : runs[name]) });
     },
   });
-  const past = await pastRunsOverStore(counted, "agent-1");
+  const past = (await pastRunsOverStore(counted, "agent-1")).runs;
   assert.deepEqual(past.map((one) => one.allInUsd).sort(), [0.5, 0.5, 1], "each served run all in with its shadow's");
   assert.deepEqual(gets.filter((id) => id.startsWith("audit.")), [], `no shadow read one at a time: ${JSON.stringify(gets)}`);
 });

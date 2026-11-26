@@ -91,6 +91,77 @@ test("no seal key and nowhere to keep one: refused in words, never a start witho
   assert.throws(() => mod.ensureSealKey(undefined, { dataDir: data }), mod.SealKeyRefused);
 });
 
+test("a key of the wrong shape is refused with the length it wants and the length it has, never its value", async (t) => {
+  const mod = await sealKey();
+  assert.ok(mod, "seal-key.js exists");
+  const wants = "43 characters, or 44 ending in =";
+  // What a host's generator makes when it counts bytes, not characters: 43 random bytes are 60 base64 characters.
+  const long = randomBytes(43).toString("base64");
+  const short = randomBytes(24).toString("base64");
+  const wrongForm = `${randomBytes(32).toString("base64").slice(0, 42)}.`;
+  const said = (error) => String(error.message);
+  const refusedFor = (key, length) => (error) => {
+    assert.ok(error instanceof mod.SealKeyRefused, said(error));
+    assert.ok(said(error).includes(`AGENTRUN_SEAL_KEY is set but is not 32 bytes in base64 (${wants}; it has ${length}`), said(error));
+    assert.equal(said(error).split(key).length - 1, 0, "the key's value is never in the refusal");
+    return true;
+  };
+  const home = await scratch(t);
+  assert.throws(() => mod.ensureSealKey(long, { dataDir: home }), refusedFor(long, 60));
+  assert.throws(() => mod.ensureSealKey(short, { dataDir: home }), refusedFor(short, 32));
+  assert.throws(() => mod.ensureSealKey(wrongForm, { dataDir: home }), refusedFor(wrongForm, "43, but not in that form"));
+  // The start's path, over a store that holds nothing yet: the same words.
+  const empty = { settings: { get: async () => undefined }, sealedSecrets: { all: async () => [] } };
+  await assert.rejects(mod.bootSealKey(empty, await scratch(t), { given: long, say: () => {} }), refusedFor(long, 60));
+  // A kept key file that holds no key: its length too, never its text.
+  const data = await scratch(t);
+  mkdirSync(join(data, "seal"), { mode: 0o700 });
+  writeFileSync(join(data, "seal", "seal.key"), `${long}\n`, { mode: 0o600 });
+  assert.throws(() => mod.ensureSealKey(undefined, { dataDir: data }), (error) => {
+    assert.ok(error instanceof mod.SealKeyRefused, said(error));
+    assert.ok(said(error).includes(`seal.key holds a key that is not 32 bytes in base64 (${wants}; it has 60)`), said(error));
+    assert.equal(said(error).split(long).length - 1, 0, "the key's value is never in the refusal");
+    return true;
+  });
+});
+
+// Every reader that keeps or opens something under the seal key refuses one it was not handed, or one of the wrong shape,
+// in the same words (tool-keys.ts sealKeyIn): the one handed by its length, never its value, not even a part of it. In
+// production the start boots the key first (bootSealKey) and refuses a malformed one itself; this is each reader's guard.
+test("every seal-key reader refuses none, and a malformed AGENTRUN_SEAL_KEY by its length, never any part of its value", async () => {
+  const { toolKeysOverStore } = await import("../dist/tool-keys-store.js");
+  const { openServerSecretsOverStore } = await import("../dist/server-secrets-store.js");
+  const { runnerLoop } = await import("../dist/runner/main.js");
+  const { ownSecrets } = await import("../dist/import.js");
+  const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
+  // Each is refused before the store is touched, so none is needed.
+  const readers = {
+    "tool keys": async (env) => toolKeysOverStore({}, env, () => {}),
+    "the server's own secrets": async (env) => openServerSecretsOverStore({}, "/nowhere", env, []),
+    "a runner's secrets": async (env) => runnerLoop({}, "/nowhere", env),
+    "an import's read of the server's own secrets": async (env) => ownSecrets({}, "/nowhere", env),
+    "MCP servers' credentials": async (env) => mcpServersOverStore({}, env, "1.0.0"),
+  };
+  const long = randomBytes(43).toString("base64");
+  for (const [name, read] of Object.entries(readers)) {
+    for (const env of [{}, { AGENTRUN_SEAL_KEY: "" }, { AGENTRUN_SEAL_KEY: " \n" }]) {
+      await assert.rejects(read(env), /kept under the server's seal key \(AGENTRUN_SEAL_KEY\), and none was handed/, `${name}: ${JSON.stringify(env)}`);
+    }
+    await assert.rejects(read({ AGENTRUN_SEAL_KEY: long }), (error) => {
+      const said = String(error.message);
+      assert.match(said, /kept under the server's seal key \(AGENTRUN_SEAL_KEY\), and the one handed is not 32 bytes in base64 .*it has 60\)/, `${name}: ${said}`);
+      for (let at = 0; at + 8 <= long.length; at++) assert.ok(!said.includes(long.slice(at, at + 8)), `${name}: no part of the key is in the refusal`);
+      return true;
+    });
+  }
+  // An import and a scrub run offline: with none handed, they are pointed at the data directory, not told to start a server.
+  await assert.rejects(ownSecrets({}, "/nowhere", {}), (error) => {
+    assert.doesNotMatch(String(error.message), /start the server/);
+    assert.match(String(error.message), /none was handed: .*--data/);
+    return true;
+  });
+});
+
 test("the server does not start without a seal key it can keep: in words, naming AGENTRUN_SEAL_KEY", async (t) => {
   const mod = await sealKey();
   assert.ok(mod, "seal-key.js exists");

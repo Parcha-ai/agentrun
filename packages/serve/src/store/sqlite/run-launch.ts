@@ -6,9 +6,9 @@ import { type LaunchSealed, type RunLaunchInput, type RunLaunchRow, type Runs, S
 import type { Dialect } from "../dialect.js";
 import type { SqliteExecutor } from "./connection.js";
 
-type RunLaunchRecord = { run_id: string; body: string; sealed: Uint8Array | null; created_at: number };
-const RUN_LAUNCH_COLUMNS = "run_id, body, sealed, created_at";
-const runLaunchOf = (r: RunLaunchRecord): RunLaunchRow => ({ runId: r.run_id, body: JSON.parse(r.body), sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), createdAt: r.created_at });
+type RunLaunchRecord = { run_id: string; body: string; sealed: Uint8Array | null; census: string | null; created_at: number };
+const RUN_LAUNCH_COLUMNS = "run_id, body, sealed, census, created_at";
+const runLaunchOf = (r: RunLaunchRecord): RunLaunchRow => ({ runId: r.run_id, body: JSON.parse(r.body), sealed: r.sealed === null ? null : Uint8Array.from(r.sealed), census: r.census, createdAt: r.created_at });
 
 /** JSON text `column` (a launch body, a command's body, a journal record) as every read of one id, number or flag out of
  *  it takes it: on Postgres its copy with escaped NULs and lone surrogates blanked (postgresReadableJson), so a run's text
@@ -17,7 +17,7 @@ const runLaunchOf = (r: RunLaunchRecord): RunLaunchRow => ({ runId: r.run_id, bo
 export const readableJson = (dialect: Dialect, column: string): string => (dialect.name === "postgres" ? postgresReadableJson(column) : column);
 
 /** Writes a run's launch row inside `tx` (the same transaction as the queued run it belongs to): the run path and the
- *  trigger path both call it, so the row lands with its run or not at all. */
+ *  trigger path both call it, so the row lands with its run or not at all. Its census is null until an end writes one. */
 export function writeLaunch(tx: Pick<SqliteExecutor, "run">, runId: string, launch: RunLaunchInput, at: number): Promise<void> {
   return tx.run("INSERT INTO run_launch (run_id, body, sealed, created_at) VALUES (?, ?, ?, ?)", runId, JSON.stringify(launch.body ?? null), launch.sealed ?? null, at);
 }
@@ -34,14 +34,17 @@ export function launchDiskOf(launch: RunLaunchInput | undefined): string | null 
   return kind === "launch" && typeof id === "string" && id !== "" ? id : null;
 }
 
+/** The sealed bytes run `runId`'s launch holds now, read inside `tx`. */
+async function sealedOf(tx: Pick<SqliteExecutor, "get">, runId: string): Promise<Uint8Array | null> {
+  const row = await tx.get<{ sealed: Uint8Array | null }>("SELECT sealed FROM run_launch WHERE run_id = ?", runId);
+  return row?.sealed == null ? null : Uint8Array.from(row.sealed);
+}
+
 /** A message's launch secrets written over the run's (runs.command, runs.reopen), inside `tx`: the bytes as given, or a
- *  function's answer to the bytes the launch holds now, read in the same transaction. */
+ *  function's answer to the bytes the launch holds now, read in the same transaction. The census stays as the last end
+ *  wrote it: that end's count of where its turn's secrets sat, which the next end merges with its own (censusAfter). */
 export async function writeLaunchSealed(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, launchSealed: LaunchSealed): Promise<void> {
-  let next: Uint8Array | null;
-  if (typeof launchSealed === "function") {
-    const row = await tx.get<{ sealed: Uint8Array | null }>("SELECT sealed FROM run_launch WHERE run_id = ?", runId);
-    next = launchSealed(row?.sealed == null ? null : Uint8Array.from(row.sealed));
-  } else next = launchSealed;
+  const next = typeof launchSealed === "function" ? launchSealed(await sealedOf(tx, runId)) : launchSealed;
   await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", next, runId);
 }
 

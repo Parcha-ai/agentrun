@@ -6,7 +6,7 @@ import { type Agent, toolOffers } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 import { placesOf } from "@/lib/place";
 
-// The editor's Computer step: where the agent's runs execute and what they drive. It comes before Tools & skills (the
+// The editor's Computer step: where the agent's runs execute and what they drive. It comes before Tools (the
 // computer decides the tools), and a pick there is saved as definition.computer, the setting the server keeps place as
 // a view of.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -29,16 +29,16 @@ function mount(props: Record<string, unknown>) {
   const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
   const input = (sel: string) => host.querySelector(sel) as HTMLInputElement | null;
   const save = () => act(async () => { [...host.querySelectorAll("button")].find((b) => /^Save/.test(b.textContent ?? ""))!.click(); });
-  const rail = () => [...host.querySelectorAll("ol li")].map((li) => li.textContent ?? "");
+  const rail = () => [...host.querySelectorAll('nav[aria-label="Agent settings sections"] ul li')].map((li) => li.textContent ?? "");
   return { host, click, input, save, rail, saved: () => saved };
 }
 
 describe("AgentEditor, the Computer step", () => {
-  it("comes after Context and before Tools & skills", () => {
+  it("comes after General and before Tools", () => {
     const { rail } = mount({ agent: agent(), caps, step: "computer" });
-    const names = rail().map((text) => /^\d*\s*(Context|Computer|Tools & skills|Settings|History)/.exec(text)?.[1] ?? text);
-    expect(names.indexOf("Computer")).toBe(names.indexOf("Context") + 1);
-    expect(names.indexOf("Tools & skills")).toBe(names.indexOf("Computer") + 1);
+    const names = rail().map((text) => /^\d*\s*(General|Computer|Tools|Model & runtime|History)/.exec(text)?.[1] ?? text);
+    expect(names.indexOf("Computer")).toBe(names.indexOf("General") + 1);
+    expect(names.indexOf("Tools")).toBe(names.indexOf("Computer") + 1);
   });
 
   it("holds where the agent runs; the Settings step no longer does", () => {
@@ -71,7 +71,7 @@ describe("AgentEditor, the Computer step", () => {
   // The kind cards, each kind's providers and "The loop gets …" read the server's computers list (capabilities.computers,
   // the same list GET /v2/computers answers). The words below are this fixture's; the console shows the server's.
   const KINDS = [
-    { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], settings: [], record: { available: false, why: "with no computer, there is no screen to record" }, providers: [] },
+    { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [] },
     { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], settings: ["image", "persistent", "gpu"], record: { available: false, why: "fixture: a sandbox has no screen to record" }, providers: [
       { id: "docker", name: "Docker", secrets: [], required: [], ready: true, metered: false },
       { id: "daytona", name: "Daytona", secrets: [{ name: "computer:daytona:DAYTONA_API_KEY", set: true, source: "console", changed_at: null }], required: ["computer:daytona:DAYTONA_API_KEY"], ready: false, why: "fixture: Daytona can't mount this server's run folders" },
@@ -164,5 +164,18 @@ describe("AgentEditor, the Computer step", () => {
     expect(host.querySelector('input[name="computer-provider"]')).toBeNull();
     await save();
     expect(saved()!.computer).toEqual({ kind: "none" });
+  });
+
+  // Which tools run only in a box is the capabilities' word (sandbox_only); the computers list comes from its own read.
+  // Before the capabilities answer, or after their read failed, the editor has no tools listed: a pick that puts the
+  // agent on the runner can't tell which of its tools to drop, so it changes nothing and says so.
+  it("the capabilities not read: none picked for an agent in a box with bash is refused in words, and nothing puts it on the runner with bash", async () => {
+    const { host, click, save, saved } = mount({ agent: agent({ computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" }, tools: ["read", "bash"] }), caps: { ...listed, tools: [] }, step: "computer" });
+    click(kindRadio(host, "none"));
+    await save();
+    const sent = saved() as { computer?: { kind: string }; tools?: string[] } | undefined;
+    expect({ computer: sent?.computer?.kind, bash: sent?.tools?.includes("bash") }, "the Computer step saved the agent on the runner with bash, before the capabilities said which tools run only in a box").not.toEqual({ computer: "none", bash: true });
+    expect(host.textContent).toContain("The server's tools haven't been read, so which of this agent's tools run only in a box is unknown: the computer was not changed. Try again, or reload the page if this stays.");
+    expect(kindRadio(host, "sandbox")!.checked, "the computer picked after the refused pick").toBe(true);
   });
 });

@@ -21,7 +21,7 @@ export class CliLearningConnections {
   const target=await selectedNative(body);const native=await launchNative({...target,connected:true});
   const id=createHash('sha256').update(`${target.runtime}\0${target.machine_id}\0${target.project}`).digest('hex').slice(0,32);
   const agentId=`cli-${id}`;
-  // Agent creation is deterministic. Concurrent enrollments keep the winner's revision and learning folder.
+  // Agent creation is deterministic. Concurrent enrollments keep the winner's revision and learning.
   if(!await getAgent(this.store,agentId))try{await createAgent(this.store,{definition:{id:agentId,name:typeof body.name==='string'?body.name:`${basename(target.project)} (${target.runtime})`,instructions:'',tools:[],learning:true,cli_learning:{runtime:target.runtime,connection_id:id,project:target.project}}});}catch(error){if(!await getAgent(this.store,agentId))throw error;}
   const candidate:CliConnection={connection_id:id,agent_id:agentId,runtime:target.runtime as CliConnection['runtime'],project:target.project,active:true,generation:randomBytes(24).toString('base64url'),native};
   for(let attempt=0;attempt<20;attempt++){

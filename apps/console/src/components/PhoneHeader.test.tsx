@@ -27,23 +27,44 @@ const until = async (ok: () => boolean) => { for (let i = 0; i < 100 && !ok(); i
 /** Every class that is not a max-sm variant: what 640 px and up render. */
 const wide = (el: Element | null | undefined) => classes(el).filter((c) => c && !c.startsWith("max-sm:"));
 
-async function agentPage(agent: Agent = agentFixture("invoice-checker")) {
+async function agentPage(agent: Agent = agentFixture("invoice-checker"), tab?: string) {
   const v2 = { getAgent: async () => ({ agent }), statsOver: async () => { throw new Error("no stats"); }, listAgentRuns: async () => ({ runs: [], next_cursor: null }) };
-  const host = mount(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, efforts: ["low", "high"], go: () => {} }));
+  const host = mount(createElement(AgentPage, { v2: v2 as never, agentId: agent.agent_id, efforts: ["low", "high"], go: () => {}, tab, renderEditor: () => createElement("div", null, "Agent settings") }));
   await until(() => !!host.querySelector("h1"));
   return host;
 }
 
 describe("the agent page's header on a phone", () => {
+  it("keeps Settings visible beside a shrinking agent breadcrumb and leaves the toolbar actions reachable", async () => {
+    const agent = agentFixture("invoice-checker");
+    const name = "Invoice checker with a long descriptive agent name";
+    const host = await agentPage({ ...agent, definition: { ...agent.definition, name } }, "settings");
+    const header = host.querySelector('header[aria-label="Agent toolbar"]')!;
+    const breadcrumb = header.querySelector('nav[aria-label="Breadcrumb"]')!;
+    const link = breadcrumb.querySelector("a")!;
+    expect(link.textContent).toBe(name);
+    expect(link.getAttribute("title")).toBe(name);
+    expect(classes(breadcrumb)).toEqual(expect.arrayContaining(["min-w-0", "flex-1", "basis-40"]));
+    expect(classes(link)).toEqual(expect.arrayContaining(["min-w-0", "truncate", "py-1"]));
+    expect(breadcrumb.querySelector('[aria-current="page"]')?.textContent).toBe("Settings");
+    expect(classes(breadcrumb.querySelector("h1"))).toContain("shrink-0");
+    expect(header.querySelector('button[aria-label="Back"]')).toBeTruthy();
+    expect(header.querySelector('button[aria-label="Choose coding agent for Edit agent"]')).toBeTruthy();
+    expect(header.querySelector('button[aria-label="Choose coding agent for Run agent"]')).toBeNull();
+    expect(host.querySelectorAll("h1")).toHaveLength(1);
+  });
+
   it("keeps the compact toolbar and named handoff actions reachable on a narrow screen", async () => {
     const host = await agentPage();
     const header = host.querySelector('header[aria-label="Agent toolbar"]')!;
-    const back = header.querySelector('button[aria-label="Back to agents"]');
+    const back = header.querySelector('button[aria-label="Back"]');
     expect(back).not.toBeNull();
     expect(header.textContent).toContain("Invoice checker");
     expect(classes(header)).toEqual(expect.arrayContaining(["min-h-12", "flex-wrap"]));
     expect(header.querySelector('button[aria-label="Choose coding agent for Edit agent"]')).not.toBeNull();
-    expect(header.querySelector('button[aria-label="Choose coding agent for Run agent"]')).not.toBeNull();
+    // A hosted agent runs from the run box under the bar, not a hand-off in it.
+    expect(header.querySelector('button[aria-label="Choose coding agent for Run agent"]')).toBeNull();
+    expect(host.querySelector('[data-run-here] section[aria-label="Start a run"]')).not.toBeNull();
     expect(host.querySelectorAll("h1")).toHaveLength(1);
     expect(host.querySelector('[aria-label="Agent overview"] h1')?.textContent).toBe("Invoice checker");
   });

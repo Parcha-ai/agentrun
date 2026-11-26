@@ -15,6 +15,10 @@ import { PROVIDERS } from "../dist/kinds.js";
 import { create, LocalBrowserProvider } from "../dist/local-chrome.js";
 import { providerModule } from "../dist/providers.js";
 
+/** A create's context with a request id of its own: each create here is a new request. */
+let requests = 0;
+const newRequest = (context = {}) => ({ requestId: `local-provider-${++requests}`, ...context });
+
 const FAKE = fileURLToPath(new URL("./fake-chrome.mjs", import.meta.url));
 // A short root: the egress socket's path must fit a Unix socket.
 const scratch = mkdtempSync(join("/tmp", "lbt-"));
@@ -23,6 +27,15 @@ after(() => rmSync(scratch, { recursive: true, force: true }));
 const CHROME = join(scratch, "chrome");
 writeFileSync(CHROME, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "$@"\n`);
 chmodSync(CHROME, 0o755);
+let modes = 0;
+/** The fake with its own settings (FAKE_CHROME_MODE, FAKE_CHROME_LIST_PROBES) set by its program, not inherited: the
+ *  supervisor and Chrome get only the names Chrome reads of the environment the host passes. */
+const chromeWith = (setting) => {
+	const program = join(scratch, `chrome-${++modes}`);
+	writeFileSync(program, `#!/bin/sh\nexport ${setting}\nexec "${process.execPath}" "${FAKE}" "$@"\n`);
+	chmodSync(program, 0o755);
+	return program;
+};
 let roots = 0;
 /** This process's own user: the root it makes is its own, as the provider checks (a CI runner is not uid 1000). */
 const UID = process.getuid();
@@ -99,7 +112,7 @@ test("no Chrome: findChrome finds none, and check, create and testConnection say
 	assert.match(NO_CHROME, /install Google Chrome or Chromium/);
 	assert.match(NO_CHROME, /executablePath/);
 	assert.match(NO_CHROME, /CHROME_PATH/);
-	const made = await missing.create(SPEC);
+	const made = await missing.create(SPEC, newRequest());
 	assert.equal(made.ok, false);
 	assert.equal(made.error.code, "not_found");
 	const tested = await missing.testConnection();
@@ -110,10 +123,10 @@ test("no Chrome: findChrome finds none, and check, create and testConnection say
 
 test("create starts Chrome headless with a fresh profile, a loopback debugging port and the fence; connect hands over its DevTools URL; release ends it", async () => {
 	const p = provider();
-	const made = await p.create(SPEC);
+	const made = await p.create(SPEC, newRequest());
 	assert.ok(made.ok, made.ok ? "" : made.error.message);
 	const { id } = made.value;
-	assert.match(id, /^lb-[0-9a-f]{16}$/);
+	assert.match(id, /^computer-[0-9a-f]{12}$/, "the request's name (computerNameFor)");
 	const dir = files(p, id);
 	const record = json(join(dir, "browser.json"));
 	assert.deepEqual(record.labels, SPEC.labels, "the labels a list finds it by, in its own directory");
@@ -170,11 +183,9 @@ test("create starts Chrome headless with a fresh profile, a loopback debugging p
 test("a browser made with an allowlist: its proxy reaches only the listed hosts, the public-address fence holds for them too, and its network reads back as the list", async (t) => {
 	// The fake asks for a host off the list and for loopback on 443 too: both refused before any lookup, so no DNS. That a
 	// listed name passes the list is the egress proxy's own test (egress-proxy.test.mjs, over a fake lookup).
-	process.env.FAKE_CHROME_LIST_PROBES = "1";
-	t.after(() => delete process.env.FAKE_CHROME_LIST_PROBES);
-	const p = provider();
+	const p = provider({ executablePath: chromeWith("FAKE_CHROME_LIST_PROBES=1") });
 	const allow = ["listed.example", "8.8.8.0/24"];
-	const made = await p.create({ ...SPEC, network: { allow } });
+	const made = await p.create({ ...SPEC, network: { allow } }, newRequest());
 	assert.ok(made.ok, made.ok ? "" : made.error.message);
 	const { id } = made.value;
 	const dir = files(p, id);
@@ -197,7 +208,7 @@ test("the deadline ends the browser though the process that made it is gone: a c
 	const root = join(scratch, "crashed");
 	// A process that makes a browser of 1.5 s and exits at once, without releasing it.
 	const maker = `import { LocalBrowserProvider } from ${JSON.stringify(new URL("../dist/local-chrome.js", import.meta.url).href)};
-const made = await new LocalBrowserProvider({ executablePath: ${JSON.stringify(CHROME)}, root: ${JSON.stringify(root)}, uid: ${UID} }).create({ image: "chromium", lifetimeMs: 1500, network: "open" });
+const made = await new LocalBrowserProvider({ executablePath: ${JSON.stringify(CHROME)}, root: ${JSON.stringify(root)}, uid: ${UID} }).create({ image: "chromium", lifetimeMs: 1500, network: "open" }, { requestId: "local-provider-crashed-run" });
 process.stdout.write(JSON.stringify(made));
 process.exit(0);`;
 	const child = spawn(process.execPath, ["--input-type=module", "-e", maker], { stdio: ["ignore", "pipe", "inherit"] });
@@ -213,10 +224,8 @@ process.exit(0);`;
 });
 
 test("a supervisor killed while Chrome starts leaves Chrome's pid: the release ends that Chrome and removes its files", async (t) => {
-	process.env.FAKE_CHROME_MODE = "hang";
-	t.after(() => delete process.env.FAKE_CHROME_MODE);
-	const p = provider();
-	const making = p.create(SPEC);
+	const p = provider({ executablePath: chromeWith("FAKE_CHROME_MODE=hang") });
+	const making = p.create(SPEC, newRequest());
 	let id;
 	await until("the supervisor spawned Chrome and wrote its pid", () => {
 		id = existsSync(p.root) ? readdirSync(p.root).find((name) => existsSync(join(p.root, name, "chrome.pid"))) : undefined;
@@ -234,10 +243,8 @@ test("a supervisor killed while Chrome starts leaves Chrome's pid: the release e
 });
 
 test("a Chrome that cannot start its sandbox is refused in words that never offer to turn it off, and leaves nothing", async (t) => {
-	process.env.FAKE_CHROME_MODE = "sandbox";
-	t.after(() => delete process.env.FAKE_CHROME_MODE);
-	const p = provider();
-	const made = await p.create(SPEC);
+	const p = provider({ executablePath: chromeWith("FAKE_CHROME_MODE=sandbox") });
+	const made = await p.create(SPEC, newRequest());
 	assert.equal(made.ok, false);
 	assert.equal(made.error.code, "refused");
 	assert.match(made.error.message, /could not start its sandbox/);
@@ -258,14 +265,14 @@ test("a create stopped while it works starts no Chrome, or ends the one it start
 	};
 	// Stopped while the directory was made: the supervisor is never started.
 	const early = provider();
-	const before = await early.create(SPEC, { signal: abortedFrom(2) });
+	const before = await early.create(SPEC, newRequest({ signal: abortedFrom(2) }));
 	assert.equal(before.ok, false);
 	assert.equal(before.error.code, "aborted");
 	assert.match(before.error.message, /aborted before Chrome was started/);
 	assert.deepEqual(readdirSync(early.root), [], "no directory left");
 	// Stopped before the listener was added: the abort is read there, and the supervisor it started is ended.
 	const late = provider();
-	const during = await late.create(SPEC, { signal: abortedFrom(3) });
+	const during = await late.create(SPEC, newRequest({ signal: abortedFrom(3) }));
 	assert.equal(during.ok, false);
 	assert.equal(during.error.code, "aborted");
 	assert.match(during.error.message, /aborted while Chrome started; it was ended/);

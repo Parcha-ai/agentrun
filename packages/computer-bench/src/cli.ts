@@ -12,7 +12,7 @@ import { messagesJudge } from "./grader.js";
 import { Store } from "./record.js";
 import { buildReport, readResults, reportMarkdown } from "./report.js";
 import type { Arm, Backend, Result } from "./runner.js";
-import { runBench } from "./runner.js";
+import { runBench, stopOnSignals } from "./runner.js";
 import type { Split, Task } from "./task.js";
 import { loadSuite, TaskError } from "./task.js";
 import { serveBackend } from "./serve.js";
@@ -125,13 +125,10 @@ function judgeOf(spec: string | undefined): Judge | undefined {
 	throw new Usage(`no judge provider ${provider}: anthropic or openrouter`);
 }
 
-/** Stops the run on the first SIGINT; results so far stay written. */
+/** Stops the run on the first SIGINT or SIGTERM; results so far stay written. */
 function interrupt(): AbortSignal {
 	const controller = new AbortController();
-	process.once("SIGINT", () => {
-		process.stderr.write("stopping: the episodes running now end, release their computers and are written\n");
-		controller.abort(new Error("stopped"));
-	});
+	stopOnSignals(process, controller);
 	return controller.signal;
 }
 

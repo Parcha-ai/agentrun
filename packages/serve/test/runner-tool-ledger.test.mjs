@@ -19,7 +19,7 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
-const { parallelSearchFee } = await import("../dist/paid-calls.js");
+const { parallelSearchFee } = await import("@parcha/agentrun-web");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
@@ -50,7 +50,7 @@ async function searchRun(t, capUsd) {
   // The model: free, so the run's cost is its paid calls alone.
   const route = {
     model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => `not-a-secret-${"r"}` },
-    fetch: scriptedOrigin([{ call: "web_search", args: { query: "agentrun", n: 3 } }, { say: "done" }]),
+    fetch: scriptedOrigin([{ call: "web_search", args: { objective: "agentrun", n: 3 } }, { say: "done" }]),
     price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 1_000,
   };
   const deps = {

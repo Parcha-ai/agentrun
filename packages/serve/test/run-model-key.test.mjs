@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import { gatewayKeyNames, modelKeyMisfit, noServerKeyFor, serverKeyMissing, withRunModelKey } from "../dist/run-model-key.js";
+import { OLLAMA_DEFAULT_HOST } from "../dist/ollama-provider.js";
+import { gatewayKeyNames, gatewayOnThisMachine, modelKeyMisfit, modelKeyRequired, noServerKeyFor, serverKeyMissing, withRunModelKey } from "../dist/run-model-key.js";
 import { claimModelEnv, claimModelKey, claimSpendOff } from "../dist/runner/claim-secrets.js";
 import { providerFor } from "../dist/provider.js";
 import { openRunLaunch, openRunMcpAuth, sealRunLaunch, sealRunMcpAuth } from "../dist/store/index.js";
@@ -45,7 +46,7 @@ test("the model env of a run with its own key: that key in the gateway's variabl
   assert.equal(env.AGENT_MODEL_API_KEY, now, "a message's new key is read at the next request");
   const offOrigin = withRunModelKey({ ...base, ANTHROPIC_BASE_URL: "https://elsewhere.example" }, { origin: GW, key: () => RUN_KEY });
   assert.equal(offOrigin.ANTHROPIC_API_KEY, undefined, "Anthropic's endpoint off the gateway's origin never gets it");
-  assert.equal(claimModelEnv(base, {}, undefined).AGENT_MODEL_API_KEY, SERVER_KEY, "a run with no key of its own reads the server's, as before");
+  assert.equal(claimModelEnv(base, [], undefined).AGENT_MODEL_API_KEY, SERVER_KEY, "a run with no key of its own reads the server's, as before");
 });
 
 test("a claim opens the run's key from its sealed launch, bound to the gateway's origin: another origin is refused, a message's key replaces it at fresh(), and a launch that holds none falls back to the server's path", async () => {
@@ -70,7 +71,7 @@ test("a claim opens the run's key from its sealed launch, bound to the gateway's
   sealed = sealRunMcpAuth(sealKey, "run-1", { gw: { headers: { authorization: "Bearer x-mcp-123" }, origin: "https://mcp.example" } });
   const later = await claimModelKey({ store, sealKey, env: gateway }, "run-1");
   assert.deepEqual([later.key(), later.everHeld()], [undefined, false], "no key yet");
-  const env = claimModelEnv(gateway, { AGENT_MODEL_API_KEY: SERVER_KEY }, later);
+  const env = claimModelEnv(gateway, [{ AGENT_MODEL_API_KEY: SERVER_KEY }], later);
   assert.equal(env.AGENT_MODEL_API_KEY, SERVER_KEY, "the server's key until the run has one");
   sealed = sealRunLaunch(sealKey, "run-1", { model: { key: RUN_KEY, origin: GW } });
   await later.fresh();
@@ -112,4 +113,41 @@ test("spend beside a claimed run (a shadow audit, a replay check, its learning g
   assert.match(keyless("A shadow audit"), /holds none of its own/);
   const served = await claimSpendOff(deps({ ...gateway, AGENT_MODEL_API_KEY: SERVER_KEY }), undefined);
   assert.equal(served("A shadow audit"), undefined);
+});
+
+// A service that reached Ollama as a gateway with AGENT_MODEL_API_KEY=none gets model_key_required once that key is gone:
+// with the gateway on this machine, the words name the move off it; one elsewhere is told only to bring a key.
+test("model_key_required: a gateway on this machine is told to remove AGENT_MODEL_BASE_URL, since AgentRun lists Ollama itself", () => {
+  const MOVE = "remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself";
+  for (const base of ["http://localhost:11434/v1", "http://127.0.0.1:11434/v1", "http://[::1]:11434/v1"]) {
+    assert.equal(gatewayOnThisMachine({ AGENT_MODEL_BASE_URL: base }), true, base);
+    for (const message of [false, true]) {
+      // One owner's own machine: server.ts puts the default address in the server's OLLAMA_HOST.
+      const refused = modelKeyRequired(message, { AGENT_MODEL_BASE_URL: base, OLLAMA_HOST: OLLAMA_DEFAULT_HOST });
+      assert.equal(refused.code, "model_key_required");
+      assert.ok(refused.message.includes(MOVE), refused.message);
+      assert.ok(!refused.message.includes(base), "the address is never in the words");
+    }
+  }
+  for (const env of [{ AGENT_MODEL_BASE_URL: "https://gateway.example.com/v1" }, {}]) {
+    assert.equal(gatewayOnThisMachine(env), false);
+    assert.ok(!modelKeyRequired(false, env).message.includes(MOVE));
+  }
+  assert.ok(!modelKeyRequired(false).message.includes(MOVE), "no env: the words as before");
+});
+
+test("model_key_required: the move adds OLLAMA_HOST where the server would lose Ollama with the gateway: a shared server naming none, or a gateway off port 11434", () => {
+  const HOST = "remove AGENT_MODEL_BASE_URL and set OLLAMA_HOST=<host:port> (Ollama's address); AgentRun lists Ollama itself";
+  const said = (env) => modelKeyRequired(false, env).message;
+  // A shared server names no OLLAMA_HOST of its own, so it lists no Ollama until one is set.
+  assert.ok(said({ AGENT_MODEL_BASE_URL: "http://localhost:11434/v1" }).includes(HOST));
+  // An Ollama on a port of its own, reached as the gateway: the default address is not it.
+  assert.ok(said({ AGENT_MODEL_BASE_URL: "http://localhost:11500/v1", OLLAMA_HOST: OLLAMA_DEFAULT_HOST }).includes(HOST));
+  assert.ok(said({ AGENT_MODEL_BASE_URL: "http://localhost/v1", OLLAMA_HOST: OLLAMA_DEFAULT_HOST }).includes(HOST), "no port: 80");
+  // OLLAMA_HOST already names an Ollama, or the default where the gateway is on 11434: the move is the gateway alone.
+  for (const env of [{ AGENT_MODEL_BASE_URL: "http://localhost:11500/v1", OLLAMA_HOST: "127.0.0.1:11500" }, { AGENT_MODEL_BASE_URL: "http://127.0.0.1:11434/v1", OLLAMA_HOST: OLLAMA_DEFAULT_HOST }]) {
+    assert.ok(said(env).includes("remove AGENT_MODEL_BASE_URL; AgentRun lists Ollama itself"), JSON.stringify(env));
+    assert.ok(!said(env).includes("OLLAMA_HOST=<host:port>"));
+  }
+  assert.ok(!said({ AGENT_MODEL_BASE_URL: "https://gateway.example.com/v1" }).includes("OLLAMA_HOST"), "a gateway elsewhere: bring a key");
 });

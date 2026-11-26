@@ -12,9 +12,9 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, STORE_META_LEDGER_BACKFILLED, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
-  ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
+  ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunnerBelowFloor, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -42,10 +42,14 @@ const seqOf = (cursor: RunChangeCursor): number => {
 };
 import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
+import { dropAgentLearning, dropRunLearning, learningRows } from "./learning-rows.js";
 import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
-import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
+import { applyRunPatch, backfillLedger, BY_HAND_BEFORE, EXACT_COST_USD, NOT_A_LEARNING_RUN, recordLedger, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
 import { launchDiskOf, readableJson,readLaunch, readLearningStarts, readSeededBefore, readUsageMetadata, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
+import { mcpRecordKeys } from "../mcp-record-keys.js";
+import type { LedgerRow, SpendRow } from "../../learn/ledger.js";
+import { workflowCallsIn } from "../../learning-cost.js";
 import { readProjectCheckpoints } from "./project-checkpoints.js";
 import { aadOf, sealedAt } from "../seal.js";
 
@@ -83,6 +87,11 @@ export const DEFAULT_LEASE_MS = 30_000;
 
 /** The store's file in its data directory: only the store names it. */
 export const STORE_FILE = "store.sqlite";
+/** The oldest schema version this release brings up to SCHEMA_VERSION in place at its server's open (version 11,
+ *  0.1.0-beta.44 and before): every version from it to the one before SCHEMA_VERSION is upgraded, each step by the
+ *  version it starts from; an older one is refused (SchemaVersionUnknown). The window follows SCHEMA_VERSION, so a new
+ *  version never drops the one before it. */
+export const OLDEST_UPGRADED = 11;
 
 export type SqliteStoreOptions = (
   /** The data directory (the server's and every runner's): the store's file is STORE_FILE in it. */
@@ -114,6 +123,10 @@ type FiringRecord = {
 /** No audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."): the prefix compared as it is, which LIKE does not on
  *  SQLite (it folds case). */
 const NOT_A_SHADOW_RUN = "substr(runs.id, 1, 6) <> 'audit.'";
+/** A runs list's `model` (ListedFilter.model, `provider/model`) as SQL taking the model as its one `?`: the runs that sent at
+ *  least one request to it, a key of the requests their metrics count per model (metrics.models), exactly (no prefix, no case
+ *  folding). A run with no metrics yet sent none. */
+const runUsedModel = (d: Dialect): string => d.jsonObjectHasKey("runs.metrics", ["models"]);
 /** A runner holds the run's claim at `now` (SQL), and the run is not over. */
 const heldAt = (now: string) => `(runs.runner IS NOT NULL AND runs.claimed_until >= ${now} AND runs.state NOT IN ('ended', 'stopped', 'failed'))`;
 /** The run's listing is behind at `now` (SQL; its parameters twice, `params`): built before the latest write that moved
@@ -197,8 +210,9 @@ const claimableIn = (d: Dialect, n: StoreNow, claimer?: string): { sql: string; 
   };
 };
 /** The run's computer is kept at its park (its KEPT_PREFIX row) pinned to a runner other than `claimer` that is still
- *  there under the incarnation the row names, at the deadlines' clock `n`: its runners row seen within RUNNER_STALE_MS,
- *  claiming (refused NULL); the keep neither ending nor ended, and its `until` ahead. That runner's Docker engine or
+ *  there (KEPT_PREFIX says what that means: its runners row seen within RUNNER_STALE_MS at the deadlines' clock `n`,
+ *  under the incarnation the row names) and claiming (refused NULL); the keep neither ending nor ended, and its `until`
+ *  ahead, on the same clock it was stamped on. That runner's Docker engine or
  *  attach hub holds the machine, so only it can take it back (workspace/computer-kept.ts pinnedOf); once any of these
  *  stops holding, any runner claims the run. Read in the claim's own statement, so no check-then-act gap. A row with no
  *  runner (a computer any runner reaches: an exec vendor's, a phone; or one an earlier build kept) pins nothing. */
@@ -333,6 +347,11 @@ async function versionOf(db: Connection): Promise<number | null> {
  *  the store, is set again. */
 const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json", "trigger-secrets.json", ".door-token"];
 
+/** The store's earlier versions the server upgrades in place at its open (openSqliteStore), which a runner waits for
+ *  (StoreAwaitsServer); store-schema reports from the same set. Every version from OLDEST_UPGRADED to the one before
+ *  SCHEMA_VERSION, so a new version never drops the one before it. */
+export const SQLITE_UPGRADES: ReadonlySet<number> = new Set(Array.from({ length: SCHEMA_VERSION - OLDEST_UPGRADED }, (_, i) => OLDEST_UPGRADED + i));
+
 /** The columns a runner of this build needs that an earlier build of this same version may not have: the server adds each
  *  at its start (openSqliteStore), and a runner on a file without one waits for that server (StoreAwaitsServer, in `why`'s
  *  words; exit 3). store-schema reads the same list, so its report says "waits" where the runner would. */
@@ -341,11 +360,16 @@ export const SQLITE_RUNNER_NEEDS: readonly { readonly table: string; readonly co
   { table: "settings", columns: ["connector_id"], why: "add native command ownership metadata" },
   { table: "runs", columns: ["cost_upper_bound"], why: "add the bound beside each run's cost" },
   { table: "runs", columns: ["labels"], why: "add each run's labels" },
+  { table: "run_launch", columns: ["census"], why: "add each run's census" },
   { table: "triggers", columns: ["template_id"], why: "add each trigger's package mark" },
   { table: "runners", columns: ["host"], why: "keep each runner's word that it is there and its relay in one table (runners)" },
   { table: "runners", columns: Object.keys(RUNNERS_ADDED), why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
   { table: "hand_backs", columns: ["run_id"], why: "keep each runner's version and slots, and each hand-back (runners.version, runners.slots, hand_backs)" },
   { table: "run_attempts", columns: ["run_id"], why: "keep each claim's turn and attempt (run_attempts)" },
+  // A run's end writes its ledger row and spend rows (run-patch.ts applyRunPatch) in its own transaction.
+  { table: "learning_ledger", columns: ["run_id", ...Object.keys(LEARNING_LEDGER_ADDED)], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
+  { table: "learning_spend", columns: ["run_id"], why: "write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)" },
+  { table: "learning_saves", columns: ["merge_key"], why: "keep each agent's learning as rows (learning_saves, learning_items, learning_records)" },
 ];
 
 /** What a runner of this build waits for on a file of this version (SQLITE_RUNNER_NEEDS' first missing column's `why`),
@@ -462,9 +486,15 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // it. Version 12 names no minting runner on a machine's token and keeps no runner's relay: the server adds them
     // (schema.ts relayUpgrade). Version 13 keeps no purge time on a run or an agent: the server adds them (schema.ts
     // purgeUpgrade). Version 14 keeps no disk on a run: the server adds it and writes each run's from its launch (schema.ts
-    // diskUpgrade). A runner refuses 11 to 14 until that server has.
-    const upgrading = found === 11 || found === 12 || found === 13 || found === 14;
+    // diskUpgrade). Version 15 keeps each ledger row's epoch: the server repairs the rows that release could leave wrong
+    // and drops it (the ledger's step below, then ledgerUpgrade). Version 16 keeps no learning as rows: the server adds
+    // them (schema.ts learningRowsUpgrade), last. A runner refuses each version of SQLITE_UPGRADES until that server has,
+    // and a runner of 15, whose end writes the epoch, refuses 16 and later (SchemaVersionUnknown), or stops at its next
+    // floor read. A later version is refused too, a runner in words that name its floor (a SQLite runner opens only its
+    // own version, so the floor is the version): RunnerBelowFloor.
+    const upgrading = found !== null && SQLITE_UPGRADES.has(found);
     if (upgrading && role === "runner") throw new StoreAwaitsServer(`bring this store from version ${found} to ${SCHEMA_VERSION}`);
+    if (role === "runner" && found !== null && found > SCHEMA_VERSION) throw new RunnerBelowFloor(file, found, SCHEMA_VERSION, found);
     if (found !== SCHEMA_VERSION && !upgrading) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
     // Every column a runner of this build needs that an earlier build of this version may lack (SQLITE_RUNNER_NEEDS), read
@@ -492,6 +522,21 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       if (role === "runner") throw new StoreAwaitsServer("add each run's labels");
       await connection.write([{ sql: RUNS_LABELS }], { full: true });
     }
+    // An earlier build of this version kept no census on a run's launch (schema.ts RUN_LAUNCH_CENSUS): the server adds the
+    // column, nullable: every run ended before reads as never handed a secret, and a launch that holds one now as not yet
+    // counted (its end counts it). A runner writes it at each end, so it waits for that server.
+    if (!(await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('run_launch')")).some((column) => column.name === "census")) {
+      if (role === "runner") throw new StoreAwaitsServer("add each run's census");
+      await connection.write([{ sql: RUN_LAUNCH_CENSUS }], { full: true });
+    }
+    // A store no server of this build opened yet holds no RUN_LAUNCH_CENSUS_ERASED (an end that erases sealed bytes with
+    // no census, as an earlier runner's does, writes "unscanned"). The server makes it, and in the same write settles each
+    // "pending" 0.1.0-beta.57 left (RUN_LAUNCH_CENSUS_SETTLE), so a run live at the upgrade is counted at its end. Every
+    // later open reads only that the trigger is there. A runner leaves both: an end over a "pending" writes the marker,
+    // and its files are withheld, never read uncut.
+    if (role === "server" && (await connection.all(RUN_LAUNCH_CENSUS_ERASED_MADE)).length === 0) {
+      await connection.write([{ sql: RUN_LAUNCH_CENSUS_SETTLE }, { sql: RUN_LAUNCH_CENSUS_ERASED }], { full: true });
+    }
     // An earlier build of this version kept no package mark on a trigger (schema.ts TRIGGERS_TEMPLATE_ID): the server adds
     // the column, nullable, every trigger made before reading as no package's. A runner reads each trigger through it, so
     // it waits for that server.
@@ -515,6 +560,20 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // that adds the table.
     if (role === "runner" && (await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('run_attempts')")).length === 0) {
       throw new StoreAwaitsServer("keep each claim's turn and attempt (run_attempts)");
+    }
+    // A run's end writes its ledger row and spend rows (schema.ts LEARNING_LEDGER, LEARNING_SPEND) in its own transaction:
+    // a runner waits for the server that adds the tables (STORE_DDL at its start) and their columns (LEARNING_LEDGER_ADDED).
+    // The `epoch` version 15 kept on the ledger, which this build's end does not write, is the version's: a runner
+    // refuses 15 above.
+    const metaColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('store_meta')")).map((column) => column.name));
+    const ledgerColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_ledger')")).map((column) => column.name));
+    if (role === "runner" && ((await connection.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ('learning_ledger', 'learning_spend')")).length < 2 || Object.keys(LEARNING_LEDGER_ADDED).some((column) => !ledgerColumns.has(column)))) {
+      throw new StoreAwaitsServer("write each run's learning ledger row and spend at its end (learning_ledger, learning_spend)");
+    }
+    // A run's merge and purge write the agent's learning rows (schema.ts LEARNING_ROWS) in their own transactions: a runner
+    // waits for the server that adds the tables.
+    if (role === "runner" && (await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_saves')")).length === 0) {
+      throw new StoreAwaitsServer("keep each agent's learning as rows (learning_saves, learning_items, learning_records)");
     }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
@@ -552,6 +611,18 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: COMPUTER_INTERVALS_RUN },
         // Nor any claim's turn and attempt (schema.ts RUN_ATTEMPTS): a claim made before it has no row.
         { sql: RUN_ATTEMPTS },
+        // Nor any learning ledger (schema.ts LEARNING_LEDGER, LEARNING_SPEND; version 15's, with each row's `epoch`, is
+        // repaired and its epoch dropped by ledgerUpgrade below). Nor the mark that every ended run has its row
+        // (STORE_META_LEDGER_BACKFILLED), nor the by-hand index (LEARNING_LEDGER_BY_HAND).
+        ...(metaColumns.has("ledger_backfilled") ? [] : [{ sql: STORE_META_LEDGER_BACKFILLED }]),
+        { sql: LEARNING_LEDGER },
+        { sql: LEARNING_LEDGER_AGENT },
+        { sql: LEARNING_LEDGER_BY_HAND },
+        { sql: LEARNING_SPEND },
+        { sql: LEARNING_SPEND_AGENT },
+        { sql: LEARNING_SPEND_OF_RUN },
+        // Nor any agent's learning as rows (schema.ts LEARNING_ROWS): learning kept before it is not read.
+        ...LEARNING_ROWS.map((sql) => ({ sql })),
         { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
       // A computer_intervals an earlier build of this version made has no disk or booked time (schema.ts
@@ -564,20 +635,33 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       const runnersNow = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runners')")).map((column) => column.name));
       const runnersMissing = Object.entries(RUNNERS_ADDED).filter(([column]) => !runnersNow.has(column)).map(([, sql]) => ({ sql }));
       if (runnersMissing.length > 0) await connection.write(runnersMissing, { full: true });
+      // A learning_ledger an earlier build of this version made keeps no calls (schema.ts LEARNING_LEDGER_ADDED): added
+      // where missing, its rows' calls none until their run's next end. Before the open's backfill (backfillLedger below),
+      // whose rows recordLedger writes with their calls.
+      const ledgerNow = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_ledger')")).map((column) => column.name));
+      const ledgerMissing = Object.entries(LEARNING_LEDGER_ADDED).filter(([column]) => !ledgerNow.has(column)).map(([, sql]) => ({ sql }));
+      if (ledgerMissing.length > 0) await connection.write(ledgerMissing, { full: true });
       await backfillNativeCommandOwners(connection);
-      if (found === 11) {
+      // Here `found` is SCHEMA_VERSION or a version in the window (any other was refused above): each step runs for the
+      // versions before the one that first kept what it adds.
+      if (found! <= 11) {
         const present = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runs')")).map((column) => column.name));
         await connection.write(listingUpgrade(present).map((sql) => ({ sql })), { full: true });
       }
-      if (found === 11 || found === 12) {
+      if (found! <= 12) {
         const minted = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('minted_tokens')")).map((column) => column.name));
         await connection.write(relayUpgrade(minted).map((sql) => ({ sql })), { full: true });
       }
-      if (upgrading) {
+      if (upgrading && found !== null) {
         const named = async (table: string) => new Set((await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).map((column) => column.name));
-        if (found !== 14) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
-        await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
+        if (found <= 13) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
+        if (found <= 14) await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
+        if (found <= 15) await connection.write(ledgerUpgrade(await named("learning_ledger")).map((sql) => ({ sql })), { full: true });
+        // Last: ledgerUpgrade writes 16, and the rows step writes 17 after it.
+        await connection.write(learningRowsUpgrade().map((sql) => ({ sql })), { full: true });
       }
+      // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads.
+      await backfillLedger(connection, options.now ?? Date.now);
     }
   } catch (error) {
     await connection.close().catch(() => undefined);
@@ -672,9 +756,16 @@ export function storeOver(connection: StoreConnection, now: () => number, file?:
  *  start's scrub: short, since every other request of the store's connection queues behind it. */
 const PURGE_CHECKPOINT_BUSY_MS = 20;
 
+/** Run `runId`'s learning ledger (learn/ledger.ts), gone: its row, each spend row it booked, and an audit's spend row of
+ *  it (its shadow's, of_run). What a run's purge (Runs.purge) and its delete (Runs.remove) both drop. */
+async function dropLedger(tx: SqliteExecutor, runId: string): Promise<void> {
+  await tx.run("DELETE FROM learning_ledger WHERE run_id = ?", runId);
+  await tx.run("DELETE FROM learning_spend WHERE run_id = ? OR of_run = ?", runId, runId);
+}
+
 /** A run's content in every table that keeps it by the run's id, gone: what a run's purge (Runs.purge) and its delete
  *  (Runs.remove) both drop. A table added for a run's content goes here, so neither path leaves it behind. */
-async function dropRunContent(tx: SqliteExecutor, runId: string): Promise<void> {
+async function dropRunContent(tx: Tx, runId: string, at: number): Promise<void> {
   for (const table of PI_TABLES) await tx.run(`DELETE FROM ${table} WHERE run_id = ?`, runId);
   await tx.run("DELETE FROM commands WHERE run_id = ?", runId);
   await tx.run("DELETE FROM run_origins WHERE run_id = ?", runId);
@@ -689,12 +780,20 @@ async function dropRunContent(tx: SqliteExecutor, runId: string): Promise<void> 
   await tx.run("DELETE FROM hand_backs WHERE run_id = ?", runId);
   // Its claims' attempts: what each cost is in its tombstone's money, and no read of a purged run splits it.
   await tx.run("DELETE FROM run_attempts WHERE run_id = ?", runId);
+  // What it learned and what its agent's learning kept of it (learning-rows.ts dropRunLearning), its agent's alone,
+  // under the lock a save of that agent's learning takes: the purge is a save of its own at `at`.
+  const agentId = (await tx.get<{ agent_id: string }>("SELECT agent_id FROM runs WHERE id = ?", runId))?.agent_id;
+  if (agentId !== undefined) {
+    await tx.dialect.lockKey(tx, `learning:${agentId}`);
+    await dropRunLearning(tx, agentId, runId, at);
+  }
 }
 
-/** An agent's own rows no tombstone keeps (its learning, its saved sign-ins and their tombstones), gone: what an agent's
- *  purge (Agents.purge) and its delete (Agents.remove) both drop. */
-async function dropAgentPrivate(tx: SqliteExecutor, agentId: string): Promise<void> {
+/** An agent's own rows no tombstone keeps (its learning, under its learning locks: dropAgentLearning; its saved sign-ins
+ *  and their tombstones), gone: what an agent's purge (Agents.purge) and its delete (Agents.remove) both drop. */
+async function dropAgentPrivate(tx: Tx, agentId: string): Promise<void> {
   await tx.run("DELETE FROM learning WHERE agent_id = ?", agentId);
+  await dropAgentLearning(tx, agentId);
   await tx.run("DELETE FROM sign_ins WHERE agent_id = ?", agentId);
   await tx.run("DELETE FROM sign_in_tombstones WHERE agent_id = ?", agentId);
 }
@@ -756,6 +855,8 @@ class SqliteStore implements Store {
   readonly where: string;
   /** The deadlines' clock now (fence.ts storeNow): the database's on Postgres, this store's clock bound on SQLite. */
   readonly #clock: () => StoreNow;
+  /** Store.leaseClock: this store's clock when the deadlines are stamped on it (no database clock: SQLite, or a test's). */
+  readonly leaseClock?: () => number;
   /** Each claim's one journal, until it is closed. */
   readonly #journals = new Map<string, RunStorage>();
   /** Each run's claim this store released last (its epoch): journal() refuses that claim, or an older one, rather than
@@ -780,6 +881,7 @@ class SqliteStore implements Store {
     const d = db.dialect;
     const clock = (): StoreNow => storeNow(d, now);
     this.#clock = clock;
+    if (!d.nowSql) this.leaseClock = now;
 
     const insertAgent = (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null }, at: number) =>
       tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);
@@ -977,6 +1079,8 @@ class SqliteStore implements Store {
           const left = await tx.all<{ id: string }>("SELECT id FROM triggers WHERE agent_id = ? ORDER BY id", agentId);
           if (left.length) throw new TriggersLeft(agentId, left.map((one) => one.id));
           await tx.run("DELETE FROM learning_proposals WHERE agent_id = ?", agentId);
+          await tx.run("DELETE FROM learning_ledger WHERE agent_id = ?", agentId);
+          await tx.run("DELETE FROM learning_spend WHERE agent_id = ?", agentId);
           await dropAgentPrivate(tx, agentId);
           // Its revisions in one statement (a revision's parent is the same agent's, checked at the statement's end), the
           // agent's pointer at its current one cleared first.
@@ -1147,6 +1251,7 @@ class SqliteStore implements Store {
           // holdsAt: holdsRoom's own predicate, at that time.
           if (change.holdsAt !== undefined && !(was.status === "sent" && was.run_id === null && was.retry_at !== null && was.retry_at >= change.holdsAt)) return undefined;
           if (change.startByWas !== undefined && !(was.status === "sent" && was.run_id === null && was.retry_at === change.startByWas)) return undefined;
+          if (change.noRun && was.run_id !== null) return undefined;
           const settled = change.status !== undefined && change.status !== "due";
           // Out of due, a firing keeps no retry, wait, payload or attrs (unless keepAttrs), nor the reason its last try gave
           // (unless it gives one). One exception: a sent firing keeps its startBy in retry_at (firingOf reads it back as
@@ -1322,8 +1427,24 @@ class SqliteStore implements Store {
         })),
     };
 
+    /** Firing `firing` started with run `runId`, in the run's own transaction, under its trigger's row lock (as settle
+     *  takes it): only while it has no run and is due, or sent with a start_by (its host took it); else FiringMoved,
+     *  which rolls the run back. Its trigger's last run and failure streak move as a started firing's do (settle). */
+    const startFiring = async (tx: Tx, { triggerId, key }: { triggerId: string; key: string }, runId: string, at: number): Promise<void> => {
+      await d.lockRow(tx, "triggers", "id", triggerId);
+      const moved = await tx.runCounted(
+        "UPDATE trigger_firings SET status = 'started', run_id = ?, retry_at = NULL, waits_on = NULL, payload = NULL, attrs = NULL, reason = NULL, attempts = 0 WHERE trigger_id = ? AND key = ? AND run_id IS NULL AND (status = 'due' OR (status = 'sent' AND retry_at IS NOT NULL))",
+        runId, triggerId, key,
+      );
+      if (moved === 0) throw new FiringMoved(triggerId, key);
+      const trigger = await tx.get<{ last_run_id: string | null }>("SELECT last_run_id FROM triggers WHERE id = ?", triggerId);
+      // Run ids are UUIDv7s, sorted by when the run started: an older run never takes a later one's place (settle).
+      const last = trigger?.last_run_id && trigger.last_run_id > runId ? trigger.last_run_id : runId;
+      await tx.run("UPDATE triggers SET last_run_id = ?, failures_in_a_row = 0, updated_at = ? WHERE id = ?", last, at, triggerId);
+    };
+
     this.runs = {
-      create: async ({ id, agentId, revisionId, origin, labels, expectedCurrent, settingsGuards, startedAt }, launch) => {
+      create: async ({ id, agentId, revisionId, origin, labels, expectedCurrent, settingsGuards, startedAt, firing }, launch) => {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, disk, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const labelled = labelsColumn(labels);
@@ -1346,6 +1467,7 @@ class SqliteStore implements Store {
           const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, launchDiskOf(launch), startedAt ?? at);
           if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
           if (launch) await writeLaunch(tx, id, launch, at);
+          if (firing) await startFiring(tx, firing, id, at);
           return runOf(row!);
         }));
       },
@@ -1392,10 +1514,12 @@ class SqliteStore implements Store {
       projectCheckpoints: (filter) => readProjectCheckpoints(db, filter),
       learningStarts: (agentId) => readLearningStarts(db, agentId, NOT_A_LEARNING_RUN),
       seededBefore: (agentId, at) => readSeededBefore(db, agentId, at),
-      list: async ({ agentId, revisionId, state, archived, labels, disk, limit, purged = false }) => {
+      list: async ({ agentId, revisionId, state, archived, labels, disk, limit, purged = false, scope, before }) => {
         // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
         // count, stat or notice names it. A purged run is a tombstone: only the readers that sum or count ask for it.
-        const where: string[] = [NOT_A_LEARNING_RUN, ...(purged ? [] : ["purged_at IS NULL"])];
+        // The Agent Factory's active scope alone lists a learning run: there it is an execution like any other. Its review
+        // scope keeps the runs list's boundary (listed, below): no learning run and no audit's shadow run.
+        const where: string[] = [...(scope === "active" ? [] : [NOT_A_LEARNING_RUN]), ...(scope === "review" ? [NOT_A_SHADOW_RUN] : []), ...(purged ? [] : ["purged_at IS NULL"])];
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
@@ -1405,6 +1529,18 @@ class SqliteStore implements Store {
         for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("labels")), params.push(key, value));
         if (disk === null) where.push("disk IS NULL");
         else if (disk !== undefined) (where.push("disk = ?"), params.push(disk));
+        // Factory visibility is selected before the page limit: an old parked run must not disappear behind newer
+        // history. A person's stopped agentic turn remains continuable; an imported session never executes here.
+        if (scope !== undefined) {
+          where.push("imported_from IS NULL");
+          where.push(scope === "active"
+            ? `(state IN ('queued', 'running', 'parked') OR (state = 'stopped' AND outcome = 'stopped' AND ${NOT_A_LEARNING_RUN} AND ${NOT_A_SHADOW_RUN} AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')))`
+            : "((state = 'ended' AND outcome = 'escalated') OR state = 'failed') AND archived_at IS NULL AND NOT EXISTS (SELECT 1 FROM agents WHERE agents.id = runs.agent_id AND agents.archived_at IS NOT NULL)");
+        }
+        if (before !== undefined) {
+          where.push("(started_at < ? OR (started_at = ? AND id < ?))");
+          params.push(before.startedAt, before.startedAt, before.id);
+        }
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);
@@ -1412,7 +1548,7 @@ class SqliteStore implements Store {
       },
       // A list's page from the rows alone: filtered, ordered and cut to the page in the query, one read whatever the number
       // of runs, each row with its listing (schema.ts RUN_LISTING_COLUMNS) and its agent's archive time.
-      listed: async ({ agentId, revisionId, labels, archived, status, going, after, limit, offset = 0 }) => {
+      listed: async ({ agentId, revisionId, labels, source, startedFrom, startedBefore, model, archived, status, going, after, limit, offset = 0 }) => {
         const n = clock();
         const behind = listingBehind(n.sql);
         // Neither a built-in learning run nor an audit's shadow run (learn/audit.ts SHADOW_PREFIX, matched as it is, case and all).
@@ -1421,6 +1557,12 @@ class SqliteStore implements Store {
         if (agentId !== undefined) (where.push("runs.agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("runs.revision_id = ?"), params.push(revisionId));
         for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("runs.labels")), params.push(key, value));
+        if (source === "live") where.push("runs.imported_from IS NULL");
+        else if (source !== undefined) (where.push(`${d.jsonText("runs.imported_from", ["source"])} = ?`), params.push(source));
+        // The window [startedFrom, startedBefore): a run started at its start is in it, one started at its end is not.
+        if (startedFrom !== undefined) (where.push("runs.started_at >= ?"), params.push(startedFrom));
+        if (startedBefore !== undefined) (where.push("runs.started_at < ?"), params.push(startedBefore));
+        if (model !== undefined) (where.push(runUsedModel(d)), params.push(model));
         where.push(`COALESCE(runs.archived_at, agents.archived_at) IS ${archived ? "NOT NULL" : "NULL"}`, "runs.purged_at IS NULL");
         if (status !== undefined) (where.push("runs.list_status = ?"), params.push(status));
         // A run still going (no settled status on its row) whose listing is behind: its list_status may say what it was.
@@ -1439,6 +1581,22 @@ class SqliteStore implements Store {
           })),
           more: rows.length > limit,
         };
+      },
+      // The same columns `listed` reads beside a row, for the runs named: one read, whatever their journals. A purged run
+      // is a tombstone, as it is to `listed`: it keeps no listing, and none is built for it.
+      listings: async (runIds) => {
+        if (runIds.length === 0) return [];
+        const n = clock();
+        const behind = listingBehind(n.sql);
+        const rows = await db.all<{ id: string; agent_archived_at: number | null; listing: string | null; list_mark: number; behind: number }>(
+          `SELECT runs.id, agents.archived_at AS agent_archived_at, runs.listing, runs.list_mark, ${behind.sql} AS behind
+             FROM runs JOIN agents ON agents.id = runs.agent_id WHERE runs.purged_at IS NULL AND runs.id IN (${runIds.map(() => "?").join(", ")})`,
+          ...behind.params(n.params), ...runIds,
+        );
+        return rows.map((row) => ({
+          id: row.id, agentArchivedAt: row.agent_archived_at, listMark: Number(row.list_mark), behind: Boolean(Number(row.behind)),
+          listing: row.listing === null ? null : (JSON.parse(row.listing) as KeptListing),
+        }));
       },
       counts: async (agentId) => {
         const [row] = await db.all<{ count: number; live: number | null }>(
@@ -1464,10 +1622,10 @@ class SqliteStore implements Store {
         );
         return rows.map((row) => ({ id: row.id, mark: Number(row.mark), held: Boolean(Number(row.held)) }));
       },
-      putListing: async (runId, mark, { item, cut, status, live, until, flags }) => {
+      putListing: async (runId, mark, { item, cut, status, live, until, flags, factory }) => {
         const [result] = await db.write([{
           sql: "UPDATE runs SET listing = ?, list_status = ?, listing_mark = ?, listing_live = ?, listing_until = ?, listing_flags = ? WHERE id = ? AND list_mark = ? RETURNING id",
-          params: [json({ item, cut }), status, mark, live ? 1 : 0, until, flags, runId, mark],
+          params: [json({ item, cut, ...(factory !== undefined ? { factory } : {}) }), status, mark, live ? 1 : 0, until, flags, runId, mark],
         }]);
         return (result?.rows.length ?? 0) > 0;
       },
@@ -1481,11 +1639,16 @@ class SqliteStore implements Store {
       // or the epoch), so it never overwrites a figure or a bound, whatever its caller read.
       healCost: async (runId, { epoch, endedAt }, { costUsd, costUpperBound }) => {
         if (!Number.isFinite(costUsd) || costUsd < 0) throw new TypeError(`a healed cost is a figure of $0 or more (got ${costUsd})`);
-        const [result] = await db.write([{
-          sql: `UPDATE runs SET cost_usd = ?, cost_upper_bound = ? WHERE id = ? AND ${COST_UNKNOWN} AND epoch = ? AND ended_at = ? RETURNING id`,
-          params: [costUsd, costUpperBound ? 1 : 0, runId, epoch, endedAt],
-        }]);
-        return (result?.rows.length ?? 0) > 0;
+        // Its ledger row is recorded again with it, in the same transaction: the job's cost it reads is the healed one.
+        return db.transaction(async (tx) => {
+          const row = await tx.get<RunRecord>(
+            `UPDATE runs SET cost_usd = ?, cost_upper_bound = ? WHERE id = ? AND ${COST_UNKNOWN} AND epoch = ? AND ended_at = ? RETURNING ${RUN_COLUMNS}`,
+            costUsd, costUpperBound ? 1 : 0, runId, epoch, endedAt,
+          );
+          if (!row) return false;
+          await recordLedger(tx, runOf(row), now());
+          return true;
+        });
       },
       // The runs healCost may write that the heal's rule (store-view.ts bookedCostOf, healOf) does not refuse by its
       // columns alone, so the start sweep never reads one that cannot heal again at each start: left out are a person's
@@ -1562,7 +1725,7 @@ class SqliteStore implements Store {
             if ((await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM runs WHERE id = ?", id))?.purged_at === null) left.push(id);
           }
           if (left.length) throw new RunsMadeFromLeft(runId, left);
-          await dropRunContent(tx, runId);
+          await dropRunContent(tx, runId, now());
           // What names it, let go: a trigger's last run, the firing that started it (its key and status kept, so it never
           // fires again; the event it was given, its payload and attributes, gone), a firing's wait behind it (the
           // trigger's room is read again, as for a run that ended), the run a machine's token was minted for.
@@ -1576,6 +1739,9 @@ class SqliteStore implements Store {
             const state = (JSON.parse(row.proposal) as { state?: unknown } | null)?.state;
             await tx.run("UPDATE learning_proposals SET turn = '{}', proposal = ? WHERE run_id = ? AND round = ?", json(typeof state === "string" ? { state } : {}), runId, row.round);
           }
+          // Its ledger row and every spend row it booked or that audits it, as a remove takes them: what it cost stays on its
+          // tombstone (cost_usd, the metrics' figures), which the readers of money (usage, stats) read; no series shows it.
+          await dropLedger(tx, runId);
           // Its row's content, its metrics cut to their figures and names (tombstoneMetrics), with what its spend's readers
           // read from its journal folded in. Its outcome stays: a code (RunOutcome), never words.
           const metrics = tombstoneMetrics(run.metrics === null ? null : JSON.parse(run.metrics), kept);
@@ -1591,8 +1757,10 @@ class SqliteStore implements Store {
           const run = await tx.get<{ state: RunState }>("SELECT state FROM runs WHERE id = ?", runId);
           if (!run) return;
           if (!(FINAL_STATES as readonly string[]).includes(run.state)) throw new StoreConstraint(`run ${runId} is ${run.state}: only a final run is removed`);
-          await dropRunContent(tx, runId);
+          await dropRunContent(tx, runId, now());
           await tx.run("DELETE FROM learning_proposals WHERE run_id = ?", runId);
+          // Its ledger row and every spend row it booked or that audits it, as a purge takes them.
+          await dropLedger(tx, runId);
           // Its computers' usage, which a purge keeps (figures, no words).
           await tx.run("DELETE FROM computer_intervals WHERE run_id = ?", runId);
           await tx.run("DELETE FROM runs WHERE id = ?", runId);
@@ -1640,11 +1808,13 @@ class SqliteStore implements Store {
             await d.lockRow(tx, "runs", "id", id, "update");
             const at = now();
             const n = storeNow(d, () => at);
-            const row = await tx.get<{ id: string }>(
-              `UPDATE runs SET state = 'failed', summary = ?, ended_at = ?, left_running_at = ${n.sql}, epoch = epoch + 1 WHERE id = ? AND state = 'queued' AND epoch = 0 AND runner IS NULL RETURNING id`,
+            const row = await tx.get<RunRecord>(
+              `UPDATE runs SET state = 'failed', summary = ?, ended_at = ?, left_running_at = ${n.sql}, epoch = epoch + 1 WHERE id = ? AND state = 'queued' AND epoch = 0 AND runner IS NULL RETURNING ${RUN_COLUMNS}`,
               summary, at, ...n.params, id,
             );
             if (!row) return false;
+            // Its ledger row, as an end writes one (applyRunPatch).
+            await recordLedger(tx, runOf(row), at);
             // As an end does: its untaken commands refused, its launch's secrets erased, in this same commit.
             await refuseLeftovers(tx, id, "failed", at, d);
             return true;
@@ -1680,7 +1850,7 @@ class SqliteStore implements Store {
             }
           }
           // An update that made the run final: its other untaken rows are refused in this transaction, after its own takes.
-          await refuseLeftovers(tx, claim.runId, patch.state, at, d, patch.keepsEnd === true);
+          await refuseLeftovers(tx, claim.runId, patch.state, at, d, patch.keepsEnd === true, patch.census);
           // The bind's save lease, in this same transaction as the sign_in_handed write just made (applyRunPatch, under
           // SIGN_IN_HANDED_LOCK): this run saves unless another run already holds one of the handed pointers (a running run,
           // or — within signInSettleMs of leaving running, a vendor's settle window — one that left running less than that
@@ -1707,6 +1877,10 @@ class SqliteStore implements Store {
      *  writes or removes the row, so an owner's save, which drops the mark in the transaction that writes its row
      *  (dropTokensMark), never lands in between. */
     const recordJson = readableJson(d, "settings.value");
+    /** A new row's created_at, its two `?` now and three the name's record keys (mcpRecordKeys) then now again: now, or past
+     *  every `of` the name's records still hold, even within its millisecond or on a clock stepped back. created_at is the
+     *  row's identity (the `of` its records name): a record about an earlier row of the name is never a later row's. */
+    const madeAfterRecords = `${d.greatest}(${d.bigintParam}, COALESCE((SELECT MAX(${d.jsonNumber(recordJson, ["of"])}) FROM settings WHERE settings.key IN (?, ?, ?)), ${d.bigintParam} - 1) + 1)`;
     const tokensMarked = `EXISTS (SELECT 1 FROM settings WHERE settings.key = ? AND ${d.jsonText(recordJson, ["by"])} = 'token' AND ${d.jsonValue(recordJson, ["of"])} = CAST(mcp_servers.created_at AS TEXT))`;
 
     /** A write of the saved server `name` that the token's mark decides (McpTokensMark, McpOwnersMark): one transaction that
@@ -1746,7 +1920,8 @@ class SqliteStore implements Store {
       const left = sealed !== null && typeof tokenLeftMs === "number" && Number.isFinite(tokenLeftMs) ? tokenLeftMs : null;
       const stamp = clock();
       // updated_at defaults to now (a save or a sign-in); a refresh passes the kept one so it is not read as an edit.
-      // listed_at is the tools' listing time, now unless given.
+      // listed_at is the tools' listing time, now unless given. A save's moves past the row's own, in the statement that
+      // writes it (lastEdit), even within its millisecond: a refresh that read the row compares it, and must see the save.
       const updated = updatedAt ?? at;
       const listed = listedAt ?? at;
       // The credential's own time: now for a put that writes one, unless the caller says it kept the sealed one (its
@@ -1758,31 +1933,40 @@ class SqliteStore implements Store {
       const statement = expected !== undefined && expected !== null
         ? {
           sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, sealed = ?, refresh_holder = NULL, refresh_until = NULL,
-              updated_at = ?, listed_at = ?, credential_changed_at = ?, token_until = ${stamp.sql} + ${d.bigintParam}
+              updated_at = ${lastEdit(updatedAt, "?")}, listed_at = ?, credential_changed_at = ?, token_until = ${stamp.sql} + ${d.bigintParam}
             WHERE name = ? AND auth = ? AND sealed IS ${expected.sealed ? "NOT NULL" : "NULL"} AND ${expected.changedAt === null ? "credential_changed_at IS NULL" : "credential_changed_at = ?"}${tokens ? ` AND ${tokensMarked}` : ""}
             RETURNING ${mcpServerColumnsAt(stamp)}`,
           params: [...values, updated, listed, credentialAt, ...stamp.params, left, name, expected.auth, ...(expected.changedAt === null ? [] : [expected.changedAt]), ...(tokens ? [tokens.record] : []), ...stamp.params],
         }
         : {
-          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
+          sql: `INSERT INTO mcp_servers (name, url, auth, protocol, tools, prices, server_info, instructions, sealed, created_at, updated_at, listed_at, credential_changed_at, token_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${madeAfterRecords}, ?, ?, ?, ${stamp.sql} + ${d.bigintParam})
             ON CONFLICT (name) DO UPDATE SET url = excluded.url, auth = excluded.auth, protocol = excluded.protocol, tools = excluded.tools,
-              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = excluded.updated_at, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
+              prices = excluded.prices, server_info = excluded.server_info, instructions = excluded.instructions, sealed = excluded.sealed, refresh_holder = NULL, refresh_until = NULL, updated_at = ${lastEdit(updatedAt, "excluded.updated_at")}, listed_at = excluded.listed_at, credential_changed_at = excluded.credential_changed_at, token_until = excluded.token_until
               ${expected === null ? "WHERE 1 = 0" : ""}
             RETURNING ${mcpServerColumnsAt(stamp)}`,
-          params: [name, ...values, at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
+          params: [name, ...values, at, ...mcpRecordKeys(name), at, updated, listed, credentialAt, ...stamp.params, left, ...stamp.params],
         };
       const written = await writeMcpRow(name, statement, tokens, owns);
       return written && mcpServerOf(written);
     };
 
+    /** A server row's updated_at as a write sets it to `value` (SQL): kept as given when the caller passes the one it read
+     *  (`given`, a refresh: not an edit), else past the row's own (mcp_servers.updated_at, the row before the write) by at
+     *  least 1 ms, so two saves in one millisecond are still two edits a compare-and-set tells apart. */
+    const lastEdit = (given: number | undefined, value: string) => (given === undefined ? `${d.greatest}(${value}, mcp_servers.updated_at + 1)` : value);
+
     /** `statement`, the write of server `name`'s row, answering the row it wrote (RETURNING): alone, or, when the token's mark
      *  decides it (`tokens`, `owns`), in one transaction under the server's lock (underMcpLock), the owner's dropping the
-     *  mark once its row is written and only then. */
+     *  mark once its row is written and only then, the token's first save writing its record (`tokens.made`) there too. */
     const writeMcpRow = async (name: string, statement: Statement, tokens: McpTokensMark | undefined, owns: McpOwnersMark | undefined): Promise<McpServerRecord | undefined> => {
       if (!tokens && !owns) return (await db.write([statement]))[0]!.rows[0] as McpServerRecord | undefined;
       return underMcpLock(name, async (tx) => {
         const row = (await tx.step(statement)).rows[0] as McpServerRecord | undefined;
         if (row && owns) await dropTokensMark(tx, owns, mcpServerOf(row).createdAt);
+        if (row && tokens?.made) {
+          const encoded = json(tokens.made(mcpServerOf(row)));
+          await tx.run("INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, connector_id = excluded.connector_id, updated_at = excluded.updated_at", tokens.record, encoded, nativeCommandOwner(tokens.record, encoded), now());
+        }
         return row;
       });
     };
@@ -1795,16 +1979,19 @@ class SqliteStore implements Store {
     this.mcp = {
       put: async (row) => (await putServer(row, undefined))!,
       putIfCredential: (row, expected, tokens, owns) => putServer(row, expected, tokens, owns),
-      // One statement compares the credential and writes, as keepRefreshed: no read between, so a refresh's keep never lands
-      // in a gap and is then written over. The credential's columns and the refresh lease are not in its SET.
+      // One statement compares the row as read (its credential, address, auth type and last edit) and writes, as
+      // keepRefreshed: no read between, so a refresh's keep never lands in a gap and is then written over, and a save with no
+      // credential (the sealed column the same after it), whether it moved the row or only repriced it, is never written
+      // back over: every save moves updated_at, past the row's own even within its millisecond (lastEdit). The credential's
+      // columns and the refresh lease are not in its SET.
       rewrite: async ({ name, url, auth, protocol = null, tools, prices = null, serverInfo = null, instructions = null, listedAt, updatedAt }, seen, owns) => {
         const at = now();
         const stamp = clock();
         const row = await writeMcpRow(name, {
-          sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, updated_at = ?, listed_at = ?
-            WHERE name = ? AND ${d.nullSafeEquals("sealed")}
+          sql: `UPDATE mcp_servers SET url = ?, auth = ?, protocol = ?, tools = ?, prices = ?, server_info = ?, instructions = ?, updated_at = ${lastEdit(updatedAt, "?")}, listed_at = ?
+            WHERE name = ? AND ${d.nullSafeEquals("sealed")} AND url = ? AND auth = ? AND updated_at = ?
             RETURNING ${mcpServerColumnsAt(stamp)}`,
-          params: [url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, updatedAt ?? at, listedAt ?? at, name, seen, ...stamp.params],
+          params: [url, auth, protocol, json(tools), json(prices), serverInfo === null ? null : json(serverInfo), instructions, updatedAt ?? at, listedAt ?? at, name, seen.sealed, seen.url, seen.auth, seen.updatedAt, ...stamp.params],
         }, undefined, owns);
         return row && mcpServerOf(row);
       },
@@ -1959,6 +2146,7 @@ class SqliteStore implements Store {
     // A purged run's kept learning is its state alone (Runs.purge), for the learning meter: no reader of learning reads it.
     const NOT_PURGED = "NOT EXISTS (SELECT 1 FROM runs WHERE runs.id = learning_proposals.run_id AND runs.purged_at IS NOT NULL)";
     this.learning = {
+      ...learningRows(db, now),
       // A round asked for, else the run's newest.
       proposal: async (runId, round) => {
         const row = round === undefined
@@ -1996,6 +2184,43 @@ class SqliteStore implements Store {
           return kept?.state === "proposed" ? [] : [{ agentId: row.agent_id, at: row.created_at, costUsd: 0 }];
         });
       },
+      ledger: async (agentId, runIds) => {
+        // One statement over both tables (a UNION ALL, each row marked by its table): one snapshot on either database, so
+        // an end committed between two reads never mixes its row with another end's spend.
+        type Part = { part: "row" | "spend"; run_id: string; agent_id: string; started_at: number | string | null; path: string | null; workflow: string | null; digest: string | null; not_served: string | null; job_usd: number | null; look_back_usd: number | null; cost: string | null; workflow_calls: string | null; kind: string | null; round: number | string | null; of_run: string | null; usd: number | null };
+        if (runIds !== undefined && runIds.length === 0) return { rows: [], spend: [] };
+        const list = runIds === undefined ? "" : runIds.map(() => "?").join(", ");
+        const rowsOf = runIds === undefined ? { sql: "", params: [] } : { sql: ` AND run_id IN (${list})`, params: [...runIds] };
+        const spendOf = runIds === undefined ? { sql: "", params: [] } : { sql: ` AND (run_id IN (${list}) OR of_run IN (${list}))`, params: [...runIds, ...runIds] };
+        const text = "CAST(NULL AS TEXT)", whole = "CAST(NULL AS BIGINT)", usd = "CAST(NULL AS DOUBLE PRECISION)";
+        const parts = await db.all<Part>(
+          `SELECT 'row' AS part, run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, workflow_calls, ${text} AS kind, ${whole} AS round, ${text} AS of_run, ${usd} AS usd
+             FROM learning_ledger WHERE agent_id = ?${rowsOf.sql}
+           UNION ALL
+           SELECT 'spend' AS part, run_id, agent_id, ${whole}, ${text}, workflow, digest, ${text}, ${usd}, ${usd}, ${text}, ${text}, kind, round, of_run, usd
+             FROM learning_spend WHERE agent_id = ?${spendOf.sql}`,
+          agentId, ...rowsOf.params, agentId, ...spendOf.params,
+        );
+        const usdOf = (value: number | null) => (value === null ? null : Number(value));
+        const rows = parts.filter((one) => one.part === "row").map((row): LedgerRow => ({
+          runId: row.run_id, agentId: row.agent_id, startedAt: Number(row.started_at), path: row.path as LedgerRow["path"], workflow: row.workflow, digest: row.digest,
+          notServed: row.not_served as LedgerRow["notServed"], jobUsd: usdOf(row.job_usd), lookBackUsd: usdOf(row.look_back_usd), cost: row.cost as LedgerRow["cost"],
+          // Its calls as its end wrote them (record), each checked again as read.
+          workflowCalls: workflowCallsIn({ workflow_calls: JSON.parse(row.workflow_calls ?? "[]") as unknown }),
+        }));
+        const spend = parts.filter((one) => one.part === "spend").map((row): SpendRow => ({
+          runId: row.run_id, round: Number(row.round), agentId: row.agent_id, kind: row.kind as SpendRow["kind"], ofRun: row.of_run, workflow: row.workflow, digest: row.digest, usd: usdOf(row.usd),
+        }));
+        const byText = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+        return {
+          rows: rows.sort((a, b) => a.startedAt - b.startedAt || byText(a.runId, b.runId)),
+          spend: spend.sort((a, b) => byText(a.runId, b.runId) || byText(a.kind, b.kind) || a.round - b.round),
+        };
+      },
+      byHandBefore: async (agentId, before, limit) => {
+        const rows = await db.all<{ run_id: string; started_at: number | string; job_usd: number }>(BY_HAND_BEFORE, agentId, before.startedAt, before.id, limit);
+        return rows.map((row) => ({ id: row.run_id, startedAt: Number(row.started_at), jobUsd: Number(row.job_usd) }));
+      },
     };
 
     this.settings = {
@@ -2007,7 +2232,7 @@ class SqliteStore implements Store {
         const encoded=json(value);
         await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, connector_id = excluded.connector_id, updated_at = excluded.updated_at", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
       },
-      putIfAbsent: async (key, value, capacity) => {
+      putIfAbsent: async (key, value, capacity, claim) => {
         const encoded=json(value);
         if (capacity !== undefined) {
           if (typeof capacity.prefix !== "string" || !capacity.prefix || capacity.prefix.includes("\0") || !key.startsWith(capacity.prefix) || !Number.isSafeInteger(capacity.limit) || capacity.limit < 1)
@@ -2016,6 +2241,8 @@ class SqliteStore implements Store {
             // SQLite holds its writer lock already; Postgres holds this schema's prefix lock until commit. The count
             // and insertion cannot interleave with another bounded insertion, even through an independent store handle.
             await d.lockKey(tx, `settings.capacity:${capacity.prefix}`);
+            // Settings precede the run's claim lock, as in replaceIf.
+            if (claim) await underClaim(tx, claim, now);
             const existing = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
             if (existing !== undefined) return JSON.parse(existing.value);
             // Match Settings.all's literal prefix range: use the key index and never parse values or treat _/% as LIKE.
@@ -2035,6 +2262,13 @@ class SqliteStore implements Store {
             return saved === undefined ? undefined : JSON.parse(saved.value);
           });
         }
+        // Under a claim: the claim's fence and the insert in one transaction, so a claim that lost the run writes nothing.
+        if (claim) return db.transaction(async (tx) => {
+          const at = await underClaim(tx, claim, now);
+          await tx.run("INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", key, encoded, nativeCommandOwner(key, encoded), at);
+          const saved = await tx.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
+          return saved === undefined ? undefined : JSON.parse(saved.value);
+        });
         await db.write([{ sql: "INSERT INTO settings (key, value, connector_id, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (key) DO NOTHING", params: [key, encoded, nativeCommandOwner(key,encoded), now()] }]);
         const row = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", key);
         return row === undefined ? undefined : JSON.parse(row.value);
@@ -2087,6 +2321,10 @@ class SqliteStore implements Store {
       },
       put: async (name, sealed) => {
         await db.write([{ sql: "INSERT INTO sealed_keys (name, sealed, updated_at) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET sealed = excluded.sealed, updated_at = excluded.updated_at", params: [name, sealed, now()] }]);
+      },
+      putIfAbsent: async (name, sealed) => {
+        const [result] = await db.write([{ sql: "INSERT INTO sealed_keys (name, sealed, updated_at) VALUES (?, ?, ?) ON CONFLICT (name) DO NOTHING", params: [name, sealed, now()] }]);
+        return result!.changes === 1;
       },
       replaceIf: async (name, was, sealed) => {
         const [result] = await db.write([{ sql: "UPDATE sealed_keys SET sealed = ?, updated_at = ? WHERE name = ? AND sealed = ?", params: [sealed, now(), name, was] }]);
@@ -2906,7 +3144,10 @@ class SqliteStore implements Store {
       );
       await writeLaunch(tx, run.id, run.launch, at);
       await new RunStorage(this.#db, { runId: run.id, epoch: 0 }, this.#now).applyIn(tx, run.transcript, row!.inserted_rowid ?? "this-transaction");
-      return runOf(row!);
+      // Its ledger row, as an end writes one (applyRunPatch), in this same commit.
+      const imported = runOf(row!);
+      if (FINAL_STATES.includes(imported.state)) await recordLedger(tx, imported, at);
+      return imported;
     });
   }
 

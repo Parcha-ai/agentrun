@@ -2,9 +2,11 @@
 // read and a `tools` line on /usage, inside the run's `usd`. The real server and runner, a faux model at a fixed price a
 // request, and a fake MCP server saved with the toolkit `fal` that answers fal's get_pricing and run_model.
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 import { test } from "node:test";
 import { REQUEST_USD } from "./fixtures/faux-tools-cost.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { SAMPLES } from "./fixtures/media-samples.mjs";
 import { agent, follow, serve } from "./support.mjs";
 
 const FAUX = new URL("./fixtures/faux-tools-cost.mjs", import.meta.url).pathname;
@@ -26,7 +28,7 @@ test("a run's fal job: a Tool cost row, tools_usd and a /usage tools line at fal
   const made = await api("POST", "/agents", agent("card", { tools: [RUN_MODEL], tool_settings: { [RUN_MODEL]: { permission: "allow" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   // The run has a cap, so the job is held under it before it is sent.
-  const run = await api("POST", "/agents/card/runs", { input: { content: 'Call mcp__fal__run_model with {"endpoint_id":"fal-ai/ideogram/v3","input":{"prompt":"a share card","num_images":2},"submission_key":"card-20261120-1"}' }, max_cost_usd: 1 });
+  const run = await api("POST", "/agents/card/runs", { input: { content: 'Call mcp__fal__run_model with {"endpoint_id":"fal-ai/ideogram/v3","input":{"rendering_speed":"TURBO","prompt":"a share card","num_images":2},"submission_key":"card-20261120-1"}' }, max_cost_usd: 1 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
@@ -97,25 +99,38 @@ test("a fal job booked above its hold that leaves the run within its cap stops n
   assert.equal(view.status, "completed", JSON.stringify(view.error));
 });
 
+const isCharge = (row) => row.kind === "phase" && /^Tool cost:/.test(row.summary ?? "");
+
+// The timeline's own long poll (wait_ms) from its cursor, as `follow` reads it, bounded: each page's rows (new or changed
+// since the last) are checked until a row `matches`, or a failure names `what` that never came. `runOf` gives the run's id
+// once its start has answered.
+async function onTimeline(api, runOf, matches, what) {
+  const deadline = Date.now() + 30_000;
+  let after = 0;
+  while (Date.now() < deadline) {
+    const runId = runOf();
+    if (!runId) { await new Promise((done) => setImmediate(done)); continue; }
+    const page = (await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=2000`)).body;
+    if (page?.rows?.some(matches)) return;
+    after = page?.next_after ?? after;
+  }
+  throw new Error(`not within 30 s: ${what}`);
+}
+
 /** A run whose model sends two ideogram jobs at once (two calls in one message) under a $1 cap, each asking 4 images at
- *  $0.10 (each held at $0.40): the first states 7 images ($0.70) while the second is still running; the second states
- *  `secondImages`. Then, in its next turn, a call that costs nothing. The order is the fake's, never the machine's: the
- *  first answers only once the second has been sent (so both were admitted at their holds), and the second only once the
- *  first's charge is on the run's timeline. */
-async function twoAtOnce(t, secondImages) {
+ *  $0.10 (each held at $0.40): the first states 7 images ($0.70), the second `secondImages`. Then, in its next turn, a
+ *  call that costs nothing. The order is the fake's, never the machine's: the first answers only once the second has been
+ *  sent (so both were admitted at their holds). With `heldFirst` false, the first settles while the second is still
+ *  running, and the second answers only once the first's charge is on the run's timeline; with it true, the second
+ *  settles first, and the first answers only once the second's charge is on the timeline. */
+async function twoAtOnce(t, secondImages, { heldFirst = false } = {}) {
   const { api } = await serve(t, { faux: AT_ONCE });
   const fake = await startFakeMcp({});
   t.after(() => fake.close());
   let secondArrived;
   const secondSent = new Promise((done) => { secondArrived = done; });
   let runId;
-  const firstBooked = async () => {
-    for (;;) {
-      const page = runId ? (await api("GET", `/runs/${runId}/timeline`)).body : undefined;
-      if (page?.rows?.some((row) => row.kind === "phase" && /^Tool cost:/.test(row.summary ?? ""))) return;
-      await new Promise((done) => setTimeout(done, 100));
-    }
-  };
+  const charged = (which) => onTimeline(api, () => runId, isCharge, `the ${which} job's charge on the run's timeline`);
   const images = (n) => Array.from({ length: n }, (_, i) => ({ url: `https://v3.fal.media/${i}.png`, width: 1024, height: 1024 }));
   const reply = (args, n) => ({ content: [{ type: "text", text: JSON.stringify({ status: "completed", submission_replayed: false, endpoint_id: args.endpoint_id, request_id: `r-${args.input?.prompt}`, result: { images: images(n) }, has_result: true }) }] });
   fake.tools.get_pricing = { description: "fal's price for an endpoint.", input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false }, run: ({ endpoint_id }) => ({ content: [{ type: "text", text: JSON.stringify({ prices: [{ endpoint_id, unit_price: 0.1, unit: "images", currency: "USD" }], next_cursor: null, has_more: false }) }] }) };
@@ -123,9 +138,13 @@ async function twoAtOnce(t, secondImages) {
     description: "Run a fal model.",
     input: { type: "object", properties: {} },
     run: async (args) => {
-      if (args.input?.prompt === "first") return (await secondSent, reply(args, 7));
+      if (args.input?.prompt === "first") {
+        await secondSent;
+        if (heldFirst) await charged("second");
+        return reply(args, 7);
+      }
       secondArrived();
-      await firstBooked();
+      if (!heldFirst) await charged("first");
       return reply(args, secondImages);
     },
   };
@@ -134,7 +153,7 @@ async function twoAtOnce(t, secondImages) {
   const SCHEMA = "mcp:fal/get_model_schema";
   const made = await api("POST", "/agents", agent("two", { tools: [RUN_MODEL, SCHEMA], tool_settings: { [RUN_MODEL]: { permission: "allow" }, [SCHEMA]: { permission: "allow" } } }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
-  const job = (prompt) => ["mcp__fal__run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt, num_images: 4 } }];
+  const job = (prompt) => ["mcp__fal__run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt, num_images: 4 } }];
   const content = `At once: ${JSON.stringify([job("first"), job("second")])}\nAt once: ${JSON.stringify([["mcp__fal__get_model_schema", { endpoint_id: "fal-ai/ideogram/v3" }]])}`;
   const run = await api("POST", "/agents/two/runs", { input: { content }, max_cost_usd: 1 });
   assert.equal(run.status, 202, JSON.stringify(run.body));
@@ -142,7 +161,7 @@ async function twoAtOnce(t, secondImages) {
   const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
   const called = (tool) => fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === tool).length;
-  const costs = rows.filter((row) => row.kind === "phase" && /^Tool cost:/.test(row.summary ?? "")).map((row) => micro(row.usage?.usd));
+  const costs = rows.filter(isCharge).map((row) => micro(row.usage?.usd));
   return { view, called, costs };
 }
 
@@ -164,6 +183,16 @@ test("a fal job that settles above its hold while another is still held: when th
   assert.match(view.error?.message ?? "", /over its cap of \$1\.$/);
 });
 
+test("a fal job that settles at its hold while another is still held: when the other then settles above its hold and takes the run past its cap, the run stops at once", { timeout: 120_000 }, async (t) => {
+  const { view, called, costs } = await twoAtOnce(t, 4, { heldFirst: true });
+  assert.equal(called("run_model"), 2, "both jobs were sent");
+  assert.deepEqual(costs, [micro(0.4), micro(0.7)], "the second settled at its hold before the first settled above its");
+  assert.equal(micro(view.cost.tools_usd), micro(1.1));
+  assert.equal(called("get_model_schema"), 0, "nothing ran after the charge that passed the cap");
+  assert.deepEqual([view.status, view.error?.code], ["failed", "spend_cap_reached"]);
+  assert.match(view.error?.message ?? "", /over its cap of \$1\.$/);
+});
+
 /** Three calls at once under a $1 cap, in one message. ideogram's job, held at $0.40 (4 images at $0.10), states 12 images
  *  ($1.20) and stops the run for good. flux's job passed the tool gate beside it, and the fake answers its price only once
  *  ideogram's result is on the timeline (the gateway answers only after its settle, so after the stop): flux's job is
@@ -175,19 +204,6 @@ async function admittedAfterStop(t) {
   const fake = await startFakeMcp({});
   t.after(() => fake.close());
   let runId;
-  // The timeline's own long poll (wait_ms) from its cursor, as `follow` reads it, bounded: each page's rows (new or changed
-  // since the last) are checked until a row `matches`, or a failure names `what` that never came.
-  const onTimeline = async (matches, what) => {
-    const deadline = Date.now() + 30_000;
-    let after = 0;
-    while (Date.now() < deadline) {
-      if (!runId) { await new Promise((done) => setImmediate(done)); continue; }
-      const page = (await api("GET", `/runs/${runId}/timeline?after=${after}&wait_ms=2000`)).body;
-      if (page?.rows?.some(matches)) return;
-      after = page?.next_after ?? after;
-    }
-    throw new Error(`not within 30 s: ${what}`);
-  };
   const schemaCalls = [];
   let waitArrived;
   const waitSent = new Promise((done) => { waitArrived = done; });
@@ -198,7 +214,7 @@ async function admittedAfterStop(t) {
     input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false },
     run: async ({ endpoint_id }) => {
       if (endpoint_id === "fal-ai/ideogram/v3") return price(endpoint_id, 0.1, "images");
-      await onTimeline((row) => row.kind === "tool_result" && /run_model: ok/.test(row.summary ?? ""), "ideogram's result on the run's timeline");
+      await onTimeline(api, () => runId, (row) => row.kind === "tool_result" && /run_model: ok/.test(row.summary ?? ""), "ideogram's result on the run's timeline");
       return price(endpoint_id, 0.5, "megapixels");
     },
   };
@@ -217,7 +233,7 @@ async function admittedAfterStop(t) {
       schemaCalls.push(args.endpoint_id);
       if (args.endpoint_id === "wait") {
         waitArrived();
-        await onTimeline((row) => row.kind === "tool_result" && /run_model failed/.test(row.summary ?? ""), "flux's refusal on the run's timeline");
+        await onTimeline(api, () => runId, (row) => row.kind === "tool_result" && /run_model failed/.test(row.summary ?? ""), "flux's refusal on the run's timeline");
       }
       return { content: [{ type: "text", text: "{}" }] };
     },
@@ -228,7 +244,7 @@ async function admittedAfterStop(t) {
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const script = "await tools.mcp__fal__get_model_schema({ endpoint_id: 'wait' }); await tools.mcp__fal__get_model_schema({ endpoint_id: 'last' }).catch(() => 'refused'); return 'end';";
   const calls = [
-    ["mcp__fal__run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a lighthouse", num_images: 4 } }],
+    ["mcp__fal__run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { rendering_speed: "TURBO", prompt: "a lighthouse", num_images: 4 } }],
     ["mcp__fal__run_model", { endpoint_id: "fal-ai/flux/schnell", input: { prompt: "a harbour", image_size: { width: 1000, height: 1000 }, num_images: 1 } }],
     ["codemode", { script }],
   ];
@@ -250,3 +266,54 @@ test("a stop for good stays: a paid call admitted after it and refused for room 
   assert.deepEqual([view.status, view.error?.code], ["failed", "spend_cap_reached"], JSON.stringify(view.error));
   assert.match(view.error?.message ?? "", /over its cap of \$1\.$/, "ended in the stop's words");
 });
+
+/** A run's speech-to-text job (fal bills it per minute of its input audio, read before the job is sent) whose audio_url
+ *  is on this machine's loopback, where a real MP3 answers. The runner reads that length only through the public-host
+ *  guard web_fetch and web_save download through, so the read is refused before it connects: the MP3's server is never
+ *  asked. Under a cap the job is refused unsent, naming the URL; with no cap it is sent and booked as an unknown charge.
+ *  `childRuns`: the run in a process of its own, its MCP the runner's (run-child-host.ts). */
+async function mediaOnLoopback(t, { cap, childRuns } = {}) {
+  const { api } = await serve(t, { faux: FAUX, ...(childRuns ? { childRuns } : {}) });
+  const asked = [];
+  const media = createServer((request, response) => {
+    // Only the voice's own path counts: a host's port prober can GET / any new loopback port, and that is not the guard's read.
+    if (new URL(request.url ?? "/", "http://x").pathname === "/voice.mp3") asked.push(request.url);
+    response.writeHead(200, { "content-type": "audio/mpeg" }).end(Buffer.from(SAMPLES.mp3Info.bytes));
+  });
+  await new Promise((done) => media.listen(0, "127.0.0.1", done));
+  t.after(() => new Promise((done) => media.close(done)));
+  const audioUrl = `http://127.0.0.1:${media.address().port}/voice.mp3`;
+  const fake = await startFakeMcp({});
+  t.after(() => fake.close());
+  fake.tools.get_pricing = { description: "fal's price for an endpoint.", input: { type: "object", properties: { endpoint_id: { type: "string" } }, required: ["endpoint_id"], additionalProperties: false }, run: ({ endpoint_id }) => ({ content: [{ type: "text", text: JSON.stringify({ prices: [{ endpoint_id, unit_price: 0.4, unit: "minutes", currency: "USD" }], next_cursor: null, has_more: false }) }] }) };
+  fake.tools.run_model = { description: "Run a fal model.", input: { type: "object", properties: {} }, run: (args) => ({ content: [{ type: "text", text: JSON.stringify({ status: "completed", submission_replayed: false, endpoint_id: args.endpoint_id, request_id: "r-stt", result: { text: "hello" }, has_result: true }) }] }) };
+  assert.equal((await api("PUT", "/settings/mcp-servers/fal", { url: fake.url, auth: { type: "none" }, toolkit: "fal" })).status, 200);
+  const made = await api("POST", "/agents", agent("listen", { tools: [RUN_MODEL], tool_settings: { [RUN_MODEL]: { permission: "allow" } } }));
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  const job = { endpoint_id: "fal-ai/elevenlabs/speech-to-text", input: { audio_url: audioUrl } };
+  const run = await api("POST", "/agents/listen/runs", { input: { content: `Call mcp__fal__run_model with ${JSON.stringify(job)}` }, ...(cap === undefined ? {} : { max_cost_usd: cap }) });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  const { rows } = await follow(api, run.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  const sent = fake.log.filter((entry) => entry.method === "tools/call" && entry.tool === "run_model").length;
+  return { rows, view, sent, asked, audioUrl };
+}
+
+for (const childRuns of [undefined, {}]) {
+  const where = childRuns ? " (in a run's own process)" : "";
+  test(`a fal job priced by its input media's length reads it only through the public-host guard: on loopback, under a cap, it is refused unsent, by its URL${where}`, { timeout: 120_000 }, async (t) => {
+    const { rows, sent, asked, audioUrl } = await mediaOnLoopback(t, { cap: 1, childRuns });
+    assert.deepEqual(asked, [], "the guard refused the read before it connected");
+    assert.equal(sent, 0, "the job was never sent");
+    const words = `mcp:fal/run_model was not sent: fal bills fal-ai/elevenlabs/speech-to-text per minute of its input media, and the length of ${audioUrl} could not be read, so a run with a spend cap can't send it. Nothing was sent.`;
+    assert.ok(rows.some((row) => JSON.stringify(row).includes(JSON.stringify(words).slice(1, -1))), "the run's timeline gives the refusal in words, by the URL");
+  });
+
+  test(`a fal job priced by its input media's length whose media the guard refuses runs with no cap, booked as an unknown charge, never $0${where}`, { timeout: 120_000 }, async (t) => {
+    const { view, sent, asked } = await mediaOnLoopback(t, { childRuns });
+    assert.deepEqual(asked, [], "the guard refused the read before it connected");
+    assert.equal(sent, 1, "with no cap the job was sent");
+    assert.equal(view.status, "completed", JSON.stringify(view.error));
+    assert.equal(view.cost.tools_usd, null, "the run's tool cost reads unknown");
+  });
+}

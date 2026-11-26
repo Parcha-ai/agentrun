@@ -443,6 +443,30 @@ test("Docker: no box warns with the reason and the fix", async () => {
   assert.match(missing.check("docker").summary, /Docker is not installed/);
 });
 
+test("Docker: no box, by mode, read from places.default_place: null (Mode 1) says a new agent names its place, in the server's words; the runner (Mode 2) says new agents run on the runner", async () => {
+  const { home, data } = homeOf();
+  // default_reason ends in why Docker's box is not here, which the summary says first: it is not said again.
+  const NAME_A_BOX = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <none is set up>}, or to {mode: runner} to run without a shell. docker: Docker does not answer here.";
+  const docker = { id: "docker", available: false, reason: "Docker does not answer here" };
+  const mode1 = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...HEALTHY_CAPS, places: { default_place: null, default_reason: NAME_A_BOX, boxes: [docker] } } } }) });
+  assert.equal(mode1.check("docker").status, "warn");
+  assert.equal(mode1.check("docker").summary, "No Docker box: Docker does not answer here. An agent that needs a computer (bash, files) fails to start, and a new agent must name its place: a box, or the runner.");
+  const mode2 = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...HEALTHY_CAPS, places: { default_place: { mode: "runner" }, boxes: [docker] } } } }) });
+  assert.equal(mode2.check("docker").status, "warn");
+  assert.equal(mode2.check("docker").summary, "No Docker box: Docker does not answer here. An agent that needs a computer (bash, files) fails to start, and new agents run on the runner.");
+});
+
+test("Docker: no box with another box ready, where places.default_place is null (Mode 1), says a new agent names its place, that box or the runner, never that it runs in that box instead; a server that does not say keeps the words it had", async () => {
+  const { home, data } = homeOf();
+  const boxes = [{ id: "docker", available: false, reason: "Docker does not answer here" }, { id: "e2b", available: true }, { id: "daytona", available: false }];
+  const mode1 = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...HEALTHY_CAPS, places: { default_place: null, default_reason: "name a box: …", boxes } } } }) });
+  assert.equal(mode1.check("docker").status, "info");
+  assert.equal(mode1.check("docker").summary, "No Docker box: Docker does not answer here. A new agent must name its place: a box (e2b), or the runner.");
+  assert.deepEqual(mode1.check("docker").fix, []);
+  const unsaid = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...HEALTHY_CAPS, places: { boxes } } } }) });
+  assert.equal(unsaid.check("docker").summary, "No Docker box: Docker does not answer here. An agent that needs a computer runs in e2b instead.");
+});
+
 /** Whether a request to the CLI test's server is the CLI's, an API request under /v2/. Another process on the machine
  *  may send `GET /` to any new loopback listener: the server neither records nor reads it. */
 const ours = (req) => req.url.startsWith("/v2/");
@@ -455,6 +479,31 @@ async function cli(argv, env) {
   const code = await main(argv, env, io);
   return { code, out: out.join(""), err: err.join("") };
 }
+
+test("through the CLI: a server started with its token in AGENTRUN_TOKEN, with neither variable set, is not checked, in the words every CLI command refuses it with", async (t) => {
+  const seen = [];
+  const server = createServer((req, res) => {
+    if (!ours(req)) return void res.writeHead(404).end();
+    seen.push(req.url);
+    const send = (status, body) => res.writeHead(status, { "content-type": "application/json" }).end(JSON.stringify(body));
+    if (req.url === "/v2/health") return send(200, { status: "ok", checks: { store: "ok", disk: "ok" } });
+    if (req.url === "/v2/auth/session") return send(200, { accounts: true, password_set: true, signed_in: false });
+    send(404, {});
+  });
+  await new Promise((done) => server.listen(0, "127.0.0.1", done));
+  t.after(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(resolve);
+  }));
+  const data = fresh();
+  // No token_file: the server was started with its token in AGENTRUN_TOKEN.
+  writeFileSync(join(data, ".server.json"), `${JSON.stringify({ base_url: `http://127.0.0.1:${server.address().port}/v2`, pid: process.pid })}\n`, { mode: 0o600 });
+  const env = { PATH: fresh(), DISPLAY: ":0" };
+  const report = JSON.parse((await cli(["doctor", "--data", data, "--json"], env)).out);
+  const words = `The server recorded in ${join(data, ".server.json")} was started with its token in AGENTRUN_TOKEN; set AGENTRUN_API_KEY (or AGENTRUN_TOKEN) to it`;
+  assert.equal(report.checks.find((c) => c.id === "models").summary, `Not checked: ${words}.`);
+  assert.ok(!seen.includes("/v2/capabilities"), "no capabilities read without a token");
+});
 
 test("through the CLI: --json's shape and exit codes, the token sent only to capabilities and never printed, --base-url refused", async (t) => {
   const seen = [];

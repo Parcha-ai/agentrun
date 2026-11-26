@@ -8,7 +8,7 @@ import type { Agent, SaveWarning } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 
 /** A fake client with no computers list unless it brings its own: the Computer step then shows where runs go. */
-const withoutComputers = (v2: object) => ({ computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
+const withoutComputers = (v2: object) => ({ getRevisionSkills: async (_agentId: string, revision: string) => ({ revision, skills: {} }), computers: () => Promise.reject(new Error("fixture: no computers list")), ...v2 });
 
 // A save the server took can still say what this host lacks to run it (`warnings`): the editor shows each one, above
 // the form and beside the field it names, so nothing the server said is hidden.
@@ -32,6 +32,23 @@ describe("AgentEditor, a save's warnings", () => {
     // The model's warning twice: in the list and under the Model field.
     expect(settings.split(MODEL.message).length - 1).toBe(2);
     expect(settings.split(PLACE.message).length - 1).toBe(1);
+  });
+
+  it("lists a warning a run goes on under (a computer every tool of which is set to deny, which no run starts) apart from what refuses a run", () => {
+    const DENIED: SaveWarning = { field: "definition.computer", reason: "not_allowed", message: "Every tool for this agent's phone is set to deny, so a run never starts it: allow one, or set the computer to none." };
+    // As the static markup writes it (an apostrophe escaped).
+    const said = DENIED.message.replace(/'/g, "&#x27;");
+    const alone = renderToStaticMarkup(createElement(AgentEditor, { agent: agentAt("r2", [DENIED]), caps, step: "settings" }));
+    expect(alone).toContain("Saved. A run of this revision goes on, as each line says:");
+    expect(alone).toContain(said);
+    expect(alone).not.toContain("is refused until the server has");
+    const both = renderToStaticMarkup(createElement(AgentEditor, { agent: agentAt("r2", [MODEL, DENIED]), caps, step: "settings" }));
+    const refused = both.indexOf("is refused until the server has");
+    const goesOn = both.indexOf("goes on, as each line says");
+    expect(refused).toBeGreaterThan(-1);
+    expect(both.indexOf(MODEL.message)).toBeGreaterThan(refused);
+    expect(both.indexOf(MODEL.message)).toBeLessThan(goesOn);
+    expect(both.indexOf(said)).toBeGreaterThan(goesOn);
   });
 
   it("shows none when the answer had none, or for an agent read back (a read carries no warnings)", () => {

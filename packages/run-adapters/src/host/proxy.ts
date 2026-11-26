@@ -498,34 +498,90 @@ export function errorCut(mode: "error" | "events" | "as-is", forms: readonly str
   };
 }
 
+/** A whole server-sent event, as the format reads one
+ *  (https://html.spec.whatwg.org/multipage/server-sent-events.html#event-stream-interpretation): `text`, its lines as they
+ *  came joined with a line feed (whatever ended them), and `data`, its `data:` lines' values (the one space after the
+ *  colon dropped), which the format joins with a line feed. An event longer than its reader's limit has no text and no
+ *  data: it is read past whole, never in part. */
+export interface StreamEvent {
+  text?: string;
+  data: string[];
+}
+
+/** Reads a stream's whole events from its pieces as they come: lines end in LF, CRLF or a bare CR (a CRLF split between
+ *  two pieces is one line end), and a blank line ends an event, never a line alone, so an event whose data spans several
+ *  lines, or several pieces part way through a line, is read once it is whole. `max`: the most of an event kept. */
+export function eventReader(max: number): { push(text: string): StreamEvent[] } {
+  const breaks = /\r\n|\r|\n/g;
+  /** The event's whole lines, and their length with their line ends (past `max`: Infinity, and its lines dropped). */
+  let lines: string[] = [];
+  let size = 0;
+  /** The line coming: what of it is kept, and its length, which tells a blank line. */
+  let line = "";
+  let lineChars = 0;
+  /** That the last piece ended on a CR: a LF the next one begins with is that CR's line end, not a line of its own. */
+  let afterCr = false;
+  const ended = (): StreamEvent | undefined => {
+    const blank = lineChars === 0;
+    if (!blank && size !== Infinity) {
+      lines.push(line);
+      size += line.length + 1;
+    }
+    line = "";
+    lineChars = 0;
+    if (!blank) return undefined;
+    const event = size === Infinity ? { data: [] } : lines.length ? { text: lines.join("\n"), data: lines.filter((each) => each.startsWith("data:")).map((each) => each.slice(5).replace(/^ /, "")) } : undefined;
+    lines = [];
+    size = 0;
+    return event;
+  };
+  return {
+    push(text) {
+      const out: StreamEvent[] = [];
+      let at = afterCr && text.startsWith("\n") ? 1 : 0;
+      afterCr = false;
+      while (at < text.length) {
+        breaks.lastIndex = at;
+        const found = breaks.exec(text);
+        const end = found ? found.index : text.length;
+        lineChars += end - at;
+        if (size !== Infinity) {
+          line += text.slice(at, end);
+          if (size + line.length > max) {
+            size = Infinity;
+            lines = [];
+            line = "";
+          }
+        }
+        if (!found) break;
+        at = end + found[0].length;
+        if (found[0] === "\r" && at === text.length) afterCr = true;
+        const event = ended();
+        if (event) out.push(event);
+      }
+      return out;
+    },
+  };
+}
+
 function eventCounter<K extends string>(readers: Record<K, ((event: string) => number) | undefined>): { push(text: string): void; bytes(of: K): number } {
   const keys = (Object.keys(readers) as K[]).filter((key) => readers[key] !== undefined);
   const sums = Object.fromEntries(keys.map((key) => [key, 0])) as Record<K, number>;
-  let pending = "";
-  /** A "\r" the last piece ended on: the first half of a "\r\n" the next piece ends. */
-  let cr = "";
+  const events = eventReader(EVENT_MAX_CHARS);
   return {
     push(text) {
       if (!keys.length) return;
-      // A line end split between pieces ("\r" here, "\n" in the next) is joined before "\r\n" becomes "\n", or the two
-      // events around a split blank line would read as one, which no policy can parse.
-      let piece = cr + text;
-      cr = piece.endsWith("\r") ? "\r" : "";
-      if (cr) piece = piece.slice(0, -1);
-      pending += piece.replace(/\r\n/g, "\n");
-      for (let at = pending.indexOf("\n\n"); at >= 0; at = pending.indexOf("\n\n")) {
-        const event = pending.slice(0, at);
-        pending = pending.slice(at + 2);
+      for (const event of events.push(text)) {
+        if (event.text === undefined) continue;
         for (const key of keys) {
           try {
-            const n = readers[key]!(event);
+            const n = readers[key]!(event.text);
             if (typeof n === "number" && Number.isFinite(n) && n > 0) sums[key] += n;
           } catch {
             // An event the policy cannot read carries nothing it counts.
           }
         }
       }
-      if (pending.length > EVENT_MAX_CHARS) pending = "";
     },
     bytes: (of) => sums[of] ?? 0,
   };
@@ -617,7 +673,8 @@ export interface ModelProxyOptions {
    *  after the client's, so the client can neither set nor override them, and before the credential's. Checked when the
    *  proxy starts (`hostHeaderProblems`). */
   headers?: Readonly<Record<string, string>>;
-  /** For tests: the fetch the proxy forwards with. */
+  /** The fetch the proxy forwards with: the host's route for a model it translates onto the wire (a test's recorder,
+   *  too); absent, the network. */
   fetch?: typeof fetch;
   /** Told, with CONTENT_FILTERED, once an answer the provider stopped on its content filter has been passed and booked
    *  (`ProviderPolicy.filtered`): the harness halts the turn with it, before its client asks for the answer again. */
@@ -1583,10 +1640,28 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         say(`model proxy (${policy.id}): onCut threw`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       }
     };
+    /** Whether this proxy had aborted the request when the answer's first error event was read (undefined: none read
+     *  yet). Each event is read here whole (eventReader) before its client is written the blank line that ends it, and a
+     *  client acts on an event only once that line ends it, so an error read before the abort is the provider's own (a
+     *  refusal, an overload) that its client then read and left on: no stop. One read after the abort may be the
+     *  abort's own end of the stream (a route's "aborted" event), or a refusal raced by the hang-up: a stop. */
+    let errorReadAborted: boolean | undefined;
     /** The answer's stops, read from what has come of it so far: its content-filter stop, and its cut. */
     const tellStops = (text: string): void => {
       tellFiltered(text);
       tellCut(text);
+    };
+    /** The answer's events, whole, at most a window of each: what tellEvent reads. */
+    const events = eventReader(USAGE_WINDOW);
+    /** One whole event of a successful answer: whether it is the provider's error, read by streamErrorOf as the booking
+     *  reads the answer's end, so the two never disagree on an event, and whether this proxy had aborted then. And when its
+     *  data came on several lines, its stops, from its data on one `data:` line (a space where the format joins with a
+     *  line feed: JSON reads both alike): a policy reads each `data:` line on its own, and no one line of such an event
+     *  holds it. */
+    const tellEvent = (event: StreamEvent): void => {
+      if (event.text === undefined) return;
+      if (errorReadAborted === undefined && event.text.includes("error") && streamErrorOf(event.text) !== undefined) errorReadAborted = controller.signal.aborted;
+      if (event.data.length > 1) tellStops([...event.text.split("\n").filter((each) => !each.startsWith("data:")), `data: ${event.data.join(" ")}`].join("\n"));
     };
     try {
       // From here a paid request may be paid, so every way out below books it exactly once.
@@ -1731,6 +1806,8 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
               line = "";
             }
           }
+          // Then each event this piece ends, whole: an error event, and a stop whose data spans several lines.
+          if (upstream.ok) for (const event of events.push(text)) tellEvent(event);
           // A whole JSON body (no event stream) may be printed across lines, so no one line holds its stop: while it fits the
           // window, it is read whole at each piece that may close it (ends in "}"), which is a few pieces, never one each.
           if (wholeBody === undefined && text.trimStart() !== "") wholeBody = (tail + text).trimStart().startsWith("{");
@@ -1752,12 +1829,18 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       }
       res.end();
       answered = { ok: upstream.ok };
+      // An upstream that ends its answer on this proxy's abort without throwing (a route's own fetch: pi-ai's stream ends
+      // in its "aborted" error event, and the route closes it) is a stop all the same: its client left, and this proxy's
+      // abort, not the provider, ended it. Never one read on past its client (keepReading: the signal was never aborted),
+      // nor one whose error event was read before the abort (errorReadAborted false): the provider ended it, and its
+      // client left after reading that.
+      stoppedByClient = clientLeft && upstream.ok && controller.signal.aborted && errorReadAborted !== false;
     } catch (error) {
       // Its client had left before this (a stop): read now, as the proxy's own end below closes the response too.
       // Before any header too: the request left, and the provider may have begun it, as a stop part way. Only this proxy's
       // abort ends a stop: an answer read on after its client left (its content-filter stop) that the provider ends with
-      // an error is no stop.
-      stoppedByClient = clientLeft && (began === undefined || began.ok) && controller.signal.aborted;
+      // an error is no stop, nor is one whose error event was read before the abort (errorReadAborted false).
+      stoppedByClient = clientLeft && (began === undefined || began.ok) && controller.signal.aborted && errorReadAborted !== false;
       if (!began) failedCode = rejectionCode(error);
       say(`model proxy (${policy.id}): the request did not complete`, { error: String((error as Error)?.message ?? error).slice(0, 200) });
       if (!res.headersSent) refuse(res, 502, "the provider did not answer", req);
@@ -1833,8 +1916,9 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         // the model's first token, then a rate limit or an overload as an error event): refused, never run, so it cost
         // nothing. Never once the model's content streamed with no usage said, nor once the stream shows it began its
         // output with none of it streamed (outputBeganIn: hidden reasoning, a block a translation held): that was run,
-        // and is booked at an unknown cost as any answer cut short. Missing content is no proof of a refusal.
-        if (failed !== undefined && reported === undefined && !(policy.contentBytesOf && sentOf.bytes("content") > 0) && !outputBeganIn(kept)) {
+        // and is booked at an unknown cost as any answer cut short. Missing content is no proof of a refusal, and the error
+        // a stop's abort ends a stream in (stoppedByClient) is ours, never the provider's refusal: the stop counts it.
+        if (!stoppedByClient && failed !== undefined && reported === undefined && !(policy.contentBytesOf && sentOf.bytes("content") > 0) && !outputBeganIn(kept)) {
           refusedIn = wordsOf(failed.words);
           say(`model proxy (${policy.id}): the provider refused the request inside its answer (${failed.rateLimit ? "a rate limit" : "an error"}); booked at nothing`);
         }

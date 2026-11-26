@@ -12,8 +12,7 @@
 // Its price and search fee are the session proxy's to book: the pi runner's policy (runner/adapters/pi.ts) holds its input at its
 // context plus HOSTED_SEARCH_ALLOWANCE_TOKENS and its fee at the searches the body allows.
 import type { AssistantMessage, Context, Models } from "@earendil-works/pi-ai";
-import { clip, TITLE_CAP } from "./web-fetch-direct.js";
-import { ANSWER_MAX, type Hit, type Limit, type Search, type Searched, snippetOf } from "./web-search.js";
+import { ANSWER_MAX, clip, type Hit, type Limit, type Search, type Searched, snippetOf, TITLE_CAP } from "@parcha/agentrun-web";
 
 export const HOSTED_MAX_USES = 5;
 /** One search's results billed as input: about 25,000 tokens, a working estimate. */
@@ -154,5 +153,5 @@ export async function hostedSearched(query: string, n: number, ref: string | und
   // Results found, and a later search of the same request failing all the same (too_many_requests after hits): the run
   // gets the results, and the breaker the limit its codes name (no Retry-After reaches here: 60 s).
   const limit = limitOf(read.codes().join(" "));
-  return { answer: { provider: "native", query, results: read.hits().slice(0, n), ...(said ? { text: clip(said, ANSWER_MAX) } : {}) }, ...(limit ? { limit } : {}) };
+  return { answer: { provider: "native", objective: query, queries: [query], results: read.hits().slice(0, n), ...(said ? { text: clip(said, ANSWER_MAX) } : {}) }, ...(limit ? { limit } : {}) };
 }

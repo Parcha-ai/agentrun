@@ -7,14 +7,13 @@ import { test } from "node:test";
 import { request as httpRequest } from "node:http";
 import { isDeepStrictEqual } from "node:util";
 import { decisionRows } from "../dist/decision-rows.js";
-import { agentFolderOf } from "../dist/files.js";
 import { agentHomeFolder } from "../dist/workspace/index.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
 import { AGENT_FIELDS_SENT, CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, MCP_PREVIEW_SCOPE, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
-import { ended, fedBack, LEARN, learner, made, started } from "./learn-support.mjs";
+import { ended, fedBack, LEARN, learner, made, started, unreadable } from "./learn-support.mjs";
 import { agent, FAUX, flowAgent, follow, serve } from "./support.mjs";
 import { fakeClock, schedule } from "./trigger-support.mjs";
 
@@ -194,32 +193,40 @@ test("the contract's operations are as vendored; this server's own are added and
       continue;
     }
     if (op.operationId === "listRuns") {
-      // runlabels/1: an agent's runs take GET /runs' `label` filter too: the contract's parameters, then this server's one,
-      // and the rest as vendored.
-      assert.deepEqual(Object.keys(changes), ["label"]);
-      assert.deepEqual(op.parameters.slice(0, -1), original.parameters);
-      assert.deepEqual([op.parameters.at(-1).name, op.parameters.at(-1).in, op.parameters.at(-1).required], ["label", "query", false]);
+      // factory/1 and runlabels/1: an agent's runs take GET /runs' `scope` and `label` filters too: the contract's
+      // parameters, then this server's two, and the rest as vendored.
+      assert.deepEqual(changes, { scope: "factory/1", label: "runlabels/1" });
+      assert.deepEqual(op.parameters.slice(0, -2), original.parameters);
+      assert.deepEqual(op.parameters.slice(-2).map((p) => [p.name, p.in, p.required]), [["scope", "query", false], ["label", "query", false]]);
+      assert.deepEqual(op.parameters.at(-2).schema, { enum: ["active", "review"] });
       const { parameters: _a, ...same } = rest;
       const { parameters: _b, ...vendoredSame } = original;
-      assert.ok(isDeepStrictEqual(same, vendoredSame), "listRuns is the contract's but for its label");
+      assert.ok(isDeepStrictEqual(same, vendoredSame), "listRuns is the contract's but for its scope and label");
       continue;
     }
     if (op.operationId === "listRunFiles" || op.operationId === "readRunFile") {
       // A hidden run's files (signins/1): the contract's description, then why 403 is answered here, and 403 added where
       // the contract has none; a file's read also serves the run's recordings (runvideo/1), video/mp4 first in its 200
       // and 206; and its `cut=run` read (filecut/1) adds the cut parameter after the contract's, and 413 and 415 (its
-      // text/plain answer is the 200's */*); the rest as vendored.
+      // text/plain answer is the 200's */*); the listing's `cut=run` (filecut/2) adds the cut parameter after the
+      // contract's, which names each file under the run's cut (RunFile.name); the rest as vendored.
       assert.ok(op.description.startsWith(original.description.trimEnd()) && /403 forbidden/.test(op.description), "the contract's description first, then the 403");
       assert.equal(op.responses["403"].$ref, "#/components/responses/Forbidden");
       const read = op.operationId === "readRunFile";
       const video = read ? ["200", "206"] : [];
-      assert.deepEqual(Object.keys(changes).sort(), read ? ["description", "parameters", "responses"] : original.responses["403"] ? ["description"] : ["description", "responses"]);
+      assert.deepEqual(Object.keys(changes).sort(), read ? ["description", "parameters", "responses"] : original.responses["403"] ? ["description", "parameters"] : ["description", "parameters", "responses"]);
+      assert.deepEqual(op.parameters.slice(0, -1), original.parameters ?? []);
+      const cut = op.parameters.at(-1);
+      assert.deepEqual([cut.name, cut.in, cut.required, cut.schema], ["cut", "query", false, { type: "string", enum: ["run"] }]);
+      if (!read) {
+        assert.equal(changes.parameters, "filecut/2");
+        assert.equal(doc.components.schemas.RunFile.properties.name["x-agentrun-serve"], "filecut/2");
+        assert.equal(doc.components.schemas.RunFile.properties.name.type, "string");
+        assert.ok(!(doc.components.schemas.RunFile.required ?? []).includes("name"), "a listing without the cut names no file");
+      }
       if (read) {
         assert.equal(changes.responses, "runvideo/1");
         assert.equal(changes.parameters, "filecut/1");
-        assert.deepEqual(op.parameters.slice(0, -1), original.parameters);
-        const cut = op.parameters.at(-1);
-        assert.deepEqual([cut.name, cut.in, cut.required, cut.schema], ["cut", "query", false, { type: "string", enum: ["run"] }]);
         assert.equal(op.responses["413"].$ref, "#/components/responses/PayloadTooLarge");
         assert.equal(op.responses["415"].$ref, "#/components/responses/UnsupportedMediaType");
         assert.deepEqual(Object.keys(op.responses).filter((code) => !Object.hasOwn(original.responses, code)).sort(), [...(original.responses["403"] ? [] : ["403"]), "413", "415"]);
@@ -227,7 +234,6 @@ test("the contract's operations are as vendored; this server's own are added and
       const { description: _a, responses: _b, parameters: _e, ...same } = rest;
       const { description: _c, responses: _d, parameters: _f, ...vendoredSame } = original;
       assert.ok(isDeepStrictEqual(same, vendoredSame), `${op.operationId} is the contract's but for the 403`);
-      if (!read) assert.deepEqual(rest.parameters, original.parameters);
       for (const code of Object.keys(original.responses)) {
         if (!video.includes(code)) {
           assert.deepEqual(op.responses[code], original.responses[code], code);
@@ -543,7 +549,7 @@ test("a timeline row's usage says where it shows here: a browser call's row carr
 });
 
 /** The closed list of a run's learning reasons, as the console's read shape names them. */
-const REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"];
+const REASONS = ["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset", "purged_since_seed"];
 
 test("learning is this server's own addition, learning/1: the definition's switch, the server's in capabilities, a run's learning whole on its read and short in lists, its timeline row, the usage meter and the stats block, each enum whole, and the answers meet the document", { timeout: 120_000 }, async (t) => {
   const { api, baseUrl, data } = await serve(t);
@@ -571,13 +577,12 @@ test("learning is this server's own addition, learning/1: the definition's switc
   assert.deepEqual(caps.learning, { pending: true, approve: false, approve_needs: "password" }, "a draft that calls an unpriced tool waits; approving needs the owner's password session");
   assert.deepEqual(caps.features.usage.meters, ["tokens", "tools", "browser_time", "learning"]);
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, caps), []);
-  // A run with nothing to keep (no correction, its compile not due), one whose folder cannot be made (a file where it
-  // goes), and one of an agent that does not learn.
+  // A run with nothing to keep (no correction, its compile not due), one whose learning cannot be read (a row of it is
+  // damaged), and one of an agent that does not learn.
   assert.equal((await api("POST", "/agents", agent("learner", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("blocked", { learning: true }))).status, 201);
   assert.equal((await api("POST", "/agents", agent("plain"))).status, 201);
-  await mkdir(agentFolderOf(data, "blocked"), { recursive: true });
-  await writeFile(join(agentFolderOf(data, "blocked"), "learning"), "not a folder");
+  await unreadable(data, "blocked");
   const want = { learner: ["dropped", "empty"], blocked: ["dropped", "seed_failed"], plain: null };
   for (const id of Object.keys(want)) {
     const started = await api("POST", `/agents/${id}/runs`, { input: { content: "hi" } });

@@ -1,5 +1,5 @@
 // The agent editor's Computer step, against --faux's computers (packages/serve/src/faux-computers.ts): the Computer step
-// comes right before Tools & skills; Faux sandbox needs FAUX_SANDBOX_KEY, so it is not ready until the key is saved (from
+// comes after General and before Tools; Faux sandbox needs FAUX_SANDBOX_KEY, so it is not ready until the key is saved (from
 // the signed-in page, as Settings → Computers saves it: a secret write takes the owner's session, never the token); then
 // the sandbox kind and that provider are picked in the step, the tools its loop gets are shown as served, and the save
 // carries the computer, which the agent read then has.
@@ -18,10 +18,10 @@ export default {
 
     // The editor before the key: the sandbox kind lists Faux sandbox, not ready, in the server's words.
     await page.goto(`${base}/#/agents/${encodeURIComponent(id)}/edit`);
-    const rail = page.locator("ol").first();
+    const rail = page.getByRole("navigation", { name: "Agent settings sections" }).locator("ul");
     await rail.getByRole("button", { name: /Computer/ }).waitFor();
-    const names = await rail.getByRole("button").evaluateAll((buttons) => buttons.map((b) => /(Context|Computer|Tools & skills|Settings|History)/.exec(b.textContent ?? "")?.[1] ?? ""));
-    check(names.indexOf("Computer") === names.indexOf("Context") + 1 && names.indexOf("Tools & skills") === names.indexOf("Computer") + 1, `the rail reads ${JSON.stringify(names)}`);
+    const names = await rail.getByRole("button").evaluateAll((buttons) => buttons.map((b) => /(General|Computer|Tools|Skills|Model & runtime|Learning|History)/.exec(b.textContent ?? "")?.[1] ?? ""));
+    check(names.indexOf("Computer") === names.indexOf("General") + 1 && names.indexOf("Tools") === names.indexOf("Computer") + 1, `the rail reads ${JSON.stringify(names)}`);
     await rail.getByRole("button", { name: /Computer/ }).click();
     await page.locator('input[name="computer-kind"][value="sandbox"]').check();
     const fauxSandbox = page.locator('input[name="computer-provider"][value="faux-sandbox"]');
@@ -39,7 +39,7 @@ export default {
     await page.getByRole("dialog", { name: "Leave without saving?" }).getByRole("button", { name: "Leave", exact: true }).click();
     await page.waitForFunction(() => location.hash === "#/");
     await page.goto(`${base}/#/agents/${encodeURIComponent(id)}/edit`);
-    await page.locator("ol").first().getByRole("button", { name: /Computer/ }).click();
+    await page.getByRole("navigation", { name: "Agent settings sections" }).locator("ul").getByRole("button", { name: /Computer/ }).click();
     await page.locator('input[name="computer-kind"][value="sandbox"]').check();
     await page.locator('input[name="computer-provider"][value="faux-sandbox"]').check();
     const listed = await api("GET", "/computers");

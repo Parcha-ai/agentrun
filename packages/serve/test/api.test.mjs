@@ -292,7 +292,7 @@ test("a run's input is checked against the default schema {content: string} befo
   assert.deepEqual(noContent.body.error.fields.map((f) => [f.field, f.reason]), [["input.content", "missing"]]);
   const quote = await api("POST", "/agents/plain/runs", { input: { content: "x" }, quote_id: "q" });
   assert.deepEqual([quote.status, quote.body.error.capability], [501, "quotes"]);
-  const unbound = await api("POST", "/agents", agent("shell", { tools: ["read", "bash"] }));
+  const unbound = await api("POST", "/agents", agent("shell", { tools: ["read", "bash"], place: { mode: "runner" } }));
   assert.deepEqual([unbound.status, unbound.body.error.fields.map((f) => f.field)], [422, ["definition.tools[1]"]]);
   assert.deepEqual((await api("GET", "/agents/plain/runs")).body, { runs: [], next_cursor: null });
 });
@@ -306,10 +306,9 @@ test("a tool's missing variables are named, never their values", async () => {
   const { toolsView, TOOLS } = await import("../dist/tools.js");
   assert.ok(Object.isFrozen(TOOLS));
   assert.deepEqual(toolsView({}).map((t) => [t.name, t.missing]), [["read", undefined], ["write", undefined], ["edit", undefined], ["bash", undefined], ["bash_background", undefined], ["bash_output", undefined], ["bash_input", undefined], ["bash_signal", undefined], ["bash_list", undefined], ["ask_person", undefined], ["web_fetch", undefined], ["web_search", undefined], ["web_save", undefined], ["email_search", undefined], ["email_read", undefined], ["email_draft", undefined], ["email_send", undefined], ["email_file", undefined], ["calendar_events", undefined], ["browser", undefined], ["subagent", undefined], ["pdf_pages", undefined], ["llm", undefined], ["tools_search", undefined], ["tools_call", undefined], ["codemode", undefined]]);
-  // web_search needs no key: Codex's own search; claude-agent on auto and pi with no model named, Exa's keyless search
-  // (Claude's own search is an explicit pick); Parallel picked
-  // without its key, missing.
-  assert.deepEqual(toolsView({}).find((t) => t.name === "web_search").resolves, { pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless", codex: "native", opencode: "firecrawl-keyless" });
+  // web_search needs no key: on auto every harness searches keylessly (a harness's own search is an explicit pick);
+  // Parallel picked without its key, missing.
+  assert.deepEqual(toolsView({}).find((t) => t.name === "web_search").resolves, { pi: "firecrawl-keyless", "claude-agent": "firecrawl-keyless", codex: "firecrawl-keyless", opencode: "firecrawl-keyless" });
   assert.deepEqual(toolsView({}, { web_search: { provider: "parallel" } }).filter((t) => t.resolves && t.name !== "browser").map((t) => [t.name, t.available, t.missing]), [["web_fetch", true, undefined], ["web_search", false, ["PARALLEL_API_KEY"]]]);
   // An unavailable tool always says why: a provider pick's own words, or the variables it needs.
   const off = toolsView({}, { web_search: { provider: "off" } }).find((t) => t.name === "web_search");

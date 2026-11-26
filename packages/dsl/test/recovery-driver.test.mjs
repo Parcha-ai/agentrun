@@ -12,7 +12,7 @@ import { runWorkflow, DecisionProviderError, judgeFromProvider } from '@parcha/a
 // The driver measures an effect's durable attempt clock with Date.now(), and the interpreter its deadline with
 // performance.now(). A test that needs either to pass holds both clocks and moves them itself.
 const holdClocks = (t) => { let now = 0; t.mock.method(performance, 'now', () => now); t.mock.timers.enable({ apis: ['Date'], now: Date.now() }); return { advance: (ms) => { now += ms; t.mock.timers.tick(ms); } }; };
-import { openRecovery, withRecovery, memoryStore, openJournal, workspaceFiles, recoveryBinding, recoveryBound, RecoveryError, nodeAt, frozenStepId, FROZEN_SNAPSHOT_SCHEMA } from '@parcha/agentrun-dsl/recovery';
+import { openRecovery, withRecovery, memoryStore, openJournal, workspaceFiles, recoveryBinding, recoveryBound, bindingDigests, RecoveryError, nodeAt, frozenStepId, FROZEN_SNAPSHOT_SCHEMA } from '@parcha/agentrun-dsl/recovery';
 
 const scratch = mkdtempSync(join(tmpdir(), 'agentrun-recovery-driver-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -99,6 +99,7 @@ test('a tool effect is admitted with the external call it makes, before it is di
   assert.deepEqual(journal.effects.map(({ id, status, intent }) => [id, status, intent]), [[effect(step(1)), 'unknown', gatewayIntentOf('registry_lookup', { id: 7 })]]);
   // Through a fetch wrapper the continuation names the same call by the same key.
   assert.deepEqual(journal.effects[0].intent, gatewayIntentOf('fetch', { tool: 'registry_lookup', args: { id: 7 } }));
+  assert.equal(gatewayIntentOf('fetch', { tool: 'registry_lookup', args: [7] }).tool, 'fetch', 'a fetch whose args are a list names no gateway call');
   const done = memoryStore();
   await run(done, workflow, { runEffect: async ({ node }) => { if (node.via !== 'shell') return { ok: true }; writeFileSync(join(cwd, 'out.txt'), 'bytes'); return { code: 0, stdout: '', stderr: '' }; } }, { files });
   journal = await operator(done, workflow);
@@ -813,6 +814,9 @@ test('a checkpoint is opened only when the driver could have written it for this
     (journal, state) => journal.save({ ...state, pin: { ...state.pin, done: ['/root/steps/9'] } }), (journal, state) => journal.save({ ...state, status: 'finished' })]) {
     await assert.rejects(open(await doctored(change), workflow), fault('FROZEN_CHECKPOINT_INVALID', 'Invalid frozen recovery checkpoint'));
   }
+  const listed = await doctored((journal, state) => journal.save({ ...state, clocks: [] }));
+  const got = await open(listed, workflow).then(async (opened) => { await opened.close(); return 'the run opened'; }, (error) => `${error.code}: ${error.message}`);
+  assert.equal(got, 'FROZEN_CHECKPOINT_INVALID: Invalid frozen recovery checkpoint', `a clocks table stored as a list is refused at open: it ended with ${got}`);
   // A key the driver no longer writes opens, and the open's own save drops it.
   const retired = await doctored((journal, state) => journal.save({ ...state, effectCalls: 7, lookSpendUsd: 0.25 }));
   assert.equal((await operator(retired, workflow)).state.effectCalls, 7);
@@ -831,6 +835,7 @@ test('a run is bound to its workflow and to what the host binds beside it; a vie
   const workflow = doc([tool('lookup')]); const bind = { config: { question: 'first', budget: 5 }, cwd: 'workspace' };
   const store = memoryStore(); let driver = await open(store, workflow, { bind });
   assert.deepEqual([driver.binding === recoveryBinding(workflow, bind), driver.binding === recoveryBinding(workflow)], [true, false]);
+  assert.deepEqual(Object.keys(bindingDigests({ tools: ['a', 'b'] })), ['tools'], 'a part that is a list is one input, not one per item');
   await driver.close();
   await assert.rejects(open(store, workflow, { bind: { ...bind, config: { question: 'second', budget: 5 } } }), (error) => {
     fault('RUN_STORE_BINDING_MISMATCH', 'Run store binding mismatch: config.question changed since the run was bound')(error);

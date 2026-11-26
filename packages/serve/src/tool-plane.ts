@@ -1,15 +1,14 @@
 // The tool plane: the capabilities a pack or a revision may grant, the providers a user may pick for the two that reach
 // the web, and what each resolves to on a run. A capability resolves in one order: (1) the provider the user picked, the
-// agent's own (`definition.tool_settings`) over the server's (`PUT /v2/settings/tools`), optional; (2) the native tool:
-// the harness's own (claude-agent's WebSearch), or on pi one request to the run's own model provider with its hosted
-// search (hosted-search.ts); (3) for web_search, Parallel where the server holds its key (env or saved, which then bills
-// it); (4) the keyless fallback: Firecrawl's public keyless MCP endpoint (firecrawl-keyless.ts), with Exa's
-// (exa-keyless.ts) behind it. web_fetch has no (2): its `auto` is the guarded direct fetch where the server holds a
-// Parallel key (as before keyless Firecrawl), else keyless Firecrawl with the guarded direct fetch behind it, and
-// Parallel's extract is a pick. Through Firecrawl web_fetch sends each URL to a third party, and its `why` says so; a URL
-// the public-host guard refuses never goes (web-fetch.ts). On claude-agent `auto` skips (2):
-// Claude's own search is an explicit pick, `native`. Codex's own search on codex, Parallel or keyless Firecrawl behind
-// a gateway, on OpenRouter or under a spend cap;
+// agent's own (`definition.tool_settings`) over the server's (`PUT /v2/settings/tools`), optional; (2) for web_search,
+// Parallel where the server holds its key (env or saved, which then bills it); (3) the keyless fallback: Firecrawl's
+// public keyless MCP endpoint (@parcha/agentrun-web providers/firecrawl-keyless.ts), with Exa's
+// (providers/exa-keyless.ts) behind it. web_fetch's `auto` is Parallel's extract where the server holds a Parallel key,
+// with the guarded direct fetch behind it, else keyless Firecrawl with the guarded direct fetch behind it. Both tools'
+// `auto` order is one table, DEFAULT_WEB_ORDER. Through Firecrawl web_fetch sends each URL to a third party, and its
+// `why` says so; a URL the public-host guard refuses never goes (web-fetch.ts). The native search, a harness's own
+// (Claude's WebSearch, Codex's live search) or on pi one request to the run's own model provider with its hosted search
+// (hosted-search.ts), runs only where it is picked, `native`: `auto` never resolves to it, on any harness.
 // `off` turns web_search off. web_search's default, `auto`, is that order; a pick of `native` is native only,
 // unavailable where there is none, never a keyless search. A grant names a capability, never a provider. A pick of parallel without
 // PARALLEL_API_KEY resolves unavailable, never to something else. The server resolves a run's tools at its first
@@ -26,7 +25,8 @@
 import { META_TOOLS } from "./meta-tool-names.js";
 import { blurbOf, isAskable, isTableTool, tableTools } from "./tool-list.js";
 import { PROVIDERS as COMPUTER_PROVIDERS } from "@parcha/agentrun-computer";
-import { decisionKeysOf, PARALLEL_KEY_ENV } from "./decisions.js";
+import { decisionKeysOf, jevWebWhy, PARALLEL_KEY_ENV } from "./decisions.js";
+import { webJevOff } from "./env-switch.js";
 import { keyNeeded } from "./key-words.js";
 import type { InputIssue } from "./errors.js";
 import type { Settings } from "./store/index.js";
@@ -34,6 +34,7 @@ import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import type { AdapterFacts } from "@parcha/agentrun-kernel";
 import { factsOf as tableFactsOf, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, wireOf } from "./provider.js";
+import { routedId } from "./wires.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
 import { NEEDS_A_COMPUTER, NO_SHELL, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
@@ -41,6 +42,7 @@ import { canonicalPin, defaultPermission, isPinKeys, MAX_PIN_ARGS, MAX_PIN_CHOIC
 import { BASH_POLICIES, type BashPolicy } from "./bash-read-only.js";
 import { EMAIL_SCOPES, SCOPED_TOOLS, SCOPED_WORDS } from "./email/names.js";
 import { isCatalogName, isMcpName, mcpNameOf, parseToolName } from "./tool-names.js";
+import { type FileSetting, fileIssues } from "./filed-tool.js";
 
 /** An email read tool's scope (email/names.ts). */
 type EmailScope = (typeof EMAIL_SCOPES)[number];
@@ -57,10 +59,10 @@ export const CAPABILITIES = ["read", "write", "edit", "web_search", "web_fetch",
  *  Named once here, so the scan of vendor ids (scripts/check-vendor-ids.mjs) counts it once. */
 const DIRECT_FETCH = "kernel" as const;
 /** The providers a user may pick for each capability that has a choice, its default first: `auto`, for web_search the
- *  native search where there is one (never on claude-agent, where Claude's own search is picked as `native`), else
- *  Parallel where the server holds its key, else keyless Firecrawl; for web_fetch the guarded direct fetch where the
- *  server holds a Parallel key, else keyless Firecrawl; `native`, the harness's own tool or its model provider's hosted
- *  one, and nothing else; `firecrawl-keyless`, Firecrawl's public MCP endpoint, no key, with keyless Exa behind it for
+ *  Parallel where the server holds its key, else keyless Firecrawl, on every harness (a native search is never `auto`,
+ *  only `native`); for web_fetch Parallel's extract where the server holds a Parallel key (the guarded direct fetch
+ *  behind it), else keyless Firecrawl (both in DEFAULT_WEB_ORDER); `native`, the harness's own tool or its model
+ *  provider's hosted one, and nothing else; `firecrawl-keyless`, Firecrawl's public MCP endpoint, no key, with keyless Exa behind it for
  *  web_search and the guarded direct fetch behind it for web_fetch; `exa-keyless`, Exa's public MCP endpoint alone, no
  *  key; `kernel`, the guarded direct fetch; `parallel`, Parallel's Search and Extract APIs on PARALLEL_API_KEY; `off`,
  *  web_search turned off: nothing is searched, and an
@@ -116,7 +118,7 @@ export const DECISION_PROVIDER_KEYS: readonly string[] = ["jev", "parallel", "op
 const isSettingsKey = (name: string): boolean => parseToolName(name) !== undefined && (isTableTool(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogName(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
-export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** On an MCP server's wildcard (`mcp:<server>/*`) in the server's settings only: the tools its server marks read-only run with no approval (tool-gate.ts readsLift). Kept only when true. */ allow_reads?: true; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** An email read tool's scope, an agent's own only (email/tools.ts): its email run's thread (the default), or the whole account. */ scope?: EmailScope; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
+export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** On an MCP server's wildcard (`mcp:<server>/*`) in the server's settings only: the tools its server marks read-only run with no approval (tool-gate.ts readsLift). Kept only when true. */ allow_reads?: true; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** An email read tool's scope, an agent's own only (email/tools.ts): its email run's thread (the default), or the whole account. */ scope?: EmailScope; /** An MCP tool's file setting, an agent's own only, on the tool's own key (filed-tool.ts): its answers filed whole in the run's files, the model reading a summary. */ file?: FileSetting; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
 /** The longest pinned string. */
 export const MAX_PIN_TEXT = 1024;
 /** A pinned argument's name: a top-level argument of the tool, as MCP tools name theirs. */
@@ -191,6 +193,12 @@ export type ResolveInput = {
   /** The facts of the adapter the harness runs on (its own search, its wire), its owner's table entry's (harness-table.ts
    *  factsOf: a module's harness's too); undefined for one with none (pi). Always given: a caller names them. */
   facts: AdapterFacts | undefined;
+  /** What the server's Jev means for web_search (decisions.ts jevWebWhy): said after the why of a search the run's own
+   *  web_search runs. None: no Jev key, nothing to say. */
+  jevWhy?: string;
+  /** The same for web_fetch (jevWebWhy's "web_fetch"): what a fetch the run's own Web serves sends TypeSafe, said after
+   *  its why. None: no Jev key, nothing to say. */
+  jevFetchWhy?: string;
 };
 
 /** Whether a harness's own search, `native` in its facts (the provider's search tool, through its proxy), has per-use fees
@@ -216,15 +224,18 @@ export const ownSearchViaOpenRouter = (env: NodeJS.ProcessEnv, harness: string, 
 function noNative(input: ResolveInput): { id: string; why: string } | undefined {
   // Native, where there is one: a harness's own (its facts' webSearch), else pi's, which asks Anthropic's or OpenAI's. A
   // harness's own search goes with its request on its wire, except on OpenRouter (which runs no harness's own search, nor
-  // counts its searches), behind serve's gateway on the wire it serves (no known hosted search), or under a spend cap
+  // counts its searches), on a model the route translates onto its wire (wires.ts routed: the route asks that model, which
+  // has no provider-hosted tool, so the harness's own search is never sent), behind serve's gateway on the wire it serves (no known hosted search), or under a spend cap
   // (cappedOwn: per-use fees the cap cannot reserve yet, its request's bound holding the pages' input tokens, not the
   // fees; or a request with no input bound). A harness with none (OpenCode, whose proxy policy refuses a
-  // provider-hosted tool) has none at all. Where there is none, `native` is unavailable, and `auto` goes to Parallel on
-  // the server's key (its fee booked and held by a cap, paid-calls.ts), else to keyless Firecrawl.
+  // provider-hosted tool) has none at all. Where there is none, `native` is unavailable. `auto` goes to Parallel on the
+  // server's key (its fee booked and held by a cap, paid-calls.ts), else to keyless Firecrawl, with a native search or
+  // without.
   const vendor = input.model?.slice(0, Math.max(0, input.model.indexOf("/")));
   const { facts } = input;
   if (facts) {
     if (!facts.webSearch) return { id: `${input.harness}, whose model requests carry no provider-hosted tool`, why: `${facts.label}'s model requests carry no provider-hosted tool` };
+    if (input.model && routedId(facts.wire, input.model)) return { id: `${input.harness} on a model the route translates`, why: `${facts.label}'s own search does not run on a model the route translates` };
     if (input.openRouter) return { id: `${input.harness} on OpenRouter`, why: `through OpenRouter ${facts.label}'s own search is not run, and its searches are not counted to price` };
     if (input.gateway && wireOf(facts.wire)?.gateway) return { id: `${input.harness} behind a gateway`, why: `behind a gateway ${facts.label} has no own search` };
     return input.capped ? cappedOwn(input.harness, facts.label, facts.webSearch) : undefined;
@@ -234,20 +245,36 @@ function noNative(input: ResolveInput): { id: string; why: string } | undefined 
   return input.model ? { id: input.model, why: `${input.model} has no hosted search here` } : { id: "a model with none named", why: "no model is named, so there is no hosted search" };
 }
 
-/** The native search of a run that has one, in a sentence. */
-const nativeWhy = (input: ResolveInput): string => {
+/** The native search of a run that has one, by name: the harness's own, else its model provider's hosted one. */
+const ownSearch = (input: ResolveInput): string => {
   const { facts } = input;
-  return facts?.webSearch ? `${facts.label}'s own search` : `${input.model?.startsWith("openai/") ? "OpenAI" : "Anthropic"}'s hosted search, for ${input.model}`;
+  return facts?.webSearch ? `${facts.label}'s own search` : `${input.model?.startsWith("openai/") ? "OpenAI" : "Anthropic"}'s hosted search`;
 };
+/** The native search of a run that has one, in a sentence. */
+const nativeWhy = (input: ResolveInput): string => (input.facts?.webSearch ? ownSearch(input) : `${ownSearch(input)}, for ${input.model}`);
 
 /** Keyless Firecrawl in a sentence, as web_search and web_fetch use it. web_fetch's says plainly that each URL leaves
  *  the server, and how to keep it here. */
 const FIRECRAWL_SEARCH = "Firecrawl's free keyless search, no key, keyless Exa behind it";
-export const FIRECRAWL_FETCH = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); set PARALLEL_API_KEY or choose kernel to fetch directly";
+export const FIRECRAWL_FETCH = "Firecrawl's free keyless fetch, no key, the guarded direct fetch behind it. web_fetch sends each URL to Firecrawl's keyless service (never a private or local one); choose kernel to fetch directly";
+
+/** The resolutions of web_search the run's own web_search runs (web-run.ts webOf), where Jev ranks the results: native
+ *  only where it is the model provider's hosted search (pi's), never a harness's own search inside its CLI. */
+const searchesOwn = (resolves: string, facts: AdapterFacts | undefined): boolean => WEB_RUNS.web_search.includes(resolves) && (resolves !== "native" || !facts?.webSearch);
+const ranksOwn = (resolves: Resolution, input: ResolveInput): boolean => searchesOwn(resolves, input.facts);
 
 /** What `capability` resolves to on a run of `input`, and why in a plain sentence (capabilities' `why`): one rule, so
- *  the two never disagree. */
+ *  the two never disagree. A web_search the run's own tool runs, and a web_fetch its own Web serves (any resolution but
+ *  a deny), say what Jev does with it and what it sends TypeSafe, where the server has a Jev key, or that Jev is off
+ *  (`jevWhy`, `jevFetchWhy`). */
 export function explainCapability(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
+  const said = explained(capability, input);
+  if (capability === "web_search" && input.jevWhy && ranksOwn(said.resolves, input)) return { ...said, why: `${said.why}; ${input.jevWhy}` };
+  if (capability === "web_fetch" && input.jevFetchWhy && WEB_RUNS.web_fetch.includes(said.resolves)) return { ...said, why: `${said.why}; ${input.jevFetchWhy}` };
+  return said;
+}
+
+function explained(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
   const chosen = input.override ?? input.pick ?? PROVIDERS[capability][0];
   const picked = input.override !== undefined ? "picked for this agent" : "picked in settings";
   const key = `your Parallel key (${input.parallelKeyFrom ?? "server"})`;
@@ -257,24 +284,44 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   if (capability === "web_fetch") {
     if (chosen === DIRECT_FETCH) return { resolves: DIRECT_FETCH, why: `the guarded direct fetch, ${picked}` };
     if (chosen === "firecrawl-keyless") return { resolves: "firecrawl-keyless", why: `keyless Firecrawl, ${picked}: ${FIRECRAWL_FETCH}` };
-    return input.parallelKey ? { resolves: DIRECT_FETCH, why: `the guarded direct fetch: the server holds ${key}, so no URL goes to a keyless service` } : { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH };
+    return autoWeb("web_fetch", input);
   }
   if (capability === "browser") return browserBy(chosen, picked, input.browserKeys);
   if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
   if (chosen === "firecrawl-keyless") return { resolves: "firecrawl-keyless", why: `keyless Firecrawl, ${picked}: ${FIRECRAWL_SEARCH}` };
-  // Under ask, a harness's own search runs inside its CLI, where no call can wait for a person: none on claude-agent or
-  // codex then, and the kernel's search, which the gate holds, in its place. pi's is a tool of the run's, which it holds.
-  const asks = input.permission === "ask" && input.facts !== undefined;
+  // `native` picked: the native search only. Under ask, a harness's own search runs inside its CLI, where no call can
+  // wait for a person, so it is unavailable; pi's is a tool of the run's, which the gate holds.
   const without = noNative(input);
-  if (chosen === "native" && asks && without === undefined) return { resolves: NATIVE_ASKS, why: "native search cannot wait for an approval: it runs inside the harness's CLI" };
-  const none = without ?? (asks ? { id: input.harness, why: "under ask the harness's own search cannot wait for a person's approval" } : undefined);
-  if (chosen === "native") return none === undefined ? { resolves: "native", why: nativeWhy(input) } : { resolves: `unavailable: no native search for ${none.id}`, why: `no native search for ${none.id}` };
-  // `auto` skips a harness's own search that has per-use fees (its facts' `native`: the provider's search tool), an
-  // explicit pick (`native`): Parallel on the server's key, else keyless Firecrawl.
-  const { facts } = input;
-  if (facts?.webSearch === "native") return input.parallelKey ? { resolves: "parallel", why: key } : { resolves: "firecrawl-keyless", why: `${FIRECRAWL_SEARCH}; ${facts.label}'s own search is an explicit pick` };
-  if (none === undefined) return { resolves: "native", why: nativeWhy(input) };
-  return input.parallelKey ? { resolves: "parallel", why: `${none.why}; ${key}` } : { resolves: "firecrawl-keyless", why: `${none.why}; ${FIRECRAWL_SEARCH}` };
+  if (chosen === "native") {
+    if (without !== undefined) return { resolves: `unavailable: no native search for ${without.id}`, why: `no native search for ${without.id}` };
+    return input.permission === "ask" && input.facts !== undefined ? { resolves: NATIVE_ASKS, why: "native search cannot wait for an approval: it runs inside the harness's CLI" } : { resolves: "native", why: nativeWhy(input) };
+  }
+  return autoWeb("web_search", input);
+}
+
+/** The order `auto` asks for each web tool: the first provider here the server can run is what auto resolves to
+ *  (Parallel only where the server holds its key; keyless Firecrawl, keyless Exa and the guarded direct fetch always),
+ *  keyless Firecrawl where none can. Capabilities' `why` and every run's plane read it (autoWeb). Parallel is first for
+ *  both. To put Firecrawl first, swap the two ids in a list: that one line is the whole change. */
+export const DEFAULT_WEB_ORDER: Readonly<{ web_search: readonly AutoSearch[]; web_fetch: readonly AutoFetch[] }> = Object.freeze({ web_search: Object.freeze(["parallel", "firecrawl-keyless"] as const), web_fetch: Object.freeze(["parallel", "firecrawl-keyless"] as const) });
+type AutoSearch = "parallel" | "firecrawl-keyless" | "exa-keyless";
+type AutoFetch = "parallel" | "firecrawl-keyless" | typeof DIRECT_FETCH;
+
+/** What `auto` resolves `capability` to on a run of `input`, and why, by `order` (DEFAULT_WEB_ORDER). `auto` never
+ *  resolves native, on any harness: where a native search would run, web_search's why names it as the pick it is;
+ *  where none runs (noNative), it says why not. */
+export function autoWeb(capability: "web_search" | "web_fetch", input: ResolveInput, order: typeof DEFAULT_WEB_ORDER = DEFAULT_WEB_ORDER): { resolves: Resolution; why: string } {
+  const runs = (id: string): boolean => id !== "parallel" || input.parallelKey;
+  const id = order[capability].find(runs) ?? "firecrawl-keyless";
+  const key = `your Parallel key (${input.parallelKeyFrom ?? "server"})`;
+  if (capability === "web_fetch") {
+    if (id === "parallel") return { resolves: "parallel", why: `Parallel's extract on ${key}, the guarded direct fetch behind it` };
+    return id === DIRECT_FETCH ? { resolves: DIRECT_FETCH, why: "the guarded direct fetch" } : { resolves: "firecrawl-keyless", why: FIRECRAWL_FETCH };
+  }
+  const said = id === "parallel" ? key : id === "exa-keyless" ? "Exa's free search, no key" : FIRECRAWL_SEARCH;
+  const without = noNative(input);
+  if (without !== undefined) return { resolves: id as Resolution, why: `${without.why}; ${said}` };
+  return { resolves: id as Resolution, why: id === "parallel" ? said : `${said}; ${ownSearch(input)} is an explicit pick` };
 }
 
 /** What `capability` resolves to on a run of `input`. */
@@ -310,6 +357,13 @@ function browserProviderIds(): string[] {
 }
 export const BROWSER_VENDOR_IDS: readonly string[] = Object.freeze(browserProviderIds());
 export const BROWSER_KEYS: Readonly<Record<string, readonly string[]>> = Object.freeze(Object.fromEntries(BROWSER_VENDORS.map((vendor) => [vendor.id, vendor.keys])));
+/** The browser vendor where nothing names one (a run kept before its plane was, a page's key row, the capabilities'
+ *  browser): the registry's first hosted browser, the one `auto` tries first (Browserbase). */
+export const DEFAULT_BROWSER_VENDOR: Resolution = (() => {
+  const first = BROWSER_VENDORS[0];
+  if (!first) throw new Error("the computer registry declares no hosted browser provider");
+  return first.id as Resolution;
+})();
 type BrowserVendor = string;
 const LABELS: Readonly<Record<string, string>> = Object.freeze(Object.fromEntries(BROWSER_VENDORS.map((vendor) => [vendor.id, vendor.label])));
 const isVendor = (name: unknown): name is BrowserVendor => typeof name === "string" && Object.hasOwn(BROWSER_KEYS, name);
@@ -341,7 +395,9 @@ function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, b
 /** The server's environment's part of every resolution: its gateway and Parallel's key, and where the key is from. */
 const served = (env: NodeJS.ProcessEnv) => {
   const parallelKey = PARALLEL_KEY_ENV in decisionKeysOf(env);
-  return { gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey, browserKeys: browserKeysOf(env), ...(parallelKey ? { parallelKeyFrom: savedIn(env).has(PARALLEL_KEY_ENV) ? ("saved" as const) : ("server" as const) } : {}) };
+  const jevWhy = jevWebWhy(env, "web_search");
+  const jevFetchWhy = jevWebWhy(env, "web_fetch");
+  return { gateway: Boolean(env.AGENT_MODEL_BASE_URL), parallelKey, browserKeys: browserKeysOf(env), ...(parallelKey ? { parallelKeyFrom: savedIn(env).has(PARALLEL_KEY_ENV) ? ("saved" as const) : ("server" as const) } : {}), ...(jevWhy ? { jevWhy } : {}), ...(jevFetchWhy ? { jevFetchWhy } : {}) };
 };
 
 /** Each pickable capability on each harness under the server's `settings` and an agent's `overrides`, on `model`
@@ -368,8 +424,10 @@ const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettin
 });
 
 /** What a run is told: each pickable capability its revision names, resolved; with web_search native on pi, the model
- *  its search asks (the one the resolution read). */
-export type Plane = Partial<Record<Pickable, Resolution>> & { model?: string };
+ *  its search asks (the one the resolution read); and `jev: "off"` where the server had Jev turned off for the web tools
+ *  (AGENTRUN_WEB_JEV_OFF) when it created the run, on a plane with a web tool, so the switch reaches a runner on another
+ *  host; a runner's re-check (recheckPlane) keeps it. */
+export type Plane = Partial<Record<Pickable, Resolution>> & { model?: string; jev?: "off" };
 /** The facts of a pinned revision its run's tools resolve from. */
 /** `approvals`: the revision's, kept only when "never" (the agent runs unattended: an ask is an allow, never over a deny). */
 export type Tooling = { harness?: string; tools: readonly string[]; model?: string; overrides?: ToolSettingsMap; workflow?: true; approvals?: "never" };
@@ -397,28 +455,39 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   // The model a search through its provider's hosted search asks (hosted-search.ts): pi's own web_search, and on
   // another harness, whose agent searches with its own tool, a learned workflow's call node (learned-workflow.ts).
   if (plane.web_search === "native" && model) plane.model = model;
-  return plane;
+  return withJevSwitch(plane, env);
 }
 
-/** A run's kept Plane at a later launch: as it was, but Parallel, or the browser's vendor, where the server no longer
+/** `plane` with Jev's switch: `jev: "off"` where `keptOff` (the plane was made with it off) or where `env` has the switch
+ *  on (AGENTRUN_WEB_JEV_OFF) and the plane has a web tool; else no `jev` field. */
+function withJevSwitch(plane: Plane, env: NodeJS.ProcessEnv, keptOff = false): Plane {
+  const { jev: _was, ...rest } = plane;
+  return keptOff || (webJevOff(env) && (rest.web_search !== undefined || rest.web_fetch !== undefined)) ? { ...rest, jev: "off" } : rest;
+}
+
+/** A run's kept Plane at a later launch: as it was (its Jev off kept, and added where `env` has the switch), but Parallel, or the browser's vendor, where the server no longer
  *  holds its key, which is unavailable, never another provider; and, given `now` (the Plane it would get today and each
  *  capability's permission today), a capability set to ask or deny, or kept denied, as it resolves today: a harness's
  *  own search cannot wait for a person, and a deny that was lifted is lifted. The browser keeps its vendor, whose
  *  sessions it has: only a deny it was kept with is lifted. */
 export function recheckPlane(plane: Plane, env: NodeJS.ProcessEnv, now?: { fresh: Plane; permission: (name: Pickable) => Permission }): Plane {
   const keyed = served(env).parallelKey;
-  return Object.fromEntries(Object.entries(plane).map(([name, value]) => {
+  const { jev: kept, ...resolved } = plane;
+  // Jev off is read when the run is created (planeFor) and is never lifted here: `env`'s switch (a runner's own) can add
+  // "off", never remove it.
+  return withJevSwitch(Object.fromEntries(Object.entries(resolved).map(([name, value]) => {
     const fresh = name === "model" ? undefined : now?.fresh[name as Pickable];
     if (fresh !== undefined && (value === DENIED || (name !== "browser" && now!.permission(name as Pickable) !== "allow"))) return [name, fresh];
     return [name, name === "browser" && isVendor(value) && !browserKeysOf(env)[value] ? noBrowserKey(value) : value === "parallel" && !keyed ? NO_PARALLEL_KEY : value];
-  })) as Plane;
+  })) as Plane, env, kept === "off");
 }
 
 /** The Plane kept for a run made before its plane was kept, resolved at a later launch (runs.ts): its browser stays
- *  Browserbase, the one vendor there was then, never today's pick, which could check its sessions at another vendor. It
- *  keeps the vendor, never a refusal: the plane each launch hands over is checked again (recheckPlane), so Browserbase's
- *  keys missing make it unavailable for that launch alone, and restored keys make the next one run. */
-export const keptFromBefore = (plane: Plane): Plane => (plane.browser === undefined ? plane : { ...plane, browser: "browserbase" });
+ *  the default vendor (DEFAULT_BROWSER_VENDOR, the one vendor there was then), never today's pick, which could check its
+ *  sessions at another vendor. It keeps the vendor, never a refusal: the plane each launch hands over is checked again
+ *  (recheckPlane), so that vendor's keys missing make it unavailable for that launch alone, and restored keys make the
+ *  next one run. */
+export const keptFromBefore = (plane: Plane): Plane => (plane.browser === undefined ? plane : { ...plane, browser: DEFAULT_BROWSER_VENDOR });
 
 /** A run's saved Plane as a launch reads it: a vendor's missing-key refusal an earlier server saved (noBrowserKey's exact
  *  words, Browserbase's or Kernel's) is that vendor again, which the launch checks again as usual (recheckPlane), so
@@ -430,9 +499,9 @@ export function keptVendor(plane: Plane): Plane {
 }
 
 /** The key row (tool-keys.ts) of the browser's vendor on `resolution` with `picked` the provider in force: the vendor it
- *  resolved to, else the one picked, else the registry's first (Browserbase), so a page links a missing key to the row
+ *  resolved to, else the one picked, else the default (DEFAULT_BROWSER_VENDOR), so a page links a missing key to the row
  *  it is saved on. */
-export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): string => (isVendor(resolution) ? resolution : isVendor(picked) ? picked : BROWSER_VENDORS[0]?.id ?? "browserbase");
+export const browserKeyRow = (picked: string | undefined, resolution: string | undefined): string => (isVendor(resolution) ? resolution : isVendor(picked) ? picked : DEFAULT_BROWSER_VENDOR);
 
 /** The Plane a run's process is handed at a launch, under the server's `settings` now: its kept Plane (as keptVendor
  *  reads it) checked again (recheckPlane) against the one it would get today; with none kept, today's, its browser kept
@@ -458,6 +527,18 @@ export function planeOf(env: NodeJS.ProcessEnv): Plane {
 /** Whether a run is handed Parallel's key: one of its capabilities resolves to Parallel. */
 export const handsParallel = (plane: Plane): boolean => PICKABLE.some((name) => plane[name] === "parallel");
 
+/** The resolutions of each web tool its run's Web runs (web-run.ts SEARCH_CHAINS, FETCH_CHAINS), where Jev ranks a
+ *  search's results. */
+const WEB_RUNS: Readonly<Record<"web_search" | "web_fetch", readonly string[]>> = { web_search: ["parallel", "native", "firecrawl-keyless", "exa-keyless"], web_fetch: ["parallel", "firecrawl-keyless", DIRECT_FETCH] };
+/** Whether a run on `harness` is handed TypeSafe's key for its web tools (decisions.ts DecisionNeeds.jevWeb): one of
+ *  them is served by its own Web (web-run.ts webOf), and Jev is turned off neither by the plane (the server's switch at
+ *  launch, planeFor) nor in `env` (AGENTRUN_WEB_JEV_OFF: a runner's own switch adds "off", never removes it).
+ *  web_fetch always is where it runs; web_search is where it resolves to Parallel or a keyless provider, or to native
+ *  where that is the model provider's hosted search (pi's), never a harness's own search inside its CLI (codex's,
+ *  claude-agent's: its facts' webSearch), where no Jev call can happen. */
+export const handsJevWeb = (plane: Plane, env: NodeJS.ProcessEnv, harness: string | undefined): boolean =>
+  plane.jev !== "off" && !webJevOff(env) && (searchesOwn(plane.web_search ?? "", tableFactsOf(env, harness)) || WEB_RUNS.web_fetch.includes(plane.web_fetch ?? ""));
+
 /** The issues of `value` as a settings map, its fields under `at` (none: a body's own): each settings key (a tool of the
  *  table, a catalog tool, an MCP server's wildcard) to `{provider?, permission?}`, a provider only for a capability that
  *  has a choice and one offered for it, a permission one offered for the tool. */
@@ -480,6 +561,11 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
       if (key === "scope") {
         if (layer !== "agent" || !SCOPED_TOOLS.includes(name)) return [{ field: field(name, key), reason: "not_allowed", message: `A scope is set on ${SCOPED_WORDS} in an agent's own tool settings (definition.tool_settings.email_read.scope), never ${layer === "agent" ? `on ${name}` : "in the server's"}.` }];
         return (EMAIL_SCOPES as readonly unknown[]).includes(given) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${EMAIL_SCOPES.join(", ")}: thread, an email's run reads its thread alone; mailbox, the whole account` }];
+      }
+      // An MCP tool's file setting (filed-tool.ts): an agent's own, on the tool's own key only, set as bash's policy is.
+      if (key === "file") {
+        if (layer !== "agent" || !mcpNameOf(name)) return [{ field: field(name, key), reason: "not_allowed", message: `A file setting is set on an MCP tool's own key (mcp:<server>/<tool>) in an agent's own tool settings (definition.tool_settings), never ${layer === "agent" ? `on ${name}` : "in the server's"}.` }];
+        return fileIssues(given, field(name, key));
       }
       // The server's own mark of a pin in its file that does not read (withDefaults serves it), which a whole-map save
       // sends back: it keeps the broken pin, and nothing else. Never an agent's.
@@ -504,7 +590,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   });
 }
 
-/** `map` as a revision body keeps it: each tool's provider, permission, pin and policy as written (never a stand-in's internal
+/** `map` as a revision body keeps it: each tool's provider, permission, pin, policy, scope and file setting as written (never a stand-in's internal
  *  marks), tools, fields and a pin's arguments sorted, and a tool with none of them gone. The one form, so two
  *  revisions whose settings say the same (a pin's arguments in another order) are the same text, and so one revision
  *  where its id is the body's digest (the store keeps the body as given: store/sqlite/store.ts). */
@@ -512,7 +598,7 @@ export function canonicalToolSettings(map: ToolSettingsMap): ToolSettingsMap {
   const sorted = <T>(record: Readonly<Record<string, T>>): Record<string, T> => Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]!]));
   return sorted(Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
     if (!setting) return [];
-    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.allow_reads === true ? { allow_reads: true as const } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.policy ? { policy: setting.policy } : {}), ...(setting.scope ? { scope: setting.scope } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
+    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.allow_reads === true ? { allow_reads: true as const } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.policy ? { policy: setting.policy } : {}), ...(setting.scope ? { scope: setting.scope } : {}), ...(setting.file ? { file: { folder: setting.file.folder, show: [...setting.file.show] } } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
     return Object.keys(kept).length ? [[name, kept]] : [];
   })));
 }

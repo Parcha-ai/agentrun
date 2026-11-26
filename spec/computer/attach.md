@@ -53,8 +53,9 @@ The person installs the driver (Computerd.app on a Mac), and its first run asks 
 - `name` is what the person calls the machine, which they can edit before sending. The app suggests the OS's own
   computer name.
 - `hello` is the driver's own, as it would answer it, so the server records what it pairs: kind, os, groups and
-  features. A `hello` of another protocol version is refused with the words of [the version rule](#versions), and the
-  code stays good.
+  features. A `hello` of a protocol the server does not take is refused with the words of [the version rule](#versions),
+  naming the side to update ("update the driver on Ada's MacBook Pro, then pair with the same code" for an older
+  driver), and the code stays good.
 
 ### 3. The server issues the credential
 
@@ -211,15 +212,21 @@ protocol version) wait for a person; any other exit dials again.
 
 A person's installed app updates on its own schedule, so it can lag the server. The rule:
 
-- **The protocol version must be the server's.** The subprotocol a driver asks for, and the `protocol` in its `hello`,
-  name the protocol version it speaks. A driver of another version is refused: at the upgrade when the subprotocol
-  differs, else at `hello`, with close code `4426` and words that say what to do. An older driver gets "update the
-  driver on Ada's MacBook Pro (the download is on the console's Computers page)": the server names no OS and no
-  driver app, so the words read the same for every computer, and a driver may add its own way to update when it
-  shows them. A newer driver than the server gets "the server is older: it is updated by whoever runs it". The app
+- **The protocol must be one the server takes: its major, 0.2 or a later minor.** The subprotocol a driver asks for
+  (`agentrun.computer.<protocol>`), and the `protocol` in its `hello`, name the protocol version it speaks. From 0.2 on,
+  a minor step only adds, and the driver's `hello` groups and features say what it has. The server answers the upgrade
+  with its own subprotocol when the driver offers it, else with the first it asked for that works. A 0.1 driver (from
+  before 0.2 replaced `apps.ui_tree` with `ui`), a driver of another major, or a version of another shape is refused,
+  in words that say what to do. When no subprotocol it asks for works, the upgrade is answered HTTP `426` with the
+  words as its body. A 0.1 driver offers only its own subprotocol, so this is where it is refused. Otherwise the
+  refusal comes at `hello`, with close code `4426` and the words. A driver takes a `426` as it takes `4426`. An older
+  driver, or one whose version is of another shape, gets "update the driver on Ada's MacBook Pro (the download is on
+  the console's Computers page)": the server names no OS and no driver app, so the words read the same for every
+  computer, and a driver may add its own way to update when it shows them. A newer driver than the server gets "the
+  server is older: it is updated by whoever runs it". The app
   shows these words and stops dialing until it is updated, then dials again on its own.
-- **Within one protocol version, any build is accepted.** A newer or older patch of the driver (0.2.0, 0.2.3) is the
-  same wire. The server records the build each `hello` names and shows it on the Computers page.
+- **Within the protocols the server takes, any build is accepted.** A newer or older build of the driver (0.2.0, 0.2.3,
+  or one speaking 0.3) is the same wire, with more or less of it. The server records the build each `hello` names and shows it on the Computers page.
 - **The daemon version check does not apply.** A copied `computerd` must be exactly the provider's version, because
   the provider puts it there and replaces a drifted one. An attached driver is the person's own app, which the provider
   cannot replace, so `attachedProvider`'s `version` is the version of the driver's live `hello`. The drift check then
@@ -256,7 +263,9 @@ A person's installed app updates on its own schedule, so it can lag the server. 
 | `4401` | Its token is unknown or revoked. | Stops: the person pairs it again. |
 | `4408` | Nothing heard for 60 s. | Dials again. |
 | `4409` | The same computer dialed again. | Dials again (the newer socket is already up). |
-| `4426` | It speaks another protocol version ([Versions](#versions)), or its `hello` lacks a group its kind needs. | Stops: the person updates the driver. |
+| `4426` | It speaks a protocol the server does not take ([Versions](#versions)), or its `hello` lacks a group its kind needs. | Stops: the person updates the driver. |
+
+An upgrade the server refuses before the socket opens is taken as its code: `401` as `4401`, `426` as `4426`.
 
 Any other code, or a drop with none (`1006`), is redialed. A driver waits 1 s before its first redial, doubling each
 time to at most 60 s, less up to a fifth at random so a fleet that lost the server together does not return together
@@ -307,6 +316,37 @@ The server maps an attached computer to a provider so a run takes it like any ot
 - **Lists and attach** find it by its id, or by its own labels with the holding run's.
 - **The policy** (which apps a run may use, which routes) stays the server's, as for every computer: the driver offers
   what its `hello` declares, and the server's claim narrows it.
+
+**A runner of its own process.** A paired computer dials the server, and a runner in a process of its own reaches its
+socket only through the server's relay, the one a hosted machine's dial takes ([Hosted machines that
+dial](#hosted-machines-that-dial)). It needs the runner to know the server's public address (`AGENTRUN_PUBLIC_URL`).
+Where the computer's socket goes is one settings row per computer, its route: the runner, that runner's process (its
+incarnation), the run, the hold's end, and the server's note of why a route was refused or dropped. Every write to it
+is a compare-and-set.
+
+- **The claim takes the route.** A run's `create` on a runner writes the route to name itself, under the run's claim.
+  It takes a route that is empty, or stale: its runner is gone or restarted since, or its run is final (completed,
+  failed or cancelled), read from the run's row. A route held by a live run on a live runner is refused `refused`:
+  `<name> is held by run <run> on runner <runner>: one run at a time`.
+- **The server moves the socket.** Once a second, the server compares each route with where each paired computer's
+  socket is. One in the wrong place is closed `1001`, and the driver's redial lands where its route says: with no
+  route, on the server's own hub; with a live route, relayed to the runner, which takes a paired token only while the
+  route names it; with a stale route, refused `503` in words the server keeps on the route, and the route dropped.
+- **The run waits for it.** `create` waits for the computer's socket on the runner for the computer's longest redial,
+  a relay's connect and a `hello`, and is refused in words naming the runner when it does not arrive. A cancel of the
+  run's claim ends the wait at once: the route it took is dropped, and `create` answers `aborted` in words. The run's
+  `release`, or the runner's sweep of a hold it no longer has, ends the hold, then drops the route, so the computer's
+  next dial comes back to the server. A run that ends any other way (cancelled, failed, its claim lost) releases the
+  same way as its loop unwinds. A runner process that dies releases nothing: its runner row stops renewing, so its
+  route is stale within 30 s, and a redial in that window gets the `503` and the stale drop. A runner whose relay
+  closed while its row is fresh still holds its route for at most those 30 s: it errs toward refusing a take.
+- **The runner beside the server takes a route too.** A run on the runner in the server's own process takes the route
+  the same way, naming that runner (its name and incarnation the server's, new at each start; it is live by its runner
+  row, with no relay), and is refused in the same words. The server keeps a computer whose route names it on its own
+  hub: the tick never moves it there, and moves it back there from a relay. A server restart leaves the old route stale.
+- **The list says where it is.** `GET /v2/computers` lists a routed computer's run, its runner (`held_on`) and the
+  hold's end from the route, online while its socket is relayed, and the route's note (`hold_note`) when a relay was
+  refused or the computer is attached nowhere.
 
 ## Hosted machines that dial
 
@@ -369,8 +409,10 @@ test is `packages/serve/test/computer-attach-e2e.test.mjs`.
    computer; `computer-for-claim.ts` claims it (`create`) for the run and releases it at the run's end.
 5. **More than one serve process**: a computer's socket lands on one process. Until claims route to the process that
    holds the socket, attached computers need serve to run as one process, or a sticky route by computer id. Built: the
-   runner beside the server shares its `AttachHub`; a runner of its own process refuses a paired computer at the claim
-   in words that say so.
+   runner beside the server shares its `AttachHub`; a runner of its own process that knows the server's public address
+   takes the computer through the route its claim writes, and the server relays the socket to it ([A runner of its own
+   process](#the-servers-side-the-provider-attached)); one that does not refuses a paired computer at the claim in
+   words that say so.
 6. **The console**: a "pair a computer" page that shows the code and the paired computers, online or offline.
 
 ## Open questions

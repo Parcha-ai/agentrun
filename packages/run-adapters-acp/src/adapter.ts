@@ -48,6 +48,8 @@ export interface AcpAdapterOptions {
    *  the session: the host's bound alone. */
   contextWindow?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
+  /** Log each call the agent announces, ids and names only (AcpHarnessOptions.debug). */
+  debug?: boolean;
 }
 
 /** What a proxy-billed agent process's proxy is started for: its session's booking and tools, and its drive's stop. */
@@ -131,6 +133,7 @@ export function acpAdapter(options: AcpAdapterOptions): AgentAdapter {
         ...(options.callIdWaitMs !== undefined ? { callIdWaitMs: options.callIdWaitMs } : {}),
         ...(options.startMs !== undefined ? { startMs: options.startMs } : {}),
         ...(options.log ? { log: options.log } : {}),
+        ...(options.debug ? { debug: true } : {}),
         // The host's gate: asked by the kernel's tool bridge for our tools, and by the harness for the agent's own.
         ...(io.gate ? { gate: (call: GateCall) => io.gate!(call) } : {}),
       }, (c) => void (control = c));

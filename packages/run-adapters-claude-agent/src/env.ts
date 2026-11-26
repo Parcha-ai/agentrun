@@ -12,9 +12,12 @@
  */
 
 import { type ClaudeAgentLogin, loginEnv, personHome } from './login.js';
+import { loginUser } from './login-user.js';
 
-/** What never reaches a CLI that runs on a person's login: a model URL, key or token of any kind. */
-export const LOGIN_UNSET: readonly string[] = Object.freeze(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']);
+/** What never reaches a CLI that runs on a person's login from the app's own variables: a model URL, key or token of
+ *  any kind, a refresh token or a token's file descriptor among them. A login handed as a token sets its own
+ *  CLAUDE_CODE_OAUTH_TOKEN after. */
+export const LOGIN_UNSET: readonly string[] = Object.freeze(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_REFRESH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR', 'ANTHROPIC_CUSTOM_HEADERS', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']);
 
 /** The `PATH` of the CLI and its commands in the VM: the image's, never the Function's. */
 export const VM_PATH = '/usr/local/bin:/usr/bin:/bin';
@@ -47,6 +50,12 @@ export interface DurableEnvOptions {
    * environment has no model URL or key at all (login.ts).
    */
   login?: ClaudeAgentLogin;
+  /**
+   * The person's own login handed as its access token alone (login.ts ClaudeLoginToken, read by the host for this
+   * start), in place of the model port and of `login`: the CLI gets it as CLAUDE_CODE_OAUTH_TOKEN, with no refresh token
+   * and no login directory (its credentials directories are the session's own), and a 401 never parks it.
+   */
+  oauthToken?: string;
   /** The platform the CLI runs on, this host's by default. On macOS a CLI on a login runs in the person's home (`HOME`). */
   platform?: NodeJS.Platform;
   /** The model, as the CLI's main and alias models. */
@@ -77,6 +86,8 @@ export interface DurableEnvOptions {
  * - `HOME`, `CLAUDE_CONFIG_DIR`, `TMPDIR` and the XDG dirs in the session's
  *   cache dirs, which the relay wipes before every spawn (`/var/lib/dh/s`),
  *   but `HOME` on macOS on a login: the person's (login.ts personHome);
+ * - on a login, `USER` and `LOGNAME`: the user this process runs as
+ *   (login-user.ts loginUser), the account of the login's Keychain item on macOS;
  * - the projects key fixed (`CLAUDE_CODE_PROJECT_DIR_NAME`), so a transcript
  *   resumes on any VM, whatever the cwd;
  * - the model through the VM's model port, with the attach's key; the
@@ -99,18 +110,26 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
   const { home, model } = options;
   const small = options.smallModel ?? model;
   const env: Record<string, string> = { ...(options.extra ?? {}) };
-  if (options.login) {
+  if (options.login && options.oauthToken !== undefined) throw new Error('agentrun-harness-claude: the CLI takes a login by its directories or by its token, not both');
+  if (options.login || options.oauthToken !== undefined) {
     // On a login, no model URL, key or token reaches the CLI, the app's own variables included: its login is its only one.
     for (const name of Object.keys(env)) if (LOGIN_UNSET.includes(name)) delete env[name];
   } else if (options.baseUrl === undefined || options.token === undefined) {
     throw new Error('agentrun-harness-claude: the CLI needs its model port and key, or a login');
   }
+  // A login by its token: the token alone, its credentials directories the session's own (so no app variable points
+  // them at a login), and no wait for a newer token on a 401: the host is asked for one at once (getOAuthToken). It
+  // reads no keychain, so its HOME stays the session's on every platform.
+  const byToken = options.oauthToken === undefined ? undefined : { CLAUDE_CODE_OAUTH_TOKEN: options.oauthToken, CLAUDE_CODE_OAUTH_401_WAIT_MS: '0', CLAUDE_SECURESTORAGE_CONFIG_DIR: options.configDir, ANTHROPIC_CONFIG_DIR: `${home}/.config/anthropic` };
   const platform = options.platform ?? process.platform;
   Object.assign(env, {
     PATH: VM_PATH,
     // On macOS the CLI on a login reads its tokens from the login keychain, which is under the person's home: in the
     // session's it finds none and reads signed out. Its config, XDG and temporary dirs stay the session's.
     HOME: options.login && platform === 'darwin' ? personHome(options.login) : home,
+    // On a login, the user it is the login of: on macOS the CLI names the Keychain item's account by USER, and with
+    // none it reads the account "unknown", not the one the sign-in saved the tokens under (login-user.ts loginUser).
+    ...(options.login ? loginUser() : {}),
     TMPDIR: options.tmpDir,
     CLAUDE_CONFIG_DIR: options.configDir,
     CLAUDE_CODE_PROJECT_DIR_NAME: PROJECT_DIR_NAME,
@@ -118,7 +137,7 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
     XDG_CACHE_HOME: options.cacheDir,
     XDG_DATA_HOME: `${home}/.local/share`,
     XDG_STATE_HOME: `${home}/.local/state`,
-    ...(options.login ? loginEnv(options.login, platform) : { ANTHROPIC_BASE_URL: options.baseUrl, ANTHROPIC_AUTH_TOKEN: options.token }),
+    ...(byToken ?? (options.login ? loginEnv(options.login, platform) : { ANTHROPIC_BASE_URL: options.baseUrl, ANTHROPIC_AUTH_TOKEN: options.token })),
     ANTHROPIC_DEFAULT_OPUS_MODEL: model,
     ANTHROPIC_DEFAULT_SONNET_MODEL: model,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: small,

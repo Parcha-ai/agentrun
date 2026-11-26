@@ -123,6 +123,26 @@ describe("CodingAgentAction", () => {
     expect(button("Copy prompt")).toBeTruthy();
   });
 
+  it("marks the main action with an arrow only when it opens another app", () => {
+    const arrow = () => document.querySelector('[role="group"] .lucide-arrow-up-right');
+    const render = (agent: string, props: { compact?: boolean; disabled?: boolean } = {}) => {
+      localStorage.setItem(CODING_AGENT_PREFERENCE, agent);
+      act(() => root?.unmount());
+      const host = document.body.appendChild(document.createElement("div"));
+      root = createRoot(host);
+      act(() => root!.render(createElement(CodingAgentAction, { label: "Ask about runs", prompt, ...props })));
+    };
+    render("claude");
+    expect(arrow()?.closest("a")?.title).toBe("Open in Claude Code app");
+    expect(arrow()?.getAttribute("aria-hidden")).toBe("true");
+    render("claude-cli");
+    expect(arrow()).toBeNull();
+    render("claude", { compact: true });
+    expect(arrow()).toBeNull();
+    render("claude", { disabled: true });
+    expect(arrow()).toBeNull();
+  });
+
   it("takes a Button's height, so it stands level with the button beside it", () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);

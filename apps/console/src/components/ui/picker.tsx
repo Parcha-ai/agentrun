@@ -1,7 +1,7 @@
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from "@headlessui/react";
 import { Check, ChevronDown } from "lucide-react";
-import { type ButtonHTMLAttributes, forwardRef } from "react";
-import { Chip } from "@/components/ui/chip";
+import { type ButtonHTMLAttributes, forwardRef, useId } from "react";
+import { Chip, type ChipTone } from "@/components/ui/chip";
 import { useFieldWiring } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
 
@@ -13,9 +13,10 @@ const PickerButton = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButt
 ));
 PickerButton.displayName = "PickerButton";
 
-/** One choice: its value, its words, and, where it can't be picked here, `disabled` with why (`title`). `tag`: a fact
- *  about it ("Free · 1M context"), a chip after its words in the list. */
-export type PickerOption = { value: string; label: string; disabled?: boolean; title?: string; tag?: string };
+/** One choice: its value and words. `description` explains the choice beneath its label in the open list, including
+ *  why a disabled choice is unavailable; `title` is an optional hover hint. `tag`: a fact about it ("Free · 1M context"),
+ *  a chip after its words in the list. The closed field always shows only the label. */
+export type PickerOption = { value: string; label: string; description?: string; disabled?: boolean; title?: string; tag?: string; tagTone?: ChipTone };
 
 /** The console's picker, every dropdown's: a field that opens its list right under itself (Headless UI's Listbox,
  *  anchored "bottom start" and kept inside the viewport), in place of a native <select>, which a phone opens detached
@@ -34,6 +35,7 @@ export function Picker({ value, onChange, options, label, id, className, disable
 }) {
   const picked = options.find((o) => o.value === value);
   const wiring = useFieldWiring();
+  const descriptionId = useId();
   return (
     <Listbox value={value} onChange={onChange} disabled={disabled} name={name}>
       <ListboxButton as={PickerButton} id={id ?? wiring?.id} autoFocus={autoFocus} aria-label={label} describedBy={wiring?.describedBy} aria-invalid={wiring?.invalid || undefined} data-value={value}
@@ -51,12 +53,17 @@ export function Picker({ value, onChange, options, label, id, className, disable
       <ListboxOptions anchor="bottom start" data-picker-list=""
         className={cn("z-popover max-h-72 overflow-auto border border-border-strong bg-background py-1 font-mono text-body shadow-float outline-none [--anchor-gap:2px] [--anchor-padding:8px]",
           steady ? "w-max min-w-[max(12rem,var(--button-width))] max-w-[calc(100vw-1rem)]" : "w-[var(--button-width)] min-w-[12rem]")}>
-        {options.map((o) => (
-          <ListboxOption key={o.value} value={o.value} disabled={o.disabled} title={o.title} data-value={o.value}
-            className="group flex min-h-10 cursor-pointer items-center gap-2 px-3 py-2 data-[disabled]:cursor-not-allowed data-[focus]:bg-accent data-[disabled]:opacity-50 data-[selected]:text-foreground">
-            <Check className="invisible size-3.5 shrink-0 text-primary-text group-data-[selected]:visible" aria-hidden />
-            <span className="min-w-0 break-words">{o.label}</span>
-            {o.tag && <Chip tone="success" className="ml-auto">{o.tag}</Chip>}
+        {options.map((o, i) => (
+          <ListboxOption key={o.value} value={o.value} disabled={o.disabled} title={o.title} data-value={o.value} data-tag-tone={o.tag ? o.tagTone ?? "success" : undefined}
+            aria-label={o.description ? o.label : undefined} aria-describedby={o.description ? `${descriptionId}-${i}` : undefined}
+            className={cn("group flex min-h-10 cursor-pointer items-center gap-2 px-3 py-2 data-[disabled]:cursor-not-allowed data-[focus]:bg-accent data-[selected]:text-foreground",
+              o.description ? "data-[disabled]:text-muted-foreground" : "data-[disabled]:opacity-50")}>
+            <Check className={cn("invisible size-3.5 shrink-0 text-primary-text group-data-[selected]:visible", o.description && "mt-0.5 self-start")} aria-hidden />
+            <span className="min-w-0 break-words">
+              <span className="block">{o.label}</span>
+              {o.description && <span id={`${descriptionId}-${i}`} className="mt-1 block font-sans text-small text-muted-foreground">{o.description}</span>}
+            </span>
+            {o.tag && <Chip tone={o.tagTone ?? "success"} className="ml-auto">{o.tag}</Chip>}
           </ListboxOption>
         ))}
       </ListboxOptions>

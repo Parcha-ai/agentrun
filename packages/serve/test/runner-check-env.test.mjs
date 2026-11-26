@@ -62,6 +62,21 @@ test("runner --check --env with nothing: the store's URL and the seal key are mi
   assert.match(err, /AGENTRUN_STORE_URL: /, "each gap on stderr too");
 });
 
+// A seal key's shape needs no store: one that is not a key is bad even when the store does not open, said by its length
+// as the start's refusal says it, never its value; a key of the right shape stays unchecked there.
+test("runner --check --env with no store: a seal key that is not one is bad, by its length, never printed; one of the right shape is skipped", async (t) => {
+  const root = await scratch(t);
+  const wrong = "q".repeat(60);
+  const bad = await run(["runner", "--check", "--env"], { ...baseEnv(root), AGENTRUN_SEAL_KEY: wrong });
+  assert.equal(bad.code, 1, bad.out + bad.err);
+  assert.equal(stateOf(bad.out, "AGENTRUN_SEAL_KEY"), "bad", bad.out);
+  assert.match(bad.out, /^bad\s+AGENTRUN_SEAL_KEY\s.*it has 60/m);
+  assert.ok(!(bad.out + bad.err).includes(wrong), "the value is never printed");
+  const shaped = await run(["runner", "--check", "--env"], { ...baseEnv(root), AGENTRUN_SEAL_KEY: SEAL });
+  assert.equal(stateOf(shaped.out, "AGENTRUN_SEAL_KEY"), "skipped", shaped.out);
+  assert.ok(!(shaped.out + shaped.err).includes(SEAL), "the value is never printed");
+});
+
 test("runner --check --env with a pool size the runner's start refuses: bad, by name, and it exits 1", async (t) => {
   const root = await scratch(t);
   const { code, out, err } = await run(["runner", "--check", "--env", "--data", root], { ...baseEnv(root), AGENTRUN_STORE_POOL_SIZE: "0" });
@@ -73,7 +88,7 @@ test("runner --check --env with settings the runner's start refuses (Archil's S3
   const root = await scratch(t);
   for (const [given, words] of [
     [{ AGENTRUN_ARCHIL_REGION: "r", AGENTRUN_ARCHIL_S3_URL: "http://example.com" }, /AGENTRUN_ARCHIL_S3_URL is the region's S3 endpoint, an https URL/],
-    [{ AGENTRUN_ARCHIL_REGION: "r" }, /set AGENTRUN_ARCHIL_REGION and AGENTRUN_ARCHIL_S3_URL together/],
+    [{ AGENTRUN_ARCHIL_REGION: "r" }, /AGENTRUN_ARCHIL_S3_URL is needed for the region r:/],
     [{ AGENTRUN_MAX_RUNS: "0" }, /max runs is a positive integer/],
     [{ AGENTRUN_RUN_USER: "everyone" }, /AGENTRUN_RUN_USER=everyone is not a setting this runner knows/],
   ]) {

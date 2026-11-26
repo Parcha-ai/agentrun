@@ -6,8 +6,8 @@
 import { createHash } from "node:crypto";
 import { connect, createServer } from "node:net";
 import { basename } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { beforeEach } from "node:test";
+import { Worker } from "node:worker_threads";
 
 export const PG_URL = process.env.AGENTRUN_TEST_PG_URL || undefined;
 /** Whether this run's stores are on Postgres. */
@@ -250,24 +250,66 @@ export async function storeAtRest(place) {
   }
 }
 
-/** Direct access to a store's rows at `place` (raw SQL with `?` parameters, on either database): run (its changes), get,
- *  all, exec (statements with no parameters), close. Bytes read back as Uint8Array on both. */
-export async function raw(place, { readOnly = false } = {}) {
-  const schema = schemaOf(place);
-  if (schema === undefined) {
-    const db = new DatabaseSync(place, { readOnly, timeout: 5_000 });
-    return {
-      kind: "sqlite",
-      run: async (sql, ...params) => ({ changes: Number(db.prepare(sql).run(...params).changes) }),
-      get: async (sql, ...params) => {
-        const row = db.prepare(sql).get(...params);
-        return row === undefined ? undefined : { ...row };
-      },
-      all: async (sql, ...params) => db.prepare(sql).all(...params).map((row) => ({ ...row })),
-      exec: async (sql) => void db.exec(sql),
-      close: async () => db.close(),
-    };
+/** raw()'s SQLite connection, its statements on a worker thread (fixtures/raw-sqlite-worker.mjs). node:sqlite waits for a
+ *  write lock synchronously, and a store this process opened (a test's in-process server or runner) commits an open
+ *  transaction from this thread: a write waiting here held it up until the wait ran out, "database is locked" at any
+ *  timeout. Rows, bytes and errors (message, code, errcode) come back as node:sqlite gives them. */
+async function sqliteRaw(file, { readOnly, timeout }) {
+  const worker = new Worker(new URL("./fixtures/raw-sqlite-worker.mjs", import.meta.url), { workerData: { file, readOnly, timeout } });
+  const waiting = new Map();
+  let next = 1, lost;
+  worker.on("message", ({ id, ok, value, error }) => {
+    const waiter = waiting.get(id);
+    if (!waiter) return;
+    waiting.delete(id);
+    // Idle, the worker keeps the process alive no more than the connection on this thread did.
+    if (waiting.size === 0) worker.unref();
+    if (ok) waiter.resolve(value);
+    else waiter.reject(Object.assign(new Error(error.message), { code: error.code, errcode: error.errcode, errstr: error.errstr }));
+  });
+  const fail = (error) => {
+    lost ??= error;
+    for (const waiter of waiting.values()) waiter.reject(lost);
+    waiting.clear();
+  };
+  worker.on("error", fail);
+  worker.on("exit", (code) => fail(new Error(`raw()'s SQLite worker for ${file} exited (${code})`)));
+  const ask = (id, message) => new Promise((resolve, reject) => {
+    if (lost) return reject(lost);
+    waiting.set(id, { resolve, reject });
+    worker.ref();
+    if (message) worker.postMessage({ id, ...message });
+  });
+  const send = (op, sql, params) => ask(next++, { op, sql, params });
+  try {
+    await ask(0);
+  } catch (error) {
+    await worker.terminate();
+    throw error;
   }
+  return {
+    kind: "sqlite",
+    run: (sql, ...params) => send("run", sql, params),
+    get: (sql, ...params) => send("get", sql, params),
+    all: (sql, ...params) => send("all", sql, params),
+    exec: async (sql) => void (await send("exec", sql)),
+    close: async () => {
+      try {
+        await send("close");
+      } finally {
+        await worker.terminate();
+      }
+    },
+  };
+}
+
+/** Direct access to a store's rows at `place` (raw SQL with `?` parameters, on either database): run (its changes), get,
+ *  all, exec (statements with no parameters), close. Bytes read back as Uint8Array on both. `timeout`: how long a SQLite
+ *  write waits for a live server's or runner's write to end (a loaded box can hold one past the default). A SQLite
+ *  connection's statements run on a worker thread of its own (sqliteRaw), so that wait never holds this thread. */
+export async function raw(place, { readOnly = false, timeout = 5_000 } = {}) {
+  const schema = schemaOf(place);
+  if (schema === undefined) return sqliteRaw(place, { readOnly, timeout });
   const c = await client(schema);
   // Rows as SQLite's raw reads give them: bytes as a plain Uint8Array (ints are numbers already: client()'s parser).
   const plain = (row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [key, Buffer.isBuffer(value) ? new Uint8Array(value) : value]));

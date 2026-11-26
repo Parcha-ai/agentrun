@@ -2,7 +2,7 @@
 import { basename, join } from "node:path";
 import { type LineSource, lineReader, type ReadContext } from "../lines.js";
 import { entries } from "../reader.js";
-import { argsOf, effortOf, isObject, str, textOf, timeOf } from "../text.js";
+import { argsOf, effortOf, FAILED, isObject, str, textOf, timeOf } from "../text.js";
 import type { ToolCall } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
@@ -68,7 +68,7 @@ function record(value: Record<string, unknown>, at: number, { state, keep, add }
       ...(session.model ? { model: session.model } : {}),
       ...(state.effort ? { effort: state.effort } : {}),
       ...(tokens ? { usage: tokens } : {}),
-      ...(message.stopReason === "error" ? { error: str(message.errorMessage) ?? "unknown error" } : {}),
+      ...(message.stopReason === "error" ? { error: keep ? (str(message.errorMessage) ?? "unknown error") : FAILED } : {}),
     });
   }
 }
@@ -88,6 +88,7 @@ const spec: LineSource<"pi", undefined> = {
   },
   start: () => undefined,
   record,
+  totals: true,
   idOf: (file) => basename(file, ".jsonl").split("_").pop()!,
 };
 

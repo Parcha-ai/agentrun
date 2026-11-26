@@ -2,7 +2,10 @@
 # The installer's walk on a fresh machine, with no Node.js on PATH (CI: .github/workflows/install-walk.yml).
 #   install-walk.sh service [installer options]    launchd (macOS) or a systemd user session (Linux): install.sh starts
 #       the service; its health through a stop and start, a restart by the service manager, `service restart`, a crash
-#       (SIGKILL), running the installer again, and `service uninstall`.
+#       (SIGKILL), running the installer again, and `service uninstall`. Then on a terminal (a pty, on_terminal): asked
+#       first, Enter runs it in the background, still running after the terminal goes; y installs the service; and
+#       --no-service over that service is refused with the service left as it was; with its output captured (a program
+#       running it), it is not asked and installs the service.
 #   install-walk.sh container [installer options]  no service manager: the installer piped to sh, `service install`
 #       refused in words; the default start, in the background, returns and AgentRun answers after it; an older launcher
 #       with no `agentrun stop`, then this one again, each replace it; `agentrun stop` stops it. Then --tailscale with no
@@ -11,7 +14,7 @@
 #   install-walk.sh first-run [installer options]  the setup prompt's own lines (docs/SKILL.md), timed from the installer
 #       to a finished first run, the time said against the bar, 5 minutes (a warning over it, never a failure: it
 #       counts the runner's downloads): the installer (a service where there is a service manager,
-#       else the background), the Local model step on a stand-in for Ollama (walk-model.mjs), `server capabilities`
+#       else the background), the Local model step on a fake Ollama (walk-model.mjs), `server capabilities`
 #       until models.ready, then the release-notes agent and its first run.
 # Installer options: --package FILE (this checkout's launcher, packed), or none (the published one). NODE_PIN=1 gives the
 # installer the launcher's Node floor as --node-version; without it the installer picks the newest on the floor's line.
@@ -102,6 +105,56 @@ piped_install() {
     die "the installer did not return 0 within $bound s"
   }
   cat "$out"
+}
+
+# The command after $1 $2 on a terminal of its own (a pty), as a person runs it there: a shell leads the terminal's session
+# and runs the command as its foreground job, in a process group of its own, so what the command leaves running in the
+# background gets no hangup when the shell and the terminal go (macOS has no setsid to start it in a session of its own).
+# Once the installer's question shows, it types $1 and Enter. The terminal's output goes to $2; it returns the command's
+# exit code, or fails the walk after 600 s.
+on_terminal() {
+  python3 - "$@" << 'PY'
+import os, pty, select, signal, sys, time
+answer, out_path, cmd = sys.argv[1], sys.argv[2], sys.argv[3:]
+pid, fd = pty.fork()
+if pid == 0:
+    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+    job = os.fork()
+    if job == 0:
+        os.setpgid(0, 0)
+        os.tcsetpgrp(0, os.getpid())
+        os.execvp(cmd[0], cmd)
+    try:
+        os.setpgid(job, job)
+    except OSError:
+        pass
+    _, status = os.waitpid(job, 0)
+    os.tcsetpgrp(0, os.getpgrp())
+    os._exit(os.waitstatus_to_exitcode(status) & 0xFF)
+out, sent, done, status, deadline = b"", False, 0, None, time.time() + 600
+while time.time() < deadline:
+    if select.select([fd], [], [], 1)[0]:
+        try:
+            data = os.read(fd, 4096)
+        except OSError:
+            data = b""
+        out += data
+        if not sent and b"[y/N]" in out:
+            time.sleep(0.5)
+            os.write(fd, answer.encode() + b"\r")
+            sent = True
+        if data:
+            continue
+        time.sleep(0.1)
+    done, status = os.waitpid(pid, os.WNOHANG)
+    if done:
+        break
+open(out_path, "wb").write(out)
+sys.stdout.write(out.decode(errors="replace"))
+if not done:
+    sys.exit("on_terminal: no exit within 600 s")
+sys.exit(os.waitstatus_to_exitcode(status))
+PY
 }
 
 # --tailscale in the background (no service manager), with no tailscale, then a fake one (fake-tailscale.sh) in a fresh
@@ -208,7 +261,7 @@ first_run_walk() {
   healthy 30
   t_install=$((SECONDS - t0))
 
-  step "2. a local model on localhost:11434 (walk-model.mjs, the stand-in for Ollama)"
+  step "2. a local model: Ollama on 127.0.0.1:11434 (walk-model.mjs, a fake one)"
   nodebin=$(echo "$HOME"/.agentrun/node/*/bin/node)
   work=$(mktemp -d)
   first_run_model "$nodebin" "$work" 11434 || die "$fr_why"
@@ -219,7 +272,7 @@ first_run_walk() {
     # shellcheck disable=SC2086 # the prompt's words, one VARIABLE=value each (first_run_lines checked them)
     (for pair in $fr_vars; do export "${pair?}"; done; piped_install 600 /tmp/first-model.log "$@") || exit 1
   else
-    step "   Local model, on the service: $fr_service"
+    step "   Local model, the service told where Ollama listens: $fr_service"
     bash -c "$fr_service"
   fi
   healthy 30
@@ -412,4 +465,56 @@ else
   [ ! -e "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agentrun.service" ] || die "the unit is still there"
 fi
 [ -d "$HOME/.agentrun" ] || die "the data directory went with the service"
+
+# On a terminal the installer asks first (GRE-4837), No unless the person says yes; the steps above have no terminal to
+# ask in, so they install the service, as before.
+question='Keep AgentRun running as a service of this user (it starts again at login)? [y/N]'
+step "on a terminal, piped, Enter: asked, and No runs AgentRun in the background with no service"
+on_terminal "" /tmp/ask-no.log bash -c 'cat "$0" | sh -s -- "$@"' "$here/install.sh" "$@" || die "the installer exited $? on a terminal"
+grep -qF "$question" /tmp/ask-no.log || die "the installer did not ask on a terminal"
+grep -q "Starting AgentRun in the background, without a service" /tmp/ask-no.log || die "a No did not start it in the background"
+expect_exit 3 "$agentrun" service status
+healthy 10
+step "the terminal closed: still running"
+bash -c "curl -fsS '$(base)/health'"
+echo
+step "agentrun stop"
+"$agentrun" stop
+down 30
+
+step "on a terminal, y: asked, and the service is installed"
+on_terminal y /tmp/ask-yes.log sh "$here/install.sh" "$@" || die "the installer exited $? on a terminal"
+grep -qF "$question" /tmp/ask-yes.log || die "the installer did not ask on a terminal"
+"$agentrun" service status
+healthy 10
+
+step "--no-service over the service: refused before anything changes, the service as it was"
+serving=$(manager_pid)
+code=0
+out=$(sh "$here/install.sh" --no-service "$@" 2>&1) || code=$?
+echo "$out"
+[ "$code" = 1 ] || die "--no-service over the service exited $code, not 1"
+grep -q -- "--no-service, but AgentRun is a service of this user already" <<< "$out" || die "the refusal does not say why"
+[ "$(manager_pid)" = "$serving" ] || die "the service's process changed from $serving to $(manager_pid)"
+healthy 1
+
+step "service uninstall"
+"$agentrun" service uninstall
+down 30
+expect_exit 3 "$agentrun" service status
+
+step "on a terminal, its output to a file (a program that captures it): not asked, and the service is installed"
+on_terminal y /tmp/ask-captured.log bash -c 'cat "$0" | sh -s -- "$@" > /tmp/captured.log 2>&1' "$here/install.sh" "$@" || {
+  cat /tmp/captured.log
+  die "the installer exited $? with its output captured"
+}
+if grep -qF "$question" /tmp/ask-captured.log; then die "asked on the terminal, where nobody reads the question"; fi
+grep -q "AgentRun is running at" /tmp/captured.log || die "no address printed"
+"$agentrun" service status
+healthy 10
+
+step "service uninstall"
+"$agentrun" service uninstall
+down 30
+expect_exit 3 "$agentrun" service status
 echo "walk: service ok"

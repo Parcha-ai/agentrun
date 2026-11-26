@@ -202,6 +202,22 @@ test("R2: by default an MCP call asks: the run parks on it with nothing sent, it
   assert.equal(toolCalls(run.fake, "add").length, 1, "run exactly once");
 });
 
+test("R2b: a fal job's card says priced by usage: fal prices it only when it runs, after the allow", async (t) => {
+  const SUBMIT = { name: "submit_job", description: "Submit a fal job.", inputSchema: object({ endpoint_id: { type: "string" }, input: { type: "object" } }) };
+  // The save pins "fake" as fal's (its owner's toolkit), as mcpPinOf does: its jobs are priced only when they run.
+  const falPin = (args) => {
+    const pinned = savePin(args);
+    return pinned && { fake: { ...pinned.fake, meter: "fal" } };
+  };
+  const script = [{ call: "mcp__fake__submit_job", args: { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "a card", num_images: 1 } } }, { sayLastResult: true }];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/submit_job"], tools: [SUBMIT], pin: falPin });
+  assert.equal(run.row.state, "parked", JSON.stringify(run.row));
+  assert.equal(toolCalls(run.fake).length, 0, "nothing sent while it waits");
+  const [ask] = await asks(run.server);
+  assert.equal(ask.tool, "mcp:fake/submit_job");
+  assert.equal(ask.price, "priced by usage");
+});
+
 test("R3: a denied MCP call is told in words, and nothing is sent", async (t) => {
   const script = [{ call: "mcp__fake__add", args: { a: 1, b: 1 } }, { sayLastResult: true }];
   const run = await mcpRun(t, { script, grants: ["mcp:fake/add"] });
@@ -538,10 +554,12 @@ test("R16: a per_run server is called with the credential the run was handed, wh
   await assertNowhere(RUN_TOKEN, run, lines);
 });
 
-test("R17: a per_run server's call in a run handed no credential for it is refused unsent, in UNUSABLE.perRunMissing's words", async (t) => {
+test("R17: a per_run server's call in a run handed no credential for it is refused unsent, in UNUSABLE.perRunMissing's words, and the claim names the server (ClaimMcp.unconnected) for its builder to leave out", async (t) => {
   const script = [{ call: "mcp__fake__add", args: { a: 2, b: 3 } }, { sayLastResult: true }];
-  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "per_run", fakeToken: RUN_TOKEN, launchSealed: (url) => sealRunMcpAuth(KEY, "run-1", { other: { headers: { authorization: "Bearer x" }, origin: new URL(url).origin } }) });
+  const opened = [];
+  const run = await mcpRun(t, { script, grants: ["mcp:fake/add"], settings: { "mcp:fake/add": { permission: "allow" } }, auth: "per_run", fakeToken: RUN_TOKEN, opened, launchSealed: (url) => sealRunMcpAuth(KEY, "run-1", { other: { headers: { authorization: "Bearer x" }, origin: new URL(url).origin } }) });
   assert.equal(run.row.state, "ended", JSON.stringify(run.row));
+  assert.deepEqual(opened.map((mcp) => mcp.unconnected), [["fake"]], "named by the claim");
   assert.equal(lastResult(run.sent), `The MCP server fake's credential can't be used right now: ${UNUSABLE.perRunMissing}.`);
   assert.equal(toolCalls(run.fake).length, 0, "nothing sent");
 });

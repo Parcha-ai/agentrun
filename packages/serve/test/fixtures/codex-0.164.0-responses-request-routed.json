@@ -1,0 +1,42 @@
+{
+  "path": "/v1/responses",
+  "model": "qwen3:8b",
+  "keys": [
+    "include",
+    "input",
+    "max_output_tokens",
+    "model",
+    "parallel_tool_calls",
+    "prompt_cache_key",
+    "reasoning",
+    "store",
+    "stream",
+    "tool_choice",
+    "tools"
+  ],
+  "stream": true,
+  "store": false,
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "tool_choice": "auto",
+  "tools": [],
+  "input": [
+    [
+      "message",
+      "developer"
+    ],
+    [
+      "message",
+      "developer"
+    ],
+    [
+      "message",
+      "user"
+    ],
+    [
+      "message",
+      "user"
+    ]
+  ]
+}

@@ -178,14 +178,13 @@ test("opencode: a paid call the cap refuses for room pauses the run, its result 
   assert.equal(Math.round(done.cost.usd * 1e6) / 1e6, 0.00024, JSON.stringify(done.cost));
 });
 
-// SKIP (#2430): the person's message after a stopped turn answers 409 until a person's stop ends the turn, not the run.
-test.skip("claude-agent: a turn stopped between a refused paid call and its next request leaves no pause behind: the person's next message runs, never refused for the call they moved on from", { timeout: 120_000 }, async (t) => {
+test("claude-agent: a turn stopped between a refused paid call and its next request leaves no pause behind: the person's next message runs, never refused for the call they moved on from", { timeout: 120_000 }, async (t) => {
   const log = join(await scratch(t), "monid-calls.jsonl");
   const signal = join(await scratch(t), "held");
   withEnv(t, { MONID_API_KEY: KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: log });
   const { api } = await serve(t, { fauxMonid: FAUX_MONID, harnessTable: fauxTable(FAUX_HARNESS) });
-  const held = `Run monid's /person/enrich, then hold the turn (signal ${signal}).`;
-  assert.equal((await api("POST", "/agents", agent("paid-stopped", { harness: "claude-agent", instructions: held, tools: ["monid:faux/person/enrich"], tool_settings: { "monid:faux/person/enrich": { permission: "allow" } } }))).status, 201);
+  const held = `Run monid's /person/lookup, then hold the turn (signal ${signal}).`;
+  assert.equal((await api("POST", "/agents", agent("paid-stopped", { harness: "claude-agent", instructions: held, tools: [SEARCH], tool_settings: ALLOWED }))).status, 201);
   const started = await api("POST", "/agents/paid-stopped/runs", { input: { content: "go" }, max_cost_usd: 0.5 });
   const runId = started.body.run_id;
   // The call refused (its result says so), the turn holding with no request open: the person stops it there.
