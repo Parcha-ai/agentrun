@@ -28,12 +28,14 @@
 //
 // Git there reads no system or global config (no filter, textconv or fsmonitor a machine's config could attach), copies
 // no template at its init (an image's template hooks and config), runs no hook (core.hooksPath=/dev/null), fetches no
-// tags and no submodules, and checks out with the repository's own config alone, which this exec wrote. sh, git and the
-// rest are found in /usr/bin and /bin first (checkoutEnv).
+// tags and no submodules, and checks out with the repository's own config alone, which this exec wrote. Its fetches
+// verify TLS and go through no proxy, whatever that config says (GIT_PRELUDE). sh, git and the rest are found in
+// /usr/bin and /bin first (checkoutEnv).
 //
 // What the run is told: one line in its system prompt, the checkout's facts, or why there is none and that the GitHub
 // tools can read the change instead. The checkout is removed when the claim lets go (spec-holds.ts), and made again by
-// the next claim of the same run.
+// the next claim of the same run where that claim may make one: on a region with no exec, a claim that takes back a
+// kept sandbox gets none, and a repo/ an earlier claim's removal left there is named as not its checkout.
 import { randomUUID } from "node:crypto";
 import { noExecWords } from "../archil-settings.js";
 import { GITHUB_WEB, type GithubPull, githubPullOf, githubTargetOf } from "../github.js";
@@ -71,12 +73,14 @@ const OWNER_FILE = "agentrun-claim";
  *  that reaches GitHub (a fetch, ls-remote): `g` with the Authorization header in that one git's environment
  *  (GIT_CONFIG_COUNT, as prefix assignments). The header itself is a variable of the script's ($auth), never exported, so
  *  no other git call and nothing else the script runs carries it; the script empties it after its last fetch. An empty
- *  one: an anonymous fetch, no header at all. */
+ *  one: an anonymous fetch, no header at all. Every `net` call verifies TLS and goes through no proxy
+ *  (http.sslVerify=true, and an empty http.proxy, which turns the proxy variables off too): the checkout's .git/config is
+ *  the one config git still reads, and it sits in the run's folder, so it never decides where the header goes. */
 const GIT_PRELUDE = `export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 g() { git -c core.hooksPath=/dev/null "$@"; }
 net() {
-  if [ -n "\${auth:-}" ]; then GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$scope.extraheader" GIT_CONFIG_VALUE_0="$auth" git -c core.hooksPath=/dev/null "$@"
-  else g "$@"; fi
+  if [ -n "\${auth:-}" ]; then GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$scope.extraheader" GIT_CONFIG_VALUE_0="$auth" git -c core.hooksPath=/dev/null -c http.sslVerify=true -c http.proxy= "$@"
+  else g -c http.sslVerify=true -c http.proxy= "$@"; fi
 }`;
 
 /** The checkouts' environment (each exec's, its removal's too): the run's shell's (shellEnv), its PATH with /usr/bin and
@@ -274,7 +278,8 @@ export async function prCheckoutForClaim(
  *  (`mounted.fresh`: ClaimComputer.fresh; the header comment says why). The mount holds the disk's write delegation, and
  *  the fetch writes through it. With no computer that mounts the folder, or one this claim did not start, none is made
  *  and no token minted: the run is told why, and `say` puts it on its timeline (with no computer, the fix: a sandbox
- *  computer). */
+ *  computer). A computer this claim did not start whose mount still shows a repo/ (an earlier claim's, its removal
+ *  failed): the run is told that folder is not this claim's checkout and may be stale. */
 export async function checkoutWhereNoExec(
   deps: Parameters<typeof prCheckoutForClaim>[0],
   mounted: { readonly workspace: Workspace; readonly fresh: boolean } | undefined,
@@ -293,6 +298,15 @@ export async function checkoutWhereNoExec(
     // The computer may have run the agent's code (a kept sandbox, the agent's own, a paired one): no token goes into it.
     const why = `${where}, and the run's computer is not one this claim started (a sandbox kept through a wait, the agent's own computer or a paired one): it may already have run the agent's code, so the server hands it no GitHub token`;
     say?.(`No checkout in repo/: ${why}.`);
+    // A repo/ there now is an earlier claim's checkout whose removal at its release failed, never this claim's: the run
+    // is told so. A look that fails tells nothing either way.
+    let left: unknown;
+    try {
+      left = await mounted.workspace.stat(CHECKOUT_DIR);
+    } catch {
+      left = undefined;
+    }
+    if (left !== undefined) return noCheckout(`No checkout was made: ${why}. The ${CHECKOUT_DIR}/ folder in the run's folder is not this claim's checkout: an earlier claim's, whose removal failed, so it may be stale. ${instead}`);
     return noCheckout(`No checkout was made, so there is no ${CHECKOUT_DIR}/ folder: ${why}. ${instead}`);
   }
   say?.(`No checkout in repo/: ${where}, and this run has none. Give the agent a sandbox computer (a box) to get its checkout.`);
