@@ -1130,6 +1130,8 @@ test("a 16 KB OTLP header value of 900 pairs joined by %20, or a 30 KB one of 1,
   for (const [what, header, bound, first, later] of [
     ["900 pairs", `X-Relay=api_key=${`${key}%20b=1%20`.repeat(900)}`, 128, key, undefined],
     ["1,000 credential pairs", `X-Relay=${pairs}`, 192, many(0), `${many(500)}%20v%3Bapi_key=${many(501)}`],
+    // Each pair after a %3B, and one & at the end: up to the next & each would hold the rest of the value.
+    ["1,000 credential pairs after a pair, before one &", `X-Relay=region=us%3B${pairs}&x=1`, 192, many(0), `${many(500)}%20v%3Bapi_key=${many(501)}`],
   ]) {
     const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: header };
     for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
