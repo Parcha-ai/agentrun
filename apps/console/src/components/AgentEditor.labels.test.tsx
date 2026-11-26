@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { agentFixture, editorCaps } from "@/fixtures";
-import { DECISION, WORKFLOW } from "@/lib/agentForm";
+import { pick, picker } from "@/test/picker";
 
 // Each of the editor's own inputs is named by its label: a screen reader reads "Name" on the name input, a click on the
 // label puts the cursor in it, and a test finds it by its label, as a person does.
@@ -73,21 +73,23 @@ const namedGroup = (host: HTMLElement, name: string) => {
 describe("the agent editor's composite field groups", () => {
   it("names Tools and Skills and links their help, refusal and warning without changing the tool edit", async () => {
     const savedAgent = agentFixture("invoice-checker");
-    const agent = { ...savedAgent, definition: { ...savedAgent.definition, tools: ["read", "write"], skills: ["billing.md"] }, warnings: [{ field: "definition.tools[0]", reason: "missing" as const, message: "Need a configured source." }] };
+    const agent = { ...savedAgent, definition: { ...savedAgent.definition, tools: ["read", "write"], skills: ["billing"] }, warnings: [{ field: "definition.tools[0]", reason: "missing" as const, message: "Need a configured source." }] };
     let saved: { tools?: string[] } | undefined;
-    const { host } = await open({ agent, step: "tools", problem: { kind: "invalid", message: "Refused", fields: { "definition.tools[0]": "Choose another tool." } }, onSave: async (fields) => { saved = fields; return null; } });
-    const tools = namedGroup(host, "Tools"), skills = namedGroup(host, "Skills");
+    const { host } = await open({ agent, skillFiles: { "billing/SKILL.md": "---\nname: billing\ndescription: Review a bill.\n---\n\nCheck the amounts.\n" }, step: "tools", problem: { kind: "invalid", message: "Refused", fields: { "definition.tools[0]": "Choose another tool." } }, onSave: async (fields) => { saved = fields; return null; } });
+    const tools = namedGroup(host, "Tools");
     const descriptions = textAtIds(tools, "aria-describedby");
     expect(descriptions).toContain("On by default");
     expect(descriptions).toContain("Choose another tool.");
     expect(descriptions).toContain("Need a configured source.");
-    expect(textAtIds(skills, "aria-describedby")).toContain("Skill files are saved with each revision");
-    expect(skills.textContent).toContain("billing.md");
     const read = tools.querySelector<HTMLInputElement>('input[type="checkbox"][value="read"]')!;
     expect(read.checked).toBe(true);
     await act(async () => { read.focus(); read.click(); });
     expect(document.activeElement).toBe(read);
     expect(read.checked).toBe(false);
+    await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find(control => control.textContent?.trim().startsWith("Skills"))!.click(); });
+    const skills = namedGroup(host, "Skills");
+    expect(textAtIds(skills, "aria-describedby")).toContain("Changes are saved with the agent’s next revision");
+    expect(skills.textContent).toContain("billing");
     await act(async () => { [...host.querySelectorAll("button")].find((button) => button.textContent === "Save revision")!.click(); });
     expect(saved?.tools).toEqual(["write"]);
   });
@@ -97,7 +99,7 @@ describe("the agent editor's composite field groups", () => {
     const agent = { ...savedAgent, kind: "workflow" as const, definition: { ...savedAgent.definition, workflow: { v: 2, name: "check", root: { node: "chain", steps: [] } } }, warnings: [{ field: "definition.workflow/root", reason: "missing" as const, message: "Workflow needs a source." }] };
     const { host } = await open({ agent, step: "context" });
     const group = namedGroup(host, "Workflow");
-    expect(textAtIds(group, "aria-describedby")).toContain("Edit its nodes in the Workflow step");
+    expect(textAtIds(group, "aria-describedby")).toContain("Edit its nodes in the Workflow section");
     expect(textAtIds(group, "aria-describedby")).toContain("Workflow needs a source.");
     const action = group.querySelector<HTMLButtonElement>("button")!;
     expect(action.textContent?.trim()).toBe("Open the workflow");
@@ -106,19 +108,10 @@ describe("the agent editor's composite field groups", () => {
     expect([...group.querySelectorAll("label")].filter((label) => label.htmlFor && !document.getElementById(label.htmlFor))).toEqual([]);
   });
 
-  it.each([WORKFLOW, DECISION])("names the new %s starter explanation instead of labelling a nonexistent input", async (harness) => {
-    const { host } = await open({ step: "settings", caps: { ...editorCaps, decisionProvider: "jev" } });
-    await act(async () => { host.querySelector<HTMLInputElement>(`input[type="radio"][value="${harness}"]`)!.click(); });
-    await act(async () => { [...host.querySelectorAll("button")].find((button) => button.textContent?.includes("Context"))!.click(); });
-    const group = namedGroup(host, "Workflow");
-    expect(group.textContent).toContain(harness === DECISION ? "A decision agent is a workflow" : "A workflow agent starts from a one-step workflow");
-    expect(group.querySelector("label")).toBeNull();
-  });
-
-  it("keeps each composite group's naming and help IDs unique when two editors render", async () => {
+  it("keeps composite group naming and help IDs unique across Tools and Skills editors", async () => {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    await act(async () => { root!.render(createElement("div", null, ...["one", "two"].map((key) => createElement(AgentEditor, { key, agent: agentFixture("invoice-checker"), caps: editorCaps, step: "tools" })))); });
+    await act(async () => { root!.render(createElement("div", null, ...(["tools", "skills"] as const).flatMap(step => ["one", "two"].map(key => createElement(AgentEditor, { key: `${step}-${key}`, agent: agentFixture("invoice-checker"), caps: editorCaps, step }))))); });
     const groups = [...host.querySelectorAll('[role="group"]')].filter((group) => ["Tools", "Skills"].includes(textAtIds(group, "aria-labelledby")));
     expect(groups).toHaveLength(4);
     const ids = groups.flatMap((group) => ["aria-labelledby", "aria-describedby"].flatMap((attribute) => (group.getAttribute(attribute) ?? "").split(/\s+/).filter(Boolean)));

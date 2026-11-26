@@ -309,7 +309,7 @@ test("Parallel in the order with no key and Firecrawl refused, nothing behind th
   const { answer, receipt } = await w.fetch(PUBLIC);
   const text = web.webFetchText(answer);
   assert.doesNotMatch(text, /fetched directly/, "nothing was fetched directly");
-  assert.match(text, /\nParallel was picked for web_fetch and gave no page \(not tried: this run holds no Parallel key\); no provider after it read the page\.$/);
+  assert.match(text, /\nParallel gave no page \(not tried: this run holds no Parallel key\); no provider after it read the page\.$/);
   assert.equal(answer.via, "none");
   assert.deepEqual(receipt.tries.map(({ provider, outcome }) => [provider, outcome]), [["firecrawl-keyless", "error"], ["parallel", "error"]]);
   assert.equal(receipt.tries[1]?.error, "not tried: this run holds no Parallel key");

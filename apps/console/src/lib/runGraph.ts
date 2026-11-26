@@ -66,6 +66,7 @@ export type RunGraph = {
   /** `withheld`: the server found a saved secret split across two of the graph's words and served it with no nodes and
    *  no edges. */
   graph: WorkflowGraph & { withheld?: true };
+  /** "[redacted]" in place of the map when the server found a saved secret split across the run's node states. */
   nodes: Record<string, NodeRun>;
   decisions: Decision[];
   effects: Effect[];

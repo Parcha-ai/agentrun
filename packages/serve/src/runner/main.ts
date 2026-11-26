@@ -624,7 +624,7 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   try {
     holds = runnerHolds(args, env);
     // The Archil settings an operator sets, read by every run's claim here as the server reads them (archil-settings.ts):
-    // one of the region and S3 URL without the other, or a value the server would refuse, stops this start as it stops
+    // one set without the region, or a value the server would refuse, stops this start as it stops
     // the server's.
     archilSettingsFromEnv(env);
   } catch (error) {

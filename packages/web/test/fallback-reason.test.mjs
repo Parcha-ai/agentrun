@@ -25,14 +25,14 @@ test("keyless Firecrawl rate-limited on a fetch: the page says until when, and s
   const w = web.createWeb({ order: { search: ["firecrawl-keyless"], fetch: ["firecrawl-keyless", "direct"] }, endpoints: { "firecrawl-keyless": fc.url }, guard: guardOf(network()), now: () => START, log: (event, fields) => logged.push([event, fields]) });
   const first = await w.fetch(PUBLIC);
   assert.deepEqual([first.answer.via, first.answer["firecrawl-keyless"]], ["direct", "rate-limited until 12:01 UTC"]);
-  assert.equal(lineOf(first.answer), "keyless Firecrawl was picked for web_fetch and gave no page (rate-limited until 12:01 UTC); this one was fetched directly.");
+  assert.equal(lineOf(first.answer), "keyless Firecrawl gave no page (rate-limited until 12:01 UTC); this one was fetched directly.");
   assert.deepEqual(turns(first.receipt), [["firecrawl-keyless", "error"], ["direct", "ok"]], "the receipt as before");
   assert.deepEqual(logged.map(([event, fields]) => [event, fields.direct]), [["web_fetch_firecrawl_failed", "read"]], "the log as before");
   assert.equal(logged[0][1].said, first.receipt.tries[0].error, "the log keeps the provider's failure in our words");
 
   const second = await w.fetch(NOTES);
   assert.deepEqual([second.answer.via, second.answer["firecrawl-keyless"]], ["direct", "not tried: rate-limited until 12:01 UTC"]);
-  assert.equal(lineOf(second.answer), "keyless Firecrawl was picked for web_fetch and gave no page (not tried: rate-limited until 12:01 UTC); this one was fetched directly.");
+  assert.equal(lineOf(second.answer), "keyless Firecrawl gave no page (not tried: rate-limited until 12:01 UTC); this one was fetched directly.");
   assert.deepEqual(turns(second.receipt), [["firecrawl-keyless", "held"], ["direct", "ok"]], "a held turn is on the receipt");
   assert.equal(fc.calls("firecrawl_scrape"), 1);
 });
@@ -43,7 +43,7 @@ test("keyless Firecrawl's daily limit met on a search: a fetch says it is out of
   await w.search("widgets");
   const page = await w.fetch(PUBLIC);
   assert.deepEqual([page.answer.via, page.answer["firecrawl-keyless"]], ["direct", "not tried: out of quota until 00:00 UTC"]);
-  assert.equal(lineOf(page.answer), "keyless Firecrawl was picked for web_fetch and gave no page (not tried: out of quota until 00:00 UTC); this one was fetched directly.");
+  assert.equal(lineOf(page.answer), "keyless Firecrawl gave no page (not tried: out of quota until 00:00 UTC); this one was fetched directly.");
 });
 
 test("keyed Exa that gave no page: its failure in our words, on the page and in the line", async (t) => {
@@ -52,7 +52,7 @@ test("keyed Exa that gave no page: its failure in our words, on the page and in 
   const page = await w.fetch(PUBLIC);
   const said = page.receipt.tries[0].error;
   assert.deepEqual([page.answer.via, page.answer.exa], ["direct", said]);
-  assert.equal(lineOf(page.answer), `Exa was picked for web_fetch and gave no page (${said}); this one was fetched directly.`);
+  assert.equal(lineOf(page.answer), `Exa gave no page (${said}); this one was fetched directly.`);
   assert.doesNotMatch(web.webFetchText(page.answer), new RegExp(EXA_CANARY), "never the key");
 });
 
@@ -73,7 +73,7 @@ test("Parallel's own line is as it was where it is not limited, and a part of th
   const page = await w.fetch(PUBLIC, { maxChars: 1_000 });
   assert.deepEqual(Object.keys(page.answer).slice(-3), ["via", "firecrawl-keyless", "parallel"], "after via, in the order asked");
   assert.deepEqual(web.webFetchText(page.answer).split("\n").slice(1, 3), [
-    "keyless Firecrawl was picked for web_fetch and gave no page (rate-limited until 12:01 UTC); this one was fetched directly.",
-    "Parallel was picked for web_fetch and gave no page (not tried: this run holds no Parallel key); this one was fetched directly.",
+    "keyless Firecrawl gave no page (rate-limited until 12:01 UTC); this one was fetched directly.",
+    "Parallel gave no page (not tried: this run holds no Parallel key); this one was fetched directly.",
   ]);
 });

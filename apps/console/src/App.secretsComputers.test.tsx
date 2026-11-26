@@ -16,7 +16,7 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 const COMPUTERS = { paired: [], kinds: [{ kind: "sandbox", offered: true, groups: [], tools: [], settings: [], record: { available: false, why: "fixture: a sandbox has no screen to record" }, providers: [
   { id: "e2b", name: "E2B", metered: true, secrets: [{ name: "computer:e2b:E2B_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:e2b:E2B_API_KEY"], ready: false, why: "E2B needs E2B_API_KEY saved" },
 ] }] };
-const ARCHIL = { on: false, secret: { name: "workspace:archil", set: false, source: null, changed_at: null } };
+const ARCHIL = { on: false, regions: { "aws-us-east-1": "https://s3.green.us-east-1.aws.prod.archil.com" }, secret: { name: "workspace:archil", set: false, source: null, changed_at: null } };
 
 async function open(hash: string, session: Record<string, unknown>) {
   vi.stubGlobal("fetch", async (url: string) => {

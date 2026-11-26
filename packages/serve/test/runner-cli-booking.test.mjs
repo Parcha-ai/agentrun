@@ -81,7 +81,7 @@ async function cliRun(t, { tools, instructions, learned }) {
   // tests do: so the instruction, not the person's message, names the learned workflow to run.
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions, harness: HARNESS, tools, ...(learned ? { learning: true } : {}) } });
   const seed = learned ? await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]) : undefined;
-  if (learned) await promoteChecked(server.settings, "agent-1", [{ name: "answer", workflow: answerFlow }]);
+  if (learned) await promoteChecked(server, "agent-1", [{ name: "answer", workflow: answerFlow }]);
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: HARNESS, model: { provider: "openai", modelId: "gpt-test" }, ...(learned ? { learning: startAt(seed) } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();

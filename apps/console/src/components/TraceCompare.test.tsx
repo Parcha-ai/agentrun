@@ -8,6 +8,7 @@ import { TRACE, TRACE_CLI, TRACE_END, TRACE_START, TRACE_USD } from "@/component
 import { TraceCompare } from "@/components/TraceCompare";
 import type { Client } from "@/lib/client";
 import type { Run, RunTrace as Trace } from "@/lib/v2";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 // The compare page (#/compare?runs=…): two to four runs' Dev tools figures side by side, and the two places that open it:
 // a race's toolbar and a run's Dev tools tab.
@@ -36,6 +37,13 @@ describe("the compare page", () => {
   it("is the page of an address that names its runs", () => {
     expect(route("#/compare?runs=run_a,run_b")).toEqual({ section: "runs", compare: ["run_a", "run_b"] });
     expect(route("#/compare")).toEqual({ section: "runs", compare: [] });
+  });
+  it("keeps the Compare runs bar in view, with runs to compare, too few or one unread: the rest scrolls in one box under it", async () => {
+    expect(expectPinnedBar((await shown(["run_a", "run_b"])).host).querySelector("section[aria-label='The runs in figures']")).not.toBeNull();
+    act(() => root!.unmount());
+    expect(expectPinnedBar((await shown(["run_a"])).host).textContent).toContain("names one run");
+    act(() => root!.unmount());
+    expectPinnedBar((await shown(["run_a", "missing"])).host);
   });
   it("reads each run and its trace once, and says two runs' figures with the second against the first", async () => {
     const { host, client } = await shown(["run_a", "run_b"]);

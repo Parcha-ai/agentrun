@@ -7,7 +7,7 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, foldsHeld, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import { entityAt, jsonEscapeAt, privateKeyEnd, scanned, squeeze, type Span } from "./redact/match.js";
+import { entityAt, jsonEscapeAt, privateKeyEnd, pythonEscapeAt, scanned, squeeze, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -52,6 +52,10 @@ function detailOf(rest: string): string {
   return (text.split(/(?<=[.!?])\s/)[0] ?? "").slice(0, 200).replace(/[.\s]+$/, "");
 }
 
+/** How many texts redacted and withheldWhole have read in this process: a test reads it to see a read of a run's rows
+ *  cut only the texts an earlier read had not (store-reads/journal.ts rowCutsOnce). */
+export const cutPasses = { count: 0 };
+
 /** The most of a run's error or a tool's output serve ever shows: a Timeline row's text, cut at 2000 characters
  *  (`CAPS.text` in timeline/; a summary and a tool result's preview at 500), which the error box reads too. */
 const SHOWN = 2000;
@@ -66,6 +70,7 @@ const SHOWN = 2000;
  *  error costs no more to redact than a short one, whatever it holds. `shown`: a head of another length, for a reader
  *  that is shown more. */
 export function redacted(text: string, secrets: readonly string[], shown = SHOWN): string {
+  cutPasses.count++;
   const longest = secrets.reduce((most, value) => Math.max(most, value.length), 0);
   const window = shown + 6 * longest + 16;
   if (text.length <= window) return redactSecrets(text, secrets, Buffer.byteLength(text));
@@ -132,6 +137,7 @@ export function redactedCall(text: string, secrets: readonly string[], shown: nu
  *  own finds, so a value read wholly inside one of them is taken there (sdk/runs.ts withheldParts: a part withheld by
  *  itself). */
 export function withheldWhole(text: string, secrets: readonly string[], held: readonly (readonly [number, number])[] = []): boolean {
+  cutPasses.count++;
   return redactSecrets(text, secrets, Number.POSITIVE_INFINITY, held) === "[redacted]";
 }
 
@@ -247,15 +253,17 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
 
 /** text from `from` on, as far as `count` characters the matcher sees (all of it, if it holds fewer), each run of
  *  whitespace in it one space. The matcher reads "+" as a space and decodes percent-encoded bytes, JSON's escapes (one
- *  level and two, as the JSON view reads them) and HTML's numeric character references, so a "+", an encoded byte, an
- *  escape and a reference that decode to whitespace
- *  count no more than whitespace does, and any other escape counts as what the view keeps of the character it decodes
- *  to. A character that renders as nothing (a zero-width space, a soft hyphen) or a combining mark counts as nothing
- *  too: the views drop it. So does a quote or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join view
- *  drops between a text's strings, and, with `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-",
- *  "_", ":", "."), which the fold view drops. Padding of any of them never hides the rest of a value split before it.
- *  Undefined, so the caller withholds the text, when that takes more than a piece of text (a run of whitespace counted
- *  as one): no redaction pass reads more than a piece. */
+ *  level and two, as the JSON view reads them), Python's ("\'", "\x" and two hex digits, as the view that reads a
+ *  single-quoted dict through them does) and HTML's character references (named and numeric), so a "+", an encoded
+ *  byte, an escape and a reference that decode to whitespace count no more than whitespace does, and any other escape
+ *  counts as what the view keeps of the character it decodes to. A character that renders as nothing (a zero-width
+ *  space, a soft hyphen, a control character that is no whitespace: a NUL, an escape, a delete; U+FFFF; as it stands or as
+ *  "\u0001", "\x01", "%01" or "&#1;" decodes) or a combining mark counts as nothing too: the views drop it (kept). So does a quote, an apostrophe
+ *  or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join views drop between a text's strings, and, with
+ *  `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-", "_", ":", "."), which the fold view
+ *  drops. Padding of any of them never hides the rest of a value split before it. Undefined, so the caller withholds
+ *  the text, when that takes more than a piece of text (a run of whitespace counted as one): no redaction pass reads
+ *  more than a piece. */
 function peek(text: string, from: number, count: number, fold: boolean): string | undefined {
   const read = visible(text, from, count, text.length, fold);
   return read.span > ANSWER_PIECE ? undefined : read.parts.join("");
@@ -264,7 +272,7 @@ function peek(text: string, from: number, count: number, fold: boolean): string 
 /** The end of the run text[start, to) the pass reads for the head of a value whose rest comes after the run: as few of
  *  its last characters as hold `count` characters the matcher sees (at most a piece's worth), counted as peek counts
  *  them (with `fold` as peek's), so padding the views read as nothing (whitespace, a zero-width space, a soft hyphen, a
- *  quote or JSON's punctuation, a separator a folded value drops, an escape, a character reference or encoded bytes
+ *  control character, U+FFFF, a quote or JSON's punctuation, a separator a folded value drops, an escape, a character reference or encoded bytes
  *  that decode to any of them) between that head and the run's end never pushes the head out of it. Read forward from
  *  a start moved back from `to`, twice as far each time, so it reads at most two pieces in all. Undefined, so the
  *  caller withholds the text, when that takes more than a piece of text. */
@@ -316,11 +324,16 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
   }
   return { parts, found, span };
 }
-/** The character text[at] starts, as the views read it: a JSON escape's (jsonEscapeAt) or a character reference's
- *  (entityAt), else the UTF-16 unit itself (`raw`), and where it ends. */
+/** The character text[at] starts, as the views read it: one of Python's escapes (pythonEscapeAt, at either level:
+ *  "\x20" and "\\x20" are a space), else a JSON escape's (jsonEscapeAt), or a character reference's (entityAt), else
+ *  the UTF-16 unit itself (`raw`), and where it ends. Python's first: where JSON's escapes read "\\x20" as a backslash
+ *  and three characters, the view that reads Python's twice reads a space; counting less only reads further. */
 function charAt(text: string, at: number): { char: string; end: number; raw: boolean } {
   let escape: { char: string; end: number } | undefined;
-  if ((text[at] === "\\" && (escape = jsonEscapeAt(text, at)) !== undefined) || (text[at] === "&" && (escape = entityAt(text, at)) !== undefined))
+  if (
+    (text[at] === "\\" && ((escape = pythonEscapeAt(text, at)) !== undefined || (escape = jsonEscapeAt(text, at)) !== undefined)) ||
+    (text[at] === "&" && (escape = entityAt(text, at)) !== undefined)
+  )
     return { ...escape, raw: false };
   return { char: text[at]!, end: at + 1, raw: true };
 }
@@ -328,12 +341,14 @@ const HIGH = (char: string): boolean => char.length === 1 && char.charCodeAt(0) 
 const LOW = (char: string): boolean => char.length === 1 && char.charCodeAt(0) >= 0xdc00 && char.charCodeAt(0) <= 0xdfff;
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
-/** What every view drops between a text's strings: a quote and JSON's punctuation (the join view). */
-const JOIN_DROPS = new Set(['"', "{", "}", "[", "]", ",", ":"]);
+/** What every view drops between a text's strings: a quote, an apostrophe (the join of single-quoted strings) and JSON's
+ *  punctuation (the join view). */
+const JOIN_DROPS = new Set(['"', "'", "{", "}", "[", "]", ",", ":"]);
 /** What the fold view drops: the separators of a hex identifier. */
 const FOLD_DROPS = new Set(["-", "_", ":", "."]);
-/** How many characters the views keep of `chars` at the least (peek): squeezed, less each the join view drops, and,
- *  with `fold`, each the fold view drops. */
+/** How many characters the views keep of `chars` at the least (peek): squeezed (a control character that is no
+ *  whitespace, and U+FFFF, as the views drop them, count 0), less each the join view drops, and, with `fold`, each the
+ *  fold view drops. */
 function kept(chars: string, fold: boolean): number {
   let count = 0;
   for (const char of squeeze(chars)) if (!JOIN_DROPS.has(char) && !(fold && FOLD_DROPS.has(char))) count += char.length;
