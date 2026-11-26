@@ -717,6 +717,9 @@ const TURN_PAGE = 32;
 /** A call's words when its turn could not be read back from its conversation (restoreOf): plain, the store's own error
  *  kept off the model's transcript, and within RESULT_ALWAYS_WHOLE_CHARS, so no bound cuts them. */
 const TURN_UNREAD = "This call did not run: its turn could not be read back from its conversation, so what the turn has left for its result is unknown. Nothing it would do was done; it may be called again.";
+/** The same for a call pi runs again after a crash (piTool's execute, no beforeTool): this run of it did nothing, but an
+ *  earlier attempt may have taken effect before the crash, so it is never told it is free to call again. */
+const TURN_UNREAD_RESUMED = "This call stopped before running again: it was resuming after a restart, and its turn could not be read back from its conversation. An earlier attempt of it may already have taken effect; check what it did before calling it again.";
 
 /**
  * A conversation's turn as its entries keep it (newest first, a page at a time from `page`): its last answer's facts and
@@ -828,7 +831,11 @@ export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: stri
       const window = windowOf(ref);
       // A call the model made claims its share of its turn (a nested call's result goes to the tool that made it).
       const claim = turnOf && !api.callId.includes("/") ? { turn: turnOf(api.conversationId), callId: api.callId } : undefined;
-      if (claim) await restoreOf?.(api.conversationId, toolContext);
+      // A first run read its turn in beforeTool (or was blocked there), so a read that fails here is a call pi runs again
+      // after a crash, with no beforeTool: an earlier attempt of it may have acted, and its words say so (TURN_UNREAD_RESUMED).
+      if (claim) await restoreOf?.(api.conversationId, toolContext).catch((error: unknown) => {
+        throw new Error(TURN_UNREAD_RESUMED, { cause: error instanceof Error && error.cause !== undefined ? error.cause : error });
+      });
       const max = await maxOf(window, claim);
       const answer = await tool.call(args ?? {}, {
         callId: api.callId, signal: toolContext.abortSignal ?? io.signal,
