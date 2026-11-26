@@ -238,6 +238,25 @@ for (const [what, text, [head, rest]] of FOLLOWED_TITLES) {
   });
 }
 
+// Each sequence is read through the decodings that read its opener as one, and no other: one that reads "\u001b" as
+// six characters would read on to the bound at each title. Counted as match.ts counts the characters each read visits.
+test("the read after a run's head reads each title through the decodings that open it: 2,000 titles, raw, a JSON writer's, a Python repr's or percent-encoded, at most 48 characters visited per character", async () => {
+  const { scanned } = await import("../dist/redact/match.js");
+  const over = [];
+  for (const [what, title] of [
+    ["raw", "\u001b]0;t\u001b\\"],
+    ["a JSON writer's", String.raw`\u001b]0;t\u001b\\`],
+    ["a Python repr's", String.raw`\x1b]0;t\x1b\\`],
+    ["percent-encoded", "%1B]0;t%1B%5C"],
+  ]) {
+    const text = wrapped("json", `${PY_HEAD}${title.repeat(2000)} ${PY_REST} more`);
+    scanned.chars = 0;
+    redactedAnswer(text, [`${PY_HEAD}${PY_REST}`]);
+    if (scanned.chars > 48 * text.length) over.push(`${what}: ${scanned.chars} for ${text.length}`);
+  }
+  assert.deepEqual(over, []);
+});
+
 test("kr-11: control padding after a word, with no held value split around it, is shown (control)", () => {
   let body = "";
   while (body.length < 8192 - 100) body += "word ";

@@ -7,7 +7,21 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, foldsHeld, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import { entityAt, joinDrops, jsonEscapeAt, jsonEscapeOnceAt, privateKeyEnd, pythonEscapeAt, scanned, sequenceAt, type SequenceUnits, squeeze, type Span } from "./redact/match.js";
+import {
+  type DecoderName,
+  entityAt,
+  joinDrops,
+  jsonEscapeAt,
+  jsonEscapeOnceAt,
+  privateKeyEnd,
+  pythonEscapeAt,
+  scanned,
+  sequenceAt,
+  type SequenceUnits,
+  squeeze,
+  type Span,
+  VIEW_DECODINGS,
+} from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -315,7 +329,7 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
       if (end > at) {
         const bytes = Buffer.from(text.slice(at, end).replaceAll("%", ""), "hex").toString("utf8");
         found = counted(found, bytes, fold);
-        if (opensSequence(bytes.at(-1))) [end, found] = sequenceEnd(text, end, to, bytes.at(-1)!, found);
+        if (opensSequence(bytes.at(-1))) [end, found] = sequenceEnd(text, end - (bytes.at(-1) === "\u001b" ? 3 : 6), end, to, bytes.at(-1)!, found);
       } else {
         // A character past U+FFFF is read whole, its two UTF-16 units as they are or as two escapes, as the views gather
         // it before they squeeze it: a combining mark past U+FFFF is then dropped as the views drop it, where each of
@@ -330,7 +344,7 @@ function visible(text: string, from: number, count: number, to: number, fold: bo
           }
         }
         if (!(read.raw && read.char === "+")) found = counted(found, read.char, fold);
-        if (opensSequence(read.char)) [end, found] = sequenceEnd(text, end, to, read.char, found);
+        if (opensSequence(read.char)) [end, found] = sequenceEnd(text, at, end, to, read.char, found);
       }
       parts.push(text.slice(at, end));
       span += end - at;
@@ -366,31 +380,72 @@ function counted(found: number, chars: string, fold: boolean): number {
 }
 /** Whether `char` opens a terminal sequence (ESC, the 8-bit CSI or OSC): the views read one as a terminal shows it. */
 const opensSequence = (char: string | undefined): boolean => char === "\u001b" || char === "\u009b" || char === "\u009d";
+type Unit = { char: string; end: number };
+/** One unit as each decoder a view reads through (match.ts VIEW_DECODINGS) reads it, where one starts at text[at]. A
+ *  "+" has none: inside a sequence it and the space a form's "+" stands for are of one class (an intermediate byte, or
+ *  a title's text), so a view with it reads a sequence as the same view without it does. */
+const UNIT_DECODERS: Readonly<Record<DecoderName, ((text: string, at: number, to: number) => Unit | undefined) | undefined>> = {
+  percent: (text, at, to) => percentAt(text, at, to),
+  plus: undefined,
+  json: (text, at) => (text[at] === "\\" ? jsonEscapeAt(text, at) : undefined),
+  "json-quoted": (text, at) => (text[at] === "\\" ? jsonEscapeAt(text, at, true) : undefined),
+  "json-once": (text, at) => jsonEscapeOnceAt(text, at),
+  entity: (text, at) => (text[at] === "&" ? entityAt(text, at) : undefined),
+  python: (text, at) => pythonEscapeAt(text, at, 1) ?? jsonEscapeOnceAt(text, at),
+  "python-twice": (text, at) => (text[at] === "\\" ? (pythonEscapeAt(text, at, 2) ?? jsonEscapeAt(text, at, true)) : undefined),
+};
+const TWO_LEVELS: ReadonlySet<DecoderName> = new Set(["json", "json-quoted", "python-twice"]);
+/** The decodings sequenceEnd reads a sequence through: each view's (match.ts VIEW_DECODINGS), read once where two
+ *  views differ only in "+". `strings`: the view reads a text's strings and decodes two levels of escapes, so a
+ *  backslash one level reads right before a quote or an apostrophe is that string's last character, which the second
+ *  level does not read with the quote. Exported for its test. */
+export const SEQUENCE_LAYERS: readonly { readonly names: readonly DecoderName[]; readonly strings: boolean }[] = [
+  ...new Map(
+    VIEW_DECODINGS.map(({ names, strings }) => {
+      const kept = names.filter((name) => UNIT_DECODERS[name] !== undefined);
+      const layer = { names: kept, strings: strings && kept.some((name) => TWO_LEVELS.has(name)) };
+      return [`${kept.join(" ")}${layer.strings ? " strings" : ""}`, layer] as const;
+    }),
+  ).values(),
+];
+const LAYER_READS = SEQUENCE_LAYERS.map(({ names, strings }) => {
+  const decoders = names.map((name) => UNIT_DECODERS[name]!);
+  return (text: string, at: number, to: number): Unit => {
+    if (strings) {
+      const once = jsonEscapeOnceAt(text, at);
+      if (once?.char === "\\" && (text[once.end] === '"' || text[once.end] === "'")) return once;
+    }
+    for (const decode of decoders) {
+      const unit = decode(text, at, to);
+      if (unit) return unit;
+    }
+    return { char: text[at]!, end: at + 1 };
+  };
+});
 /** Where the terminal sequence `intro` opens, read on from text[at], ends, read by the matcher's sequence rules
- *  (match.ts sequenceAt); or `at` where it opens none (the views then read on from there). It counts as nothing, and a
- *  backspace inside it, which still moves back, as one would outside it: `found` comes back with it taken off
- *  (counted). It is read three times, and the read that ends furthest is taken:
+ *  (match.ts sequenceAt); or `at` where it opens none (the views then read on from there). `from` is where the opener
+ *  starts. It counts as nothing, and a backspace inside it, which still moves back, as one would outside it: `found`
+ *  comes back with it taken off (counted). It is read through each decoding and the read that ends furthest is taken:
  *  - each unit as charAt or percentAt decodes it (every layer at once, JSON's two levels among them), a unit that
  *    decodes to nothing (an escaped quote, which the view that reads a string written in a string drops) passed over;
  *  - the same, with what the join views drop passed over too (match.ts joinDrops: a ":" or a blank they drop can make
  *    a whole escape of the rest);
- *  - each unit through one level of Python's and JSON's escapes alone (pythonEscapeAt at one level, match.ts
- *    jsonEscapeOnceAt), as the views that read a string's text once do: where a string ends right after an ST written
- *    "\u001b" and two backslashes, the second level reads the backslashes and the closing quote as one escaped quote
- *    and loses the ST's backslash (JSON's drops it, Python's reads an apostrophe; so does an ST written "\u001b\u005c"
- *    before the quote). This read's end is taken only where it is also an end of a unit as the first two read them,
- *    or where what is left of that unit is a quote, after any backslashes (the escaped quote that took the ST's
- *    backslash): elsewhere the rest would be read from inside an escape the other reads decode whole ("\\u001b" read
- *    once is a backslash and five characters).
- *  Read no further than a piece of text.
+ *  - each unit as each view decodes it (SEQUENCE_LAYERS), where that view reads the opener as an opener too (a view
+ *    that reads "\u001b" as six characters opens no sequence there, and its read would only run to the bound). A
+ *    view that decodes fewer layers can read an ST where the first two read its backslash with what follows as one
+ *    escape: a JSON writer's "\u001b" and two backslashes before a quote, a letter of JSON's escapes, or "u" and four
+ *    hex digits; Python's before "x" and two hex digits; a raw ESC and backslash before any of them.
+ *  The end taken is rounded up to the end of the unit (as the first two read units) it falls in, so the read past it
+ *  resumes where those reads resume, never inside an escape they read whole; what it passes over then counts as
+ *  nothing. Read no further than a piece of text.
  *
  *  The invariant every count here keeps is one-sided: this read may count fewer characters than the views show
  *  (it then reads further), never more, so no padding the views read past pushes a held value's other half out of
  *  the read. */
-function sequenceEnd(text: string, at: number, to: number, intro: string, found: number): [number, number] {
-  const unitsOf = (decode: (k: number) => { char: string; end: number }): SequenceUnits => {
+function sequenceEnd(text: string, from: number, at: number, to: number, intro: string, found: number): [number, number] {
+  const unitsOf = (decode: (k: number) => Unit): SequenceUnits => {
     let place = -1;
-    let read: { char: string; end: number } = { char: "", end: at };
+    let read: Unit = { char: "", end: at };
     const unit = (k: number) => {
       if (k !== place) [place, read] = [k, decode(k)];
       return read;
@@ -398,23 +453,22 @@ function sequenceEnd(text: string, at: number, to: number, intro: string, found:
     return { end: Math.min(to, at + ANSWER_PIECE + 1), code: (k) => unit(k).char.charCodeAt(0), char: (k) => unit(k).char, next: (k) => unit(k).end };
   };
   const units = unitsOf((k) => percentAt(text, k, to) ?? charAt(text, k));
-  const once = unitsOf((k) => pythonEscapeAt(text, k, 1) ?? jsonEscapeOnceAt(text, k) ?? { char: text[k]!, end: k + 1 });
   const code = intro.charCodeAt(0);
   // A unit decoded to nothing (an escaped quote: jsonEscapeAt) has no code; the view it comes from records nothing
-  // there, so every read passes over it (one level of Python's and JSON's escapes never decodes to nothing: passed the same, as a no-op).
+  // there, so every read passes over it.
   const empty = (unit: number): boolean => Number.isNaN(unit);
   const reads = [sequenceAt(units, code, at, empty), sequenceAt(units, code, at, (unit) => empty(unit) || joinDrops(unit))];
-  let sequence = reads.reduce((far, one) => (one && (!far || one.end > far.end) ? one : far), undefined);
-  const single = sequenceAt(once, code, at, empty);
-  if (single && (!sequence || single.end > sequence.end)) {
-    let k = at;
-    while (k < single.end) k = units.next(k);
-    if (/^(\\*["'])?$/.test(text.slice(single.end, k))) sequence = single;
+  for (const read of LAYER_READS) {
+    const layer = unitsOf((k) => read(text, k, to));
+    if (layer.next(from) === at && layer.char(from) === intro) reads.push(sequenceAt(layer, code, at, empty));
   }
+  const sequence = reads.reduce((far, one) => (one && (!far || one.end > far.end) ? one : far), undefined);
   if (!sequence) return [at, found];
+  let end = at;
+  while (end < sequence.end) end = units.next(end);
   let count = found;
   for (let n = 0; n < sequence.backspaces; n++) count = counted(count, "\b", false);
-  return [sequence.end, count];
+  return [end, count];
 }
 /** The byte text[at] percent-encodes ("%" and two hex digits before `to`), or -1. */
 function percentByte(text: string, at: number, to: number): number {

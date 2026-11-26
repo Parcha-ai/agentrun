@@ -789,12 +789,17 @@ const MARKS = /\p{M}+/gu;
 export const squeeze = (text: string): string => text.replace(IGNORABLE, "").normalize("NFKD").replace(MARKS, "").normalize("NFKC").replace(GONE, "");
 
 /** What a view decodes where its trigger character stands: given the text and that place, the end of what it decoded,
- *  each character it decodes to handed to `unit` with the text it came from; or -1 where nothing there decodes. */
-type Decoder = { readonly trigger: string; readonly decode: (text: string, at: number, unit: Sink) => number };
+ *  each character it decodes to handed to `unit` with the text it came from; or -1 where nothing there decodes. `name`
+ *  says which (VIEW_DECODINGS). */
+type Decoder = { readonly name: DecoderName; readonly trigger: string; readonly decode: (text: string, at: number, unit: Sink) => number };
+/** Each decoder the views read through: percent-encoded UTF-8, "+" as a space, JSON's escapes twice (an escaped quote
+ *  as nothing, or as a quote) or once, HTML's character references, and Python's escapes at one level or two. */
+export type DecoderName = "percent" | "plus" | "json" | "json-quoted" | "json-once" | "entity" | "python" | "python-twice";
 type Sink = (char: string, from: number, to: number) => void;
 
 /** A run of percent-encoded bytes, decoded as UTF-8 (decoded). */
 const PERCENT: Decoder = {
+  name: "percent",
   trigger: "%",
   decode(text, at, unit) {
     let end = at;
@@ -807,7 +812,7 @@ const PERCENT: Decoder = {
   },
 };
 /** "+" as a space, as a form's encoding writes one. */
-const PLUS: Decoder = { trigger: "+", decode: (_text, at, unit) => (scanned.chars++, unit(" ", at, at + 1), at + 1) };
+const PLUS: Decoder = { name: "plus", trigger: "+", decode: (_text, at, unit) => (scanned.chars++, unit(" ", at, at + 1), at + 1) };
 /** What JSON's one-character escapes stand for. */
 const ESCAPED: Readonly<Record<string, string>> = {
   n: "\n", r: "\r", t: "\t", '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f",
@@ -837,6 +842,7 @@ function unescaped(text: string, at: number): Char | undefined {
  *  JSON's escapes alone read it (a held value with a quote of its own, written escaped). With `levels` 1, the first level
  *  alone: a "\\" is a backslash, read no further. */
 const jsonEscape = (dropQuote: boolean, levels: 1 | 2 = 2): Decoder => ({
+  name: levels === 1 ? "json-once" : dropQuote ? "json" : "json-quoted",
   trigger: "\\",
   decode(text, at, unit) {
     const put = (char: string, end: number) => {
@@ -891,6 +897,7 @@ export function pythonEscapeAt(text: string, at: number, levels: 1 | 2 = 2): { c
  *  its repr wrote them, with one level of JSON's escapes ("\\", "\n", "\u" and four hex digits); and, written in a
  *  JSON string, both levels of each ("\\'" and "\\x41", "\\\\" and "\\n"). */
 const pythonEscape = (levels: 1 | 2, json: Decoder): Decoder => ({
+  name: levels === 1 ? "python" : "python-twice",
   trigger: "\\",
   decode(text, at, unit) {
     const found = pythonEscapeAt(text, at, levels);
@@ -904,17 +911,17 @@ const PYTHON_ESCAPE_TWICE = pythonEscape(2, JSON_ESCAPE_QUOTED);
 /** One level of JSON's escapes at `at`, as the views that read a string's text once read it (JSON_ESCAPE_ONCE, the join
  *  view's parts): a "\" and one of ESCAPED's keys (an escaped quote is a quote, "\\" a backslash read no further), or
  *  "\u" and four hex digits; undefined where none starts. Never "". key-refusal.ts reads a terminal sequence through it
- *  too, where JSON's second level would read a backslash and the quote after it as one escaped quote. */
+ *  as the views that decode JSON's escapes once do (VIEW_DECODINGS). */
 export function jsonEscapeOnceAt(text: string, at: number): { char: string; end: number } | undefined {
   return text[at] === "\\" ? unescaped(text, at) : undefined;
 }
 /** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels ("" for an escaped
  *  quote, which decodes to nothing), and where it ends; undefined where no escape starts (the "\" is then itself).
  *  key-refusal.ts's peek counts an escape by it, so the read past a call's stop and the JSON view see the same
- *  characters. */
-export function jsonEscapeAt(text: string, at: number): { char: string; end: number } | undefined {
+ *  characters. With `quoted`, as JSON_ESCAPE_QUOTED reads it: an escaped quote is a quote. */
+export function jsonEscapeAt(text: string, at: number, quoted = false): { char: string; end: number } | undefined {
   let char = "";
-  const end = JSON_ESCAPE.decode(text, at, (decoded) => {
+  const end = (quoted ? JSON_ESCAPE_QUOTED : JSON_ESCAPE).decode(text, at, (decoded) => {
     char = decoded;
   });
   return end < 0 ? undefined : { char, end };
@@ -962,6 +969,7 @@ export function entityAt(text: string, at: number): { char: string; end: number 
 /** An HTML character reference (entityAt), as the character it stands for (a character past U+FFFF as its two UTF-16
  *  units, each from the whole reference). */
 const ENTITY: Decoder = {
+  name: "entity",
   trigger: "&",
   decode(text, at, unit) {
     const found = entityAt(text, at);
@@ -1057,6 +1065,13 @@ const VIEWS: readonly ViewSpec[] = [
   viewSpec((has) => has.apostrophe && has.python, [PYTHON_ESCAPE], "quoted"),
   viewSpec((has) => has.apostrophe && has.quote, [PYTHON_ESCAPE_TWICE], "again"),
 ];
+/** Each view's decoders by name, and whether it reads a text's strings (a join view: a string's closing quote ends
+ *  what a second level of escapes reads there). key-refusal.ts reads a terminal sequence past a call's stop through
+ *  each of these, so a view added here is read there too. */
+export const VIEW_DECODINGS: readonly { readonly names: readonly DecoderName[]; readonly strings: boolean }[] = VIEWS.map((view) => ({
+  names: view.decoders.map((decoder) => decoder.name),
+  strings: view.join !== undefined,
+}));
 
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
 

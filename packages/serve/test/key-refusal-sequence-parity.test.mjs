@@ -10,7 +10,8 @@
 // the read takes must withhold it too.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { redactedAnswer, redactedCall } from "../dist/key-refusal.js";
+import { redactedAnswer, redactedCall, SEQUENCE_LAYERS } from "../dist/key-refusal.js";
+import { VIEW_DECODINGS } from "../dist/redact/match.js";
 
 const [HEAD, REST] = [["Wc3M", "hT8q", "Lz5N", "rB1v"].join(""), ["Xe6K", "pJ4d", "Ys9G", "fA2u"].join("")];
 const VALUE = `${HEAD}${REST}`;
@@ -160,6 +161,22 @@ test("every OSC title ended by ST the matcher reads past whole, followed right a
       }
   assert.ok(checked > count / 2, `the matcher read past ${checked} of ${count} titles`);
   assert.deepEqual(under, []);
+});
+
+// The decodings the read past a call's stop reads a sequence through are the views' own: a view added to the matcher,
+// or a decoder added to a view, is read there too ("+" aside: in a sequence it and the space it stands for are of one
+// class; a join view's strings bound only a second level of escapes).
+test("each view's decoding is one the read after a call's stop reads a sequence through", () => {
+  const twice = new Set(["json", "json-quoted", "python-twice"]);
+  const key = ({ names, strings }) => `${names.join(" ")}${strings ? " strings" : ""}`;
+  const layers = SEQUENCE_LAYERS.map(key);
+  const views = VIEW_DECODINGS.map(({ names, strings }) => {
+    const kept = names.filter((name) => name !== "plus");
+    return key({ names: kept, strings: strings && kept.some((name) => twice.has(name)) });
+  });
+  assert.ok(VIEW_DECODINGS.length >= 16, `${VIEW_DECODINGS.length} views`);
+  assert.deepEqual(views.filter((view) => !layers.includes(view)), []);
+  assert.deepEqual([...new Set(views)].sort(), [...layers].sort());
 });
 
 test("kr-10 (percent-encoded CSI colours with U+FFFD inside): a held value whose head ends a run too long to read, the padding after it, and whose rest follows is withheld", () => {
