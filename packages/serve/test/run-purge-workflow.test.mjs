@@ -156,10 +156,12 @@ test("a purge takes the purged run's workflow out of the learning: both its file
   assert.ok(!(await learningText(store, "keeper")).includes(mark), "no learning row holds its text");
   assert.deepEqual((await onMain(store, "keeper", "solo")).files, {}, "the learning no longer holds solo");
 
-  // A later run learns solo again: a repeat DELETE finds nothing of the purged run's and takes none of it.
-  await endedRuns(api, store, "keeper", ["later"], false);
+  // A later run learns solo again: a repeat DELETE finds nothing of the purged run's and takes none of it. The run is
+  // this server's runner's, as the others here: endedRuns claims its runs itself, so it is for a server with no runner.
+  const later = await started(api, "keeper", "What is four?");
+  await ended(api, later);
   const again = JSON.stringify(answerFlow("Answer it alone."));
-  await learned(store, "keeper", (learning) => learningCommit(learning, { runId: "later", reason: "It learned solo again.", files: [{ path: soloPath, text: again }, readmeOf("solo")] }));
+  await learned(store, "keeper", (learning) => learningCommit(learning, { runId: later, reason: "It learned solo again.", files: [{ path: soloPath, text: again }, readmeOf("solo")] }));
   assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
   assert.deepEqual((await onMain(store, "keeper", "solo")).files, { [soloReadme]: readmeOf("solo").text, [soloPath]: again }, "a repeat DELETE leaves the later run's solo");
 
