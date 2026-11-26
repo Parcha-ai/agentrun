@@ -116,6 +116,42 @@ async function openStore(dir, role, now) {
 const followUpsSent = (sent, usd) => sent.filter((body) => JSON.stringify(body.messages ?? []).includes(FOLLOW_UP(usd))).length;
 const commandOf = async (server, id) => (await server.commands("run-1", id - 1)).find((row) => row.id === id);
 
+/** How long a loaded machine's runner is slow, once `on()`: longer than a case's own sleeps. */
+const SLOW_MS = STEADY.pollMs * 20;
+/** A runner on a loaded machine, from `on()` on: each claim and each journal commit waits SLOW_MS before it reaches the
+ *  store. A case ordered by the run's own events reads the same either way; one ordered by a sleep reads the run early. */
+const loaded = () => {
+  let slow = false;
+  const later = () => (slow ? sleep(SLOW_MS) : Promise.resolve());
+  const delayed = (target, value) => async (...args) => (await later(), value.apply(target, args));
+  const storeOf = (store) => {
+    const runs = new Proxy(store.runs, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key === "claimMany") return delayed(target, value);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    return new Proxy(store, {
+      get(target, key) {
+        if (key === "runs") return runs;
+        const value = Reflect.get(target, key, target);
+        if (key === "claim") return delayed(target, value);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  };
+  const journalOf = (journal) =>
+    new Proxy(journal, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target);
+        if (key === "commit") return delayed(target, value);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  return { hooks: { storeOf, journalOf }, on: () => void (slow = true) };
+};
+
 // Mirrors kernel-cap-park "a parked run raised goes on: one follow-up in the server's words, under the new cap" and
 // serve cap-raise.test.mjs:53 ("a run paused at its cap, its cap raised, goes on: one follow-up turn in the server's
 // words runs under the new cap and completes").
@@ -354,8 +390,10 @@ test("a raise that reaches the loop once its pause is journaled, before the run 
 });
 
 test("a raise not above the run's cap is refused in the rule's words, and the run stays parked", async (t) => {
-  const w = await cappedRun(t, [{ say: "done" }]);
+  const load = loaded();
+  const w = await cappedRun(t, [{ say: "done" }], load.hooks);
   await w.settled("parked");
+  load.on();
   const row = await w.raise(CAP);
   const refused = await (async () => {
     for (const from = Date.now(); Date.now() - from < 10_000; await sleep(20)) {
@@ -374,8 +412,10 @@ test("a raise not above the run's cap is refused in the rule's words, and the ru
 // Mirrors kernel-cap-park "a parked run's next step stays refused until the cap is raised, then goes": a raise above the
 // cap but short of the request's need resumes the run, and the cap refuses that request again, at the new figures.
 test("a raise above the cap but short of the request's need resumes the run once, and it parks again with a fresh pending budget", async (t) => {
-  const w = await cappedRun(t, [{ say: "done" }]);
+  const load = loaded();
+  const w = await cappedRun(t, [{ say: "done" }], load.hooks);
   await w.settled("parked");
+  load.on();
   const [first] = await rootEntries(w.store, "agentrun.budget");
   const short = Number(((CAP + first.pending.least_cap_usd) / 2).toFixed(6));
   assert.ok(short > CAP && short < first.pending.least_cap_usd, `a raise between the cap and the least cap: ${short}`);
