@@ -33,7 +33,8 @@
 //   lateTitle: with announce "late", that update's title instead (a release that words it otherwise);
 //   (a call step's `ask`, {kind, title}: what its permission request says instead of the call's own kind and title;)
 //   (a native step's `lateInput`: a tool_call_update after its tool_call with that rawInput, a release that echoes the
-//   model's arguments in a later update;)
+//   model's arguments in a later update; in it and in the step's title, `<server>` is the name the client gave its MCP
+//   server, so a test can name the start's own server, whatever name the start gave it;)
 //   (a native step's `narrate`: text the agent writes after the call's tool_call and before it ends, as Cursor
 //   2026.11.13 does;)
 //   (styles "goose" and "goose-1.59": each tool_call names its tool in _meta.goose.toolCall.toolName, as Goose 1.59.2
@@ -350,14 +351,15 @@ async function takeTurn(client, session, prompt, signal) {
       const id = `native_${step - 1}`;
       // A model that, taking a step again (after a restart), writes another command for it (retitled).
       const again = s.retitled?.length ? tally(step - 1) : 0;
-      const title = again > 0 ? s.retitled[Math.min(again, s.retitled.length) - 1] : (s.title ?? s.native);
+      const named = (value) => JSON.parse(JSON.stringify(value).replaceAll("<server>", session.server));
+      const title = again > 0 ? s.retitled[Math.min(again, s.retitled.length) - 1] : named(s.title ?? s.native);
       const update = { toolCallId: id, title, kind: s.native, status: "pending", rawInput: again > 0 ? { ...(s.input ?? {}), command: title } : (s.input ?? {}), ...(style === "antigravity" ? { name: s.toolName ?? s.native } : {}) };
       const entry = { kind: "native", id, title: update.title, status: "pending" };
       session.history.push(entry);
       save(session);
       // {announce: false}: a permission request for a call no tool_call announced.
       if (s.announce !== false) await notify({ sessionUpdate: "tool_call", ...update, ...gooseMeta(s.toolName ?? `developer__${s.native}`) });
-      if (s.lateInput) await notify({ sessionUpdate: "tool_call_update", toolCallId: id, rawInput: s.lateInput });
+      if (s.lateInput) await notify({ sessionUpdate: "tool_call_update", toolCallId: id, rawInput: named(s.lateInput) });
       if (s.narrate) await notify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: s.narrate } });
       const allowed = deniesWrite && EDITS.has(s.native) ? false : askNative.has(s.native) ? await permitted(client, session, update) : true;
       if (signal.aborted) return { stopReason: "cancelled" };

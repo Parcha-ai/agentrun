@@ -308,14 +308,15 @@ test("on Cursor's tie, a native read titled `agentrun__write` is never announced
   assert.equal(ran, 0);
 });
 
-test("on Cursor's tie, a native read whose later update echoes the model's arguments at the top of its rawInput (providerIdentifier, toolName) is never named ours: its request titled `agentrun__write` asks the host's gate", async (t) => {
-  // Before: a later update named any call with no effects of its own whose rawInput said providerIdentifier "agentrun"
-  // and a toolName, so this read was tied and answered allow_once. A later update names only a call whose tool_call
-  // reported no input: Cursor's untitled `MCP: tool`, rawInput {}.
+test("on Cursor's tie, a native read whose later update echoes the model's arguments at the top of its rawInput (providerIdentifier, toolName) is never named ours, even under the start's own server name: its request, titled as our write's, asks the host's gate", async (t) => {
+  // Before: a later update named any call with no effects of its own whose rawInput said our server and a toolName, so
+  // this read was tied and answered allow_once. A later update names only a call whose tool_call reported no input:
+  // Cursor's untitled `MCP: tool`, rawInput {}. Its server and title are the start's own (`<server>`), so only that
+  // guard keeps it out, never the name.
   const dir = scratch();
   const nativeLog = join(dir, 'native.log');
-  const lateInput = { providerIdentifier: 'agentrun', toolName: 'write', path: 'notes.md' };
-  const recipe = fakeRecipe(dir, { script: [{ native: 'read', title: 'agentrun__write', input: { path: 'notes.md' }, lateInput }, { sayLastResult: true }], style: 'cursor', askNative: ['read'], nativeLog });
+  const lateInput = { providerIdentifier: '<server>', toolName: 'write', path: 'notes.md' };
+  const recipe = fakeRecipe(dir, { script: [{ native: 'read', title: '<server>-write: write', input: { path: 'notes.md' }, lateInput }, { sayLastResult: true }], style: 'cursor', askNative: ['read'], nativeLog });
   assert.deepEqual(recipe.quirks, { permissionTie: 'title' });
   const asked = [];
   let ran = 0;
@@ -325,7 +326,9 @@ test("on Cursor's tie, a native read whose later update echoes the model's argum
   });
   await session.send('go');
   assert.equal((await session.turnEnd()).status, 'completed');
-  assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_read', 'agentrun__write']], 'the host gate was asked about the read');
+  assert.equal(asked.length, 1, 'the host gate was asked about the read');
+  assert.equal(asked[0].tool, 'acp_read');
+  assert.match(asked[0].args.title, /^ar[0-9a-f]{6}-write: write$/, 'titled as our write under the start\'s own server');
   assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
   assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the read never ran');
   assert.equal(ran, 0);
