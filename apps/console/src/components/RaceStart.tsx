@@ -34,10 +34,12 @@ function firstPick(runnable: RaceHarness[], i: number): LaneChoice {
   return { harness: h.id, model: models[(start + Math.floor(i / runnable.length)) % models.length] };
 }
 
-/** Whether `e` is the server saying no, nothing started: a 4xx with its error object, other than an idempotency answer
- *  (a start under this key it may still be making). A lost answer, a timeout or a 5xx may have started the run. */
+/** Whether `e` is the server saying no, nothing started: a 4xx with its error object that isn't retryable, and isn't an
+ *  idempotency answer (a start under this key it may still be making). A retryable answer may follow a saved run: a
+ *  busy store (home_busy) can answer after the run was saved, and Start sends the same request again to find it. A lost
+ *  answer, a timeout or a 5xx may have started the run too. */
 const refused = (e: unknown): e is ClientError =>
-  e instanceof ClientError && e.status >= 400 && e.status < 500 && e.code !== "http_error" && !e.code.startsWith("idempotency_");
+  e instanceof ClientError && e.status >= 400 && e.status < 500 && e.code !== "http_error" && !e.retryable && !e.code.startsWith("idempotency_");
 
 /** Makes a lane's agent, or finds it made, and answers its first revision, the one the lane's run runs. Its id is already
  *  here only when an earlier send of this same lane made it (laneStart), so its version 1 is that send's definition,
