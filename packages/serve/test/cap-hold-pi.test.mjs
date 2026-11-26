@@ -29,27 +29,28 @@ const SOL = "openai/gpt-6.1-sol";
 const SOL_CAP = Object.freeze({ id: SOL, api: "anthropic-messages", price: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5, tiers: [{ inputTokensAbove: 272_000, input: 4, output: 15, cacheRead: 0.2, cacheWrite: 5 }] }, outputCeiling: 128_000, reasoning: true });
 /** What the provider bills a usage at Sol's list price, below its long-context tier (every request here is). */
 const price = (_model, usage) => ((usage.input ?? 0) * 2 + (usage.cacheWrite ?? 0) * 2.5 + (usage.cacheRead ?? 0) * 0.1 + (usage.output ?? 0) * 10) / 1e6;
-/** A long page as a fetch returns it: some 300 KB of English, which o200k_base reads as some 60,000 tokens. */
+/** A long page as a fetch returns it: some 300 KB of English. pi holds each tool result to the kernel's 120,000-character
+ *  host bound, so step 0 reads it three times at once: the request after carries some 360 KB, which o200k_base reads as
+ *  some 72,000 tokens. */
 const PAGE = "Each party's total liability under these terms will not exceed the fees paid in the three months before the claim.\n".repeat(2_600);
 
 const BILLED_AFTER_PAGE = 58_000;
 
 const sse = (events) => new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
-/** Step 0 calls read (billed $0.10: 45,000 input tokens and 1,000 output); step 1 answers, billed for the page's tokens
- *  (58,000, under the body's o200k_base count without its margin). */
+/** Step 0 calls read three times at once (billed $0.10: 45,000 input tokens and 1,000 output); step 1 answers, billed
+ *  58,000 tokens for the three cut pages (under the body's o200k_base count without its margin). */
 function answer(body, step, usage) {
   const block = step === 0
-    ? [{ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_0", name: "read", input: {} } }, { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{}" } }]
-    : [{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "done" } }];
+    ? [0, 1, 2].flatMap((index) => [{ type: "content_block_start", index, content_block: { type: "tool_use", id: `toolu_${index}`, name: "read", input: {} } }, { type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: "{}" } }, { type: "content_block_stop", index }])
+    : [{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "done" } }, { type: "content_block_stop", index: 0 }];
   return sse([
     { type: "message_start", message: { id: `msg_${step}`, type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, usage: { input_tokens: usage.input_tokens, output_tokens: 1 } } },
     ...block,
-    { type: "content_block_stop", index: 0 },
     { type: "message_delta", delta: { stop_reason: step === 0 ? "tool_use" : "end_turn", stop_sequence: null }, usage: { output_tokens: usage.output_tokens } },
     { type: "message_stop" },
   ]);
 }
-/** The translation's upstream as the proxy sees it: no count of its own, step 0 calls read, step 1 answers. */
+/** The translation's upstream as the proxy sees it: no count of its own, step 0 calls read three times, step 1 answers. */
 function origin(sent) {
   return async (url, init = {}) => {
     if (String(url).includes("count_tokens")) return new Response("{}", { status: 404 });
@@ -274,7 +275,7 @@ test("pi on GPT-6.1 Sol through OpenRouter at $1.50, $0.10 spent: a request whos
   const spent = await spentOf(store);
   t.diagnostic(`${row.state}: spent $${spent.toFixed(4)}; bodies ${JSON.stringify(sent.map((one) => one.bytes))}`);
   t.diagnostic(`asked: ${JSON.stringify(asked.map((one) => ({ inputTokensMax: one.request?.inputTokensMax, answer: one.answer && ("refuse" in one.answer ? { refuse: one.answer.refuse } : { holdUsd: Number(one.answer.holdUsd?.toFixed(4)), outputTokensMax: one.answer.outputTokensMax }) })))}`);
-  // The first request read the page; the second carries it, past the long-context tier on its bytes.
+  // The first request read the page three times; the second carries the three cut results, past the long-context tier on its bytes.
   assert.equal(sent.length >= 1, true, "the first request was sent");
   const refusals = asked.filter((one) => one.answer && "refuse" in one.answer).map((one) => one.answer.refuse);
   assert.deepEqual(refusals, [], "no request refused: the one after the page is bounded by its count, not its bytes");

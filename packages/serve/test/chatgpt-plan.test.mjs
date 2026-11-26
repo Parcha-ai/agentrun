@@ -41,7 +41,7 @@ const jwtOf = (claims) => [part({ alg: "none", typ: "JWT" }), part(claims), rand
  *  200 and kept in `offHost`, never sent. */
 function fakeOpenAI(t) {
   const real = globalThis.fetch;
-  const o = { expiresIn: 3600, refuse: false, issued: [], codes: 0, modelLists: 0, refreshes: 0, responses: [], other: [], revoked: [], live: new Set(), spent: new Set(), revokeStatus: 200, revocationEndpoint: "https://auth.openai.com/oauth/revoke", keys: new Set(), reply: "Forty-two.", offHost: [] };
+  const o = { expiresIn: 3600, refuse: false, issued: [], codes: 0, modelLists: 0, modelBearers: [], refreshes: 0, responses: [], other: [], revoked: [], live: new Set(), spent: new Set(), revokeStatus: 200, revocationEndpoint: "https://auth.openai.com/oauth/revoke", keys: new Set(), reply: "Forty-two.", offHost: [] };
   o.revocationsOf = (token) => o.revoked.filter((revoked) => revoked.token === token).length;
   const issue = () => {
     const tokens = { access: jwtOf({ "https://api.openai.com/profile": { email: "person@example.com" }, "https://api.openai.com/auth": { chatgpt_plan_type: "plus" }, jti: randomUUID() }), refresh: `fake-${randomBytes(16).toString("hex")}`, id: jwtOf({ email: "person@example.com" }) };
@@ -113,6 +113,8 @@ function fakeOpenAI(t) {
     }
     if (url.href === "https://api.openai.com/v1/models" && request.method === "GET") {
       o.modelLists += 1;
+      // `modelBearers`: the authorization each list was asked with.
+      o.modelBearers.push(request.headers.get("authorization"));
       if (o.modelsDelayMs) await new Promise((resolve) => setTimeout(resolve, o.modelsDelayMs));
       // `holdModels`: a promise the model list waits on before it answers, so a test acts while it is out.
       if (o.holdModels) await o.holdModels;
@@ -939,6 +941,8 @@ test("a start's settle leaves a row under a live renewal lease alone: the renewa
   const server = await startOf(new ChatGPTPlan({ store, sealKey }));
   await server.close();
   assert.ok(Buffer.from(store.sealed.get(PLAN_ROW)).equals(leased), "a settle never writes over a live lease");
+  assert.equal(openai.modelLists, 0, "nor sends the row's ended token to the list, nor waits on the renewal: the next settle lists");
+  assert.equal(openai.refreshes, 1);
   openai.holdRefresh = undefined;
   release();
   const token = await renewing;
@@ -992,6 +996,153 @@ test("a start's settle that lists the plan's models tells the server (its change
   await quiet.close();
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(changes, 1, "nothing to settle: no change told");
+});
+
+test("a start's settle lists the plan's models only with a token OpenAI takes, and never renews one: an ended token is not sent to the list, its refresh token is not spent, and a stop right after leaves the sign-in whole", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const old = await seatRow(store, sealKey);
+  const stale = await seatUnsettled(store, sealKey, old, -1_000);
+  // A stop right after the start: close() is the server's stop, and nothing the settle did may outlive it.
+  const plan = await startOf(new ChatGPTPlan({ store, sealKey }));
+  await plan.close();
+  assert.equal(openai.refreshes, 0, "the settle never spends the refresh token: a renewal could outlast the stop and lose the pair");
+  assert.equal(openai.modelLists, 0, "the ended token is never sent to the list");
+  const row = await openRow(store, sealKey);
+  assert.equal(row.credential.refresh, stale.refresh, "the sign-in is as it was");
+  assert.ok(openai.live.has(stale.refresh), "its refresh token still live at OpenAI");
+  assert.equal(row.unlisted, true, "the list waits for a settle whose token is fresh");
+  assert.equal(row.retired, undefined, "the carried pair is revoked all the same");
+  assert.equal(openai.revocationsOf(old.refresh), 1);
+  // Once a reader renewed it (a run's token()), the next start lists with the fresh token.
+  const renewed = await new ChatGPTPlan({ store, sealKey }).token();
+  const next = await startOf(new ChatGPTPlan({ store, sealKey }));
+  await next.close();
+  assert.deepEqual(openai.modelBearers, [`Bearer ${renewed}`]);
+  assert.equal((await openRow(store, sealKey)).unlisted, undefined);
+});
+
+test("the server's read of an unlisted sign-in a reader renewed lists its models then, not at the next start, with no renewal of its own; a listed row or a closed plan queues none", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const old = await seatRow(store, sealKey);
+  await seatUnsettled(store, sealKey, old, -1_000);
+  let told = 0;
+  // The plan's clock, moved past the minute between a read's settles so each check below fails for its own reason.
+  let skew = 0;
+  const plan = await startOf(new ChatGPTPlan({ store, sealKey, now: () => Date.now() + skew, changed: () => void (told += 1) }));
+  await until(() => openai.revocationsOf(old.refresh) === 1, "the start's settle carried the old pair off");
+  assert.equal(openai.modelLists, 0, "the start's token was ended: nothing listed");
+  const renewed = await new ChatGPTPlan({ store, sealKey }).token();
+  await plan.refresh();
+  await until(() => openai.modelLists === 1, "the server's read queued a settle with the fresh token");
+  await until(async () => (await openRow(store, sealKey)).unlisted === undefined, "the listed models written");
+  await until(() => told >= 1, "and told to the server, so its offers are made again");
+  assert.deepEqual(openai.modelBearers, [`Bearer ${renewed}`]);
+  assert.equal(openai.refreshes, 1, "the reader's renewal alone: the read never renews");
+  const pause = () => new Promise((resolve) => setTimeout(resolve, 150));
+  skew += 61_000;
+  await plan.refresh();
+  await pause();
+  assert.equal(openai.modelLists, 1, "a listed row queues no settle");
+  await seatUnsettled(store, sealKey, (await openRow(store, sealKey)).credential);
+  await plan.refresh();
+  await until(() => openai.modelLists === 2, "unlisted again and fresh, a read a minute on lists");
+  await until(async () => (await openRow(store, sealKey)).unlisted === undefined, "and writes them");
+  await pause();
+  await seatUnsettled(store, sealKey, (await openRow(store, sealKey)).credential);
+  await plan.refresh();
+  await pause();
+  assert.equal(openai.modelLists, 2, "within the minute, a read asks OpenAI no more, however often the console reads");
+  skew += 61_000;
+  await plan.close();
+  await plan.refresh();
+  await pause();
+  assert.equal(openai.modelLists, 2, "after close(), a read queues no settle to outlive the stop");
+});
+
+test("close() waits for a start's settle to tell the server: not while the change callback it owes is out, at once after", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const old = await seatRow(store, sealKey);
+  await seatUnsettled(store, sealKey, old);
+  let release;
+  let told = 0;
+  const changed = () => {
+    told += 1;
+    return new Promise((resolve) => (release = resolve));
+  };
+  const plan = await startOf(new ChatGPTPlan({ store, sealKey, changed }));
+  t.after(() => release?.());
+  await until(() => told === 1, "the settle's listed models told to the server");
+  let closed = false;
+  const closing = plan.close().then(() => (closed = true));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(closed, false, "the change callback is still out");
+  release();
+  await closing;
+  assert.equal(closed, true);
+});
+
+test("a renewal whose write-back loses and whose pair OpenAI doesn't confirm revoked carries it in the row: no pair live and saved nowhere, and the next start revokes it", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  await seatRow(store, sealKey, -1_000);
+  openai.answerDelayMs = 300;
+  const renewing = new ChatGPTPlan({ store, sealKey }).token();
+  await until(() => openai.refreshes === 1 && openai.issued.length === 2, "the renewal at OpenAI");
+  const dropped = openai.issued.at(-1);
+  // The owner signs in again (another process) while the renewal's answer is on its way; OpenAI then fails revocations.
+  const again = await seatRow(store, sealKey);
+  openai.revokeStatus = 503;
+  assert.equal(await renewing, again.access, "the new sign-in's token, never the dropped renewal's");
+  assert.equal(openai.revocationsOf(dropped.refresh), 1, "the dropped pair's revocation was asked");
+  const row = await openRow(store, sealKey);
+  assert.equal(row.credential.refresh, again.refresh, "the new sign-in stays the row's");
+  assert.deepEqual((row.retired ?? []).map((old) => old.refresh), [dropped.refresh], "the unconfirmed pair rides in the row");
+  assert.ok(noneUnsaved(openai, row), "every pair live at OpenAI is in the row");
+  openai.revokeStatus = 200;
+  const next = await startOf(new ChatGPTPlan({ store, sealKey }));
+  await next.close();
+  assert.equal(openai.revocationsOf(dropped.refresh), 2, "the next start revokes it again");
+  assert.equal((await openRow(store, sealKey)).retired, undefined, "confirmed: dropped");
+  assert.equal(openai.revocationsOf(again.refresh), 0, "the new sign-in stays");
+});
+
+test("a lost renewal's unconfirmed pair waits out another holder's live lease on the new row, then is carried: never written over the lease, never dropped", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { putSealedKey } = await import("../dist/server-keys.js");
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  await seatRow(store, sealKey, -1_000);
+  openai.answerDelayMs = 300;
+  const renewing = new ChatGPTPlan({ store, sealKey }).token();
+  renewing.catch(() => undefined);
+  await until(() => openai.refreshes === 1 && openai.issued.length === 2, "the renewal at OpenAI");
+  const dropped = openai.issued.at(-1);
+  // A new sign-in (another process), which a third holder is renewing under a live lease when the renewal's answer lands.
+  const again = await seatRow(store, sealKey, 3_600_000, { holder: "another", until: Date.now() + 20_000 });
+  const leased = Buffer.from(store.sealed.get(PLAN_ROW));
+  openai.revokeStatus = 503;
+  await until(() => openai.revocationsOf(dropped.refresh) === 1, "the dropped pair's revocation asked, and not confirmed");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.ok(Buffer.from(store.sealed.get(PLAN_ROW)).equals(leased), "nothing written over the live lease");
+  // The holder writes its row back, lease cleared: the pair is carried in it.
+  await putSealedKey(store, sealKey, PLAN_ROW, JSON.stringify({ v: 1, state: "signed_in", credential: again, models: ["gpt-6.1-sol"] }));
+  assert.equal(await renewing, again.access, "the new sign-in's token");
+  const row = await openRow(store, sealKey);
+  assert.equal(row.credential.refresh, again.refresh);
+  assert.deepEqual((row.retired ?? []).map((old) => old.refresh), [dropped.refresh], "carried once the lease cleared");
+  assert.ok(noneUnsaved(openai, row), "every pair live at OpenAI is in the row");
 });
 
 /** The browser's return to this machine: the sign-in tab, on its loopback callback. The page it shows. */

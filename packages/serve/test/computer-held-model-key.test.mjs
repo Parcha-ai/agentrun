@@ -828,14 +828,14 @@ test("per-run process (run-child-host heldFor): the runner answers a held run it
   // A run granted subagent whose fast tier runs on OpenRouter: its process asks the runner for its tiers' saved model keys.
   const revision = { kind: "agentic", body: { instructions: "Answer.", model: MODEL, tools: ["subagent"], modelTiers: { fast: "openrouter/anthropic/claude-haiku-5.5" } } };
   // The host holds another provider's key too, which no tier of it runs on.
-  const seam = (launch) => heldFor({ store, sealKey: SEAL_KEY, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY, OPENAI_API_KEY: UNROUTED_KEY }, data: dir }, { claim: { runId: "run-1", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision, claimed: {} }, (text) => text, () => {}).held;
+  const seam = (launch) => heldFor({ store, sealKey: SEAL_KEY, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY, OPENAI_API_KEY: UNROUTED_KEY }, data: dir }, { claim: { runId: "run-1", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch, revision, claimed: {} }, heldRedactor((text) => text), () => {}).held;
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "pi" };
   assert.deepEqual(await seam(launch).subagentTierKeys(), { OPENROUTER_API_KEY: HOST_MODEL_KEY }, "a run not held, granted subagent, is answered the host's model key for its fast tier and no other provider's");
   const held = seam({ ...launch, hold: { minutes: 5, refused: REFUSAL } });
   assert.deepEqual(await held.subagentTierKeys(), {}, "a held run its model kept from running is answered no saved model key, though its process asks: its model runs nowhere");
   // A replay grades on its fast tier's model, whose provider's saved key its runner hands its process: not a held one's.
   const graded = { kind: "agentic", body: { instructions: "Answer.", model: MODEL, modelTiers: { fast: "openrouter/anthropic/claude-haiku-5.5" } } };
-  const replaySeam = (hold) => heldFor({ store, sealKey: SEAL_KEY, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY }, data: dir }, { claim: { runId: "run-2", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-2", signInHanded: null }, launch: { ...launch, replay: { of: "run-asked", workflow: "answer", digest: "d".repeat(16) }, ...hold }, revision: graded, claimed: {} }, (text) => text, () => {}).held;
+  const replaySeam = (hold) => heldFor({ store, sealKey: SEAL_KEY, env: { OPENROUTER_API_KEY: HOST_MODEL_KEY }, data: dir }, { claim: { runId: "run-2", epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-2", signInHanded: null }, launch: { ...launch, replay: { of: "run-asked", workflow: "answer", digest: "d".repeat(16) }, ...hold }, revision: graded, claimed: {} }, heldRedactor((text) => text), () => {}).held;
   assert.deepEqual(await replaySeam({}).subagentTierKeys(), { OPENROUTER_API_KEY: HOST_MODEL_KEY }, "a replay not held is answered its grader's provider's saved key, as before");
   assert.deepEqual(await replaySeam({ hold: { minutes: 5, refused: REFUSAL } }).subagentTierKeys(), {}, "a held replay its model kept from running is answered no grader's key either: it grades nothing");
   // Its learnedFirst is refused below, so it lays no learned workflow whose tiers it could ask for: this answer is that
@@ -981,7 +981,7 @@ test("per-run process (run-child-host heldFor), MCP: the runner opens no MCP cre
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "pi" };
   const seam = async (runId, hold) => {
     await store.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" }, { body: { ...launch, ...hold } });
-    const made = heldFor({ store, sealKey: SEAL_KEY, env: {}, data: dir }, { claim: { runId, epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch: { ...launch, ...hold }, revision, claimed: {} }, (text) => text, () => {});
+    const made = heldFor({ store, sealKey: SEAL_KEY, env: {}, data: dir }, { claim: { runId, epoch: 1 }, run: { agentId: "agent-1", revisionId: "rev-1", signInHanded: null }, launch: { ...launch, ...hold }, revision, claimed: {} }, heldRedactor((text) => text), () => {});
     releases.push(() => made.release());
     return made.held;
   };

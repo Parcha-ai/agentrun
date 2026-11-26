@@ -52,6 +52,16 @@ test("a run pinned at its start to Anthropic's model, the server's one saved key
   assert.deepEqual(claimed.plane, { web_search: "native", web_fetch: "firecrawl-keyless", model: "anthropic/claude-sonnet-5-5" });
 });
 
+test("a run's own process takes the plane its runner capped and chose its keys by (claimedPlane), never the settings as they read now: a ceiling lifted since leaves it capped", async (t) => {
+  // The runner read native and handed no keyless service's key; the server has since been set back to auto.
+  const deps = await on(t, { web_search: { provider: "auto" } });
+  const handed = { web_search: "native", web_fetch: "firecrawl-keyless", model: "anthropic/claude-sonnet-5-5" };
+  assert.deepEqual((await underServerCeilings({ ...deps, sealKey: undefined, claimedPlane: handed }, launchOf(), pi)).plane, handed);
+  // Set to native now, while the runner read auto and kept its keyless pick: still the runner's.
+  const native = await on(t, { web_search: { provider: "native" } });
+  assert.deepEqual((await underServerCeilings({ ...native, sealKey: undefined, claimedPlane: KEYLESS }, launchOf(), pi)).plane, KEYLESS);
+});
+
 test("a claude-agent run whose only saved model key is OpenRouter's: claimed after the server is set to native, its search is unavailable (OpenRouter runs no harness's own search), as the saved key's name says, never keyless", async (t) => {
   const deps = await on(t, { web_search: { provider: "native" } }, { OPENROUTER_API_KEY: "not-a-secret" });
   const claimed = await underServerCeilings(deps, launchOf(), { kind: "agentic", body: { harness: "claude-agent", tools: ["web_search"] } });

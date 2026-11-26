@@ -1,0 +1,11 @@
+# Applied with these parameters (POST /v2/templates/kyb/apply). Pass: 3 of 3 runs.
+# fixtures/web.json is the other list-file cases' fixture (the list owners' own files of 2026-11-20 (OFAC, EU),
+# 2026-11-24 (UK) and 2026-11-25 (UN), each cut to a few leading rows and every row of its targets) with rows added from
+# the same files: every UN INDIVIDUAL that holds AKHUND, HASSAN or MOHAMMAD (121, so a search of a word of the
+# director's name finds what the whole file gives an INDIVIDUAL: 30, 64 and 134 lines), the UK (AFG0006) and EU (603)
+# entries of UN TAi.002, and OFAC SDN 12798 (AKHUND, Mohammad Aman) with its ALT rows. Searches find nothing and pages
+# answer 404.
+parameters:
+  risk_appetite: medium
+  jurisdictions_of_interest: ""
+web: fixtures/web.json

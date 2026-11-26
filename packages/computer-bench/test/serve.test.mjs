@@ -659,7 +659,7 @@ test("this repository's serve has every route the bench needs: the preflight fin
 	await serveBackend({ baseUrl: server.baseUrl, token: server.token }).preflight(AbortSignal.timeout(30_000));
 });
 
-test("this repository's serve saves an arm's agent: its effort is the definition's thinking", async (t) => {
+test("this repository's serve saves an arm's agent: its effort is the definition's thinking, and it is given read and write, which the computer's file ops need", async (t) => {
 	const { startServe } = await import("@parcha/agentrun-serve");
 	const server = await startServe({ data: join(tmp("cb-serve-"), "agents"), port: 0, drainTimeout: "5s" });
 	t.after(() => server.close());
@@ -674,4 +674,6 @@ test("this repository's serve saves an arm's agent: its effort is the definition
 	const agent = await saved.json();
 	assert.equal((agent.definition ?? agent).thinking, "high");
 	assert.equal((agent.definition ?? agent).computer.surface, "tools", "serve keeps the arm's surface");
+	// A computer's file ops need read and write among the agent's tools: without them serve offers none of the files group.
+	assert.deepEqual([...(agent.definition ?? agent).tools].sort(), ["read", "write"], "the agent is given the computer's file ops");
 });
