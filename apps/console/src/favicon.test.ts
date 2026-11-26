@@ -1,16 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import html from "../index.html?raw";
 
-// The page declares its icon itself, as a data: URL (the page's CSP allows data: images): the browser never asks for
-// /favicon.ico, which the server answers 404 (it serves the console's index.html and its /assets/ scripts, styles and
-// fonts only), so no load logs a red 404.
+// Vite's explicit ?inline overrides its default of always emitting link icons as files. The server's CSP
+// permits those images, without relying on an unserved /favicon.ico or an SVG asset route.
 describe("the page's icon", () => {
-  const link = html.match(/<link rel="icon" type="image\/svg\+xml" href="(data:image\/svg\+xml,[^"]+)"/)?.[1];
-  it("is declared in index.html as a data: URL, so no icon file is ever asked for", () => {
-    expect(link).toBeDefined();
+  const link = html.match(/<link rel="icon" type="image\/svg\+xml" href="([^"]+)"/)?.[1];
+  it("explicitly embeds the vector icon rather than requesting an unserved icon file", () => {
+    expect(link).toBe("./src/assets/branding/agentrun-favicon.svg?inline");
   });
-  it("is an SVG image", () => {
-    const svg = decodeURIComponent(link!.slice("data:image/svg+xml,".length));
-    expect(svg).toMatch(/^<svg xmlns='http:\/\/www\.w3\.org\/2000\/svg' viewBox='0 0 32 32'>.*<\/svg>$/);
+  it("points to a square transparent vector with no raster payload", () => {
+    const svg = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "..", link!.split("?")[0]), "utf8");
+    expect(svg).toContain('viewBox="0 0 1080 1080"');
+    expect(svg).toContain("<path");
+    expect(svg).not.toMatch(/<image|<rect|data:image/);
   });
 });

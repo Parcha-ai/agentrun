@@ -3,15 +3,15 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
-import { DECISION } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
+import { pick, picker } from "@/test/picker";
 
 // The agent's default spend cap per run (`definition.max_cost_usd`): a run started without a cap of its own, and a
 // trigger with none, is capped at it. Empty means none, and clearing one sends an explicit 0 (the server's "no default"):
 // leaving the field out never removes a spend limit. The server judges the number and its 422 shows under the field.
 const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }], thinking: ["low"] };
 const capped = { ...SERVED_AGENT, agent_id: "inv", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Invoices", instructions: "Check.", harness: "pi", skills: [], tools: ["read"], max_cost_usd: 2.5 } };
-const LABEL = "Default spend cap per run, $";
+const LABEL = "Spend limit per run (USD)";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const roots: (() => void)[] = [];
@@ -51,13 +51,11 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     expect(link?.getAttribute("href")).toBe("https://github.com/Parcha-ai/agentrun/blob/main/packages/serve/README.md#spend-cap");
   });
 
-  it("is offered on a workflow agent as on an agentic one, and not on a new Decision agent, which starts with none", () => {
+  it("is offered on workflow, existing agentic and new agentic agents", async () => {
     const flow = { ...SERVED_AGENT, agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [], max_cost_usd: 3 } };
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: flow, caps, step: "settings" })).match(/<input[^>]*id="agent-max-cost"[^>]*>/)?.[0]).toContain('value="3"');
     const { host } = mount({ agent: null, caps: { ...caps, decisionProvider: "jev" } });
     expect(host.textContent).toContain(LABEL);
-    act(() => { host.querySelector<HTMLInputElement>(`input[type=radio][value="${DECISION}"]`)!.click(); });
-    expect(host.textContent).not.toContain(LABEL);
   });
 
   it("a workflow agent's save sends its cap with its workflow, as an agentic agent's does", async () => {
@@ -73,7 +71,7 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
   it("a save of another edit sends the cap back as it was; a new number replaces it; emptied, the save sends 0 to clear it", async () => {
     const sent: Record<string, unknown>[] = [];
     const { host, type, save } = mount({ agent: capped, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
-    act(() => { host.querySelector<HTMLInputElement>('input[name="thinking"]')!.click(); });
+    await pick(picker(host, "Thinking")!, "low");
     await save();
     type("4");
     await save();
@@ -87,7 +85,7 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     const sent: Record<string, unknown>[] = [];
     const bare = { ...capped, definition: { ...capped.definition, max_cost_usd: undefined } };
     const { host, save } = mount({ agent: bare, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
-    act(() => { host.querySelector<HTMLInputElement>('input[name="thinking"]')!.click(); });
+    await pick(picker(host, "Thinking")!, "low");
     await save();
     expect(sent[0]?.max_cost_usd).toBeUndefined();
   });
@@ -126,7 +124,7 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
     const { host, fill, type, button, save } = mount({ agent: null, step: "context", onSave: async (fields: Record<string, unknown>) => { sent = fields; return null; } });
     fill(host.querySelector<HTMLInputElement>('input[placeholder="e.g., Invoice checker"]'), "Capped");
     fill(host.querySelector("textarea"), "Check.");
-    act(() => { button(/Settings/)!.click(); });
+    act(() => { button(/Model & runtime/)!.click(); });
     type("0.75");
     await save();
     expect(sent).toMatchObject({ max_cost_usd: 0.75 });
