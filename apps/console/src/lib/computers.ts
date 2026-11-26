@@ -100,10 +100,12 @@ export const placeOfComputer = (computer: Computer): Place => (computer.kind ===
  *  runs where that shell is the runner's own, the server's own test (runnable.ts: runShellOf "local"). Read off the
  *  choice's served `shell` in `kinds` (GET /v2/computers): the no-computer choice's own (Archil's exec in Mode 2, so
  *  bash; none in Mode 1), another kind's provider's (none where it mounts the run's folder: its shell is its own, which
- *  the server lets on a runner place with no shell tool). A list not read yet, or one that lists no such choice, keeps
- *  none: what the server answers in Mode 1. */
+ *  the server lets on a runner place with no shell tool). A computer set to run no programs of its own (`exec: false`)
+ *  has no shell anywhere, not its computer's and not Archil's exec, whatever its provider's shell (serve's runShellOf).
+ *  A list not read yet, or one that lists no such choice, keeps none: what the server answers in Mode 1. */
 export function runnerShellOf(computer: Computer | null | undefined, kinds: readonly ComputerKindView[] | null | undefined): ReadonlySet<string> {
   const chosen = computer ?? { kind: "none" };
+  if ("exec" in chosen && chosen.exec === false) return shellToolsOf("none");
   const kind = kinds?.find((one) => one.kind === chosen.kind);
   return shellToolsOf(chosen.kind === "none" ? kind?.shell : kind?.providers.find((provider) => provider.id === chosen.provider)?.shell);
 }
