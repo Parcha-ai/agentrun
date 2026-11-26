@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { NATIVE_RUNTIME_FACTS } from "./runtimes.js";
-import { nativeExecutable, nativeMetadata } from "./discovery.js";
+import { nativeExecutable, nativeMetadata, nativeSpawnEnv } from "./discovery.js";
 import type { NativeBinding, NativeEvent, NativeResult, NativeSendOptions, NativeSession, NativeTarget, NativeUsage } from "./types.js";
 
 const unknownUsage = (): NativeUsage => ({input_tokens:null,output_tokens:null,cache_read_tokens:null,cache_write_tokens:null,cost_usd:null});
@@ -91,7 +91,8 @@ export async function openNativeSession(options: {
           const denials: string[] = [], toolNames = new Map<string,string>();
           const seenEvents = new Set<string>();
           let eventQueue = Promise.resolve(), eventsClosed = false;
-          const child = spawn(binary,args,{cwd:target.project,env,detached:process.platform !== "win32",stdio:["pipe","pipe","pipe"]}); active = child;
+          // USER filled where the server has none, so the CLI reads the person's Keychain item (nativeSpawnEnv).
+          const child = spawn(binary,args,{cwd:target.project,env:nativeSpawnEnv(env),detached:process.platform !== "win32",stdio:["pipe","pipe","pipe"]}); active = child;
           const emit = (event: NativeEvent) => { eventQueue = eventQueue.then(()=>eventsClosed ? undefined : options.onEvent?.(event)).then(()=>{}); eventQueue.catch(error=>stop(error instanceof Error ? error : new Error("Native event recording failed."))); };
           const abort = () => stop(new NativeRuntimeError("Native turn was cancelled; its outcome may be incomplete. Inspect the recorded session before retrying.","aborted",sessionId));
           const timer = setTimeout(()=>stop(new NativeRuntimeError("Native turn timed out; its outcome may be incomplete. Inspect the recorded session before retrying.","timeout",sessionId)),Math.min(Math.max(sendOptions.timeoutMs ?? 180_000,1),600_000));

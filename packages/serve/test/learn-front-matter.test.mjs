@@ -1,23 +1,19 @@
 // One reader of what a workflow draft's README.md says of itself (learn/workflow-draft.ts frontMatter): its keys, name,
-// description and status, for the checker, the folder's snapshot (which the console shows), the learning routes and a
+// description and status, for the checker, the learning view (which the console shows), the learning routes and a
 // run's seed alike; and of a revision skill's SKILL.md as OpenCode is served it (servedSkill). A front matter that does
 // not read one way (not closed, a key indented, an indented first line, a key set twice) or a status that is none of
 // active, pending and retired is never active: another reader could read a status this one does not. A YAML explicit
 // key (`? status`) is such a form: no writer here edits it, so it reads no way, and the draft is never held, active or
 // served.
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
 import { checkDraft, unstorable } from "../dist/learn/check.js";
 import { draftFiles, frontKeys, frontMatter, isHeld, learnedFront, learnedStatus, readmeProblems, released, retiredLearned, servedSkill, setsStatus, UNCLEAR_FRONT } from "../dist/learn/workflow-draft.js";
-import { readSnapshot } from "../dist/learn/folder.js";
-import { agentFolderOf } from "../dist/files.js";
-import { learningWorkspace } from "../dist/workspace/index.js";
 import { chooseWorkflows, secretsShown, seedOf } from "../dist/learning.js";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
 import { added, workflow } from "./learn-format-support.mjs";
-import { git, resnap } from "./learn-support.mjs";
+import { learningAt, putLearning } from "./learn-support.mjs";
 import { scratch } from "./support.mjs";
 
 /** A README (or a SKILL.md, with a body) of front matter `front`. */
@@ -107,36 +103,26 @@ test("a status set on more than one line reads unclear: never held, never active
   }
 });
 
-/** Agent-1's learning folder with `readmes` (each a draft's README by its name, a workflow.json beside it) committed by
- *  hand, the snapshot rebuilt: its drafts' statuses, and the names a run's seed lays. */
+/** Agent-1's learning with `readmes` (each a draft's README by its name, a workflow.json beside it) saved by hand: its
+ *  drafts' statuses as the view reads them, and the names a run's seed lays. */
 async function byHand(t, readmes) {
   const data = await scratch(t);
-  await seedOf(data, "agent-1");
-  const repo = join(agentFolderOf(data, "agent-1"), "learning");
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  t.after(() => store.close());
+  await store.learning.seed("agent-1");
   const files = Object.fromEntries(Object.entries(readmes).flatMap(([name, text]) => [[`workflows/${name}/README.md`, text], [`workflows/${name}/workflow.json`, workflow({ name })]]));
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "drafts by hand"]);
-  await resnap(data, "agent-1");
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-  try {
-    const snapshot = await readSnapshot(folder.workspace);
-    return { statuses: Object.fromEntries(snapshot.workflows.map(({ name, status }) => [name, status])), laid: (await seedOf(data, "agent-1")).workflows.map(({ name }) => name) };
-  } finally {
-    await folder.end();
-  }
+  await putLearning(store, "agent-1", files);
+  const { view } = await learningAt(store, "agent-1");
+  return { statuses: Object.fromEntries(view.workflows.map(({ name, status }) => [name, status])), laid: (await seedOf(data, store, "agent-1")).workflows.map(({ name }) => name) };
 }
 
-test("a draft whose README's name and description are explicit keys is never served: the snapshot reads it retired, and a seed never lays it", async (t) => {
+test("a draft whose README's name and description are explicit keys is never served: the learning view reads it retired, and a seed never lays it", async (t) => {
   const { statuses, laid } = await byHand(t, { "weekly-summary": doc(CLEAN), asked: doc("? name\n: asked\n? description\n: Asked for, explicitly.\n") });
   assert.deepEqual(statuses, { asked: "retired", "weekly-summary": "active" });
   assert.deepEqual(laid, ["weekly-summary"]);
 });
 
-test("the folder's snapshot reads a hand-written README whose front matter reads no way as retired, and a seed never lays it", async (t) => {
+test("the learning view reads a hand-written README whose front matter reads no way as retired, and a seed never lays it", async (t) => {
   const { statuses, laid } = await byHand(t, {
     "weekly-summary": doc(CLEAN),
     "half-held": "---\nname: half-held\ndescription: Waits, to one reader.\nstatus: pending\n",

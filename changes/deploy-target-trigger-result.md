@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun
-kind: fix
----
-`agentrun deploy` reports what a deploy target that sets up triggers itself says it did with each trigger, over the install's skip. Such a target (a backend in front of an install that does not make the trigger, as an API-only install does not make a Composio trigger) names its result in `triggers_set_up` on the apply's answer, and on the plan's (beside `plan` or in it): `{name, made, enabled?, reason?, message?}` per trigger. A trigger it made is planned `+ ... (the target sets it up)` and said `Trigger NAME (KIND) set up by TARGET.` after the apply, never skipped, and the install's `triggers.<i>` warning on it is left out of the printed warnings and of stdout's `warnings`. One it did not make is skipped in its words (its message, else its reason), the install's warning on it replaced by the target's, and counts as not made yet (the lock names no package, so the next deploy applies again) unless its `reason` is `not_an_option`. A trigger the target says nothing of keeps the install's word, as before. stdout's answer carries the target's `triggers_set_up` when it sends one.

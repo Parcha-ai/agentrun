@@ -35,7 +35,7 @@ import type { PairedRelay } from "./attached-computers.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
 import { computerHeldWords, computerLapsedWords, computerLostWords, KEEP_WORDS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
-import { computerProviderFactories, computerProviderMakers, type ProviderLoad } from "./computer-providers.js";
+import { computerProviderFactories, computerProviderMakers, type ProviderLoad, providerSecretsOf } from "./computer-providers.js";
 import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
 
 type ComputerKindOf = Exclude<ComputerSettingKind, "none">;
@@ -389,12 +389,14 @@ export function computerDepsFrom(options: ComputerDepsOptions): { computerForCla
     return { ...(volume ?? {}), ...(addresses.length > 0 ? { egress: { hostAddresses: addresses } } : {}) };
   };
   /** The options a provider takes beside its keys, by what its descriptor declares, never by its id: for a local one,
-   *  its image source and its host options; for a remote one, the server's dial. The host environment it reads is the
-   *  makers' (computerProviderMakers' `env`). */
+   *  its image source and its host options; for a remote one, the server's dial; for one that makes secrets of its own
+   *  (its `secrets`), the server's sealed store of them, with a seal key (without one, it keeps them for its process).
+   *  The host environment it reads is the makers' (computerProviderMakers' `env`). */
   const declaredOptions = async (id: string, boxAllow: readonly string[] | "none" | undefined): Promise<Record<string, unknown>> => {
     const entry = kinds.PROVIDERS.find((one) => one.id === id);
     return {
       ...(entry?.local ? { image: preparedImage, ...(await localHostOptions(boxAllow)) } : options.dial ? { dial: options.dial } : {}),
+      ...(entry?.secrets && sealKey ? { [entry.secrets.option]: providerSecretsOf(store, sealKey, id) } : {}),
     };
   };
   const load = options.load ?? (providerFor as unknown as ProviderLoad);

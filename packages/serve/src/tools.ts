@@ -17,7 +17,7 @@ import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { Revision } from "./agent-rows.js";
-import { registerTurnEnding } from "./timeline/index.js";
+import { registerTurnEnding, webCut } from "./timeline/index.js";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
@@ -46,11 +46,11 @@ import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { unattachable } from "./attach-images.js";
 import { handedSignIn } from "./secrets.js";
-import { redactedAnswer } from "./key-refusal.js";
+import { redactedAnswer, withheldWhole } from "./key-refusal.js";
 import { SIGN_IN_KEY, vendorsOver } from "./sign-ins.js";
 import { answerIn, answerOnce } from "./runner/hand-back.js";
 import { waitingAsk } from "./browser-commands.js";
-import { runnerSecrets } from "./runner/redact.js";
+import { type Redact, runnerSecrets } from "./runner/redact.js";
 import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
 import { provenFor, type RunnerLive } from "./live-reach.js";
@@ -371,14 +371,47 @@ export function cutAnswer<T>(value: T, cut: (text: string) => string): T {
   return value;
 }
 
+/** One call's web answer cut by `cut` (timeline/web-calls.ts webCut): each of its JSON's strings cut once, and the whole
+ *  "[redacted]" when its strings, read joined, hold a held value no cut in place takes (a value split across two of
+ *  them). The join is read against the values `cut` holds (key-refusal.ts withheldWhole), or through `cut` itself when
+ *  it does not know them (joinCut). Undefined for an answer that is not a web call's JSON. Make one per call. */
+export function webAnswerCut(cut: Redact): (tool: string, text: string) => string | undefined {
+  const seen = new Map<string, string>();
+  const once = (text: string): string => {
+    let out = seen.get(text);
+    if (out === undefined) seen.set(text, (out = cut(text)));
+    return out;
+  };
+  const holds = (joined: string, parts: readonly string[]): boolean => {
+    const values = cut.heldValues?.();
+    return values ? withheldWhole(joined, values) : joinCut(joined, parts, once);
+  };
+  return (tool, text) => webCut(tool, text, once, holds);
+}
+
+/** Whether `cut`, a redactor that does not know its values, takes from `joined` (`parts` joined by line breaks) what it
+ *  does not take from the parts each read alone: a held value split across two parts. Its cut of the join whole being
+ *  "[redacted]" is not enough: it reads a text longer than a piece in pieces of 8,192 characters (key-refusal.ts
+ *  redactedAnswer), and a value split inside one piece withholds only that piece, the rest of the join served. It misses
+ *  nothing: no value split across parts is in a part to cut, so the join's cut and the parts' differ wherever the join
+ *  holds one; where nothing spans two parts they are the same, as every piece ends at whitespace or inside a run longer
+ *  than a piece, and a line break ends each part. */
+function joinCut(joined: string, parts: readonly string[], cut: (text: string) => string): boolean {
+  const whole = cut(joined);
+  return whole === "[redacted]" || whole !== parts.map(cut).join("\n");
+}
+
 /** `tool` whose answer, and a throw's message, pass `cut` inside its execute: before pi stores the result or the model
- *  reads it. */
-function answersCutInside(tool: ToolRegistration, cut: (text: string) => string): ToolRegistration {
+ *  reads it. A web call's JSON is cut as the agentic specs' answersCut cuts it (webAnswerCut), so it still parses and
+ *  keeps its links, and a held value split across its strings withholds it whole. */
+export function answersCutInside(tool: ToolRegistration, cut: Redact): ToolRegistration {
   return {
     ...tool,
     execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
       try {
-        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
+        const web = webAnswerCut(cut);
+        const textCut = (text: string) => web(tool.name, text) ?? cut(text);
+        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), textCut);
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);

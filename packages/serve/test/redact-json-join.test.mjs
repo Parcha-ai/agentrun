@@ -496,8 +496,8 @@ async function sdkWorkflowRunOf(t) {
   const server = await serve(t, { runner: false });
   const workflow = { v: 2, name: "release", schemas: { In: { type: "object" }, Out: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" }, root: { node: "call", label: "status", via: "tool", tool: STATUS, args: {}, out: "Out", as: "answer", deadline_s: 5 } };
   assert.equal((await server.api("POST", "/agents", { definition: { id: "sdk-flow", name: "SDK flow", instructions: "Read release status.", sdk: { runtime: "claude-agent-sdk" }, learning: true, tools: [] } })).status, 201);
-  await landWorkflows(server.data, "sdk-flow", [{ name: "release", description: "Read release status.", workflow }]);
-  await promoteChecked(server.store.settings, "sdk-flow", [{ name: "release", workflow }]);
+  await landWorkflows(server.store, "sdk-flow", [{ name: "release", description: "Read release status.", workflow }]);
+  await promoteChecked(server.store, "sdk-flow", [{ name: "release", workflow }]);
   const started = await server.api("POST", "/agents/sdk-flow/sdk-runs", { runtime: "claude-agent-sdk", input: "Read release status.", instructions: "Read release status.", workflow_tools: [{ name: STATUS, description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 }] }, { "Idempotency-Key": "flow" });
   assert.equal(started.status, 201, JSON.stringify(started.body));
   assert.deepEqual(started.body.learning.workflows.map((flow) => flow.name), ["release"]);

@@ -303,6 +303,7 @@ export function openrouterProvider(options: OpenRouterOptions = {}): DecisionPro
         void response.body?.cancel().catch(() => {});
         const details = { status, attempts: attempt };
         if (status === 401 || status === 403) throw new DecisionProviderError("auth", `OpenRouter refused the key (HTTP ${status}).`, details);
+        if (status === 402) throw new DecisionProviderError("payment_required", `OpenRouter refused the key's account: it is out of credit (HTTP 402).`, details);
         if (status === 400 || status === 404 || status === 422) throw new DecisionProviderError("invalid_request", `OpenRouter refused the request (HTTP ${status}).`, details);
         if (status === 429) throw new DecisionProviderError("rate_limited", `OpenRouter rate-limited the request after ${attempt} attempts.`, details);
         throw new DecisionProviderError("http", `OpenRouter answered HTTP ${status}.`, details);
