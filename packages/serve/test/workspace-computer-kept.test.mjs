@@ -188,8 +188,10 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
     return computerForClaim({ runId: "run-1", epoch, computer: setting, ...launch }, runners ? { ...store, runners } : store, { ...deps, check: { readBackOf, epoch }, ...extra });
   };
   // `self` and `runners`: the janitor of a runner (its name and incarnation), reading which runners are there. `now`: its
-  // process's own clock, where it is not the store's. `log`: where it says what it did.
-  const janitor = ({ self, runners, now = () => clock.now, log, deleteMs } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, now, ...(self ? { self } : {}), ...(log ? { log } : {}), ...(deleteMs ? { deleteMs } : {}) });
+  // process's own clock, where it is not the store's. `log`: where it says what it did. One start over the left removes
+  // kept across its passes, as startJanitor keeps one.
+  const leftStart = {};
+  const janitor = ({ self, runners, now = () => clock.now, log, deleteMs } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, now, leftStart, ...(self ? { self } : {}), ...(log ? { log } : {}), ...(deleteMs ? { deleteMs } : {}) });
   // A full janitor pass as the runner process runs it (startJanitor's first: the kept pass, then every provider's sweep),
   // as runner `self` reading `runners`; one vendor account behind every provider, as a dial vendor's (or one Docker
   // engine) both runners list. The store without its agents, so no server id is minted. What it logged.

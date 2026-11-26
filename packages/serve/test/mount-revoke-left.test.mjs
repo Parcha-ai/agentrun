@@ -33,7 +33,7 @@ test("a pass over left removes whose Archil never answers ends at one bound, not
     return new Promise((_, reject) => signal.addEventListener("abort", () => { cut += 1; reject(signal.reason); }, { once: true }));
   };
   const started = performance.now();
-  const { failed } = await sweepMountRevokes({ settings, revoke, deleteMs: 100 });
+  const { failed } = await sweepMountRevokes({ settings, revoke, deleteMs: 100, start: {} });
   const took = performance.now() - started;
   assert.deepEqual(asked, ["run-1"], "Archil not answering the first, no other is asked this pass");
   assert.equal(cut, 1, "the call asked is cut");
@@ -138,7 +138,7 @@ test("a pass removes each row once its remove answers; a refused one stays, said
     asked.push([runId, left.epoch, left.disk]);
     if (runId === "run-1") throw new Error("Archil is down");
   };
-  const { failed } = await sweepMountRevokes({ settings, revoke, deleteMs: 1_000 });
+  const { failed } = await sweepMountRevokes({ settings, revoke, deleteMs: 1_000, start: {} });
   assert.deepEqual(asked, [["run-1", 3, "disk-1"], ["run-2", 4, "disk-1"]]);
   assert.deepEqual(failed, ["the Archil mount credential of run run-1: Archil is down"]);
   assert.deepEqual([...settings.rows.keys()], [mountRevokeKeyOf("run-1")], "the refused one stays for the next pass");
@@ -149,7 +149,7 @@ test("a row a later claim rewrote while its remove ran stays: only the row read 
   const key = mountRevokeKeyOf("run-1");
   await settings.put(key, row(3));
   const revoke = async () => settings.put(key, row(4, 2_000));
-  const { failed } = await sweepMountRevokes({ settings, revoke, deleteMs: 1_000 });
+  const { failed } = await sweepMountRevokes({ settings, revoke, deleteMs: 1_000, start: {} });
   assert.deepEqual(failed, []);
   assert.deepEqual(await settings.get(key), row(4, 2_000), "the later claim's row stays for the next pass");
 });
@@ -158,6 +158,6 @@ test("a row that is no left remove is removed, and nothing is asked of Archil fo
   const settings = memorySettings();
   await settings.put(`${MOUNT_REVOKE_PREFIX}run-1`, { epoch: "3" });
   const asked = [];
-  const { failed } = await sweepMountRevokes({ settings, revoke: async (runId) => void asked.push(runId), deleteMs: 1_000 });
+  const { failed } = await sweepMountRevokes({ settings, revoke: async (runId) => void asked.push(runId), deleteMs: 1_000, start: {} });
   assert.deepEqual([failed, asked, settings.rows.size], [[], [], 0]);
 });
