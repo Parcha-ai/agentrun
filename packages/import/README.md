@@ -112,7 +112,7 @@ const { hitRate, breaks } = await analyzeCache(session);
 | `compaction` | a compaction since the turn before: Claude Code's `compact_boundary` or `isCompactSummary` record, Codex's `compacted`. It counts in the file that holds it first; across a session's files it carries to the next file's first turn, and a later file's copy of it is never consulted |
 | `edited` | the prompt leaves the chain of the turn before (its prompt and answer) at an earlier message: `diverged` is that message's index |
 | `sidechain` | the turn opens a sidechain after a main-chain turn (Claude Code's `isSidechain`) |
-| `unknown` | none of the above |
+| `unknown` | none of the above: the read dropped where the transcript shows no change. With the session's chain read, the cause is outside the transcript, on the provider's side (a cache evicted early, or a request served where its cache was not) |
 
 `chain: true` keeps the session's `chain` beside its turns: each record's id and its parent's (Claude Code's
 `uuid`/`parentUuid`, pi's `id`/`parentId`), a 16-hex sha256 of its content, never the content, and which record opens
