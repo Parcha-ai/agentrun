@@ -2648,7 +2648,9 @@ time fails the create in words that say the browser may still be running, and a 
 stuck behind it. Another create's browser of the same request, even one another process answered, carries another attempt
 label and is left running. A lost create's own browser is left running too, for another create's converge and to its
 lifetime, when it is the oldest of the request's that runs and the request's browsers, ended ones included, hold a
-newer one: only another create made that one, and its converge answers the older. Where the lost create's browser is
+newer one: only another create made that one, and its converge answers the older. Browserbase is asked status by
+status in a session's own order (pending, then running, then the ended ones), so a session that moves on while a
+list runs is found in a later answer, never missed; Kernel answers every state in one list. Where the lost create's browser is
 the request's only one it is released, even when another process's create answered it by its lookup: nothing on the
 vendor says so. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own:
 `check()` refuses them in a spec, and no list or attach shows them.

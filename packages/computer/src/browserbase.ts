@@ -106,6 +106,13 @@ type SessionStatus = "RUNNING" | "PENDING" | "COMPLETED" | "ERROR" | "TIMED_OUT"
 const LIVE: ReadonlySet<SessionStatus> = new Set(["RUNNING", "PENDING"]);
 /** Every status a session reads as, ended ones included: a request's whole record (#leftToConverge). */
 const EVER: ReadonlySet<SessionStatus> = new Set([...LIVE, "COMPLETED", "ERROR", "TIMED_OUT"]);
+/**
+ * The order #sessions asks for the statuses, a session's own: it is PENDING, then RUNNING, then ended, and never goes
+ * back. Each group is asked once the one before has answered, so a session that moves on while the read runs is found
+ * by a later group, never missed between two (asked side by side, a session could leave RUNNING after the COMPLETED
+ * answer and before the RUNNING one, and be in neither). The ended statuses are asked together: none moves to another.
+ */
+const LIFECYCLE: ReadonlyArray<ReadonlyArray<SessionStatus>> = [["PENDING"], ["RUNNING"], ["COMPLETED", "ERROR", "TIMED_OUT"]];
 
 /** A label key Browserbase's metadata can carry once its dots are underscores: letters, digits and dots, so the mapping is one to one. */
 const LABEL_KEY = /^[A-Za-z0-9.]+$/;
@@ -727,7 +734,8 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	/**
 	 * The running and pending sessions with all of these labels. Browserbase is asked by status and by the first label a
 	 * query carries as it is; the match is the provider's own, so a lane that drops the query never hands back another's.
-	 * Both statuses must answer: a release trusts this list. `statuses` widens it, to the ended ones too (EVER).
+	 * Both statuses must answer: a release trusts this list. `statuses` widens it, to the ended ones too (EVER). The
+	 * statuses are asked in a session's own order (LIFECYCLE), so every session there when the read starts is found.
 	 */
 	async #sessions(labels: Record<string, string>, signal?: AbortSignal, statuses: ReadonlySet<SessionStatus> = LIVE): Promise<Result<BrowserbaseSession[]>> {
 		const problem = browserbaseLabelsProblem(labels);
@@ -735,14 +743,20 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		if (Object.keys(labels).length === 0) return fail("invalid", "list and attach take at least one label: a Browserbase project holds sessions this provider did not make");
 		const first = Object.entries(labels).find(queryable);
 		const q = first === undefined ? undefined : `user_metadata['${metadataKey(first[0])}']:'${first[1]}'`;
-		let pages: BrowserbaseSession[][];
+		const found = new Map<string, BrowserbaseSession>();
 		try {
-			pages = await Promise.all([...statuses].map((status) => this.#api.list({ status, ...(q === undefined ? {} : { q }) }, signal)));
+			for (const group of LIFECYCLE) {
+				const asked = group.filter((status) => statuses.has(status));
+				if (asked.length === 0) continue;
+				const pages = await Promise.all(asked.map((status) => this.#api.list({ status, ...(q === undefined ? {} : { q }) }, signal)));
+				for (const s of pages.flat()) {
+					if (typeof s?.id === "string" && statuses.has(s.status as SessionStatus) && carries(metadataLabels(s.userMetadata), labels) && !found.has(s.id)) found.set(s.id, s);
+				}
+			}
 		} catch (error) {
 			return vendorFailure("browserbase", NAME, "GET /v1/sessions", error);
 		}
-		const seen = new Set<string>();
-		return ok(pages.flat().filter((s) => typeof s?.id === "string" && statuses.has(s.status as SessionStatus) && carries(metadataLabels(s.userMetadata), labels) && !seen.has(s.id) && seen.add(s.id)));
+		return ok([...found.values()]);
 	}
 
 	async list(labels: Record<string, string>, { signal }: CallContext = {}): Promise<Result<ComputerInfo[]>> {
