@@ -259,6 +259,9 @@ export function nameCall(calls: CallIds, update: AcpCallUpdate, announces: AcpAn
 /** The key of an announcement that names no tool and reports no input (CallIds.add). */
 const NOTHING = "\0*";
 
+/** take's word for a call torn between announcements its arguments match only without an extra. */
+const TORN = Symbol("torn");
+
 /** The agent's announced calls, matched to the MCP calls of our tools that reach the server. */
 export class CallIds {
   private readonly seen = new Map<string, string[]>();
@@ -350,56 +353,96 @@ export class CallIds {
    *  came by then. Of the announcements with the same arguments, the oldest named `tool` first, then the oldest named
    *  none; then the oldest of `tool` that reported no input. Then, already there or once the wait is over, never woken
    *  by one coming in during it (which may be the agent's own while this call's own announcement is on its way), the
-   *  oldest that named nothing and reported nothing. */
+   *  oldest that named nothing and reported nothing. Where the arguments match two or more announcements only read
+   *  without an extra (addAnnounced), the call waits while one of them may yet be another call's whole arguments. */
   async take(tool: string, args: Record<string, unknown>, signal: AbortSignal, ms: number): Promise<string | undefined> {
     const keys = [`${tool}\0${canonical(args)}`, `\0${canonical(args)}`, `${tool}\0*`];
-    const ready = (from: readonly string[]) => {
-      for (const key of from) {
-        const id = this.seen.get(key)?.shift();
-        if (id) {
-          this.unlist(id);
-          this.used.add(id);
-          return id;
-        }
+    const key = keys[0]!;
+    // Under the first of `from` that keeps one: an announcement whose own arguments are these (its first key, the form
+    // with the extra) first, then the oldest. But two or more kept under this call's own key only read without an extra
+    // (addAnnounced) are torn: which of them sent none, only their own MCP calls say, and another's may be on its way
+    // with the extra, needing its own. So while there are more of them than calls waiting on them (`waiting`, this one
+    // among them), the call waits; once there are not, each takes the oldest.
+    const pick = (from: readonly string[], waiting: number): string | undefined | typeof TORN => {
+      for (const at of from) {
+        const list = this.seen.get(at);
+        if (!list?.length) continue;
+        const id = list.find((each) => this.keyOf.get(each)?.[0] === at) ?? (at === key && list.length > 1 && list.length > waiting ? TORN : list[0]!);
+        if (id === TORN) return TORN;
+        this.unlist(id);
+        this.used.add(id);
+        this.wake();
+        return id;
       }
       return undefined;
     };
     // Once the wait is over, the oldest announced call named `tool` whose reported input differs from what reached MCP.
     // Never one named no tool with other arguments: its arguments are all that ties it, and they differ. Then the oldest
     // that named nothing and reported nothing.
-    const loose = () => ready([...[...this.seen.keys()].filter((key) => key.startsWith(`${tool}\0`)), NOTHING]);
-    const now = ready([...keys, NOTHING]);
-    if (now) return now;
+    const loose = () => pick([...[...this.seen.keys()].filter((at) => at.startsWith(`${tool}\0`)), NOTHING], Infinity) as string | undefined;
+    // Calls already torn on this key go first, in the order they came, unless this one's arguments are an announcement's own.
+    const queued = this.torn.get(key) ?? 0;
+    const now = queued && !this.seen.get(key)?.some((id) => this.keyOf.get(id)?.[0] === key) ? TORN : pick([...keys, NOTHING], 1);
+    if (typeof now === "string") return now;
+    const torn = now === TORN;
     return new Promise<string | undefined>((resolve, reject) => {
-      const lists = keys.map((key) => {
-        const list = this.waiting.get(key) ?? [];
-        this.waiting.set(key, list);
+      const lists = keys.map((at) => {
+        const list = this.waiting.get(at) ?? [];
+        this.waiting.set(at, list);
         return list;
       });
-      const drop = () => {
+      const retry = () => {
+        const id = pick(keys, this.torn.get(key) ?? 0);
+        if (typeof id === "string") done(id);
+      };
+      const leave = () => {
         for (const list of lists) {
           const at = list.indexOf(done);
           if (at >= 0) list.splice(at, 1);
         }
+        if (!this.retries.delete(retry)) return;
+        const left = (this.torn.get(key) ?? 1) - 1;
+        if (left > 0) this.torn.set(key, left);
+        else this.torn.delete(key);
       };
       const done = (id: string) => {
         clearTimeout(timer);
         signal.removeEventListener("abort", stop);
-        drop();
+        leave();
         resolve(id);
       };
       const stop = () => {
         clearTimeout(timer);
-        drop();
+        leave();
         reject(signal.reason instanceof Error ? signal.reason : new Error("the call was stopped"));
       };
       const timer = setTimeout(() => {
         signal.removeEventListener("abort", stop);
-        drop();
-        resolve(loose());
+        leave();
+        resolve((torn ? (pick(keys, Infinity) as string | undefined) : undefined) ?? loose());
       }, ms);
       signal.addEventListener("abort", stop, { once: true });
       for (const list of lists) list.push(done);
+      if (torn) {
+        this.torn.set(key, (this.torn.get(key) ?? 0) + 1);
+        this.retries.add(retry);
+        this.wake();
+      }
+    });
+  }
+
+  /** The MCP calls torn between announcements (take): how many wait under each key, and each one's retry. */
+  private readonly torn = new Map<string, number>();
+  private readonly retries = new Set<() => void>();
+  private waking = false;
+
+  /** Each torn call tries again, once the current one is through: an announcement was taken, or another call is torn. */
+  private wake(): void {
+    if (this.waking || this.retries.size === 0) return;
+    this.waking = true;
+    queueMicrotask(() => {
+      this.waking = false;
+      for (const retry of [...this.retries]) retry();
     });
   }
 }

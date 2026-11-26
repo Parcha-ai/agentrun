@@ -130,6 +130,28 @@ test("an extra our tool's input schema declares is its argument, never agy's own
   const waiting = early.take('look_up', { q: 'f' }, signal, 60_000);
   announceCall(early, agy('call_f', { q: 'f', toolSummary: 'Look f up' }), AGY, TOOLS, declared);
   assert.equal(await hurry(waiting), 'call_f');
+  // Two calls in flight with the same arguments but for the extra, each announced with its own: one sent it (A's MCP
+  // call carries toolSummary 'a'), one left it out, agy adding its own (B's carries none). B's MCP call reaching MCP
+  // first matches both without the extra, so it waits rather than take A's id, which A's own call is about to need:
+  // A's takes A by its whole arguments, and B's the one left. Before, B's took A (the oldest), and A's took B after the wait.
+  const pair = new calls.CallIds();
+  announceCall(pair, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
+  announceCall(pair, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
+  const bFirst = pair.take('look_up', { q: 'x' }, signal, 60_000);
+  const aNext = pair.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000);
+  assert.deepEqual(await hurry(Promise.all([bFirst, aNext])), ['call_b', 'call_a'], 'each its own id, at once');
+  // Both left it out: each MCP call carries { q: 'x' }. Two calls waiting for two such announcements leave none for a
+  // whole-argument call, so they take them in order, oldest first, never after the wait.
+  const both = new calls.CallIds();
+  announceCall(both, agy('call_a', { q: 'x', toolSummary: 'Look x up' }), AGY, TOOLS, declared);
+  announceCall(both, agy('call_b', { q: 'x', toolSummary: 'Look x up again' }), AGY, TOOLS, declared);
+  const first = both.take('look_up', { q: 'x' }, signal, 60_000);
+  const second = both.take('look_up', { q: 'x' }, signal, 60_000);
+  assert.deepEqual(await hurry(Promise.all([first, second])), ['call_a', 'call_b'], 'in order, at once');
+  // Only one there: nothing to wait for, so it is taken at once, as before.
+  const lone = new calls.CallIds();
+  announceCall(lone, agy('call_a', { q: 'x', toolSummary: 'Look x up' }), AGY, TOOLS, declared);
+  assert.equal(await hurry(lone.take('look_up', { q: 'x' }, signal, 60_000)), 'call_a');
   // Another tool's declaration keeps nothing for this one.
   const other = new calls.CallIds();
   announceCall(other, agy('call_c', { q: 'c', toolSummary: 'Look c up' }), AGY, TOOLS, new Map([['check_echo', new Set(['toolSummary'])]]));
