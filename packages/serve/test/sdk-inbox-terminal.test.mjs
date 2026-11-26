@@ -5,6 +5,7 @@ import { serve } from "./support.mjs";
 import { SdkRuns } from "../dist/sdk/runs.js";
 import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { runEntries } from "../dist/store-reads/journal.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const gate = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const proxy = (target, overrides) => new Proxy(target, { get(object, name) {
@@ -25,7 +26,7 @@ async function fixture(t, runtime, learning = false) {
   let routes = 0;
   const loop = (observed = store, journal, signal = new AbortController().signal) => createSdkLoop(launch, { store: observed, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => {
     routes++; assert.fail("This control must not dispatch reflection or grading");
-  })({ journal: claim => journal?.(claim) ?? store.journal(claim), flush: () => store.flush(), signal });
+  })({ redact: heldRedactor((text) => text), journal: claim => journal?.(claim) ?? store.journal(claim), flush: () => store.flush(), signal });
   const sdk = observed => new SdkRuns(observed ?? store, server.data, "fake-test-key");
   return { ...server, id, key, launch, loop, sdk, routes: () => routes };
 }

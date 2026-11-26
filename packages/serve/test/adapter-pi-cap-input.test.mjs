@@ -7,13 +7,14 @@ import { closeOpenSessions, hostTools, MODEL } from "./conformance-pi-adapter.mj
 import { capRun, quiet, SONNET } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 after(closeOpenSessions);
 
 const sse = (events) => new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
 const provider = { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` };
 /** A spec of pi on `fetch` with `input` as the person's first message. */
 const specWith = (fetch, input) => (_claim, run) => ({
-  adapter: piAdapter({ run, model: MODEL, provider, fetch, price: () => 0 }),
+  adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider, fetch, price: () => 0 }),
   session: { key: "root", label: "root", system: ["Answer."], tools: hostTools({}), context: "fresh" },
   input,
   hooks: quiet,

@@ -70,7 +70,26 @@ function savePathOf(given: unknown): string {
   return path;
 }
 
-const OP = `One of the computer's ops no other tool runs, as a script's \`computer\` calls it: input.act {actions}, apps.list, apps.open {id, url?, background?}, shell.run {command, cwd?, env?, timeoutMs?}, processes.start {command, cwd?, env?}, files.read {path, encoding?}, files.write {path, data, encoding?}, files.list {path}, files.stat {path}. An op this computer does not offer is refused.`;
+/** Each op's arguments, as computer_op's words give them (none: it takes none). */
+const OP_ARGS: Readonly<Record<string, string>> = Object.freeze({
+  "input.act": "{actions}",
+  "apps.open": "{id, url?, background?}",
+  "shell.run": "{command, cwd?, env?, timeoutMs?}",
+  "processes.start": "{command, cwd?, env?}",
+  "files.read": "{path, encoding?}",
+  "files.write": "{path, data, encoding?}",
+  "files.list": "{path}",
+  "files.stat": "{path}",
+});
+
+/** What every offer of a computer's ops says of its input: leaving bash out does not keep a script from a terminal app. */
+export const INPUT_REACHES_SHELL = "Input ops on a computer with a terminal app can do what a shell does, whatever bash's setting.";
+
+/** computer_op's words for the ops it offers. */
+const opWords = (ops: readonly string[]): string =>
+  `One of the computer's ops no other tool runs, as a script's \`computer\` calls it: ${ops.map((op) => (OP_ARGS[op] ? `${op} ${OP_ARGS[op]}` : op)).join(", ")}. An op this computer does not offer is refused. ${INPUT_REACHES_SHELL}`;
+
+const OP = opWords(Object.keys(COMPUTER_OPS));
 
 /** The ops computer_op runs on a computer with `groups`. */
 export function computerOpsFor(groups: readonly string[]): readonly string[] {
@@ -105,15 +124,23 @@ const def = (kind: CapabilityKind, name: (typeof COMPUTER_TOOLS)[number], descri
   replaySafe,
 });
 
-/** computer_op's parameters: the op, and its arguments as a script's `computer` gives them. */
-const OP_PARAMETERS: object = {
+/** computer_op's parameters over `ops`: the op, and its arguments as a script's `computer` gives them. */
+const opParameters = (ops: readonly string[]): object => ({
   type: "object",
   properties: {
-    op: { type: "string", enum: Object.keys(COMPUTER_OPS) },
+    op: { type: "string", enum: [...ops] },
     args: { type: "object", description: "The op's arguments." },
   },
   required: ["op"],
   additionalProperties: false,
+});
+const OP_PARAMETERS = opParameters(Object.keys(COMPUTER_OPS));
+
+/** computer_op's definition `def` for a run whose gate refuses the ops `without` (its agent is not given their tool):
+ *  its words and its op list name only the others. */
+export const withoutOps = <T extends { readonly description: string; readonly parameters: object }>(def: T, without: readonly string[]): T => {
+  const ops = Object.keys(COMPUTER_OPS).filter((op) => !without.includes(op));
+  return { ...def, description: opWords(ops), parameters: opParameters(ops) };
 };
 
 /** The computer's tools in `kind`, under its settings key, for a computer with `groups`. An act or an op changes the

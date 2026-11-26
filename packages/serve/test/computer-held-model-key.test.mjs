@@ -28,7 +28,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { readBackOf } from "@parcha/agentrun-computer";
-import { GATEWAY_KEY_ENV, MODEL_KEYS } from "../dist/model.js";
+import { FAUX_ENV, FAUX_PROVIDER, GATEWAY_KEY_ENV, MODEL_KEYS } from "../dist/model.js";
 import { specFor } from "./runner-spec-support.mjs";
 import { agent, scratch, serve, withEnv } from "./support.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -42,6 +42,7 @@ const { ApiError } = await import("../dist/errors.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { heldRefusedRoute } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { claimSecrets, MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
 const { childLoops, heldFor, LOGIN_MACHINE_NEEDS_SERVER_USER, staysInRunner } = await import("../dist/runner/run-child-host.js");
 const { cursorOptions } = await import("../dist/harness-table.js");
@@ -211,7 +212,7 @@ async function cliClaim(t, hold, extra = {}, host = {}) {
   }
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: host.runner ? undefined : SEAL_KEY, routeOf: host.routeOf ?? (async () => assert.fail("a CLI run takes no pi route")), computerForClaim: async () => ({ release: async () => {} }) };
   host.watch?.(store);
-  built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  built = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
   return built;
 }
 
@@ -563,19 +564,28 @@ test("claim secrets (claimSecrets): a held run its model kept from running is la
   assert.equal(held.PARALLEL_API_KEY, HOST_TOOL_KEY, "its tool's key is laid as any claim's is");
 });
 
-test("claim secrets (claimSecrets) on a runner holding the seal key: a held run its model kept from running opens no saved model key at all, not one it then drops; the same run not held opens its model's", async () => {
+test("claim secrets (claimSecrets) on a runner holding the seal key: a run that sends no model key (held, on a --faux runner, faux-pinned) opens no saved model key at all, not one it then drops; the same run off faux, unpinned and not held opens its model's", async () => {
   // The store's saved keys, as a runner reads them: each read is a sealed key opened with the seal key, if saved. None is
   // saved here, so each read is counted by name and nothing is opened.
   const reads = [];
-  const deps = { store: { sealedKeys: { get: async (name) => (reads.push(name), undefined) }, settings: { get: async () => undefined } }, sealKey: Buffer.alloc(32, 7), env: {} };
+  const depsOn = (env) => ({ store: { sealedKeys: { get: async (name) => (reads.push(name), undefined) }, settings: { get: async () => undefined } }, sealKey: Buffer.alloc(32, 7), env });
   const revision = { kind: "agentic", body: { model: MODEL, tools: ["web_search"] } };
   const plane = { web_search: "parallel", web_fetch: "parallel" };
-  await claimSecrets(deps, revision, { plane });
-  assert.ok(reads.includes("OPENROUTER_API_KEY"), `a claim of the run, not held, reads its model's saved key: ${JSON.stringify(reads)}`);
-  reads.length = 0;
-  await claimSecrets(deps, revision, { plane, hold: { minutes: 5, refused: REFUSAL } });
-  assert.deepEqual(reads.filter((name) => MODEL_KEY_NAMES.includes(name)), [], `a held run its model kept from running reads no saved model key: ${JSON.stringify(reads)}`);
-  assert.ok(reads.includes("PARALLEL_API_KEY"), `its tool's saved key is read as any claim's is: ${JSON.stringify(reads)}`);
+  await claimSecrets(depsOn({}), revision, { plane });
+  assert.ok(reads.includes("OPENROUTER_API_KEY"), `a claim of the run off faux, unpinned and not held, reads its model's saved key: ${JSON.stringify(reads)}`);
+  // Each run that sends no model key (claim-secrets.ts sendsNoModelKey), as the runner's env and the launch's own fields.
+  const opened = {};
+  for (const [where, env, own] of [
+    ["held, its model kept from running", {}, { hold: { minutes: 5, refused: REFUSAL } }],
+    ["on a --faux runner", { [FAUX_ENV]: "1" }, {}],
+    ["faux-pinned on a runner off faux", {}, { model: { provider: FAUX_PROVIDER, modelId: "faux-1" } }],
+  ]) {
+    reads.length = 0;
+    await claimSecrets(depsOn(env), revision, { plane, ...own });
+    opened[where] = reads.filter((name) => MODEL_KEY_NAMES.includes(name));
+    assert.ok(reads.includes("PARALLEL_API_KEY"), `${where}: its tool's saved key is read as any claim's is: ${JSON.stringify(reads)}`);
+  }
+  assert.deepEqual(opened, { "held, its model kept from running": [], "on a --faux runner": [], "faux-pinned on a runner off faux": [] }, "a run that sends no model key reads no saved model key");
 });
 
 /** A gateway's key saved in the console (model-gateway.ts saveGateway), a test's: never a real one. */
@@ -614,7 +624,7 @@ async function handedNames(t, { env = {}, hold, before, harness = "pi", body = {
   await writeFile(script, NAMES_OF_KEYS);
   const deps = { store, data: dir, sealKey: SEAL_KEY, env, computerForClaim: async () => assert.fail("the run names no computer") };
   const loop = childLoops({ deps, isolation: { kind: "process", why: "a test's runner" }, log: () => {}, argv: [process.execPath, script, out] })({
-    signal: new AbortController().signal, journal: (claim) => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(),
+    signal: new AbortController().signal, journal: (claim) => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(), redact: heldRedactor((text) => text),
   });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const ended = await loop.start(claim).then(() => undefined, (error) => error);

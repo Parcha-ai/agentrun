@@ -188,8 +188,10 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
     return computerForClaim({ runId: "run-1", epoch, computer: setting, ...launch }, runners ? { ...store, runners } : store, { ...deps, check: { readBackOf, epoch }, ...extra });
   };
   // `self` and `runners`: the janitor of a runner (its name and incarnation), reading which runners are there. `now`: its
-  // process's own clock, where it is not the store's. `log`: where it says what it did.
-  const janitor = ({ self, runners, now = () => clock.now, log, deleteMs } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, now, ...(self ? { self } : {}), ...(log ? { log } : {}), ...(deleteMs ? { deleteMs } : {}) });
+  // process's own clock, where it is not the store's. `log`: where it says what it did. One start over the left removes
+  // kept across its passes, as startJanitor keeps one.
+  const leftStart = {};
+  const janitor = ({ self, runners, now = () => clock.now, log, deleteMs } = {}) => sweepKeptComputers({ store: runners ? { ...store, runners } : store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, env: {}, sealKey, ...mountControl, now, leftStart, ...(self ? { self } : {}), ...(log ? { log } : {}), ...(deleteMs ? { deleteMs } : {}) });
   // A full janitor pass as the runner process runs it (startJanitor's first: the kept pass, then every provider's sweep),
   // as runner `self` reading `runners`; one vendor account behind every provider, as a dial vendor's (or one Docker
   // engine) both runners list. The store without its agents, so no server id is minted. What it logged.
@@ -555,8 +557,9 @@ test("a kept desktop whose folder is not on Archil: the janitor ends it with no 
   assert.deepEqual(archil.requests, []);
 });
 
-/** A claim's own Archil step, as archil-claim.ts makes it, for `one`'s run-1 at `epoch`, over the fake `archil`. */
-const archilStepOf = (one, archil, epoch) =>
+/** A claim's own Archil step, as archil-claim.ts makes it, for `one`'s run-1 at `epoch`, over the fake `archil`, with
+ *  `extra` options (its log). */
+const archilStepOf = (one, archil, epoch, extra = {}) =>
   archilClaim({
     settings: { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" },
     keys: one.store.sealedKeys,
@@ -566,6 +569,7 @@ const archilStepOf = (one, archil, epoch) =>
     control: { baseUrl: archil.baseUrl, fetch: archil.fetch },
     run: { agentId: "agent-1", store: one.store },
     makeDisk: (options) => ({ id: options.disk }),
+    ...extra,
   });
 
 test("Mode 2, the parking runner's own timer deletes the kept desktop and Archil refuses its mount credential's remove: the row is left ending and said, and the janitor's next pass removes the credential", async (t) => {
@@ -1335,6 +1339,65 @@ test("Mode 2, a run's process whose credential remove failed, its runner's relea
   refuse = false;
   const swept = await one.janitor();
   assert.deepEqual(swept.failed, []);
+  assert.deepEqual(nicknames(archil), [], "removed by the janitor's pass");
+});
+
+test("Mode 2, a lost claim's revoke failing after its release: the remove is left, and the janitor's next pass removes the credential, then the row", async () => {
+  let refuse = false;
+  const archil = archilControlFetch({ answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
+  const one = await server({ mode: 2, archil });
+  const step = await archilStepOf(one, archil, 3);
+  await step.token();
+  // A lost claim: its release first (nothing owed yet, nothing left), then its revoke, which Archil refuses.
+  step.release();
+  refuse = true;
+  await assert.rejects(step.revoke(), /Archil is down/);
+  assert.deepEqual(await one.store.settings.get("archil_revoke:run-1"), { epoch: 3, disk: DISK, until: T0 }, "the remove left for the janitor");
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:3"], "still at Archil");
+  refuse = false;
+  assert.deepEqual((await one.janitor()).failed, []);
+  assert.deepEqual(nicknames(archil), [], "removed by the janitor's pass");
+  assert.equal(await one.store.settings.get("archil_revoke:run-1"), undefined, "and its row");
+});
+
+test("Mode 2, a left remove past its time plus the credential's ttl: the janitor's pass removes its row and removes none of its credentials; one in its ttl has its removed", async () => {
+  const archil = mountUsers();
+  const one = await server({ mode: 2, archil });
+  await one.store.settings.put("archil_revoke:run-1", { epoch: 3, disk: DISK, until: T0 - MOUNT_TTL_MS });
+  await one.store.settings.put("archil_revoke:run-2", { epoch: 3, disk: DISK, until: T0 - MOUNT_TTL_MS + 1 });
+  assert.deepEqual((await one.janitor()).failed, []);
+  assert.equal(await one.store.settings.get("archil_revoke:run-1"), undefined, "the row past its ttl removed");
+  assert.equal(await one.store.settings.get("archil_revoke:run-2"), undefined, "the row in its ttl removed once its remove answered");
+  assert.deepEqual(nicknames(archil), ["agentrun:run-1:1", "agentrun:run-1:3", "agentrun:run-1:6"], "run-1's past its ttl not asked; run-2's up to epoch 3 removed");
+});
+
+test("Mode 2, a claim's release whose leave the store fails: it is said on the log, and a later leave writes the row, not the failed write again", async () => {
+  let refuse = true;
+  const archil = archilControlFetch({ answer: ({ method }) => (refuse && method === "DELETE" ? { status: 500, body: { error: "Archil is down" } } : undefined) });
+  const one = await server({ mode: 2, archil });
+  const logged = [];
+  const step = await archilStepOf(one, archil, 3, { log: (line) => void logged.push(line) });
+  await step.token();
+  await assert.rejects(step.revoke(), /Archil is down/);
+  // The store fails the leave's first write, as a store blip does.
+  const settings = one.store.settings;
+  const putIfAbsent = settings.putIfAbsent;
+  let failing = 1;
+  settings.putIfAbsent = async (key, ...rest) => {
+    if (key === "archil_revoke:run-1" && failing > 0) {
+      failing -= 1;
+      throw new Error("the store dropped the write");
+    }
+    return putIfAbsent(key, ...rest);
+  };
+  step.release();
+  for (let turn = 0; turn < 10; turn += 1) await new Promise((done) => setImmediate(done));
+  assert.equal(failing, 0, "the release's leave asked the store");
+  assert.ok(logged.some((line) => /run run-1's Archil mount credential remove could not be left for the janitor, so it lapses at its ttl: .*the store dropped the write/.test(line)), logged.join("\n"));
+  await step.leave();
+  assert.equal((await settings.get("archil_revoke:run-1"))?.epoch, 3, "a later leave writes the row");
+  refuse = false;
+  assert.deepEqual((await one.janitor()).failed, []);
   assert.deepEqual(nicknames(archil), [], "removed by the janitor's pass");
 });
 
