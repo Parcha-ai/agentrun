@@ -229,3 +229,24 @@ test("a row's file path is named as a whole path: in the run's directory relativ
 test("the largest image the runner's read answers (pi-env READ_IMAGE_MAX_BYTES) is still one the claude-agent adapter sends: its base64 within the adapter's cap", () => {
   assert.ok(Math.ceil(READ_IMAGE_MAX_BYTES / 3) * 4 <= CLAUDE_AGENT_MAX_IMAGE_BYTES, `${READ_IMAGE_MAX_BYTES} bytes is over ${CLAUDE_AGENT_MAX_IMAGE_BYTES} as base64`);
 });
+
+test("a tool its binding runs once (RUNS_ONCE) has no host row, never runs again after a crash, and its api's memo is the call's own: the first value stored wins, and the next call starts with none", async () => {
+  const { hostToolOf, RUNS_ONCE } = await import("../dist/host-tools.js");
+  const tool = {
+    name: "snapshot", description: "d", parameters: { type: "object" },
+    async execute(args, api) {
+      const before = await api.memo("ran", ctx);
+      const first = await api.memo("ran", args.tag, ctx);
+      const second = await api.memo("ran", "another", ctx);
+      api.output(JSON.stringify({ before: before ?? null, first, second, after: await api.memo("ran", ctx) }));
+      return {};
+    },
+  };
+  const hostCtx = { context: ctx, results: new Map(), env: async () => ({}) };
+  assert.equal(hostToolOf("browser", tool, hostCtx), undefined, "the browser has no host row: a host binds it only by its own binding");
+  const host = hostToolOf("browser", tool, hostCtx, RUNS_ONCE);
+  assert.equal(host.replay, "never", "a call a crash cut off is never run again");
+  const call = async (tag, callId) => JSON.parse((await host.call({ tag }, { callId, signal: new AbortController().signal })).text);
+  assert.deepEqual(await call("ar-1", "c1"), { before: null, first: "ar-1", second: "ar-1", after: "ar-1" }, "the first value stored is the one every later read and store answers");
+  assert.deepEqual(await call("ar-2", "c2"), { before: null, first: "ar-2", second: "ar-2", after: "ar-2" }, "the next call's memo is its own, empty at its start");
+});

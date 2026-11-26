@@ -4,7 +4,7 @@
 // provider's key, a default model, a tier's model) saves as a warning. Either refuses a run, 409 agent_not_runnable.
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionModelsNamed, providerMissing, providersNamed } from "./decisions.js";
-import { isHostTool } from "./tool-list.js";
+import { adapterBinds } from "./tool-list.js";
 import { type InputIssue, sentence } from "./errors.js";
 import { DEFAULT_HARNESS, type HarnessCapability, harnessOffers } from "./harness.js";
 import { harnessOf, onAdapter } from "./harness-table.js";
@@ -222,10 +222,10 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       }
       // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
-      // Another harness gets the host tools only (host-tools.ts: the file tools, ask_person, web_fetch and web_search):
-      // any other tool this host binds (the browser, subagent, pdf_pages, llm) is pi's here and refuses the
-      // run, never runs without it.
-      else if (onAdapter(env, harness) && !isHostTool(tool)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
+      // Another harness gets the host tools (host-tools.ts: the file tools, ask_person, web_fetch and web_search) and the
+      // browser (tool-list.ts adapterBinds): any other tool this host binds (subagent, pdf_pages, llm) is pi's here and
+      // refuses the run, never runs without it.
+      else if (onAdapter(env, harness) && !adapterBinds(tool)) out.push({ field: `definition.tools[${index}]`, reason: NOT_SET_UP, message: `${tool} runs on pi here; on ${harness} it is not bound yet.`, host: true, tool });
       else {
         unset(`definition.tools[${index}]`, tool);
         // The browser of an agent whose computer is a browser is that computer (tools.ts browserComputer), on the keys

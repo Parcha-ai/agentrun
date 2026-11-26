@@ -24,7 +24,7 @@ export function BuiltInToolCards({ shown, offers, tools, harness, place, places,
     // With no place, ticking a shell tool is what moves the agent to the box: read the place with it ticked.
     const sandbox = sandboxReason(t, place ?? defaultPlaceOf(workflow, [...tools, t.name], places));
     const unavailable = !t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined;
-    // Every rule that keeps it off here, together (QA: the browser runs only on pi and only on the server, and the card
+    // Every rule that keeps it off here, together (QA: a tool can run on some harnesses only and only on the server, and the card
     // said one rule at a time): the harnesses that run it, where it runs, and what it lacks.
     const rules = [!runs ? notOn(harness, t.name, offers) : undefined, sandbox, unavailable].filter((rule): rule is string => !!rule);
     const why = serverDenies(t.name, gates, granted) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : rules.length ? rules.join("; ") : undefined;

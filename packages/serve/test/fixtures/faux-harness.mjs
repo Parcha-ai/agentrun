@@ -254,6 +254,8 @@ export function script(spec, session = {}) {
   // A read of a link out of the workspace, which the test plants while the turn holds; a crash then resumes the turn.
   const link = /Read the link after (\S+)\./.exec(text)?.[1];
   if (link) return [{ call: "write", args: { path: "first.txt", content: "x" }, usd: 0.001 }, ...(existsSync(link) ? [] : [{ hang: true }]), { call: "read", args: { path: "out.txt" }, usd: 0.001 }, { say: "Tried.", usd: 0.001 }];
+  // The browser's registrations, as a CLI harness is handed them: a snapshot of the page, a click on its Add button.
+  if (/Snapshot the browser and click its Add button\./.test(text)) return [{ call: "snapshot", args: {}, usd: 0.001 }, { call: "run", args: { actions: [{ op: "click", id: "0-11" }] }, usd: 0.001 }, { say: "Clicked.", usd: 0.001 }];
   const page = /Fetch (\S+) and say its title(?: with (\w+))?\./.exec(text);
   if (page) return [{ call: page[2] ?? "web_fetch", args: { url: page[1] }, usd: 0.001 }, { say: "Fetched.", usd: 0.001 }];
   const query = /Search the web for (.+?) and say what you found\./.exec(text)?.[1];
