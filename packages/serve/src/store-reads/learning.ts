@@ -11,7 +11,7 @@ import { learningStartOf, learningStartOfStored, readLaunchBody, type RunLaunch,
 import { said, seedStopped } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact } from "../learning-run.js";
 import { type Bill, type BillHold, COST_WINDOW, type CostReplay, type CostRun, type CostSummary, JOB_PATHS, noiseOff, RUN_PATHS, type RunPath, SERVED_PATHS, type WorkflowCall, workflowCallsIn } from "../learning-cost.js";
-import { type Answered, answeredOf, auditOfLaunch, figuresOf, type LedgerRead, type LedgerRow, ownCheck, record, type RevisionAt, roundsLooked, roundsSpentIn, type RunEnd, type RunFigures, type Shadow, shadowCostOf, type SpendRow, spendByRun, summarize, type Summarized } from "../learn/ledger.js";
+import { type Answered, answeredOf, figuresOf, type LedgerRead, type LedgerRow, ownCheck, record, type RevisionAt, roundsLooked, roundsSpentIn, type RunEnd, runEndOfLaunch, type RunFigures, type Shadow, shadowCostOf, type SpendRow, spendByRun, summarize, type Summarized } from "../learn/ledger.js";
 import { learningChildrenOf } from "../learning-work.js";
 import { COMPILE_AFTER_DEFAULT } from "../learning-setting.js";
 import { modelsOwn, runPathOf } from "../runner/learning-end.js";
@@ -324,11 +324,11 @@ async function ledgerRowsOf(store: Store, agentId: string, runIds?: readonly str
   return { recorded: new Map(ledger.rows.map((row) => [row.runId, row])), spend: ledger.spend };
 }
 
-/** What record() reads of an ended run: its row, every round its learning kept and, for a shadow, the run it audits. */
+/** What record() reads of an ended run: its row, every round its learning kept and its launch, as its end's ledger write
+ *  reads them (learn/ledger.ts runEndOfLaunch). */
 async function runEndOf(records: RunRecords, run: RunRecord): Promise<RunEnd> {
   const rounds = (await roundsOf(records, run.id)).map((one) => ({ round: one.round, proposal: one.proposal }));
-  const auditOf = auditOfLaunch(run.id, isShadowRun(run.id) ? (await records.runs.launch(run.id).catch(() => undefined))?.body : undefined);
-  return { id: run.id, agentId: run.agentId, startedAt: run.startedAt, costUsd: run.costUsd, costAtMostUsd: run.costAtMostUsd, metrics: run.metrics, rounds, ...(auditOf === undefined ? {} : { auditOf }) };
+  return runEndOfLaunch(run, rounds, (await records.runs.launch(run.id).catch(() => undefined))?.body);
 }
 
 /** Each hold of the agent's learned workflows (its promotion records that say hold), placed on the series: at the first

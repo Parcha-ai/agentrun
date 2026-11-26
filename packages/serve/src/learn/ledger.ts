@@ -80,11 +80,11 @@ const objectOf = (value: unknown): Record<string, unknown> => (value && typeof v
 
 /** RunEnd.auditOf of run `runId` from its stored launch body (`body`, undefined with none): the run its launch audits
  *  (null when it names none) for an audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."), undefined for any other. */
-export const auditOfLaunch = (runId: string, body: unknown): string | null | undefined =>
+const auditOfLaunch = (runId: string, body: unknown): string | null | undefined =>
   runId.startsWith("audit.") ? textOrNull(objectOf(objectOf(body).audit).of) : undefined;
 /** RunEnd.replay from a run's stored launch body (`body`, undefined with none): its replay, undefined for a run that is
  *  no check's replay. */
-export const replayOfLaunch = (body: unknown): LaunchReplay | undefined => {
+const replayOfLaunch = (body: unknown): LaunchReplay | undefined => {
   const replay = objectOf(body).replay;
   if (!replay || typeof replay !== "object" || Array.isArray(replay)) return undefined;
   const { workflow, digest, paid_by } = replay as Record<string, unknown>;
@@ -92,7 +92,18 @@ export const replayOfLaunch = (body: unknown): LaunchReplay | undefined => {
 };
 /** RunEnd.learns from a run's stored launch body (`body`, undefined with none): whether it holds a learning start, as
  *  run-launch.ts learningStartOfStored reads one. No launch reads as a run that does not learn. */
-export const learnsOfLaunch = (body: unknown): boolean => objectOf(body).learning !== undefined;
+const learnsOfLaunch = (body: unknown): boolean => objectOf(body).learning !== undefined;
+/** The RunEnd of ended run `run`, its kept `rounds` and its stored launch body (`body`, undefined with none): what every
+ *  reader of an end records, one rule (store/sqlite/run-patch.ts recordLedger, which writes the ledger; store-reads/
+ *  learning.ts runEndOf, which reads a run at another figure or with no row yet). */
+export const runEndOfLaunch = (run: Pick<RunEnd, "id" | "agentId" | "startedAt" | "costUsd" | "costAtMostUsd" | "metrics">, rounds: RunEnd["rounds"], body: unknown): RunEnd => {
+  const auditOf = auditOfLaunch(run.id, body);
+  const replay = replayOfLaunch(body);
+  return {
+    id: run.id, agentId: run.agentId, startedAt: run.startedAt, costUsd: run.costUsd, costAtMostUsd: run.costAtMostUsd, metrics: run.metrics, rounds,
+    learns: learnsOfLaunch(body), ...(auditOf === undefined ? {} : { auditOf }), ...(replay ? { replay } : {}),
+  };
+};
 /** A sum of parts, null once one is unknown; 0 for none. */
 const sumOf = (parts: readonly (number | null)[]): number | null => (parts.some((one) => one === null) ? null : noiseOff(parts.reduce<number>((total, one) => total + one!, 0)));
 
