@@ -44,8 +44,9 @@ function cardNeeds(t: TemplateView): [string, ReactNode][] {
 const catalogHash = (playground: boolean) => playground ? "#/playground?operation=apply-template" : "#/templates";
 
 /** The server's templates: review and install a GitHub package, run with a coding agent, or apply through the API playground. */
-/** `model`: the agent's model, sent as apply's `overrides.model` (the Free shelf's "Use free" opens a template with it). */
-export function TemplatesPage({ v2, name, install, go, playground = false, draft, model }: Props & { name?: string; install?: string; model?: string }) {
+/** `model`: the agent's model, sent as apply's `overrides.model` (the Free shelf's "Use free" opens a template with it).
+ *  `freeIds`: this server's free models, once capabilities are read: a linked model not among them is said to be one. */
+export function TemplatesPage({ v2, name, install, go, playground = false, draft, model, freeIds }: Props & { name?: string; install?: string; model?: string; freeIds?: readonly string[] }) {
   const [templates, setTemplates] = useState<TemplateView[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -65,7 +66,7 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
     : error && !templates ? <ProblemCard problem={error} onRetry={retry} className="" />
     : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
     : name === undefined ? <TemplateList v2={v2} templates={templates} go={go} playground={playground} onRemoved={retry} />
-    : shown ? <ApplyTemplate key={`${shown.id}:${draft ?? ""}:${model ?? ""}`} v2={v2} template={shown} go={go} playground={playground} draft={draft} model={model} />
+    : shown ? <ApplyTemplate key={`${shown.id}:${draft ?? ""}:${model ?? ""}`} v2={v2} template={shown} go={go} playground={playground} draft={draft} model={model} freeIds={freeIds} />
     : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href={catalogHash(playground)} className="underline">See its templates</a>.</p>;
   // In the API playground the page sits under the playground's own bar, with its own way back.
   if (playground) return <div className="p-5 md:p-8">{body}</div>;
@@ -340,12 +341,14 @@ function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-function ApplyTemplate({ v2, template: t, go, playground = false, draft, model: linked }: Props & { template: TemplateView; model?: string }) {
+function ApplyTemplate({ v2, template: t, go, playground = false, draft, model: linked, freeIds }: Props & { template: TemplateView; model?: string; freeIds?: readonly string[] }) {
   const Heading = playground ? "h2" : "h1";
   const form = { fields: schemaFields(t.parameters) ?? [], contentRequired: false };
   const prepared = readTemplateDraft(draft, t);
   // The agent's model as the link set it, or as a prepared request carries it (the playground opened from Use free).
   const model = linked ?? prepared.body?.overrides?.model;
+  // A link sets `?model=` (the Free shelf's Use free sends a free one): one this server does not offer free may cost money.
+  const unfree = linked !== undefined && freeIds !== undefined && !freeIds.includes(linked);
   // Shared compiled fields supply defaults; an explicit prepared false, zero or list stays the reviewed choice.
   const [values, setValues] = useState<ParameterText>(() => ({ ...Object.fromEntries(form.fields.filter(([, field]) => field.type === "boolean" && !field.array).map(([key]) => [key, "false"])), ...fieldStartText(form), ...Object.fromEntries(Object.entries(prepared.body?.parameters ?? {}).map(([key, value]) => [key, Array.isArray(value) ? value.map(String).join("\n") : String(value)])) }));
   const [ticked, setTicked] = useState<Set<string>>(() => new Set(prepared.body?.grants ?? []));
@@ -626,6 +629,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft, model: 
         <section aria-label="Model" className="mt-6">
           <h2 className="caps text-small font-semibold">Model</h2>
           <p className="mt-2 border px-4 py-3 font-mono text-body" data-model-override title={model}>{modelLabel(model, null).text}</p>
+          {unfree && <p role="status" data-model-unfree className="mt-2 text-body text-warning-text">This model came from the link and is not one of this server's free models: its runs may cost money.</p>}
           <Issues issues={at("overrides.model")} />
         </section>
       ) : t.model?.choices?.length ? (

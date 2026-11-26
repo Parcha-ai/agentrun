@@ -1906,6 +1906,7 @@ class AgentToolsItem(_AgentToolsItemRequired, total=False):
     provider_from: Literal["agent", "server", "default"]
     default_provider: str
     resolved: str
+    ceiling: str
 
 
 class AgentLearning(TypedDict):
@@ -2543,6 +2544,7 @@ class GetAgentResponseToolsItem(_GetAgentResponseToolsItemRequired, total=False)
     provider_from: Literal["agent", "server", "default"]
     default_provider: str
     resolved: str
+    ceiling: str
 
 
 class GetAgentResponseLearning(TypedDict):

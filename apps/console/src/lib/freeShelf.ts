@@ -51,24 +51,28 @@ export function webTools(tools: unknown, harness: string): ShelfTool[] {
 }
 
 /** Whether a template asks for nothing that costs money besides its model: no key (`secrets`), no MCP toolkit (`mcp`, or a
- *  tool named `mcp:…`), no browser tool, and no computer but this server's own Docker sandbox or none. A package's tags
- *  are its author's own claim, and "Use free" swaps only the model. */
+ *  tool named `mcp:…`), no Monid endpoint (`monid:…`, booked on the server's Monid key, which apply asks for only where
+ *  the server holds none), no browser tool, and no computer but this server's own Docker sandbox or none. A package's
+ *  tags are its author's own claim, and "Use free" swaps only the model. */
 export function asksNothingPaid(t: TemplateView): boolean {
   if (t.secrets.length || t.mcp.length) return false;
-  if ((t.tools ?? []).some((name) => name.startsWith("mcp:") || name.startsWith("browser"))) return false;
+  if ((t.tools ?? []).some((name) => name.startsWith("mcp:") || name.startsWith("monid:") || name.startsWith("browser"))) return false;
   const here = t.computer_here;
   if (!here?.computer) return true;
   if (here.computer.kind === "sandbox") return here.computer.provider === "docker";
   return here.computer.kind === "none" && here.shell === null;
 }
 
-/** Whether a template runs free here: it asks for nothing paid besides its model (asksNothingPaid), and its package marks
- *  it free (its `free` tag) or prefers or offers as a choice one of this server's free models, a choice that needs no
- *  key. */
+/** Whether a template runs free here: it asks for nothing paid besides its model (asksNothingPaid), a `subagent` it grants
+ *  runs on free models only, and its package marks it free (its `free` tag) or prefers or offers as a choice one of this
+ *  server's free models, a choice that needs no key. A subagent call runs on the package's model for its tier (`fast`,
+ *  `strong`), which "Use free" keeps, else the host's for the tier, which the console can't read: both must be named, and
+ *  free here. */
 export function runsFree(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): boolean {
   if (!asksNothingPaid(t)) return false;
-  if (t.tags.includes("free")) return true;
   const free = new Set(freeModels(harnesses).map((m) => m.id));
+  if ((t.tools ?? []).includes("subagent") && ![t.model?.fast, t.model?.strong].every((id) => !!id && free.has(id))) return false;
+  if (t.tags.includes("free")) return true;
   return [t.model?.prefer, ...(t.model?.choices ?? []).filter((c) => !c.secrets.length).map((c) => c.model)].some((id) => !!id && free.has(id));
 }
 

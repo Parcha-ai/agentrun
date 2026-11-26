@@ -2276,19 +2276,32 @@ off for a run, `web_search` answers `search is unavailable for the rest of this 
 sees the URL, its query string included, so a token in a URL's query goes to Firecrawl with it. A URL first passes the
 guard's own check, and one it refuses (a private, loopback, link-local or intranet address, a name that resolves to one,
 or a URL holding a user name or password) is refused as the guarded direct fetch refuses it, and never sent to Firecrawl,
-to Exa or to Parallel. To keep every URL on the server, pick `kernel` for `web_fetch`, or hold a Parallel key, where
-`auto` is the guarded direct fetch. A server's pick is the default only, an agent's own `tool_settings` (an imported
+to Exa or to Parallel. To keep every URL on the server, pick `kernel` for `web_fetch` (with a Parallel key, `auto`
+is Parallel's extract, which sends Parallel each URL). A server's pick is the default only, an agent's own `tool_settings` (an imported
 template's among them) over it, except for these. The server's `kernel` for `web_fetch`, and its `native` or `off` for
 `web_search`, are a ceiling: an agent's pick of `firecrawl-keyless`, `exa-keyless`, `auto` or `parallel` resolves as the
 server's setting does, so nothing goes to Firecrawl, to Exa or to Parallel, and capabilities' `why` says so ("the
-server's setting, kernel, is a ceiling over this agent's pick of auto"). Under `off`, an agent's `native` is off too;
+server's setting, kernel, is a ceiling over this agent's pick of auto"). An agent's own view (`GET /agents/{agent_id}`,
+its `tools`) keeps the agent's pick as `provider`, shows what runs as `resolved`, and names the server's setting that
+capped it as `ceiling`. Under `off`, an agent's `native` is off too;
 under `native`, it is the ceiling's own. To let agents use Parallel, set `parallel` server-wide; any server pick but
 these three (`auto`, `firecrawl-keyless`, `exa-keyless`, `parallel`) is only a default an agent's pick replaces. A
 server's `deny` is absolute: set `web_fetch` or `web_search` to `deny` to refuse every agent's calls, whatever it picks.
 A server setting applies at a run's next claim (its start, a follow-up, a resume or a reclaim): a claim keeps the plane
-it began with to its end, through any approval it waits on while it holds the run. Tool settings a claim cannot read
-fail closed: a capability kept on a keyless service or on Parallel runs nothing, its tool saying the settings could not
-be read.
+it began with to its end, through any approval it waits on while it holds the run. `deny` is read at each call, so it
+is the setting that stops a claim already running. Tool settings a claim cannot read fail closed: a capability kept on a
+keyless service or on Parallel runs nothing, its tool saying the settings could not be read.
+
+The ceiling covers `web_search` and `web_fetch`, not every way a run reaches the web:
+- `browser` sends each URL to its provider, and `bash` (`curl`) and MCP or catalog tools reach the web on their own; set
+  them to `deny` to stop them.
+- Jev, where it is on, sends a kernel fetch's page text, or a native pi search's query and result URLs, to TypeSafe;
+  `AGENTRUN_WEB_JEV_OFF=1` turns it off.
+- A workflow's typed questions on the `parallel` decision provider send the workflow's state to Parallel, which answers
+  from live web research, whatever `web_search` says. A server `deny` on `parallel` refuses it to learned workflows; a
+  workflow agent's own decision nodes run on it wherever the server holds `PARALLEL_API_KEY`.
+- A native job runs the user's own Claude Code or Codex CLI with that CLI's own configuration, which these settings do
+  not reach.
 
 A `web_fetch` through keyless Firecrawl takes at most about 95 s: up to 30 s for the guard's check of the URL, 30 s for
 Firecrawl, then, where Firecrawl gives no page, the guarded fetch's 30 s and 5 s to read the page.
@@ -5242,6 +5255,7 @@ is unpriced.
   seconds between the end's booking and its delete included), and one whose delete failed run on with no claim to hold
   them. Their time is on the usage read (`unheld_quantity`, and the
   interval's `booked_seconds` beside its life) but in no cap and no cost: check `computer_intervals` for such a computer.
+  On a provider that bills nothing (Docker) both are 0: its time costs nothing, held or not.
   A computer a later claim takes back is held again from then on.
 - A run whose process keeps no ledger here (a runner of its own with no run ledger) holds and books nothing, as if
   unpriced.

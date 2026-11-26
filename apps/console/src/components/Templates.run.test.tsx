@@ -78,6 +78,20 @@ describe("running a served template", () => {
     expect(applyTemplate.mock.calls[0]).toEqual([template.id, { parameters: { repo: "acme/web" }, overrides: { approvals: "ask", model: "ollama/qwen3:8b" } }, expect.any(String)]);
   });
 
+  // `?model=` is any link's: the Free shelf's Use free sends one of this server's free models, a crafted link anything.
+  it("says so on Apply when a linked model is not one of this server's free models; a free one, or before they are read, says nothing", async () => {
+    const shown = async (model: string, freeIds?: readonly string[]) => {
+      const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+      await act(async () => root!.render(createElement(TemplatesPage, { v2: v2 as never, name: template.id, model, freeIds, go: () => {} })));
+      const said = host.querySelector("[data-model-unfree]")?.textContent ?? null;
+      unmount();
+      return said;
+    };
+    expect(await shown("anthropic/claude-x", ["ollama/qwen3:8b"])).toMatch(/not one of this server's free models/);
+    expect(await shown("ollama/qwen3:8b", ["ollama/qwen3:8b"])).toBeNull();
+    expect(await shown("anthropic/claude-x")).toBeNull();
+  });
+
   it("hydrates prepared array choices as individual lines and applies the same typed values", async () => {
     const lists: TemplateView = { ...template, parameters: { type: "object", additionalProperties: false, required: ["names", "counts", "flags"], properties: {
       names: { type: "array", items: { type: "string" }, description: "Names" },

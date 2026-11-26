@@ -70,7 +70,7 @@ import { workflowsAt } from "./learning-seed.js";
 import { claimMetering, heldMcpOf, mcpForClaim } from "./mcp-run.js";
 import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
-import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
+import { refuseRecipeTriggerRun, resolveRunnerLoop, underServerCeilings, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { loginForRun } from "../claude-login.js";
@@ -1319,7 +1319,10 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         // host's default's now, where its revision names no model and a key saved since moved that default. On a --faux
         // runner, or pinned to the faux model, a run sends no model key (claim-secrets.ts sendsNoModelKey): its process is
         // handed none, not even its revision's model's.
-        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
+        // Its keys are its capped plane's (harness-loops.ts underServerCeilings), as the run's own loop reads that plane: a
+        // run kept on Parallel and claimed after the server set kernel or native is handed no Parallel key.
+        const capped = await underServerCeilings(claimDeps, launch, revisionRow as never);
+        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, capped, claim.runId);
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.

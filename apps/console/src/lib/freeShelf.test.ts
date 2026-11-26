@@ -105,6 +105,20 @@ describe("runsFree", () => {
     expect(runsFree(template({ ...tagged, ...here({ kind: "sandbox", provider: "docker" }, "the docker sandbox"), tools: ["read", "bash", "web_fetch"] }), harnesses)).toBe(true);
     expect(runsFree(template({ ...tagged, ...here({ kind: "none" }, null) }), harnesses)).toBe(true);
   });
+  // Neither shows in a package's `secrets`: apply asks for Monid's key only where the server holds none, and a subagent's
+  // tier runs on the package's model for it, else the host's (AGENT_MODEL_FAST, AGENT_MODEL_STRONG), which "Use free"
+  // leaves as they are.
+  it("never one that names a Monid endpoint, which books Monid's charges on the server's key", () => {
+    expect(runsFree(template({ tags: ["free"], tools: ["read", "monid:apollo/people/match"] }), harnesses)).toBe(false);
+  });
+  it("one that grants subagent only where the package names both its tiers, each one of this server's free models", () => {
+    const sub = (fast?: string, strong?: string) => template({ tags: ["free"], tools: ["read", "subagent"], model: { tier: "fast", prefer: LOCAL.id, ...(fast ? { fast } : {}), ...(strong ? { strong } : {}) } });
+    expect(runsFree(sub(), harnesses)).toBe(false);
+    expect(runsFree(sub(LOCAL.id), harnesses)).toBe(false);
+    expect(runsFree(sub(LOCAL.id, "anthropic/claude-x"), harnesses)).toBe(false);
+    expect(runsFree(sub(LOCAL.id, CATALOG.id), harnesses)).toBe(true);
+    expect(runsFree(template({ tags: ["free"], tools: ["read", "subagent"] }), harnesses)).toBe(false);
+  });
   it("a free model only on a choice that needs no key", () => {
     const choice = (secrets: string[]) => ({ model: { tier: "fast" as const, choices: [{ id: "c", label: "C", model: LOCAL.id, harness: "pi", warning: null, note: null, secrets }] } });
     expect(runsFree(template(choice(["OPENROUTER_API_KEY"])), harnesses)).toBe(false);

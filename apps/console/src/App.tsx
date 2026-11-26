@@ -39,6 +39,7 @@ import { TemplatesPage } from "@/components/Templates";
 import { FreeShelf } from "@/components/FreeShelf";
 import { SuggestionsPage } from "@/components/SuggestionsPage";
 import { repoOfHash } from "@/lib/suggestions";
+import { freeModels } from "@/lib/freeShelf";
 import { WrappedPage } from "@/components/WrappedPage";
 import { LiveRun } from "@/components/LiveRun";
 import { Race } from "@/components/Race";
@@ -978,7 +979,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
         : where.section === "factory"
         ? <AgentFactoryPage v2={v2} agentName={agentName} />
         : where.section === "templates"
-        ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : `${where.template ?? ""}:${where.templateModel ?? ""}`} v2={v2} name={where.template} install={where.install} model={where.templateModel} go={go} />
+        ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : `${where.template ?? ""}:${where.templateModel ?? ""}`} v2={v2} name={where.template} install={where.install} model={where.templateModel} freeIds={c ? freeModels(c.harnesses).map((m) => m.id) : undefined} go={go} />
         : where.section === "free"
         ? <FreeShelf v2={v2} harnesses={editorCaps.harnesses} tools={c?.tools} freeRequests={editorCaps.freeRequests} routePrefix={c?.models?.route_prefix} go={go}
             fit={<LocalModelCard v2={v2} onPulling={() => setFitHeld(true)} onReady={localReady} onDone={() => setFitHeld(false)} />} fitHeld={fitHeld} localModel={localModel} />

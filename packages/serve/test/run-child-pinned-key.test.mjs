@@ -43,14 +43,15 @@ const DUMP = `const fs = require("node:fs"); const net = require("node:net"); co
 /** The names a dump holds. */
 const namesIn = (bytes) => bytes.toString("utf8").split("\0").filter(Boolean).map((pair) => pair.slice(0, pair.indexOf("=")));
 
-/** The key names the process of a run of `revision` launched on `model` is handed by its runner, with `saved` sealed and
- *  `gateway`, if given, saved in the console. */
-async function handed(t, { revision, model, saved, env = {}, gateway }) {
+/** The key names the process of a run of `revision` launched on `model` (and `plane`, if given) is handed by its runner,
+ *  with `saved` sealed, `gateway`, if given, saved in the console, and the server's tool settings `settings`, if given. */
+async function handed(t, { revision, model, plane, saved, env = {}, gateway, settings }) {
   const { store, dir: data } = await storeOn(t);
+  if (settings) await store.settings.put("tool-settings", settings);
   for (const [name, value] of Object.entries(saved)) await putSealedKey(store, SEAL_KEY, name, value);
   if (gateway) await saveGateway({ store, sealKey: SEAL_KEY, env: {}, changed: async () => {} }, gateway);
   await store.agents.create({ id: "agent", name: "Pinned" }, { id: "rev", kind: "agentic", body: { instructions: "Work.", ...revision } });
-  await store.runs.create({ id: "run", agentId: "agent", revisionId: "rev" }, { body: launchBody({ input: { content: "Work." }, title: "Work", place: { mode: "runner" }, harness: "pi", model }) });
+  await store.runs.create({ id: "run", agentId: "agent", revisionId: "rev" }, { body: launchBody({ input: { content: "Work." }, title: "Work", place: { mode: "runner" }, harness: "pi", model, ...(plane ? { plane } : {}) }) });
   const out = join(data, "handed.bin");
   const deps = { store, data, sealKey: SEAL_KEY, env, computerForClaim: async () => { throw new Error("no computer here"); } };
   const loop = childLoops({ deps, isolation: { kind: "process", why: "a test's runner" }, log: () => {}, argv: [process.execPath, "-e", DUMP, out] })({
@@ -90,6 +91,15 @@ test("no run on a --faux runner, nor a faux-pinned launch on any runner, is hand
     // A faux-pinned launch claimed by a runner on the same store that is not in faux mode: still no key.
     assert.deepEqual(await handed(t, { revision, model: faux, ...on }), [], `a faux-pinned launch on a runner not in faux mode holds ${where}'s key`);
   }
+});
+
+test("a run kept on Parallel for web_search, claimed after the server is set to native: its process is handed no Parallel key, which its capped plane never uses; with no ceiling it is", { timeout: 60_000 }, async (t) => {
+  const PARALLEL_SAVED = `not-a-secret-${"parallel-saved"}`;
+  const run = { revision: { tools: ["web_search"], toolSettings: { web_search: { provider: "parallel" } } }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, plane: { web_search: "parallel" }, saved: { ANTHROPIC_API_KEY: ANTHROPIC_SAVED, PARALLEL_API_KEY: PARALLEL_SAVED } };
+  assert.ok((await handed(t, run)).includes("PARALLEL_API_KEY"), "kept on Parallel with no ceiling: its key");
+  const capped = await handed(t, { ...run, settings: { web_search: { provider: "native" } } });
+  assert.ok(!capped.includes("PARALLEL_API_KEY"), `under the server's native: no Parallel key on its pipe: ${capped}`);
+  assert.deepEqual(modelKeysOf(capped), ["ANTHROPIC_API_KEY"], "its pinned model's key still");
 });
 
 const until = async (done, what, ms = 40_000) => {

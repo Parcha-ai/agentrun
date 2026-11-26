@@ -15,7 +15,7 @@ import { ended, learningAt, learningText, putLearning, started } from "./learn-s
 import { putPromotions } from "./learned-workflow-seed-support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 import { raw } from "./store-target.mjs";
-import { agent, answerFlow, serve, startRun } from "./support.mjs";
+import { agent, answerFlow, FAUX, serve, startInProcessRunner, startRun } from "./support.mjs";
 
 /** `write` over agent `agentId`'s learning in the server's store, as a run's merge writes it: its save's id. */
 async function learned(store, agentId, write) {
@@ -52,13 +52,16 @@ const onMain = async (store, agentId, name = "answer") => {
 /** Agent `agentId`'s learning rows, read whole (learningText), with its newest save's id: what a DELETE again must leave. */
 const heldOf = async (store, agentId) => ({ main: (await store.learning.newest(agentId))?.save.id ?? null, text: await learningText(store, agentId) });
 
-/** Runs `runIds` of agent `agentId` (made, learning, when `make`), each ended, so a DELETE purges it: no runner. */
+/** Runs `runIds` of agent `agentId` (made, learning, when `make`), each ended, so a DELETE purges it. On a server with no
+ *  runner claiming: a runner beside it could claim a run between its create and the claim here, and run it. */
 async function endedRuns(api, store, agentId, runIds, make = true) {
   if (make) assert.equal((await api("POST", "/agents", agent(agentId, { learning: true }))).status, 201);
   const revisionId = (await store.agents.get(agentId)).currentRevision;
   for (const runId of runIds) {
     await store.runs.create({ id: runId, agentId, revisionId }, { body: launchBody({ input: { content: "Q" }, title: "t", place: { mode: "runner" } }) });
-    await store.runs.update(await store.claim(runId, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.1 });
+    const claim = await store.claim(runId, "runner-a", { leaseMs: 60_000 });
+    assert.ok(claim, `${runId}: a runner claimed it first; endedRuns wants a server with no runner claiming`);
+    await store.runs.update(claim, { state: "ended", costUsd: 0.1 });
   }
 }
 
@@ -77,7 +80,13 @@ const servedNow = async (api, store, agentId, question) => {
 
 test("a purge takes the purged run's workflow out of the learning: both its files read 404, the view drops it, the champion read reads no save, a later merge's diff serves each of its files against nothing, and the agent's next run is not served it; a repeat DELETE takes no later run's workflow", { timeout: 300_000 }, async (t) => {
   const mark = `PURGED-FLOW-${randomBytes(6).toString("hex")}`;
-  const { api, data, store } = await serve(t, { learning: "on" });
+  // A runner of the test's own, which it halts before endedRuns: that run must be the test's to claim and end.
+  const server = await serve(t, { learning: "on", runner: false });
+  const { api, data, store } = server;
+  const halt = await startInProcessRunner(data, { learning: "on", faux: FAUX, mcpOwn: server.own });
+  let halted;
+  const stopRunner = () => (halted ??= halt());
+  t.after(stopRunner);
   const gone = (await startRun(api, "keeper", "What is two?", { learning: true, instructions: "Answer the question." })).run_id;
   await ended(api, gone);
   const other = await started(api, "keeper", "What is three?");
@@ -157,6 +166,7 @@ test("a purge takes the purged run's workflow out of the learning: both its file
   assert.deepEqual((await onMain(store, "keeper", "solo")).files, {}, "the learning no longer holds solo");
 
   // A later run learns solo again: a repeat DELETE finds nothing of the purged run's and takes none of it.
+  await stopRunner();
   await endedRuns(api, store, "keeper", ["later"], false);
   const again = JSON.stringify(answerFlow("Answer it alone."));
   await learned(store, "keeper", (learning) => learningCommit(learning, { runId: "later", reason: "It learned solo again.", files: [{ path: soloPath, text: again }, readmeOf("solo")] }));
