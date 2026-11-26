@@ -290,6 +290,21 @@ test("a first claim whose seed cannot be read again keeps the start it had, with
   assert.ok(lines.some((line) => line.includes("could not be read again")), lines.join("\n"));
 });
 
+test("an abort that comes while the seed is read again (its wait over) writes nothing: `after` stays, so the next claim waits on those rounds again", async (t) => {
+  const data = await tmpData(t);
+  const { store, written } = claimStore({ epoch: 1, journal: EMPTY_JOURNAL });
+  const abort = new AbortController();
+  // As a runner closing does mid-read: the signal aborts while the seed is read again (here a read that fails, so the
+  // abort lands as its failure is logged, before the start without `after` would be written).
+  const shown = async () => {
+    abort.abort();
+    return SHOWN();
+  };
+  const row = await reseededLaunchOf({ store, data, shown, log: () => abort.abort(), waitMs: 60_000 })("run-2", 1, abort.signal);
+  assert.deepEqual(written, [], "nothing written, neither the new start nor the start without `after`");
+  assert.deepEqual(row.body.learning.after, ["run-1"], "the row as it was");
+});
+
 test("the row a claim runs on is built from what it wrote, never read back: a read back that fails or answers the old seed changes nothing", async (t) => {
   const data = await tmpData(t);
   const rereads = [

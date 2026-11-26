@@ -124,18 +124,23 @@ export function reseededLaunchOf(deps: ReseedDeps): (runId: string, epoch: numbe
       await sleep(Math.min(pollPauseMs(pass), Math.max(0, until - now())), signal);
       if (signal?.aborted) return row;
     }
+    // An abort that came while the last read ran (the round ending, the bound passing) writes nothing either: `after`
+    // stays, so the next claim waits on those rounds again.
+    if (signal?.aborted) return row;
     const waited: SeedWaited = open.size ? "timed_out" : "ended";
     if (open.size) deps.log(`run ${runId}: starts from its agent's learning as it is now: its open round${open.size === 1 ? "" : "s"} (${[...open].join(", ")}) did not end within ${Math.round(deps.waitMs / 1000)} s`);
     const own: Pick<NonNullable<RunLaunch["learning"]>, "use" | "noWorkflows" | "model"> = { ...(start.noWorkflows ? { noWorkflows: true as const } : {}), ...(start.use ? { use: true as const } : {}), ...(start.model ? { model: start.model } : {}) };
     let written: unknown;
     try {
       written = { ...startOfSeed(await seedOf(deps.data, deps.store, run.agentId), await deps.shown(), own), waited };
+      if (signal?.aborted) return row;
       if (!(await deps.store.runs.reseedLearning(runId, written, epoch))) return CLAIM_GONE;
     } catch (error) {
       deps.log(`run ${runId}: starts from the learning its start read: its agent's could not be read again: ${said(error)}`);
       // The start it had, without `after`: a later claim never waits on those rounds again. A write that throws leaves
       // the row as it is; one the fence refuses is a claim gone.
       written = started;
+      if (signal?.aborted) return row;
       const wrote = await deps.store.runs.reseedLearning(runId, started, epoch).catch(() => undefined);
       if (wrote === undefined) return row;
       if (!wrote) return CLAIM_GONE;
