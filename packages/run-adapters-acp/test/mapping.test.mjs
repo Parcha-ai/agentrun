@@ -297,6 +297,61 @@ test("a loaded conversation the agent was never given the recipe's instructions 
   assert.deepEqual(given[1], ['again']);
 });
 
+// A runner that dies in the turn that carried the instructions, before the agent's history was copied back: the next
+// runner loads the history from before that turn, which does not hold them.
+const crashedTelling = async (t, { before, during, after, system = [] }) => {
+  const store = memorySessionStore();
+  if (before) {
+    const { session } = await openSession(t, before, { store, system });
+    await session.send('go');
+    assert.equal((await session.turnEnd()).status, 'completed');
+    await session.close();
+  }
+  const first = await openSession(t, during, { store, system });
+  await first.session.send('again');
+  await until(() => fakeEvents(during).some((e) => e.type === 'hang'), 'the turn to start');
+  first.stop(new Error('the runner died'));
+  await first.session.turnEnd().catch(() => undefined);
+  await first.session.close().catch(() => undefined);
+  const second = await openSession(t, after, { store, system });
+  assert.equal(second.session.state, 'open_turn', 'the turn the crash cut is open');
+  await second.session.recover();
+  assert.equal((await second.session.turnEnd()).status, 'completed');
+  await second.session.close();
+  const third = await openSession(t, after, { store, system });
+  await third.session.send('more');
+  assert.equal((await third.session.turnEnd()).status, 'completed');
+  return fakeEvents(during).filter((e) => e.type === 'prompt').map((e) => e.text);
+};
+
+test("a runner that dies in the turn carrying a recipe's new instructions, before the history holding them is copied back: the next load gives them again", async (t) => {
+  const told = 'Write files with a shell command.';
+  const dir = scratch();
+  const before = fakeRecipe(dir, { script: [{ say: 'one' }] });
+  const during = fakeRecipe(dir, { script: [{ say: 'one' }, { hang: true }] }, { instructions: told });
+  const after = fakeRecipe(dir, { script: [{ say: 'one' }, { say: 'two' }, { say: 'three' }] }, { instructions: told });
+  const prompts = await crashedTelling(t, { before, during, after, system: ['Be brief.'] });
+  assert.equal(fakeEvents(before).filter((e) => e.type === 'load').length, 3, 'every later run loaded the session');
+  assert.match(prompts[1][0], /Write files with a shell command\./, 'the cut turn carried them');
+  assert.match(prompts[2].join('\n'), /\[Recovery\]/);
+  assert.match(prompts[2][0], /Write files with a shell command\./, "the loaded history never got them: the recovery's prompt carries them");
+  assert.doesNotMatch(prompts[2][0], /Be brief/, "the recipe's alone: the session's own are in its history already");
+  assert.deepEqual(prompts[3], ['more'], 'once: given with a history copied back, the next load does not repeat them');
+});
+
+test('a runner that dies in the first turn of a new session, before the history holding its instructions is copied back: the next load gives them all', async (t) => {
+  const told = 'Write files with a shell command.';
+  const dir = scratch();
+  const during = fakeRecipe(dir, { script: [{ hang: true }] }, { instructions: told });
+  const after = fakeRecipe(dir, { script: [{ say: 'one' }, { say: 'two' }] }, { instructions: told });
+  const prompts = await crashedTelling(t, { during, after, system: ['Be brief.'] });
+  assert.equal(fakeEvents(during).filter((e) => e.type === 'load').length, 2, 'both later runs loaded the session');
+  assert.match(prompts[0][0], /Be brief\.[\s\S]*Write files with a shell command\./, 'the cut turn carried them');
+  assert.match(prompts[1].join('\n'), /\[Recovery\]/);
+  assert.match(prompts[1][0], /Be brief\.[\s\S]*Write files with a shell command\./, "the session's own and the recipe's: its history holds neither");
+  assert.deepEqual(prompts[2], ['more'], 'once');
+});
+
 test('the agent runs in a private HOME with the environment allowlist, in a process group of its own', async (t) => {
   const recipe = fakeRecipe(scratch(), { script: [{ say: 'ok' }] }, { env: { FAKE_SETTING: '1' } });
   const sessionsDir = join(scratch(), 'sessions');
