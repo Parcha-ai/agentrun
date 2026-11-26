@@ -2486,7 +2486,9 @@ both find nothing make two computers, so after Orgo's answer, and again once its
 workspace once more: where an older computer of the request is there (by `created_at`, then id), it deletes its own
 and answers the older, and the oldest keeps its own. A caller's signal that aborts one of those reads deletes the
 create's own computer (not under that signal) and the create is `aborted`. A name Orgo already holds (two creates in the same second) is
-answered the same way. The parked desktops name each computer at random, so a create retried there makes a second
+answered the same way. A create whose POST got no answer deletes the computer by that exact name, which can be the
+computer another process's create answered through that 409: not covered, and tracked separately (see the browser
+providers' gaps below). The parked desktops name each computer at random, so a create retried there makes a second
 computer.
 
 - **What each offers.** The protocol groups, by Orgo's calls:
@@ -2658,14 +2660,37 @@ vendor made with no usable CDP URL) is bounded by the
 provider's `cleanupMs` option (default `RECOVER_MS`, 30 s), never by the caller's signal: one that does not finish in
 time fails the create in words that say the browser may still be running, and a retry is answered as above, never
 stuck behind it. Another create's browser of the same request, even one another process answered, carries another attempt
-label and is left running. A lost create's own browser is left running too, for another create's converge and to its
-lifetime, when it is the oldest of the request's that runs and the request's browsers, ended ones included, hold a
-newer one: only another create made that one, and its converge answers the older. Browserbase is asked status by
-status in a session's own order (pending, then running, then the ended ones), so a session that moves on while a
-list runs is found in a later answer, never missed; Kernel answers every state in one list. Where the lost create's browser is
-the request's only one it is released, even when another process's create answered it by its lookup: nothing on the
-vendor says so. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own:
-`check()` refuses them in a spec, and no list or attach shows them.
+label and is left running. A lost create's own browser is left for another create's converge when it is the oldest of
+the request's that runs and the request's browsers, ended ones included, hold a newer one: only another create made
+that one, and its converge may answer the older. A converge that answers the older releases its own first, so once a
+newer browser has ended, the lost create's is left running for that create, at once when the first read shows it.
+Otherwise the request's browsers are read again, every 2 s for up to half of `cleanupMs` (once at least, and sooner
+when that half is under 2 s). While every newer one still runs, no converge has answered it (each such create kept its
+own), and at the end it is released. On the first read as on every later one, a newer one that has ended counts before
+an older one that runs, since a converge whose list missed the older may have answered it. A read that fails, or a read again that misses the lost create's
+browser or every newer one, says nothing of who holds it and leaves it running; a first read that fails is tried again
+within the same half before that. The search's own retries, for a vendor that lists a browser late, wait within that
+half too, so the release keeps the other half.
+Browserbase is asked status by status in a session's own order (pending, then running, then the ended ones), so a
+session that moves on while a list runs is found in a later answer, never missed, and one found in two answers reads as
+the later one says; Kernel answers every state in one paged list, and a browser listed twice reads as deleted once
+either row says so. A newer browser that ended for another reason reads the same as one a converge released: its create was aborted
+while it listed the request, or released its own and then failed (its release reported a failure, or its read of the
+older failed), or its own reply was lost too and its recovery released it. Nothing on the vendor tells those apart, so
+there the lost create's browser runs to the vendor's lifetime: on Browserbase its `timeout`, up to the run's lifetime
+and at most 6 h; on Kernel its idle timeout, at most 72 h. One kept because the request could not be read runs as long.
+The create's failure says so, and its labels let a sweep find it. This bound is not covered, and is tracked separately.
+Where a read shows the lost create's browser is the request's only one, it is released. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own: `check()` refuses
+them in a spec, and no list or attach shows them.
+
+Two gaps are not covered, and are tracked separately. A lost create whose browser is the request's only one releases
+it even when another process's create answered it by its lookup, or when the lost create read the request before the
+other create's POST landed and that create's converge answered it: nothing on the vendor says so, and that create
+holds a browser that has ended. The same holds when a converge lists the lost create's browser running just before the
+lost create's last read again and ends its own just after: the lost create releases it, and that create's read of it
+most often finds it ended and fails the request. On Orgo, a create whose POST got no answer deletes the computer by its exact name; that
+name can be the computer another process's create answered through Orgo's 409 (name in use), which then holds a
+deleted computer.
 
 The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`
 (check past the cap, attach by id and by labels, list, CDP `Browser.getVersion` and `Runtime.evaluate` on a `data:`

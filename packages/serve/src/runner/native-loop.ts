@@ -31,7 +31,7 @@ import { bookedSpend, cliRunMetrics } from './metrics.js';
 import { stopEnd, type AlsoRow, type Claim, type LoopFactory, type StopReason } from './loop-contract.js';
 import { END_PATCH_MS, END_PATCH_UNKNOWN, REAL_TIMER } from './loop.js';
 import { storeSecrets } from './store-secrets.js';
-import { runnerSecrets, heldRedactor, processSecretRedactor } from './redact.js';
+import { runnerSecrets, mustHold } from './redact.js';
 import { secretRedactor } from './redact.js';
 import type { AdapterSpecDeps } from './adapter-run-spec.js';
 
@@ -59,7 +59,7 @@ async function lockProject(data:string,target:NativeBinding,runId:string):Promis
 
 export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFactory{
  return deps=>{
- const held=heldRedactor(deps.redact??processSecretRedactor());
+ const held=mustHold(deps.redact,'A native loop');
  let stopped:StopReason|undefined;const abort=new AbortController();let session:NativeSession|undefined;
  let settled:Promise<unknown>|undefined;
  const signal=AbortSignal.any([deps.signal,abort.signal]);

@@ -332,7 +332,7 @@ test("registryHere: Daytona mounts Archil only where DAYTONA_ARCHIL_EGRESS has a
     const kept = relayed.PROVIDERS.find((one) => one.id === entry.id);
     if (kept !== entry) assert.deepEqual(kept, { ...entry, unmounted: mountsOf(entry, () => false, true).unmounted }, entry.id);
   }
-  assert.deepEqual(relayed.PROVIDERS.filter((one, at) => one !== REAL[at]).map((one) => one.id).sort(), ["cloudflare", "daytona", "fly"]);
+  assert.deepEqual(relayed.PROVIDERS.filter((one, at) => one !== REAL[at]).map((one) => one.id).sort(), ["cloudflare", "daytona", "fly", "render"]);
   // A Mode 2 Daytona sandbox has its computer's shell either way: with the egress and its image named, its folder an
   // Archil mount; without, a synced folder.
   const { resolveComputer: resolveHere } = await import("../dist/workspace/index.js");

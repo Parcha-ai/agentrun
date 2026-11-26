@@ -1,5 +1,5 @@
-// A provider whose machines dial this server (the computer package's connectOf "dial": Fly Machines and Cloudflare, and
-// E2B, Daytona or Modal set to dial) on a server whose runner runs in a process of its own (--no-runner; the image's
+// A provider whose machines dial this server (the computer package's connectOf "dial": Fly Machines, Cloudflare and
+// Render, and E2B, Daytona or Modal set to dial) on a server whose runner runs in a process of its own (--no-runner; the image's
 // server-and-runner): the machine's socket is taken by the attach hub of the server's process, where no run reaches it,
 // and the runner's create refuses. Settings → Computers says so before any run starts: the provider's row in
 // GET /v2/computers carries runs_refused, as a paired computer's does, and its test (the console's Test connection)
@@ -16,7 +16,7 @@ import { client, scratch, startServe } from "./support.mjs";
  *  paired computer's, or the server runs its runs in its own process. */
 const FIX = "give the runner AGENTRUN_PUBLIC_URL (this server's public address), or start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
 /** The providers whose machines dial this server as serve makes them (its settings name no connect): the descriptors'. */
-const DIALS = [["fly", "Fly Machines"], ["cloudflare", "Cloudflare"]];
+const DIALS = [["fly", "Fly Machines"], ["cloudflare", "Cloudflare"], ["render", "Render"]];
 /** Providers the server reaches through the vendor: Docker on this machine, and E2B, Daytona and Modal on exec. */
 const REACHED = ["docker", "e2b", "daytona", "modal"];
 

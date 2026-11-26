@@ -170,6 +170,21 @@ describe("Settings → Tools: a harness this server can't run", () => {
 describe("AgentEditor: what a switch holds, and what counts as a change", () => {
   const boxed = { ...caps, tools: toolOffers([{ name: "read", available: true, harnesses: ALL }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]),
     places: placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "runner" }, boxes: [{ id: "docker", available: true }] } }) };
+  // Mode 2: GET /v2/computers serves the no-computer choice's run shell as the runner's own ("local"), which runs bash.
+  it("Mode 2: bash held by a switch to Claude is ticked again on Pi after a move to no computer, whose shell runs it", async () => {
+    const computers = [
+      { kind: "none", offered: true, groups: [], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [], shell: "local" },
+      { kind: "sandbox", offered: true, groups: ["exec"], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no screen" }, providers: [{ id: "modal", name: "modal", secrets: [], required: [], ready: true, metered: false, shell: "computer" }] },
+    ] as unknown as EditorCaps["computers"];
+    const t = mountWith(agent({ definition: { version: 1, name: "boxed", instructions: "Do it.", harness: "pi", skills: [], tools: ["read", "bash"], computer: { kind: "sandbox", provider: "modal" } } }), { ...boxed, computers });
+    await pickOption(picker(t.host, "Runtime")!, "claude-agent");
+    t.step("Computer");
+    t.click('input[name="computer-kind"][value="none"]');
+    t.step("Model & runtime");
+    await pickOption(picker(t.host, "Runtime")!, "pi");
+    t.step("Tools");
+    expect(t.host.querySelector<HTMLInputElement>('input[value="bash"]')!.checked).toBe(true);
+  });
   function mountWith(a: Agent, c: EditorCaps, onSave: (f: Record<string, unknown>) => Promise<null> = async () => null) {
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);

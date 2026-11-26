@@ -22,6 +22,9 @@ export const NO_WORKSPACE = "this Orgo key's account has no workspace: make one 
 /** A workspace in words: its name, and its status when it is not active. */
 export const workspaceWords = (workspace: OrgoWorkspace): string => (workspace.status === undefined ? workspace.name : `${workspace.name} (${workspace.status})`);
 
+/** A workspace in words with its id, the value ORGO_WORKSPACE_ID takes: `name = id`, or the id alone when it is the name. */
+const workspaceWithId = (workspace: OrgoWorkspace): string => (workspace.name === workspace.id ? workspaceWords(workspace) : `${workspaceWords(workspace)} = ${workspace.id}`);
+
 /** Every workspace the key's account sees, deleted ones left out, in Orgo's order. An HTTP failure keeps its code. */
 export async function orgoWorkspaces(rest: OrgoRest, { timeoutMs, signal }: { timeoutMs: number; signal?: AbortSignal }): Promise<Result<OrgoWorkspace[]>> {
 	const read = await rest.request<{ workspaces?: unknown }>("GET", "/workspaces", { timeoutMs, ...(signal ? { signal } : {}) });
@@ -40,7 +43,8 @@ export async function orgoWorkspaces(rest: OrgoRest, { timeoutMs, signal }: { ti
 
 /**
  * The workspace a provider whose settings name none uses: the key's account's one workspace. Several are refused in
- * words naming them and pointing at Settings, where a person picks one; none is refused saying to make one.
+ * words naming each and its id, pointing at Settings, where a person picks one, or at ORGO_WORKSPACE_ID; none is
+ * refused saying to make one.
  */
 export async function soleWorkspace(rest: OrgoRest, context: { timeoutMs: number; signal?: AbortSignal }): Promise<Result<string>> {
 	const listed = await orgoWorkspaces(rest, context);
@@ -50,7 +54,7 @@ export async function soleWorkspace(rest: OrgoRest, context: { timeoutMs: number
 	if (more.length === 0) return ok(only.id);
 	return fail(
 		"invalid",
-		`this Orgo key's account has ${listed.value.length} workspaces (${listed.value.map(workspaceWords).join(", ")}): pick the one its computers live in, in Settings → Computers (ORGO_WORKSPACE_ID)`,
+		`this Orgo key's account has ${listed.value.length} workspaces (${listed.value.map(workspaceWithId).join(", ")}): pick one in Settings → Computers or set ORGO_WORKSPACE_ID to its id`,
 	);
 }
 

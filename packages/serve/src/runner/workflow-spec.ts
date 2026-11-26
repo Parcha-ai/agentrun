@@ -365,7 +365,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     const nodeTools = new Map<string, NodeToolBinding>();
     for (const [name, binding] of nodeBindings) {
       const booked = bookedNodeTools(binding, () => paidTools, parkAt);
-      const tools = run?.redact ? (booked.tools as ToolRegistration[]).map((tool) => answersCutInside(tool, run.redact)) : booked.tools;
+      const tools = (booked.tools as ToolRegistration[]).map((tool) => answersCutInside(tool, redact));
       nodeTools.set(name, { tools, extensions: [defineExtension({ name: `node-tool-${name}`, tools: tools as unknown as ToolRegistration[] })] });
     }
     const nodePolicy = callPolicyOf(deps.store, claim.runId, claimed);

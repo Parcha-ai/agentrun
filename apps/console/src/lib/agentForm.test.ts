@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, learningOn, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { WORKFLOW_STARTER } from "./workflowStarter";
+import { shellToolsOf } from "./place";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
 import workflow from "../fixtures/agent.support-triage.json";
@@ -346,15 +347,15 @@ describe("tools by default (tools on, Miguel's rule), and whether the agent reac
     expect(offers.find((t) => t.name === "browser")).toEqual({ name: "browser", available: false, missing: ["BROWSERBASE_API_KEY"], harnesses: ["pi"] });
   });
   it("a new pi agent starts with every tool the server can run ticked, never one it can't", () => {
-    expect(defaultTools("pi", offers)).toEqual(["read", "write", "edit", "web_fetch", "ask_person"]);
+    expect(defaultTools("pi", offers, undefined, new Set())).toEqual(["read", "write", "edit", "web_fetch", "ask_person"]);
   });
   it("on Claude or Codex, only the tools that harness runs here: the server's own rule until it says per harness", () => {
-    expect(defaultTools("claude-agent", offers)).toEqual(["read", "write", "edit"]);
-    expect(defaultTools("codex", offers)).toEqual(["read", "write", "edit"]);
+    expect(defaultTools("claude-agent", offers, undefined, new Set())).toEqual(["read", "write", "edit"]);
+    expect(defaultTools("codex", offers, undefined, new Set())).toEqual(["read", "write", "edit"]);
   });
   it("follows the server when it says which harnesses run each tool", () => {
     const said = toolOffers([{ name: "read", available: true, harnesses: ["pi", "codex"] }, { name: "web_fetch", available: true, harnesses: ["pi", "codex"] }, { name: "ask_person", available: true, harnesses: ["pi"] }]);
-    expect(defaultTools("codex", said)).toEqual(["read", "web_fetch"]);
+    expect(defaultTools("codex", said, undefined, new Set())).toEqual(["read", "web_fetch"]);
   });
   it("reaches the web with web_fetch or web_search, and with neither does not", () => {
     for (const web of ["web_fetch", "web_search"]) expect(reachesWeb(["read", web]), web).toBe(true);
@@ -384,7 +385,7 @@ describe("call-only tools", () => {
   });
   it("no harness runs one, so no agent starts with one ticked", () => {
     expect(toolsFor("pi", offers).map((t) => t.name)).toEqual(["read"]);
-    expect(defaultTools("pi", offers)).toEqual(["read"]);
+    expect(defaultTools("pi", offers, undefined, new Set())).toEqual(["read"]);
   });
 });
 
@@ -398,12 +399,17 @@ describe("sandbox-only tools", () => {
   });
   it("lists one for an agent to name, and starts no new agent with it ticked: a new agent's place is the runner", () => {
     expect(toolsFor("codex", offers).map((t) => t.name)).toEqual(["read", "bash"]);
-    expect(defaultTools("pi", offers)).toEqual(["read"]);
+    expect(defaultTools("pi", offers, undefined, new Set())).toEqual(["read"]);
   });
   it("can be ticked only on an agent whose place is a sandbox: a new agent, or a runner one, says why not", () => {
-    for (const place of [undefined, { mode: "runner" }]) expect(sandboxReason(offers[1], place)).toMatch(/^Sandbox-only: it runs in a box/);
-    expect(sandboxReason(offers[1], { mode: "sandbox", box: "docker" })).toBeUndefined();
-    expect(sandboxReason(offers[0], undefined)).toBeUndefined();
+    for (const place of [undefined, { mode: "runner" }]) expect(sandboxReason(offers[1], place, new Set())).toMatch(/^Sandbox-only: it runs in a box/);
+    expect(sandboxReason(offers[1], { mode: "sandbox", box: "docker" }, new Set())).toBeUndefined();
+    expect(sandboxReason(offers[0], undefined, new Set())).toBeUndefined();
+  });
+  it("where the agent's run shell on the runner runs bash (a served shell \"local\": Archil's exec in Mode 2), bash can be ticked on the runner", () => {
+    const mode2 = shellToolsOf("local");
+    expect(sandboxReason(offers[1], { mode: "runner" }, mode2)).toBeUndefined();
+    expect(sandboxReason({ name: "bash_background", available: true, sandbox_only: true, harnesses: ["pi"] }, { mode: "runner" }, mode2)).toMatch(/^Sandbox-only: it runs in a box/);
   });
 });
 

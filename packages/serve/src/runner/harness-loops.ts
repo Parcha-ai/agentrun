@@ -77,7 +77,7 @@ export function resolveRunnerLoop(given: AdapterSpecDeps, options: { readonly ke
  *  key stays off the claim's tool keys (claimSecrets), and a later scan of the store (holdStored) would find only a key
  *  saved since, so a gateway reply that echoes this one is cut in the run's records and logs all the same. `made` itself
  *  where the gateway is not the saved one. */
-function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined): LoopFactory {
+export function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined): LoopFactory {
   const key = env && savedGatewayIn(env) ? env[GATEWAY_KEY_ENV] : undefined;
   if (!key) return made;
   return (loopDeps) => {
@@ -110,6 +110,8 @@ export async function sdkCompileEnv(deps: Pick<AdapterSpecDeps, "store" | "sealK
  *  opens those later), and with the saved keys' names (savedNamesOver) for the route its model requests take. */
 export async function underServerCeilings(deps: AdapterSpecDeps, launch: RunLaunch, revision: Revision): Promise<RunLaunch> {
   if (!launch.plane) return launch;
+  // A run's own process takes the plane its runner capped, the one its keys were chosen by (AdapterSpecDeps.claimedPlane).
+  if (deps.claimedPlane) return { ...launch, plane: deps.claimedPlane };
   const { settings, unreadable } = await storeSettings(deps.store);
   const unread = unreadable === true;
   const tooling = await toolingOf(revision);
