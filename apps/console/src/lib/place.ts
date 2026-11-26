@@ -25,6 +25,11 @@ const NO_SHELL: ReadonlySet<string> = new Set();
  *  (Mode 1). Capabilities have no shell field of their own: the server serves the runner as a new agent's default place
  *  only where its runner has a shell (serve's place.ts placesOf), so that is the word read. */
 export const runnerShellTools = (places: Places | null | undefined): ReadonlySet<string> => (places?.defaultPlace?.mode === "runner" ? RUNNER_SHELL : NO_SHELL);
+/** The box-only tools a run on the runner keeps where its shell is `shell`, a computer's run shell as the server serves it
+ *  (GET /v2/computers `shell`, serve's runShellOf): bash where it is the runner's own ("local"); none where it is in a
+ *  computer that mounts the run's folder ("computer"), which the server lets on a runner place with no shell tool, or
+ *  where there is none. */
+export const shellToolsOf = (shell: unknown): ReadonlySet<string> => (shell === "local" ? RUNNER_SHELL : NO_SHELL);
 
 /** The computer a place is, as the server keeps place as computer's view: the runner is the computer none, a sandbox box
  *  is a sandbox on that box's provider. */

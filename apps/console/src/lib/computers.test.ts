@@ -36,14 +36,14 @@ describe("a sandbox's needs across a switch", () => {
 describe("computerFields with no tools listed", () => {
   const OFFERED = [{ name: "bash", sandbox_only: true as const }, { name: "read" }];
   it("the runner, tools listed: drops the box-only ones", () => {
-    expect(computerFields({ kind: "none" }, ["bash", "read"], OFFERED, null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["read"] });
+    expect(computerFields({ kind: "none" }, ["bash", "read"], OFFERED, null, null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["read"] });
   });
   it("the runner, no tools listed, an agent with tools: null", () => {
-    expect(computerFields({ kind: "none" }, ["bash", "read"], [], null)).toBeNull();
+    expect(computerFields({ kind: "none" }, ["bash", "read"], [], null, null)).toBeNull();
   });
   it("no tools listed, but nothing to drop: an agent with no tools on the runner, or a pick of a box", () => {
-    expect(computerFields({ kind: "none" }, [], [], null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: [] });
-    expect(computerFields({ kind: "sandbox", provider: "docker" }, ["bash", "read"], [], null)).toEqual({ computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" } });
+    expect(computerFields({ kind: "none" }, [], [], null, null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: [] });
+    expect(computerFields({ kind: "sandbox", provider: "docker" }, ["bash", "read"], [], null, null)).toEqual({ computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" } });
   });
 });
 
@@ -56,11 +56,20 @@ describe("computerFields to the runner, by mode", () => {
   const MODE1: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }], defaultPlace: { mode: "sandbox", box: "docker" } };
   const MODE1_NO_BOX: Places = { modes: ["runner", "sandbox"], boxes: [], defaultPlace: null };
   it("Mode 2: keeps bash, drops the background tools", () => {
-    expect(computerFields({ kind: "none" }, ["bash", "bash_background", "read"], OFFERED, MODE2)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["bash", "read"] });
+    expect(computerFields({ kind: "none" }, ["bash", "bash_background", "read"], OFFERED, MODE2, null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["bash", "read"] });
   });
   it("Mode 1: drops bash too, with a Docker box or with none", () => {
     for (const places of [MODE1, MODE1_NO_BOX, null]) {
-      expect(computerFields({ kind: "none" }, ["bash", "bash_background", "read"], OFFERED, places)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["read"] });
+      expect(computerFields({ kind: "none" }, ["bash", "bash_background", "read"], OFFERED, places, null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["read"] });
     }
+  });
+  // Another kind on a runner place keeps bash only where its provider's served run shell is the runner's own ("local"),
+  // as the server saves it (runShellOf): a desktop that mounts the run's folder ("computer"), one with no shell, and one
+  // whose provider isn't listed drop it.
+  it("Mode 2, a desktop: keeps bash only where its run shell is the runner's own", () => {
+    const desktop = (shell: string) => [{ kind: "desktop", providers: [{ id: "e2b", shell }] }] as unknown as ComputerKindView[];
+    const fields = (kinds: ComputerKindView[] | null) => computerFields({ kind: "desktop", provider: "e2b" }, ["bash", "read"], OFFERED, MODE2, kinds);
+    expect(fields(desktop("local"))?.tools).toEqual(["bash", "read"]);
+    for (const kinds of [desktop("computer"), desktop("none"), null]) expect(fields(kinds)?.tools).toEqual(["read"]);
   });
 });

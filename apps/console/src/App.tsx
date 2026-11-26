@@ -796,8 +796,9 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const moveToRunner = async (agentId: string): Promise<MovedToRunner> => {
     const { agent, etag } = await v2.getAgent(agentId);
     const tools = agent.definition.tools ?? [];
-    const read = async () => { const caps = await fetchCaps() as unknown as { tools?: unknown } | null; return computerFields({ kind: "none" }, tools, toolOffers(caps?.tools), placesOf(caps)); };
-    const fields = computerFields({ kind: "none" }, tools, editorCaps.tools, editorCaps.places) ?? await read();
+    // No computer: its run shell is read off the places alone, so no computers list is passed.
+    const read = async () => { const caps = await fetchCaps() as unknown as { tools?: unknown } | null; return computerFields({ kind: "none" }, tools, toolOffers(caps?.tools), placesOf(caps), null); };
+    const fields = computerFields({ kind: "none" }, tools, editorCaps.tools, editorCaps.places, null) ?? await read();
     if (!fields) throw new Error("the server's tools could not be read, so which of them run only in a box is unknown. Try again.");
     const { unchanged, ...body } = editBody(agent, fields, "Moved to the runner, where Claude Code's login on this machine runs it");
     if (unchanged) return { revision: agent.revision, saved: false, dropped: [] };

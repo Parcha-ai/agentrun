@@ -29,7 +29,7 @@ import { CAP_NOTE, isPlanModel } from "@/lib/chatgpt";
 import type { McpServer } from "@/lib/mcp";
 import { isMonidName, monidFieldsOf, splitMonidWarnings } from "@/lib/monid";
 import { computerOfPlace, newAgentPlace, placeOf, runnerShellTools } from "@/lib/place";
-import { computerFields } from "@/lib/computers";
+import { computerFields, runnerShellOf } from "@/lib/computers";
 import type { ComputerKindView } from "@/lib/v2";
 import type { Places } from "@/lib/place";
 import type { ToolSettings } from "@/lib/v2";
@@ -94,6 +94,11 @@ export type EditorProps = {
 type Step = "context" | "workflow" | "computer" | "tools" | "skills" | "settings" | "learning" | "history";
 /** The workflow in the form's text, when it parses; else undefined (the saved one stands). */
 const parsedWorkflow = (text: string | undefined): unknown => { try { return text ? JSON.parse(text) : undefined; } catch { return undefined; } };
+/** The words for the box-only tools a computer pick took off: on the runner, they run only on a sandbox computer. */
+const shellOffWords = (tools: readonly string[]): string => {
+  const list = new Intl.ListFormat("en", { type: "conjunction" }).format(tools);
+  return `${list.charAt(0).toUpperCase()}${list.slice(1)} ${tools.length > 1 ? "are" : "is"} turned off for this agent: with this computer, ${tools.length > 1 ? "they run" : "it runs"} only on a sandbox computer.`;
+};
 
 /** A refused save's issues in the workflow: each 422 field under definition.workflow at its path, else the refusal's
  *  message for a workflow agent. */
@@ -173,6 +178,8 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   const [toolsTouched, setToolsTouched] = useState(false);
   // Whether the last computer picked was refused because no tools are listed yet (computerFields answered null).
   const [toolsUnread, setToolsUnread] = useState(false);
+  // The box-only tools the last computer picked took off (its run shell on the runner doesn't run them), said under it.
+  const [shellOff, setShellOff] = useState<string[]>([]);
   // The server's tools can arrive after the form opens (capabilities answer late): a new agent's untouched tools follow.
   // So can its places: a new agent with no place yet takes the served default then; a place the person picked stays.
   const toolsKey = caps.tools.map((t) => `${t.name}:${t.available}:${(t.harnesses ?? []).join("+")}`).join(",");
@@ -242,10 +249,10 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   // run here come off at once, before any save, and are held: a switch back ticks them again.
   const toolOpts = { mcpHarnesses: caps.mcpHarnesses, workflow };
   // A place off the box (the runner) takes the box's tools (bash) off the held ones too: a later switch back to a harness
-  // never ticks a tool the place now refuses. Bash stays where the runner's own shell runs it (Mode 2).
-  const leavePlace = (place: { mode?: string }) => {
+  // never ticks a tool the place now refuses. Bash stays where the agent's run shell is the runner's own (`shell`:
+  // computers.ts runnerShellOf for the computer it moves to).
+  const leavePlace = (place: { mode?: string }, shell: ReadonlySet<string>) => {
     if (place.mode === "sandbox") return;
-    const shell = runnerShellTools(caps.places);
     const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only && !shell.has(t.name)).map((t) => t.name));
     setHeld((h) => h.filter((t) => !sandboxOnly.has(t)));
   };
@@ -450,12 +457,16 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
                 tools to drop: it changes nothing and says so. */}
               <ComputerSetting kinds={caps.computers} value={f.computer ?? (d?.computer as AgentFields["computer"]) ?? (choosePlace ? null : computerOfPlace(f.place ?? { mode: "runner" }))}
                 onChange={(computer) => {
-                  const fields = computerFields(computer, f.tools ?? [], caps.tools, caps.places);
+                  const fields = computerFields(computer, f.tools ?? [], caps.tools, caps.places, caps.computers);
                   setToolsUnread(!fields);
                   if (!fields) return;
+                  const kept = fields.tools;
+                  setShellOff(kept ? (f.tools ?? []).filter((tool) => !kept.includes(tool)) : []);
                   set(fields);
-                  leavePlace(fields.place);
+                  leavePlace(fields.place, runnerShellOf(computer, caps.places, caps.computers));
                 }} error={(toolsUnread ? "The server's tools haven't been read, so which of this agent's tools run only in a box is unknown: the computer was not changed. Try again, or reload the page if this stays." : undefined) ?? fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
+              {/* Said, never done silently: the box-only tools this pick took off, which its run shell doesn't run here. */}
+              {shellOff.length > 0 && <p className="text-small text-muted-foreground" role="status">{shellOffWords(shellOff)}</p>}
             </div>
           )}
           {step === "computer" && !workflow && !caps.computers && caps.places && (
@@ -463,14 +474,14 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
               {/* A pick is saved as the computer, the setting the server keeps place as a view of; the form's place still
                   decides which tools a box opens (bash). */}
               <PlaceSetting value={f.place} saved={d?.place} places={caps.places} creating={creating} tools={caps.tools} picked={f.tools ?? []}
-                onChange={(next) => { set({ ...next, ...(next.place ? { computer: computerOfPlace(next.place) } : {}) }); if (next.place) leavePlace(next.place); }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
+                onChange={(next) => { set({ ...next, ...(next.place ? { computer: computerOfPlace(next.place) } : {}) }); if (next.place) leavePlace(next.place, runnerShellTools(caps.places)); }} error={fieldError("computer") ?? fieldError("place")} warning={fieldWarning("computer") ?? fieldWarning("place")} />
             </div>
           )}
 
           {step === "tools" && (
             <div className="space-y-6">
               <Field group label="Tools" note="On by default: the tools this agent's harness runs on this server. Untick one to take it away." error={fieldError("tools")} warning={fieldWarning("tools")}>
-                <ToolPicker offers={caps.tools} tools={f.tools ?? []} harness={f.harness ?? "pi"} place={f.place ?? placeOf(d?.place)} places={caps.places} workflow={workflow}
+                <ToolPicker offers={caps.tools} tools={f.tools ?? []} harness={f.harness ?? "pi"} place={f.place ?? placeOf(d?.place)} places={caps.places} runnerShell={runnerShellOf(f.computer ?? (d?.computer as AgentFields["computer"]), caps.places, caps.computers)} workflow={workflow}
                   mcp={!!caps.mcp} servers={mcpServers} mcpHarnesses={caps.mcpHarnesses} choices={providerChoices} gates={permissionGates} granted={agent?.tools} settings={f.tool_settings ?? d?.tool_settings ?? {}}
                   onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }}
                   extra={workflow ? undefined : {

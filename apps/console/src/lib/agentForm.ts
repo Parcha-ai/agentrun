@@ -191,13 +191,14 @@ export function toolsOnSwitch(harness: string, tools: readonly string[], held: r
 }
 
 /** Why `tool` cannot be ticked on an agent whose definition names `place`: a sandbox-only tool (bash) runs in a box, and
- *  the agent's place is the runner (unless the runner's own shell runs it: bash in Mode 2, runnerShellTools), or it has
- *  none (null: the server has no default place, so a box is to be chosen); a runner-only one (the browser) runs on the
- *  server, and the agent's place is a box. Undefined when it can be ticked. */
-export const sandboxReason = (tool: ToolOffer, place: unknown, places: Places | null | undefined): string | undefined => {
+ *  the agent's place is the runner (unless it is one of `runnerShell`, those the agent's run shell runs there, as its
+ *  computer is: computers.ts runnerShellOf), or it has none (null: the server has no default place, so a box is to be
+ *  chosen); a runner-only one (the browser) runs on the server, and the agent's place is a box. Undefined when it can be
+ *  ticked. */
+export const sandboxReason = (tool: ToolOffer, place: unknown, runnerShell: ReadonlySet<string>): string | undefined => {
   const where = place as { mode?: unknown; box?: unknown } | null | undefined;
   if (tool.sandbox_only && where === null) return "Sandbox-only: it runs in a box, and this agent has no place yet: choose a box under Where it runs";
-  if (tool.sandbox_only && where?.mode !== "sandbox" && !runnerShellTools(places).has(tool.name)) return "Sandbox-only: it runs in a box, and this agent's place is the runner";
+  if (tool.sandbox_only && where?.mode !== "sandbox" && !runnerShell.has(tool.name)) return "Sandbox-only: it runs in a box, and this agent's place is the runner";
   if (tool.runner_only && where?.mode === "sandbox") return `Server-only: it runs on the server, and this agent's place is ${typeof where.box === "string" && where.box ? `the ${where.box} box` : "a box"}`;
   return undefined;
 };

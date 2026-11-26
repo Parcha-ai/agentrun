@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { capOf, createBody, DECISION, decisionProvider, defaultTools, editBody, harnessOptions, learningOn, reachesWeb, same, sandboxReason, saveError, toolOffers, toolsFor, WORKFLOW } from "./agentForm";
 import { DECISION_STARTER } from "./decisionStarter";
 import { WORKFLOW_STARTER } from "./workflowStarter";
+import { runnerShellTools } from "./place";
 import { ClientError } from "./client";
 import agent from "../fixtures/agent.invoice-checker.json";
 import workflow from "../fixtures/agent.support-triage.json";
@@ -401,14 +402,14 @@ describe("sandbox-only tools", () => {
     expect(defaultTools("pi", offers, undefined, null)).toEqual(["read"]);
   });
   it("can be ticked only on an agent whose place is a sandbox: a new agent, or a runner one, says why not", () => {
-    for (const place of [undefined, { mode: "runner" }]) expect(sandboxReason(offers[1], place, null)).toMatch(/^Sandbox-only: it runs in a box/);
-    expect(sandboxReason(offers[1], { mode: "sandbox", box: "docker" }, null)).toBeUndefined();
-    expect(sandboxReason(offers[0], undefined, null)).toBeUndefined();
+    for (const place of [undefined, { mode: "runner" }]) expect(sandboxReason(offers[1], place, new Set())).toMatch(/^Sandbox-only: it runs in a box/);
+    expect(sandboxReason(offers[1], { mode: "sandbox", box: "docker" }, new Set())).toBeUndefined();
+    expect(sandboxReason(offers[0], undefined, new Set())).toBeUndefined();
   });
-  it("in Mode 2, where the runner's shell runs bash (the runner served as the default place), bash can be ticked on the runner", () => {
-    const mode2 = { modes: ["runner", "sandbox"], boxes: [], defaultPlace: { mode: "runner" as const } };
+  it("where the agent's run shell on the runner runs bash (Mode 2 with no computer, runnerShellTools), bash can be ticked on the runner", () => {
+    const mode2 = runnerShellTools({ modes: ["runner", "sandbox"], boxes: [], defaultPlace: { mode: "runner" } });
     expect(sandboxReason(offers[1], { mode: "runner" }, mode2)).toBeUndefined();
-    expect(sandboxReason({ name: "bash_background", available: true, sandbox_only: true, harnesses: ["pi"] },{ mode: "runner" }, mode2)).toMatch(/^Sandbox-only: it runs in a box/);
+    expect(sandboxReason({ name: "bash_background", available: true, sandbox_only: true, harnesses: ["pi"] }, { mode: "runner" }, mode2)).toMatch(/^Sandbox-only: it runs in a box/);
   });
 });
 

@@ -122,10 +122,14 @@ describe("AgentEditor, bash on a runner-placed computer (Mode 2)", () => {
     expect(sent?.tools).not.toContain("bash");
   });
 
-  it("an agent saved on that desktop is not offered bash on its card", () => {
+  it("an agent saved on that desktop is not offered bash on its card: a tick it has says why, and once off it stays off", () => {
     const form = open(agent({ kind: "desktop", provider: "e2b" }));
     form.step(/Tools/);
-    expect(form.input('input[type="checkbox"][value="bash"]')!.disabled).toBe(true);
+    const bash = () => form.input('input[type="checkbox"][value="bash"]')!;
+    expect(bash().closest("label")!.textContent).toContain("Sandbox-only");
+    form.click(bash());
+    expect(bash().checked).toBe(false);
+    expect(bash().disabled).toBe(true);
   });
 
   it("a desktop that mounts nothing, whose run shell is the runner's own, keeps bash and says nothing", async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultPlaceOf, runsWhere, sandboxReason } from "./agentForm";
-import { newAgentPlace, placeLabel, placeOf, placesOf } from "./place";
+import { newAgentPlace, placeLabel, placeOf, placesOf, runnerShellTools } from "./place";
 import recorded from "../fixtures/capabilities.json";
 
 // The place shapes are the server's (definition.place, Run.place, capabilities.places); the console names no box itself.
@@ -50,8 +50,8 @@ describe("places", () => {
     expect(runsWhere(agentic({ tools: ["write"] }), none)).toEqual({ place: { mode: "runner" }, byDefault: true });
     // A shell tool's card on an agent with no place says to choose a box, never that the agent is on the runner.
     const bash = { name: "bash", available: true, sandbox_only: true } as never;
-    expect(sandboxReason(bash, null, none)).toBe("Sandbox-only: it runs in a box, and this agent has no place yet: choose a box under Where it runs");
-    expect(sandboxReason(bash, { mode: "runner" }, none)).toBe("Sandbox-only: it runs in a box, and this agent's place is the runner");
+    expect(sandboxReason(bash, null, runnerShellTools(none))).toBe("Sandbox-only: it runs in a box, and this agent has no place yet: choose a box under Where it runs");
+    expect(sandboxReason(bash, { mode: "runner" }, runnerShellTools(none))).toBe("Sandbox-only: it runs in a box, and this agent's place is the runner");
   });
 
   // Where an agent's current revision runs: its own place, else the server's default for it (byDefault); with no place
