@@ -485,6 +485,18 @@ test("ownerWords: a grade's pending words or a person's message after the first 
   assert.deepEqual(ownerWords([], [...job, ...asked, row("0:5", "user_message", { text: "Why 42?" })]), ["Why 42?"], "a person's follow-up");
 });
 
+test("ownerWords: a message sent with said (POST /runs/{id}/messages) is the person's own words, its content the host's: said is kept, a message without one keeps its text", () => {
+  const job = [row("0:1", "user_message", { text: "Question 1" }), row("0:2", "final_answer", { text: "42" })];
+  const wrapped = (words) => `You are continuing a session.\n\n## Previous report\n42\n\n**Follow-up question**: ${words}\n\nReply in English.`;
+  const said = [{ text: wrapped("Freight goes to 6400."), said: "Freight goes to 6400." }, { text: wrapped("Mail goes to 4215."), said: "Mail goes to 4215." }];
+  const rows = [...job, row("0:5", "user_message", { text: wrapped("Freight goes to 6400.") }), row("0:7", "user_message", { text: "Why 42?" }), row("0:9", "user_message", { text: wrapped("Mail goes to 4215.") })];
+  assert.deepEqual(ownerWords([], rows, said), ["Freight goes to 6400.", "Why 42?", "Mail goes to 4215."], "each said in place of its content");
+  assert.deepEqual(ownerWords([], rows), [wrapped("Freight goes to 6400."), "Why 42?", wrapped("Mail goes to 4215.")], "no said: each message's text, as before");
+  // The same content sent twice, each with its own said: each said once, in order.
+  const twice = [...job, row("0:5", "user_message", { text: "Same." }), row("0:7", "user_message", { text: "Same." })];
+  assert.deepEqual(ownerWords([], twice, [{ text: "Same.", said: "First." }, { text: "Same.", said: "Second." }]), ["First.", "Second."]);
+});
+
 test("ownerWords: a subagent's task prompt (a child conversation's user_message) is not the owner's; a root message after the answer still is", () => {
   const job = [row("0:1", "user_message", { text: "Question 1" })];
   const child = row("1:1", "user_message", { text: "Research the freight rates", conversation_id: 1, parent_tool_use_id: "toolu_spawn" });
