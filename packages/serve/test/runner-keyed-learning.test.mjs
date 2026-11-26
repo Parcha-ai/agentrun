@@ -120,9 +120,10 @@ async function holdingFront(t, origin, held) {
  *  gateway and holds no key of its own; its route reads the key the claim's model env holds. `hold`: requests whose body
  *  it matches wait until `front.release()`. `learningClock`: the runner's clock for its learning children's deadlines.
  *  `usage`: what the gateway says each request used. `pollMs`: the runner's poll, when not TIMING's. `lease`: the
- *  runner's lease timings, when not TIMING's. `call`: the gateway's tool call, when not the right submit. `restart(clock)` kills the runner (a crash: it writes nothing more, its
+ *  runner's lease timings, when not TIMING's. `call`: the gateway's tool call, when not the right submit. `wrap`: the
+ *  store the runner is handed, made of its own (a spy, a fault). `restart(clock)` kills the runner (a crash: it writes nothing more, its
  *  claims lapse at their lease) and starts another on the same store, `clock` its learning clock. */
-async function world(t, { learning = true, prior = 0, promoted = false, hold, learningClock, usage, pollMs, lease, call } = {}) {
+async function world(t, { learning = true, prior = 0, promoted = false, hold, learningClock, usage, pollMs, lease, call, wrap } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-keyed-learning-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -149,7 +150,7 @@ async function world(t, { learning = true, prior = 0, promoted = false, hold, le
   const logs = [];
   const deps = { env: { AGENT_MODEL_BASE_URL: origin }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
-  const startOne = (name, clock) => startRunner({ store, name, ...TIMING, ...lease, ...(pollMs ? { pollMs } : {}), ...(clock ? { learningClock: clock } : {}), createLoop: createAdapterLoop(specOf) });
+  const startOne = (name, clock) => startRunner({ store: wrap ? wrap(store) : store, name, ...TIMING, ...lease, ...(pollMs ? { pollMs } : {}), ...(clock ? { learningClock: clock } : {}), createLoop: createAdapterLoop(specOf) });
   runner = startOne("runner-a", learningClock);
   const restart = (clock) => {
     runner.kill();
@@ -344,6 +345,56 @@ test("a learning child claimed already past its deadline (queued past it, on the
     return one.state !== "running" && one;
   }, "the run's learning work settles");
   assert.deepEqual([work.state, work.runs, work.deadline_at], ["ended", [], null], JSON.stringify(work));
+  await assertNowhere(w);
+});
+
+/** When run-1's learning children reach their deadline in real time, under a learning clock `lead` ms short of
+ *  LEARNING_CHILD_MS: the latest child's start (its view's deadline_at less LEARNING_CHILD_MS) + `lead`. */
+const realDeadline = async (w, lead) => Date.parse((await w.view("run-1")).learning_work.deadline_at) - LEARNING_CHILD_MS + lead;
+
+test("a learning child past its deadline sends no model request more, even while its cancel cannot be written: a node request answered after the deadline is followed by none, and the child ends cancelled once the cancel is written", { timeout: 240_000 }, async (t) => {
+  // Each replay's node: its first request (a submit its schema refuses) held at the front until past the deadline, then
+  // answered; the request that would follow it (the tool's result) is what must never be sent.
+  const refused = ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: "not a number", sure: true } } } : undefined);
+  const LEAD = 8_000;
+  let commandsDown = false;
+  // The runner's store, its command writes refused while the test says so: a cancel at the deadline is not written.
+  const wrap = (store) => new Proxy(store, {
+    get(target, prop) {
+      if (prop === "command") return async (...args) => {
+        if (commandsDown) throw new Error("the store did not answer");
+        return target.command(...args);
+      };
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const w = await world(t, { prior: 6, call: refused, wrap, hold: (body) => body.includes('"name":"submit"') && !body.includes('"tool_result"'), learningClock: () => Date.now() + LEARNING_CHILD_MS - LEAD });
+  await w.keyed("run-1", "What is six times seven", 5);
+  await w.ended("run-1");
+  const replays = await until(async () => {
+    const rows = await w.children("replay");
+    return rows.length === 6 && w.front.waiting.size === 6 && rows;
+  }, "six replay runs, each held at its node's first request");
+  const due = await realDeadline(w, LEAD);
+  assert.ok(Date.now() < due, `the replays held before their deadline: ${due - Date.now()} ms ahead`);
+  commandsDown = true;
+  await until(async () => Date.now() > due + 1_000, "past every replay's deadline", LEAD + 10_000);
+  // The held requests go on now, past the deadline, and are answered; each node would follow with its tool's result.
+  w.front.release();
+  const results = () => w.gw.requests.filter((request) => offers(request.body, "submit") && hasResult(request.body)).length;
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  assert.equal(results(), 0, "no request after the deadline reached the gateway while the cancel was not written");
+  for (const { id } of replays) {
+    const { state } = await w.server.runs.get(id);
+    assert.ok(!FINAL.includes(state), `replay ${id} not ended while its cancel was not written: ${state}`);
+  }
+  commandsDown = false;
+  for (const { id } of replays) {
+    const row = await w.ended(id);
+    assert.deepEqual([row.state, row.outcome], ["stopped", "cancelled"], `replay ${id} cancelled once its cancel was written: ${JSON.stringify([row.state, row.outcome, row.summary])}`);
+  }
+  assert.equal(results(), 0, "no request after the deadline reached the gateway");
   await assertNowhere(w);
 });
 

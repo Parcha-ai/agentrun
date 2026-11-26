@@ -7,6 +7,7 @@
 //     and a later claim reads it again (and starts it once the read answers and its deadline is ahead);
 //   - a child whose deadline is ahead starts as any run does;
 //   - a poll's claims read their deadlines in one store read (store.runs.learningDeadlines), never a launch read a claim;
+//   - a child at work when its deadline comes is cancelled then, by a timer of its own, never at a later poll;
 //   - a child that parks (for an approval) is woken at its deadline and ends there, never left parked past it.
 // The runner's loops are faux (runner-support.mjs fauxLoops): a loop made is a loop started.
 import assert from "node:assert/strict";
@@ -123,6 +124,29 @@ test("a poll's claims read their learning deadlines in one store read, never a l
   assert.equal(faux.loops.some((loop) => loop.claim?.runId === "replay-late"), false, "no loop on the child past its deadline");
   assert.equal(counts.launch, 0, `no launch read for a claim: ${counts.launch}`);
   assert.ok(counts.deadlines >= 1 && counts.deadlines <= 4, `one deadline read a poll that claimed, never one a run: ${counts.deadlines}`);
+});
+
+test("a learning child at work when its deadline comes is stopped then, never at a later poll: with a poll a minute apart, it ends cancelled within seconds of its deadline", async (t) => {
+  const opened = await stores();
+  // A loop at work well past the deadline: forty seconds of turns, unless it is stopped.
+  const faux = fauxLoops({ turns: 800, turnMs: 50 });
+  // A poll (the runner's sweep of held children) a minute apart: a run queued here is still claimed at once (claimNow).
+  const runner = startRunner({ store: opened.runners[0], name: "runner-a", ...TIMING, pollMs: 60_000, createLoop: faux.createLoop });
+  t.after(async () => {
+    await runner.close();
+    await release(opened);
+  });
+  const due = Date.now() + 2_000;
+  await queueReplay(opened.server, "replay-busy", due);
+  await until(() => faux.loops.length === 1, "the child's loop started before its deadline", 5_000);
+  const done = await ended(opened.server, "replay-busy");
+  assert.ok(Date.now() - due < 5_000, `stopped within seconds of its deadline, not at the next poll: ${Date.now() - due} ms after it`);
+  // A faux loop's stop writes no outcome of its own: what stopped it is the cancel row its runner wrote and handed it.
+  assert.equal(done.state, "stopped", JSON.stringify(done));
+  const [stop] = faux.loops[0].stopCalls;
+  assert.equal(stop?.kind, "command", `stopped by a command: ${JSON.stringify(faux.loops[0].stopCalls)}`);
+  const row = (await opened.server.commands("replay-busy", 0)).find((one) => one.id === stop.commandId);
+  assert.equal(row?.kind, "cancel", `the runner's cancel: ${JSON.stringify(row)}`);
 });
 
 test("a learning child that parks (an approval, a raise) is woken at its deadline and ends there, cancelled: never left parked past it, its copy of its run's key erased and its run's learning work ended with it", async (t) => {
