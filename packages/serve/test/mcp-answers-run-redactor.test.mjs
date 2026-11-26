@@ -323,6 +323,19 @@ test("binaryKept: the bytes a payload decodes to are read for a held value and a
   assert.deepEqual(Object.entries(found).filter(([, kept]) => kept !== "[redacted]").map(([what]) => what), [], "each is withheld");
 });
 
+test("binaryKept: a held value cut into pieces shorter than a run of text by a byte the matcher reads as nothing or as a blank (a form feed, a control character, a no-break space, a soft hyphen) in a payload's bytes is \"[redacted]\"", async () => {
+  const { binaryKept } = await import("../dist/mcp-gateway.js");
+  const { randomBytes } = await import("node:crypto");
+  const value = `not-a-secret-${"0123456789abcdef".repeat(2)}`;
+  const keep = (payload) => binaryKept(payload, (text) => text, (text) => text, [value]);
+  const pieces = value.match(/.{1,6}/g);
+  const split = (between) => Buffer.concat([randomBytes(4096), Buffer.from(pieces.join(between), "latin1"), randomBytes(4096)]).toString("base64");
+  const kept = Object.entries({ "form feed": "\f", "vertical tab": "\v", NUL: "\0", "start of heading": "\x01", "escape": "\x1b", "delete": "\x7f", "next line": "\x85", "no-break space": "\xa0", "soft hyphen": "\xad" })
+    .filter(([, between]) => keep(split(between)) !== "[redacted]")
+    .map(([what]) => what);
+  assert.deepEqual(kept, [], "each is withheld");
+});
+
 /** `text` as UTF-16 in either byte order, between random bytes, as a string sits in a PDF's, an Office file's or a
  *  Windows binary's bytes. */
 const utf16Between = async (text, order) => {
