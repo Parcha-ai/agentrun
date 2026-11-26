@@ -101,8 +101,9 @@ export default {
         for (const p of c.past) wrong.push(`${width}px ${c.name}: ${p} past the card's right edge`);
         check(c.controls.length === 4, `${width}px ${c.name}: ${c.controls.length} whole action controls, not 4`);
         const [run, edit, runs, settings] = c.controls;
-        check(run.label === `Run ${c.name} options` && run.buttons.includes(`Choose coding agent for Run ${c.name}`), `${width}px ${c.name}: missing Run coding-agent dropdown`);
-        check(edit.label === `Edit ${c.name} options` && edit.buttons.includes(`Choose coding agent for Edit ${c.name}`), `${width}px ${c.name}: missing Edit coding-agent dropdown`);
+        // Every agent here runs on this server: Run opens its page (the Run box) and Edit its settings, no coding-agent menu.
+        check(run.label === `Run ${c.name}` && run.buttons.length === 0, `${width}px ${c.name}: Run is not a link to its page`);
+        check(edit.label === `Edit ${c.name}` && edit.buttons.length === 0, `${width}px ${c.name}: Edit is not a link to its settings`);
         check(runs.label === `Runs of ${c.name}` && settings.label === `Settings for ${c.name}`, `${width}px ${c.name}: missing Runs or Settings action`);
         for (const control of c.controls) {
           if (control.height !== 32) wrong.push(`${width}px ${c.name}: ${control.label} is ${control.height}px high, expected 32px`);

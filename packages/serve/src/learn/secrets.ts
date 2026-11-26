@@ -320,7 +320,7 @@ function heldFields(value: string): string[] | undefined {
 /** A matcher for `values` in a text: plain, split by whitespace, as JSON writes it, percent or form encoded, base64 or
  *  hex, and each hex identifier in a value folded: in any case, its separators dropped or moved (foldedOf). Values
  *  shorter than MIN_SECRET are left out. `fold: false`, the matcher without the folded needles. */
-export function valueMatcher(values: readonly string[], { fold = true }: { fold?: boolean } = {}): (text: string) => boolean {
+export function valueMatcher(values: readonly string[], { fold = true, separated = false }: { fold?: boolean; separated?: boolean } = {}): (text: string) => boolean {
   const needles = derivedOf(values);
-  return (text) => holds(text, needles, { fold });
+  return (text) => holds(text, needles, { fold, separated });
 }

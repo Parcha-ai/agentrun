@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import * as claude from '@parcha/agentrun-harness-claude';
@@ -423,3 +424,53 @@ for (const when of Object.keys(STALE_WHEN)) {
     }
   });
 }
+
+/** Ends each hung delete the HANGING stand-in in `m` noted. */
+function endHung(m) {
+  const pids = existsSync(join(m.bin, 'hung.pids')) ? readFileSync(join(m.bin, 'hung.pids'), 'utf8').split('\n').filter(Boolean).map(Number) : [];
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+  }
+}
+
+// A delete killed at its limit did not delete the item, so the item is not dealt with: the next call asks again. Here a
+// sign-in left an item under "unknown" at AgentRun's own folder, the person signed in from their terminal, and the first
+// status check's delete hangs and is killed. Once `security` answers again, the next status check deletes it.
+test('on macOS a delete of the "unknown" item killed at its limit leaves the item to the next status check, which deletes it', { skip }, async () => {
+  const m = mac();
+  const login = PLACES["AgentRun's own folder"](m);
+  assert.equal(spawnSync(m.cli, ['auth', 'login'], { env: { PATH: m.path, HOME: m.home, ...claude.claudeSignInEnv(login) } }).status, 0, 'a sign-in with no USER');
+  const [[, service]] = keychain(m);
+  const unknownThere = () => keychain(m).some(([account, of]) => account === 'unknown' && of === service);
+  assert.ok(unknownThere(), 'the sign-in with no USER left its item under "unknown"');
+  WAYS['the shown line, run in their terminal'](m, login);
+  writeFileSync(join(m.bin, 'security'), HANGING, { mode: 0o755 });
+  try {
+    assert.equal((await within(DROP_MS + 3_000, 'the first status check', status(m, login))).signedIn, true, 'the first status check reads signed in');
+    assert.ok(existsSync(join(m.bin, 'hung.pids')), 'the first status check asked for the delete under "unknown"');
+  } finally {
+    endHung(m);
+  }
+  assert.ok(unknownThere(), 'the killed delete left the item under "unknown"');
+  writeFileSync(join(m.bin, 'security'), SECURITY, { mode: 0o755 });
+  assert.equal((await status(m, login)).signedIn, true, 'the next status check reads signed in');
+  assert.equal(unknownThere(), false, `the next status check deleted the item under "unknown" the killed delete left: items ${JSON.stringify(keychain(m))}`);
+});
+
+// The sign-in's end waits on the drop of the "unknown" item, which throws nothing of its own. Should anything in it throw
+// all the same (here the hash that names the item's service, stubbed to throw), the end still settles, as the CLI's
+// exit says, and nothing is left unhandled.
+test('on macOS a drop of the "unknown" item that throws before its delete starts still ends the sign-in: its end settles as the CLI exited', { skip }, async () => {
+  const m = mac();
+  const login = PLACES["AgentRun's own folder"](m);
+  const crypto = createRequire(import.meta.url)('node:crypto');
+  const createHash = crypto.createHash;
+  crypto.createHash = () => { throw new Error('the hash failed'); };
+  syncBuiltinESMExports();
+  try {
+    await asServerOf(m, async () => assert.deepEqual(await within(DROP_MS + 3_000, "the sign-in's end", claude.startClaudeLogin(m.cli, login, { path: m.path, display: {}, platform: 'darwin' }).ended), { end: 'exited', code: 0, signal: null }));
+  } finally {
+    crypto.createHash = createHash;
+    syncBuiltinESMExports();
+  }
+});

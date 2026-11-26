@@ -2475,6 +2475,18 @@ the protocol's methods in process over Orgo's REST API, as the phone harness and
 `"windows"` (`ORGO_WINDOWS_IMAGE`, Orgo's Windows Server 2019) or `"macos"` (`ORGO_MACOS_IMAGE`): the one the provider was
 built for.
 
+The Linux desktop makes one computer per request id. Its Orgo name begins with the request's name,
+`computer-<12 hex of sha256(requestId)>`, then the run's hash, the epoch and the deadline (`src/orgo-names.ts`). Before
+it makes a computer it lists the workspace's computers and takes the oldest whose name begins with the request's: one
+that runs with the same labels, image and sizes (its labels file) is answered, one of another spec or no longer
+running is refused `exists`, and one still being made is waited for. Two processes whose creates of one request
+both find nothing make two computers, so after Orgo's answer, and again once its computer is up, a create reads the
+workspace once more: where an older computer of the request is there (by `created_at`, then id), it deletes its own
+and answers the older, and the oldest keeps its own. A caller's signal that aborts one of those reads deletes the
+create's own computer (not under that signal) and the create is `aborted`. A name Orgo already holds (two creates in the same second) is
+answered the same way. The parked desktops name each computer at random, so a create retried there makes a second
+computer.
+
 - **What each offers.** The protocol groups, by Orgo's calls:
   - `screen`: Orgo's screenshot (`response_format=base64&format=png`). A region is cropped in process. The live view
     polls it about once a second, scaled by Orgo past `maxWidth`.
@@ -2625,11 +2637,26 @@ call and the HTTP status alone, never the vendor's words. The calls are the prov
 its own `fetch`). A thrown error rides the failure as a hidden cause (`causeOf(result)`), not enumerable, so it is in no
 JSON.
 
-Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), with a value of its own. A
-create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
-aborted it) never sends a second create: it finds the browsers carrying that label as list does, in every state not
-ended, under a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so. A 4xx refusal made
-nothing, so nothing is looked for. The label is the provider's own: `check()` refuses it in a spec, and no list or attach shows it.
+Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), whose value is the request's
+name, `computer-<12 hex of sha256(requestId)>`. Before it makes a browser, create lists the running and starting
+browsers with that label: one with the spec's labels is answered, so a retried create, in this process or another,
+makes no second browser, and one with other labels is refused `exists`; where it finds several, it takes the oldest (by
+the time the vendor made each, then id). Two processes whose creates of one request both find nothing make two
+browsers, so after the vendor's answer a create lists the label again: where an older browser of the request is
+there, it releases its own and answers the older, refused `exists` when the older has ended by then, and the oldest
+keeps its own. A caller's signal that aborts that listing releases the create's own browser (not under that signal)
+and the create is `aborted`. The browser's own options (viewport, stealth, profile) are not read back from the vendor, so a create
+from another process compares the labels alone. A browser released here, or one this provider answered that the vendor
+has ended on its own (its timeout), leaves its request refused `exists`: the provider keeps each request's browser id. A create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
+aborted it) never sends a second create: each POST also writes `agentrun.attempt` (`ATTEMPT_LABEL`), a random value of
+its own, and a lost create finds the browsers carrying its attempt label as list does, in every state not ended, under
+a signal of its own, releases each under it, and its failure says so; that request is then refused `exists`. Every
+release a create runs for itself (this one, the newer browser's, and the one after an abort) is bounded by the
+provider's `cleanupMs` option (default `RECOVER_MS`, 30 s), never by the caller's signal: one that does not finish in
+time fails the create in words that say the browser may still be running, and a retry is answered as above, never
+stuck behind it. Another create's browser of the same request, even one another process answered, carries another attempt
+label and is left running. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own:
+`check()` refuses them in a spec, and no list or attach shows them.
 
 The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`
 (check past the cap, attach by id and by labels, list, CDP `Browser.getVersion` and `Runtime.evaluate` on a `data:`
@@ -2663,6 +2690,17 @@ once `/json/version` answers on that port. `connect()` hands over the DevTools U
 removes its profile and every other file of it. `list()` and attach by labels find the provider's own browsers by
 `browser.json` in each browser's directory under the root (default `<tmpdir>/agentrun-local-browser-<uid>`, made 0700,
 refused when another user can write it). That file holds the labels and the deadline.
+
+A browser's id, and its directory's name, is its request's name, `computer-<12 hex of sha256(requestId)>`, and create
+makes that directory with `mkdir`, which one create alone wins, then writes `claim.json` in it (its process's pid and
+the time) before `browser.json`. A create that finds the directory there already, in this process or another on the
+same root, answers that browser once its Chrome answers, when its labels and network are the ones asked; one of another
+spec, past its deadline or whose supervisor has ended is refused `exists`. A directory with no `browser.json` whose
+claim names a process that is gone, or that is older than a create takes (the directory's own time where there is no
+claim), is a create that crashed: refused `exists` at once ("an earlier create of this request did not finish: create
+with a new request id"), never waited on past a create's time. A browser released
+here, or one this provider made that ended on its own (its deadline removed its directory), leaves its request refused
+`exists`.
 
 Lifetime: each browser runs under a supervisor of its own (`local-supervisor.ts`), a small detached Node process. It
 ends Chrome and removes its files at the deadline, on release, or when Chrome exits, whatever became of the process

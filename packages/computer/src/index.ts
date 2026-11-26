@@ -95,6 +95,7 @@ export {
 	isBrowserProvider,
 	BrowserVendorError,
 	CREATE_LABEL,
+	ATTEMPT_LABEL,
 	causeOf,
 	memoryUrls,
 	RECOVER_MS,
