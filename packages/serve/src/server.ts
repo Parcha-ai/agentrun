@@ -897,6 +897,7 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/triggers\/([^/]+)\/firings$/, name: "listTriggerFirings" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/firings\/([^/]+)\/release$/, name: "releaseTriggerFiring" },
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
+  { method: "PUT", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "setTriggerSecret" },
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/import$/, name: "importTemplate" },
   { method: "GET", pattern: /^\/marketplace\/templates$/, name: "listMarketplaceTemplates" },
@@ -6689,7 +6690,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           // A trigger whose sender makes its secret (Stream's) starts with none: it answers its metadata, as a read does,
           // and says how to give it.
           const given = shown ? undefined : adapters.find((a) => a.id === made.source.kind)?.givenSecret?.(made.source);
-          const unset = given ? { ...withSecretOf(made), note: `${given.sender} makes this trigger's secret: give it with POST /v2/triggers/${made.id}/secret ({"secret": "${given.prefix}..."}), the console's Set secret. Until then every request to its hook_url is refused.` } : withSecretOf(made);
+          const unset = given ? { ...withSecretOf(made), note: `${given.sender} makes this trigger's secret: give it with PUT /v2/triggers/${made.id}/secret ({"secret": "${given.prefix}..."}), the console's Set secret. Until then every request to its hook_url is refused.` } : withSecretOf(made);
           return { status: 201, body: shown ? { ...made, note: `Its secret was shown once, in the first answer; POST /v2/triggers/${made.id}/secret makes a new one.` } : unset, headers: { location: `/v2/triggers/${made.id}` } };
         });
         const replayed = answer.headers?.["idempotent-replayed"] === "true";
@@ -6754,17 +6755,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "rotateTriggerSecret": {
         // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).
-        // A trigger whose secret is minted here takes no body: any body is refused before it rotates, `{}` too (a length
-        // other than 0, or one sent chunked, is a body whatever it holds), and the new secret is made here and shown once.
-        // One whose sender makes its secret (Stream's) takes that secret as the body's `secret`, alone; it is sealed and
-        // never answered.
-        const sent = req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"] ?? 0) !== 0;
-        const given = await triggers.givenSecret(id);
-        if (!given) {
-          if (sent) throw invalid([{ field: "body", reason: "not_allowed", message: "Rotating a trigger's secret takes no body: send none, and the new secret is made here." }]);
-          return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret, new Date().toISOString()));
+        // It takes no body: the new secret is made here, never given. Any body is refused before it rotates, `{}` too: a
+        // length other than 0, or one sent chunked, is a body whatever it holds.
+        if (req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"] ?? 0) !== 0) {
+          throw invalid([{ field: "body", reason: "not_allowed", message: "Rotating a trigger's secret takes no body: send none, and the new secret is made here." }]);
         }
-        const body = sent ? await bodyOf(req) : {};
+        // A trigger whose sender makes its secret (Stream's) has none made here: PUT gives it.
+        const given = await triggers.givenSecret(id);
+        if (given) throw invalid([{ field: "source.signature", reason: "not_allowed", message: `${given.sender} makes this trigger's secret, so none is made here: give it with PUT /v2/triggers/${id}/secret and {"secret": "${given.prefix}..."}, the console's Set secret.` }]);
+        return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret, new Date().toISOString()));
+      }
+      case "setTriggerSecret": {
+        // A secret write, as a rotation is (trigger-secrets-shown.ts): the owner's session alone. A trigger whose sender
+        // makes its secret (Stream's) takes that secret as the body's `secret`, alone; it is sealed and never answered.
+        // One whose secret is made here takes none (triggers.ts givenSecretIssues): POST makes a new one.
+        const body = await bodyOf(req);
         const extra = unknownFields(body, ["secret"]);
         if (extra.length) throw invalid(extra);
         await triggers.rotate(id, body.secret);

@@ -34,7 +34,7 @@ async function until(read, done, what) {
 const ENDED = ["completed", "failed", "escalated", "stopped", "cancelled", "input_required"];
 
 test("the Stream router: notes sent together each start the router; Jev routes each to none, Arun, research or code; a none note runs no model", { timeout: 180_000 }, async (t) => {
-  withEnv(t, { TYPESAFE_API_KEY: "faux-key-for-the-scripted-jev" });
+  withEnv(t, { TYPESAFE_API_KEY: "fake-test-key" });
   const { api, baseUrl } = await serve(t, { fauxJev: FAUX_JEV });
   const made = await api("POST", "/agents", flowAgent("stream-router", WORKFLOW, { max_cost_usd: 1 }));
   assert.equal(made.status, 201, JSON.stringify(made.body));
@@ -42,7 +42,7 @@ test("the Stream router: notes sent together each start the router; Jev routes e
   // skipped. max_active_runs bounds them.
   const trigger = await api("POST", "/triggers", { name: "ring", source: { kind: "webhook", signature: "stream", accept: [{ event: "interaction" }] }, target: { kind: "start_run", agent_id: "stream-router", input: { content: "A voice note arrived from the Stream ring." }, max_cost_usd: 1 }, max_active_runs: 5 });
   assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
-  assert.equal((await api("POST", `/triggers/${trigger.body.id}/secret`, { secret: SECRET })).status, 200);
+  assert.equal((await api("PUT", `/triggers/${trigger.body.id}/secret`, { secret: SECRET })).status, 200);
 
   const cases = [
     ["Arun, follow up with Dana about the Q4 slides before Friday.", "arun"],
@@ -57,7 +57,9 @@ test("the Stream router: notes sent together each start the router; Jev routes e
     assert.equal(firing.status, "started", `${text}: ${JSON.stringify(firing)}`);
     const run = await until(async () => (await api("GET", `/runs/${firing.run_id}`)).body, (r) => ENDED.includes(r.status), "the run's end");
     assert.equal(run.status, "completed", `${text}: ${JSON.stringify(run.error ?? run.pending)}`);
-    assert.deepEqual([run.result.output.taken, run.result.output.unsure], [want, false], text);
+    assert.deepEqual([run.result.output.route.taken, run.result.output.route.unsure], [want, false], text);
+    // The result carries the specialist's work beside the route: a reply for an agent's branch, none for none.
+    assert.equal(Object.hasOwn(run.result.output, "reply"), want !== "none", `${text}: ${JSON.stringify(run.result.output)}`);
     const rows = (await api("GET", `/runs/${firing.run_id}/timeline?limit=500`)).body.rows;
     const decisions = rows.filter((r) => r.kind === "decision").length;
     const requests = rows.findLast((r) => r.kind === "usage")?.usage?.requests ?? 0;
@@ -72,7 +74,7 @@ test("gaps, as AgentRun behaves today: a prefix rule has no word boundary, no ru
   const make = async (name, accept) => {
     const made = await api("POST", "/triggers", { name, source: { kind: "webhook", signature: "stream", accept }, target: { kind: "start_run", agent_id: "arun", input: { content: "A note." }, max_cost_usd: 1 } });
     assert.equal(made.status, 201, JSON.stringify(made.body));
-    assert.equal((await api("POST", `/triggers/${made.body.id}/secret`, { secret: SECRET })).status, 200);
+    assert.equal((await api("PUT", `/triggers/${made.body.id}/secret`, { secret: SECRET })).status, 200);
     return made.body.id;
   };
   const wake = await make("arun", [{ event: "interaction", where: [{ pointer: "/text", prefix: "Arun" }] }]);

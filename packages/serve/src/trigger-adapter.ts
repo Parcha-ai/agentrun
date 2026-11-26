@@ -47,7 +47,7 @@ export type TriggerAdapter = {
   settings?: SettingsSpec;
   /** When a trigger of `source` keeps a secret its sender made and showed the person (Sandbar Stream's) instead of one
    *  this server mints: who the sender is and what its secrets start with. Then none is made at its create or after, the
-   *  person gives it (POST /triggers/{id}/secret with `{secret}`), it is sealed as a minted one is and never answered, and
+   *  person gives it (PUT /triggers/{id}/secret with `{secret}`), it is sealed as a minted one is and never answered, and
    *  every request is refused until it is given. Default (undefined): it mints. */
   givenSecret?(source: Source): GivenSecret | undefined;
   /** Its shapes as a create's error names them: `{kind: "..."}` with its fields. */

@@ -1020,7 +1020,6 @@ __all__ = [
     "RevokeRemoteConnectorResponseConnector",
     "RevokeRemoteConnectorResponseConnectorCapabilities",
     "RotateComposioSecretResponse",
-    "RotateTriggerSecretBody",
     "RotateTriggerSecretResponse",
     "RotateWebhookSecretResponse",
     "RotateWebhookSecretResponseDisabled",
@@ -1171,6 +1170,8 @@ __all__ = [
     "SetSourceSyncResponseProjectIssuesItem2",
     "SetSourceSyncResponseToolConnectionsItem",
     "SetSourceSyncResponseToolConnectionsItemCandidatesItem",
+    "SetTriggerSecretBody",
+    "SetTriggerSecretResponse",
     "SignIn",
     "SignOutChatGPTResponse",
     "SignOutClaudeLoginResponse",
@@ -11207,16 +11208,20 @@ class ReleaseTriggerFiringResponseError(TypedDict):
     message: str
 
 
-class RotateTriggerSecretBody(TypedDict, total=False):
-    secret: str
-
-
 class _RotateTriggerSecretResponseRequired(TypedDict):
     secret: SecretMeta
 
 
 class RotateTriggerSecretResponse(_RotateTriggerSecretResponseRequired, total=False):
     signing_secret: str
+
+
+class SetTriggerSecretBody(TypedDict):
+    secret: str
+
+
+class SetTriggerSecretResponse(TypedDict):
+    secret: SecretMeta
 
 
 class UpdateTriggerBody(TypedDict, total=False):
@@ -12163,7 +12168,8 @@ OPERATIONS: dict[str, Operation] = {
     "getTrigger": Operation(method="GET", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listTriggers": Operation(method="GET", path="/triggers", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "releaseTriggerFiring": Operation(method="POST", path="/triggers/{trigger_id}/firings/{firing_id}/release", path_params=("trigger_id", "firing_id"), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "rotateTriggerSecret": Operation(method="POST", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=True, public_fields=(), tagged=False),
+    "rotateTriggerSecret": Operation(method="POST", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=True, public_fields=(), tagged=False),
+    "setTriggerSecret": Operation(method="PUT", path="/triggers/{trigger_id}/secret", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=(), tagged=False),
     "updateTrigger": Operation(method="PATCH", path="/triggers/{trigger_id}", path_params=("trigger_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getUsage": Operation(method="GET", path="/usage", path_params=(), multi_segment=(), query=("from", "to", "group_by"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteWebhook": Operation(method="DELETE", path="/settings/webhook", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -13045,9 +13051,13 @@ class TriggersResource(Group):
         """The launch hook's host releases a firing it took and will start no run for (POST /triggers/{trigger_id}/firings/{firing_id}/release)."""
         return self._call("releaseTriggerFiring", (trigger_id, firing_id), body, None, timeout=timeout)
 
-    def rotate_secret(self, trigger_id: str, body: RotateTriggerSecretBody | None = None, *, timeout: float | None = None) -> RotateTriggerSecretResponse:
-        """A webhook trigger's new secret: made here and shown once, or, for a stream trigger, the one Stream made; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
-        return self._call("rotateTriggerSecret", (trigger_id,), body, None, timeout=timeout)
+    def rotate_secret(self, trigger_id: str, *, timeout: float | None = None) -> RotateTriggerSecretResponse:
+        """A webhook trigger's new secret, shown once; the old one signs nothing from now on (POST /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("rotateTriggerSecret", (trigger_id,), None, None, timeout=timeout)
+
+    def set_secret(self, trigger_id: str, body: SetTriggerSecretBody, *, timeout: float | None = None) -> SetTriggerSecretResponse:
+        """Give a stream trigger the secret Stream made; the old one signs nothing from now on (PUT /triggers/{trigger_id}/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("setTriggerSecret", (trigger_id,), body, None, timeout=timeout)
 
     def update(self, trigger_id: str, body: UpdateTriggerBody, *, timeout: float | None = None) -> UpdateTriggerResponse:
         """Change a trigger, or turn it off and on (PATCH /triggers/{trigger_id})."""

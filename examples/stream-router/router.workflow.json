@@ -49,14 +49,31 @@
         }
       },
       "additionalProperties": false
+    },
+    "Result": {
+      "type": "object",
+      "description": "The run's whole result: the note as it arrived, Jev's route, and the specialist's reply, which a note routed to none has none of.",
+      "required": [
+        "route"
+      ],
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "route": {
+          "$ref": "#/definitions/Route"
+        },
+        "reply": {
+          "$ref": "#/definitions/Reply"
+        }
+      }
     }
   },
   "input": {
     "schemaId": "Note"
   },
   "output": {
-    "schemaId": "Route",
-    "path": "route"
+    "schemaId": "Result"
   },
   "root": {
     "node": "chain",

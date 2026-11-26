@@ -1,5 +1,5 @@
 {
-  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "listComposioToolkits", "saveComposioServer", "rotateTriggerSecret", "rotateWebhookSecret", "saveSlack", "saveModelGateway", "testModelGateway"],
+  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "listComposioToolkits", "saveComposioServer", "rotateTriggerSecret", "setTriggerSecret", "rotateWebhookSecret", "saveSlack", "saveModelGateway", "testModelGateway"],
   "publicFields": {
     "saveMcpServer": ["url", "auth.type"],
     "previewMcpServer": ["url", "auth.type", "name"],
@@ -114,6 +114,7 @@
     "fireTrigger": ["triggers", "fire"],
     "listTriggerFirings": ["triggers", "firings"],
     "rotateTriggerSecret": ["triggers", "rotate-secret"],
+    "setTriggerSecret": ["triggers", "set-secret"],
     "releaseTriggerFiring": ["triggers", "release-firing"],
     "listTemplates": ["template", "list"],
     "getTemplate": ["template", "get"],

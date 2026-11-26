@@ -357,7 +357,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
   const giveSecret = async () => {
     if (rotateOut.current) return;
     rotateOut.current = true; setRenewing(true); setSaid(null);
-    try { await v2.rotateTriggerSecret(id, { secret: streamSecret.trim() }); setSettingSecret(false); setStreamSecret(""); setSecretSaved(true); } catch (e) { setSaid(problem(e, "the secret")); } finally { rotateOut.current = false; setRenewing(false); }
+    try { await v2.setTriggerSecret(id, streamSecret.trim()); setSettingSecret(false); setStreamSecret(""); setSecretSaved(true); } catch (e) { setSaid(problem(e, "the secret")); } finally { rotateOut.current = false; setRenewing(false); }
   };
   const runNow = async () => {
     if (firing.current) return;

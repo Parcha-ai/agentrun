@@ -3231,9 +3231,10 @@ it `X-Stream-Signature: t=<Unix seconds>,v1=<hex HMAC-SHA256 of "{t}.{body}">` u
 secret Stream shows, `swh_` prefix included, with `t` held to the same 300 s window. Stream makes that secret, so a
 stream trigger is the one webhook trigger whose secret is given, not made here: its create answers no `signing_secret`
 (its `secret.set` is false, and a `note` says how to give it), every request is the one `401` until it is given, and the
-owner gives it with `POST /v2/triggers/{id}/secret` and the body `{"secret": "swh_..."}` (the console's Set secret on the
+owner gives it with `PUT /v2/triggers/{id}/secret` and the body `{"secret": "swh_..."}` (the console's Set secret on the
 trigger's page). It is sealed as a minted secret is, cut from what a run shows and an import keeps, and never answered:
-the answer is its metadata alone. Every other trigger's secret route still takes no body. A PATCH may not move a trigger
+the answer is its metadata alone. `POST /v2/triggers/{id}/secret` still takes no body and mints, so for a stream trigger
+it is `422` naming PUT, and PUT is `422` for a trigger whose secret is made here. A PATCH may not move a trigger
 between a secret made here and Stream's (`422` under `source.signature`): make a new trigger for the other. The firing's
 key is the signed body's `interaction_id`, so a note Stream posts again is the same firing; its event is `interaction`,
 and `where` reads `/text`. A trigger that wakes only on notes that start with a name:
@@ -3705,7 +3706,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs/{id}/computer` | This server's own (`computer/1`): the run's live computer view for the owner, one family for every kind, `{state: "off", hold, why?}`, `{state: "none", kind, hold}` or `{state: "live", kind, viewer, hold}`, its viewer under `/runs/{id}/computer/live/`; the browser is kind `browser` here, beside its own route ([the live view](#the-browsers-live-view)). |
 | `GET` and `POST /settings/api-keys`, `DELETE /settings/api-keys/{api_key_id}` | [API keys for your apps](#api-keys-for-your-apps), this server's own routes (`x-agentrun-serve: "apikeys/1"`): the keys the owner makes in the console, each shown once and kept as a keyed hash. Making and revoking take the owner's signed-in session. |
 | `GET`, `PUT` and `DELETE /settings/webhook`, `POST /settings/webhook/test`, `GET /settings/webhook/deliveries` and `POST .../deliveries/{webhook_id}/redeliver` | [Webhooks](#webhooks), this server's own routes (`x-agentrun-serve: "webhook/1"`): the URL run notices are POSTed to, signed by the Standard Webhooks spec; never its secret but once. |
-| `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
+| `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST` and `PUT /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
 | `GET /marketplace/templates` | [Templates](#templates), this server's own route (`x-agentrun-serve: "marketplace/1"`): marketplace.agentrun.ai's templates as this server read them, each with the package here that it is. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |

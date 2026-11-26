@@ -273,7 +273,7 @@ describe("Triggers: a webhook is signed the standard way, GitHub's or Sandbar St
     await t.set("stream-secret", "  CANARY-swh-given  ");
     await t.click(/^Save$/);
     const sent = calls.filter((c) => c.path === "/v2/triggers/trg_s/secret");
-    expect(sent).toEqual([{ method: "POST", path: "/v2/triggers/trg_s/secret", body: { secret: "CANARY-swh-given" }, key: null }]);
+    expect(sent).toEqual([{ method: "PUT", path: "/v2/triggers/trg_s/secret", body: { secret: "CANARY-swh-given" }, key: null }]);
     expect(t.host.querySelector('[data-stream-secret="set"]')).not.toBeNull();
     expect(t.text()).not.toContain("CANARY-swh-given");
     expect((t.host.querySelector('input[name="stream-secret"]') as HTMLInputElement | null)?.value ?? "").toBe("");

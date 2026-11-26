@@ -39,23 +39,32 @@ test("a stream trigger starts with no secret and refuses every request; once the
   const { id } = created.body;
   assert.equal(created.body.signing_secret, undefined, "none is made for it");
   assert.equal(created.body.secret.set, false, JSON.stringify(created.body.secret));
-  assert.match(created.body.note, /Stream makes this trigger's secret: give it with POST \/v2\/triggers\/.+\/secret/);
+  assert.match(created.body.note, /Stream makes this trigger's secret: give it with PUT \/v2\/triggers\/.+\/secret/);
 
   const first = note("Arun, remind me to check the article tomorrow.", "72358766-2B3E-420B-955F-9680F869EBEB");
   assert.equal((await post(baseUrl, id, first, { "x-stream-signature": streamSignature(secret, first) })).status, 401, "no secret yet: refused");
 
   // The secret is the owner's to give: the token is refused, and the body is checked before anything changes.
-  const byToken = await fetch(`${baseUrl}/triggers/${id}/secret`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ secret }) });
+  const byToken = await fetch(`${baseUrl}/triggers/${id}/secret`, { method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ secret }) });
   assert.equal(byToken.status, 403, await byToken.text());
-  for (const [body, field, reason] of [[undefined, "secret", "missing"], [{ secret: 42 }, "secret", "wrong_type"], [{ secret: `whsec_${randomBytes(32).toString("base64")}` }, "secret", "invalid"], [{ secret, also: 1 }, "also", undefined]]) {
-    const refused = await api("POST", `/triggers/${id}/secret`, body);
+  for (const [body, field, reason] of [[{}, "secret", "missing"], [{ secret: 42 }, "secret", "wrong_type"], [{ secret: `whsec_${randomBytes(32).toString("base64")}` }, "secret", "invalid"], [{ secret, also: 1 }, "also", undefined]]) {
+    const refused = await api("PUT", `/triggers/${id}/secret`, body);
     assert.equal(refused.status, 422, JSON.stringify(refused.body));
     const issue = refused.body.error.fields.find((f) => f.field === field);
     assert.ok(issue && (reason === undefined || issue.reason === reason), JSON.stringify(refused.body));
   }
+  // PUT takes a body: none at all is the server's one 400 for a body that is not a JSON object.
+  assert.equal((await api("PUT", `/triggers/${id}/secret`)).status, 400);
   assert.equal((await api("GET", `/triggers/${id}`)).body.secret.set, false, "a refused body set nothing");
 
-  const given = await api("POST", `/triggers/${id}/secret`, { secret });
+  // POST mints a secret, and none is minted for a stream trigger: it points to PUT, and changes nothing.
+  const rotate = await api("POST", `/triggers/${id}/secret`);
+  assert.equal(rotate.status, 422, JSON.stringify(rotate.body));
+  assert.equal(rotate.body.error.fields[0].field, "source.signature");
+  assert.match(rotate.body.error.fields[0].message, /give it with PUT \/v2\/triggers\/.+\/secret/);
+  assert.equal((await api("GET", `/triggers/${id}`)).body.secret.set, false);
+
+  const given = await api("PUT", `/triggers/${id}/secret`, { secret });
   assert.equal(given.status, 200, JSON.stringify(given.body));
   assert.equal(given.body.secret.set, true);
   assert.equal(given.body.signing_secret, undefined, "the owner's own secret is not answered back");
@@ -104,7 +113,7 @@ test("a stream trigger's accept reads what was said: only a note that starts wit
   const created = await api("POST", "/triggers", streamTrigger("arun", { accept: [{ event: "interaction", where: [{ pointer: "/text", prefix: "Arun" }] }] }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const { id } = created.body;
-  assert.equal((await api("POST", `/triggers/${id}/secret`, { secret })).status, 200);
+  assert.equal((await api("PUT", `/triggers/${id}/secret`, { secret })).status, 200);
 
   const groceries = note("Add oat milk to my grocery list.");
   const ignored = await post(baseUrl, id, groceries, { "x-stream-signature": streamSignature(secret, groceries) });
@@ -116,7 +125,7 @@ test("a stream trigger's accept reads what was said: only a note that starts wit
   assert.equal(firing.status, "started", JSON.stringify(firing));
 });
 
-test("a trigger whose secret is made here still takes no body on rotate, and no PATCH moves a trigger between a secret made here and Stream's", { timeout: 120_000 }, async (t) => {
+test("a trigger whose secret is made here still takes no body on rotate and no secret of the sender's, and no PATCH moves a trigger between a secret made here and Stream's", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t);
   await made(api, "arun");
   const standard = await api("POST", "/triggers", { ...streamTrigger("arun"), name: "deploys", source: { kind: "webhook" } });
@@ -127,6 +136,9 @@ test("a trigger whose secret is made here still takes no body on rotate, and no 
     assert.equal(refused.status, 422, JSON.stringify(refused.body));
     assert.equal(refused.body.error.fields[0].field, "body");
   }
+  const put = await api("PUT", `/triggers/${standard.body.id}/secret`, { secret: streamSecret() });
+  assert.equal(put.status, 422, JSON.stringify(put.body));
+  assert.deepEqual([put.body.error.fields[0].field, put.body.error.fields[0].reason], ["secret", "not_allowed"]);
   const rotated = await api("POST", `/triggers/${standard.body.id}/secret`);
   assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
   assert.match(rotated.body.signing_secret, /^whsec_/);

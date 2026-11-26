@@ -86,6 +86,8 @@ export type TriggerCreate = Body<"createTrigger">;
 export type TriggerMade = Answer<"createTrigger">;
 /** A webhook trigger's new signing secret (POST /v2/triggers/{id}/secret), shown that once. */
 export type TriggerSecret = Answer<"rotateTriggerSecret">;
+/** A stream trigger's given secret's metadata (PUT /v2/triggers/{id}/secret): the secret itself is never answered. */
+export type TriggerSecretSet = Answer<"setTriggerSecret">;
 /** An edit's answer: the trigger, and for a trigger from an app whose pause or resume Composio could not follow, what to
  *  do there by hand (`composio`). */
 export type TriggerUpdated = Answer<"updateTrigger">;

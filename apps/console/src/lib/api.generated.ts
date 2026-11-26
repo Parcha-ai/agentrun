@@ -6654,9 +6654,7 @@ export interface operations {
     };
   };
   rotateTriggerSecret: {
-    body: {
-      secret?: string;
-    };
+    body: never;
     answer: {
       secret: components["SecretMeta"];
       signing_secret?: string;
@@ -7103,6 +7101,14 @@ export interface operations {
           auth: string;
         }[];
       }[];
+    };
+  };
+  setTriggerSecret: {
+    body: {
+      secret: string;
+    };
+    answer: {
+      secret: components["SecretMeta"];
     };
   };
   signOutChatGPT: {
