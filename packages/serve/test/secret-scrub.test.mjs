@@ -1892,6 +1892,48 @@ test("LVI (11-25 r3): a transcript's cut runs on past `#` and `>` lines, to the 
   assert.equal(continued.text, "$ printenv \\\n[redacted:env-dump 2 lines]");
 });
 
+test("LVI (11-26): a glob or brace `.env` read, a member access across a line break, systemd's, heroku's and BSD ps's environment are dumps", async () => {
+  const seed = "Tallow4quarry62";
+  const region = "basin-orchard-41";
+  const text = `APP_REGION=${region}\nAPP_SEED ${seed}`;
+  for (const command of [
+    // A glob or a brace names every .env file at once: no one path env-file can test, so the env token stays.
+    "cat .env*", "tail -n +1 .env*", "head .env.*", "cat .env.{local,production}", "grep . .env*", "cat .env.local*", "less .env.[lp]*", "cat config/.env?",
+    // A member access whose dot opens the next line (a chained call's formatting): the environment, not a .env file.
+    "node -e \"const v = process\n  .env; console.log(v)\"", "node -e \"const v = process\n  .env\nconsole.log(v)\"",
+    // systemd's Environment property, the system's environment file, a host's config vars, BSD ps's E option.
+    "systemctl show -p Environment app", "systemctl show app --property=Environment", "cat /etc/environment", "heroku config", "heroku config -a app",
+    "heroku config:get DATABASE_URL -a app", "ps auxE", "ps -E", "ps -wwE",
+  ]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
+  }
+  // A plain dotfile path is still a file, cut whole by env-file; a template is no secret.
+  for (const command of ["cat .env", "cat .env; ls", "cat .env.local", "source .env && make"]) {
+    const out = await gone(text, [seed, region], { command });
+    assert.equal(out.text, "[redacted:env-file 2 lines]", command);
+  }
+  for (const command of ["cat .env.example", "ps -ef", "ps aux", "heroku apps", "heroku logs --tail", "systemctl status app"]) {
+    const out = await scrub(text.replace(seed, "gold"), { mode: "count", command });
+    assert.deepEqual(out.cuts, [], `${command}: ${JSON.stringify(out.cuts)}`);
+  }
+});
+
+test("LVI (11-26): a full PS1 prompt (`user@host:~$`, `root@c:/#`, `[user@host dir]$`) opens and ends a transcript's cut", async () => {
+  const seed = "Tallow4quarry62";
+  const user = await gone(`user@host:~$ env\nA=1\nB=l1\nl2\nC=${seed}\nuser@host:~$ ls\nREADME.md`, [seed]);
+  assert.equal(user.text, "user@host:~$ env\n[redacted:env-dump 4 lines]\nuser@host:~$ ls\nREADME.md");
+  const root = await gone(`root@c:/# printenv APP_CONFIG\nregion: north\nseed ${seed}\nroot@c:/# ls\nREADME.md`, [seed]);
+  assert.equal(root.text, "root@c:/# printenv APP_CONFIG\n[redacted:env-dump 2 lines]\nroot@c:/# ls\nREADME.md");
+  const bracket = await gone(`[deploy@web-1 app]$ cat .env*\nregion: north\nseed ${seed}`, [seed]);
+  assert.equal(bracket.text, "[deploy@web-1 app]$ cat .env*\n[redacted:env-dump 2 lines]");
+  const venv = await gone(`(venv) dev@box:~/app$ python -c 'import os; print(os.environ)'\nenviron({'APP_SEED': '${seed}'})`, [seed]);
+  assert.equal(venv.text, "(venv) dev@box:~/app$ python -c 'import os; print(os.environ)'\n[redacted:env-dump 1 lines]");
+  // A PS1 prompt whose command prints nothing of the environment: kept.
+  const ls = `user@host:~$ ls\nREADME.md\nseed gold`;
+  assert.deepEqual((await scrub(ls, { mode: "count" })).cuts, []);
+});
+
 test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {
   const wrappers = [
     (s) => s,
