@@ -25,7 +25,7 @@ import { completer } from "../llm.js";
 import { askedBefore, catalogPrice, JEV_INPUT_USD, PARALLEL_DECISION_USD } from "../decision-cap.js";
 import { decisionProvidersIn } from "../decisions.js";
 import { imageLoader } from "../pdf-pages.js";
-import type { RunLaunch } from "../run-launch.js";
+import { readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { llmTiers, nodeTiers, type Tier, workflowNodes } from "../model.js";
 import { answersCutInside, CALL_TOOLS, type EffectRun, type ToolBinding, type ToolHost, toolOf, workflowTools } from "../tools.js";
 import { forModel } from "../result.js";
@@ -171,6 +171,10 @@ interface Claimed {
   readonly workRoot: string;
   /** The launch's tool plane (which web tools resolve to Parallel), for scoping the run's decision keys. */
   readonly plane: RunLaunch["plane"];
+  /** The launch's pinned model and hold, which say whether the run sends a model key at all (claim-secrets.ts
+   *  sendsNoModelKey): a held run its model kept from running, or one pinned to the faux model, is laid none. */
+  readonly model: RunLaunch["model"];
+  readonly hold: RunLaunch["hold"];
 }
 
 /** The newest raise's cap on the run's root, else none: the effective cap after takeRaises wrote this claim's raise, read
@@ -241,7 +245,7 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     // models, its decisions, its call nodes' effects and its model nodes' tools all run on these, never on another run's
     // keys or on this process's whole environment.
     // Held by the runner's one redactor before anything can echo one (holding: run.redact), as the decision keys were.
-    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}), redact: run?.redact }, claimed.revision, { plane: claimed.plane }, claim.runId));
+    const claimedEnv = await holding(claimSecrets({ store: deps.store, sealKey: deps.sealKey, ...(deps.env ? { env: deps.env } : {}), redact: run?.redact }, claimed.revision, { plane: claimed.plane, model: claimed.model, hold: claimed.hold }, claim.runId));
     // The run's models resolve the one way the runner resolves any (routeProviderOf over routeOf), unless a test gives its
     // own: each tier's key from the runner's environment, else the one the claim opened (a key saved in
     // Settings → Model keys runs the next run with no restart).
@@ -1138,7 +1142,9 @@ async function readClaim(deps: WorkflowSpecDeps, runId: string): Promise<Claimed
   const input = launch && typeof launch.input === "object" && launch.input !== null ? (launch.input as Record<string, unknown>) : {};
   const capUsd = typeof launch?.max_cost_usd === "number" ? launch.max_cost_usd : undefined;
   const workRoot = typeof launch?.documents === "string" ? launch.documents : "/tmp";
-  return { agentId: run.agentId, revisionId: run.revisionId, revision: revision as unknown as Revision, workflow: (revision.body as { workflow: Workflow }).workflow, input, capUsd, workRoot, plane: (launch?.plane as RunLaunch["plane"]) };
+  // The model and hold as every reader of a launch reads them (a hold whose refusal does not read is still a refusal).
+  const read = readLaunchBody(launchRow.body);
+  return { agentId: run.agentId, revisionId: run.revisionId, revision: revision as unknown as Revision, workflow: (revision.body as { workflow: Workflow }).workflow, input, capUsd, workRoot, plane: (launch?.plane as RunLaunch["plane"]), model: read?.model, hold: read?.hold };
 }
 
 export { BACKGROUND_CONTEXT };
