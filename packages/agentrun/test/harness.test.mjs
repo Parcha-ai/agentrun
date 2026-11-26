@@ -21,7 +21,7 @@ const envOf = (home) => ({
   HTTPS_PROXY: "http://127.0.0.1:9",
   HTTP_PROXY: "http://127.0.0.1:9",
 });
-const agentrun = (args, home) => spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env: envOf(home), timeout: 60_000 });
+const agentrun = (args, home, cwd) => spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env: envOf(home), timeout: 60_000, ...(cwd ? { cwd } : {}) });
 
 function home(t) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-harness-"));
@@ -29,7 +29,7 @@ function home(t) {
   return dir;
 }
 
-test("agentrun harness install names the harnesses it installs: goose and cursor alone", (t) => {
+test("agentrun harness install names the harnesses it installs: goose, cursor and antigravity alone", (t) => {
   const dir = home(t);
   const none = agentrun(["harness", "install"], dir);
   assert.equal(none.status, 2, none.stderr);
@@ -37,10 +37,32 @@ test("agentrun harness install names the harnesses it installs: goose and cursor
   assert.equal(other.status, 2, other.stderr);
   assert.match(other.stderr, /goose/);
   assert.match(other.stderr, /cursor/);
+  assert.match(other.stderr, /antigravity/);
   assert.match(other.stderr, /codex/);
   const help = agentrun(["help", "harness"], dir);
   assert.equal(help.status, 0, help.stderr);
   assert.match(help.stdout, /install/);
+});
+
+test("agentrun harness install antigravity, --recipe antigravity and harness-check --recipe antigravity reach the recipe AgentRun ships, by its name, unless a file of that name is in the directory", (t) => {
+  const dir = home(t);
+  const data = join(dir, "data");
+  // The dead proxy: the download is tried and fails.
+  const named = agentrun(["harness", "install", "antigravity", "--data", data], dir, dir);
+  assert.equal(named.status, 1, named.stderr);
+  assert.match(named.stderr, /^Google Antigravity: the recipe AgentRun ships \(/m);
+  const flagged = agentrun(["harness", "install", "--recipe", "antigravity", "--data", data], dir, dir);
+  assert.match(flagged.stderr, /^Google Antigravity: the recipe AgentRun ships \(/m);
+  // Not installed: the check is refused by its code, and names the shipped recipe's install by its name.
+  const report = join(dir, "report.json");
+  const check = agentrun(["harness-check", "--recipe", "antigravity", "--data", data, "--report", report], dir, dir);
+  assert.equal(check.status, 1, check.stderr);
+  assert.match(check.stdout + check.stderr, /HARNESS_NOT_INSTALLED: [^\n]*agentrun harness install antigravity --data /);
+  writeFileSync(join(dir, "antigravity"), "{}");
+  const shadowed = agentrun(["harness-check", "--recipe", "antigravity", "--data", data, "--report", report], dir, dir);
+  assert.equal(shadowed.status, 1, shadowed.stderr);
+  assert.match(shadowed.stdout, /harness-check: refused: RECIPE_INVALID/);
+  assert.match(JSON.parse(readFileSync(report, "utf8")).refused.message, /antigravity names both the recipe AgentRun ships/);
 });
 
 test("agentrun harness install --recipe and agentrun harness-check: a recipe that breaks a rule is refused by its code, and nothing is installed", (t) => {

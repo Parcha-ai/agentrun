@@ -12,6 +12,7 @@ import { learningCommit } from "../dist/learn/commit.js";
 import { recordPromotion } from "../dist/learn/promote.js";
 import { workflowDigest } from "../dist/runner/workflow-first.js";
 import { learningOf } from "../dist/learn/rows.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const tool = {
   name: "mcp:backend/status", description: "Read release readiness from the existing backend.",
@@ -94,7 +95,7 @@ test("a reclaim with no compile due keeps the durable compile request's cost as 
     } });
     // The route is asked for the claim it serves, so its requests can name the claim's run, turn and attempt.
     const asked = [];
-    const loop = createSdkLoop(launch, { store: s.store, data: s.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async (of) => (asked.push(of), route))({ journal: () => guarded, flush: () => s.store.flush(), signal: abort.signal });
+    const loop = createSdkLoop(launch, { store: s.store, data: s.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async (of) => (asked.push(of), route))({ redact: heldRedactor((text) => text), journal: () => guarded, flush: () => s.store.flush(), signal: abort.signal });
     assert.equal((await loop.start(claim)).state, crash ? "interrupted" : "ended");
     assert.ok(asked.every((of) => of === claim), "every route ask names the loop's claim");
     if (crash) { assert.ok(cut); await s.store.release(claim); }
