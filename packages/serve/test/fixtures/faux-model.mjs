@@ -34,6 +34,9 @@ const abortedOf = (faux) =>
 
 /** The key timeline-key-words.test.mjs holds, which the provider errors above echo. */
 const CUT_KEY = `not-a-secret-${"cut-key-0123456789abcdef"}`;
+/** A made-up body line of a key, 64 base64 characters with "+" at 31 and 55, which redact-plus-literals.test.mjs holds:
+ *  an answer below prints it as code that builds it from string literals joined by "+". */
+export const PLUS_KEY = ["Zq8VbN3xLmT6pR2wYk9HsD", "/", "q7Xk2Lr9", "+", "fJ8mWb3Nc", "/", "hP4sYd6Gv1EzQ", "+", "uKa0Rw7H"].join("");
 
 export default function reply(context, faux) {
   const verdict = graderAnswerOfContext(context);
@@ -400,6 +403,9 @@ function replyTo(context, faux) {
   if (first.includes("Fail echoing an encoded key")) return faux.message("", { stopReason: "error", errorMessage: `401 {"message":"Key ${Buffer.from(CUT_KEY).toString("base64")} is not valid"}` });
   // An answer that quotes the held key, plainly and base64-encoded (final-answer-redact.test.mjs holds CUT_KEY as a key).
   if (first.includes("Answer quoting the held key.")) return faux.message(`Here it is: ${CUT_KEY} and ${Buffer.from(CUT_KEY).toString("base64")}. The rest stays.`);
+  // An answer that prints PLUS_KEY as string literals joined by "+": in chunks of 16, one a line, or in halves at a "+".
+  if (first.includes("Answer printing the plus key in lines.")) return faux.message(["The body:", "const body =", ...PLUS_KEY.match(/.{16}/g).map((chunk) => `  "${chunk}" +`), '  "";'].join("\n"));
+  if (first.includes("Answer printing the plus key in halves.")) return faux.message(`The body: const body = "${PLUS_KEY.slice(0, 31)}" + "${PLUS_KEY.slice(31)}";`);
   // A long answer (about 50 KB) that quotes the held key near its end.
   if (first.includes("Answer at length quoting the held key.")) return faux.message(`${"word ".repeat(10_000)}near the end ${CUT_KEY} done.`);
   // A workflow's llm call that answers with the held key, and one whose provider echoes it in its error (graph-redact.test.mjs).

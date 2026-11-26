@@ -975,6 +975,60 @@ const CASES = [
       { name: "a held value with a : whole in prose beside a quote is cut in place (control)", text: `say "hi" ${LOGIN} ok`, values: [LOGIN], hides: ["s3cretpass"], exact: all('say "hi" [redacted] ok') },
     ];
   })(),
+  // A held value that holds a "+" (base64, a key's body), printed split into string literals joined by "+" (code that
+  // builds it: `"ab" + "cd+ef"`, a line each, single-quoted, over a Python line continuation). The join read the "+"
+  // between the strings as text and its "+" views read the value's own "+" as a space, so no reading held the value: it
+  // showed. The join's values now read the strings back to back without that operator, keeping the value's own "+", so
+  // each withholds the text. The same splits of a value with no "+" withheld before, double-quoted, and still do;
+  // single-quoted they showed too (the join that reads an apostrophe as a quote has no view with "+" as a space), and now
+  // withhold. The operator standing where the value's own "+" is withheld before and still does; strings joined by "+"
+  // that hold no held value show as they came (controls).
+  ...(() => {
+    const all = (shown) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, shown]));
+    // A made-up body line of a key, 64 base64 characters with "+" at 31 and 55 and "/" at 22 and 41.
+    const BODY = ["Zq8VbN3xLmT6pR2wYk9HsD", "/", "q7Xk2Lr9", "+", "fJ8mWb3Nc", "/", "hP4sYd6Gv1EzQ", "+", "uKa0Rw7H"].join("");
+    assert.ok(BODY.length === 64 && BODY[31] === "+" && BODY[55] === "+" && BODY[22] === "/" && BODY[41] === "/", BODY);
+    const SHORT = `${P24[0].slice(0, 6)}+${P24[1].slice(0, 6)}`;
+    const chunks = (value, n) => value.match(new RegExp(`.{1,${n}}`, "g"));
+    const at = (value, i) => [value.slice(0, i), value.slice(i)];
+    const lit = (parts, q = '"') => parts.map((part) => `${q}${part}${q}`);
+    // Each way of printing `value` split into literals: what it is, and the text. A key's body in chunks of 16, a short
+    // value in chunks of 4.
+    const splits = (value, n = value.length > 16 ? 16 : 4) => [
+      [`in ${n}-character chunks, one a line`, ["const body =", ...lit(chunks(value, n)).map((part) => `  ${part} +`), '  "";'].join("\n")],
+      [`in ${n}-character chunks on one line`, `const body = ${lit(chunks(value, n)).join(" + ")};`],
+      [`in ${n}-character single-quoted chunks, one a line`, ["body = (", ...lit(chunks(value, n), "'").map((part) => `  ${part} +`), "  '')"].join("\n")],
+      ...[...value].flatMap((char, i) => (char === "+" ? [i, i + 1] : [])).flatMap((i) => [
+        [`in halves at ${i} on one line`, `const body = ${lit(at(value, i)).join(" + ")};`],
+        [`in halves at ${i}, a line each`, `const body =\n  ${lit(at(value, i)).join(" +\n  ")};`],
+        [`in single-quoted halves at ${i}`, `body = ${lit(at(value, i), "'").join(" + ")}`],
+        [`in halves at ${i} with no spaces`, `x=${lit(at(value, i)).join("+")}`],
+        [`in halves at ${i} over a Python line continuation`, `body = ${lit(at(value, i)).join(` + ${String.fromCharCode(92)}\n    `)}`],
+      ]),
+      ["in halves at its middle", `const body = ${lit(at(value, value.length >> 1)).join(" + ")};`],
+      ["in single-quoted halves at its middle", `body = ${lit(at(value, value.length >> 1), "'").join(" + ")}`],
+    ];
+    const noPlus = (value) => value.replaceAll("+", "A");
+    const before = (what) => (what.includes("single-quoted") ? "" : ", as before");
+    return [
+      ...[BODY, SHORT].flatMap((value) => splits(value).map(([what, text]) => ({
+        name: `a held value with a "+" printed as string literals joined by "+" ${what} withholds the text (${value.length} characters)`,
+        text, values: [value], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
+      }))),
+      ...[BODY, SHORT].flatMap((value) => splits(noPlus(value)).map(([what, text]) => ({
+        name: `a held value with no "+" printed as string literals joined by "+" ${what} withholds the text${before(what)} (${value.length} characters)`,
+        text, values: [noPlus(value)], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
+      }))),
+      {
+        name: 'the operator "+" standing where a held value\'s own "+" is, between two string literals, withholds the text, as before (control)',
+        text: `const body = ${lit(SHORT.split("+")).join(" + ")};`, values: [SHORT], hides: [SHORT.slice(0, 6)], exact: all("[redacted]"),
+      },
+      ...[
+        ['string literals joined by "+" that hold no held value', `const url = "https://h.example/" + "a+b" + '/c' + "+d";\nlet n = 1 + 2;`],
+        ["a held value's halves in string literals with a word between them", `const body = ${lit(at(BODY, 32)).join(" + note + ")};`],
+      ].map(([what, text]) => ({ name: `${what} shows as it came (control)`, text, values: [BODY], hides: [], exact: all(text) })),
+    ];
+  })(),
   // A combining mark (P2-B): NFKC composes a letter and the mark after it into one character, so a held value with a
   // mark after its first or last letter, written as it is, escaped or percent-encoded, lost that letter. The squeeze
   // decomposes and drops every combining mark, on the held value's side and the text's, so each withholds the text. A
