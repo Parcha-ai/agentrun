@@ -210,6 +210,34 @@ test("kr-10 (an OSC title ended by ST that ends a string): a held value whose he
   for (const out of [redactedCall(long, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(long, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
 });
 
+// An ST's backslash read with what follows it as one escape: JSON's second level reads "\\" and a letter of its
+// escapes ("n", "t", "r", "b", "f", "/", or "u" and four hex digits) as one, and Python's "\\" and "x" and two hex
+// digits; a raw ST's backslash and a letter read as JSON's escape. The views that read the text as it stands, or one
+// level of escapes, read the ST there, and then the letter as the held value's own. Each title is past the read, the
+// held value split right after it.
+const X250 = "x".repeat(250);
+const FROM_R = ["Wc3MhT8qLz5N", `rB1v${PY_REST}`];
+const FOLLOWED_TITLES = [
+  ["a raw OSC title ended by ST, then a letter, in terminal output", (before, after) => `${before}\u001b]0;${X250}\u001b\\${after}`, FROM_R],
+  ["a JSON writer's OSC title ended by ST, then a letter", (before, after) => `["${before}${TITLE}${after}"]`, FROM_R],
+  ["a JSON writer's OSC title ended by ST, then u and four hex digits", (before, after) => `["${before}${TITLE}${after}"]`, ["Wc3MhT8qLz5N", `uface${PY_REST}`]],
+  ["a Python repr's OSC title ended by ST, then x and two hex digits", (before, after) => `['${before}${String.raw`\x1b]0;`}${X250}${String.raw`\x1b\\`}${after}']`, ["Wc3MhT8qLz5N", `xab${PY_REST}`]],
+  ["a percent-encoded OSC title ended by a JSON writer's ST that ends a string", (before, after) => `["${before}%1B]0;${X250}%1B${String.raw`\\`}", "${after}"]`, FROM_R],
+  ["an OSC title written in JSON twice, its ST's backslash once, that ends a string", (before, after) => `["${before}${String.raw`\\u001b]0;`}${X250}${String.raw`\\u001b\\`}", "${after}"]`, FROM_R],
+];
+for (const [what, text, [head, rest]] of FOLLOWED_TITLES) {
+  test(`kr-9 (${what}): a held value split at a call's stop around it is withheld`, () => {
+    let body = "";
+    while (body.length < 8192 - 100) body += "word ";
+    assert.equal(redactedCall(text(`${body}see ${head} `, `${rest} more`), [`${head}${rest}`], 200), "[redacted]");
+  });
+
+  test(`kr-10 (${what}): a held value whose head ends a run too long to read, the title after it, and whose rest follows is withheld`, () => {
+    const long = text(`${"a".repeat(9000)}${head}`, `${rest} more`);
+    for (const out of [redactedCall(long, [`${head}${rest}`], 100_000), redactedAnswer(long, [`${head}${rest}`])]) assert.equal(out.includes(PY_REST), false);
+  });
+}
+
 test("kr-11: control padding after a word, with no held value split around it, is shown (control)", () => {
   let body = "";
   while (body.length < 8192 - 100) body += "word ";

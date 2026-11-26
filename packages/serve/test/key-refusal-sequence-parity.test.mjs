@@ -69,17 +69,21 @@ const toPython = (text) => [...text].map((char) => (char === "'" ? "\\'" : char 
 const toEntities = (text) => [...text].map((char) => (/^[\x20-\x7e]$/.test(char) && char !== "&" && char !== '"' && char !== "\\" ? char : `&#x${char.codePointAt(0).toString(16)};`)).join("");
 const percent = (text) => Buffer.from(text, "utf8").toString("hex").replace(/../g, (byte) => `%${byte.toUpperCase()}`);
 
+const ENCODINGS = [
+  ["as it stands", (text) => text, "json"],
+  ["as JSON's escapes", toJson, "json"],
+  ["as JSON's \\u escapes", toUnicode, "json"],
+  ["as JSON's escapes twice", toJsonTwice, "json"],
+  ["as Python's escapes", toPython, "python"],
+  ["as HTML references", toEntities, "json"],
+  ["percent-encoded", percent, "json"],
+];
+
 const SHAPES = [];
 for (const [opener, intro, body] of OPENERS) {
   for (const [what, inner] of INNERS) {
     const sequence = `${intro}${body(inner)}`;
-    SHAPES.push([`${opener}, ${what} inside, as it stands`, sequence, "json", inner]);
-    SHAPES.push([`${opener}, ${what} inside, as JSON's escapes`, toJson(sequence), "json", inner]);
-    SHAPES.push([`${opener}, ${what} inside, as JSON's \\u escapes`, toUnicode(sequence), "json", inner]);
-    SHAPES.push([`${opener}, ${what} inside, as JSON's escapes twice`, toJsonTwice(sequence), "json", inner]);
-    SHAPES.push([`${opener}, ${what} inside, as Python's escapes`, toPython(sequence), "python", inner]);
-    SHAPES.push([`${opener}, ${what} inside, as HTML references`, toEntities(sequence), "json", inner]);
-    SHAPES.push([`${opener}, ${what} inside, percent-encoded`, percent(sequence), "json", inner]);
+    for (const [how, encode, kind] of ENCODINGS) SHAPES.push([`${opener}, ${what} inside, ${how}`, encode(sequence), kind, inner]);
   }
   // Percent-encoded bytes that are no UTF-8: the percent views decode each to U+FFFD.
   for (const [what, bytes] of [["a lone byte FF", "%FF"], ["a truncated sequence", "%E2%82"], ["a stray continuation byte", "%80"]])
@@ -126,6 +130,37 @@ for (const [layout, shapes, piece, text] of LAYOUTS)
     assert.ok(checked > shapes.length / 2, `the matcher read past ${checked} of ${shapes.length} shapes`);
     assert.deepEqual(under, []);
   });
+
+// Each title ended by ST, past the read, followed right away by a held value's rest that starts with what a second
+// level of escapes reads with the ST's backslash as one escape (a letter of JSON's escapes, "u" and four hex digits,
+// "x" and two hex digits), in every encoding: the views that read the text as it stands, or one level of escapes, end
+// the title at the ST and read the letter as the held value's own.
+const TITLES = [
+  ["ESC ] ended by ST", `\u001b]0;${"x".repeat(250)}\u001b\\`],
+  ["U+009D", `\u009d0;${"x".repeat(250)}\u009c`],
+];
+const FOLLOWERS = ["n", "t", "r", "b", "f", "/", "uface", "xab"];
+test("every OSC title ended by ST the matcher reads past whole, followed right away by a held value's rest that a second level of escapes reads with the ST, is read past by the read after a call's stop and by a run's tail read", () => {
+  const head = HEAD.slice(0, 12);
+  const under = [];
+  let [checked, count] = [0, 0];
+  let body = "";
+  while (body.length < 8192 - 100) body += "word ";
+  for (const [opener, title] of TITLES)
+    for (const [how, encode, kind] of ENCODINGS)
+      for (const follower of FOLLOWERS) {
+        count++;
+        const [rest, pad, name] = [`${follower}B1v${REST}`, encode(title), `${opener} ${how}, then ${follower}`];
+        if (redactedAnswer(wrapped(`see ${head} ${pad}${rest} more`, kind), [`${head}${rest}`]).includes(REST)) continue;
+        checked++;
+        if (redactedCall(wrapped(`${body}see ${head} ${pad}${rest} more`, kind), [`${head}${rest}`], 200) !== "[redacted]") under.push(`kr-9 ${name}`);
+        const tail = wrapped(`${"a".repeat(9000)}${head}${pad}${rest} more`, kind);
+        if (redactedCall(tail, [`${head}${rest}`], 100_000).includes(REST)) under.push(`kr-10 call ${name}`);
+        if (redactedAnswer(tail, [`${head}${rest}`]).includes(REST)) under.push(`kr-10 answer ${name}`);
+      }
+  assert.ok(checked > count / 2, `the matcher read past ${checked} of ${count} titles`);
+  assert.deepEqual(under, []);
+});
 
 test("kr-10 (percent-encoded CSI colours with U+FFFD inside): a held value whose head ends a run too long to read, the padding after it, and whose rest follows is withheld", () => {
   const text = wrapped(`${"a".repeat(9000)}${HEAD}${"%1B%5B0%EF%BF%BDm".repeat(300)} ${REST} more`);
