@@ -197,3 +197,26 @@ test("a stop buffered before the inner loop is chosen, whose inner stop throws, 
     process.off("unhandledRejection", onRejection);
   }
 });
+
+test("a buffered command its inner loop refuses is refused in the runner's store, before the inner loop's delivered resolves: never left untaken to wake its run again", async () => {
+  const inner = fakeLoop();
+  const refusing = (d) => {
+    const made = inner.factory(d);
+    return { ...made, command: async (command) => (made.command(command), { refused: "A cap is only raised: name more than the run's $0.12." }) };
+  };
+  const refusedRows = [];
+  const gate = defer();
+  const dispatch = createDispatchLoop({ launchOf: async () => (await gate.promise, { body: piBody }), resolve: () => refusing })({
+    ...deps,
+    refuse: async (commandId, reason) => void refusedRows.push([commandId, reason]),
+  });
+  const run = dispatch.start(CLAIM);
+  // Taken for now: the runner moves past the row, so its answer is the dispatch's to keep.
+  assert.deepEqual(await dispatch.command({ id: 7, kind: "raise", body: { capUsd: 0.12 } }), { taken: true });
+  gate.resolve();
+  await inner.whenStarted;
+  await inner.depsOf().delivered;
+  assert.deepEqual(refusedRows, [[7, "A cap is only raised: name more than the run's $0.12."]], "refused in the inner loop's words, once the loop's delivered resolves");
+  inner.finish();
+  await run;
+});

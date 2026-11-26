@@ -6,7 +6,7 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, st
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
-import { agent, call, clientOwnerSession, follow, scratch, serve, startRun, storeBytes, withEnv } from "./support.mjs";
+import { agent, call, claimsAfterRow, clientOwnerSession, FAUX, follow, scratch, serve, startInProcessRunner, startRun, storeBytes, withEnv } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 import { findPlanted, plantedValue } from "./fixtures/planted-secrets.mjs";
 import { storeOn } from "./store-helpers.mjs";
@@ -1891,4 +1891,57 @@ test("a run's own process, its harness's keys saved and no owner sign-in: a held
     assert.match(error.message, /HARNESS_RECIPE_NOT_INSTALLED|not installed/, `a recipe that is not installed is refused whether held or not: ${error.message}`);
     return true;
   });
+});
+
+/** A trigger's message to a run, as a message_run target writes it: it answers nothing, and its origin is the trigger. */
+const TRIGGER_MESSAGE = { text: "A new event came in.", answers: false, origin: { kind: "trigger", trigger_id: "trigger-1", source: "webhook", owner: false } };
+
+test("a run's process on its owner's sign-in (a plan-billed recipe, no key saved), its run ended: a trigger's message that reopens it is written refused in the sign-in's words, and the run is back at its end, claimed once for it and never again on each poll", { skip: linux, timeout: 240_000 }, async (t) => {
+  const { RECIPE_TURN_PERSON_ONLY } = await import("../dist/harness-keys.js");
+  const { data, file, origin } = await installed(t, (o) => signingIn(o));
+  assert.equal((await signIn(file, data)).status, 0);
+  await noteChecked(data, file);
+  const lines = [];
+  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true, childRuns: { log: (line) => void lines.push(line) } });
+  const person = await startRun(server.api, "on-sign-in", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  const ran = await follow(server.api, person.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(ran.last.status, "completed", JSON.stringify(ran.last));
+  for (let row = await server.store.runs.get(person.run_id); row.runner !== null; row = await server.store.runs.get(person.run_id)) await new Promise((resolve) => setTimeout(resolve, 50));
+  const before = (await server.store.runAttempts.forRun(person.run_id)).length;
+  const heard = origin.messages().length;
+  const message = await server.store.runs.reopen(person.run_id, { kind: "steer", body: TRIGGER_MESSAGE });
+  const { claims, row, run } = await claimsAfterRow(server.store, person.run_id, message.id, before, server.runnerBeats);
+  assert.equal(claims, 1, `claimed once for the message, never again: ${claims} claims; the row ${JSON.stringify(row)}; ${lines.join("\n")}`);
+  assert.equal(row?.refused, RECIPE_TURN_PERSON_ONLY, JSON.stringify(row));
+  assert.equal(run.state, "ended", JSON.stringify(run));
+  assert.equal(origin.messages().length, heard, "no turn of it reached the vendor");
+});
+
+test("a run's process on its owner's sign-in, its run stopped before its first input: a trigger's message that reopens it is written refused in the sign-in's words, and the run is back at its stop, claimed once for it and never again on each poll", { skip: linux, timeout: 240_000 }, async (t) => {
+  const { RECIPE_TURN_PERSON_ONLY } = await import("../dist/harness-keys.js");
+  const { sendCommand } = await import("../dist/runner/commands.js");
+  const { data, file, origin } = await installed(t, (o) => signingIn(o));
+  assert.equal((await signIn(file, data)).status, 0);
+  await noteChecked(data, file);
+  const lines = [];
+  const childRuns = { log: (line) => void lines.push(line) };
+  // No runner yet: the person's stop is in before any claim, so the run ends stopped with its session never sent its input.
+  const server = await serve(t, { data, harnessRecipes: [file], harnessSignIn: true, runner: false });
+  const person = await startRun(server.api, "stopped-first", "Reply with the word ready.", { harness: "model-agent", model: "model-agent/default" });
+  await sendCommand(server.store, person.run_id, { kind: "stop", body: {} });
+  // Closed here, before serve()'s own teardown (its after-hook runs first).
+  const runner = await startInProcessRunner(server.data, { data: server.data, faux: FAUX, mcpOwn: server.own, harnessRecipes: [file], harnessSignIn: true, childRuns });
+  try {
+    for (let row = await server.store.runs.get(person.run_id); !(row.state === "stopped" && row.runner === null); row = await server.store.runs.get(person.run_id)) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal((await server.store.runs.get(person.run_id)).outcome, "stopped");
+    const before = (await server.store.runAttempts.forRun(person.run_id)).length;
+    const message = await server.store.runs.reopen(person.run_id, { kind: "steer", body: TRIGGER_MESSAGE });
+    const { claims, row, run } = await claimsAfterRow(server.store, person.run_id, message.id, before, runner.beats);
+    assert.equal(claims, 1, `claimed once for the message, never again: ${claims} claims; the row ${JSON.stringify(row)}; ${lines.join("\n")}`);
+    assert.equal(row?.refused, RECIPE_TURN_PERSON_ONLY, JSON.stringify(row));
+    assert.deepEqual([run.state, run.outcome], ["stopped", "stopped"], JSON.stringify(run));
+    assert.equal(origin.messages().length, 0, "no turn reached the vendor");
+  } finally {
+    await runner();
+  }
 });
