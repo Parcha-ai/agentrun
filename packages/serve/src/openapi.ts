@@ -33,6 +33,8 @@ import { COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { LOOP_COMPILES_MAX } from "./store-reads/loop.js";
 import { GRADE_SOURCES, GRADES_KEPT, LABEL_MAX } from "./learn/promote.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
+// Also registers its operations as the owner's alone (secret-writes.ts).
+import { INKLING, INKLING_OLLAMA, LOCAL_MODEL_TAGS, QWEN3_DEFAULT } from "./local-model.js";
 import { MAX_MODEL_KEY_CHARS } from "./run-model-key.js";
 import { MIN_SECRET } from "./learn/secrets.js";
 import { HANDED_SECRET } from "./handed-secret.js";
@@ -392,7 +394,7 @@ const RUN_USAGE_LINE = {
     not_metered_calls: { type: "integer", minimum: 1, description: "On `tools`: calls with no price set (an MCP tool its owner set none for), as GET /usage counts them. They ran outside the run's cost and its cap, so they are in neither `quantity` nor `usd`: a line of such calls alone has `quantity` 0 and `usd` 0." },
     resource: { enum: ["vcpu", "memory", "gpu", "disk"], description: "On `compute_time`: the resource the line counts." },
     gpu_type: { type: ["string", "null"], description: "On `compute_time` for `gpu`: the provider's own name for the GPU type. Null on the other resources." },
-    unheld_quantity: { type: ["number", "null"], minimum: 0, description: "On `compute_time`: the part of `quantity` no claim of the run held, so no cap held and nothing booked: a computer kept past its claim for a follow-up, one deleted after its run ended, one whose delete failed, one still open. Its cost is in neither `usd` nor `total`. Null when `quantity` is." },
+    unheld_quantity: { type: ["number", "null"], minimum: 0, description: "On `compute_time`: the part of `quantity` no claim of the run held, so no cap held and nothing booked: a computer kept past its claim for a follow-up, one deleted after its run ended, one whose delete failed, one still open. Its cost is in neither `usd` nor `total`. 0 for a provider that bills nothing (Docker): its time costs nothing, held or not. Null when `quantity` is." },
     open_computers: { type: "integer", minimum: 0, description: "On `compute_time`: how many of the line's computers no delete has ended yet (still running, or their delete failed), counted up to `measured_to`." },
     measured_to: { type: "string", format: "date-time", description: "On `compute_time` with an open computer: the moment its time is counted to, this read's." },
   },
@@ -1139,6 +1141,35 @@ const MODEL_GATEWAY_VIEW = closed({
   set_at_start: { type: "array", items: { type: "string" }, description: "The variables of these fields set where AgentRun starts (AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_FAST, AGENT_MODEL_STRONG, AGENT_MODEL_API_KEY): each wins over what is saved here, and is changed only where AgentRun starts. A key set there goes only to the gateway AGENT_MODEL_BASE_URL names, never to a saved one." },
   secret: { ...SECRET_ITEM("\"model:gateway\": the gateway's key, which PUT /settings/model-gateway takes as api_key and AGENT_MODEL_API_KEY sets with AGENT_MODEL_BASE_URL."), description: "The gateway's key as its SecretMeta: never a value." },
   problem: { type: ["string", "null"], description: "Why the gateway in force runs no model, in words: an address the one rule refuses (https only, or http to this machine; no user, query, fragment or dot segment). Null when none." },
+});
+/** GET /settings/local-model's answer (local-model.ts localModelView): this machine, its Ollama, the model recommended for
+ *  them and the pull here. */
+const LOCAL_MODEL_VIEW = closed({
+  machine: closed({
+    platform: { type: "string", description: "The operating system as Node names it: `darwin`, `linux`, `win32`." },
+    arch: { type: "string", description: "The CPU architecture as Node names it: `arm64`, `x64`." },
+    ram_bytes: { type: "integer", minimum: 0, description: "Total memory, in bytes (on Apple silicon, its unified memory)." },
+    gpu: { oneOf: [
+      closed({ kind: { const: "apple" }, unified: { const: true } }, "Apple silicon (darwin on arm64): the GPU shares the unified memory."),
+      closed({ kind: { const: "nvidia" }, name: { type: "string" }, memory_bytes: { type: "integer", minimum: 0 } }, "The first NVIDIA GPU nvidia-smi names, with its memory."),
+      closed({ kind: { const: "unknown" } }, "No GPU read cheaply here."),
+    ] },
+  }, "This machine, read once when the server started."),
+  ollama: closed({ asked: { type: "boolean", description: "Whether this server asks an Ollama at all: false under the faux model or a model gateway (AGENT_MODEL_BASE_URL), where `reachable` is false, `version` null, and `recommended.why` is the refusal's words." }, reachable: { type: "boolean", description: "Whether the Ollama here answered GET /api/version." }, version: { type: ["string", "null"], description: "The version it says; null when it did not answer." } }),
+  recommended: closed({
+    tag: { type: ["string", "null"], description: `The Ollama tag recommended here: ${INKLING} on Apple silicon with Ollama ${INKLING_OLLAMA} or later, else ${QWEN3_DEFAULT} or a smaller qwen3 that fits in memory (one of ${LOCAL_MODEL_TAGS.join(", ")}). Null where none fits or no Ollama answers.` },
+    why: { type: "string", description: "Why, in words: the memory each tag needs and this machine has, an Ollama to update or install, or that the tag is already pulled." },
+    pulled: { type: "boolean", description: "Whether the Ollama here has the tag already: no pull needed." },
+  }),
+  pull: { oneOf: [{ type: "null" }, closedWith({
+    tag: { type: "string" },
+    state: { enum: ["pulling", "done", "failed"], description: "`done` once the model is in the server's listing too, so the picker has it." },
+    status: { type: "string", description: "Ollama's last status line (`pulling manifest`, `pulling <digest>`, `success`)." },
+    completed_bytes: { type: "integer", minimum: 0 },
+    total_bytes: { type: "integer", minimum: 0, description: "The bytes of every layer Ollama has named so far." },
+  }, { error: { type: "string", description: "With `failed`: why, in Ollama's words." } })], description: "The last pull made here since the server started, or null." },
+  can_pull: { type: "boolean", description: "Whether POST /settings/local-model/pull may pull here." },
+  refused: { type: ["string", "null"], description: "Why not, in words, with `can_pull` false: the faux model or a model gateway takes every model here, or this server is not one owner's own on their own machine. Null with `can_pull` true." },
 });
 /** POST /settings/model-gateway/test's answer: the model ids the gateway lists, or why it could not be asked. */
 const MODEL_GATEWAY_TEST = {
@@ -3167,6 +3198,27 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       requestBody: { required: false, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { base_url: { type: "string", minLength: 1, description: "The gateway's address to ask; left out, the gateway in force." }, api_key: { type: ["string", "null"], minLength: 1, maxLength: 4096, "x-agentrun-secret": true, description: "The key to ask with. Null: ask with no key, never the saved one; left out, the saved key, and only when the address is of the origin it was saved for." } } } } } },
       responses: { "200": json(MODEL_GATEWAY_TEST, "The test's answer."), ...errors(401, 403, 415, 422, 429, 500) },
       "x-agentrun-serve": "modelgateway/1",
+    },
+  },
+  "/settings/local-model": {
+    get: {
+      operationId: "getLocalModel", tags: ["local"], summary: "This machine, its Ollama, the free local model recommended for them, and the pull here",
+      description: `What the console's Free local model card reads: the machine (platform, arch, memory, a GPU where it is cheap to read), whether the Ollama here answers and its version, the model recommended (${INKLING} on Apple silicon with Ollama ${INKLING_OLLAMA} or later; else ${QWEN3_DEFAULT}, or a smaller qwen3 that fits in memory, or none, with why), and the pull here with its progress. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.`,
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(LOCAL_MODEL_VIEW, "This machine and its model."), ...errors(401, 403, 429, 500) },
+      "x-agentrun-serve": "localmodel/1",
+    },
+  },
+  "/settings/local-model/pull": {
+    post: {
+      operationId: "pullLocalModel", tags: ["local"], summary: "Pull a recommended model into the Ollama here",
+      description: `Starts pulling \`tag\` through this server's own Ollama (POST /api/pull) and answers at once; GET /settings/local-model shows its progress, and once it is \`done\` the model is in capabilities' models with no restart. Only a tag the recommendation can name, ${LOCAL_MODEL_TAGS.join(", ")} (422 input_invalid for any other). Only on one owner's own server on their own machine, and never under the faux model or a model gateway: 403 forbidden in words otherwise. One pull at a time: 409 local_model_pulling while one is under way. The owner's signed-in session alone (ownerSession).`,
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["tag"], properties: { tag: { enum: [...LOCAL_MODEL_TAGS], description: "The tag to pull: the recommendation's (`recommended.tag`), one of the tags a recommendation names (any other: 422)." } } } } } },
+      responses: { "202": json(LOCAL_MODEL_VIEW, "The pull started: `pull` is under way."), ...errors(401, 403, 409, 415, 422, 429, 500) },
+      "x-agentrun-serve": "localmodel/1",
     },
   },
   "/auth/session": {

@@ -21,7 +21,7 @@ export function modelLabel(id: string, routePrefix: string | null | undefined): 
 /** The provider of the models on this machine's Ollama, which the server lists itself (`ollama/<tag>`). */
 const LOCAL_PROVIDER = "ollama";
 /** Whether `id` names a model on this machine's Ollama: $0, with no limit on its requests. */
-const isLocalModel = (id: string): boolean => id.startsWith(`${LOCAL_PROVIDER}/`) && id.length > LOCAL_PROVIDER.length + 1;
+export const isLocalModel = (id: string): boolean => id.startsWith(`${LOCAL_PROVIDER}/`) && id.length > LOCAL_PROVIDER.length + 1;
 
 /** The model a run ran on, as the server booked it (GET /v2/runs/{id}/usage, its `tokens` lines): the one most of its
  *  requests went to (a side call's or a subagent's model aside), its lines summed first (the server books one per

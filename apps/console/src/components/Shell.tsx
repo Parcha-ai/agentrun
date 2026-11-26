@@ -1,4 +1,4 @@
-import { Brain, CalendarClock, Code, Factory, History, LayoutGrid, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sparkles, Sun } from "lucide-react";
+import { BadgeDollarSign, Brain, CalendarClock, Code, Factory, History, LayoutGrid, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sparkles, Sun } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
 import { DojoIcon } from "@/components/DojoIcon";
@@ -7,11 +7,11 @@ import { Button, NavItem } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
-export type Section = "mission" | "factory" | "playground" | "agents" | "runs" | "dojo" | "templates" | "suggestions" | "triggers" | "wrapped" | "settings";
+export type Section = "mission" | "factory" | "playground" | "agents" | "runs" | "dojo" | "templates" | "suggestions" | "triggers" | "wrapped" | "settings" | "free";
 
 /** Each section as the browser's tab names it. */
-const PLACES: Record<Section, string> = { mission: "Mission Control", factory: "Agent Factory", playground: "Playground", agents: "Agents", runs: "Runs", dojo: "Dojo", templates: "Templates", suggestions: "Suggested agents", triggers: "Triggers", wrapped: "Wrapped", settings: "Settings" };
-const ROUTES: Record<Section, string> = { mission: "#/", factory: "#/factory", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", suggestions: "#/suggestions", triggers: "#/triggers", wrapped: "#/wrapped", settings: "#/settings/keys" };
+const PLACES: Record<Section, string> = { mission: "Mission Control", factory: "Agent Factory", playground: "Playground", agents: "Agents", runs: "Runs", dojo: "Dojo", templates: "Templates", suggestions: "Suggested agents", triggers: "Triggers", wrapped: "Wrapped", settings: "Settings", free: "Free" };
+const ROUTES: Record<Section, string> = { mission: "#/", factory: "#/factory", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", suggestions: "#/suggestions", triggers: "#/triggers", wrapped: "#/wrapped", settings: "#/settings/keys", free: "#/free" };
 const THEME_LABEL: Record<Theme, [string, typeof Brain]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
 
 /** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
@@ -71,6 +71,7 @@ export function Shell({ active, settings = false, triggers = false, banners, onN
             <NavItem className="w-full" active={active === "mission"} onClick={() => navigate("mission")}><LayoutGrid className="size-4 shrink-0" aria-hidden />Mission Control</NavItem>
             <NavItem className="w-full" active={active === "factory"} onClick={() => navigate("factory")}><Factory className="size-4 shrink-0" aria-hidden />Agent Factory</NavItem>
             <NavItem className="w-full" active={active === "playground"} onClick={() => navigate("playground")}><Code className="size-4 shrink-0" aria-hidden />API playground</NavItem>
+            <NavItem className="w-full" active={active === "free"} onClick={() => navigate("free")}><BadgeDollarSign className="size-4 shrink-0" aria-hidden />Free</NavItem>
             <NavItem className="w-full" active={active === "agents"} onClick={() => navigate("agents")}><Brain className="size-4 shrink-0" aria-hidden />Agents</NavItem>
             <NavItem className="w-full" active={active === "suggestions"} onClick={() => navigate("suggestions")}><Sparkles className="size-4 shrink-0" aria-hidden />Suggested</NavItem>
             <NavItem className="w-full" active={active === "templates"} onClick={() => navigate("templates")}><LayoutTemplate className="size-4 shrink-0" aria-hidden />Templates</NavItem>
