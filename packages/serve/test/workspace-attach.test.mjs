@@ -165,7 +165,7 @@ test("attached: a path that leaves the root is ESCAPE and never reaches the comp
   await refused(workspace.remove(""), "REFUSED");
 });
 
-test("attached: exec is the computer's process.start in /workspace/<cwd>, read as it comes; never exec.run; stdin is refused", async () => {
+test("attached: exec is the computer's process.start in /workspace/<cwd>, read as it comes; never exec.run; stdin goes by process.write, then closed", async () => {
   const { root, computer, workspace } = await attached();
   realProcesses(computer, root);
   mkdirSync(join(root, "src"));
@@ -176,7 +176,19 @@ test("attached: exec is the computer's process.start in /workspace/<cwd>, read a
   assert.deepEqual([Buffer.from(result.stdout).toString(), result.stderr, result.code, result.signal, result.timedOut, result.truncated], [`${join(root, "src")}\n`, "err\n", 3, null, false, false]);
   assert.deepEqual(chunks.sort(), [["stderr", "err\n"], ["stdout", `${join(root, "src")}\n`]]);
   await workspace.exec(["true"], { env: {}, timeoutMs: 1000, onOutput: () => { throw new Error("the caller's bug"); } });
-  await refused(workspace.exec(["cat"], { env: {}, timeoutMs: 1000, stdin: Buffer.from("x") }), "REFUSED", /stdin/);
+  // stdin: the process is started with its stdin open (stdin: true, never the bytes in its argv or environment), the
+  // bytes written, and its stdin closed, so a program that reads to the end ends.
+  computer.clear();
+  const input = Buffer.from(`one\n${"x".repeat(1000)}\n`);
+  const fed = await workspace.exec(["sh", "-c", "IFS= read -r first; printf '%s|' \"$first\"; wc -c"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5000, stdin: input });
+  assert.deepEqual([Buffer.from(fed.stdout).toString().replace(/\s+/g, ""), fed.code], ["one|1001", 0]);
+  assert.deepEqual(computer.calls[0], ["process.start", { argv: ["sh", "-c", "IFS= read -r first; printf '%s|' \"$first\"; wc -c"], cwd: "/workspace", env: { PATH: "/usr/bin:/bin" }, stdin: true }]);
+  const writes = computer.calls.filter(([method]) => method === "process.write");
+  assert.equal(Buffer.concat(writes.map(([, params]) => Buffer.from(params.data ?? "", "base64"))).toString(), input.toString());
+  assert.equal(writes.at(-1)[1].close, true);
+  // A program that ends without reading its input answers as it ended.
+  const unread = await workspace.exec(["sh", "-c", "exit 4"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 5000, stdin: Buffer.from("never read\n") });
+  assert.equal(unread.code, 4);
   await refused(workspace.exec(["no-such-program-here"], { env: {}, timeoutMs: 1000 }), "NOT_FOUND");
 });
 

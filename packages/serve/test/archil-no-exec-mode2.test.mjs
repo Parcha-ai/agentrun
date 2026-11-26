@@ -12,7 +12,7 @@ import { delimiter, join } from "node:path";
 import { test } from "node:test";
 import { scratch, serve, withEnv } from "./support.mjs";
 
-const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "DOCKER_HOST", "DOCKER_CONTEXT", "ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"];
+const UNSET = ["AGENTRUN_SEAL_KEY", "AGENTRUN_BOXES", "DOCKER_HOST", "DOCKER_CONTEXT", "ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE", "E2B_API_KEY", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY", "AGENT37_API_KEY"];
 const NO_EXEC = /gcp-us-central1 has no serverless exec/;
 const SANDBOX = /sandbox computer/;
 
@@ -123,6 +123,34 @@ for (const docker of [true, false]) {
     assert.equal(made.status, 201, JSON.stringify(made.body));
     assert.equal("place" in made.body.definition, false, "no place stamped: the runner");
     assert.equal("computer" in made.body.definition, false);
+  });
+
+  test(`Mode 2 on gcp-us-central1, ${label}: a template whose computer list asks for a shell first ([shell, none], as code-review and agent-scout ask, each with a checkout) gets a sandbox that mounts Archil where one is ready here, so its runs have a shell and their checkout; with none ready, no computer, saying why; aws-us-east-1 keeps Archil's exec`, async (t) => {
+    const templates = join(await scratch(t), "templates");
+    await mkdir(join(templates, "pr-reader"), { recursive: true });
+    await writeFile(join(templates, "pr-reader", "agent.md"), "---\nname: pr-reader\nversion: 1.0.0\ndescription: Reads a pull request.\ncomputer: [shell, none]\ncheckout: pull_request\ntools: [read, bash]\n---\nRead the change in repo/.\n");
+    const apply = async (api) => {
+      const applied = await api("POST", "/templates/pr-reader/apply", {});
+      assert.equal(applied.status, 201, JSON.stringify(applied.body));
+      return { applied: applied.body, definition: (await api("GET", `/agents/${applied.body.agent_id}`)).body.definition };
+    };
+    // A sandbox provider that mounts Archil, its key set (E2B): the template's agent is made with it.
+    const ready = await started(t, { region: "gcp-us-central1", docker, templates, env: { E2B_API_KEY: "fake-test-key" } });
+    const listed = (await ready.api("GET", "/templates")).body.templates?.find((one) => one.name === "pr-reader");
+    t.diagnostic(`computer_here ${JSON.stringify(listed?.computer_here)}`);
+    const withSandbox = await apply(ready.api);
+    assert.deepEqual(withSandbox.definition.computer, { kind: "sandbox", provider: "e2b" }, JSON.stringify(withSandbox));
+    assert.equal(withSandbox.definition.checkout, "pull_request");
+    assert.ok(withSandbox.definition.tools.includes("bash"), JSON.stringify(withSandbox.definition.tools));
+    await ready.stop();
+    // None ready: no computer, saying why and to give it a sandbox computer.
+    const none = await apply(await server(t, { region: "gcp-us-central1", docker, templates }));
+    assert.equal(none.definition.computer, undefined, JSON.stringify(none.definition));
+    assert.match(JSON.stringify(none.applied), NO_EXEC);
+    // A region with exec: the runner's shell, Archil's exec, as before, with the same key set.
+    const aws = await apply(await server(t, { region: "aws-us-east-1", docker, templates, env: { E2B_API_KEY: "fake-test-key" } }));
+    assert.equal(aws.definition.computer, undefined, JSON.stringify(aws.definition));
+    assert.ok(aws.definition.tools.includes("bash"), "bash on Archil's exec");
   });
 
   test(`Mode 2, ${label}: an agent saved with bash and no computer on aws-us-east-1, its server started again on gcp-us-central1, is refused its run (409), naming the region and a sandbox computer, and no run starts`, async (t) => {
