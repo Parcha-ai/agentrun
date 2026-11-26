@@ -19,6 +19,7 @@
 //    booked the same way, at the meter's quote. A call it cannot price is refused unsent under a spend cap, and with
 //    none runs booked as an unknown charge. A meter's keys (McpMeter.keys; fal's submission keys on fal's own host) are
 //    scoped to the run on every call of its server as it leaves, and read back as the agent's own in what the model reads.
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import type { McpCallResult, McpTool } from "@parcha/agentrun-kernel";
@@ -165,6 +166,9 @@ export function mcpPinOf(names: readonly string[], source: McpServerSource): Mcp
   return pin;
 }
 
+/** An HTTP answer's facts a call's error reads: its status, and the wait its Retry-After names (filed-tool.ts errorLine). */
+type Answered = { last?: number; retryAfter?: number };
+
 /** A request's address refused by the guarded fetch below, before anything left: thrown only there, and told apart by
  *  its class, never by its words. A server's error answer can carry the same words after it ran the call (the SDK puts
  *  the body of a failed POST in its error's message), and reading them as this refusal would say a call that may have
@@ -265,9 +269,13 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const pins = new Map(Object.entries(options.pin));
   const meters = new Map([...pins].map(([server, pinned]) => [server, meterFor(pinned, { media: options.media, now: options.now, run: options.run })] as const));
   const credentials: Pick<Map<string, McpCredentials[string]>, "get"> = { get: (server) => (Object.hasOwn(options.credentials, server) ? options.credentials[server] : undefined) };
-  /** Each server's last HTTP status, which tells a refused credential from another failure. (An address refusal is never
-   *  kept here: it is read from each call's own error, since calls to one server run at once.) */
-  const statuses = new Map<string, { last?: number; retryAfter?: number }>();
+  /** Each server's last HTTP status, which tells a refused credential from another failure: what a call reads that failed
+   *  before it sent its own request (its connect). (An address refusal is never kept here: it is read from each call's
+   *  own error, since calls to one server run at once.) */
+  const statuses = new Map<string, Answered>();
+  /** A call's own request's status and wait, kept with the call that sent it (forward), never on the server's connection:
+   *  calls to one server run at once, so another call's answer never stands for this one's. */
+  const answeredBy = new AsyncLocalStorage<Answered>();
   const send = options.fetch ?? fetch;
   /** The credential values each call in flight took or its server's requests sent while it was out, one set per call, by
    *  server: a refresh can swap a token between a call taking its headers and a request leaving, so
@@ -300,7 +308,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     scrub(text, [...Object.values(headers), ...values, ...Object.values(credentials.get(server)?.headers ?? {}), ...Object.values(queryOf(server))]);
 
   /** The fetch one server's client sends with: its credential added, no redirect followed, at most MAX_RESPONSE read. */
-  const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number; retryAfter?: number }, query: Record<string, string> = {}) => async (input: string | URL | Request, init: RequestInit = {}) => {
+  const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: Answered, query: Record<string, string> = {}) => async (input: string | URL | Request, init: RequestInit = {}) => {
     // The account its client was connected as, set over whatever the request's address says, and held for the scrub.
     if (Object.keys(query).length) {
       hold(server, query);
@@ -325,6 +333,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     status.last = response.status;
     // Its wait, when it names one: a filed tool's error line says it (filed-tool.ts errorLine), never the body.
     status.retryAfter = retryAfterHeader(response.headers.get("retry-after"));
+    // And the call's own, when a call sent it (answeredBy).
+    const own = answeredBy.getStore();
+    if (own) Object.assign(own, { last: status.last, retryAfter: status.retryAfter });
     if (response.status >= 300 && response.status < 400) throw new Error(`it answered a redirect (HTTP ${response.status}), which is never followed`);
     return capped(response);
   };
@@ -334,7 +345,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     const key = JSON.stringify(query);
     const held = clients.get(server);
     if (held && held.query === key) return held.upstream;
-    const status: { last?: number; retryAfter?: number } = {};
+    const status: Answered = {};
     statuses.set(server, status);
     const upstream = (async () => {
       const { client, transport } = mcpClient(await import("@modelcontextprotocol/client"), { name: "agentrun", version: "1.0.0", url: new URL(url), fetch: guarded(server, () => credentials.get(server)?.headers ?? {}, status, query) as never });
@@ -445,6 +456,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // Every text the model reads of the call (its answer, a filed one, an error), its keys read as the agent's own.
     const clean = back ? (text: string) => back(scrubbed(text)) : scrubbed;
     hold(server, queryOf(server));
+    // What this call's own request was answered with (answeredBy): read by its error, never another call's.
+    const own: Answered = {};
     try {
       const upstream = await until(connect(server, url, headers), boundedSignal);
       connected = true;
@@ -454,9 +467,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       }
       // The pinned definition, so the SDK mirrors its x-mcp-header parameters into Mcp-Param-* headers on a 2026-07-28
       // server, as its own listing would have it do.
-      const result = operation
+      const result = await answeredBy.run(own, async () => operation
         ? await resourceResult(upstream, operation, args, boundedSignal, options.bounds?.callMs ?? CALL_MS, scrubbed)
-        : (await upstream.callTool({ name: tool.name, arguments: args }, { signal, timeout: options.bounds?.callMs ?? CALL_MS, toolDefinition: { name: tool.name, inputSchema: tool.inputSchema } })) as Record<string, unknown>;
+        : (await upstream.callTool({ name: tool.name, arguments: args }, { signal, timeout: options.bounds?.callMs ?? CALL_MS, toolDefinition: { name: tool.name, inputSchema: tool.inputSchema } })) as Record<string, unknown>);
       outcome.raw = result;
       // A meter's own read (`quiet`): its raw result is all that is wanted, nothing filed for a model to read.
       if (outcome.quiet) return said("", result.isError === true);
@@ -485,7 +498,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
         outcome.unsent = true;
         return said(`The MCP server ${server}'s address is refused here: ${refused}. Nothing was sent.`, true);
       }
-      const status = statuses.get(server)?.last;
+      // Its own request's status and wait once it was connected; before that, its connect's (the server's connection).
+      const seen = connected ? own : (statuses.get(server) ?? {});
+      const status = seen.last;
       // An OAuth token that expired mid-run is not refreshed here (no channel to serve for it): the next launch does.
       if (status === 401 || status === 403) return said(`The MCP server ${server} refused its credential (its sign-in expired or was revoked, or its key changed): ${SIGN_IN_AGAIN}, or update its credential there.`, true);
       // It never answered at all: its connection failed before any HTTP status, so nothing reached it.
@@ -498,7 +513,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
         const thrown = error as { code?: unknown; message?: unknown; data?: unknown };
         const code = ProtocolError.isInstance(error) && Number.isInteger(thrown.code) ? (thrown.code as number) : undefined;
         const body = { error: { ...(code !== undefined ? { code } : {}), message: String(thrown?.message ?? error), ...(thrown?.data !== undefined ? { data: thrown.data } : {}) } };
-        const retryAfterS = statuses.get(server)?.retryAfter;
+        const retryAfterS = seen.retryAfter;
         return await filedOf(filing, tool.name, clean(JSON.stringify(body)), { ...(status !== undefined ? { status } : {}), ...(code !== undefined ? { code } : {}), ...(retryAfterS !== undefined ? { retryAfterS } : {}) });
       }
       const why = clean(String((error as Error)?.message ?? error)).slice(0, 300);
