@@ -27,7 +27,8 @@ export type FactoryFilters = { repository: string; control: string };
 export type FactoryPlace = FactoryFilters & { session?: string };
 export const NO_FACTORY_FILTERS: FactoryFilters = { repository: "all", control: "all" };
 const REPOSITORY = /^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/;
-const CONTROLS: Record<string, string> = { managed: "control:Managed", observed: "control:Observed" };
+// A Map, not an object: an address may say any word, and an object answers to "constructor" and "toString" too.
+const CONTROLS = new Map([["managed", "control:Managed"], ["observed", "control:Observed"]]);
 
 /** `#/factory`, saying only what is not the default: `?session=<run id>&repo=<owner/name | unreported>&control=<managed |
  *  observed>`. A reload, a link and a trip to a run's own page and back all open the same board. */
@@ -36,7 +37,7 @@ export function factoryHash(place: Partial<FactoryPlace> = {}): string {
   if (place.session) q.set("session", place.session);
   if (place.repository === "unreported") q.set("repo", "unreported");
   else if (place.repository?.startsWith("repo:")) q.set("repo", place.repository.slice(5));
-  const control = Object.entries(CONTROLS).find(([, value]) => value === place.control)?.[0];
+  const control = [...CONTROLS].find(([, value]) => value === place.control)?.[0];
   if (control) q.set("control", control);
   const query = q.toString();
   return query ? `#/factory?${query}` : "#/factory";
@@ -49,7 +50,7 @@ export function factoryPlace(query: string): FactoryPlace {
   const repo = q.get("repo") ?? "", session = q.get("session") ?? "";
   return {
     repository: repo === "unreported" ? "unreported" : REPOSITORY.test(repo) ? `repo:${repo}` : "all",
-    control: CONTROLS[q.get("control") ?? ""] ?? "all",
+    control: CONTROLS.get(q.get("control") ?? "") ?? "all",
     ...(session && session.length <= 200 ? { session } : {}),
   };
 }

@@ -220,6 +220,8 @@ describe("the board's address", () => {
   it("widens a filter it does not know to every session, never to an empty board no option explains", () => {
     expect(factoryPlace("repo=not-a-repository&control=owned")).toEqual({ repository: "all", control: "all" });
     expect(factoryPlace("repo=a/b/c&control=Managed")).toEqual({ repository: "all", control: "all" });
+    // A word every object answers to (constructor, toString, __proto__) is no control: it is not one of the two.
+    for (const word of ["constructor", "toString", "__proto__", "hasOwnProperty", "valueOf"]) expect(factoryPlace(`control=${word}`), word).toEqual({ repository: "all", control: "all" });
     // A session id past any real one is not carried into a request.
     expect(factoryPlace(`session=${"x".repeat(201)}`)).toEqual({ repository: "all", control: "all" });
   });
