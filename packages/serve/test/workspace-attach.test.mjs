@@ -212,6 +212,26 @@ test("attached: exec's stdin, a write computerd refuses: a program that closed i
   assert.ok(computer.calls.some(([method, params]) => method === "process.signal" && params.signal === "KILL"), "the process was killed");
 });
 
+test("attached: exec's stdin, a write computerd answers invalid for an error other than a closed input (its catch-all) while the program still reads: its stdin is closed at once (process.write close, its answer ignored), so the program sees its input end and answers now, not at the call's deadline", { timeout: 30_000 }, async () => {
+  const { root, computer, workspace } = await attached();
+  realProcesses(computer, root);
+  const real = computer.overrides["process.write"];
+  // computerd's catch-all for a write's OS error (process/table.go Write's default case): kind invalid, answered before
+  // its close is looked at, so the program's stdin is still open. A write that only closes goes to the real process.
+  computer.overrides["process.write"] = (params) => {
+    if (params.data !== undefined) throw Object.assign(new Error("process 1's input could not be written: write |1: no buffer space available"), { code: "EINVAL" });
+    return real(params);
+  };
+  const started = Date.now();
+  const result = await workspace.exec(["sh", "-c", "cat > /dev/null; exit 7"], { env: { PATH: "/usr/bin:/bin" }, timeoutMs: 20_000, stdin: Buffer.from("Authorization: never read\n") });
+  assert.equal(result.timedOut, false, "not at the call's deadline");
+  assert.equal(result.code, 7, "the program saw its input end and answered as it ended");
+  assert.ok(Date.now() - started < 10_000, `at once: ${Date.now() - started} ms`);
+  const writes = computer.calls.filter(([method]) => method === "process.write").map(([, params]) => params);
+  assert.equal(writes.length, 2, JSON.stringify(writes));
+  assert.deepEqual(writes[1], { id: writes[0].id, close: true }, "the close, alone, after the refused write");
+});
+
 test("attached: exec streams, gives onOutput every byte of a long output (its end included), keeps the cap's head, and says a signal", async () => {
   const { root, computer, workspace } = await attached();
   realProcesses(computer, root);

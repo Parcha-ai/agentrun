@@ -24,9 +24,11 @@ type window struct {
 }
 
 // snapshot is the apps and the windows that show, at one moment: windows bottom of the stack first, active the window
-// manager's active window (0 for none, or no window manager), wm whether a window manager runs.
+// manager's active window (0 for none, or no window manager), wm whether a window manager runs; refused the desktop
+// files entries left out, by id.
 type snapshot struct {
 	entries []Entry
+	refused map[string]refusal
 	windows []window
 	active  uint32
 	wm      bool
@@ -76,7 +78,8 @@ func (g *group) look() (*snapshot, error) {
 }
 
 func (g *group) read(c *x11.Conn) (*snapshot, error) {
-	s := &snapshot{entries: g.entries()}
+	s := &snapshot{}
+	s.entries, s.refused = g.entries()
 	for _, a := range []struct {
 		name string
 		into *uint32

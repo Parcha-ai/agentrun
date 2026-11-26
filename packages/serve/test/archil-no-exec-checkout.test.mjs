@@ -3,9 +3,10 @@
 // is the server's own git fetch, one command over the run's folder. Where the region has exec, that command is Archil's
 // exec over the disk, before the run's computer exists, as before. Where it has none, the disk runs no command, so the
 // checkout waits for the run's computer, and runs in it, through its own exec, once it has mounted the run's folder:
-// the same script, the token on its stdin (process.write), never on its argv or in its environment. A run with no
-// computer that mounts the folder there gets no checkout, and is told why up front, the timeline naming a sandbox
-// computer, instead of a fetch that fails on Archil's "Exec is not enabled". Both spec builders (pi's and the CLI's), over
+// the same script, the token on its stdin (process.write), never on its argv or in the environment it starts with. A run
+// with no computer that mounts the folder there gets no checkout, and is told why up front, the timeline naming a sandbox
+// computer, instead of a fetch that fails on Archil's "Exec is not enabled". Nor does a run whose computer this claim did
+// not start (a kept sandbox taken back, the agent's own, a paired one): it may already have run the agent's code. Both spec builders (pi's and the CLI's), over
 // the Archil fake (its disk, its control plane) with a fake E2B sandbox whose processes run for real in a local folder
 // standing in for the mounted run's folder, and a folder of bare repositories or git's own HTTP server on loopback
 // standing in for GitHub: no network.
@@ -22,13 +23,15 @@ import { realProcesses } from "./workspace-fake-processes.mjs";
 
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
-const { prCheckout, CHECKOUT_DIR } = await import("../dist/runner/pr-checkout.js");
+const { checkoutWhereNoExec, prCheckout, CHECKOUT_DIR } = await import("../dist/runner/pr-checkout.js");
 const { localWorkspace } = await import("../dist/workspace/local.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
 
 const GCP = "gcp-us-central1";
 const AWS = "aws-us-east-1";
 const NO_EXEC = /gcp-us-central1 has no serverless exec/;
+/** Why a computer this claim did not start gets no checkout. */
+const REUSED_WORDS = /the run's computer is not one this claim started \(a sandbox kept through a wait, the agent's own computer or a paired one\): it may already have run the agent's code, so the server hands it no GitHub token/;
 
 async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "no-exec-checkout-"));
@@ -49,8 +52,10 @@ const KINDS = {
 
 /** The disk's execs: Archil's serverless exec, asked. */
 const execsOf = (disk) => disk.calls.filter((call) => call.op === "exec");
+/** The checkout's git script, by its init. */
+const CHECKOUT_SCRIPT = /\binit -q --template= /;
 /** The computer's process.start calls that ran the checkout's git script. */
-const checkoutStarts = (computer) => computer.calls.filter(([method, params]) => method === "process.start" && params.argv.some((arg) => /git init -q/.test(arg)));
+const checkoutStarts = (computer) => computer.calls.filter(([method, params]) => method === "process.start" && params.argv.some((arg) => CHECKOUT_SCRIPT.test(arg)));
 
 for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFromLaunch], ["the CLI spec (opencode)", "opencode", cliRunSpecFromLaunch]]) {
   for (const kind of Object.keys(KINDS)) {
@@ -100,13 +105,51 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     }
   });
 
+  test(`${name}, Mode 2 on ${GCP}, a computer that mounts the run's folder but that this claim did not start (a sandbox an earlier claim kept at its park and this one took back, the agent's own computer, a paired computer): no checkout is made in it, and the run and its timeline are told why (it may already have run the agent's code, so the server hands it no GitHub token)`, { timeout: 120_000 }, async (t) => {
+    const gh = join(await scratch(t), "gh");
+    const named = pullRepo(gh, "acme/widgets");
+    // What computerForClaim answers for each (workspace-computer-kept, workspace-agent-computer and
+    // workspace-computer-for-claim pin it): the same mounted computer, but not one this claim started (no `fresh`).
+    const REUSED = {
+      "a kept sandbox taken back": (computer) => ({ ...computer, fresh: undefined }),
+      "the agent's own computer": (computer) => ({ ...computer, fresh: undefined, made: undefined, keeps: undefined, outlives: true }),
+      "a paired computer": (computer) => ({ ...computer, fresh: undefined, made: undefined, keeps: undefined, outlives: true }),
+    };
+    for (const [which, reused] of Object.entries(REUSED)) {
+      for (const kind of Object.keys(KINDS)) {
+        const { launch } = KINDS[kind](named);
+        const disk = new FakeArchilDisk();
+        disk.noExec = true;
+        const run = await mode2Run(t, { harness, disk, region: GCP, processes: true, body: { checkout: kind }, launch, deps: { githubWeb: `file://${gh}` } });
+        const claimed = run.deps.computerForClaim;
+        run.deps.computerForClaim = async (...args) => reused(await claimed(...args));
+        const { spec } = await run.claimNext(build);
+        const line = spec.session.system.find((one) => /checkout|checked out/i.test(one));
+        t.diagnostic(`${which}, ${kind}: ${line}`);
+        assert.equal(run.mounts.length, 1, `${which}: the computer mounts the run's folder`);
+        assert.deepEqual(checkoutStarts(run.computer), [], `${which}, ${kind}: nothing of the checkout ran in the computer`);
+        assert.ok(!(await readdir(run.scratch)).includes(CHECKOUT_DIR), `${which}, ${kind}: no repo/ folder`);
+        assert.deepEqual(execsOf(disk), [], "the disk's exec was never asked");
+        assert.ok(line, `the run is told about its checkout: ${spec.session.system.join(" | ")}`);
+        assert.match(line, /^No checkout was made, so there is no repo\/ folder: /, `${which}, ${kind}`);
+        assert.match(line, NO_EXEC, `${which}, ${kind}`);
+        assert.match(line, REUSED_WORDS, `${which}, ${kind}`);
+        const told = run.said.find((words) => /^No checkout in repo\//.test(words));
+        assert.ok(told, `the timeline says why: ${JSON.stringify(run.said)}`);
+        assert.match(told, REUSED_WORDS);
+        assert.doesNotMatch(told, /Give the agent a sandbox computer/, "the run has one: the fix is not a sandbox");
+        await spec.release();
+      }
+    }
+  });
+
   test(`${name}, Mode 2 on ${AWS} (a region with exec), a sandbox that mounts the run's folder: unchanged, the checkout is one exec on the disk, before the computer's mount, and nothing of it runs in the computer`, { timeout: 120_000 }, async (t) => {
     const gh = join(await scratch(t), "gh");
     const { at, launch, note } = KINDS.pull_request(pullRepo(gh, "acme/widgets"));
     const disk = new FakeArchilDisk();
     const run = await mode2Run(t, { harness, disk, region: AWS, processes: true, body: { checkout: "pull_request" }, launch, deps: { githubWeb: `file://${gh}` } });
     const { spec } = await run.claimNext(build);
-    const fetches = disk.calls.map((call, index) => ({ call, index })).filter(({ call }) => call.op === "exec" && /git init -q/.test(call.command));
+    const fetches = disk.calls.map((call, index) => ({ call, index })).filter(({ call }) => call.op === "exec" && CHECKOUT_SCRIPT.test(call.command));
     assert.equal(fetches.length, 1, JSON.stringify(execsOf(disk).map((call) => call.command.slice(0, 80))));
     assert.ok(fetches[0].index < run.mounts[0].at, "before the computer's mount took the disk's write delegation");
     assert.deepEqual(checkoutStarts(run.computer), [], "nothing of the checkout ran in the computer");
@@ -117,7 +160,34 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
   });
 }
 
-test("a checkout through a computer's exec (an attached Workspace) carries the App's token on the process's stdin alone: never in its argv or its environment, never in any other call the computer is sent; the checkout lands, the token is revoked, and the run's folder keeps none", { timeout: 120_000 }, async (t) => {
+test("checkoutWhereNoExec, a computer that mounts the run's folder but that the claim did not start: the server's GitHub App is never opened (no token minted), nothing runs in the computer, and the run and its timeline are told why; one the claim started gets its checkout", { timeout: 60_000 }, async (t) => {
+  const asked = [];
+  // The store the App is read from (github-app.ts appOf): none here, so a checkout that went on would fetch anonymously.
+  const deps = { store: { triggerSettings: { get: async (adapter) => (asked.push(adapter), []) } }, sealKey: Buffer.alloc(32, 1) };
+  const ran = [];
+  const workspace = { exec: async (argv) => (ran.push(argv), { code: 0, signal: null, stdout: new Uint8Array(), stderr: "", timedOut: false, truncated: false }) };
+  const named = pullRepo(join(await scratch(t), "gh"), "acme/widgets");
+  for (const kind of Object.keys(KINDS)) {
+    const { launch } = KINDS[kind](named);
+    const said = [];
+    const held = [];
+    const made = await checkoutWhereNoExec(deps, { workspace, fresh: false }, GCP, launch, { hold: () => {} }, undefined, (part) => held.push(part), kind, (words) => void said.push(words));
+    assert.deepEqual(asked, [], `${kind}: the App was never opened, so no token was minted`);
+    assert.deepEqual(ran, [], `${kind}: nothing ran in the computer`);
+    assert.deepEqual(held, [], `${kind}: no removal to hold`);
+    assert.match(made.note, /^No checkout was made, so there is no repo\/ folder: /);
+    assert.match(made.note, REUSED_WORDS);
+    assert.match(made.note, kind === "pull_request" ? /Read the change through the GitHub tools/ : /Read it through the GitHub tools/);
+    assert.equal(said.length, 1);
+    assert.match(said[0], REUSED_WORDS);
+    await made.end();
+  }
+  const fresh = await checkoutWhereNoExec(deps, { workspace, fresh: true }, GCP, KINDS.pull_request(named).launch, { hold: () => {} }, undefined, () => {}, "pull_request");
+  assert.deepEqual(asked, ["github"], "one the claim started: the App is opened for its fetch");
+  assert.equal(ran.length, 1, `its fetch ran in the computer: ${fresh.note}`);
+});
+
+test("a checkout through a computer's exec (an attached Workspace) carries the App's token on the process's stdin alone: never in its argv or the environment it starts with, never in any other call the computer is sent; the checkout lands, the token is revoked, and the run's folder keeps none", { timeout: 120_000 }, async (t) => {
   const dir = await scratch(t);
   const gh = join(dir, "gh");
   const { head, base, mergeBase } = pullRepo(gh, "acme/private");

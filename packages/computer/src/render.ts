@@ -134,11 +134,44 @@ const BUILD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
  */
 const SANDBOX_NAME = /^(computer-[0-9a-f]{12})(?:-r([a-z2-7]{16}))?(?:-e(0|[1-9][0-9]{0,15}))?$/;
 
+/** The run's hash a sandbox of these labels is named with: "" for none. */
+function runPart(labels: Record<string, string>): string {
+	const run = labels[RUN_LABEL];
+	return typeof run === "string" && run !== "" ? runHash(run) : "";
+}
+
+/** The epoch a sandbox of these labels is named with: "" for none, or one that is not a whole number. */
+function epochPart(labels: Record<string, string>): string {
+	const epoch = labels[EPOCH_LABEL];
+	return typeof epoch === "string" && /^(?:0|[1-9][0-9]{0,15})$/.test(epoch) ? epoch : "";
+}
+
 /** A computer's sandbox name for create's request: its name, then its run label's hash and its epoch label where they are one. */
 function sandboxName({ name, labels }: Pick<MachineRequest, "name" | "labels">): string {
-	const run = labels[RUN_LABEL];
-	const epoch = labels[EPOCH_LABEL];
-	return `${name}${typeof run === "string" && run !== "" ? `-r${runHash(run)}` : ""}${typeof epoch === "string" && /^(?:0|[1-9][0-9]{0,15})$/.test(epoch) ? `-e${epoch}` : ""}`;
+	const run = runPart(labels);
+	const epoch = epochPart(labels);
+	return `${name}${run === "" ? "" : `-r${run}`}${epoch === "" ? "" : `-e${epoch}`}`;
+}
+
+/**
+ * The whole sandbox name a listing asks for, where it asks the adapter's name, a run and a whole-number epoch: Render's
+ * own exact name filter then finds it, no page of the workspace's other sandboxes read. Undefined where it asks less.
+ */
+function wholeName(labels: Record<string, string>): string | undefined {
+	const name = labels[NAME_LABEL];
+	if (name === undefined || runPart(labels) === "" || epochPart(labels) === "") return undefined;
+	return sandboxName({ name, labels });
+}
+
+/**
+ * Where a labels file says another run or epoch than its sandbox's name, why, in words; undefined where it agrees. The
+ * name is Render's, set at create; the file is the guest's root's to rewrite, so one that disagrees is not read.
+ */
+function misnamed(parts: NonNullable<ReturnType<typeof nameParts>>, file: Record<string, string>): string | undefined {
+	const found: string[] = [];
+	if ((parts.run ?? "") !== runPart(file)) found.push(`run: the name's run hash ${show(parts.run)} is not the labels file's run ${show(file[RUN_LABEL])}`);
+	if ((parts.epoch ?? "") !== epochPart(file)) found.push(`epoch: the name says ${show(parts.epoch)}, the labels file ${show(file[EPOCH_LABEL])}`);
+	return found.length === 0 ? undefined : found.join("; ");
 }
 
 /** What a sandbox's name says: the adapter's name, the run's hash and the epoch; undefined for a sandbox not named as a computer. */
@@ -317,6 +350,9 @@ class RenderHost implements MachineHost {
 		// The sandbox dials the server: Render's runs take no stdin (S: runs/{sync,stream} take { command }), so there is
 		// no exec and no upload here. Its descriptor's (connectOf).
 		connect: RENDER.connect,
+		// A sandbox's name carries its run's hash and its epoch (sandboxName): a create's sweeps for the sandbox it made ask
+		// for both, so list asks Render for the whole name rather than reading the workspace's every page.
+		labels: { named: true },
 	};
 	readonly #api: Rest;
 	readonly #apiKey: string;
@@ -372,18 +408,21 @@ class RenderHost implements MachineHost {
 
 	/**
 	 * A sandbox's labels: the ones this process knows, else its name's, else its labels file's, read once through runs/sync
-	 * and kept. `need`: a listing's labels; when the name's hold every one asked, no file is read. A sandbox not named as a
-	 * computer carries none; one not running, one terminated from this process, or one with no file yet, its name's. The
-	 * read is held to `end` (epoch ms, the call's own bound): one that fails or has no answer by then gives the name's,
-	 * kept for nothing, so the next read tries again, with `unread`, why: get answers the name's (release needs no more),
-	 * and a listing fails closed on it. Only the caller's own abort throws.
+	 * and kept. `need`: a listing's labels; when the name's hold every one asked, no file is read. The name's are the
+	 * computer's and its name, and, for a listing by the whole name (wholeName), the run and epoch asked, which that name
+	 * is made of (the run by its 80-bit hash). A sandbox not named as a computer carries none; one not running, one
+	 * terminated from this process, or one with no file yet, its name's. A file whose run or epoch is not the name's
+	 * (misnamed) is not read: the guest's root rewrote it. The read is held to `end` (epoch ms, the call's own bound): one
+	 * that fails, disagrees with the name, or has no answer by then gives the name's, kept for nothing, so the next read
+	 * tries again, with `unread`, why: get answers the name's (release needs no more), and a listing fails closed on it.
+	 * Only the caller's own abort throws.
 	 */
-	async #labelsOf(found: RenderSandbox, ctx: HostCall, end: number, need?: Record<string, string>): Promise<{ labels: Record<string, string>; unread?: string }> {
+	async #labelsOf(found: RenderSandbox, ctx: HostCall, end: number, need?: Record<string, string>, whole = false): Promise<{ labels: Record<string, string>; unread?: string }> {
 		const parts = nameParts(found.name);
 		if (parts === undefined) return { labels: {} };
 		const known = this.#labels.get(found.id);
 		if (known !== undefined) return { labels: known };
-		const own = { [COMPUTER_LABEL]: "1", [NAME_LABEL]: parts.computer };
+		const own: Record<string, string> = { [COMPUTER_LABEL]: "1", [NAME_LABEL]: parts.computer, ...(whole && need ? { [RUN_LABEL]: need[RUN_LABEL] as string, [EPOCH_LABEL]: need[EPOCH_LABEL] as string } : {}) };
 		if ((need !== undefined && Object.keys(need).every((key) => key in own)) || found.status !== "running" || this.#ending.has(found.id)) return { labels: own };
 		const late = { labels: own, unread: `no answer within ${seconds(ctx.timeoutMs)}` };
 		const left = end - Date.now();
@@ -397,6 +436,8 @@ class RenderHost implements MachineHost {
 			return bound.aborted ? late : { labels: own, unread: error instanceof Error ? error.message : String(error) };
 		}
 		if (file === undefined) return { labels: own };
+		const differs = misnamed(parts, file);
+		if (differs !== undefined) return { labels: own, unread: `the labels file of ${found.id} does not match its name ${found.name}: ${differs}` };
 		const labels = { ...file, ...own };
 		this.#labels.set(found.id, labels);
 		return { labels };
@@ -537,8 +578,10 @@ class RenderHost implements MachineHost {
 
 	/**
 	 * GET /v1/sandboxes?ownerId (S, list-sandboxes: terminated ones left out unless asked), every page by its last item's
-	 * cursor while a page is full: Render filters by an exact name alone, and a sandbox's name carries its run and epoch
-	 * beside the adapter's, so the name asked is matched here. Only sandboxes named as computers whose name may carry the
+	 * cursor while a page is full. Render filters by an exact name alone, and a sandbox's name carries its run and epoch
+	 * beside the adapter's: a listing that asks all three (wholeName, as a create's sweeps for the sandbox it made do) asks
+	 * Render for that name, and the name's labels hold all three, so no file is read; any other is matched here, over
+	 * every page (MAX_PAGES at most, then it fails). Only sandboxes named as computers whose name may carry the
 	 * labels asked (mayCarry: the adapter's name, the run's hash and the epoch); a label asked that is not the name's is
 	 * read from each running one's labels file (#labelsOf), LABEL_READS at once, all within this call's own bound, and only
 	 * those that carry every label asked are answered. A file that can't be read by then fails the listing closed, once
@@ -546,17 +589,19 @@ class RenderHost implements MachineHost {
 	 * and leaving it out would let a run's listing miss a newer epoch's fence or call a partial cleanup whole (janitor.ts
 	 * releaseOlder). So only a sandbox that may be the run's can fail a listing by run: another run's is never read. A
 	 * listing by the name alone reads no file, and a sandbox terminated from this process is never read, so neither fails
-	 * so. What this process kept of a sandbox the listing no longer shows is let go: Render ended it, at its timeout or by
-	 * another's hand.
+	 * so. What this process kept of a sandbox a listing of the whole workspace no longer shows is let go: Render ended it,
+	 * at its timeout or by another's hand.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
 		const end = Date.now() + ctx.timeoutMs;
+		const whole = wholeName(labels);
 		// Only what was kept before the listing began is let go: a sandbox made while it ran may not be on its pages.
 		const kept = [...new Set([...this.#labels.keys(), ...this.#ending])];
 		const listed = orThrow(
 			await allPages<RenderSandbox>(
 				async (cursor) => {
-					const page = await this.#api.json("GET", this.#api.url(this.#owned("/v1/sandboxes", { limit: String(PAGE), ...(cursor === undefined ? {} : { cursor }) })), { retry: true, timeoutMs: ctx.timeoutMs }, ctx.signal);
+					const query = { limit: String(PAGE), ...(whole === undefined ? {} : { name: whole }), ...(cursor === undefined ? {} : { cursor }) };
+					const page = await this.#api.json("GET", this.#api.url(this.#owned("/v1/sandboxes", query)), { retry: true, timeoutMs: ctx.timeoutMs }, ctx.signal);
 					if (!page.ok) return page;
 					if (!Array.isArray(page.value)) return vendorFail(RENDER.id, "GET /v1/sandboxes answered no list");
 					const rows = page.value as Array<{ sandbox?: RenderSandbox; cursor?: unknown } | null>;
@@ -569,13 +614,15 @@ class RenderHost implements MachineHost {
 			),
 		);
 		const live = listed.filter((found) => found.status !== "terminated");
-		const shown = new Set(live.map(({ id }) => id));
-		for (const id of kept) if (!shown.has(id)) this.#forget(id);
+		if (whole === undefined) {
+			const shown = new Set(live.map(({ id }) => id));
+			for (const id of kept) if (!shown.has(id)) this.#forget(id);
+		}
 		const ours = live.filter((found) => {
 			const parts = nameParts(found.name);
 			return parts !== undefined && mayCarry(parts, labels);
 		});
-		const read = await eachAtMost(ours, LABEL_READS, async (found) => ({ found, ...(await this.#labelsOf(found, ctx, end, labels)) }));
+		const read = await eachAtMost(ours, LABEL_READS, async (found) => ({ found, ...(await this.#labelsOf(found, ctx, end, labels, whole !== undefined)) }));
 		const unread = read.flatMap(({ found, unread: why }) => (why === undefined ? [] : [`${found.id}: ${why}`]));
 		if (unread.length > 0) {
 			const asked = Object.entries(labels).filter(([key]) => key !== COMPUTER_LABEL && key !== NAME_LABEL);
