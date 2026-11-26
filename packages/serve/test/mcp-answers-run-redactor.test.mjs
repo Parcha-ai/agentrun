@@ -323,17 +323,68 @@ test("binaryKept: the bytes a payload decodes to are read for a held value and a
   assert.deepEqual(Object.entries(found).filter(([, kept]) => kept !== "[redacted]").map(([what]) => what), [], "each is withheld");
 });
 
-test("binaryKept: a held value cut into pieces shorter than a run of text by a byte the matcher reads as nothing or as a blank (a form feed, a control character, a no-break space, a soft hyphen) in a payload's bytes is \"[redacted]\"", async () => {
+test("binaryKept: a held value cut into pieces shorter than a run of text by a byte the matcher reads as nothing or as a blank (a form feed, a control character, a no-break space, a soft hyphen, a spacing accent) in a payload's bytes is \"[redacted]\"", async () => {
   const { binaryKept } = await import("../dist/mcp-gateway.js");
   const { randomBytes } = await import("node:crypto");
   const value = `not-a-secret-${"0123456789abcdef".repeat(2)}`;
   const keep = (payload) => binaryKept(payload, (text) => text, (text) => text, [value]);
   const pieces = value.match(/.{1,6}/g);
   const split = (between) => Buffer.concat([randomBytes(4096), Buffer.from(pieces.join(between), "latin1"), randomBytes(4096)]).toString("base64");
-  const kept = Object.entries({ "form feed": "\f", "vertical tab": "\v", NUL: "\0", "start of heading": "\x01", "escape": "\x1b", "delete": "\x7f", "next line": "\x85", "no-break space": "\xa0", "soft hyphen": "\xad" })
+  const kept = Object.entries({ "form feed": "\f", "vertical tab": "\v", NUL: "\0", "start of heading": "\x01", "escape": "\x1b", "delete": "\x7f", "next line": "\x85", "no-break space": "\xa0", "soft hyphen": "\xad", diaeresis: "\xa8", macron: "\xaf", "acute accent": "\xb4", cedilla: "\xb8" })
     .filter(([, between]) => keep(split(between)) !== "[redacted]")
     .map(([what]) => what);
   assert.deepEqual(kept, [], "each is withheld");
+});
+
+test("binaryKept: a held value written as UTF-32 in either byte order, or as UTF-16 with a soft hyphen or a zero-width space between its letters, in a payload's bytes is \"[redacted]\"", async () => {
+  const { binaryKept } = await import("../dist/mcp-gateway.js");
+  const { randomBytes } = await import("node:crypto");
+  const value = `not-a-secret-${"0123456789abcdef".repeat(2)}`;
+  const keep = (payload) => binaryKept(payload, (text) => text, (text) => text, [value]);
+  const between = (bytes) => Buffer.concat([randomBytes(4096), bytes, randomBytes(4096)]).toString("base64");
+  const utf32 = (order) =>
+    Buffer.concat(
+      [...value].map((c) => {
+        const unit = Buffer.alloc(4);
+        if (order === "le") unit.writeUInt32LE(c.codePointAt(0));
+        else unit.writeUInt32BE(c.codePointAt(0));
+        return unit;
+      }),
+    );
+  const kept = Object.entries({
+    "UTF-32 LE": utf32("le"),
+    "UTF-32 BE": utf32("be"),
+    "UTF-16 LE, soft hyphens": Buffer.from([...value].join("­"), "utf16le"),
+    "UTF-16 BE, soft hyphens": Buffer.from([...value].join("­"), "utf16le").swap16(),
+    "UTF-16 LE, zero-width spaces": Buffer.from([...value].join("​"), "utf16le"),
+    "UTF-16 BE, zero-width spaces": Buffer.from([...value].join("​"), "utf16le").swap16(),
+  })
+    .filter(([, bytes]) => keep(between(bytes)) !== "[redacted]")
+    .map(([what]) => what);
+  assert.deepEqual(kept, [], "each is withheld");
+});
+
+test("textRuns reads a payload's bytes in time linear in their length: 4 MiB of NULs holding 7 printable bytes, 4 MiB of NUL and a letter in turn, and 4 MiB of random bytes", async () => {
+  const { textRuns } = await import("../dist/mcp-gateway.js");
+  const { randomBytes } = await import("node:crypto");
+  const size = 4 * 1024 * 1024;
+  const nuls = Buffer.alloc(size);
+  for (let i = 1; i <= 7; i++) nuls[Math.floor((i * size) / 8)] = 0x40 + i;
+  const turns = Buffer.alloc(size);
+  for (let i = 1; i < size; i += 2) turns[i] = 0x61 + ((i >> 1) % 26);
+  const timed = (bytes) => {
+    const started = performance.now();
+    const text = textRuns(bytes.toString("latin1"));
+    return { text, ms: performance.now() - started };
+  };
+  const few = timed(nuls);
+  assert.equal(few.text, "", "7 printable bytes are no run");
+  const half = timed(turns);
+  assert.equal(half.text.length, size / 2, "every other byte a letter reads whole");
+  const noise = timed(randomBytes(size));
+  // Each takes well under a second here; a run pattern that backtracks over a long run of NULs took 185 ms at 4 KiB,
+  // about 4 times more for each doubling.
+  for (const [what, { ms }] of Object.entries({ nuls: few, turns: half, random: noise })) assert.ok(ms < 5_000, `${what}: ${ms.toFixed(0)} ms`);
 });
 
 /** `text` as UTF-16 in either byte order, between random bytes, as a string sits in a PDF's, an Office file's or a
