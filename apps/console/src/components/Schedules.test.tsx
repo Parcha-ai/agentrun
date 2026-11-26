@@ -1,7 +1,8 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SchedulesPage, type ScheduleView } from "./Schedules";
+import { PHONE_NEW, SchedulesPage, type ScheduleView } from "./Schedules";
+import { buttonVariants } from "@/components/ui/button";
 import { createClient } from "@/lib/client";
 import type { Firing, Trigger } from "@/lib/v2";
 import { optionsOf, pick, picker, valueOf } from "@/test/picker";
@@ -212,34 +213,39 @@ describe("the schedules list", () => {
     expect(h1.className.split(" ")).toContain("caps");
     expect(h1.querySelector("svg")?.getAttribute("class")).toContain("lucide-calendar-clock");
     for (const c of ["min-h-12", "border-b"]) expect(header.className.split(" ")).toContain(c);
-    // From a tablet's width up: the six, in columns where they wrap (the triggers-bar browser flow measures them).
+    // The six at every width, in columns where they wrap (the triggers-bar browser flow measures them).
     const row = header.querySelector("[data-new-triggers]")!;
     const actions = [...row.querySelectorAll("button")];
     expect(actions.map((b) => b.textContent?.trim())).toEqual(["New app trigger", "New GitHub trigger", "New webhook", "New feed trigger", "New email trigger", "New schedule"]);
     // Toolbar-sized, and one main action, the last.
     for (const b of actions) expect(b.className.split(" "), b.textContent ?? "").toContain("h-control-sm");
     expect(actions.map((b) => /\bbg-primary\/10\b/.test(b.className))).toEqual([false, false, false, false, false, true]);
-    // The columns are by the bar's own width, and a phone hides them as a range: a breakpoint that showed them (sm:)
-    // would be written after the bar's widths and undo the one row.
+    // The columns are by the bar's own width. No breakpoint shows them: one that did (sm:) would be written after the
+    // bar's widths and undo the one row.
     expect(header.className.split(" ")).toContain("@container");
-    for (const c of ["grid", "grid-cols-2", "max-sm:hidden", "@[44rem]:grid-cols-3", "@[72rem]:flex"]) expect(row.className.split(" "), c).toContain(c);
+    for (const c of ["grid", "grid-cols-2", "@[44rem]:grid-cols-3", "@[72rem]:flex"]) expect(row.className.split(" "), c).toContain(c);
     expect(row.className).not.toMatch(/(^| )sm:(grid|flex|block)( |$)/);
   });
 
-  it("gives a phone one New trigger button that lists the six kinds and opens the one picked", async () => {
+  it("keeps the six on a phone, in the smallest button's measures, with no menu in their place", async () => {
     const t = await open(server({ triggers: [NIGHTLY] }).v2, {});
     const header = t.host.querySelector("header")!;
-    const menu = [...header.querySelectorAll("button")].find((b) => b.textContent?.trim() === "New trigger")!;
-    // Shown on a phone alone, and the bar's main action there.
-    expect(menu.parentElement!.className.split(" ")).toContain("sm:hidden");
-    expect(menu.className).toMatch(/\bbg-primary\/10\b/);
-    expect(menu.closest("[data-new-triggers]")).toBeNull();
-    await act(async () => { menu.click(); });
-    await t.settle();
-    const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
-    // The first-trigger panel's order: the kinds as a person meets them.
-    expect(items.map((item) => item.textContent?.trim())).toEqual(["New schedule", "New webhook", "New GitHub trigger", "New app trigger", "New feed trigger", "New email trigger"]);
-    await act(async () => { items[2]!.click(); });
+    const row = header.querySelector("[data-new-triggers]")!;
+    // Every button of the bar is one of the six: none stands in for them, and no width hides them.
+    expect([...header.querySelectorAll("button")].map((b) => b.textContent?.trim())).toEqual(["New app trigger", "New GitHub trigger", "New webhook", "New feed trigger", "New email trigger", "New schedule"]);
+    expect(row.className).not.toMatch(/hidden/);
+    const phone = row.className.split(" ");
+    for (const c of PHONE_NEW.split(" ")) expect(phone, c).toContain(c);
+    // Under the bar's name, as wide as the bar.
+    expect(phone).toContain("max-sm:w-full");
+    // What the xs button sets, a phone sets, so the two stay one size.
+    const xs = buttonVariants({ size: "xs" }).split(" ");
+    for (const c of ["gap-1.5", "px-2", "text-label"]) { expect(xs, c).toContain(c); expect(phone, c).toContain(`max-sm:[&>button]:${c}`); }
+    // xs is 28px high (h-7). A phone's is at least that: a long name takes a second line there and is never cut.
+    expect(xs).toContain("h-7");
+    for (const c of ["h-auto", "min-h-7", "whitespace-normal", "text-left"]) expect(phone, c).toContain(`max-sm:[&>button]:${c}`);
+    // A press opens the kind's form, as at any width.
+    await t.click(/^New GitHub trigger$/);
     expect(t.went).toEqual(["#/triggers/new-github"]);
   });
 
