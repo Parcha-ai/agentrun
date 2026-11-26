@@ -514,11 +514,26 @@ test("the bundle's shape is checked: its format, its closed keys at each level t
   // A workflow's graph as its route serves it (graph-view.ts) is taken; one the page cannot draw is refused.
   const graphed = { ...structuredClone(doc), graph: GRAPH };
   assert.equal(checkShareBundle(resigned(graphed)).sha256, JSON.parse(resigned(graphed)).sha256);
+  // Each run field the page reads may be null, or of its type; a run with every field set so is taken.
+  const typed = structuredClone(doc);
+  Object.assign(typed.run, { error: null, review: null, cost: { usd: 0.01, basis: "metered" }, stopped_for: null, budget_refused_calls: 0, effort: null, approvals: "auto" });
+  assert.equal(checkShareBundle(resigned(typed)).sha256, JSON.parse(resigned(typed)).sha256);
   const refused = {
     format: (d) => (d.format = "agentrun.share/2"),
     extraTop: (d) => (d.exported_by = "someone"),
     missingTop: (d) => delete d.omitted,
     runField: (d) => (d.run.run_id = "run_1"),
+    // A run field of another type: the page would throw on it (Redactions reads a title's text).
+    runTitleObject: (d) => (d.run.title = {}),
+    runStatusNumber: (d) => (d.run.status = 1),
+    runCreatedArray: (d) => (d.run.created_at = []),
+    runEndedNumber: (d) => (d.run.ended_at = 1),
+    runResultString: (d) => (d.run.result = "done"),
+    runErrorArray: (d) => (d.run.error = []),
+    runReviewString: (d) => (d.run.review = "x"),
+    runCostString: (d) => (d.run.cost = "$1"),
+    runRefusedCallsString: (d) => (d.run.budget_refused_calls = "2"),
+    runEffortObject: (d) => (d.run.effort = {}),
     importedSession: (d) => (d.run.imported_from = { source: "claude-code", session: "abc" }),
     agentField: (d) => (d.agent.id = "a1"),
     sourceField: (d) => (d.source.host = "x"),
