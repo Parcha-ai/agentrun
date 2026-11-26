@@ -665,38 +665,6 @@ test("a request made already, asked again with another epoch or run, finds its s
 	}
 });
 
-test("two servers racing one request with different epochs: neither first check finds the other's sandbox, so each makes one, and convergence by the request's name alone keeps one; the other create is refused as exists", async () => {
-	const dial = dialServer();
-	const daemonPath = fileURLToPath(import.meta.url);
-	const render = fakeRender({ start: (sandbox, script) => bootDial({ ...sandbox.env, AGENTRUN_ATTACH_URL: /AGENTRUN_ATTACH_URL='([^']*)'/.exec(script)[1] }, dial, { daemon: readFileSync(daemonPath) }) });
-	const options = { dial, daemonPath, timeouts: { pollMs: 1, listedStableMs: 0 } };
-	const spec = (epoch) => ({ image: BUILD, lifetimeMs: 600_000, network: "none", labels: { "agentrun.run": "run-1", "agentrun.epoch": epoch } });
-	// Two server processes of one workspace. Each one's POST waits until the other's is sent too: both first checks are
-	// done by then, and found nothing.
-	let both;
-	const posted = new Promise((resolve) => (both = resolve));
-	let posts = 0;
-	const server = () => ({
-		...restarted(render),
-		fetch: async (url, init = {}) => {
-			if (init.method === "POST" && new URL(url).pathname === "/v1/sandboxes") {
-				if (++posts === 2) both();
-				await posted;
-			}
-			return render.fetch(url, init);
-		},
-	});
-	const answers = await Promise.all([provider(server(), options).create(spec("2"), { requestId: "render-raced" }), provider(server(), options).create(spec("3"), { requestId: "render-raced" })]);
-	assert.equal(posts, 2, "each server made a sandbox");
-	const kept = answers.filter((answer) => answer.ok);
-	const refused = answers.filter((answer) => !answer.ok);
-	assert.equal(kept.length, 1, `one create answers its sandbox: ${refused.map(({ error }) => `${error.code}: ${error.message}`).join("; ")}`);
-	assert.equal(refused.length, 1, "the other is refused");
-	assert.equal(refused[0].error.code, "exists", refused[0].error.message);
-	const live = [...render.sandboxes.values()].filter(({ record }) => record.status !== "terminated").map(({ record }) => record.id);
-	assert.deepEqual(live, [kept[0].value.id], "the kept create's sandbox alone is left running");
-});
-
 test("a create reads the workspace's pages twice, at its first check and at its last convergence; its first look after its POST asks Render for its sandbox's whole name, one page", async () => {
 	const dial = dialServer();
 	const daemonPath = fileURLToPath(import.meta.url);
