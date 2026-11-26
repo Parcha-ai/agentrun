@@ -152,6 +152,19 @@ export function convergedBrowser(listed: ReadonlyArray<HeldBrowser>, mine: HeldB
 }
 
 /**
+ * Whether a lost create's browser (`mine`) is left to another create of its request rather than released: it still runs,
+ * no older browser of the request runs (so every converge keeps it), and the request's browsers, ended ones included,
+ * hold a newer one, which only another create made: that create's converge answers mine. A lost create whose browser is
+ * the request's only one releases it.
+ */
+export function leftToConverge(mine: string, made: ReadonlyArray<HeldBrowser & { live: boolean }>): boolean {
+	const own = made.find((one) => one.id === mine);
+	if (own === undefined || !own.live) return false;
+	if (made.some((one) => one.id !== mine && one.live && oldestBrowserFirst(one, own) < 0)) return false;
+	return made.some((one) => one.id !== mine && oldestBrowserFirst(own, one) < 0);
+}
+
+/**
  * Whether a create that threw may still have made a browser: anything but the vendor's own 4xx answer (a refusal, which
  * makes nothing). A request not answered, aborted, cut short, or answered 5xx or with a body that is no browser may
  * have been admitted.
@@ -171,8 +184,9 @@ const RECOVER_GAP_MS = 2_000;
 
 /**
  * After a create whose outcome is unknown: the browsers carrying its create label, found and released under a signal
- * of the recovery's own, `ms` in all (the caller's may be what ended the create). The words say what became of them, for
- * the create's failure; they never carry a URL.
+ * of the recovery's own, `ms` in all (the caller's may be what ended the create), save one `leave` says another create
+ * of the request answers (leftToConverge). The words say what became of them, for the create's failure; they never
+ * carry a URL.
  */
 export async function recoverCreate(
 	what: string,
@@ -180,6 +194,7 @@ export async function recoverCreate(
 	release: (id: string, signal: AbortSignal) => Promise<Result<void>>,
 	sleep: (ms: number) => Promise<void>,
 	ms = RECOVER_MS,
+	leave?: (id: string, signal: AbortSignal) => Promise<boolean>,
 ): Promise<string> {
 	const signal = AbortSignal.timeout(ms);
 	let found: Result<string[]> = ok([]);
@@ -192,6 +207,10 @@ export async function recoverCreate(
 	if (found.value.length === 0) return `no ${what} carries its create label, so none was made or the vendor does not list it yet; its labels let a sweep find it`;
 	const words: string[] = [];
 	for (const id of found.value) {
+		if (leave !== undefined && (await leave(id, signal))) {
+			words.push(`the ${what} it made (${id}) is its request's oldest, which another create of the request answers: it is left running for that create, to its lifetime`);
+			continue;
+		}
 		const released = await release(id, signal);
 		if (released.ok) words.push(`the ${what} it made (${id}) was released`);
 		else if (signal.aborted) words.push(`the ${what} it made (${id}) may still be running: the search and its release did not finish within ${ms / 1000} s, and its labels let a sweep find it`);
