@@ -89,17 +89,18 @@ describe("AgentEditor, bash on a runner-placed computer (Mode 2)", () => {
   const provider = (id: string, shell: "computer" | "local" | "none") => ({ id, name: id, secrets: [], required: [], ready: true, metered: false, shell });
   const KINDS = [
     { kind: "none", offered: true, groups: [], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [], shell: "local" },
+    { kind: "sandbox", offered: true, groups: ["exec"], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no screen" }, providers: [provider("docker", "computer")] },
     { kind: "desktop", offered: true, groups: ["screen"], tools: ["read", "screen.shot"], settings: ["surface", "exec", "record"], record: { available: false, why: "fixture: no ffmpeg" }, providers: [provider("e2b", "computer"), provider("unmounted", "local")] },
   ];
   const agent = (computer: Record<string, unknown>): Agent => ({
     ...SERVED_AGENT, agent_id: "shelly", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Shelly", instructions: "Probe.", harness: "pi", skills: [], tools: ["read", "bash"], computer: computer as NonNullable<Agent["definition"]["computer"]> },
   });
-  function open(a: Agent) {
+  function open(a: Agent, places = MODE2) {
     let saved: Record<string, unknown> | undefined;
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(AgentEditor, { agent: a, caps: { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places: MODE2, computers: KINDS }, step: "computer", onSave: async (f: Record<string, unknown>) => { saved = f; return null; } } as never)));
+    act(() => root!.render(createElement(AgentEditor, { agent: a, caps: { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places, computers: KINDS }, step: "computer", onSave: async (f: Record<string, unknown>) => { saved = f; return null; } } as never)));
     const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
     const input = (sel: string) => host.querySelector(sel) as HTMLInputElement | null;
     const step = (label: RegExp) => click([...host.querySelectorAll("button")].find((b) => label.test(b.textContent ?? "")));
@@ -120,6 +121,22 @@ describe("AgentEditor, bash on a runner-placed computer (Mode 2)", () => {
     const sent = await form.save();
     expect(sent).toMatchObject({ computer: { kind: "desktop", provider: "e2b" }, place: { mode: "runner" } });
     expect(sent?.tools).not.toContain("bash");
+  });
+
+  // Mode 2 with Docker answering: the server gives new agents Docker's box (default_place), yet its no-computer choice's
+  // run shell is still Archil's exec ("local"), which runs bash.
+  it("Mode 2 with Docker answering: a move from Docker's box to no computer keeps bash and says nothing", async () => {
+    const docker = served([{ id: "docker", available: true }], { mode: "sandbox", box: "docker" });
+    const form = open(agent({ kind: "sandbox", provider: "docker" }), docker);
+    form.click(form.input('input[name="computer-kind"][value="none"]'));
+    expect(form.host.textContent).not.toMatch(/turned off/);
+    form.step(/Tools/);
+    const bash = form.input('input[type="checkbox"][value="bash"]')!;
+    expect(bash.checked).toBe(true);
+    expect(bash.closest("label")!.textContent).not.toContain("Sandbox-only");
+    const sent = await form.save();
+    expect(sent).toMatchObject({ computer: { kind: "none" }, place: { mode: "runner" } });
+    expect(sent?.tools).toContain("bash");
   });
 
   it("an agent saved on that desktop is not offered bash on its card: a tick it has says why, and once off it stays off", () => {
