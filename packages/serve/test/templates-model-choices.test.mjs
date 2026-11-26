@@ -20,6 +20,7 @@ const manifest = (choices, harness = "[codex, pi]") => `---
 name: inbox
 version: 1.0.0
 description: Sorts an inbox.
+tools: []
 ${harness === null ? "" : `harness: ${harness}\n`}model:
   tier: balanced
 ${choices}
@@ -172,6 +173,7 @@ const preferring = (prefer) => `---
 name: inbox
 version: 1.0.0
 description: Sorts an inbox.
+tools: []
 harness: [pi]
 model: { tier: fast, prefer: ${prefer} }
 ---
