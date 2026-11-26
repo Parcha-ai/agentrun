@@ -322,3 +322,24 @@ test("binaryKept: the bytes a payload decodes to are read for a held value and a
   };
   assert.deepEqual(Object.entries(found).filter(([, kept]) => kept !== "[redacted]").map(([what]) => what), [], "each is withheld");
 });
+
+/** `text` as UTF-16 in either byte order, between random bytes, as a string sits in a PDF's, an Office file's or a
+ *  Windows binary's bytes. */
+const utf16Between = async (text, order) => {
+  const { randomBytes } = await import("node:crypto");
+  const units = Buffer.from(text, "utf16le");
+  return Buffer.concat([randomBytes(4096), order === "be" ? Buffer.from(units).swap16() : units, randomBytes(4096)]).toString("base64");
+};
+
+test("the gateway itself: a held value written as UTF-16 in a binary payload's bytes, in either byte order, is \"[redacted]\"", { timeout: 60_000 }, async (t) => {
+  const filed = await filedWhole(t, {
+    le: [{ type: "image", data: await utf16Between(HELD, "le"), mimeType: "image/png" }],
+    be: [{ type: "image", data: await utf16Between(HELD, "be"), mimeType: "image/png" }],
+  }, runRedactor());
+  assert.deepEqual(Object.entries(filed).filter(([, answer]) => answer.content[0].data !== "[redacted]").map(([order]) => order), [], "each is withheld");
+});
+
+test("the gateway itself: a secret's shape written as UTF-16 in a binary payload's bytes is \"[redacted]\"", { timeout: 60_000 }, async (t) => {
+  const filed = await filedWhole(t, { pem: [{ type: "image", data: await utf16Between(PEM, "le"), mimeType: "image/png" }] }, runRedactor());
+  assert.equal(filed.pem.content[0].data, "[redacted]");
+});
