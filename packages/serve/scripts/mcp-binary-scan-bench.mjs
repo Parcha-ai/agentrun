@@ -8,9 +8,9 @@
 //   node scripts/mcp-binary-scan-bench.mjs [--runs 5] [--values 32] [--chance 20] [--size 4] [--whole]
 import { randomBytes } from "node:crypto";
 import { parseArgs } from "node:util";
-import { binaryKept } from "../dist/mcp-gateway.js";
+import { binaryKept, textRuns } from "../dist/mcp-gateway.js";
 import { MAX_RESPONSE } from "../dist/mcp-wire.js";
-import { MIN_SECRET, secretShapes, valueLeft } from "../dist/learn/secrets.js";
+import { secretShapes, valueLeft } from "../dist/learn/secrets.js";
 import { heldRedactor, secretRedactor } from "../dist/runner/redact.js";
 
 const { values: args } = parseArgs({ options: { runs: { type: "string", default: "5" }, values: { type: "string", default: "32" }, chance: { type: "string", default: "20" }, size: { type: "string" }, whole: { type: "boolean", default: false } } });
@@ -18,9 +18,6 @@ const runs = Number(args.runs);
 const count = Number(args.values);
 const chances = Number(args.chance);
 const size = args.size ? Math.floor((Number(args.size) * 1024 * 1024) / 4) * 4 : MAX_RESPONSE;
-/** The runs of text binaryKept reads in a payload's bytes, as it reads them. */
-const TEXT_RUN = new RegExp(`[\\t\\n\\r\\x20-\\x7e]{${MIN_SECRET},}`, "g");
-const textOf = (bytes) => (bytes.match(TEXT_RUN) ?? []).join("\n");
 
 const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -72,7 +69,7 @@ for (let run = 0; run < runs; run++) {
   const data = payload();
   const decode = timed(() => Buffer.from(data, "base64").toString("latin1"));
   steps.decode.push(decode.ms);
-  const text = timed(() => textOf(decode.out));
+  const text = timed(() => textRuns(decode.out));
   steps["text runs"].push(text.ms);
   runChars += text.out.length;
   steps["shapes (text runs)"].push(timed(() => secretShapes(text.out)).ms);
@@ -88,7 +85,7 @@ const byChance = { base64: 0, text: 0 };
 for (let one = 0; one < chances; one++) {
   const data = payload();
   if (secretShapes(data).length) byChance.base64++;
-  if (secretShapes(textOf(Buffer.from(data, "base64").toString("latin1"))).length) byChance.text++;
+  if (secretShapes(textRuns(Buffer.from(data, "base64").toString("latin1"))).length) byChance.text++;
 }
 
 console.log(`payload: ${size} base64 characters (${(size / 4) * 3} bytes, ${Math.round(runChars / runs)} characters of text runs), ${values.length} held values (lengths ${Math.min(...values.map((v) => v.length))}-${Math.max(...values.map((v) => v.length))}), ${runs} runs, node ${process.version}`);

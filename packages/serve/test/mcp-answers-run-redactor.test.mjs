@@ -304,8 +304,8 @@ test("binaryKept: the bytes a payload decodes to are read for a held value and a
   scanned.chars = 0;
   assert.equal(keep(image), image, "random bytes holding nothing are kept whole");
   const per = scanned.chars / image.length;
-  // Eight values: the base64 text's own check reads about 110 characters per payload character, and the whole decoded
-  // view read through every view about 550 more; 300 is between.
+  // Eight values: the base64 text's own check reads about 110 characters per payload character and the bytes' runs of
+  // text, plain and UTF-16, about 2 more; the whole decoded view read through every view read about 550 more. 300 is between.
   assert.ok(per < 300, `the check reads ${per.toFixed(1)} characters per payload character`);
   const { MAX_RESPONSE } = await import("../dist/mcp-wire.js");
   const screenshot = randomBytes((MAX_RESPONSE / 4) * 3).toString("base64");

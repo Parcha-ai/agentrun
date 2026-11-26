@@ -265,16 +265,22 @@ export type McpCommit = <T>(change: (tx: unknown) => Promise<T>) => Promise<T>;
 export function binaryKept(payload: string, clean: (text: string) => string, own: (text: string) => string, values: readonly string[] | undefined): string {
   if (!values) return clean(payload);
   const scrubbed = own(payload);
-  const text = (Buffer.from(scrubbed, "base64").toString("latin1").match(TEXT_RUN) ?? []).join("\n");
+  const text = textRuns(Buffer.from(scrubbed, "base64").toString("latin1"));
   if (secretShapes(text).length > 0) return "[redacted]";
   if (!values.length) return scrubbed;
   return valueLeft(scrubbed, values, []) || valueLeft(text, values, []) ? "[redacted]" : scrubbed;
 }
 
-/** A run of text in a payload's bytes: MIN_SECRET or more printable ASCII characters, tabs and line breaks among them.
- *  Only these are read: a value or a shape the bytes carry is text, and every view read over binary bytes cost about
- *  25 s a MiB. */
-const TEXT_RUN = new RegExp(`[\\t\\n\\r\\x20-\\x7e]{${MIN_SECRET},}`, "g");
+/** The text in a payload's bytes, one run to a line: runs of MIN_SECRET or more printable ASCII characters (tabs and line
+ *  breaks among them), as bytes or as UTF-16 in either byte order, its NULs dropped. Only these are read: a value or a
+ *  shape the bytes carry is text, and every view read over binary bytes cost about 25 s a MiB. */
+export function textRuns(bytes: string): string {
+  return [TEXT_RUN, UTF16_LE_RUN, UTF16_BE_RUN].flatMap((run) => (bytes.match(run) ?? []).map((found) => found.replaceAll("\0", ""))).join("\n");
+}
+const PRINTABLE = "[\\t\\n\\r\\x20-\\x7e]";
+const TEXT_RUN = new RegExp(`${PRINTABLE}{${MIN_SECRET},}`, "g");
+const UTF16_LE_RUN = new RegExp(`(?:${PRINTABLE}\\x00){${MIN_SECRET},}`, "g");
+const UTF16_BE_RUN = new RegExp(`(?:\\x00${PRINTABLE}){${MIN_SECRET},}`, "g");
 
 /** The gateway: a session's servers, and their calls. `credentials` is read at every call and every request, never
  *  copied: a change the claim step makes after (a token refreshed behind the claim, a server removed) reaches it, even
