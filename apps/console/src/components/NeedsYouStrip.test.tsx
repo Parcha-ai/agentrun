@@ -67,6 +67,12 @@ describe("NeedsYouStrip, the runs waiting on a person", () => {
     // An open question has no row of choices, only the box and Send.
     expect(host.querySelector('[data-run="q2"] [data-choices]')).toBeNull();
   });
+  it("keeps each waiting card its own height in the grid, not stretched to the tallest card in its row", () => {
+    const grid = mount().querySelector("[data-asking]")!;
+    expect(grid.classList.contains("grid")).toBe(true);
+    expect(grid.classList.contains("items-start")).toBe(true);
+    expect([...grid.children].map((c) => c.getAttribute("data-run"))).toEqual(["q1", "q2"]);
+  });
   it("answers in place: a choice fills the box, Send sends it to that run, and the card says it went", async () => {
     const sent: string[] = [];
     const host = mount({ onAnswer: async (id, text) => { sent.push(`${id}: ${text}`); return null; } });

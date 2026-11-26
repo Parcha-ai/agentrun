@@ -98,7 +98,8 @@ export function NeedsYouStrip({ asking, failed, failedAll, live, learning = [], 
         </p>
       ))}
       {asking.length > 0 && (
-        <ul className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+        // Each card its own height: a short card beside a tall one ends where its content does, with no blank box under it.
+        <ul className="grid grid-cols-1 items-start gap-3 xl:grid-cols-2" data-asking>
           {asking.map((r) => r.native ? <li key={r.run_id} className="space-y-2 border p-4"><a href={runHref(r.run_id)} className="text-body underline underline-offset-2">{runTitle(r)}</a><p className="text-small text-muted-foreground">Native sessions cannot receive another message. <a href={`#/playground?agent=${encodeURIComponent(r.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> to continue.</p></li> : r.pending?.kind === "approval"
             ? <Approval key={`${r.run_id}:${r.pending.id}`} run={r} pending={r.pending} agentName={agentName(r.agent_id)} at={at} onApprove={approve} />
             : askOf(r)
