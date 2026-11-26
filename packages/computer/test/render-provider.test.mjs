@@ -325,7 +325,7 @@ test("a labels read that fails or never answers gives get the name's labels with
 	]) {
 		let failing = true;
 		const render = fakeRender({ answer: (method, path, body, { signal }) => (failing && path === "/runs/sync" && body.command.includes(LABELS_FILE) ? fails(signal) : undefined) });
-		plant(render, SBX, NAME, { labels: LABELS });
+		plant(render, SBX, `${NAME}-r${runHash("run-1")}`, { labels: LABELS });
 		const { host } = provider(render);
 		const started = Date.now();
 		assert.deepEqual((await host.get(SBX, { timeoutMs: 300 })).labels, own, what);
@@ -335,7 +335,7 @@ test("a labels read that fails or never answers gives get the name's labels with
 	}
 	const caller = new AbortController();
 	const render = fakeRender({ answer: (method, path, body, { signal }) => (path === "/runs/sync" ? (caller.abort(), hang(signal)) : undefined) });
-	plant(render, SBX, NAME, { labels: LABELS });
+	plant(render, SBX, `${NAME}-r${runHash("run-1")}`, { labels: LABELS });
 	await assert.rejects(provider(render).host.get(SBX, { ...CTX, signal: caller.signal }), (error) => error.code === "aborted", "the caller's own abort is no failed read: it aborts");
 });
 
@@ -396,8 +396,8 @@ test("a sandbox Render still reads running after its terminate is read without i
 	assert.equal(sandbox.record.status, "terminated");
 	Object.assign(sandbox, { ending: undefined });
 	sandbox.record.status = "running";
-	sandbox.files.set(LABELS_FILE, JSON.stringify({ ...LABELS, "agentrun.run": "run-2" }));
-	assert.equal((await made.host.get(SBX, CTX)).labels["agentrun.run"], "run-2", "the labels were let go once Render read it terminated");
+	sandbox.files.set(LABELS_FILE, JSON.stringify({ ...LABELS, "user.read": "again" }));
+	assert.equal((await made.host.get(SBX, CTX)).labels["user.read"], "again", "the labels were let go once Render read it terminated");
 });
 
 test("a sandbox Render ended by itself, which a listing no longer shows, leaves no labels behind", async () => {
@@ -409,9 +409,9 @@ test("a sandbox Render ended by itself, which a listing no longer shows, leaves 
 	render.sandboxes.delete(SBX);
 	assert.deepEqual((await host.list({ "agentrun.computer": "1" }, CTX)).map(({ id }) => id), ["sbx-00000000000000000001"]);
 	render.sandboxes.set(SBX, ended);
-	ended.files.set(LABELS_FILE, JSON.stringify({ ...LABELS, "agentrun.run": "run-2" }));
+	ended.files.set(LABELS_FILE, JSON.stringify({ ...LABELS, "user.read": "again" }));
 	const runs = render.runs().length;
-	assert.equal((await host.get(SBX, CTX)).labels["agentrun.run"], "run-2", "read again: the listing that missed it let its labels go");
+	assert.equal((await host.get(SBX, CTX)).labels["user.read"], "again", "read again: the listing that missed it let its labels go");
 	assert.equal(render.runs().length, runs + 1);
 	assert.deepEqual((await host.get("sbx-00000000000000000001", CTX)).labels["agentrun.run"], "run-1");
 	assert.equal(render.runs().length, runs + 1, "one the listing showed is kept");
@@ -445,8 +445,8 @@ test("list reads every page by cursor and matches the name asked itself, leaves 
 
 	const few = fakeRender();
 	const named = (n, run) => `computer-00000000000${n}-r${runHash(run)}-e1`;
-	plant(few, "sbx-one0123456789", named(1, "run-1"), { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000001", "agentrun.run": "run-1" } });
-	plant(few, "sbx-two0123456789", named(2, "run-2"), { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000002", "agentrun.run": "run-2" } });
+	plant(few, "sbx-one0123456789", named(1, "run-1"), { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000001", "agentrun.run": "run-1", "agentrun.epoch": "1" } });
+	plant(few, "sbx-two0123456789", named(2, "run-2"), { labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000002", "agentrun.run": "run-2", "agentrun.epoch": "1" } });
 	plant(few, "sbx-new0123456789", named(3, "run-1"), { status: "creating" });
 	const other = provider(few).host;
 	const byRun = await other.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX);
@@ -595,6 +595,83 @@ test("prepareImage shares an import only between providers of one key: a wrong k
 	assert.equal(wrong.ok, false, "the wrong key is refused");
 	assert.match(wrong.error.message, /401/);
 	assert.deepEqual(right, { ok: true, value: BUILD }, "the right key's import is not the wrong key's 401");
+});
+
+test("a labels file its guest rewrote to another run or epoch than its name's is unread: a listing by run fails closed on it, naming it, and get answers the name's", async () => {
+	for (const [what, rewrite, said] of [
+		["another run", { "agentrun.run": "run-9" }, `run: the name's run hash "${runHash("run-1")}" is not the labels file's run "run-9"`],
+		["another epoch", { "agentrun.epoch": "7" }, `epoch: the name says "1", the labels file "7"`],
+	]) {
+		const render = fakeRender();
+		const { id: kept } = await provider(render).host.create(runRequest(1, "run-1", 1), CTX);
+		const { id: rewritten } = await provider(render).host.create(runRequest(2, "run-1", 1), CTX);
+		const sandbox = render.sandboxes.get(rewritten);
+		// The guest's root writes the file: the name is Render's, set at create.
+		sandbox.files.set(LABELS_FILE, JSON.stringify({ ...JSON.parse(sandbox.files.get(LABELS_FILE)), ...rewrite }));
+		const reader = provider(restarted(render)).host;
+		const error = await reader.list({ "agentrun.computer": "1", "agentrun.run": "run-1" }, CTX).catch((caught) => caught);
+		assert.equal(error instanceof Error, true, `${what}: the listing fails closed, never leaves the sandbox out or answers the file's labels`);
+		assert.equal(error.message, `could not read the labels of ${rewritten}: the labels file of ${rewritten} does not match its name ${sandbox.record.name}: ${said}; the listing can't tell whether it carries agentrun.run=run-1`, what);
+		assert.equal(error.message.includes(kept), false, `${what}: naming that sandbox alone`);
+		assert.deepEqual((await reader.get(rewritten, CTX)).labels, { "agentrun.computer": "1", "agentrun.computer.name": "computer-000000000002" }, `${what}: get answers the name's labels, so release still finds it`);
+	}
+});
+
+test("a create's wait to be listed asks Render for the sandbox's whole name, one page; its first check and convergence read every page by the request's name, so a workspace past 100 pages refuses it before any sandbox is made", async () => {
+	const dial = dialServer();
+	const daemonPath = fileURLToPath(import.meta.url);
+	const booting = () => fakeRender({ start: (sandbox, script) => bootDial({ ...sandbox.env, AGENTRUN_ATTACH_URL: /AGENTRUN_ATTACH_URL='([^']*)'/.exec(script)[1] }, dial, { daemon: readFileSync(daemonPath) }) });
+	const spec = { image: BUILD, lifetimeMs: 600_000, network: "none", labels: { "agentrun.run": "run-1", "agentrun.epoch": "2" } };
+	const options = { dial, daemonPath, timeouts: { pollMs: 1, listedStableMs: 0 } };
+	const render = booting();
+	const created = await provider(render, options).create(spec, { requestId: "render-named-sweep" });
+	assert.equal(created.ok, true, created.ok ? "" : `${created.error.code}: ${created.error.message}`);
+	const whole = `${created.value.name}-r${runHash("run-1")}-e2`;
+	const asked = (calls) => calls.filter(({ method, url }) => method === "GET" && url.pathname === "/v1/sandboxes").map(({ url }) => url.searchParams.get("name"));
+	const posted = (calls) => calls.filter(({ method, url }) => method === "POST" && url.pathname === "/v1/sandboxes").length;
+	const names = asked(render.calls);
+	assert.equal(names[0], null, "the first check reads the workspace's pages: the request's sandbox may carry another run or epoch");
+	assert.ok(names.includes(whole), "the wait to be listed asks for the whole name");
+	assert.deepEqual([...new Set(names)].sort(), [null, whole].sort());
+
+	const crowded = booting();
+	// 100 pages of 100 is the most a listing reads (MAX_PAGES): one more sandbox than that.
+	for (let i = 0; i <= 100 * 100; i++) plant(crowded, `sbx-other${String(i).padStart(12, "0")}`, `someone-else-${i}`);
+	const refused = await provider(crowded, options).create(spec, { requestId: "render-named-sweep" });
+	assert.equal(refused.ok, false, "it can't tell the request has no sandbox yet, so it makes none");
+	assert.match(refused.error.message, /Render's sandbox listing ran past 100 pages/);
+	assert.equal(posted(crowded.calls), 0, "no sandbox is made");
+});
+
+test("a request made already, asked again with another epoch or run, finds its sandbox by the request's name and is refused as exists: no second sandbox", async () => {
+	const dial = dialServer();
+	const daemonPath = fileURLToPath(import.meta.url);
+	const render = fakeRender({ start: (sandbox, script) => bootDial({ ...sandbox.env, AGENTRUN_ATTACH_URL: /AGENTRUN_ATTACH_URL='([^']*)'/.exec(script)[1] }, dial, { daemon: readFileSync(daemonPath) }) });
+	const options = { dial, daemonPath, timeouts: { pollMs: 1, listedStableMs: 0 } };
+	const spec = (run, epoch) => ({ image: BUILD, lifetimeMs: 600_000, network: "none", labels: { "agentrun.run": run, "agentrun.epoch": epoch } });
+	const first = await provider(render, options).create(spec("run-1", "2"), { requestId: "render-asked-again" });
+	assert.equal(first.ok, true, first.ok ? "" : `${first.error.code}: ${first.error.message}`);
+	const live = () => [...render.sandboxes.values()].filter(({ record }) => record.status !== "terminated").map(({ record }) => record.name);
+	for (const [what, run, epoch] of [
+		["another epoch", "run-1", "3"],
+		["another run", "run-2", "2"],
+	]) {
+		// Another server, or this one after a restart: nothing of the first create is in its memory.
+		const again = await provider(restarted(render), options).create(spec(run, epoch), { requestId: "render-asked-again" });
+		assert.equal(again.ok, false, `${what}: refused, never a second sandbox`);
+		assert.equal(again.error.code, "exists", `${what}: ${again.error.message}`);
+		assert.deepEqual(live(), [`${first.value.name}-r${runHash("run-1")}-e2`], `${what}: the first sandbox alone, still running`);
+	}
+});
+
+test("a sweep by name whose run and epoch are known, of a sandbox whose guest can't answer, reads no file: the name proves them", async () => {
+	const render = fakeRender({ answer: (method, path) => (path === "/runs/sync" ? json(200, { stdout: "", stderr: "fork: out of memory", exit_code: 1 }) : undefined) });
+	plant(render, SBX, `${NAME}-r${runHash("run-1")}-e3`, { labels: { ...LABELS, "agentrun.epoch": "3" } });
+	const asked = { "agentrun.computer": "1", "agentrun.computer.name": NAME, "agentrun.run": "run-1", "agentrun.epoch": "3" };
+	const listed = await provider(render).host.list(asked, CTX);
+	assert.deepEqual(listed.map(({ id, labels }) => [id, labels]), [[SBX, asked]]);
+	assert.deepEqual(render.runs(), [], "no guest read");
+	assert.deepEqual(await provider(render).host.list({ ...asked, "agentrun.epoch": "4" }, CTX), [], "another epoch's whole name is another sandbox's");
 });
 
 test("delete terminates the sandbox, which Render answers 204 even once it is terminated", async () => {

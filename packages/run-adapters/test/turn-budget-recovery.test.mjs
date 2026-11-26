@@ -85,3 +85,69 @@ test("a budget that has read an answer is not taken back to the journal's: a lat
   journalTurn(turn, new NativeJournal(next));
   assert.equal(turn.claim('c1', WINDOW), (WINDOW - 12_000 - answerReserve(WINDOW)) * CHARS_PER_TOKEN, "its own answer's room, not the journal's");
 });
+
+test("a restart right after results were handed, before anything else was written: those results keep their part, and a pending call gets only what is left", async () => {
+  // MUTATION: a settled length written but not flushed before its result goes back: lost with the process, the pending
+  // call claims the room the handed results already took.
+  const store = memorySessionStore();
+  // A store whose writes land a moment after they are asked (as a database's do): a write still on its way when the
+  // process stops is lost with it (the next process's open fences it).
+  const writer = await store.open('r4');
+  const first = await openDrive({ writer: { ...writer, append: async (records) => (await new Promise((r) => setImmediate(r)), writer.append(records)) }, signal: new AbortController().signal });
+  const journal = new NativeJournal(first);
+  const turn = new TurnBudget();
+  journalTurn(turn, journal);
+  // An answer whose calls were not counted: each call claims what is left, in turn.
+  turn.open({ inputTokens: HELD, outputTokens: 0 });
+  const bridge = toolBridge(first, [bigTool(10_000)], { budget: { contextWindow: WINDOW, turn } });
+  const before = [await bridge.call('lookup', { q: 'c1' }, 'c1'), await bridge.call('lookup', { q: 'c2' }, 'c2')].map((r) => r.text.length);
+  // The process stops here: no flush after the results went back.
+  const [after] = await resumed(store, 'r4', ['c3'], 10_000);
+  const handed = before.reduce((a, b) => a + b, 0);
+  assert.ok(handed + after <= ROOM, `handed before the restart ${before.join(', ')}, after it ${after}: together within ${ROOM}`);
+});
+
+test("a result whose length the journal could not keep is never handed: the call fails", async () => {
+  // MUTATION: a sink that drops its flush's failure hands the result anyway, and a resume after it claims that room again.
+  const store = memorySessionStore();
+  const drive = await driveOf(store, 'r5');
+  const turn = new TurnBudget();
+  // A journal that cannot write (as a poisoned NativeJournal's flush rejects); its answer's record fails too, unawaited.
+  const broken = { append: () => true, flush: () => Promise.reject(new Error('the journal could not write')), records: () => [] };
+  journalTurn(turn, broken);
+  turn.open({ inputTokens: HELD, outputTokens: 0, calls: 1 });
+  const bridge = toolBridge(drive, [bigTool(10_000)], { budget: { contextWindow: WINDOW, turn } });
+  await assert.rejects(bridge.call('lookup', { q: 'c1' }, 'c1'), /could not write/);
+});
+
+test("a journal that could not keep a length fails only its own drive: the next drive of the same budget (Codex's) hands its results and writes the turn again, a replayed call's length with it", async () => {
+  // MUTATION: a failed length kept past its drive: every later drive's result fails with the old journal's error.
+  const store = memorySessionStore();
+  const turn = new TurnBudget();
+  const broken = { append: () => true, flush: () => Promise.reject(new Error('the journal could not write')), records: () => [] };
+  journalTurn(turn, broken);
+  turn.open({ inputTokens: HELD, outputTokens: 0 });
+  const first = toolBridge(await driveOf(store, 'r6'), [bigTool(1_000)], { budget: { contextWindow: WINDOW, turn } });
+  await assert.rejects(first.call('lookup', { q: 'c1' }, 'c1'), /could not write/);
+  // The store recovers; the session's next drive journals the same budget, replays c1 (its tool's run is in the log) and
+  // runs c2.
+  const next = await driveOf(store, 'r6');
+  const journal = new NativeJournal(next);
+  journalTurn(turn, journal);
+  const bridge = toolBridge(next, [bigTool(1_000)], { budget: { contextWindow: WINDOW, turn } });
+  const replayed = await bridge.call('lookup', { q: 'c1' }, 'c1');
+  const result = await bridge.call('lookup', { q: 'c2' }, 'c2');
+  assert.equal(replayed.text.length, 1_000, 'the replay handed whole');
+  assert.equal(result.text.length, 1_000, 'handed whole');
+  // MUTATION: the replayed c1, settled in the drive whose journal failed, is handed without its length: a process that
+  // restarts now restores a turn without the answer or c1's part, and its calls claim that room again.
+  await journal.flush();
+  const records = journalRecords(next);
+  const last = records.findLastIndex((record) => 'open' in record);
+  assert.ok(last >= 0, `the answer's facts are in the next drive's journal: ${JSON.stringify(records)}`);
+  assert.deepEqual(records[last].open, { inputTokens: HELD, outputTokens: 0 });
+  assert.deepEqual(records.slice(last + 1).map((record) => record.settled), [{ callId: 'c1', chars: 1_000 }, { callId: 'c2', chars: 1_000 }], 'both lengths after it');
+});
+
+/** The turn records a drive's journal holds. */
+const journalRecords = (drive) => new NativeJournal(drive).records(processExports.TURN_STREAM).map((record) => record.data);

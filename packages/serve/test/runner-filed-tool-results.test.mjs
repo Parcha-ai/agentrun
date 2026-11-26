@@ -18,7 +18,7 @@ const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-sp
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const host = await import("../dist/runner/run-child-host.js");
 const { heldRedactor } = await import("../dist/runner/redact.js");
-const { runFolder, runKey } = await import("../dist/workspace/paths.js");
+const { runFolder, runKey, scratchFolder } = await import("../dist/workspace/paths.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
@@ -86,6 +86,28 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     const puts = disk.calls.filter((call) => call.op === "putObject").map((call) => call.key);
     assert.ok(puts.includes(`${RUN_KEY}/stripe/${file}`), `on the run's disk: ${JSON.stringify(puts)}`);
     empty();
+  });
+}
+
+// A CLI works in the run's scratch folder on this machine, which its file tools take as another name of the run's folder
+// (cli-run-spec.ts: runTools' aliases). The run's gate holds the filed folder by every name those tools resolve into
+// the run's files, so the CLI's own path to it is refused too; a sibling by that path is not.
+for (const computer of [true, false]) {
+  test(`the CLI spec, Mode 2 ${computer ? "with" : "with no"} computer: a read of the filed folder by the scratch folder's path is refused in the setting's words, a sibling by that path is not`, { timeout: 120_000 }, async (t) => {
+    const { fake, register } = await fakeStripe(t);
+    const run = await mode2Run(t, { harness: "opencode", disk: new FakeArchilDisk(), mcp: MCP(fake, register), computer });
+    const { spec } = await run.claimNext(cliRunSpecFromLaunch);
+    const scratch = scratchFolder(run.data, AGENT, RUN);
+    const gate = (path, i) => spec.gate({ callId: `r${i}`, tool: "read", args: { path } });
+    for (const [i, given] of [`${scratch}/stripe/list_transactions-1.json`, `${scratch}/stripe`, `${scratch}/notes/../stripe/a.json`].entries()) {
+      const said = await gate(given, i);
+      assert.equal(typeof said, "object", `${given}: ${JSON.stringify(said)}`);
+      assert.ok(said.deny.startsWith(`read can't be called: ${given} is in stripe/, the folder this agent's setting for ${GRANTS[0]} files that tool's answers in (its file setting)`), said.deny);
+    }
+    const plain = await gate("notes.md", 10);
+    assert.equal(typeof plain, "string", JSON.stringify(plain));
+    for (const [i, given] of [`${scratch}/notes.md`, `${scratch}/stripes/a.json`].entries()) assert.equal(await gate(given, 20 + i), plain, `${given}: as any other file of the run's`);
+    assert.deepEqual(fake.log.filter((entry) => entry.method === "tools/call"), [], "nothing was called");
   });
 }
 

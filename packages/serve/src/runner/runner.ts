@@ -1070,6 +1070,14 @@ export function startRunner(options: RunnerOptions): Runner {
         emit({ type: "refused", runId: held.claim.runId, commandId, reason });
       },
       redact,
+      // Only in a close, and once: the loop is stopped for a shutdown and its signal aborted, as at the drain's end, so
+      // the run is handed back (cut "drain") and its turn resumes on the next claim.
+      handBack: () => {
+        const now = heldNow;
+        if (!closed || !now || now.ending || now.stopping || now.fence.lost) return;
+        stopLoop(now, { kind: "shutdown" });
+        now.abort.abort(new Error("the runner is closing"));
+      },
     });
     const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib, ...(learningDeadline !== undefined && pastDeadline ? { learningDeadline, pastDeadline } : {}) };
     heldNow = held;

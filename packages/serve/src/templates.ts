@@ -108,7 +108,8 @@ const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
  *  `${parameters.<name>}`), which apply writes as the tool's pin in the agent's tool settings, so a send goes only to the
  *  destination the owner set. `file`, by tool: where each of its answers is filed whole in the run's files and the paths of it
  *  the tool's result shows (filed-tool.ts), which apply writes as the tool's file setting in the agent's tool settings, so
- *  the tool's result is a summary, never the answer (the model's own file tools can still open the folder). Absent when
+ *  the tool's result is a summary, never the answer (the gate refuses the agent's own read, write and edit in the folder;
+ *  bash is not gated by path). Absent when
  *  the package files none. */
 export type McpNeed = { source: McpSource; toolkit: string; tools: string[]; required: boolean; reason?: string; allow: string[]; pin: Record<string, Record<string, PinValue>>; file?: Record<string, FileSetting> };
 /** One of a package's model choices (manifest `model.choices`): a model and the harness it runs on, which an owner picks
@@ -1091,11 +1092,11 @@ function modelView(model: Package["model"]) {
 }
 
 /** A package whole, as an import and a read of one answer it: its listing with the computer it would get here
- *  (`computerHere`), and every text its agent would be given, the instructions and each skill file by path (a rule and
+ *  (`computerHere`) and its subagents' tiers (`tiersHere`), and every text its agent would be given, the instructions and each skill file by path (a rule and
  *  the answer's schema beside each SKILL.md among them), so a person reads what a package would tell their agent before
  *  it is applied. */
-export function packageDetail<Pick>(p: Package, computerHere: (p: Package) => Pick) {
-  return { template: { ...packageView(p), computer_here: computerHere(p) }, instructions: p.instructions, skill_files: { ...p.skills } };
+export function packageDetail<Pick, Tiers>(p: Package, computerHere: (p: Package) => Pick, tiersHere: (p: Package) => Tiers) {
+  return { template: { ...packageView(p), computer_here: computerHere(p), model_tiers_here: tiersHere(p) }, instructions: p.instructions, skill_files: { ...p.skills } };
 }
 
 /** The packages this server serves: the ones it ships, read at its start, and the ones imported here (the store keeps
