@@ -386,6 +386,8 @@ export function runLearningBody(input: { readonly id: string; readonly learning:
     workflows: filesView(learning, shown).workflows ?? [],
     // How many lines of its owner's words its merge added to corrections.md.
     corrections: learning.corrections ?? 0,
+    // How many of corrections.md's oldest lines that correction pushed out to keep the file within its cap.
+    dropped_lines: learning.dropped_lines ?? 0,
     seed: input.seed,
     // Why it started with nothing learned (run-launch.ts SeedFailed), and how long its # Learned text was: what a read of a
     // run that seemed to start from nothing tells apart (no seed, an empty section, or one that held its corrections).

@@ -104,7 +104,7 @@ Each row: entry point, then what makes it pass.
    complete: e.g. `0.01` on luna completes and `0.0001` pauses. Only a refusal no cap fixes ends `failed`
    (`spend_cap_reached`). See serve's README, "A run paused at its cap".
 10. **Cancel**: start a multi-step run, `POST /v2/runs/{id}/cancel` after its first tool_use → `cancelled` within a few
-    seconds. Then `POST /v2/runs/{id}/messages {content}` → 409 `not_continuable`. The body takes `content` only.
+    seconds. Then `POST /v2/runs/{id}/messages {content}` → 409 `not_continuable`. The body takes `content`, and the person's own words as `said` beside it.
 11. **Follow-up**: `POST /v2/runs/{id}/messages {content}` to a completed agentic run → back to `completed`. The
     timeline's user_message count goes up by exactly one and the original rows stay first.
 12. **Kernel durability, runner crash**: start the server with `--no-runner` and a runner of its own
