@@ -67,7 +67,7 @@ export const RUN_END_RETRY_MS = 5_000;
  *  their labels: the janitor's provider sweep skips them (computer-janitor.ts sweepServerComputers), so there it ends
  *  only a machine a park kept (its kept pass, on any provider). Kept by hand, and held to the registry by
  *  run-end-computers-vendor-list.test.mjs: a provider added with lifetime "vendor" must be named here too. */
-const VENDOR_ENDS_ITS_OWN = "E2B, Daytona, Modal, Morph, Browserbase, Kernel or the phone harness";
+const VENDOR_ENDS_ITS_OWN = "E2B, Daytona, Modal, Morph, Render, Browserbase, Kernel or the phone harness";
 
 /** Why a run's end can't have its provider here, which no later try changes: its keys or options. */
 class NoProviderHere extends Error {}

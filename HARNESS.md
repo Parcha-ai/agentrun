@@ -102,7 +102,9 @@ argument, and the run's skills that check accepts are taken out of the prompt an
 
 A module may instead give a whole entry with its own runner (the members [serve's README](packages/serve/README.md#harness-modules)
 lists): it then states by hand what the kit derives from the facts (models, key rows, offer, refusal and price), and
-without facts its agent gets pi's tools, not the host tools.
+without facts its agent gets pi's tools, not the host tools. Its runner's `adapter(launch, extra)` gets the run's redactor
+as `launch.redact` (always given), which holds every key the run's claim opens: cut anything the adapter logs, records or
+hands back of a provider's answer with it.
 
 For either one, serve picks the model and the key the way it does for its own harnesses. A person's Claude Code login is
 never a module's credential. An entry's `ownKeys` names no key a built-in harness owns (Cursor's `CURSOR_API_KEY`): if
