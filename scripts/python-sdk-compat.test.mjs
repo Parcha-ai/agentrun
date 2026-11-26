@@ -119,3 +119,25 @@ assert namespace['ImportRemoteTargetResponse'](native={}) == {'native': {}}
 `, join(ROOT, 'python')], { input: text, encoding: 'utf8' });
   assert.equal(checked.status, 0, checked.stdout + checked.stderr);
 });
+
+test('remote import response types follow the native or deployment request', { skip: !existsSync(PYRIGHT) }, t => {
+  const path = '/connectors/{connector_id}/import';
+  const text = pythonText(operationsOf({ paths: { [path]: NATIVE_PATHS[path] } }), {
+    secretBody: [], omit: {}, multiSegment: {}, commands: { importRemoteTarget: ['connectors', 'import-remote-target'] },
+  }, commandOf);
+  const dir = mkdtempSync(join(tmpdir(), 'agentrun-python-import-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'generated.py'), text.replaceAll('from ._http', 'from agentrun._http').replaceAll('from ._types', 'from agentrun._types'));
+  writeFileSync(join(dir, 'pyrightconfig.json'), JSON.stringify({ include: ['consumer.py'], extraPaths: [join(ROOT, 'python')], pythonVersion: '3.11' }));
+  writeFileSync(join(dir, 'consumer.py'), [
+    'from generated import ConnectorsResource, ImportRemoteTargetBody, ImportRemoteTargetBody2, ImportRemoteTargetResponse, ImportRemoteTargetResponse2',
+    'def native(client: ConnectorsResource, body: ImportRemoteTargetBody) -> ImportRemoteTargetResponse:',
+    '    result = client.import_remote_target("connector", body)',
+    '    return result',
+    'def deployed(client: ConnectorsResource, body: ImportRemoteTargetBody2) -> ImportRemoteTargetResponse2:',
+    '    result = client.import_remote_target("connector", body)',
+    '    return result',
+  ].join('\n'));
+  const typed = spawnSync(process.execPath, [PYRIGHT, '--project', dir], { cwd: ROOT, encoding: 'utf8', timeout: 60_000 });
+  assert.equal(typed.status, 0, typed.stdout + typed.stderr);
+});

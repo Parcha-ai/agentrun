@@ -5,12 +5,19 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { exportSourceSnapshot, sourceSnapshotDigest } from '../dist/native/source-snapshot.js';
+import { exportSourceSnapshot, macOSSystemPolicyPath, sourceSnapshotDigest } from '../dist/native/source-snapshot.js';
 import { validateSourceSnapshot } from '../dist/source-sync/snapshots.js';
 import { deploymentSource } from '../dist/deployment-source.js';
 
 const trusted = project => `[projects.${JSON.stringify(project)}]\ntrust_level = \"trusted\"\n`;
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+
+test('macOS Codex policy checks use only the fixed /etc system alias', async () => {
+  const alias = async path => { assert.equal(path, '/etc'); return 'private/etc'; };
+  assert.equal(await macOSSystemPolicyPath('/etc/codex/config.toml', alias), '/private/etc/codex/config.toml');
+  await assert.rejects(macOSSystemPolicyPath('/etc/codex/config.toml', async () => 'other/etc'), { code: 'source_unavailable' });
+  assert.equal(await macOSSystemPolicyPath('/tmp/project/config.toml', async () => { throw new Error('must not inspect /etc'); }), '/tmp/project/config.toml');
+});
 const authJwt = payload => [Buffer.from('{}').toString('base64url'), Buffer.from(JSON.stringify(payload)).toString('base64url'), Buffer.from('not-a-secret').toString('base64url')].join('.');
 const authFixture = (plan = 'pro', access = {}) => ({ auth_mode: 'chatgpt', last_refresh: new Date().toISOString(), tokens: {
   id_token: authJwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: plan, chatgpt_account_id: 'fixture-account', chatgpt_user_id: 'fixture-user' } }),

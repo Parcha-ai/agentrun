@@ -1,6 +1,6 @@
 /** Source-side exporter. No service, native CLI, model or network calls; credentials are never copied/exported. */
 import { constants } from "node:fs";
-import { open, opendir, mkdtemp, mkdir, rm, writeFile, type FileHandle } from "node:fs/promises";
+import { open, opendir, mkdtemp, mkdir, readlink, rm, writeFile, type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -26,6 +26,14 @@ export type * from "./source-snapshot-types.js";
 export { sourceSnapshotDigest } from "./source-snapshot-types.js";
 
 const SYSTEM_POLICY_PATHS = ["/etc/codex/config.toml", "/etc/codex/requirements.toml", "/etc/codex/managed_config.toml"] as const;
+export async function macOSSystemPolicyPath(path: string, link: (path: string) => Promise<string> = path => readlink(path, "utf8")): Promise<string> {
+  if (!(SYSTEM_POLICY_PATHS as readonly string[]).includes(path)) return path;
+  let target: string;
+  try { target = await link("/etc"); }
+  catch { throw new SourceSnapshotError("source_unavailable", "The macOS system policy path could not be checked safely."); }
+  if (target !== "private/etc" && target !== "/private/etc") throw new SourceSnapshotError("source_unavailable", "The macOS system policy path is not the expected alias.");
+  return `/private${path}`;
+}
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const object = (value: unknown): Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
 const canonical = (value: any): string => JSON.stringify(value, function (_key, item) {
@@ -151,7 +159,7 @@ class Reader {
       || basename(path) === "skills" && basename(dirname(path)) === ".agents" && within(dirname(dirname(path)), this.options.target.project));
     if (!this.granted(path) && !(SYSTEM_POLICY_PATHS as readonly string[]).includes(path) && !piMetadata) throw new SourceSnapshotError("source_unavailable", "A required policy path is outside the source grant.");
     let handle: SourceHandle | undefined, stamp: string | null = null;
-    try { handle = await this.open(path); stamp = signature(await handle.stat()); }
+    try { handle = await this.open(this.portable ? await macOSSystemPolicyPath(path) : path); stamp = signature(await handle.stat()); }
     catch (error) { if (error instanceof SourceSnapshotError) throw error; if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new SourceSnapshotError("source_unavailable", "Required native policy could not be checked safely."); }
     finally { await handle?.close(); }
     if (!fresh) this.policyStamps.set(path, stamp);

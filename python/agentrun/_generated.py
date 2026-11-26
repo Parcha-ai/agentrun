@@ -12580,6 +12580,12 @@ class ConnectorsResource(Group):
         """Import explicitly selected, redacted past sessions without running or learning from them (POST /connectors/{connector_id}/targets/{target_id}/history)."""
         return self._call("importRemoteHistory", (connector_id, target_id), body, None, timeout=timeout)
 
+    @overload
+    def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody, *, timeout: float | None = None) -> ImportRemoteTargetResponse: ...
+    @overload
+    def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody2, *, timeout: float | None = None) -> ImportRemoteTargetResponse2: ...
+    @overload
+    def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody | ImportRemoteTargetBody2, *, timeout: float | None = None) -> ImportRemoteTargetResponse | ImportRemoteTargetResponse2: ...
     def import_remote_target(self, connector_id: str, body: ImportRemoteTargetBody | ImportRemoteTargetBody2, *, timeout: float | None = None) -> ImportRemoteTargetResponse | ImportRemoteTargetResponse2:
         """Import a selected source reference or reserve a setup-only deployment without native execution (POST /connectors/{connector_id}/import)."""
         return self._call("importRemoteTarget", (connector_id,), body, None, timeout=timeout)

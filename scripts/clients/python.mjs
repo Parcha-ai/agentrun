@@ -230,10 +230,7 @@ export function pythonText(ops, map, commandOf) {
     const json = op.answer !== null ? types.declare(`${P}Response`, op.answer, `answer ${id}`) : undefined;
 
     const positional = pathParams.map((p) => `${pyName(p)}: str`);
-    if (op.body) {
-      const type = [body, rawBody ? 'RawBody' : null].filter(Boolean).join(' | ');
-      positional.push(op.body.required ? `body: ${type}` : `body: ${type} | None = None`);
-    }
+    const bodyType = [body, rawBody ? 'RawBody' : null].filter(Boolean).join(' | ');
     const kwarg = (p) => {
       const type = p.in === 'header' ? 'str' : p.enum ? types.py({ enum: p.enum }, '') : ({ string: 'str', integer: 'int', number: 'float', boolean: 'bool' })[p.type] ?? 'str';
       return `${pyName(p.name)}: ${type} | None = None`;
@@ -244,7 +241,9 @@ export function pythonText(ops, map, commandOf) {
     const orNothing = op.noContent && answer !== 'none' ? `${plain} | None` : plain;
     const result = tagged && !download ? `Tagged[${orNothing}]` : orNothing;
     // Path parameters and the body by position; every other argument by name, so a call reads as the route it sends.
-    const signature = (stream) => ['self', ...positional, '*', ...keywords, ...(stream ? [stream] : []), 'timeout: float | None = None'].join(', ');
+    const signature = (stream, requestType = bodyType) => ['self', ...positional,
+      ...(op.body ? [op.body.required ? `body: ${requestType}` : `body: ${requestType} | None = None`] : []),
+      '*', ...keywords, ...(stream ? [stream] : []), 'timeout: float | None = None'].join(', ');
     const call = [
       str(id),
       pathParams.length === 1 ? `(${pyName(pathParams[0])},)` : `(${pathParams.map(pyName).join(', ')})`,
@@ -255,7 +254,18 @@ export function pythonText(ops, map, commandOf) {
       ...(rawBody ? ['body_type=body_type'] : []),
     ].join(', ');
     const doc = `${op.summary} (${route}).${secret ? ' Its body\'s string values are secrets: each copy is cut from the answer, and a refusal keeps only its code.' : ''}`;
-    const lines = download ? [
+    const variants = op.clientResponseVariants?.map((answerIndex, bodyIndex) => {
+      const branchName = (base, schema, index) => schema['x-agentrun-python-preserve-object'] === true && index === 0 ? base : `${base}${index + 1}`;
+      return {
+        request: types.py(op.body.type.oneOf[bodyIndex], branchName(`${P}Body`, op.body.type, bodyIndex)),
+        response: types.py(op.answer.oneOf[answerIndex], branchName(`${P}Response`, op.answer, answerIndex)),
+      };
+    });
+    const lines = variants ? [
+      ...variants.flatMap(({ request, response }) => ['@overload', `def ${name}(${signature(undefined, request)}) -> ${response}: ...`]),
+      '@overload', `def ${name}(${signature()}) -> ${result}: ...`,
+      `def ${name}(${signature()}) -> ${result}:`,
+    ] : download ? [
       '@overload',
       `def ${name}(${signature('stream: Literal[False] = False')}) -> bytes: ...`,
       '@overload',
