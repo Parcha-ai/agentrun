@@ -769,7 +769,9 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
 // has no closing one (cut at a %2C) is kept without that quote too; read split at & and %2C, it keeps the value of a
 // pair in a list joined by %2C, and read split at & and %3B, the value of a pair in a list joined by %3B, a %20, quotes
 // or a %26 in it too; read split at ; too, it keeps each pair after a ;. Every reading is held. A value whose part
-// before its first ; is empty is held after it; a value of only ; is not held.
+// before its first ; is empty is held after it, whole and as its first piece of 8 characters or more, unless that is a
+// pair named like no credential; a value of only ;, =, quotes, commas or spaces, as written or decoded, is not held and
+// not cut.
 // Each row: [what, the env, the credentials held and cut alone, what is on no held list, a line quoting the variable and
 // its cut].
 const SEMI_PREFIX = `prefix-${"dummy"}`;
@@ -968,6 +970,34 @@ const SEMI_ROWS = [
     [`${SEMI_PREFIX}%20tail-${"dummy"};suffix-${"dummy"}`, `${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"}`, SEMI_PREFIX],
     ["us-east-1", "region=us-east-1", "region=us-east-1%20", " region=us-east-1"],
     [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair holding only a comma written %2C",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=api_key=%2C&region=us" },
+    [],
+    [",", "%2C"],
+    ["parse error at , near region, see %2C", "parse error at , near region, see %2C"],
+  ],
+  [
+    "a header value's credential pair holding a lone quote written %27, quoted as written",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=%27 theme=dark" },
+    [],
+    ["'", "%27", "dark"],
+    ["parse error at %27 near theme", "parse error at %27 near theme"],
+  ],
+  [
+    "a header value's credential pair whose value starts with a ;, then a piece under 8 characters",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=token=;a;key-${"dummy"}-value&x=1` },
+    [`key-${"dummy"}-value`],
+    ["a"],
+    [`a bad value at a: key-${"dummy"}-value`, "a bad value at a: [redacted]"],
+  ],
+  [
+    "a header value's credential pair whose value starts with a ;, then a pair named like no credential",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=;theme=dark-mode" },
+    [],
+    ["theme=dark-mode", "dark-mode"],
+    ["theme=dark-mode is on", "theme=dark-mode is on"],
   ],
 ];
 
