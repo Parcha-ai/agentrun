@@ -118,8 +118,9 @@ async function holdingFront(t, origin, held) {
 /** An agent of `learning` with `prior` earlier runs of its own, on no key (the server's path), and `answer` landed in its
  *  learning folder (`promoted`: as its check's record promotes it, so it serves first). The runner's env names the
  *  gateway and holds no key of its own; its route reads the key the claim's model env holds. `hold`: requests whose body
- *  it matches wait until `front.release()`. `learningClock`: the runner's clock for its learning children's deadlines. */
-async function world(t, { learning = true, prior = 0, promoted = false, hold, learningClock, usage } = {}) {
+ *  it matches wait until `front.release()`. `learningClock`: the runner's clock for its learning children's deadlines.
+ *  `usage`: what the gateway says each request used. `pollMs`: the runner's poll, when not TIMING's. */
+async function world(t, { learning = true, prior = 0, promoted = false, hold, learningClock, usage, pollMs } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-keyed-learning-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -146,7 +147,7 @@ async function world(t, { learning = true, prior = 0, promoted = false, hold, le
   const logs = [];
   const deps = { env: { AGENT_MODEL_BASE_URL: origin }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
-  runner = startRunner({ store, name: "runner-a", ...TIMING, ...(learningClock ? { learningClock } : {}), createLoop: createAdapterLoop(specOf) });
+  runner = startRunner({ store, name: "runner-a", ...TIMING, ...(pollMs ? { pollMs } : {}), ...(learningClock ? { learningClock } : {}), createLoop: createAdapterLoop(specOf) });
   const ended = (id) => until(async () => {
     const row = await server.runs.get(id);
     return FINAL.includes(row?.state) && row.runner === null && row;
@@ -299,6 +300,35 @@ test("a learning child still at work at its deadline (its start + LEARNING_CHILD
   assert.deepEqual([work.state, work.runs, work.deadline_at], ["ended", [], null], JSON.stringify(work));
   assert.equal(nodes(), 0, "no node request of a cancelled replay reached the gateway");
   assert.deepEqual(await Promise.all(ids.map(async (id) => (await w.server.runs.get(id)).costUsd)), booked, "each replay's spend booked once, at its end");
+  await assertNowhere(w);
+});
+
+test("a learning child claimed already past its deadline (queued past it, on the runner's clock) never starts: no loop, no model request, it ends cancelled at spend 0, and the run reads ended", { timeout: 240_000 }, async (t) => {
+  // The runner's clock past every child's deadline from the start: each replay is claimed after the bound its run's caller
+  // was promised, so none may spend.
+  // A slow poll: a sweep of held children (runner.ts endOverdue) comes seconds after a claim, so only a check made before
+  // the loop starts keeps a child past its deadline from asking the model.
+  const w = await world(t, { prior: 6, learningClock: () => Date.now() + LEARNING_CHILD_MS + 60_000, pollMs: 3_000 });
+  await w.keyed("run-1", "What is six times seven", 5);
+  await w.ended("run-1");
+  const replays = await until(async () => {
+    const rows = await w.children("replay");
+    return rows.length === 6 && rows;
+  }, "six replay runs made");
+  // A replay's node asks the model with the workflow's submit tool; the run's own agent turn never offers it.
+  const nodes = () => w.gw.requests.filter((request) => offers(request.body, "submit")).length;
+  for (const { id } of replays) {
+    const row = await w.ended(id);
+    assert.deepEqual([row.state, row.outcome], ["stopped", "cancelled"], `replay ${id} cancelled unstarted: ${JSON.stringify([row.state, row.outcome, row.summary])}`);
+    assert.equal(row.costUsd ?? 0, 0, `replay ${id} spent nothing: ${row.costUsd}`);
+    assert.equal((await w.server.runs.launch(id)).sealed, null, `replay ${id}'s copy erased by the write that ends it`);
+  }
+  assert.equal(nodes(), 0, "no request of a replay past its deadline reached the gateway");
+  const work = await until(async () => {
+    const one = (await w.view("run-1")).learning_work;
+    return one.state !== "running" && one;
+  }, "the run's learning work settles");
+  assert.deepEqual([work.state, work.runs, work.deadline_at], ["ended", [], null], JSON.stringify(work));
   await assertNowhere(w);
 });
 
