@@ -833,7 +833,8 @@ const CASES = [
   })(),
   // Normalization reads past a terminal control as a reader does: a held value with a precomposed Hangul syllable, its
   // conjoining jamo split by a BEL (dropped, as any control is) or by a CSI colour (gone on screen), withholds the text.
-  // A backspace strikes out a whole character: one past U+FFFF (a surrogate pair) goes with both halves.
+  // A backspace strikes out a whole character: one past U+FFFF (a surrogate pair) goes with both halves. Jamo split by a
+  // backspace read whole where it is dropped, as before terminal readings.
   ...(() => {
     const [H, R] = P24;
     const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
@@ -842,6 +843,9 @@ const CASES = [
       { what: "conjoining jamo split by a BEL, the value precomposed", text: `x ${H}ᄀ\u0007ᅡ${R} y`, value: syllable },
       { what: "conjoining jamo split by a CSI colour, the value precomposed", text: `x ${H}ᄀ\u001b[0mᅡ${R} y`, value: syllable },
       { what: "a backspace striking out a character past U+FFFF", text: `x ${H}\u{10400}\b${R} y`, value: P24.join("") },
+      { what: "two backspaces striking out a character past U+FFFF and the one before it", text: `x ${H}Z\u{10400}\b\b${R} y`, value: P24.join("") },
+      // On screen the backspace strikes out the first jamo; with it dropped as a control, the jamo compose.
+      { what: "conjoining jamo split by a backspace, the value precomposed", text: `x ${H}\u1100\b\u1161${R} y`, value: syllable },
     ].map(({ what, text, value }) => ({ name: `a held value read across a terminal control, ${what}, withholds the text`, text, values: [value], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
   })(),
   // Controls: coloured output with no held value shows as it came; a held value coloured whole is cut in place, its
