@@ -300,8 +300,9 @@ export class CallIds {
    *  named for an id already announced without one (a call the agent named in a later update) keys it again. `also`:
    *  the same call's arguments read another way (addAnnounced: without an extra its tool's schema declares), under
    *  which it is kept too; the first MCP call either matches takes it, and it is gone from both. A call already waiting
-   *  is handed it only by its own arguments: one that matches it only without the extra may be another call's, whose
-   *  own announcement is on its way, so that one tries again as take says (wake). */
+   *  is handed it only where it is the call's own first key, its tool and its whole arguments. One that matches it only
+   *  without the extra may be another call's, whose own announcement is on its way, and one naming no tool or reporting
+   *  no input may come second to the call's own ended one, so for those the call tries again as take says (wake). */
   add(id: string, tool: string | undefined, input: unknown, also?: unknown): void {
     if (this.used.has(id)) return;
     if (tool !== undefined) this.unnamed.delete(id);
@@ -389,7 +390,12 @@ export class CallIds {
     // live announcements alone; one whose call ended (settle) is taken only once the call is `aged` and no live one
     // under any of `from` is left: then the oldest whose own arguments are these, else the oldest. One whose own
     // arguments are these (a late MCP call of a call a cancel reported failed) also comes before a live one that matches
-    // them less closely, under a later key: one naming no tool, or reporting no input, or neither. Beyond this: an
+    // them less closely, under a later key: one naming no tool, or reporting no input, or neither, whether it was
+    // announced before the MCP call or during its hold (add hands a waiting call only its own first key). Only an
+    // announcement whose own first key is this one counts as its own: one kept here only read without an extra
+    // (addAnnounced) is a guess, and a live one under a later key comes first, as before. So a retry announced with
+    // less than its call's whole arguments (no tool, or no input), after a call with these arguments ended, takes the
+    // ended one's id after the hold: the same tool with the same arguments, the order the two came in lost. Beyond this: an
     // announcement that comes more than the grace after its own MCP call (that call takes the other's), and a call torn
     // until the wait is over, more than ms behind the other's MCP call (it takes the oldest, which may be the other's);
     // in both the other's MCP call falls back once its wait is over. Two calls with the same arguments, one ended, can
@@ -432,13 +438,12 @@ export class CallIds {
     if (typeof now === "string") return now;
     return new Promise<string | undefined>((resolve, reject) => {
       let aged = this.grace <= 0;
-      const lists = keys.map((at) => {
-        const list = this.waiting.get(at) ?? [];
-        this.waiting.set(at, list);
-        return list;
-      });
-      // A call waits here only on announcements of its own key, never on one that named nothing: those are only kept on
-      // a recipe without announces, and an extra (the one cause to wait) needs announces.
+      // A call is handed an announcement at once (add) only under its own first key: its own arguments with its tool. One
+      // that names no tool or reports no input is listed, and wakes the call, whose retry takes it by pick's rules (its
+      // own ended announcement comes first). Never on one that named nothing: those are only kept on a recipe without
+      // announces, and an extra (the one cause to wait) needs announces.
+      const handed = this.waiting.get(key) ?? [];
+      this.waiting.set(key, handed);
       const retry = () => {
         const id = pick(keys, this.pending.get(key) ?? 0, aged);
         if (typeof id === "string") done(id);
@@ -446,10 +451,8 @@ export class CallIds {
       const leave = () => {
         clearTimeout(timer);
         clearTimeout(held);
-        for (const list of lists) {
-          const at = list.indexOf(done);
-          if (at >= 0) list.splice(at, 1);
-        }
+        const at = handed.indexOf(done);
+        if (at >= 0) handed.splice(at, 1);
         if (!this.retries.delete(retry)) return;
         const left = (this.pending.get(key) ?? 1) - 1;
         if (left > 0) this.pending.set(key, left);
@@ -474,7 +477,7 @@ export class CallIds {
         retry();
       }, Math.max(this.grace, 0));
       signal.addEventListener("abort", stop, { once: true });
-      for (const list of lists) list.push(done);
+      handed.push(done);
       this.pending.set(key, (this.pending.get(key) ?? 0) + 1);
       this.retries.add(retry);
       this.wake();
