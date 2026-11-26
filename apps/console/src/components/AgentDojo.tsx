@@ -13,7 +13,7 @@ import { type Agent, learningOn } from "@/lib/agentForm";
 import { type AgentLearning, type LearningModelAccess, correctionLines, givenToRuns } from "@/lib/learning";
 import { when } from "@/lib/format";
 import { problem, type Problem } from "@/lib/problem";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { cn } from "@/lib/utils";
 import { cliLearningLabel, cliLearningOf } from "@/lib/cliLearning";
 
@@ -120,12 +120,12 @@ export function AgentDojo({ v2, server, modelAccess }: { v2: Client; server?: "o
   const stale = eligible.some((row) => row.stale);
   const changes = eligible.flatMap((row) => (row.view?.log.items ?? []).map((change) => ({ agent: row.agent, change })))
     .sort((a, b) => b.change.at.localeCompare(a.change.at)).slice(0, 8);
-  return <section className="flex min-h-full flex-col">
+  return <section className={pageClass}>
     <header className={cn(pageToolbarClass, "gap-2 px-5")}>
       <h1 className={pageTitleClass}><DojoIcon size={16} className="shrink-0" />Learning Dojo</h1>
       <Button className="ml-auto" size="icon" aria-label="Refresh Learning Dojo" disabled={loading || !server} onClick={() => void read()}><RefreshCw className="size-4" aria-hidden /></Button>
     </header>
-    <div className="mx-auto w-full max-w-page-wide space-y-7 p-5 md:p-8">
+    <div data-page-body className={pageBodyClass}><div className="mx-auto w-full max-w-page-wide space-y-7 p-5 md:p-8">
       <div><h2 className="text-xl font-semibold">What your agents learn</h2><p className="mt-2 max-w-3xl text-lead leading-relaxed text-muted-foreground">Review the corrections and workflow drafts your current agents keep for later runs. Open an agent to enable learning, inspect its changes or review pending drafts.</p><p className="mt-2 max-w-3xl text-small leading-relaxed text-muted-foreground">Imported sessions are history, not learning runs. Workflow drafts come from agentic runs started through this server; corrections are yours, given with a grade or written on an agent's Learning tab.</p></div>
       {server === undefined ? <p role="status" className="text-lead text-muted-foreground">Checking learning support…</p>
         : server === null ? <div className="border bg-card p-5"><h3 className="font-semibold">This server does not expose learning</h3><p className="mt-2 text-lead text-muted-foreground">Use a server version with learning support to inspect or enable it here.</p><a href="#/agents" className="mt-4 inline-block text-lead text-primary-text underline underline-offset-4">Agents</a></div>
@@ -148,7 +148,7 @@ export function AgentDojo({ v2, server, modelAccess }: { v2: Client; server?: "o
             </section>}
           </>}
         </>}
-    </div>
+    </div></div>
   </section>;
 }
 

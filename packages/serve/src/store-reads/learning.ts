@@ -686,8 +686,9 @@ export function callArgsOf(entries: readonly EntryLike[]): Map<string, { tool: s
         if (part?.type === "toolCall" && typeof part.id === "string" && typeof part.name === "string") out.set(part.id, { tool: part.name, args: argsOf(part.arguments) });
       }
     } else if (entry.kind === KINDS.callStart) {
-      const data = (entry.data ?? {}) as { callId?: unknown; tool?: unknown; input?: unknown };
-      if (typeof data.callId === "string" && typeof data.tool === "string") out.set(data.callId, { tool: data.tool, args: argsOf(data.input) });
+      const data = (entry.data ?? {}) as { callId?: unknown; tool?: unknown; input?: unknown; workflow?: unknown };
+      // An SDK learned_workflow start stored withheld names its workflow apart from its input (CallStartData.workflow).
+      if (typeof data.callId === "string" && typeof data.tool === "string") out.set(data.callId, { tool: data.tool, args: typeof data.workflow === "string" ? { name: data.workflow } : argsOf(data.input) });
     }
   }
   return out;

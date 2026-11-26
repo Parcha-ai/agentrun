@@ -25,6 +25,7 @@ const MANIFEST = ({ urls = `["${PULLS}"]`, every = "14400", extra = [], paramete
 name: pulls
 version: 0.1.0
 description: Says who opened each new pull request in one repository.
+tools: []
 budget: { per_run_usd: 0.25 }
 ${parameters.length ? `parameters:\n${parameters.map((line) => `  ${line}`).join("\n")}\n` : ""}triggers:
   - name: new-pr

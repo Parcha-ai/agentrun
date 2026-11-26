@@ -13,17 +13,15 @@ CASES = json.loads((Path(__file__).resolve().parents[2] / "packages" / "client" 
 
 
 class ReasonTest(unittest.TestCase):
-    def test_one_space_per_whitespace_run_and_no_control_zero_width_bidi_or_bom_character(self) -> None:
+    def test_one_space_per_whitespace_run_no_control_zero_width_bidi_or_bom_character_cut_at_reason_chars(self) -> None:
+        self.assertEqual(REASON_CHARS, 300, "the cases' length")
         for message, end in CASES:
-            with self.subTest(message=message):
-                self.assertEqual(said({"message": message}), end)
-
-    def test_cut_at_reason_chars_code_points_after_cleaning(self) -> None:
-        self.assertEqual(said({"message": "x" * 400}), ": " + "x" * (REASON_CHARS - 1) + "…")
-        self.assertEqual(said({"message": "\u0000x" * REASON_CHARS}), ": " + "x" * REASON_CHARS, "dropped characters are not counted")
-        self.assertEqual(said({"message": "😀" * 400}), ": " + "😀" * (REASON_CHARS - 1) + "…", "a code point is one character")
-        self.assertEqual(said({"code": "x"}), "")
-        self.assertEqual(said(None), "")
+            with self.subTest(message=(message or "")[:80]):
+                if message is None:
+                    self.assertEqual(said({"code": "x"}), end)
+                    self.assertEqual(said(None), end)
+                else:
+                    self.assertEqual(said({"message": message}), end)
 
 
 if __name__ == "__main__":
