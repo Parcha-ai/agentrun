@@ -1019,6 +1019,20 @@ const SEMI_ROWS = [
     [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
   ],
   [
+    "a header value's credential pair quoted whole in raw quotes, with a %20 in its value, before an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=${QUOTE_RAW}api_key=${SEMI_PREFIX}%20tail-${"dummy"}${QUOTE_RAW}&region=us-east-1` },
+    [`${SEMI_PREFIX}%20tail-${"dummy"}`, `${SEMI_PREFIX} tail-${"dummy"}`],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair quoted whole in quotes written %22, with a %20 in its value, after an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=region=us-east-1&${QUOTE_22}api_key=${SEMI_PREFIX}%20tail-${"dummy"}${QUOTE_22}` },
+    [`${SEMI_PREFIX}%20tail-${"dummy"}`, `${SEMI_PREFIX} tail-${"dummy"}`],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
     "a header value's credential pair holding only an &",
     { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=region=us&api_key=&" },
     [],
