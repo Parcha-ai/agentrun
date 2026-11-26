@@ -23,6 +23,7 @@ const { chatAttributes, routeTrace, toolAttributes, tracedModel, USAGE_ATTRIBUTE
 const { keepText, runnerSecrets, secretRedactor } = await import("../dist/runner/redact.js");
 const { hostSecrets, otlpHeaderCut } = await import("../dist/secrets.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { exporterConfig } = await import("../dist/otel/tracer.js");
 const { runEnv } = await import("../dist/runner/main.js");
 const { cliRunEnv } = await import("../dist/runner/cli-run-spec.js");
@@ -1291,7 +1292,7 @@ test("pi: a native extension's tool and a session's native tool each have one ex
   const script = [{ calls: [{ call: "browse" }, { call: "ask_person" }, { call: "write" }] }, { say: "done" }];
   const createLoop = createAdapterLoop(
     (_claim, run) => ({
-      adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script), price: () => 0, extensions: [defineExtension({ name: "native-browse", tools: [browse] })], tools: [ask] }),
+      adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script), price: () => 0, extensions: [defineExtension({ name: "native-browse", tools: [browse] })], tools: [ask] }),
       session: { key: "root", label: "root", system: ["Follow the script."], tools: [write], context: "fresh" },
       input: "Follow the script.",
       hooks: quiet,

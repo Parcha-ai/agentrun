@@ -15,6 +15,7 @@ import { HarnessKeysOverStore, layHarnessKeys } from "../dist/harness-keys.js";
 import { planRecipesOf } from "../dist/harness-table.js";
 import { launchBody, readLaunchBody } from "../dist/run-launch.js";
 import { putSealedKey } from "../dist/server-keys.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const [{ checkedNoteOf, installRecipe, loadRecipe, parseRecipe, RECIPE_CODES, RecipeRefused, firstSeenTreeOf, signedInNoteOf }, { ARCHIVE_CODES, archivePlatform, ArchiveInstallFailed }] = await Promise.all([
   import("../dist/harness-recipe.js"), import("../dist/harness-archive.js"),
@@ -1806,7 +1807,7 @@ test("a held run on a plan-billed recipe whose model was refused at its create i
     const harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
     const deps = { env, data, journal: (c) => store.journal(c), store, sealKey: seal, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
     asked.length = 0;
-    const spec = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+    const spec = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
     specs.push({ spec, harness });
     return { spec, asked: [...asked] };
   };
@@ -1872,7 +1873,7 @@ async function planClaim(t, { over = {}, installed = true, perRunProcess = false
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const deps = { env, data, journal: (c) => store.journal(c), store, sealKey: perRunProcess ? undefined : seal, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }) };
-  spec = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  spec = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
   return spec;
 }
 

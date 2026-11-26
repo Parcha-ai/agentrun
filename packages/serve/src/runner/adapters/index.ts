@@ -56,7 +56,7 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
         ...(launch.price ? { price: launch.price } : {}),
         ...(launch.fetch ? { fetch: launch.fetch } : {}),
         ...(extra as Partial<PiAdapterOptions>),
-      }),
+      } as PiAdapterOptions),
   },
   [claudeFacts.id]: {
     record: "loop",

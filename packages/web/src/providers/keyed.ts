@@ -126,7 +126,7 @@ export const matching = (pattern: RegExp, must: string): Check => [(value) => ty
 export const domains = (max: number): Check => [(value) => Array.isArray(value) && value.length <= max && value.every((one) => typeof one === "string" && one.trim() !== "" && one.length <= 253), `a list of at most ${max} domains`];
 
 /** A refused value's kind in words, for a problem line that names it without echoing it. */
-const kindOf = (value: unknown): string =>
+export const kindOf = (value: unknown): string =>
   value === null ? "null" : Array.isArray(value) ? "a list" : typeof value === "object" ? "an object" : `a ${typeof value}`;
 
 /** What is wrong with `settings` for `who` by `checks`, one line each: not an object, a setting it does not take, or a
