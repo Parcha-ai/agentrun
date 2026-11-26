@@ -34,6 +34,7 @@ import { withoutFaux } from "../dist/model.js";
 import { runLine } from "../dist/print.js";
 import { bootSealKey } from "../dist/seal-key.js";
 import { stranger } from "./fixtures/stranger.mjs";
+import { holdStore } from "./fixtures/sqlite-guard.mjs";
 
 // Every test process has a config home of its own, never this machine's ~/.config: a test writes nothing outside its own
 // directories (a server keeps its seal key in its data directory, seal-key.ts).
@@ -378,6 +379,9 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  scratch and everything a run's claim reads or writes on this machine (the store and the seal key stay the server's). */
 export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, composioMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, failAgentsGet, fauxVendorApi, evalFakes, childRuns, archil, ownData, ...switches } = {}) {
   const opened = await openStore({ dataDir: data, role: "runner" });
+  // A runner commits to this store from this thread as a server does: the store is a live one from here until the runner
+  // has closed (fixtures/sqlite-guard.mjs), also when its server closed before it.
+  const release = holdStore(data);
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
   let dead = false;
@@ -487,6 +491,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
     });
   } catch (error) {
     seal.release();
+    release();
     await opened.close();
     throw error;
   }
@@ -500,6 +505,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       // As the CLI's runner closes: a first-use install its claims let go of has stopped (its npm ended) first.
       await claimInstallsStopped();
       await opened.close().catch(() => {});
+      release();
       seal.release();
     },
     {
@@ -535,6 +541,17 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   // through the runner's one way in, a test runner's option: no run of a test reaches GitHub. A test's own githubApi or
   // githubWeb wins.
   const runnerOptions = { ...(server.fauxGitHub ? { githubApi: server.fauxGitHub.api, ...(server.fauxGitHub.web ? { githubWeb: server.fauxGitHub.web } : {}) } : {}), ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, mcpOwn: server.own, ...(computerForClaim ? { computerForClaim } : {}), ...(evalFakes ? { evalFakes } : {}), ...(childRuns ? { childRuns } : {}) };
+  // The store is a live server's from here until it closes: a test writes it through raw(), never a DatabaseSync of its own
+  // (fixtures/sqlite-guard.mjs).
+  const release = holdStore(data);
+  const closeServer = server.close;
+  server.close = async (...args) => {
+    try {
+      return await closeServer.apply(server, args);
+    } finally {
+      release();
+    }
+  };
   let closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, runnerOptions);
   // Runners a test crashed (crashRunner), closed with the rest at the stop.
   const crashed = [];

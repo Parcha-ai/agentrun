@@ -66,7 +66,7 @@ test("an MCP client's agents_create whose write runs past its deadline is refuse
   const res = await fetch(`${server.baseUrl}/mcp`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${server.token}` },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agents_create", arguments: { id: "slow-tool", name: "Slow", instructions: "Answer." } } }),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "agents_create", arguments: { id: "slow-tool", name: "Slow", instructions: "Answer.", tools: [] } } }),
   });
   assert.equal(res.status, 200);
   const { result } = await res.json();

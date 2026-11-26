@@ -984,7 +984,9 @@ const RSA_PEM = generateKeyPairSync("rsa", { modulusLength: 4096, privateKeyEnco
 /** The adversarial texts of `size` characters, each with the held values it is read with, each text stressing a stage:
  *  - the shapes' prefixes and runs;
  *  - each view's decoders over a text of nothing but what they decode: percent-encoded bytes, ASCII and not, "+",
- *    JSON's escapes at one level and two (each kind, back to back), a second level that starts and fails, non-ASCII
+ *    JSON's escapes at one level and two (each kind, back to back), a second level that starts and fails, Python's
+ *    escapes ("\'", "\x41") and a single-quoted dict opened and never closed, named and numeric references (a name
+ *    never closed, zeros as long as the text, no ";"), non-ASCII
  *    stretches for NFKC, characters that render as nothing (zero-width spaces, soft hyphens, both between letters);
  *  - the join view over JSON, well formed and malformed: strings never closed, nesting as deep as the text, strings of
  *    nothing but backslashes;
@@ -1023,6 +1025,16 @@ const adversarial = (size) => {
     `"${fill(B, size - 2)}"`, `"${fill(B, size - 1)}`, f(`"${B}${B}${B}"`), f(`"${B}`), f(`"%41+${B}u0041&#65;",`),
     // The strings join's four views at once: a quote, percent, "+", an escaped quote and an escaped backslash.
     f(`"%41+${B}"${B}${B}n&#65;",`), f(`"a+${B}${B}",`),
+    // The quoted joins (a single-quoted dict's, read once as JSON's escapes and once as Python's): a lone apostrophe, a
+    // name and its value opened and never closed, an apostrophe escaped, and Python's escapes back to back.
+    f("'"), f("'a': '"), f(`'${B}`), f(`'a${B}'b${B}x41${B}${B}',`), f(`${B}x4`),
+    // Named and numeric references: whole, a name never closed, a zero, one with no ";", zeros as long as the text, and
+    // "+" in a quoted JSON text with a reference.
+    f("&amp;"), f("&ampx"), f("&#0"), f("&#65"), `&#${fill("0", size - 2)}`, f('"a&#65;+",'),
+    // A single-quoted dict written in a JSON string (a call's arguments, read one level down): many strings each holding
+    // one, one string holding a dict opened and never closed, and Python's escapes at both levels, back to back.
+    f(`"{'a': 'b'}",`), `"{'a': '${fill("ab ", size - 9)}`, `"${fill(`${B}${B}x41${B}${B}'`, size - 1)}"`, f(`"'${B}${B}x4${B}${B}'",`),
+    f(`'${B}${B}${B}${B}x41`),
   ];
   return [
     ...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })),
@@ -1030,6 +1042,11 @@ const adversarial = (size) => {
     // A held value found in every string of a JSON text, each find cut in place: the join view moves each cut to where
     // its string stands in the join, its cursor passing each cut once a pass.
     { text: f(`"${DENSE}",`), values: [DENSE] },
+    // Every view at once, each over the text at nearly its whole length: one closed JSON string holding each family (a
+    // percent byte, "+", a reference, an escaped quote, Python's "\x41" and an apostrophe one level down) turns on all
+    // sixteen, and the held value's strings after it decode to themselves in each. It heads each block of about 4 KiB, so
+    // each answer piece holds it too.
+    { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}",`.repeat(370)}`), values: [DENSE] },
     // The same in a string never closed, and in one escaped quote after another (JSON written in a string).
     { text: `{"k":"${fill(`${DENSE} `, size - 6)}`, values: [DENSE] },
     { text: f(`${BACKSLASH}"${DENSE}${BACKSLASH}",`), values: [DENSE] },
@@ -1130,21 +1147,29 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound (the test above);
 // - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
 //   the folded search (4), the finds merged (1): about 21;
-// - one whole-text check: what the text holds that a view decodes (7); twelve views at most: the squeezed one and the
+// - one whole-text check: what the text holds that a view decodes (9); sixteen views at most: the squeezed one and the
 //   percent-decoded two (one with "+") built in 9 reads each (its special characters found, its blanks, its non-ASCII
 //   stretches squeezed twice, its cover), the views of JSON's escapes alone (two levels, and one where the text has an
 //   escaped backslash) and the two stacked ones (one with "+") in 23 each (two levels of escapes read per character
 //   decoded); the nested join, which reads the text as JSON first (3: at level 0, again at level 1 inside a string, and
 //   the whitespace after a string), writes its join (2: each character in it at most twice, values then all, or names
-//   then all), and one decoding view over that join (46); the strings join, read at level 0 alone (2) and written (2),
-//   and four decoding views over it (one level of JSON's escapes alone, with percent, with percent and "+", and two
-//   levels: 46 each, 184); then each searched for 7 plain needles, the hex and the fold, lowered and flattened, each
-//   find checked against the covered stretches (21 each, 42 over a join): about 722; planCut runs two (the text with
-//   its cuts, then the cut text, at most 10/8 as long): about 1,625;
-// - so planCut is about 1,774; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
-//   of a check: 903), of the pieces as they came (722), and its shape pass (64): about 3,473.
-// That sum takes each stage at its most at once, which no text reaches: a text that builds every view decodes most of
-// itself, so each decoded view is far shorter than the text and its searches read far less.
+//   then all), and two decoding views over that join (one with "+": 46 each, 92); the strings join, read at level 0
+//   alone (2) and written (2), and four decoding views over it (one level of JSON's escapes alone, with percent, with
+//   percent and "+", and two levels: 46 each, 184); the quoted join (a single-quoted dict's), read at level 0 (2) and
+//   written (2), and the again join (each JSON string's text read one level down for a dict written in it), the text
+//   read at level 0 for its strings and they at level 1 (3) and written (2), and the two written once more one after the
+//   other (4); three decoding views over them (JSON's escapes over both: 92; Python's over the quoted join where the
+//   text holds one, and both levels of them over the again join where it holds a quote: 46 each; 184); then each
+//   searched for 7 plain needles, the hex and the fold, lowered and flattened, each find checked against the covered
+//   stretches (21 each, 42 over a join, 84 over the two joins one after the other): about 1,082; planCut runs two (the
+//   text with its cuts, then the cut text, at most 10/8 as long): about 2,435;
+// - so planCut is about 2,584; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
+//   of a check: 1,353), of the pieces as they came (1,082), and its shape pass (64): about 5,093.
+// That sum takes each stage at its most at once, and its views are all reachable together: familiesOf reads each family
+// as present or absent, so one closed JSON string holding each of them turns on all sixteen views, and the rest of the
+// text decodes to itself at nearly its whole length in each (the text of DENSE's strings, each block of about 4 KiB
+// headed by one such string). It is the most measured here: 963.0 per character at 128 KiB and 967.8 at 512 KiB,
+// through redactedAnswer; every other text measures under 450 (a held RSA key's, made anew each run, moves by a few).
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
 // lines adds k + 1 of each: its work grows with k, linear in the text all the same.
 // WORK stays 1,024, the bound from before the stacked and join views. The most measured, and each text's most, are in

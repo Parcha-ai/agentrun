@@ -167,6 +167,8 @@ describe("the Playground's No model bar follows the picked revision", () => {
 const placesWith = (place: Record<string, unknown>) => ({ ...CAPS, places: { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true, state: "ready" }], default_place: place } });
 const SANDBOX_DEFAULT = placesWith({ mode: "sandbox", box: "docker" });
 const RUNNER_DEFAULT = placesWith({ mode: "runner" });
+// No default place (default_place null: no Docker box, and a runner with no shell): a new agent names its own.
+const NO_DEFAULT = { ...CAPS, places: { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: false, state: "unavailable", reason: "fixture: no docker" }], default_place: null, default_reason: "name a box: this server has no Docker box for a new agent." } };
 const claudeAgentWith = (definition: Record<string, unknown>): Agent => ({ ...CLAUDE_AGENT, agent_id: "placed", definition: { ...CLAUDE_AGENT.definition, ...definition } as Agent["definition"] });
 const BAR = "No model yet.";
 
@@ -234,6 +236,23 @@ describe("the No model bar with no agent picked", () => {
     document.body.innerHTML = "";
     const unknown = await open(SIGNED_IN, CAPS, []);
     expect(unknown.bar()?.textContent ?? "", "the bar over a Playground with no agents before the server's places are known, while the login reads signed in").toContain(BAR);
+  });
+});
+
+describe("the No model bar on a server with no default place", () => {
+  it("keeps the bar with no agents, and over an agent that names no place and a shell tool: neither is known to run on the runner, and the page reads the null default without failing", async () => {
+    const empty = await open(SIGNED_IN, NO_DEFAULT, []);
+    expect(empty.bar()?.textContent ?? "", "the bar over a Playground with no agents on a server with no default place").toContain(BAR);
+    act(() => root?.unmount());
+    root = undefined;
+    document.body.innerHTML = "";
+    const shell = await open(SIGNED_IN, NO_DEFAULT, [claudeAgentWith({ tools: ["bash"] })]);
+    expect(shell.bar()?.textContent ?? "", "the bar over an agent with a shell tool and no place to run it").toContain(BAR);
+    act(() => root?.unmount());
+    root = undefined;
+    document.body.innerHTML = "";
+    const plain = await open(SIGNED_IN, NO_DEFAULT, [claudeAgentWith({ tools: [] })]);
+    expect(plain.bar()?.textContent ?? null, "an agent whose tools need no shell runs on the runner: no bar").toBeNull();
   });
 });
 
