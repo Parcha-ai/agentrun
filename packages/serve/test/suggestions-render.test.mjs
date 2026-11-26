@@ -292,6 +292,9 @@ test("no client follows a redirect: a start or a read answered with one is refus
       for (const method of ["POST", "GET"]) {
         redirects = method;
         elsewhere.length = 0;
+        // A probe of every new loopback listener (some machines run one) asks for / and follows the redirect it gets, as
+        // no client may: it reaches /elsewhere/ with no key, and is no client's request.
+        await fetch(`http://127.0.0.1:${server.address().port}/`).then((answer) => answer.arrayBuffer(), () => undefined);
         const ran = promisify(execFile)(command, args, { env: { PATH: process.env.PATH, AGENTRUN_BASE_URL: `http://127.0.0.1:${server.address().port}/v2`, AGENTRUN_API_KEY: "fake-test-key", AGENTRUN_AGENT_TICKET_TRIAGE: "agent_1" } });
         await assert.rejects(ran, (error) => {
           assert.match(error.stderr ?? "", /with a redirect \(HTTP 302\); not followed, so the API key stays with AGENTRUN_BASE_URL/, `${name}, ${method} redirected: ${error.stderr}`);
