@@ -66,12 +66,17 @@ export function asksNothingPaid(t: TemplateView): boolean {
 /** Whether a template runs free here: it asks for nothing paid besides its model (asksNothingPaid), a `subagent` it grants
  *  runs on free models only, and its package marks it free (its `free` tag) or prefers or offers as a choice one of this
  *  server's free models, a choice that needs no key. A subagent call runs on the package's model for its tier (`fast`,
- *  `strong`), which "Use free" keeps, else the host's for the tier, which the console can't read: both must be named, and
- *  free here. */
+ *  `strong`), which "Use free" keeps, else the host's for the tier, which the console can't read. Apply keeps a tier's
+ *  model only where the harness it makes the agent on runs it (the server's packageTiers): both must be named, and free
+ *  on that harness (applyHarness). */
 export function runsFree(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): boolean {
   if (!asksNothingPaid(t)) return false;
   const free = new Set(freeModels(harnesses).map((m) => m.id));
-  if ((t.tools ?? []).includes("subagent") && ![t.model?.fast, t.model?.strong].every((id) => !!id && free.has(id))) return false;
+  if ((t.tools ?? []).includes("subagent")) {
+    const on = applyHarness(t, harnesses);
+    const freeOn = new Set((harnesses?.find((h) => h.id === on)?.free_models ?? []).map((m) => m.id));
+    if (![t.model?.fast, t.model?.strong].every((id) => !!id && freeOn.has(id))) return false;
+  }
   if (t.tags.includes("free")) return true;
   return [t.model?.prefer, ...(t.model?.choices ?? []).filter((c) => !c.secrets.length).map((c) => c.model)].some((id) => !!id && free.has(id));
 }

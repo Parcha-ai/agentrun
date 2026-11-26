@@ -1440,6 +1440,9 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           const reach = await mcpReachOf(deps);
           const init = {
             claim, data: deps.data, signal: loopDeps.signal, where: deps.store.where, ...(traced ? { traced: true } : {}),
+            // The plane its keys were chosen by (`capped`): the process runs its tools on it, never on a later read of the
+            // server's settings, which may have moved since.
+            ...(capped.plane ? { plane: capped.plane } : {}),
             ...(reach.loopback ? { mcpLoopback: true, mcpOwn: reach.own ?? [] } : {}),
             ...(deps.githubApi ? { githubApi: deps.githubApi } : {}),
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),

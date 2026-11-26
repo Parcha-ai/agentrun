@@ -92,6 +92,21 @@ describe("running a served template", () => {
     expect(await shown("anthropic/claude-x")).toBeNull();
   });
 
+  it("still says so on the prepared playground link a linked model is carried to, where the model is the request's", async () => {
+    localStorage.setItem(CODING_AGENT_PREFERENCE, "other");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copied } });
+    const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+    await act(async () => root!.render(createElement(TemplatesPage, { v2: v2 as never, name: template.id, model: "anthropic/claude-x", freeIds: ["ollama/qwen3:8b"], go: () => {} })));
+    type(host, "repo", "acme/web");
+    await click(host.querySelector('[aria-label="Choose coding agent for Run"]')!);
+    const routed = route(document.querySelector<HTMLAnchorElement>('[role="menu"] a')!.getAttribute("href")!);
+    unmount();
+    const target = document.body.appendChild(document.createElement("div")); root = createRoot(target);
+    await act(async () => root!.render(createElement(TemplatesPage, { v2: v2 as never, name: template.id, playground: true, draft: routed.draft, freeIds: ["ollama/qwen3:8b"], go: () => {} })));
+    expect(target.querySelector("[data-model-override]")?.getAttribute("title")).toBe("anthropic/claude-x");
+    expect(target.querySelector("[data-model-unfree]")?.textContent).toMatch(/not one of this server's free models/);
+  });
+
   it("hydrates prepared array choices as individual lines and applies the same typed values", async () => {
     const lists: TemplateView = { ...template, parameters: { type: "object", additionalProperties: false, required: ["names", "counts", "flags"], properties: {
       names: { type: "array", items: { type: "string" }, description: "Names" },

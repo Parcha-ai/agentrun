@@ -40,12 +40,17 @@ const GATEWAY_SAVED = `not-a-secret-${"gateway-saved"}`;
  *  one argument names, then exits: the runner's claim then ends, failed, as for any process gone before its loop ended. */
 const DUMP = `const fs = require("node:fs"); const net = require("node:net"); const parts = []; const pipe = new net.Socket({ fd: 3, readable: true, writable: false }); pipe.on("data", (part) => parts.push(part)); pipe.on("end", () => { fs.writeFileSync(process.argv.at(-1), Buffer.concat(parts)); process.exit(0); });`;
 
+/** A run's process that also reads its channel (fd 4: frames of a 4-byte length and a V8-serialized message) until the
+ *  runner's loop.start, and writes `{ keys, plane }` as JSON: its key pipe as DUMP has it, and the plane its start's init
+ *  hands it (null for none). */
+const STARTED = `const fs = require("node:fs"); const net = require("node:net"); const v8 = require("node:v8"); let keys = null; let plane; const done = () => { if (keys === null || plane === undefined) return; fs.writeFileSync(process.argv.at(-1), JSON.stringify({ keys, plane })); process.exit(0); }; const parts = []; const pipe = new net.Socket({ fd: 3, readable: true, writable: false }); pipe.on("data", (part) => parts.push(part)); pipe.on("end", () => { keys = Buffer.concat(parts).toString("utf8"); done(); }); let buf = Buffer.alloc(0); const channel = new net.Socket({ fd: 4, readable: true, writable: true }); channel.on("data", (chunk) => { buf = Buffer.concat([buf, chunk]); while (buf.length >= 4) { const n = buf.readUInt32BE(0); if (buf.length < 4 + n) return; const message = v8.deserialize(buf.subarray(4, 4 + n)); buf = buf.subarray(4 + n); if (message.t === "call" && message.m === "start") { plane = message.a[0].plane ?? null; done(); } } });`;
+
 /** The names a dump holds. */
 const namesIn = (bytes) => bytes.toString("utf8").split("\0").filter(Boolean).map((pair) => pair.slice(0, pair.indexOf("=")));
 
 /** The key names the process of a run of `revision` launched on `model` (and `plane`, if given) is handed by its runner,
  *  with `saved` sealed, `gateway`, if given, saved in the console, and the server's tool settings `settings`, if given. */
-async function handed(t, { revision, model, plane, saved, env = {}, gateway, settings }) {
+async function handed(t, { revision, model, plane, saved, env = {}, gateway, settings }, script = DUMP, read = (bytes) => namesIn(bytes)) {
   const { store, dir: data } = await storeOn(t);
   if (settings) await store.settings.put("tool-settings", settings);
   for (const [name, value] of Object.entries(saved)) await putSealedKey(store, SEAL_KEY, name, value);
@@ -54,12 +59,12 @@ async function handed(t, { revision, model, plane, saved, env = {}, gateway, set
   await store.runs.create({ id: "run", agentId: "agent", revisionId: "rev" }, { body: launchBody({ input: { content: "Work." }, title: "Work", place: { mode: "runner" }, harness: "pi", model, ...(plane ? { plane } : {}) }) });
   const out = join(data, "handed.bin");
   const deps = { store, data, sealKey: SEAL_KEY, env, computerForClaim: async () => { throw new Error("no computer here"); } };
-  const loop = childLoops({ deps, isolation: { kind: "process", why: "a test's runner" }, log: () => {}, argv: [process.execPath, "-e", DUMP, out] })({
+  const loop = childLoops({ deps, isolation: { kind: "process", why: "a test's runner" }, log: () => {}, argv: [process.execPath, "-e", script, out] })({
     signal: new AbortController().signal, journal: (claim) => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(), redact: heldRedactor((text) => text),
   });
   const claim = await store.claim("run", "fixture", { leaseMs: 60_000 });
   await assert.rejects(loop.start(claim), /ended with its run/);
-  return namesIn(readFileSync(out));
+  return read(readFileSync(out));
 }
 const modelKeysOf = (names) => names.filter((name) => MODEL_KEY_NAMES.includes(name)).sort();
 
@@ -100,6 +105,21 @@ test("a run kept on Parallel for web_search, claimed after the server is set to 
   const capped = await handed(t, { ...run, settings: { web_search: { provider: "native" } } });
   assert.ok(!capped.includes("PARALLEL_API_KEY"), `under the server's native: no Parallel key on its pipe: ${capped}`);
   assert.deepEqual(modelKeysOf(capped), ["ANTHROPIC_API_KEY"], "its pinned model's key still");
+});
+
+test("a run's process is told the plane its runner capped and chose its keys by, so a setting changed after the runner's read can't run its tools on a key it was not handed", { timeout: 60_000 }, async (t) => {
+  const PARALLEL_SAVED = `not-a-secret-${"parallel-saved"}`;
+  const run = { revision: { tools: ["web_search"], toolSettings: { web_search: { provider: "parallel" } } }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, plane: { web_search: "parallel" }, saved: { ANTHROPIC_API_KEY: ANTHROPIC_SAVED, PARALLEL_API_KEY: PARALLEL_SAVED } };
+  const started = (bytes) => {
+    const got = JSON.parse(bytes.toString("utf8"));
+    return { names: namesIn(Buffer.from(got.keys)), plane: got.plane };
+  };
+  const capped = await handed(t, { ...run, settings: { web_search: { provider: "native" } } }, STARTED, started);
+  assert.ok(!capped.names.includes("PARALLEL_API_KEY"), `under native: no Parallel key: ${capped.names}`);
+  assert.equal(capped.plane?.web_search, "native", `its start says the plane its keys were chosen by: ${JSON.stringify(capped.plane)}`);
+  const kept = await handed(t, run, STARTED, started);
+  assert.ok(kept.names.includes("PARALLEL_API_KEY"), "no ceiling: its key");
+  assert.equal(kept.plane?.web_search, "parallel", "and the plane it was kept on");
 });
 
 const until = async (done, what, ms = 40_000) => {

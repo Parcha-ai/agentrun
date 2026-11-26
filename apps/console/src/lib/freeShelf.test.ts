@@ -119,6 +119,15 @@ describe("runsFree", () => {
     expect(runsFree(sub(LOCAL.id, CATALOG.id), harnesses)).toBe(true);
     expect(runsFree(template({ tags: ["free"], tools: ["read", "subagent"] }), harnesses)).toBe(false);
   });
+  it("a subagent's tiers count as free only where the harness apply makes the agent on runs them free: apply keeps a tier's model only there (packageTiers), else the host's paid one runs", () => {
+    // claude-agent runs the local model; the catalog's free model is offered on pi alone.
+    const claude: HarnessInfo = { id: "claude-agent", available: true, default_model: LOCAL.id, models: [LOCAL.id], free_models: [LOCAL] };
+    const both = [claude, pi([LOCAL, CATALOG])];
+    const sub = (fast: string, strong: string) => template({ tags: ["free"], harness: ["claude-agent"], tools: ["read", "subagent"], model: { tier: "fast", prefer: LOCAL.id, fast, strong } });
+    expect(runsFree(sub(CATALOG.id, CATALOG.id), both)).toBe(false);
+    expect(runsFree(sub(LOCAL.id, CATALOG.id), both)).toBe(false);
+    expect(runsFree(sub(LOCAL.id, LOCAL.id), both)).toBe(true);
+  });
   it("a free model only on a choice that needs no key", () => {
     const choice = (secrets: string[]) => ({ model: { tier: "fast" as const, choices: [{ id: "c", label: "C", model: LOCAL.id, harness: "pi", warning: null, note: null, secrets }] } });
     expect(runsFree(template(choice(["OPENROUTER_API_KEY"])), harnesses)).toBe(false);

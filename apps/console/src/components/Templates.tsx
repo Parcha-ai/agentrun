@@ -347,8 +347,9 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft, model: 
   const prepared = readTemplateDraft(draft, t);
   // The agent's model as the link set it, or as a prepared request carries it (the playground opened from Use free).
   const model = linked ?? prepared.body?.overrides?.model;
-  // A link sets `?model=` (the Free shelf's Use free sends a free one): one this server does not offer free may cost money.
-  const unfree = linked !== undefined && freeIds !== undefined && !freeIds.includes(linked);
+  // A link sets `?model=` (the Free shelf's Use free sends a free one), and a prepared request carries it on: one this
+  // server does not offer free may cost money, on either.
+  const unfree = model !== undefined && freeIds !== undefined && !freeIds.includes(model);
   // Shared compiled fields supply defaults; an explicit prepared false, zero or list stays the reviewed choice.
   const [values, setValues] = useState<ParameterText>(() => ({ ...Object.fromEntries(form.fields.filter(([, field]) => field.type === "boolean" && !field.array).map(([key]) => [key, "false"])), ...fieldStartText(form), ...Object.fromEntries(Object.entries(prepared.body?.parameters ?? {}).map(([key, value]) => [key, Array.isArray(value) ? value.map(String).join("\n") : String(value)])) }));
   const [ticked, setTicked] = useState<Set<string>>(() => new Set(prepared.body?.grants ?? []));
