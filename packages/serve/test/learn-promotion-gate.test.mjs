@@ -35,6 +35,16 @@ function learningRowsOf() {
   };
 }
 
+/** Settings in memory, with the compare-and-set writes learning-work.ts makes. */
+function memorySettings() {
+  const kv = new Map();
+  return {
+    get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
+    putIfAbsent: async (key, value) => (kv.has(key) ? kv.get(key) : (kv.set(key, structuredClone(value)), value)),
+    replaceIf: async (key, was, value) => (JSON.stringify(kv.get(key)) === JSON.stringify(was) ? (kv.set(key, structuredClone(value)), true) : false),
+  };
+}
+
 /** A store of `graded` graded agent runs the workflow fits (each with its launch), runs created and commands sent kept, and
  *  `replaying`: a promotion record already replaying with its runs (rows given). For the challenger and deadline checks.
  *  `path`: the path each graded run took (`agent`, or `workflow`: one a learned workflow answered alone). Its runs list
@@ -54,13 +64,15 @@ async function replayStoreOf({ graded = 6, rows: given = [], records = [], newes
   const commands = [];
   const store = {
     learning,
-    // No reset watermark (learn/promote.ts resetAtOf): every run is the agent's learning's.
-    settings: { get: async () => undefined },
+    // No reset watermark (learn/promote.ts resetAtOf): every run is the agent's learning's. The settings a replay's start
+    // writes: the claimed run's learning work names it first (learning-work.ts).
+    settings: memorySettings(),
     runs: {
-      get: async (id) => rows.get(id),
-      // Newest first, filtered and limited as the store's list is.
-      list: async ({ state, archived, limit } = {}) => [...rows.values()].reverse().map((row) => ({ agentId: "a", outcome: null, importedFrom: null, ...row }))
-        .filter((row) => (state === undefined || row.state === state) && (archived === undefined || ((row.archivedAt ?? null) !== null) === archived)).slice(0, limit),
+      // Each row is agent a's unless it names its own agent, as a given row may.
+      get: async (id) => (rows.has(id) ? { agentId: "a", ...rows.get(id) } : undefined),
+      // Newest first, the agent's own, filtered and limited as the store's list is.
+      list: async ({ agentId, state, archived, limit } = {}) => [...rows.values()].reverse().map((row) => ({ agentId: "a", outcome: null, importedFrom: null, ...row }))
+        .filter((row) => (agentId === undefined || row.agentId === agentId) && (state === undefined || row.state === state) && (archived === undefined || ((row.archivedAt ?? null) !== null) === archived)).slice(0, limit),
       launch: async (id) => (launches.has(id) ? { runId: id, body: launchBody(launches.get(id)), sealed: null } : Promise.reject(new Error(`no run ${id}`))),
       // A run id is the row's key: a second create under it is refused, as the store's primary key does. `raced`: ids
       // another claim creates at the same moment, its row written first.
@@ -233,6 +245,23 @@ test("runs a workflow answered alone are no check input; the agent's own complet
   assert.match(record.replay_id, /^[0-9a-f-]{36}$/, "the reservation mints the replay's id");
 });
 
+// Review on #3914 (tenancy): a check's inputs are the agent's own runs. Its audit hold's disagreeing shadow runs are read
+// by bare id, so one that names another agent's run (a record no write of the agent's makes) never makes that run an input.
+test("an audit hold naming another agent's run never makes it a check input: only the agent's own shadow run is one", async () => {
+  const text = flowOf();
+  const digest = workflowDigest({ workflow: text });
+  const shadow = (id, agentId) => ({ id, agentId, state: "ended", metrics: { path: "agent" }, archivedAt: null, launch: { input: { question: id }, title: id, place: { mode: "runner" }, learning: LEARNING } });
+  const disagreed = (run) => ({ run, served: `served-${run}`, input: run, agent: "the agent's", draft: "the workflow's" });
+  const hold = { workflow: "answer", digest: "d-held", at: new Date(0).toISOString(), decided: "hold", reason: "its audits disagreed with the agent on 2 of 2",
+    audit: { window: 2, disagree: 2, rows: 2, disagreements: [disagreed("audit.own"), disagreed("audit.other")] } };
+  const { learning, logs, gateOf } = await replayStoreOf({ graded: 2, rows: [shadow("audit.own", "a"), shadow("audit.other", "b")], records: [hold] });
+  assert.deepEqual((await promotionsOf(learning, "a")).map((one) => one.digest), ["d-held"], "the audit hold is the agent's record");
+  assert.equal(await gateOf()({ name: "answer", workflow: text }, digest), undefined);
+  const record = (await promotionsOf(learning, "a")).at(-1);
+  assert.equal(record.decided, "replaying", `${JSON.stringify(record)}\n${logs.join("\n")}`);
+  assert.deepEqual([...record.inputs].sort(), ["audit.own", "graded-0", "graded-1"], "the agent's own runs and its own shadow, never another agent's");
+});
+
 // The check's inputs: the agent's last compile_after completed runs (its definition's), newest first, never the claimed
 // run or an archived one; one with an uploaded file is one of them but has no input a replay can run, so it is left out.
 test("a check picks the inputs of the agent's last compile_after completed runs, newest first: never the claimed run, an archived one or one with a file", async () => {
@@ -336,10 +365,11 @@ test("reserved replay runs not created yet are pending until their launch grace:
 // another claim created at once is left to it.
 test("an interrupted launch is recovered: a later claim creates the reserved runs still missing, under their ids", async () => {
   const { REPLAY_LAUNCH_GRACE_MS } = await import("../dist/runner/promotion.js");
+  const { LEARNING_CHILD_MS } = await import("../dist/learning-work.js");
   const { text, digest, ids, learning, created, logs, gateOf, launches } = await reservedOf({ made: 2, raced: ["replay-3"] });
   assert.equal(await gateOf(() => REPLAY_LAUNCH_GRACE_MS + 1_000)({ name: "answer", workflow: text }, digest), undefined, logs.join("\n"));
   assert.deepEqual(created, [ids[2], ids[4], ids[5]], "the missing ones, the raced one left to the claim that made it");
-  for (const id of created) assert.deepEqual(launches.get(id).replay, { of: `graded-${id.at(-1)}`, workflow: "answer", digest }, "on the input the record names for it");
+  for (const id of created) assert.deepEqual(launches.get(id).replay, { of: `graded-${id.at(-1)}`, workflow: "answer", digest, deadlineAt: REPLAY_LAUNCH_GRACE_MS + 1_000 + LEARNING_CHILD_MS }, "on the input the record names for it, its deadline from its start");
   assert.equal((await promotionsOf(learning, "a")).at(-1).decided, "replaying");
   assert.ok(!logs.some((line) => line.includes("could not be read")), logs.join("\n"));
 });

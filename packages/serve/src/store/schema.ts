@@ -386,9 +386,10 @@ export function ledgerUpgrade(ledgerColumns: ReadonlySet<string>): readonly stri
 const LEDGER_BACKFILLED = "ledger_backfilled INTEGER NOT NULL DEFAULT 0 CHECK (ledger_backfilled IN (0, 1))";
 export const STORE_META_LEDGER_BACKFILLED = `ALTER TABLE store_meta ADD COLUMN ${LEDGER_BACKFILLED}`;
 /** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked
- *  it), a check's replay run or an audit's shadow run (round 0, `of_run` the run it audits), with its $ (null: unknown).
- *  Written with its run's ledger row, replaced whole each time; gone with its run's purge or delete, and with the purge
- *  or delete of the run it audits. */
+ *  it), a check's replay run or an audit's shadow run (round 0, `of_run` the run it audits or whose key paid it), with its
+ *  $ (null: unknown). Written with its run's ledger row, replaced whole each time; gone with its run's delete, and with
+ *  the purge or delete of its `of_run`; its run's purge takes it, but one with an `of_run`, kept as that run's figure with
+ *  no revision named (workflow, digest null: sqlite/store.ts dropLedger). */
 export const LEARNING_SPEND = `CREATE TABLE IF NOT EXISTS learning_spend (
     run_id TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('compile', 'check', 'audit')),

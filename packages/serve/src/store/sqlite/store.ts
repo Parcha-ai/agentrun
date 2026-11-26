@@ -757,10 +757,20 @@ export function storeOver(connection: StoreConnection, now: () => number, file?:
 const PURGE_CHECKPOINT_BUSY_MS = 20;
 
 /** Run `runId`'s learning ledger (learn/ledger.ts), gone: its row, each spend row it booked, and an audit's spend row of
- *  it (its shadow's, of_run). What a run's purge (Runs.purge) and its delete (Runs.remove) both drop. */
-async function dropLedger(tx: SqliteExecutor, runId: string): Promise<void> {
+ *  it (its shadow's, of_run). What a run's purge (Runs.purge) and its delete (Runs.remove) both drop, but that a purge
+ *  (`purge`) keeps the figure of each spend row it booked on another run's account (of_run: a keyed replay's check on
+ *  the paying run's key, an audit's shadow's cost), which is that run's learning and is not purged with it: its $ alone,
+ *  the revision it named gone (no read of a kept row reads one: ownCheck and the audit's cost read of_run and usd), so
+ *  the paying run's view (runFiguresOf), the agent's ledger (summarize) and the learning total read the one row. The
+ *  paying run's own purge takes it (of_run). */
+async function dropLedger(tx: SqliteExecutor, runId: string, { purge = false }: { purge?: boolean } = {}): Promise<void> {
   await tx.run("DELETE FROM learning_ledger WHERE run_id = ?", runId);
-  await tx.run("DELETE FROM learning_spend WHERE run_id = ? OR of_run = ?", runId, runId);
+  if (!purge) {
+    await tx.run("DELETE FROM learning_spend WHERE run_id = ? OR of_run = ?", runId, runId);
+    return;
+  }
+  await tx.run("DELETE FROM learning_spend WHERE of_run = ? OR (run_id = ? AND of_run IS NULL)", runId, runId);
+  await tx.run("UPDATE learning_spend SET workflow = NULL, digest = NULL WHERE run_id = ?", runId);
 }
 
 /** A run's content in every table that keeps it by the run's id, gone: what a run's purge (Runs.purge) and its delete
@@ -1510,6 +1520,20 @@ class SqliteStore implements Store {
         return row && runOf(row);
       },
       launch: (runId) => readLaunch(db, runId),
+      learningDeadlines: async (runIds) => {
+        const out = new Map<string, number>();
+        if (runIds.length === 0) return out;
+        const body = readableJson(d, "body");
+        const rows = await db.all<{ run_id: string; replay: string | null; audit: string | null }>(
+          `SELECT run_id, ${d.jsonText(body, ["replay", "deadline_at"])} AS replay, ${d.jsonText(body, ["audit", "deadline_at"])} AS audit FROM run_launch WHERE run_id IN (${runIds.map(() => "?").join(", ")})`,
+          ...runIds,
+        );
+        for (const row of rows) {
+          const at = Date.parse(row.replay ?? row.audit ?? "");
+          if (Number.isFinite(at)) out.set(row.run_id, at);
+        }
+        return out;
+      },
       usageMetadata: (runId, options) => readUsageMetadata(db, runId, options),
       projectCheckpoints: (filter) => readProjectCheckpoints(db, filter),
       learningStarts: (agentId) => readLearningStarts(db, agentId, NOT_A_LEARNING_RUN),
@@ -1741,7 +1765,8 @@ class SqliteStore implements Store {
           }
           // Its ledger row and every spend row it booked or that audits it, as a remove takes them: what it cost stays on its
           // tombstone (cost_usd, the metrics' figures), which the readers of money (usage, stats) read; no series shows it.
-          await dropLedger(tx, runId);
+          // What it booked on another run's account stays that run's, its figure alone (dropLedger `purge`).
+          await dropLedger(tx, runId, { purge: true });
           // Its row's content, its metrics cut to their figures and names (tombstoneMetrics), with what its spend's readers
           // read from its journal folded in. Its outcome stays: a code (RunOutcome), never words.
           const metrics = tombstoneMetrics(run.metrics === null ? null : JSON.parse(run.metrics), kept);
