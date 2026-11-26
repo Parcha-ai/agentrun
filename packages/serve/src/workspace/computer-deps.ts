@@ -33,7 +33,7 @@ import type { Store } from "../store/index.js";
 import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
 import type { PairedRelay } from "./attached-computers.js";
 import { type ClaimComputer, type ClaimLaunch, computerForClaim, type ComputerForClaimDeps, type ComputerRun, type ComputerSaid, type KeptKind, type OpenComputerView, type Replaced } from "./computer-for-claim.js";
-import { computerHeldWords, computerLapsedWords, computerLostWords, KEEP_WORDS } from "./computer-kept.js";
+import { computerHeldWords, computerLapsedWords, computerLostWords, computerRefusedWords, KEEP_WORDS } from "./computer-kept.js";
 import { storeLedger } from "./computer-ledger.js";
 import { computerProviderFactories, computerProviderMakers, type ProviderLoad, providerSecretsOf } from "./computer-providers.js";
 import { aLabel, type ComputerSettingKind, type KindRegistry, needsNetwork, noNetworkRefusal, type ProviderEntry, vendorNetworkOnly } from "./resolve-computer.js";
@@ -275,18 +275,20 @@ export const computerStartingWords = ({ provider, kind }: Pick<ComputerSaid, "pr
  *  (`kept`) says it is the same; a new one after a kept one's time passed (`replaced.lapsed`) says why first, as does
  *  one after a kept one pinned to a runner that was gone by the resume (`replaced.lost`, computerLostWords), or still
  *  there and ending it itself (`replaced.elsewhere`, computerHeldWords), and one after the kept one's provider refused
- *  to attach it again (`replaced.refused`, in the provider's words). Where that runner is still there, the one before
- *  runs until its end, so the words say only that nothing on it comes with the new one, never that it is gone. */
+ *  to attach it again (`replaced.refused`, computerRefusedWords: serve's words, never the provider's, which name host
+ *  paths). A runner gone or still there says why first, though its provider refused too: that is why no runner that
+ *  could reach the machine took the run. Where that runner is still there, the one before runs until its end, so the
+ *  words say only that nothing on it comes with the new one, never that it is gone. */
 export const computerReadyWords = ({ provider, kind, hello, replaced, kept }: ComputerSaid): string => {
   const ready = `The ${kind} is ready: ${[OS_NAMES[hello.os] ?? hello.os, hello.osVersion].filter(Boolean).join(" ")} (${hello.arch}), from ${provider}.`;
   if (kept) return `${ready} It's the same ${kind}, as the wait left it.`;
   if (!replaced) return ready;
-  const why = replaced.refused
-    ? ` The ${kind} kept before could not be taken back: ${replaced.refused.replace(/[.!?]+$/, "")}.`
-    : replaced.lost
-      ? ` ${computerLostWords(kind)}`
-      : replaced.elsewhere
-        ? ` ${computerHeldWords(kind)}`
+  const why = replaced.lost
+    ? ` ${computerLostWords(kind)}`
+    : replaced.elsewhere
+      ? ` ${computerHeldWords(kind)}`
+      : replaced.refused
+        ? ` ${computerRefusedWords(kind)}`
         : replaced.lapsed
           ? ` ${computerLapsedWords(kind)}`
           : "";
