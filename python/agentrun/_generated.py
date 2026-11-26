@@ -8539,7 +8539,7 @@ class GetRunUsageResponse(TypedDict):
     browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
     computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
     infra_usd: float | None
-    reason: Literal["running", "not_booked", "reopened"] | None
+    reason: Literal["running", "not_booked"] | None
 
 
 class _GetRunUsageResponseTotalRequired(TypedDict):

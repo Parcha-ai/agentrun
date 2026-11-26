@@ -57,7 +57,7 @@ import { booksDecisions, decisionsOverStore, parallelChargedDecisions } from "./
 import { type BookedSpend, bookedDecisionsOf, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, endCostOf, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
+import { laidOf, pathViewOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { correctionCount } from "./learn/corrections.js";
 import { forgetServedAnswers, isCliRecord, rowCutsOnce, servedSince, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
@@ -677,15 +677,15 @@ function costOfView(run: StoreRun): Record<string, unknown> {
  *  learning's as that turn's model requests are (runCostOf). A part of `usd`, never added to it; 0 with none. Null when
  *  one's charge is unknown (charged an unknown amount, cut, or still out) or counted at its hold; while the run is at work
  *  (not ended, stopped or failed), as its `usd` is the view's snapshot and a paid call booked after it would be read here
- *  and not there (an ended run's record no longer moves); for a run a follow-up
- *  opened again (a round past its first), whose job is what it had cost when its first round answered and whose paid
- *  calls the booking can't split by that; and for an imported, native or SDK run, whose `usd` is its import's or its
+ *  and not there (an ended run's record no longer moves); and for an imported, native or SDK run, whose `usd` is its import's or its
  *  harness's own figure, with no booking of its paid tool calls (a native or SDK run never opens the paid-tools session),
  *  and for an unknown run. */
 export async function toolsUsdOverStore(store: Store, runId: string): Promise<number | null> {
   const runRow = await store.runs.get(runId);
   const launch = await launchOf(store, runId);
-  if (!runRow || !FINAL_STATES.includes(runRow.state) || runRow.importedFrom || launch?.native || launch?.sdk || (await roundsOf(store, runId)).length > 1) return null;
+  if (!runRow || !FINAL_STATES.includes(runRow.state) || runRow.importedFrom || launch?.native || launch?.sdk) return null;
+  // A run a follow-up opened again: every round's job and follow-up turns, each round's end-of-run turn left out, as its
+  // `usd` reads them (learn/ledger.ts roundsLooked).
   const records = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
   const turns = reflectRanges(records.submissions ?? [], records.entries);
   const entries = records.entries.filter((entry) => !inReflect(turns, Number(entry.id))) as unknown as EntryLike[];

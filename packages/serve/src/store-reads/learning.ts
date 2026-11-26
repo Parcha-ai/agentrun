@@ -699,8 +699,8 @@ export async function roundsSpendOf(store: Pick<RunRecords, "learning">, runId: 
  *  its job answered and its costs once it looked back (a look-back of 0 for an ended one that did not). */
 export function impactLearningOf(end: RunLearningEnd, started: RunLaunch["learning"], laid: Laid | undefined, rounds?: Answered, rowUsd: number | null = null): ImpactLearning {
   const over = end.state === "merged" || end.state === "dropped";
-  // A run a follow-up opened again: its job answered at its first round's end, and all its row spent after (every later
-  // round's follow-up turn and look-back) is its learning, as its cost per run reads it (roundsLooked).
+  // A run a follow-up opened again: its job is all its row spent but every round's look-back (a follow-up's turns are the
+  // job's), as its cost per run reads it (roundsLooked).
   const looked = rounds ? roundsLooked(rounds, rowUsd) : end.answered_at !== undefined ? { answered_at: end.answered_at, job_cost_usd: end.job_cost_usd ?? null, look_back_usd: end.look_back_usd ?? null } : over ? { look_back_usd: 0 } : {};
   const corrections = started ? correctionCount(started.section) : 0;
   return {

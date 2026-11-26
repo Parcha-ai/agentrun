@@ -13,8 +13,9 @@ export type CostState = (typeof COST_STATES)[number];
 
 /** One ended run: who answered it (`path`, null when its end named none), the learned workflow revision that ran it
  *  (`workflow` at `digest`; for an audit's shadow, the revision it audits), why that workflow did not serve it alone,
- *  the job's own $ (`jobUsd`: what it had cost when its answer was final, its look-back left out) and everything its
- *  rounds looked back for (`lookBackUsd`: its compile turns and its follow-up rounds' turns); each null when unknown; and
+ *  the job's own $ (`jobUsd`: what it had cost when its answer was final, a follow-up's turns included, its look-backs
+ *  left out) and everything its rounds looked back for (`lookBackUsd`: each round's end-of-run turn); each null when
+ *  unknown; and
  *  every learned workflow call it made (`workflowCalls`: its metrics' `workflow_calls`, the platform's and the agent's,
  *  each with its digest, caller, outcome and booked $), none for a run that made none. */
 export type LedgerRow = {
@@ -116,14 +117,16 @@ export const answeredOf = (proposal: unknown): Answered | undefined => {
   return typeof kept.answered_at === "string" ? { answered_at: kept.answered_at, job_cost_usd: usdOrNull(kept.job_cost_usd), look_back_usd: usdOrNull(kept.look_back_usd) } : undefined;
 };
 
-/** A run a follow-up opened again: its job is what it had cost when its first round answered, and everything its row
- *  (`rowUsd`) spent after that (each later round's follow-up turn and every round's look-back: feedback the run was given
- *  is learning, never the job) is its look-back; unknown when the row's cost is and the job's is known (a later round
- *  stopped mid-request keeps no figures, so the rounds' sum would read short as if settled); the rounds' look-backs added
- *  up when the job's cost is unknown. The impact read (store-reads/learning.ts impactLearningOf) takes the same. */
+/** A run a follow-up opened again: its job is everything its row (`rowUsd`) spent but its rounds' look-backs (each
+ *  round's end-of-run turn, `rounds.look_back_usd` added up): a follow-up's turns are the job's, as the person who sent it
+ *  asked for more of the job, so the run's `cost.usd`, `cost.tools_usd` and usage lines carry them. Unknown when the row's
+ *  cost is (a later round stopped mid-request keeps no figures) or a look-back's is: the two can't be told apart, and an
+ *  unknown is never read as the first round's figure. The impact read (store-reads/learning.ts impactLearningOf) takes
+ *  the same. */
 export function roundsLooked(rounds: Answered, rowUsd: number | null): Answered {
-  const after = rounds.job_cost_usd === null ? rounds.look_back_usd : rowUsd === null ? null : Math.max(0, Math.round((rowUsd - rounds.job_cost_usd) * 1e9) / 1e9);
-  return { answered_at: rounds.answered_at, job_cost_usd: rounds.job_cost_usd, look_back_usd: after };
+  const back = rounds.look_back_usd;
+  const job = rowUsd === null || back === null ? null : Math.max(0, Math.round((rowUsd - back) * 1e9) / 1e9);
+  return { answered_at: rounds.answered_at, job_cost_usd: job, look_back_usd: back };
 }
 
 /** Over a run's kept rounds, oldest first: with two or more and one that answered, what they kept together (its first

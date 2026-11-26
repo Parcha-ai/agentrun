@@ -5497,7 +5497,7 @@ export type GetRunUsageResponse = {
     billable: boolean;
   }> | null;
   infra_usd: number | null;
-  reason: "running" | "not_booked" | "reopened" | null;
+  reason: "running" | "not_booked" | null;
 };
 
 /** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */

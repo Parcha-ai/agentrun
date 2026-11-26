@@ -3755,7 +3755,7 @@ export interface operations {
         billable: boolean;
       }[] | null;
       infra_usd: number | null;
-      reason: "running" | "not_booked" | "reopened" | null;
+      reason: "running" | "not_booked" | null;
     };
   };
   getSdkRun: {
