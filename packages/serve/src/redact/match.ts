@@ -742,7 +742,11 @@ export function cutAt(text: string, spans: readonly Span[]): string {
 
 /** A view of a text, and the stretches of it (in its own offsets, in order, apart) whose every character comes from
  *  text a cut covers. */
-type View = { readonly text: string; readonly covered: readonly Span[]; readonly marked?: boolean };
+/** `marked`, where a terminal control is in the text: its units (the characters viewOf's decoders and its copy handed
+ *  on, in order) as they came. */
+type View = { readonly text: string; readonly covered: readonly Span[]; readonly marked?: string };
+/** Which of a text's units a terminal shows (`shown`), and how many it hides before each unit (`hiddenBefore`). */
+type Screen = { readonly shown: Uint8Array; readonly hiddenBefore: Int32Array };
 
 const HEX = only("0123456789abcdefABCDEF");
 const BLANKS = /[\t-\r ]+/y;
@@ -751,8 +755,8 @@ const BLANKS = /[\t-\r ]+/y;
  *  feed, vertical tab, form feed and carriage return (U+0009-000D) are whitespace (isSpace) and read as such. */
 const isControl = (code: number): boolean => code <= 0x08 || (code >= 0x0e && code <= 0x1f) || (code >= 0x7f && code <= 0x9f);
 /** The control characters a terminal acts on as it renders: ESC, BEL, a backspace, and the 8-bit CSI, ST and OSC.
- *  viewOf keeps each in the view (`marked`), and each view is read twice (readingsOf): with them dropped, as any control
- *  is, and as a terminal shows it. */
+ *  viewOf drops each as any control and marks the view, and each marked view is read twice (readingsOf): with them
+ *  dropped, and as a terminal shows it. */
 const isTerminal = (code: number): boolean => code === 0x1b || code === 0x07 || code === 0x08 || code === 0x9b || code === 0x9c || code === 0x9d;
 /** What ends each pass of a join (joinOf). Every view keeps it, and no needle holds it, so no held value reads across
  *  it. It cannot be a NUL, as the views drop control characters wherever they come from (the text, or an escape or an
@@ -1195,15 +1199,19 @@ function bothOf(first: { text: string; cuts?: Span[] }, second: { text: string; 
  *  ASCII character is a starter nothing composes onto), and each character it makes comes from that whole stretch. A
  *  control character (isControl) is dropped, as it stands or as a decoder made it, and so is SEPARATOR, unless
  *  `separates` and it stands in the text as it is (a join's own, or a caller's: holds), where it is copied, never
- *  squeezed. A terminal control (isTerminal) is kept, never squeezed, and nothing composes across it; the view is then
- *  `marked`, for readingsOf. With `cuts` (merged spans of `text`), the view's
+ *  squeezed. A terminal control (isTerminal) is dropped as any control is, and the view is then `marked` with the
+ *  units it read, for readingsOf; with `screen`, each unit it does not show is dropped too. With `cuts` (merged spans of `text`), the view's
  *  covered stretches: where every character comes from inside one cut. */
-function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates = false): View {
+function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates = false, screen?: Screen): View {
   const out: string[] = [];
   const covered: Span[] = [];
   let length = 0;
   let cut = 0;
   let marked = false;
+  // The characters the decoders and the copy hand on (units), counted and kept as they come (record), for readingsOf
+  // where a terminal control is among them. With `screen`, a unit it does not show is skipped as a control is.
+  let units = 0;
+  const record: string[] = [];
   const cover = (from: number, to: number) => {
     const last = covered.at(-1);
     if (last && last[1] === from) last[1] = to;
@@ -1269,15 +1277,16 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
   };
   const unit = (char: string, from: number, to: number) => {
     const code = char.charCodeAt(0);
-    // A control character, or SEPARATOR, as it stands or decoded, is nothing: dropped before anything is flushed, so
-    // the characters either side of it compose as they would with it gone (as squeeze drops it before NFKD).
-    if (isTerminal(code)) {
-      flushGroup();
-      flushHeld();
-      emit(char, from, to);
-      marked = true;
-      return;
+    const index = units++;
+    if (screen) {
+      if (!screen.shown[index]) return;
+    } else {
+      if (isTerminal(code)) marked = true;
+      record.push(char);
     }
+    // A control character, or SEPARATOR, as it stands or decoded, is nothing: dropped before anything is flushed, so
+    // the characters either side of it compose as they would with it gone (as squeeze drops it before NFKD). A
+    // terminal control is one too.
     if (isControl(code) || char === SEPARATOR) return;
     if (code >= 128) {
       if (group) {
@@ -1302,10 +1311,24 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
     // The characters copied as they are, and the special one that stopped the search.
     scanned.chars += (hit ? stop + 1 : stop) - at;
     if (stop > at) {
-      flushGroup();
-      flushHeld();
-      emitSlice(at, stop - 1);
-      held = { char: text[stop - 1]!, from: stop - 1, to: stop };
+      const index = units;
+      units += stop - at;
+      if (!screen) record.push(text.slice(at, stop));
+      if (screen && screen.hiddenBefore[units] !== screen.hiddenBefore[index]) {
+        // Some of the run a terminal does not show: each character of it read alone, the ones it hides skipped.
+        scanned.chars += stop - at;
+        for (let k = at; k < stop; k++) {
+          if (!screen.shown[index + k - at]) continue;
+          flushGroup();
+          flushHeld();
+          held = { char: text[k]!, from: k, to: k + 1 };
+        }
+      } else {
+        flushGroup();
+        flushHeld();
+        emitSlice(at, stop - 1);
+        held = { char: text[stop - 1]!, from: stop - 1, to: stop };
+      }
     }
     if (!hit) break;
     const char = text[stop]!;
@@ -1335,37 +1358,10 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
   }
   flushGroup();
   flushHeld();
-  return { text: out.join(""), covered, ...(marked ? { marked } : {}) };
-}
-
-/** A view's characters where `keep` is set, its covered stretches moved to match. */
-function picked(view: View, keep: Uint8Array): View {
-  scanned.chars += view.text.length + view.covered.length;
-  const parts: string[] = [];
-  const kept = new Int32Array(view.text.length + 1);
-  let from = -1;
-  let count = 0;
-  for (let i = 0; i < view.text.length; i++) {
-    kept[i] = count;
-    if (keep[i]) {
-      if (from < 0) from = i;
-      count++;
-    } else if (from >= 0) {
-      parts.push(view.text.slice(from, i));
-      from = -1;
-    }
-  }
-  kept[view.text.length] = count;
-  if (from >= 0) parts.push(view.text.slice(from));
-  const covered: Span[] = [];
-  for (const [start, end] of view.covered) {
-    const [a, b] = [kept[start]!, kept[end]!];
-    if (a >= b) continue;
-    const last = covered.at(-1);
-    if (last && last[1] === a) last[1] = b;
-    else covered.push([a, b]);
-  }
-  return { text: parts.join(""), covered };
+  if (!marked) return { text: out.join(""), covered };
+  const recorded = record.join("");
+  scanned.chars += recorded.length;
+  return { text: out.join(""), covered, marked: recorded };
 }
 
 /** Where the CSI whose parameters start at view[at] ends (its final byte), or -1: parameter bytes (0x30-0x3F), then
@@ -1395,50 +1391,60 @@ function oscEnd(text: string, at: number): number {
   return -1;
 }
 
-/** The readings of a view: itself, or, where it is `marked` (a terminal control in it), the view with every terminal
- *  control dropped, as any control is (an ESC and the letter after it read as text), and the view as a terminal shows
- *  it: each CSI (ESC "[" or U+009B, its parameters, intermediates and final byte), each OSC (ESC "]" or U+009D to a
- *  BEL, ESC and a backslash, or U+009C) and each other escape (ESC, any intermediate bytes, and a final byte from 0x30
- *  to 0x7E) gone whole; a backspace gone with the character before it (the next one takes its place on screen); and an
- *  ESC that opens none of them, a BEL and a U+009C gone alone. A held value either reading shows is held. Each read is
- *  linear: a sequence read stops at the first byte it cannot hold. */
-function readingsOf(view: View): View[] {
+const isHigh = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
+const isLow = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
+
+/** The readings of a text through `spec`: its view, or, where a terminal control is in it (`marked`), that view (the
+ *  terminal controls dropped, as any control is: an ESC and the letter after it read as text) and the view of the text
+ *  as a terminal shows it: each CSI (ESC "[" or U+009B, its parameters, intermediates and final byte), each OSC (ESC
+ *  "]" or U+009D to a BEL, ESC and a backslash, or U+009C) and each other escape (ESC, any intermediate bytes, and a
+ *  final byte from 0x30 to 0x7E) gone whole; a backspace gone with the character before it (a whole character: both
+ *  halves of one past U+FFFF; the next one takes its place on screen); and an ESC that opens none of them, a BEL and a
+ *  U+009C gone alone. That view is built again from the text with the units a terminal hides skipped, so the squeeze
+ *  reads the characters either side of what it hides as one stretch, as a reader does. A held value either reading
+ *  shows is held. Each read is linear: a sequence read stops at the first byte it cannot hold. */
+function readingsOf(text: string, spec: ViewSpec, cuts: readonly Span[] | undefined, separates: boolean): View[] {
+  const view = viewOf(text, spec, cuts, separates);
   if (!view.marked) return [view];
-  const text = view.text;
-  const plain = new Uint8Array(text.length);
-  const screen = new Uint8Array(text.length);
-  const shown: number[] = [];
-  for (let i = 0; i < text.length; ) {
-    const code = text.charCodeAt(i);
+  const recorded = view.marked;
+  const units = recorded.length;
+  const shown = new Uint8Array(units);
+  const stack: number[] = [];
+  for (let i = 0; i < units; ) {
+    const code = recorded.charCodeAt(i);
     if (!isTerminal(code)) {
-      plain[i] = 1;
-      screen[i] = 1;
-      shown.push(i);
+      shown[i] = 1;
+      stack.push(i);
       i++;
       continue;
     }
     let end = i;
     if (code === 0x08) {
-      const last = shown.pop();
-      if (last !== undefined) screen[last] = 0;
-    } else if (code === 0x9b) end = Math.max(i, csiEnd(text, i + 1));
-    else if (code === 0x9d) end = Math.max(i, oscEnd(text, i + 1));
-    else if (code === 0x1b && i + 1 < text.length) {
-      const next = text.charCodeAt(i + 1);
-      if (next === 0x5b) end = Math.max(i, csiEnd(text, i + 2));
-      else if (next === 0x5d) end = Math.max(i, oscEnd(text, i + 2));
+      // A backspace strikes out a whole character: one past U+FFFF goes with both its halves.
+      const last = stack.pop();
+      if (last !== undefined) {
+        shown[last] = 0;
+        if (isLow(recorded.charCodeAt(last)) && stack.at(-1) === last - 1 && isHigh(recorded.charCodeAt(last - 1))) shown[stack.pop()!] = 0;
+      }
+    } else if (code === 0x9b) end = Math.max(i, csiEnd(recorded, i + 1));
+    else if (code === 0x9d) end = Math.max(i, oscEnd(recorded, i + 1));
+    else if (code === 0x1b && i + 1 < recorded.length) {
+      const next = recorded.charCodeAt(i + 1);
+      if (next === 0x5b) end = Math.max(i, csiEnd(recorded, i + 2));
+      else if (next === 0x5d) end = Math.max(i, oscEnd(recorded, i + 2));
       else {
         let k = i + 1;
-        while (k < text.length && text.charCodeAt(k) >= 0x20 && text.charCodeAt(k) <= 0x2f) k++;
+        while (k < recorded.length && recorded.charCodeAt(k) >= 0x20 && recorded.charCodeAt(k) <= 0x2f) k++;
         scanned.chars += k - i;
-        if (k < text.length && text.charCodeAt(k) >= 0x30 && text.charCodeAt(k) <= 0x7e) end = k;
+        if (k < recorded.length && recorded.charCodeAt(k) >= 0x30 && recorded.charCodeAt(k) <= 0x7e) end = k;
       }
     }
-    // A sequence's characters other than its terminal controls stay in the plain reading.
-    for (let k = i + 1; k <= end; k++) if (!isTerminal(text.charCodeAt(k))) plain[k] = 1;
     i = end + 1;
   }
-  return [picked(view, plain), picked(view, screen)];
+  const hiddenBefore = new Int32Array(units + 1);
+  for (let k = 0; k < units; k++) hiddenBefore[k + 1] = hiddenBefore[k]! + (shown[k] ? 0 : 1);
+  scanned.chars += 2 * units;
+  return [view, viewOf(text, spec, cuts, separates, { shown, hiddenBefore })];
 }
 
 /** The characters a run of percent-encoded bytes text[from, to) decodes to (as UTF-8, invalid bytes as U+FFFD, as
@@ -1551,7 +1557,7 @@ export function holds(text: string, needles: Needles, { fold = true, cuts, separ
   for (const spec of VIEWS) {
     if (!spec.when(has)) continue;
     const join = spec.join ? joinFor(spec.join) : undefined;
-    for (const view of readingsOf(join ? viewOf(join.text, spec, join.cuts, true) : viewOf(text, spec, cuts, separated))) {
+    for (const view of join ? readingsOf(join.text, spec, join.cuts, true) : readingsOf(text, spec, cuts, separated)) {
       const covered = cuts ? view.covered : undefined;
       if (holdsIn(view.text, covered, needles.plain)) return true;
       if (spec.join && needles.joined?.length && holdsIn(view.text, covered, needles.joined)) return true;
