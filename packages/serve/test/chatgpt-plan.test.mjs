@@ -131,8 +131,24 @@ function fakeOpenAI(t) {
       if (body.model === "gpt-6.1-sol" && body.reasoning?.effort === "none") {
         return Response.json({ error: { message: "Unsupported value: 'none' is not supported with the 'gpt-6.1-sol' model. Supported values are: 'low', 'medium', 'high', 'xhigh'.", type: "invalid_request_error", param: "reasoning.effort", code: "unsupported_value" } }, { status: 400 });
       }
-      const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: o.reply, annotations: [] }] };
+      // `holdResponse`: a promise the answer waits on, so a test acts while a run's request is out. `callOnce`: the next
+      // answer calls this tool (one no agent has), so the run sends one more request after it.
+      if (o.holdResponse) await o.holdResponse;
       const usage = { input_tokens: 120, output_tokens: 12, total_tokens: 132 };
+      if (o.callOnce) {
+        const call = { type: "function_call", id: "fc_1", call_id: "call_1", name: o.callOnce, arguments: "{}", status: "completed" };
+        o.callOnce = undefined;
+        const called = [
+          { type: "response.created", response: { id: "resp_0", status: "in_progress", output: [] } },
+          { type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "" } },
+          { type: "response.function_call_arguments.delta", output_index: 0, item_id: "fc_1", delta: "{}" },
+          { type: "response.function_call_arguments.done", output_index: 0, item_id: "fc_1", arguments: "{}" },
+          { type: "response.output_item.done", output_index: 0, item: call },
+          { type: "response.completed", response: { id: "resp_0", status: "completed", output: [call], usage } },
+        ];
+        return new Response(called.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
+      }
+      const item = { type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: o.reply, annotations: [] }] };
       const events = [
         { type: "response.created", response: { id: "resp_1", status: "in_progress", output: [] } },
         { type: "response.output_item.added", output_index: 0, item: { ...item, content: [] } },
@@ -2198,6 +2214,48 @@ test("a runner's stop, beside the server or in a process of its own, waits for a
     // Saved before the runner's store closed: the server sends it as it is, renewing nothing.
     assert.equal(await own.token(), issued.access, where);
     assert.equal(openai.refreshes, refreshes + 1, where);
+    await server.stop();
+  }
+});
+
+test("a run a runner's stop drains renews the plan's token when it needs to: its next request in the drain renews it and the run ends completed, beside the server or in a process of its own", { timeout: 180_000 }, async (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  const openai = fakeOpenAI(t);
+  const { runnerBeside } = await import("../dist/runner/beside.js");
+  const { startRunnerProcess } = await import("../dist/runner/main.js");
+  const starts = [["beside", (data) => runnerBeside(data, { drainMs: 30_000 })], ["own-process", (data) => startRunnerProcess({ dataDir: data, drainMs: 30_000, warn: () => {} })]];
+  for (const [where, start] of starts) {
+    const server = await serve(t, { faux: undefined, runner: false, harnesses: false });
+    await signedIn(server.api);
+    const runner = await start(server.data);
+    let closing;
+    const close = () => (closing ??= runner.close());
+    t.after(close);
+    // The run's first answer is held, then calls a tool no agent has: the run sends its next request once it is answered.
+    let release;
+    openai.holdResponse = new Promise((resolve) => (release = resolve));
+    t.after(() => release());
+    openai.callOnce = "no_such_tool";
+    const sent = openai.responses.length;
+    assert.equal((await server.api("POST", "/agents", agent(`drain-${where}`))).status, 201);
+    const started = await server.api("POST", `/agents/drain-${where}/runs`, { input: { content: "What is six times seven?" } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    await until(() => openai.responses.length > sent, `${where}: the run's first request is out`);
+    // Signed in again, near its end: the run's next request has to renew it.
+    openai.expiresIn = 200;
+    await signedIn(server.api);
+    openai.expiresIn = 3600;
+    const refreshes = openai.refreshes;
+    // The stop begins with the run in its turn: the drain lets it go on to its end, its next request included.
+    const stopped = close();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    openai.holdResponse = undefined;
+    release();
+    await stopped;
+    const { last } = await follow(server.api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+    assert.equal(last.status, "completed", `${where}: the drained run ends its turn: ${JSON.stringify(last)}`);
+    assert.equal(openai.refreshes, refreshes + 1, `${where}: its next request renewed the token in the drain`);
+    assert.equal(openai.responses.at(-1).authorization, `Bearer ${openai.issued.at(-1).access}`, `${where}: and was sent with the renewed token`);
     await server.stop();
   }
 });
