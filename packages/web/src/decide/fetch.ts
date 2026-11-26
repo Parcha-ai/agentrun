@@ -12,11 +12,13 @@ import { bounded, byScore, decisionPay, type DecisionRecord, droppedOf, drops, f
 export const LEFT_OUT = "\n…\n";
 
 /** A fetched part judged by `decider` in passages: the kept ones in order, LEFT_OUT for each run left out, the part's
- *  place in the page (chars, offset, next_offset) unchanged, and `sift` telling the model what was done. */
+ *  place in the page (chars, offset, next_offset) unchanged, and `sift` telling the model what was done. With no task
+ *  the part is not judged and comes back as it is, with no `sift`: a line saying nothing was done, on every fetch,
+ *  would only cost the model tokens; the record says why (`skipped: "no task"`). */
 export async function judgePart(decider: WebDecider, url: string, page: WebPage | Page, options: StepOptions): Promise<Sifted<(WebPage | Page) & { sift?: string }>> {
   if (!page.ok || !page.text) return { answer: page, classifier: skipped(decider, "fetch", "no page") };
   const spans = passagesOf(page.text);
-  if (!options.task) return { answer: { ...page, sift: "not run (no task given); this part is whole" }, classifier: skipped(decider, "fetch", "no task", spans.length) };
+  if (!options.task) return { answer: page, classifier: skipped(decider, "fetch", "no task", spans.length) };
   const judged = await judgeSpans(decider, url, options.task, page.text, spans, page.offset ?? 0, options);
   if ("failure" in judged) return { answer: { ...page, sift: `not run (${judged.failure.error!.code}); this part is whole` }, classifier: judged.failure };
   const { texts, scored } = judged;

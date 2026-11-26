@@ -19,6 +19,7 @@ const agentMd = (name, triggers, extra = []) => `---
 name: ${name}
 version: 1.0.0
 description: Writes a digest.
+tools: []
 ${extra.join("\n")}
 ${triggers.length ? ["triggers:", ...triggers].join("\n") : ""}
 ---

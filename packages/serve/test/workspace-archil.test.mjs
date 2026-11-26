@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { archilDisk, archilWorkspace, layOwnSkills, learningKey, localWorkspace, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
+import { archilDisk, archilWorkspace, layOwnSkills, localWorkspace, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
 import { APPEND_MAX } from "../dist/workspace/archil.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
@@ -364,9 +364,8 @@ test("archil: a timeout over 295 s is refused (Archil cuts a call at 300 s), and
   await workspace.exec(["true"], { env: ENV, timeoutMs: 295_000 });
 });
 
-test("archil: the run's and the learning folder's keys come from the one layout owner (paths.ts)", () => {
+test("archil: the run's key comes from the one layout owner (paths.ts)", () => {
   assert.match(runKey("acme", "r1"), /^agents\/acme-[0-9a-f]{16}\/runs\/r1\/work$/);
-  assert.match(learningKey("acme"), /^agents\/acme-[0-9a-f]{16}\/learning$/);
   assert.equal(join("/data", "disk", runKey("Acme", "r1")), runFolder("/data", "Acme", "r1"), "the same layout as a run's local folder");
   assert.throws(() => runKey("a/b", "r1"), /agent id/);
   assert.throws(() => runKey("acme", ".."), /run id/);

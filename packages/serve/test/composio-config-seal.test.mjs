@@ -351,6 +351,7 @@ async function keyPackage(t, { noted = false, event = DEAL_STAGE, dropped = fals
 name: deals
 version: 0.1.0
 description: Notes each deal's new stage.
+tools: []
 budget: { per_run_usd: 0.5 }
 parameters:
   app_id: { type: string, description: "the HubSpot app's id" }

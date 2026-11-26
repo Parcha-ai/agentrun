@@ -8,15 +8,13 @@
 import assert from "node:assert/strict";
 import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fakeAnthropic } from "@parcha/agentrun-harness-claude/testing";
-import { agentFolderOf } from "../dist/files.js";
-import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { entriesOf, git, resnap } from "./learn-support.mjs";
+import { entriesOf, putLearning } from "./learn-support.mjs";
 import { agent, answerFlow, call, cookieOf, follow, scratch, serve, withEnv } from "./support.mjs";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
 
@@ -29,17 +27,6 @@ const INPUT = { name: "answer", input: { question: "What is six times seven" } }
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "ANTHROPIC_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "AGENTRUN_CODEX_STANDIN", "AGENTRUN_SERVE_CODEX_STANDIN"];
 const SETPRIV = existsSync("/usr/bin/setpriv");
 
-async function folderWith(data, id) {
-  await learning.seedOf(data, id);
-  const repo = join(agentFolderOf(data, id), "learning");
-  for (const [path, text] of Object.entries(flowFiles)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(flowFiles)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
-}
 /** The owner's answer to an approval, signed in on `server` (`first`: the setup that makes the owner). */
 async function owner(server, first) {
   const origin = `http://127.0.0.1:${server.port}`;
@@ -103,9 +90,9 @@ for (const harness of ["claude-agent", "codex"]) {
       const allowOn = await owner(first, true);
       const id = `real-${harness}-${restart ? "restart" : "live"}`;
       assert.equal((await first.api("POST", "/agents", agent(id, { learning: true, harness, instructions: route.ask, tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }))).status, 201);
-      await folderWith(first.data, id);
+      await putLearning(first.store, id, flowFiles);
       // The owner approves this tool call; the workflow itself already passed its independent check.
-      await promoteChecked(first.store.settings, id, [{ name: "answer", workflow: answerFlow() }]);
+      await promoteChecked(first.store, id, [{ name: "answer", workflow: answerFlow() }]);
       const started = await first.api("POST", `/agents/${id}/runs`, { input: { content: route.ask } });
       assert.equal(started.status, 202, JSON.stringify(started.body));
       const runId = started.body.run_id;

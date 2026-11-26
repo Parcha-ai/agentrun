@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentsList } from "./AgentsList";
 import type { Agent } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -51,5 +52,17 @@ describe("the agents page's search", () => {
     });
     expect(host.textContent).toContain("Hello, AgentRun");
     expect(host.textContent).not.toContain("Reads mail.");
+  });
+});
+
+describe("the agents page's frame", () => {
+  it("keeps the bar with New agent in view: the search and the cards scroll in the one box under it", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(AgentsList, { agents: [{ ...agent, agent_id: "a1" }] })));
+    const body = expectPinnedBar(host);
+    expect(body.querySelector('input[aria-label="Search agents"]')).not.toBeNull();
+    expect(body.querySelector('ul[aria-label="Agents"]')).not.toBeNull();
+    expect(host.querySelector("header")!.textContent).toContain("New agent");
   });
 });

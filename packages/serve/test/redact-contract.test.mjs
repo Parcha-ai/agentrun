@@ -756,6 +756,102 @@ const CASES = [
       exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
     };
   })(),
+  // A control character that is no whitespace (U+0000-0008, U+000E-001F, U+007F-009F: a NUL, an escape, a delete, a
+  // C1 control) renders as nothing too: between a held value's halves it hides the value from no view, as it stands, in
+  // a JSON string as JSON.stringify writes it (once, and twice: JSON in JSON), as JSON's \u escape in prose,
+  // percent-encoded, as an HTML character reference, as Python's \x escape in a single-quoted dict, and between each of
+  // the value's characters. A text that holds such characters and no held value shows as it came, and so does one whose
+  // control stands after a held value's head with no rest after it.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const hex = (code, width) => code.toString(16).padStart(width, "0");
+    return [0x00, 0x01, 0x08, 0x0e, 0x1b, 0x1f, 0x7f, 0x85, 0x9f].flatMap((code) => {
+      const control = String.fromCharCode(code);
+      const at = `U+${hex(code, 4).toUpperCase()}`;
+      return [
+        [`${at} as it stands`, `x ${H}${control}${R} y`],
+        [`${at} in a JSON string as JSON.stringify writes it`, JSON.stringify({ note: `see ${H}${control}${R} more` })],
+        [`${at} in JSON written in a JSON string`, JSON.stringify({ out: JSON.stringify({ note: `see ${H}${control}${R} more` }) })],
+        [`${at} as JSON's \\u escape in prose`, `x ${H}${B}u${hex(code, 4)}${R} y`],
+        [`${at} percent-encoded`, `x ${H}${encodeURIComponent(control)}${R} y`],
+        [`${at} as Python's \\x escape in a single-quoted dict`, `{'a': 'see ${H}${B}x${hex(code, 2)}${R} more'}`],
+        [`${at} between each of its characters`, `v=${[...H, ...R].join(control)} ok`],
+        // A browser reads "&#0;" as U+FFFD, which shows, so it is no control (match.ts entityAt).
+        ...(code > 0 ? [[`${at} as an HTML character reference`, `x ${H}&#x${code.toString(16)};${R} y`]] : []),
+      ].map(([what, text]) => ({ name: `a held value split by a control character, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+    });
+  })(),
+  ...(() => {
+    const [nul, soh, esc, us, del, nel] = [0x00, 0x01, 0x1b, 0x1f, 0x7f, 0x85].map((code) => String.fromCharCode(code));
+    const [H] = P24;
+    return [
+      ["controls between words and no held value", `a${nul}b${soh}c ${esc}[0m d${us}e${del} f${nel}g end`],
+      ["controls after a held value's head with no rest after them", `x ${H}${nul}${soh}zzzzzzzz y`],
+      ["a control after a held value's head with no rest after it, in a JSON string", JSON.stringify({ note: `see ${H}${nul}zzzzzzzz more` })],
+    ].map(([what, text]) => ({
+      name: `a text with ${what} shows as it came (control)`,
+      text,
+      values: [P24.join("")],
+      hides: [],
+      exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
+    }));
+  })(),
+  // U+FFFF, a noncharacter, shows as a box at most, so a reader still reads a held value split by one: as it stands, in
+  // a JSON string (JSON.stringify keeps it as it is; once, and twice: JSON in JSON), as JSON's \uffff escape in prose
+  // and in a JSON string, percent-encoded (its UTF-8 bytes), as an HTML character reference, and between each of the
+  // value's characters, it withholds the text. Only the separator a join puts between its passes separates (match.ts
+  // SEPARATOR). A text with U+FFFF and no held value shows as it came; so does one with U+FFFF after a held value's head
+  // and no rest; and a held value whole beside U+FFFF, or two finds with U+FFFF between them, in prose or in JSON
+  // strings, is cut in place, the U+FFFF kept where it stood.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const N = "\uffff";
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    return [
+      ["as it stands", `x ${H}${N}${R} y`],
+      ["in a JSON string as JSON.stringify writes it", JSON.stringify({ note: `see ${H}${N}${R} more` })],
+      ["in JSON written in a JSON string", JSON.stringify({ out: JSON.stringify({ note: `see ${H}${N}${R} more` }) })],
+      ["as JSON's \\u escape in prose", `x ${H}${B}uffff${R} y`],
+      ["as JSON's \\u escape in a JSON string", `{"note":"see ${H}${B}uFFFF${R} more"}`],
+      ["percent-encoded", `x ${H}%EF%BF%BF${R} y`],
+      ["as an HTML character reference", `x ${H}&#xffff;${R} y`],
+      ["as a decimal HTML character reference", `x ${H}&#65535;${R} y`],
+      ["between each of its characters", `v=${[...H, ...R].join(N)} ok`],
+      ["in one of a dict's values written in a JSON string", JSON.stringify({ args: `{'a': 'see ${H}${N}${R} more'}` })],
+    ].map(([what, text]) => ({ name: `a held value split by U+FFFF, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
+  ...(() => {
+    const [H] = P24;
+    const N = "\uffff";
+    return [
+      ["U+FFFF between words and no held value", `a${N}b c${N}${N}d end`],
+      ["U+FFFF after a held value's head with no rest after it", `x ${H}${N}zzzzzzzz y`],
+      ["U+FFFF after a held value's head with no rest after it, in a JSON string", JSON.stringify({ note: `see ${H}${N}zzzzzzzz more` })],
+    ].map(([what, text]) => ({
+      name: `a text with ${what} shows as it came (control)`,
+      text,
+      values: [P24.join("")],
+      hides: [],
+      exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
+    }));
+  })(),
+  ...(() => {
+    const V = P24.join("");
+    const N = "\uffff";
+    return [
+      ["in prose", `see ${V}${N}${V} and a${N}b`, `see [redacted]${N}[redacted] and a${N}b`],
+      ["in JSON strings", `{"a":"${V}${N}${V}","b":"${N}${V}"}`, `{"a":"[redacted]${N}[redacted]","b":"${N}[redacted]"}`],
+    ].map(([what, text, out]) => ({
+      name: `a held value whole beside U+FFFF, ${what}, is cut in place and the U+FFFF kept (control)`,
+      text,
+      values: [V],
+      hides: [P24[0].slice(0, 8), P24[1].slice(0, 8)],
+      exact: { redacted: out, redactedAnswer: out, redactSecrets: out, runFile: out },
+    }));
+  })(),
   // The #3626 review's escaped splits, each a named guard: a held value split by one of JSON's one-character escapes
   // written as its two characters ("\n", "\t", "\""), a held value written as JSON's \u escapes twice (JSON in JSON),
   // and one split by a zero-width space or a soft hyphen, as it is or escaped. Each withholds the text.
@@ -984,8 +1080,11 @@ const RSA_PEM = generateKeyPairSync("rsa", { modulusLength: 4096, privateKeyEnco
 /** The adversarial texts of `size` characters, each with the held values it is read with, each text stressing a stage:
  *  - the shapes' prefixes and runs;
  *  - each view's decoders over a text of nothing but what they decode: percent-encoded bytes, ASCII and not, "+",
- *    JSON's escapes at one level and two (each kind, back to back), a second level that starts and fails, non-ASCII
- *    stretches for NFKC, characters that render as nothing (zero-width spaces, soft hyphens, both between letters);
+ *    JSON's escapes at one level and two (each kind, back to back), a second level that starts and fails, Python's
+ *    escapes ("\'", "\x41") and a single-quoted dict opened and never closed, named and numeric references (a name
+ *    never closed, zeros as long as the text, no ";"), non-ASCII
+ *    stretches for NFKC, characters that render as nothing (zero-width spaces, soft hyphens, both between letters),
+ *    control characters (as they stand, escaped, percent-encoded, as references);
  *  - the join view over JSON, well formed and malformed: strings never closed, nesting as deep as the text, strings of
  *    nothing but backslashes;
  *  - a held value found every 9 characters, each find cut in place, and one in every string of a JSON text; and every
@@ -1023,6 +1122,22 @@ const adversarial = (size) => {
     `"${fill(B, size - 2)}"`, `"${fill(B, size - 1)}`, f(`"${B}${B}${B}"`), f(`"${B}`), f(`"%41+${B}u0041&#65;",`),
     // The strings join's four views at once: a quote, percent, "+", an escaped quote and an escaped backslash.
     f(`"%41+${B}"${B}${B}n&#65;",`), f(`"a+${B}${B}",`),
+    // The quoted joins (a single-quoted dict's, read once as JSON's escapes and once as Python's): a lone apostrophe, a
+    // name and its value opened and never closed, an apostrophe escaped, and Python's escapes back to back.
+    f("'"), f("'a': '"), f(`'${B}`), f(`'a${B}'b${B}x41${B}${B}',`), f(`${B}x4`),
+    // Named and numeric references: whole, a name never closed, a zero, one with no ";", zeros as long as the text, and
+    // "+" in a quoted JSON text with a reference.
+    f("&amp;"), f("&ampx"), f("&#0"), f("&#65"), `&#${fill("0", size - 2)}`, f('"a&#65;+",'),
+    // A single-quoted dict written in a JSON string (a call's arguments, read one level down): many strings each holding
+    // one, one string holding a dict opened and never closed, and Python's escapes at both levels, back to back.
+    f(`"{'a': 'b'}",`), `"{'a': '${fill("ab ", size - 9)}`, `"${fill(`${B}${B}x41${B}${B}'`, size - 1)}"`, f(`"'${B}${B}x4${B}${B}'",`),
+    f(`'${B}${B}${B}${B}x41`),
+    // Control characters the views drop, as they stand, between letters, escaped (JSON's, twice, Python's in a
+    // single-quoted dict), percent-encoded, as character references, and inside JSON strings.
+    f("\u0000"), f("a\u0001"), f("\u007f\u0085"), f(`${B}u0000`), f(`${B}${B}u001f`), f(`'a${B}x01`), f("%00%C2%85"), f("&#1;&#x7f;"), f('"a\u0000",'),
+    // U+FFFF, which the views drop in the text and keep only as a join's separator: as it stands, between letters and
+    // inside JSON strings, escaped, percent-encoded, as a reference.
+    f("\uffff"), f("a\uffff"), f('"a\uffff",'), f(`${B}uffff`), f("%EF%BF%BF"), f("&#xffff;"),
   ];
   return [
     ...[...shapes, ...views].map((text) => ({ text, values: [CUT_KEY] })),
@@ -1030,10 +1145,20 @@ const adversarial = (size) => {
     // A held value found in every string of a JSON text, each find cut in place: the join view moves each cut to where
     // its string stands in the join, its cursor passing each cut once a pass.
     { text: f(`"${DENSE}",`), values: [DENSE] },
+    // Every view at once, each over the text at nearly its whole length: one closed JSON string holding each family (a
+    // percent byte, "+", a reference, an escaped quote, Python's "\x41" and an apostrophe one level down) turns on all
+    // sixteen, and the held value's strings after it decode to themselves in each. It heads each block of about 4 KiB, so
+    // each answer piece holds it too.
+    { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}",`.repeat(370)}`), values: [DENSE] },
     // The same in a string never closed, and in one escaped quote after another (JSON written in a string).
     { text: `{"k":"${fill(`${DENSE} `, size - 6)}`, values: [DENSE] },
     { text: f(`${BACKSLASH}"${DENSE}${BACKSLASH}",`), values: [DENSE] },
     { text: f(`${DENSE} x `), values: [DENSE] },
+    // A held value found every 9 characters with a control between each two finds: the views drop it, so they read the
+    // finds glued together, each still cut in place.
+    { text: f(`${DENSE}\u0000`), values: [DENSE] },
+    { text: f(`${DENSE}\uffff`), values: [DENSE] },
+    { text: f(`"${DENSE}\uffff",`), values: [DENSE] },
     { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
     { text: f(`${RSA_PEM}\n`), values: [RSA_PEM] },
     { text: f(`${RSA_PEM.split("\n").slice(1, -1).reverse().join("\n")}\n`), values: [RSA_PEM] },
@@ -1130,21 +1255,29 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // - the shapes, sought over the text and over its cut, and each run read: 128, the shapes' own bound (the test above);
 // - planCut's finds: the text lowered (1), each form and the hex searched (2 each, a find and the text before it: 16),
 //   the folded search (4), the finds merged (1): about 21;
-// - one whole-text check: what the text holds that a view decodes (7); twelve views at most: the squeezed one and the
+// - one whole-text check: what the text holds that a view decodes (9); sixteen views at most: the squeezed one and the
 //   percent-decoded two (one with "+") built in 9 reads each (its special characters found, its blanks, its non-ASCII
 //   stretches squeezed twice, its cover), the views of JSON's escapes alone (two levels, and one where the text has an
 //   escaped backslash) and the two stacked ones (one with "+") in 23 each (two levels of escapes read per character
 //   decoded); the nested join, which reads the text as JSON first (3: at level 0, again at level 1 inside a string, and
 //   the whitespace after a string), writes its join (2: each character in it at most twice, values then all, or names
-//   then all), and one decoding view over that join (46); the strings join, read at level 0 alone (2) and written (2),
-//   and four decoding views over it (one level of JSON's escapes alone, with percent, with percent and "+", and two
-//   levels: 46 each, 184); then each searched for 7 plain needles, the hex and the fold, lowered and flattened, each
-//   find checked against the covered stretches (21 each, 42 over a join): about 722; planCut runs two (the text with
-//   its cuts, then the cut text, at most 10/8 as long): about 1,625;
-// - so planCut is about 1,774; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
-//   of a check: 903), of the pieces as they came (722), and its shape pass (64): about 3,473.
-// That sum takes each stage at its most at once, which no text reaches: a text that builds every view decodes most of
-// itself, so each decoded view is far shorter than the text and its searches read far less.
+//   then all), and two decoding views over that join (one with "+": 46 each, 92); the strings join, read at level 0
+//   alone (2) and written (2), and four decoding views over it (one level of JSON's escapes alone, with percent, with
+//   percent and "+", and two levels: 46 each, 184); the quoted join (a single-quoted dict's), read at level 0 (2) and
+//   written (2), and the again join (each JSON string's text read one level down for a dict written in it), the text
+//   read at level 0 for its strings and they at level 1 (3) and written (2), and the two written once more one after the
+//   other (4); three decoding views over them (JSON's escapes over both: 92; Python's over the quoted join where the
+//   text holds one, and both levels of them over the again join where it holds a quote: 46 each; 184); then each
+//   searched for 7 plain needles, the hex and the fold, lowered and flattened, each find checked against the covered
+//   stretches (21 each, 42 over a join, 84 over the two joins one after the other): about 1,082; planCut runs two (the
+//   text with its cuts, then the cut text, at most 10/8 as long): about 2,435;
+// - so planCut is about 2,584; an answer adds its pieces' ends and joins (10), heldIn's check of what it returns (10/8
+//   of a check: 1,353), of the pieces as they came (1,082), and its shape pass (64): about 5,093.
+// That sum takes each stage at its most at once, and its views are all reachable together: familiesOf reads each family
+// as present or absent, so one closed JSON string holding each of them turns on all sixteen views, and the rest of the
+// text decodes to itself at nearly its whole length in each (the text of DENSE's strings, each block of about 4 KiB
+// headed by one such string). It is the most measured here: 963.0 per character at 128 KiB and 967.8 at 512 KiB,
+// through redactedAnswer; every other text measures under 450 (a held RSA key's, made anew each run, moves by a few).
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
 // lines adds k + 1 of each: its work grows with k, linear in the text all the same.
 // WORK stays 1,024, the bound from before the stacked and join views. The most measured, and each text's most, are in

@@ -16,6 +16,7 @@ name: watch
 display_name: "Watch on \${parameters.companies}"
 version: 0.1.0
 description: Watches companies for news.
+tools: []
 parameters:
   companies: { type: array, items: { type: string, minLength: 1 }, description: The companies to watch. }
   limit: { type: integer, required: false, default: 5, description: How many items at most. }
@@ -98,7 +99,7 @@ test("the package check fills a parameter with no default from a sample: at a fi
   const write = async (parameter) => {
     const root = join(await scratch(t), "sampled");
     mkdirSync(root, { recursive: true });
-    writeFileSync(join(root, "agent.md"), `---\nname: sampled\nversion: 0.1.0\ndescription: Sampled.\nparameters:\n  country: ${parameter}\ninputs:\n  country: { type: string, pattern: "^[A-Z]{2}$" }\nbudget: { per_run_usd: 1 }\ntriggers:\n  - name: daily\n    source: { kind: schedule, cron: "0 9 * * *", timezone: UTC }\n    target: { kind: start_run, input: { content: Go., country: "\${parameters.country}" } }\n---\nGo.\n`);
+    writeFileSync(join(root, "agent.md"), `---\nname: sampled\nversion: 0.1.0\ndescription: Sampled.\ntools: []\nparameters:\n  country: ${parameter}\ninputs:\n  country: { type: string, pattern: "^[A-Z]{2}$" }\nbudget: { per_run_usd: 1 }\ntriggers:\n  - name: daily\n    source: { kind: schedule, cron: "0 9 * * *", timezone: UTC }\n    target: { kind: start_run, input: { content: Go., country: "\${parameters.country}" } }\n---\nGo.\n`);
     return root;
   };
   readPackage(await write("{ type: string, description: The country. }"));

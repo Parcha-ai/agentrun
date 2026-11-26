@@ -9,7 +9,7 @@ export function ToolBlockers({ agentId, details }: { agentId: string; details: R
   if (!tools.length) return null;
   return (
     <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-      {tools.map((tool) => <a key={tool} href={`#/agents/${encodeURIComponent(agentId)}/edit?tool=${encodeURIComponent(tool)}`} className="underline underline-offset-4">Set {tool} for this agent</a>)}
+      {tools.map((tool) => <a key={tool} href={`#/agents/${encodeURIComponent(agentId)}/settings?tool=${encodeURIComponent(tool)}`} className="underline underline-offset-4">Set {tool} for this agent</a>)}
       <span>or for every agent: <a href="#/settings/tools" className="underline underline-offset-4">Settings → Tools</a></span>
     </p>
   );

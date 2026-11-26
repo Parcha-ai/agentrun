@@ -1285,6 +1285,33 @@ test("a read of the row that a sign-in kept or a sign-out passed while it was ou
   }
 });
 
+test("reads of the row that overlap leave the newest one's state: a read that started first and answers last never signs back in a sign-in a later read found expired", { timeout: 30_000 }, async (t) => {
+  fakeOpenAI(t);
+  const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");
+  const { putSealedKey } = await import("../dist/server-keys.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  const credential = await seatRow(store, sealKey);
+  const plan = await new ChatGPTPlan({ store, sealKey }).load();
+  t.after(() => plan.close());
+  for (const read of [() => plan.load(), () => plan.token().catch(() => undefined)]) {
+    await putSealedKey(store, sealKey, PLAN_ROW, JSON.stringify({ v: 1, state: "signed_in", credential, models: ["gpt-6.1-sol"] }));
+    await plan.load();
+    assert.equal(plan.view().state, "signed_in");
+    // The first read reads the signed-in row and answers only after a later read has answered.
+    const release = store.holdNextGet();
+    const first = read();
+    // Another process on the store (a runner whose renewal OpenAI refused for good) marks the sign-in expired, and the
+    // server's next read finds it.
+    await putSealedKey(store, sealKey, PLAN_ROW, JSON.stringify({ v: 1, state: "expired", credential, models: ["gpt-6.1-sol"] }));
+    await plan.load();
+    assert.equal(plan.view().state, "expired");
+    release();
+    await first;
+    assert.equal(plan.view().state, "expired", "the earlier read, answering last, does not put the signed-in row back");
+  }
+});
+
 test("a sign-in waiting listens for its loopback callback on this test process's own loopback address (pi-ai's PI_OAUTH_CALLBACK_HOST), port 1455", { timeout: 30_000 }, async (t) => {
   fakeOpenAI(t);
   const { createConnection } = await import("node:net");

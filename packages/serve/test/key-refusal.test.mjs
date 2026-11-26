@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { agent, follow, serve, withEnv } from "./support.mjs";
+import { redactedAnswer, redactedCall } from "../dist/key-refusal.js";
 
 const KEY = `not-a-secret-${"openrouter-key"}`;
 const ONLY = { OPENROUTER_API_KEY: KEY };
@@ -101,3 +102,56 @@ for (const [what, text] of Object.entries(NOT_REFUSALS)) {
     }
   });
 }
+
+// Python's "\x20" is a space to the view that reads a single-quoted dict through Python's escapes, so padding of it
+// between a held value's head and its rest is nothing there: the read past a call's stop, and the tail of a run too long
+// to read, count it as the view does, and the value reads whole.
+const [PY_HEAD, PY_REST] = [["Wc3M", "hT8q", "Lz5N", "rB1v"].join(""), ["Xe6K", "pJ4d", "Ys9G", "fA2u"].join("")];
+const PY_PAD = String.raw`\x20`.repeat(60);
+
+test("kr-7: a held value split at a call's stop in a single-quoted string, Python's \\x20 padding past the read after the stop, is withheld", () => {
+  let text = "{'a': '";
+  while (text.length < 8192 - 100) text += "word ";
+  text += `see ${PY_HEAD} ${PY_PAD}${PY_REST} more'}`;
+  assert.equal(redactedCall(text, [`${PY_HEAD}${PY_REST}`], 200), "[redacted]");
+});
+
+test("kr-8: a held value whose head ends a run too long to read, Python's \\x20 padding after it, and whose rest follows is withheld", () => {
+  const text = `'${"a".repeat(9000)}${PY_HEAD}${PY_PAD} ${PY_REST} more'`;
+  for (const out of [redactedCall(text, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(text, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
+});
+
+// A control character that is no whitespace (a NUL, U+0001, an escape, a delete) is nothing to the views, as it stands
+// and as JSON's or Python's escape writes it, so padding of it between a held value's head and its rest is nothing
+// too: the read past a call's stop, and the tail of a run too long to read, count it as the views do, and the value
+// reads whole. Each padding is longer than what the read after the stop takes when each control counts as a character.
+const CONTROL_PADS = [
+  ["raw NULs", "\u0000".repeat(300), "json"],
+  ["raw U+0001 to U+001F and DEL", Array.from({ length: 300 }, (_, i) => String.fromCharCode([1, 8, 14, 27, 31, 127][i % 6])).join(""), "json"],
+  ["JSON's \\u0001", String.raw`\u0001`.repeat(300), "json"],
+  ["Python's \\x01", String.raw`\x01`.repeat(250), "python"],
+  // U+FFFF, a noncharacter, shows as a box at most: the views drop it in the text (only a join's own separator is one).
+  ["raw U+FFFF", "\uffff".repeat(300), "json"],
+  ["JSON's \\uffff", String.raw`\uffff`.repeat(300), "json"],
+];
+const wrapped = (kind, body) => (kind === "python" ? `{'a': '${body}'}` : `{"a": "${body}"}`);
+
+for (const [what, pad, kind] of CONTROL_PADS) {
+  test(`kr-9 (${what}): a held value split at a call's stop, control padding past the read after the stop, is withheld`, () => {
+    let body = "";
+    while (body.length < 8192 - 100) body += "word ";
+    assert.equal(redactedCall(wrapped(kind, `${body}see ${PY_HEAD} ${pad}${PY_REST} more`), [`${PY_HEAD}${PY_REST}`], 200), "[redacted]");
+  });
+
+  test(`kr-10 (${what}): a held value whose head ends a run too long to read, control padding after it, and whose rest follows is withheld`, () => {
+    const text = wrapped(kind, `${"a".repeat(9000)}${PY_HEAD}${pad} ${PY_REST} more`);
+    for (const out of [redactedCall(text, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(text, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
+  });
+}
+
+test("kr-11: control padding after a word, with no held value split around it, is shown (control)", () => {
+  let body = "";
+  while (body.length < 8192 - 100) body += "word ";
+  const text = wrapped("json", `${body}see ${PY_HEAD} ${"\u0000".repeat(300)}zzzzzzzzzzzzzzzz more`);
+  assert.equal(redactedCall(text, [`${PY_HEAD}${PY_REST}`], 200).startsWith(`{"a": "word word`), true);
+});
