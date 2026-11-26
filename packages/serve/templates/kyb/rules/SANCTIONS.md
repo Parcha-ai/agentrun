@@ -97,14 +97,14 @@ Use the first method that reaches a list; record it as `method`.
    - **Read the candidate's record** in the same file: OFAC `grep -n -F -e '<ent_num>,' lists/ofac-alt.csv` (its
      aliases), the SDN row holds the remarks; UK every row with its `Unique ID`; UN the lines of its
      `INDIVIDUAL` or `ENTITY` element, `sed -n 'N,Mp' lists/un.txt` from the match's line number, at most 80 lines.
-     EU every row with its `Entity_LogicalId`, read by column and never cut to a length: a row runs to about 1,000
-     characters, and a long remark puts the name, birth date and place, documents and citizenship far into it. The
-     header line comes first and names each column:
-     `grep -F -e 'Entity_LogicalId' -e ';<id>;' lists/eu.txt | cut -d ';' -f 2,3,4,7,8,15,20,22,23,24,35,36,44,55,58,59,60,65,66,68,79,92,95,107 | head -n 40`
+     EU every row with its `Entity_LogicalId`, whole: never cut to a length or by column. A row runs to about 1,000
+     characters (a few to 3,000), a long remark puts the name, birth date and place, documents and citizenship far into
+     it, and a quoted field can hold a `;`, which a cut by column number takes for a break, shifting each column after
+     it. The header line comes first and names each column in order:
+     `grep -F -e 'Entity_LogicalId' -e ';<id>;' lists/eu.txt | head -n 21`
      An entry has a row for each name, address, birth date, document and citizenship, each with its own columns filled.
-     Keep the rows whose first column is the id; when 40 lines come back, read on with `sed -n '41,80p'` in place of
-     `head -n 40`, until fewer come back. If the header names other columns (the file's layout changed),
-     number them with `head -n 1 lists/eu.txt | tr ';' '\n' | nl` and pick the same ones by name.
+     Inside double quotes a `;` is part of the value. Keep the rows whose second field is the id; when 21 lines come
+     back, read on with `sed -n '22,41p'` in place of `head -n 21`, and so on, until fewer come back.
      The row is the list owner's own record: cite the file as the source, and the entry's own id.
    - **No candidate** in the whole file under the match rules, after the name searches above (the short-name search
      for a short name, records narrowed in the UN file) and a search of each identifier you hold: `no_hit`, with the
