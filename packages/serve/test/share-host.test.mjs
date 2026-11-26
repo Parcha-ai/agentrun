@@ -396,6 +396,26 @@ test("a file's content is read knowing its path: a credential file's plain conte
   await assert.rejects(screenShare(forged, []), (error) => error.code === "input_invalid" && (error.extra.details.counts["credential-file"] ?? 0) >= 1, "a forged name");
 });
 
+test("a workflow call's output is read knowing its call: a credential file's plain contents in a graph effect refuse", async () => {
+  const pgpass = `db.example:5432:app:alice:orchard${nonce()}plain`;
+  const doc = JSON.parse(await bundleOf());
+  const effect = (tool, input, output) => ({ node: "step", executionPath: "step", item: null, tool, status: "done", input, output, error: null, startedAt: "2026-01-02T03:04:05.000Z", endedAt: "2026-01-02T03:04:06.000Z" });
+  const plain = effect("notes", { topic: "a" }, `${pgpass}\n`);
+  for (const [name, read] of [
+    ["a read of .pgpass", effect("read", { path: ".pgpass" }, `${pgpass}\n`)],
+    ["a shell's cat of it, its output nested", effect("bash", { command: "cat ~/.pgpass" }, { stdout: `${pgpass}\n`, exit: 0 })],
+  ]) {
+    // Alone, and after a call whose output is the same text but says no file (read first, by the order).
+    for (const effects of [[read], [plain, read]]) {
+      const body = resigned({ ...doc, graph: { ...GRAPH, effects, totals: { ...GRAPH.totals, effects: effects.length } } });
+      await assert.rejects(screenShare(body, []), (error) => error.code === "input_invalid" && (error.extra.details.counts["credential-file"] ?? 0) + (error.extra.details.counts["env-dump"] ?? 0) >= 1, `${name}, ${effects.length} effect(s)`);
+    }
+  }
+  // A call whose output says no file is read as before: its text is no credential file's.
+  const body = resigned({ ...doc, graph: { ...GRAPH, effects: [plain], totals: { ...GRAPH.totals, effects: 1 } } });
+  await screenShare(body, []);
+});
+
 test("each string is read alone too: a label the whole-body read misses still refuses", async (t) => {
   const planted = plantedRestorable();
   const doc = JSON.parse(await restoredBundleOf(planted.content));
