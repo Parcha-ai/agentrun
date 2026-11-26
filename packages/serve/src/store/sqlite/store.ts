@@ -3142,7 +3142,9 @@ class SqliteStore implements Store {
     );
     for (const row of rows) {
       const command = commandOf(row);
-      out.set(command.runId, [...(out.get(command.runId) ?? []), command]);
+      const held = out.get(command.runId);
+      if (held) held.push(command);
+      else out.set(command.runId, [command]);
     }
     return out;
   }

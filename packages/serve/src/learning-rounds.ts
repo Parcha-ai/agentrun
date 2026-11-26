@@ -2,13 +2,15 @@
 // should start from (runner/learning-reseed.ts). Only a run holding a person's words (a steer: a follow-up, a grade's
 // words), which its round keeps as a line of corrections.md: an ordinary end-of-run round merges no correction, so a
 // batch of runs on one agent never waits on each other. Its round is going only while its end-of-run learning step runs:
-// the run looks back after its job's end (store-view.ts lookingBackOf, its learning reflecting), the job a fresh run's,
-// a follow-up's turn or a grade's round. A follow-up's turn itself is none: a run started while the person's turn runs
+// the run looks back after its job's end (feedback-round.ts keptEndOf: its job's end kept, or a grade's round not taken
+// yet), the job a fresh run's, a follow-up's turn or a grade's round. A person's next message that waits untaken meanwhile
+// keeps it going: the run reads as going on again (store-view.ts lookingBackOf), but its look-back still runs to its end
+// and merges the correction (runner/adapter-loop.ts leaves the message for the turn after). A follow-up's turn itself is none: a run started while the person's turn runs
 // starts from the learning as it is then, and only a run started once that turn's job ended waits on its round. A run
 // queued, parked on a person, or still at its job is none: a new run never waits on a person or on a job.
 import { readLaunchBody } from "./run-launch.js";
 import { journalEntries } from "./runner/journal-reader.js";
-import { lookingBackOf } from "./store-view.js";
+import { keptEndOf } from "./runner/feedback-round.js";
 import type { Command, RunRow, Store } from "./store/index.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
@@ -17,12 +19,13 @@ const OPEN_ROUNDS_PAGE = 50;
 const OPEN_ROUNDS_PAGES = 10;
 
 /** Whether run `row`'s learning round is going: running (never queued, parked or ended) and looking back after its job's
- *  end (its end-of-run learning step), never while a follow-up's turn runs. Its root entries only (no tasks, no
- *  submissions); its command rows `commands` when the caller read them already, else read here. */
+ *  end (its end-of-run learning step: keptEndOf), whatever person's message waits untaken meanwhile, never while a
+ *  follow-up's turn runs. Its root entries only (no tasks, no submissions); its command rows `commands` when the caller
+ *  read them already, else read here. */
 export async function roundOpen(store: Pick<Store, "readJournal" | "commands">, row: RunRow, commands?: readonly Command[]): Promise<boolean> {
   if (row.state !== "running") return false;
   const entries = await journalEntries(store.readJournal(row.id), BACKGROUND_CONTEXT);
-  return (await lookingBackOf(row, entries, async () => commands ?? (await store.commands(row.id, 0)))) !== undefined;
+  return keptEndOf(entries, commands ?? (await store.commands(row.id, 0))) !== undefined;
 }
 
 /** The agent's runs on the default disk that hold a steer, learn from a seed (a learning start that is no `use`) and

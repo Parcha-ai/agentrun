@@ -8,6 +8,7 @@
 // Only before the run's first turn (its journal empty, its start still naming `after`): a claim after one (a crash, a
 // lost claim) keeps the start it ran on, since its round merges against that seed. A claim handed back before any turn
 // waits and reads again on its next claim, whatever its epoch; the store's claim fence keeps a stale claim from writing.
+// A claim that cannot read its own row or journal before the wait hands the run back (CLAIM_GONE), tried again later.
 // A run started with no round going names none and is claimed as it always was.
 import { roundOpen } from "../learning-rounds.js";
 import { type Shown, secretsShown, seedOf } from "../learning.js";
@@ -71,10 +72,6 @@ function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
 export const runnerShown = (deps: { readonly env: NodeJS.ProcessEnv; readonly store: Store; readonly sealKey: Buffer | undefined; readonly data: string }) => async (): Promise<Shown> =>
   secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
 
-/** A pending stop or cancel of the run (a person's, not yet taken): the dispatch buffers it until its launch is read. */
-const stopAsked = (commands: readonly { readonly kind: string; readonly takenAt: number | null; readonly refused: string | null }[]): boolean =>
-  commands.some((command) => (command.kind === "stop" || command.kind === "cancel") && command.takenAt === null && command.refused === null);
-
 /** A read of another run that failed: its round counts as still open (the wait goes on, to its bound at most). */
 const UNREAD: unique symbol = Symbol("unread");
 
@@ -92,9 +89,10 @@ async function stillOpen(store: ReseedDeps["store"], id: string): Promise<boolea
  *  A read of the seed that fails writes the start it had, without `after`; a learning fault never stops a run. The wait
  *  ends at once:
  *  - CLAIM_GONE (the dispatch starts no loop) when the run is no longer this claim's: its epoch moved, it ended, or the
- *    fenced write was refused;
- *  - the row as it is, nothing written, when `signal` aborts (the claim lost, the runner closing, a stop reached the
- *    dispatch) or a person asked the run to stop or cancel (the dispatch then applies that stop).
+ *    fenced write was refused; and when its own row or journal could not be read before the wait (the run handed back,
+ *    claimed again later: never failed for it, never started without the wait);
+ *  - the row as it is, nothing written, when `signal` aborts: the claim lost, the runner closing, or a person's stop or
+ *    cancel, which the runner hands the dispatch (dispatch.ts stop) and the dispatch applies to the loop it then starts.
  *  Between reads it pauses POLL_FIRST_MS, doubling to POLL_MAX_MS. A failed read of another run keeps its round open; a
  *  failed read of the run's own row is tried at the next read. The runner keeps renewing the claim's lease while this
  *  waits (runner.ts holds the claim before its loop's start, which reads this). */
@@ -106,21 +104,22 @@ export function reseededLaunchOf(deps: ReseedDeps): (runId: string, epoch: numbe
     const start = readLaunchBody(row.body)?.learning;
     if (!start?.after?.length) return row;
     const { after, ...started } = start;
-    const run = await deps.store.runs.get(runId);
-    if (!run || run.state !== "running" || run.epoch !== epoch) return CLAIM_GONE;
+    const run = await deps.store.runs.get(runId).catch((): typeof UNREAD => UNREAD);
+    if (run === UNREAD || !run || run.state !== "running" || run.epoch !== epoch) return CLAIM_GONE;
     // A run that took a turn already keeps the start it ran on, whatever its body still names.
-    if ((await journalEntries(deps.store.readJournal(runId), BACKGROUND_CONTEXT).catch(() => [undefined])).length > 0) return row;
+    const entries = await journalEntries(deps.store.readJournal(runId), BACKGROUND_CONTEXT).catch((): typeof UNREAD => UNREAD);
+    if (entries === UNREAD) return CLAIM_GONE;
+    if (entries.length > 0) return row;
     const until = now() + deps.waitMs;
     const open = new Set(after);
     for (let pass = 0; ; pass++) {
       for (const id of [...open]) if (!(await stillOpen(deps.store, id))) open.delete(id);
       if (!open.size || now() >= until) break;
       if (signal?.aborted) return row;
-      // The run's own end or a claim lost (its epoch moved) ends the wait with no loop; a person's stop or cancel with
-      // the row as it is, for the dispatch's stop. A read of its own row that fails is tried at the next read.
+      // The run's own end or a claim lost (its epoch moved) ends the wait with no loop; a person's stop or cancel aborts
+      // `signal` (dispatch.ts stop). A read of its own row that fails is tried at the next read.
       const own = await deps.store.runs.get(runId).catch((): typeof UNREAD => UNREAD);
       if (own !== UNREAD && (!own || own.state !== "running" || own.epoch !== epoch)) return CLAIM_GONE;
-      if (stopAsked(await deps.store.commands(runId, 0).catch(() => []))) return row;
       await sleep(Math.min(pollPauseMs(pass), Math.max(0, until - now())), signal);
       if (signal?.aborted) return row;
     }
