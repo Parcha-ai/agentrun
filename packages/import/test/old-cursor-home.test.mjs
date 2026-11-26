@@ -15,14 +15,19 @@ import SAVED from "./fixtures/old-cursors/cursors.json" with { type: "json" };
 const TOTALS = { turns: false, totals: true };
 const CODEX = CASES.filter((c) => c.source === "codex");
 
-const canon = (sessions) => JSON.stringify(sessions.map(({ key, calls, turns, tokens, costUsd }) => ({ key, calls, turns, tokens, costUsd })).sort((a, b) => (a.key < b.key ? -1 : 1)));
+const canon = (sessions) => JSON.stringify(sessions.map(({ key, calls, turns, tokens, cost }) => ({ key, calls, turns, tokens, cost })).sort((a, b) => (a.key < b.key ? -1 : 1)));
+/** Prices for the fixture's model, each token kind at its own rate: a request counted twice, or left out, moves the cost. */
+const PRICED = {
+  catalog: new Map([["gpt-fixture", [{ provider: "openai", cost: { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 } }]]]),
+  calculateCost: (_model, usage) => ({ total: usage.input + 10 * usage.output + 100 * usage.cacheRead }),
+};
 
 test("a HomeState holding an earlier release's Codex cursors: the file is read again, and the totals are a fresh import's", async (t) => {
   const home = await tempHome(t);
   const files = await Promise.all(CODEX.map((c) => writeJsonl(join(home, c.file), c.one)));
   // A state as this release keeps it, its Codex cursors then put back as the earlier release saved them on these files.
   const state = {};
-  await parseHome(home, { state, catalog: false });
+  await parseHome(home, { state, ...PRICED });
   const cursors = state.sources.codex.cursors;
   assert.equal(cursors.size, CODEX.length, "one cursor a Codex file");
   for (const [i, c] of CODEX.entries()) {
@@ -37,14 +42,15 @@ test("a HomeState holding an earlier release's Codex cursors: the file is read a
   for (const [i, c] of CODEX.entries()) await appendFile(files[i], jsonl(c.two));
   const bytes = (await Promise.all(files.map((f) => stat(f)))).reduce((n, s) => n + s.size, 0);
   const appended = CODEX.reduce((n, c) => n + Buffer.byteLength(jsonl(c.two)), 0);
-  const resumed = await parseHome(home, { state, catalog: false });
+  const resumed = await parseHome(home, { state, ...PRICED });
   // Each old cursor is read from its file's start, not resumed: the pass reads every byte of the files (a resume would
   // read only the appended ones).
   assert.ok(state.read >= bytes, `the files reread from their start: ${state.read} bytes read of ${bytes} (${appended} appended)`);
-  const fresh = await parseHome(home, { catalog: false });
+  const fresh = await parseHome(home, { ...PRICED });
   assert.equal(canon(resumed), canon(fresh), "the totals of a fresh import");
   assert.ok(fresh.reduce((n, s) => n + s.calls, 0) > 0, "the fixture's requests are counted");
+  assert.ok(fresh.every((s) => typeof s.cost === "number" && s.cost > 0), "every session priced");
   // The next pass goes on from this release's cursors, and still gives the same totals.
   for (const [k, cursor] of state.sources.codex.cursors) assert.equal(cursor.stateVersion, 2, `${k}: rewritten at this release's version`);
-  assert.equal(canon(await parseHome(home, { state, catalog: false })), canon(fresh), "a pass after, from the new cursors");
+  assert.equal(canon(await parseHome(home, { state, ...PRICED })), canon(fresh), "a pass after, from the new cursors");
 });

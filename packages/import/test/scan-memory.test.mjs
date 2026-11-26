@@ -1,13 +1,12 @@
 // The scanner's memory (scan.ts) stays inside the import's stated bound: a thread's walker holds the longest line it
-// scanned for as long as it lives, so it scans none past 8 MiB (LONGEST). A longer line is parsed whole, as before, and
-// totals the same. Synthetic lines only.
+// scanned for as long as it lives, beside its own stack and tables, so it scans no line that would take its memory past
+// 8 MiB (SCANNER_BYTES). A longer line is parsed whole, as before, and totals the same. Synthetic lines only.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fieldsOf, scan, walkerMemory } from "../dist/scan.js";
 import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, parseHome, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const MiB = 2 ** 20;
-const PAGE = 65536;
 
 test("scan.js exports walkerMemory", () => {
   assert.equal(typeof walkerMemory, "function");
@@ -30,7 +29,7 @@ async function home(t, bytes) {
 
 const totalsOf = (sessions) => sessions.map(({ calls, turns, tokens }) => ({ calls, turns, tokens }));
 
-test("a 9 MiB line totals the same as a short one, and the walker's memory stays within 8 MiB of its tables", async (t) => {
+test("a 9 MiB line totals the same as a short one, and the walker's memory, its tables with it, stays within 8 MiB", async (t) => {
   const small = await parseHome(await home(t, 10));
   const before = walkerMemory();
   assert.ok(before, "the walker is built by a read on this thread (threads 1)");
@@ -38,16 +37,21 @@ test("a 9 MiB line totals the same as a short one, and the walker's memory stays
   assert.deepEqual(totalsOf(big), totalsOf(small), "the same calls, turns and tokens");
   assert.equal(big[0].calls, 2);
   const after = walkerMemory();
-  assert.ok(after.bytes - after.base <= 8 * MiB + PAGE, `the walker's line room ${after.bytes - after.base} B, over 8 MiB`);
+  assert.ok(after.bytes <= 8 * MiB, `the walker's memory ${after.bytes} B (its stack and tables ${after.base} B), over 8 MiB`);
 });
 
-test("scan leaves a line over 8 MiB to JSON.parse, and takes one under it", () => {
+test("scan leaves a line that would take its memory past 8 MiB to JSON.parse, and takes one that fits", () => {
   const fields = fieldsOf({ type: true });
-  const line = (bytes) => Buffer.from(JSON.stringify({ type: "user", body: "y".repeat(bytes) }));
-  const under = line(8 * MiB - 64);
-  assert.deepEqual(scan(under, 0, under.length, fields), { type: "user" }, "under 8 MiB: scanned");
-  const over = line(8 * MiB + 1);
-  assert.equal(scan(over, 0, over.length, fields), undefined, "over 8 MiB: left to JSON.parse");
-  const { bytes, base } = walkerMemory();
-  assert.ok(bytes - base <= 8 * MiB + PAGE, `line room ${bytes - base} B`);
+  const empty = Buffer.from(JSON.stringify({ type: "user", body: "" }));
+  assert.deepEqual(scan(empty, 0, empty.length, fields), { type: "user" }, "the walker built");
+  const { base } = walkerMemory();
+  // The line of `bytes` bytes in all.
+  const line = (bytes) => Buffer.from(JSON.stringify({ type: "user", body: "y".repeat(bytes - empty.length) }));
+  const fits = line(8 * MiB - base);
+  assert.deepEqual(scan(fits, 0, fits.length, fields), { type: "user" }, "the stack, the tables and the line in 8 MiB: scanned");
+  const over = line(8 * MiB - base + 1);
+  assert.equal(scan(over, 0, over.length, fields), undefined, "a byte more: left to JSON.parse");
+  const past = line(8 * MiB + 1);
+  assert.equal(scan(past, 0, past.length, fields), undefined, "over 8 MiB: left to JSON.parse");
+  assert.ok(walkerMemory().bytes <= 8 * MiB, `the walker's memory ${walkerMemory().bytes} B`);
 });

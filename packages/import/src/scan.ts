@@ -87,11 +87,11 @@ function compile(w: Walker, shape: Shape): number {
   return node;
 }
 
-/** The longest line scan reads, 8 MiB. The walker's memory holds as much as the longest line it has read for as long as
- *  its thread lives, outside the thread's heap limits: so each reading thread (a pool worker, or the thread that calls
- *  parseHome) holds up to 8 MiB of scanner memory beyond its heap, and no more. A longer line is parsed whole, as before,
- *  with the same answer. */
-const LONGEST = 1 << 23;
+/** The most memory a thread's walker takes, 8 MiB: its stack and tables (from 0 to `base()`, about 1.3 MiB) and room for
+ *  the longest line it has read, which it keeps for as long as its thread lives, outside the thread's heap limits. So each
+ *  reading thread (a pool worker, or the thread that calls parseHome) holds up to 8 MiB of scanner memory beyond its
+ *  heap, and no more. A line that would take the walker past it is parsed whole, as before, with the same answer. */
+const SCANNER_BYTES = 1 << 23;
 
 /** `length` bytes of room for a line, or false where memory cannot grow to it. */
 function room(w: Walker, length: number): boolean {
@@ -149,8 +149,9 @@ const CLOSE = 5;
  *  it reads). */
 export function scan(b: Buffer, from: number, to: number, fields: Fields): Record<string, unknown> | undefined {
   const e = to - from;
-  if (e > LONGEST || from < 0 || to > b.length) return undefined;
+  if (e > SCANNER_BYTES || from < 0 || to > b.length) return undefined;
   const w = walkerOf();
+  if (w.base() + e > SCANNER_BYTES) return undefined;
   fields.node ??= compile(w, fields.shape);
   if (fields.node < 0 || !room(w, e)) return undefined;
   b.copy(line, 0, from, to);

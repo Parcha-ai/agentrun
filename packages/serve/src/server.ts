@@ -2914,7 +2914,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // for this thread's own heap, plus threads x (workerOldMb + 16) MB, plus readAhead for the replies waiting to be
         // taken, with up to `threads` replies in flight on top: the pool checks readAhead before it starts a read. Each
         // reading thread (this one and each read thread) also holds up to 8 MiB of scanner memory outside its heap: the
-        // import's JSON scanner keeps room for the longest line it scanned, and scans none longer.
+        // import's JSON scanner's stack and tables, and room for the longest line it scanned; it scans no line that
+        // would take it past that.
         resourceLimits: { maxOldGenerationSizeMb: IMPORT_HEAP_MB },
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });

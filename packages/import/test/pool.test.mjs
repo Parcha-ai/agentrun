@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { appendFile, utimes } from "node:fs/promises";
 import { test } from "node:test";
-import { availableParallelism, freemem } from "node:os";
+import { availableParallelism } from "node:os";
 import { relative } from "node:path";
 import { parseHome, READERS } from "../dist/index.js";
 import * as poolModule from "../dist/pool.js";
@@ -235,7 +235,8 @@ test("without threads, parseHome starts the default's workers: the cores less on
   const byCores = Math.min(cores <= 2 ? cores : cores - 1, 16);
   // One thread is the calling thread alone: no worker.
   const workersAt = (threads) => (threads > 1 ? threads : 0);
-  const free = Math.min(freemem(), memoryLimit());
+  // What the default reads: free memory, at most the limit and the room the cgroups have left (freeMemory).
+  const free = poolModule.freeMemory();
   // 80 MiB heaps, nothing set aside: the cores set the count while the memory free holds 16 of them (1.25 GiB; under
   // twice that, the test is skipped).
   if (free < 2 * 16 * 80 * MiB) return t.skip(`${Math.round(free / MiB)} MiB free`);
