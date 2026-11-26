@@ -178,17 +178,19 @@ const HERE = { x64: "amd64", arm64: "arm64" }[process.arch];
 const VERSION_DRIFT = /hello: the daemon reports version (\S+), expected (\S+)/;
 
 /**
- * `bytes` with the one `from` in them written over with `to`: the same length, printable ASCII. Refused unless `from`
- * occurs exactly once, so nothing but the version string the build stamped (-X main.version) changes.
+ * `bytes` with the one stamped `from` in them written over with `to`: the same length, printable ASCII. A `from` right
+ * after a `v` is the Go build info's copy of the module version (a daemon built at a release tag carries it, as
+ * `v<from>`, twice) and is left alone. Refused unless the stamped `from` occurs exactly once, so nothing but the version
+ * string the build stamped (-X main.version) changes.
  */
 export function patchVersion(bytes, from, to) {
 	if (to.length !== from.length || !/^[\x21-\x7e]+$/.test(to)) throw new Error(`the drifted version ${JSON.stringify(to)} is not ${from.length} printable characters, as ${from} is`);
 	const was = Buffer.from(from);
-	const at = bytes.indexOf(was);
-	const again = at === -1 ? -1 : bytes.indexOf(was, at + 1);
-	if (at === -1 || again !== -1) throw new Error(`the daemon holds the version string ${from} ${at === -1 ? "nowhere" : "more than once"}: the drift case changes it only where it occurs exactly once`);
+	const stamped = [];
+	for (let at = bytes.indexOf(was); at !== -1; at = bytes.indexOf(was, at + 1)) if (at === 0 || bytes[at - 1] !== 0x76) stamped.push(at);
+	if (stamped.length !== 1) throw new Error(`the daemon holds the version string ${from} ${stamped.length === 0 ? "nowhere" : "more than once"} outside its build info: the drift case changes it only where it occurs exactly once`);
 	const patched = Buffer.from(bytes);
-	Buffer.from(to).copy(patched, at);
+	Buffer.from(to).copy(patched, stamped[0]);
 	return patched;
 }
 
