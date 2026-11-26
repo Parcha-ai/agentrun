@@ -10,7 +10,7 @@
 // said once at the start, and docker is unavailable: a guess would make every computer fail at its create.
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { containerSigns } from "@parcha/agentrun-computer";
+import { containerSigns, dockerEnv } from "@parcha/agentrun-computer";
 import { FAUX_ENV } from "./model.js";
 import { withoutSecrets } from "./secrets.js";
 
@@ -138,7 +138,7 @@ export type DockerCall = (args: readonly string[]) => Promise<{ code: number | s
 
 const dockerCall = (env: NodeJS.ProcessEnv): DockerCall => (args) =>
   new Promise((resolve) => {
-    const child = execFile("docker", args, { env: withoutSecrets(env), timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile("docker", args, { env: dockerEnv(withoutSecrets(env)), timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
       const failed = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
       resolve({ code: !failed ? 0 : failed.killed ? "timeout" : typeof failed.code === "number" ? failed.code : (failed.code ?? failed.name), stdout: String(stdout), stderr: String(stderr) });
     });

@@ -1,6 +1,6 @@
 // Package apps is a Linux desktop's apps group (src/protocol.ts, the same methods and answers as a Mac's): apps.list
-// reads the desktop files of the apps there are, apps.launch opens one on the display and answers once its window
-// shows, apps.terminate ends it. An app is launched as process.start launches a program with orphans "keep": it is in
+// reads the desktop files of the apps there are (none that computerd's own user could change: Writer), apps.launch
+// opens one on the display and answers once its window shows, apps.terminate ends it. An app is launched as process.start launches a program with orphans "keep": it is in
 // computerd's process table, with DISPLAY, no session bus (DBUS_SESSION_BUS_ADDRESS=disabled:) and NO_AT_BRIDGE=1, and
 // what it starts runs on after its launcher ends, to the computer's end.
 //
@@ -43,6 +43,8 @@ type Options struct {
 	Dirs []string
 	// Window is apps.launch's wait for a window; 0 is LaunchWindow.
 	Window time.Duration
+	// Writer is the user an app's desktop file must be out of reach of; nil is Self(), computerd's own user.
+	Writer *Writer
 }
 
 // App is one app as apps.list gives it.
@@ -74,6 +76,7 @@ type group struct {
 	table   *process.Table
 	dirs    []string
 	window  time.Duration
+	writer  Writer
 
 	// mu guards launched: the process table's ids of the launches of each app, which its terminate ends and its windows
 	// are known by.
@@ -88,9 +91,12 @@ type launch struct {
 
 // Handlers are apps.list, apps.launch and apps.terminate on display, launching into table.
 func Handlers(display *desktop.Display, table *process.Table, options Options) map[string]rpc.Handler {
-	g := &group{display: display, table: table, dirs: options.Dirs, window: options.Window, launched: map[string][]launch{}}
+	g := &group{display: display, table: table, dirs: options.Dirs, window: options.Window, writer: Self(), launched: map[string][]launch{}}
 	if g.window <= 0 {
 		g.window = LaunchWindow
+	}
+	if options.Writer != nil {
+		g.writer = *options.Writer
 	}
 	return map[string]rpc.Handler{
 		"apps.list":      g.list,
@@ -99,23 +105,43 @@ func Handlers(display *desktop.Display, table *process.Table, options Options) m
 	}
 }
 
+// entries are the apps whose desktop files computerd's user can't change, each read from the file Writer.Open checked:
+// the only ones listed, launched, ended or owning a window. An app runs its desktop file's Exec, so one the user could
+// change would run whatever a file written through the files group says, exec off or not. Each call reads them again,
+// so a launch runs the Exec of a file checked for that launch.
 func (g *group) entries() []Entry {
-	if g.dirs != nil {
-		return Entries(g.dirs)
-	}
-	return Entries(ApplicationDirs())
+	return entriesOpened(g.applicationDirs(), g.writer.Open)
 }
 
-// find is the app asked for, or not_found in words.
+// all are the apps of every desktop file, the ones entries leaves out too: read only to name one left out.
+func (g *group) all() []Entry {
+	return Entries(g.applicationDirs())
+}
+
+// applicationDirs are where the group reads desktop files.
+func (g *group) applicationDirs() []string {
+	if g.dirs != nil {
+		return g.dirs
+	}
+	return ApplicationDirs()
+}
+
+// find is the app asked for, or why not in words: denied, naming its desktop file, for an app entries left out, else
+// not_found.
 func (g *group) find(entries []Entry, asked string) (Entry, error) {
 	if asked == "" {
 		return Entry{}, rpc.Errorf(rpc.KindInvalid, "id names the app: an id apps.list gives, or its name")
 	}
 	e, ok := Find(entries, asked)
-	if !ok {
-		return Entry{}, rpc.Errorf(rpc.KindNotFound, "this desktop has no app %q: apps.list names the ones it has", asked)
+	if ok {
+		return e, nil
 	}
-	return e, nil
+	if left, ok := Find(g.all(), asked); ok {
+		if why := g.writer.Changes(left.Path); why != "" {
+			return Entry{}, rpc.Errorf(rpc.KindDenied, "%s's desktop file %s could be changed by computerd's own user (%s): an app runs what its desktop file says, so a file written through the files group would run any command, and apps.launch opens no such app (apps.list leaves it out)", left.ID, left.Path, why)
+		}
+	}
+	return Entry{}, rpc.Errorf(rpc.KindNotFound, "this desktop has no app %q: apps.list names the ones it has", asked)
 }
 
 func (g *group) list(_ context.Context, raw json.RawMessage) (any, error) {

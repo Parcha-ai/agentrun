@@ -37,7 +37,8 @@ export const SPEND_KINDS = ["compile", "check", "audit"] as const;
 export type SpendKind = (typeof SPEND_KINDS)[number];
 
 /** One learning cost: the run whose end booked it (`runId`, with its `round` for a compile turn, 0 otherwise), the run
- *  an audit's shadow audited (`ofRun`), the revision it is for (`workflow` at `digest`; a compile that kept no draft drafted
+ *  an audit's shadow audited or a check's replay spent on the own model key of (`ofRun`: that run's learning, never its
+ *  revision's; null for a replay on the server's key), the revision it is for (`workflow` at `digest`; a compile that kept no draft drafted
  *  none: both null; one whose drafts failed their checks, the workflow alone) and its $ (null: unknown). */
 export type SpendRow = {
   readonly runId: string;
@@ -53,7 +54,9 @@ export type SpendRow = {
 /** What record() reads of an ended run: its row (its cost, the bound beside it, its metrics: the run-end classifier's
  *  path, workflow and digest, runner/workflow-first.ts pathMetrics), every round its learning kept (learning_proposals)
  *  and, for an audit's shadow run, the run its launch audits (`auditOf`: its end may name no audit, when it failed first).
- *  `learns`: whether its launch learns (learnsOfLaunch); false, an end that named no path is the agent's. */
+ *  `learns`: whether its launch learns (learnsOfLaunch); false, an end that named no path is the agent's. `replay`: a
+ *  check's replay run's launch (replayOfLaunch), so one whose end named no replay (ended with no loop after a lost
+ *  claim's loop spent, or failed first) is still its revision's check, on the key its launch names. */
 export type RunEnd = {
   readonly id: string;
   readonly agentId: string;
@@ -64,7 +67,12 @@ export type RunEnd = {
   readonly rounds: readonly { readonly round: number; readonly proposal: unknown }[];
   readonly auditOf?: string | null;
   readonly learns?: boolean;
+  readonly replay?: LaunchReplay;
 };
+
+/** What a replay run's launch says of its check (run-launch.ts replayBody): the revision it checks and, on a run's own
+ *  model key, that run (`paid_by`). */
+export type LaunchReplay = { readonly workflow: string | null; readonly digest: string | null; readonly paidBy: string | null };
 
 const usdOrNull = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 const textOrNull = (value: unknown): string | null => (typeof value === "string" ? value : null);
@@ -72,11 +80,30 @@ const objectOf = (value: unknown): Record<string, unknown> => (value && typeof v
 
 /** RunEnd.auditOf of run `runId` from its stored launch body (`body`, undefined with none): the run its launch audits
  *  (null when it names none) for an audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."), undefined for any other. */
-export const auditOfLaunch = (runId: string, body: unknown): string | null | undefined =>
+const auditOfLaunch = (runId: string, body: unknown): string | null | undefined =>
   runId.startsWith("audit.") ? textOrNull(objectOf(objectOf(body).audit).of) : undefined;
+/** RunEnd.replay from a run's stored launch body (`body`, undefined with none): its replay, undefined for a run that is
+ *  no check's replay. */
+const replayOfLaunch = (body: unknown): LaunchReplay | undefined => {
+  const replay = objectOf(body).replay;
+  if (!replay || typeof replay !== "object" || Array.isArray(replay)) return undefined;
+  const { workflow, digest, paid_by } = replay as Record<string, unknown>;
+  return { workflow: textOrNull(workflow), digest: textOrNull(digest), paidBy: textOrNull(paid_by) };
+};
 /** RunEnd.learns from a run's stored launch body (`body`, undefined with none): whether it holds a learning start, as
  *  run-launch.ts learningStartOfStored reads one. No launch reads as a run that does not learn. */
-export const learnsOfLaunch = (body: unknown): boolean => objectOf(body).learning !== undefined;
+const learnsOfLaunch = (body: unknown): boolean => objectOf(body).learning !== undefined;
+/** The RunEnd of ended run `run`, its kept `rounds` and its stored launch body (`body`, undefined with none): what every
+ *  reader of an end records, one rule (store/sqlite/run-patch.ts recordLedger, which writes the ledger; store-reads/
+ *  learning.ts runEndOf, which reads a run at another figure or with no row yet). */
+export const runEndOfLaunch = (run: Pick<RunEnd, "id" | "agentId" | "startedAt" | "costUsd" | "costAtMostUsd" | "metrics">, rounds: RunEnd["rounds"], body: unknown): RunEnd => {
+  const auditOf = auditOfLaunch(run.id, body);
+  const replay = replayOfLaunch(body);
+  return {
+    id: run.id, agentId: run.agentId, startedAt: run.startedAt, costUsd: run.costUsd, costAtMostUsd: run.costAtMostUsd, metrics: run.metrics, rounds,
+    learns: learnsOfLaunch(body), ...(auditOf === undefined ? {} : { auditOf }), ...(replay ? { replay } : {}),
+  };
+};
 /** A sum of parts, null once one is unknown; 0 for none. */
 const sumOf = (parts: readonly (number | null)[]): number | null => (parts.some((one) => one === null) ? null : noiseOff(parts.reduce<number>((total, one) => total + one!, 0)));
 
@@ -141,8 +168,8 @@ function compilesIn(rounds: readonly { readonly round: number; readonly proposal
 /** The ledger row and spend rows a run's end writes, from its row and its kept rounds (RunEnd). The job's own $ is its
  *  row's cost less every look-back, never under what it had cost when it answered (a later turn's spend is the job's
  *  too); its row's cost for a run that did not look back. Its compile turns are spend rows of the revision each drafted.
- *  A replay run's cost is its revision's check, and an audit's shadow run's the run it audits: a spend row each, beside
- *  its own ledger row. */
+ *  A replay run's cost is its revision's check (one on a run's own model key, `replay.paid_by`, that run's), and an
+ *  audit's shadow run's the run it audits: a spend row each, beside its own ledger row. */
 export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   const metrics = objectOf(end.metrics);
   const cost: CostState = typeof end.costAtMostUsd === "number" ? "at_most" : end.costUsd === null ? "unknown" : "known";
@@ -159,10 +186,12 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   // revision's runs out): a run whose end named no path is the agent's when its launch does not learn; one that learns
   // and named none is unknown (null).
   const named = RUN_PATHS.includes(metrics.path as RunPath) ? (metrics.path as RunPath) : null;
-  const path = audited ? "audit" : named ?? (end.learns === false ? "agent" : null);
+  const path = audited ? "audit" : named ?? (end.replay ? "replay" : end.learns === false ? "agent" : null);
   const audit = objectOf(metrics.audit);
-  const workflow = textOrNull(audited ? audit.workflow : metrics.workflow);
-  const digest = textOrNull(audited ? audit.digest : metrics.workflow_digest);
+  // A replay whose end named none of its check is read from its launch (RunEnd.replay).
+  const launched = path === "replay" ? end.replay : undefined;
+  const workflow = textOrNull(audited ? audit.workflow : metrics.workflow) ?? launched?.workflow ?? null;
+  const digest = textOrNull(audited ? audit.digest : metrics.workflow_digest) ?? launched?.digest ?? null;
   // A hand-back a restart cut (pathMetrics workflow_cut) is `cut`, never the workflow's own `back`.
   const cut = path === "handed_back" && metrics.workflow_cut === true;
   const notServed = cut ? "cut" : NOT_SERVED.includes(metrics.not_served as NotServed) ? (metrics.not_served as NotServed) : null;
@@ -172,7 +201,7 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   };
   const base = { runId: end.id, agentId: end.agentId };
   const spend: SpendRow[] = compilesIn(rounds).map((one) => ({ ...base, round: one.round, kind: "compile", ofRun: null, workflow: one.workflow, digest: one.digest, usd: one.usd }));
-  if (path === "replay") spend.push({ ...base, round: 0, kind: "check", ofRun: null, workflow, digest, usd: rowUsd });
+  if (path === "replay") spend.push({ ...base, round: 0, kind: "check", ofRun: textOrNull(objectOf(metrics.replay).paid_by) ?? launched?.paidBy ?? null, workflow, digest, usd: rowUsd });
   if (audited) spend.push({ ...base, round: 0, kind: "audit", ofRun: textOrNull(audit.of) ?? end.auditOf ?? null, workflow, digest, usd: rowUsd });
   return { row, spend };
 }
@@ -181,12 +210,15 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
  *  `ended` once it ended, stopped or failed. A run with none has no entry. */
 export type Shadow = "open" | "ended";
 
-/** A run's figures (figuresOf), null when unknown: `series_*` are the cost series', the rest GET /runs/{id}'s. */
+/** A run's figures (figuresOf), null when unknown: `series_*` are the cost series', the rest GET /runs/{id}'s.
+ *  `check_usd` is the replays of a check it started on its own model key (`ofRun` check rows): its learning, as its
+ *  shadow is, never their revision's; 0 for none. */
 export type RunFigures = {
   readonly usd: number | null;
   readonly compile_usd: number | null;
   readonly followup_usd: number | null;
   readonly shadow_usd: number | null;
+  readonly check_usd: number | null;
   readonly share_usd: number | null;
   readonly series_learning_usd: number | null;
   readonly series_total_usd: number | null;
@@ -195,32 +227,39 @@ export type RunFigures = {
 };
 
 /** One run's figures (RunFigures) from its row and the parts the spend rows give it (its compile turns, its shadow's
- *  cost, its share): the one formula every reader of a run's cost takes. */
-export function figuresOf(row: Pick<LedgerRow, "path" | "jobUsd" | "lookBackUsd">, parts: { readonly compile: number | null; readonly shadow: number | null; readonly share: number | null }): RunFigures {
+ *  cost, its own-key check's, 0 when not given, its share): the one formula every reader of a run's cost takes. */
+export function figuresOf(row: Pick<LedgerRow, "path" | "jobUsd" | "lookBackUsd">, parts: { readonly compile: number | null; readonly shadow: number | null; readonly check?: number | null; readonly share: number | null }): RunFigures {
   const { compile, shadow, share } = parts;
+  const check = parts.check === undefined ? 0 : parts.check;
   const back = row.lookBackUsd;
   const followup = back === null || compile === null ? null : noiseOff(Math.max(0, back - compile));
-  const seriesLearning = sumOf([back, shadow]);
+  const seriesLearning = sumOf([back, shadow, check]);
   const learns = row.path !== "replay" && row.path !== "audit";
-  const learning = learns ? sumOf([followup, shadow, share]) : 0;
+  const learning = learns ? sumOf([followup, shadow, check, share]) : 0;
   return {
-    usd: row.jobUsd, compile_usd: compile, followup_usd: followup, shadow_usd: shadow, share_usd: learns ? share : 0,
+    usd: row.jobUsd, compile_usd: compile, followup_usd: followup, shadow_usd: shadow, check_usd: check, share_usd: learns ? share : 0,
     series_learning_usd: seriesLearning, series_total_usd: sumOf([row.jobUsd, seriesLearning]),
     learning_usd: learning, all_in_usd: learns ? sumOf([row.jobUsd, learning]) : 0,
   };
 }
 
-/** The spend rows read by run: each run's compile turns (null once one is unknown) and each audited run's shadow cost. */
-export function spendByRun(spend: readonly SpendRow[]): { compile: Map<string, number | null>; audit: Map<string, number | null> } {
+/** The spend rows read by run: each run's compile turns (null once one is unknown), each audited run's shadow cost, and
+ *  each run's own-key check (the replays that spent on its key, ownCheck). */
+export function spendByRun(spend: readonly SpendRow[]): { compile: Map<string, number | null>; audit: Map<string, number | null>; check: Map<string, number | null> } {
   const compile = new Map<string, number | null>();
   const audit = new Map<string, number | null>();
+  const check = new Map<string, number | null>();
   const add = (map: Map<string, number | null>, key: string, usd: number | null) => map.set(key, map.has(key) ? sumOf([map.get(key)!, usd]) : usd);
   for (const one of spend) {
     if (one.kind === "compile") add(compile, one.runId, one.usd);
     else if (one.kind === "audit" && one.ofRun !== null) add(audit, one.ofRun, one.usd);
+    else if (ownCheck(one)) add(check, one.ofRun!, one.usd);
   }
-  return { compile, audit };
+  return { compile, audit, check };
 }
+
+/** A check's spend row on a run's own model key (record: `replay.paid_by`): that run's learning, never its revision's. */
+export const ownCheck = (one: Pick<SpendRow, "kind" | "ofRun">): boolean => one.kind === "check" && one.ofRun !== null;
 
 /** An audit's shadow run as its cost reads: `ended` once it is final (FINAL_STATES), `usd` its cost (null while unknown
  *  or only a bound). */
@@ -251,6 +290,9 @@ export type LedgerRead = {
   readonly rows: readonly LedgerRow[];
   readonly spend: readonly SpendRow[];
   readonly shadows: ReadonlyMap<string, Shadow>;
+  /** The runs a replay of whose own-key check is still at work: each one's check, learning and all-in unknown until every
+   *  replay of it ended (as runAllInOverStore reads it), never a settled $0. Absent: none. */
+  readonly openChecks?: ReadonlySet<string>;
   readonly learning?: ReadonlySet<string>;
   readonly revisions: readonly RevisionAt[];
   readonly compileAfter: number;
@@ -264,19 +306,21 @@ export type Summarized = { runs: CostRun[]; summary: CostSummary; bill: Omit<Bil
  *  and the rows whose end named no path (`unknown_path_runs`, left out of all of it). Every sum is over every run.
  *
  *  A revision is its workflow and its digest, never the digest alone: two workflows of the same text share a digest, and
- *  each pays its own way. Its spend is its compile turns and its check's replay runs (spend rows of its workflow at its
- *  digest), whether or not a record names it or the records were trimmed: one no record names follows the ones that do,
+ *  each pays its own way. Its spend is its compile turns and its check's replay runs on the server's key (spend rows of
+ *  its workflow at its digest; a replay on a run's own key is that run's learning, its `check_usd`), whether or not a record names it or the records were trimmed: one no record names follows the ones that do,
  *  at `compileAfter`, `checking` while it is its workflow's newest spend, else `stopped`. It is spread over its first K
  *  served runs (amortize). What no run carries is the booked total less every run's all-in, unknown while any run's
- *  figures are. */
+ *  figures are. A replay on a run's own key, like a shadow, is no run of the series: its cost is that run's, counted
+ *  once. */
 export function summarize(read: LedgerRead): Summarized {
-  const ordered = read.rows.filter((row) => row.path !== null && row.path !== "audit").sort((a, b) => a.startedAt - b.startedAt || (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0));
+  const paidByRun = new Set(read.spend.filter(ownCheck).map((one) => one.runId));
+  const ordered = read.rows.filter((row) => row.path !== null && row.path !== "audit" && !paidByRun.has(row.runId)).sort((a, b) => a.startedAt - b.startedAt || (a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0));
   const unknownPath = read.rows.filter((row) => row.path === null).length;
   const place = new Map(ordered.map((row, at) => [row.runId, at]));
   const learns = (runId: string) => place.has(runId) && (read.learning?.has(runId) ?? true);
-  const spend = read.spend.filter((one) => (one.kind === "audit" ? place.has(one.ofRun ?? "") : learns(one.runId)));
-  const { compile, audit } = spendByRun(spend);
-  const partsOf = (row: LedgerRow, share: number | null) => ({ compile: compile.has(row.runId) ? compile.get(row.runId)! : 0, shadow: shadowCostOf(row.runId, audit, read.shadows), share });
+  const spend = read.spend.filter((one) => (one.kind === "audit" || ownCheck(one) ? place.has(one.ofRun ?? "") : learns(one.runId)));
+  const { compile, audit, check } = spendByRun(spend);
+  const partsOf = (row: LedgerRow, share: number | null) => ({ compile: compile.has(row.runId) ? compile.get(row.runId)! : 0, shadow: shadowCostOf(row.runId, audit, read.shadows), check: read.openChecks?.has(row.runId) ? null : check.has(row.runId) ? check.get(row.runId)! : 0, share });
   // One numbering, the bill's: the runs that do a job, 1 the first; a replay checks a revision and has none.
   let jobs = 0;
   const series = ordered.map((row): Omit<CostRun, "took_over"> => {
@@ -288,7 +332,7 @@ export function summarize(read: LedgerRead): Summarized {
       digest: path === "agent" || row.workflow === null ? null : row.digest,
       audited: read.shadows.has(row.runId) || audit.has(row.runId),
       cost_usd: figures.usd, cost_upper_bound: row.cost === "at_most", learning_usd: figures.series_learning_usd, total_usd: figures.series_total_usd,
-      compile_usd: figures.compile_usd, followup_usd: figures.followup_usd, shadow_usd: figures.shadow_usd, share_usd: 0, not_served: row.notServed,
+      compile_usd: figures.compile_usd, followup_usd: figures.followup_usd, shadow_usd: figures.shadow_usd, check_usd: figures.check_usd, share_usd: 0, not_served: row.notServed,
     };
   });
   const summary = costSummary(tookOverOf(series), null, new Set(series.flatMap((run) => (run.not_served === "cut" ? [run.run_id] : []))));
@@ -297,8 +341,9 @@ export function summarize(read: LedgerRead): Summarized {
   const key = (workflow: string, digest: string) => `${workflow}\0${digest}`;
   const parts = new Map<string, { workflow: string; digest: string; compile: (number | null)[]; check: (number | null)[] }>();
   const newest = new Map<string, string>();
-  // An audit's row is the run it audits' (its shadow is no run of the series): it is no revision's spend.
-  for (const one of spend.filter((each) => each.kind !== "audit").sort((a, b) => place.get(a.runId)! - place.get(b.runId)! || a.round - b.round)) {
+  // An audit's row is the run it audits' (its shadow is no run of the series), and a check's on a run's own key that
+  // run's: neither is a revision's spend.
+  for (const one of spend.filter((each) => each.kind !== "audit" && !ownCheck(each)).sort((a, b) => place.get(a.runId)! - place.get(b.runId)! || a.round - b.round)) {
     if (one.workflow === null || one.digest === null) continue;
     const at = key(one.workflow, one.digest);
     const entry = parts.get(at) ?? { workflow: one.workflow, digest: one.digest, compile: [], check: [] };

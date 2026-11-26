@@ -39,8 +39,10 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
     // The longest first: a key that holds a shorter one is cut whole.
     .sort((a, b) => b.length - a.length);
   // `text.removed` counts the values it cut, each once however often it was met; `text.probe` cuts the same and counts
-  // nothing (a string never kept); `add` takes more values to cut (the keys secretlint found).
+  // nothing (a string never kept); `add` takes more values to cut (the keys secretlint found); `tally` counts apart the
+  // values cut from its start until its stop is called (what one imported run held), each once.
   const removed = new Set<string>();
+  const tallies = new Set<Set<string>>();
   // One pass a string: every value as it is and as a JSON string holds it (a quote or a backslash in it escaped), in one
   // alternation, the longest first, so the longest value wins where two start at one place. Built again when values
   // are added.
@@ -56,7 +58,11 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
   const cut = (value: string, count: boolean) =>
     pattern
       ? value.replace(pattern, (form) => {
-          if (count) removed.add(owner.get(form)!);
+          if (count) {
+            const secret = owner.get(form)!;
+            removed.add(secret);
+            for (const tallied of tallies) tallied.add(secret);
+          }
           return REDACTED;
         })
       : value;
@@ -80,7 +86,16 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
     if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, inner]) => [text(name), json(inner)]));
     return value;
   };
-  return { text, json, add };
+  /** Counts the distinct values cut from now until the returned stop is called, which answers how many. */
+  const tally = (): (() => number) => {
+    const tallied = new Set<string>();
+    tallies.add(tallied);
+    return () => {
+      tallies.delete(tallied);
+      return tallied.size;
+    };
+  };
+  return { text, json, add, tally };
 }
 
 /** The recommended preset's rules, but its comment filter: a `secretlint-disable` line in what an import reads (a
@@ -144,6 +159,10 @@ export type ScrubOptions = {
   /** The shell command whose output `text` is, when the caller knows it (a tool call's, ruling LVI): a command that reads
    *  one file alone (`cat ~/.pgpass`) gives `path` when none is given, and an env command's output is a dump. */
   readonly command?: string;
+  /** `text` is lines flattened onto one, every run of blanks made a space (a run's title: runs-over-store.ts
+   *  prepareLaunch): a prompt inside the line opens a command as a line's start would, and an env command's output
+   *  runs on after it to the next prompt (env-dump). */
+  readonly flattened?: boolean;
   /** The homes the caller holds (rulings E, VII): a bare `/home/<user>` with no segment after it, or a Claude project
    *  folder's `-home-<user>-` outside `.claude/projects/`, is cut only for one of these. When not given, this process's
    *  user's home and $HOME. */
@@ -400,7 +419,7 @@ export function processHomes(): string[] {
  *  finds in the view (one pass a view, on first ask). */
 function contextOf(view: View, opts: ScrubOptions): ScrubContext {
   let lint: Promise<LintFind[]> | undefined;
-  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? commandReadPath(opts.command), command: opts.command, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? commandReadPath(opts.command), command: opts.command, flattened: opts.flattened === true, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
 }
 
 /** Whether a cut text holds nothing the scrub must cut: no known format the format rules still find in any view of any

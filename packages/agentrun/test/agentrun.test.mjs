@@ -93,7 +93,7 @@ test("with AGENTRUN_BOXES not set and Docker answering (a fake docker first on P
   removeAtEnd(dir);
   mkdirSync(join(dir, "bin"));
   mkdirSync(join(dir, "state"));
-  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexport FAKE_DOCKER_STATE='${join(dir, "state")}'\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
   const child = spawn(process.execPath, [BIN, "--no-open"], { env: { ...env, PATH: `${join(dir, "bin")}:${env.PATH}`, FAKE_DOCKER_STATE: join(dir, "state") }, stdio: ["ignore", "pipe", "pipe"] });
   const exited = new Promise((resolve) => child.on("exit", resolve));
   t.after(() => stopChild(child, exited));

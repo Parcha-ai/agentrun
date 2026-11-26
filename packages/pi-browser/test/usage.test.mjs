@@ -130,3 +130,36 @@ test("a charge that never commits leaves the session's record as it was: the nex
   assert.equal(release.spent.seconds, 230, "every second since the session opened, once");
   assert.ok(Math.abs(release.spent.usd - (0.12 * 230) / 3600) < 1e-11, `the whole time billed, the lost charge's included: ${release.spent.usd}`);
 });
+
+// A charge through an `at` behind the record's chargedThrough: an earlier charge (a host's cut of a release it stopped
+// waiting on) billed the session past the release's own time. It bills no time, never a negative one, leaves the
+// watermark where it is, and says by how much the earlier charge went past it.
+test("a charge through an `at` behind chargedThrough bills nothing, never a negative, and reports the overbook; a final one tops up to the minimum from what was billed", () => {
+  const free = { sessionUsdPerHour: 0.12, sessionMinimumS: 0 };
+  const cut = sessionCharge(startSpent(at(0)), at(40), free).spent;
+  const behind = sessionCharge(cut, at(33), free);
+  assert.equal(behind.overbookedS, 7, "the earlier charge went 7 s past this one's time");
+  assert.equal(behind.spent.seconds, 40, "no second billed again, and none taken back");
+  assert.equal(behind.spent.usd, cut.usd);
+  assert.equal(behind.usage.usage.cost.total, 0, "a charge of nothing, never a negative one");
+  assert.equal(behind.spent.chargedThrough, at(40), "the watermark stays where the earlier charge put it");
+  const final = sessionCharge(cut, at(33), free, "priced", true);
+  assert.deepEqual([final.spent.seconds, final.spent.final, final.overbookedS, final.usage.usage.cost.total], [40, true, 7, 0], "the release bills 0 s and is final");
+
+  // With a minimum, the release still tops the session up to it, from the seconds billed, never past it.
+  const minimum = { sessionUsdPerHour: 0.12, sessionMinimumS: 60 };
+  const short = sessionCharge(sessionCharge(startSpent(at(0)), at(40), minimum).spent, at(33), minimum, "priced", true);
+  assert.deepEqual([short.spent.seconds, short.spent.usd, short.overbookedS], [60, 0.002, 7], "one 60 s minimum, once");
+  assert.equal(sessionCharge(cut, at(40), free).overbookedS, undefined, "an `at` at the watermark is no overbook");
+});
+
+test("a record billed final bills nothing more: a second final, or any charge after it, adds no time and no money", () => {
+  const prices = { sessionUsdPerHour: 0.12, sessionMinimumS: 60 };
+  const ended = sessionCharge(sessionCharge(startSpent(at(0)), at(20), prices).spent, at(90), prices, "priced", true).spent;
+  assert.deepEqual([ended.seconds, ended.final], [90, true]);
+  for (const [label, again] of [["a second final", sessionCharge(ended, at(120), prices, "priced", true)], ["a charge after it", sessionCharge(ended, at(120), prices)]]) {
+    assert.equal(again.spent, ended, `${label} leaves the record as it was`);
+    assert.equal(again.usage.usage.cost.total, 0, `${label} charges nothing`);
+    assert.equal(again.overbookedS, undefined, `${label} reports no overbook`);
+  }
+});

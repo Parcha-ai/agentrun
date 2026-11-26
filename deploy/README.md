@@ -94,8 +94,11 @@ runner refuses to claim and every run answers `runner_refused` (packages/serve/R
 Railway's API makes a template only by copying a project, and the copy drops plain values, optional flags and some
 deploy settings. So `template.json` holds only what survives: `PORT` and `RAILWAY_RUN_UID` are written as one-character
 secrets over a one-character alphabet (always `7340` and `0`), and model keys are added in the console, not as variables.
-Railway's default draining time applies, so a redeploy stops the server without the runner's 31 s stop. A run in flight
-then picks up again after the restart.
+The draining time the template's `drainingSeconds` would set is dropped too, and Railway's default is 0 s. So the
+template sets `RAILWAY_DEPLOYMENT_DRAINING_SECONDS` to `35` the same way (`3` and a one-character secret). That lets a
+redeploy wait out the runner's 31 s stop and a ChatGPT renewal saving its new pair. If a project of the template shows
+that variable empty, set it to `35` in the service's Variables. Without it, a redeploy that cuts a renewal short loses the
+ChatGPT sign-in, and you sign in again.
 
 ## Fly.io
 

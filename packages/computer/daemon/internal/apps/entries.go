@@ -3,6 +3,7 @@ package apps
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -13,12 +14,13 @@ import (
 )
 
 // Entry is one app a desktop file describes (the freedesktop.org Desktop Entry Specification 1.5): its desktop file id,
-// its name, the command line that opens it, and the window class its windows have when it says so.
+// its name, the command line that opens it, the window class its windows have when it says so, and the desktop file.
 type Entry struct {
 	ID      string
 	Name    string
 	Exec    string
 	WMClass string
+	Path    string
 }
 
 // ApplicationDirs is where desktop files are, first first (XDG Base Directory Specification): $XDG_DATA_HOME, else
@@ -47,6 +49,12 @@ func ApplicationDirs() []string {
 // not it is an app. An app is a desktop file of type Application with a name and an Exec, not hidden (deleted), not
 // NoDisplay (not for a menu), and whose TryExec, when it has one, is a program there is.
 func Entries(dirs []string) []Entry {
+	return entriesOpened(dirs, os.Open)
+}
+
+// entriesOpened is Entries with each desktop file read from what open gives for its path; one open refuses is no app,
+// though it still hides the later ones of its id.
+func entriesOpened(dirs []string, open func(path string) (*os.File, error)) []Entry {
 	seen := map[string]bool{}
 	var out []Entry
 	for _, dir := range dirs {
@@ -63,8 +71,13 @@ func Entries(dirs []string) []Entry {
 				return nil
 			}
 			seen[id] = true
-			if e, ok := readEntry(path); ok {
-				e.ID = id
+			f, err := open(path)
+			if err != nil {
+				return nil
+			}
+			defer f.Close()
+			if e, ok := readEntry(f); ok {
+				e.ID, e.Path = id, path
 				out = append(out, e)
 			}
 			return nil
@@ -74,13 +87,8 @@ func Entries(dirs []string) []Entry {
 	return out
 }
 
-// readEntry reads a desktop file's [Desktop Entry] group, and whether it is an app.
-func readEntry(path string) (Entry, bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return Entry{}, false
-	}
-	defer f.Close()
+// readEntry reads a desktop file's [Desktop Entry] group from f, and whether it is an app.
+func readEntry(f io.Reader) (Entry, bool) {
 	keys := map[string]string{}
 	group := ""
 	scan := bufio.NewScanner(f)

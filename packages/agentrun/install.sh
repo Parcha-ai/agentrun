@@ -880,7 +880,8 @@ services:
       AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:?run the installer again}
       AGENTRUN_PUBLIC_URL: ${AGENTRUN_PUBLIC_URL:?run the installer again}
     restart: unless-stopped
-    stop_grace_period: 15s
+    # At least a signed-in server's stop bound (27 s: a ChatGPT plan renewal saves its new pair), as the quickstart's.
+    stop_grace_period: 35s
 volumes:
   agentrun-data:
 EOF

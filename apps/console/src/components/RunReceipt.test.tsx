@@ -16,6 +16,7 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 
 const run = (cost: Run["cost"], over: Partial<Run> = {}): Run => ({ sha: null, updated_at: "2026-11-23T10:01:30Z", poll_after_ms: 0, place: { mode: "runner" },
+  learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
   run_id: "run-free", agent_id: "field", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "WebGPU",
   created_at: "2026-11-23T10:00:00Z", ended_at: "2026-11-23T10:01:30Z", result: null, error: null, cost, archived_at: null, ...over,
 });
