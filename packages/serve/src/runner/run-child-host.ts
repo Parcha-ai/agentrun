@@ -55,7 +55,7 @@ import { keptKeyOf } from "../workspace/computer-kept.js";
 import { waitEndedKey } from "../browser-wait-ended.js";
 import { browserHoldKey } from "../browser-hold.js";
 import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, keyedNow, learnedDecisionKeys, openRunModelKey, savedModelKeys, sendsNoModelKey, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
-import { atRunEnd } from "../learning-work.js";
+import { atRunEnd, learningChildrenOf, learningWorkKey } from "../learning-work.js";
 import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
 import { githubPullOf, githubTargetOf } from "../github.js";
 import { isObject } from "../validate.js";
@@ -441,11 +441,13 @@ const ownWrittenSettings = (bound: Bound): ReadonlyMap<string, readonly string[]
 const OWN_ROW_MAX_BYTES = 4096;
 
 /** The settings of the claim's own run and agent a run's process may read: its run's Archil disk, SDK record, kept
- *  computer, browser wait and browser take, and its agent's Archil disk and promotions. Every other row (another run's
- *  or agent's) is not its to read. */
+ *  computer, browser wait and browser take, the learning work it started (kinds, run ids and times, which its cap gates
+ *  read beside it: learning-end.ts childrenBesideOf), and its agent's Archil disk and promotions. Every other row
+ *  (another run's or agent's) is not its to read. */
 const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
   `archil.run.${bound.claim.runId}`,
   `sdk-run:${bound.claim.runId}`,
+  learningWorkKey(bound.claim.runId),
   keptKeyOf(bound.claim.runId),
   ...ownWrittenSettings(bound).keys(),
   `archil.agent.${bound.agentId}`,
@@ -486,8 +488,8 @@ const writableSetting: Check = ([key, value], bound) => {
 
 /** The store's methods a run's loop calls, each with what binds it to the claim. A method not here is refused, and the
  *  refusal is said on the runner's log. Reads of the claim's run, its launch, its commands and its agent's revisions;
- *  of what was spent beside it (its learning grades, its own audit's shadow run's row and launch, which its cap gates
- *  read); of the agent's own runs (its learning reads its past runs); the server's settings its tools read and the
+ *  of what was spent beside it (its learning grades, its own audit's shadow run's row and launch and those of the
+ *  replays it started on its own key, which its cap gates read: storeCall, ownKeyedReplay); of the agent's own runs (its learning reads its past runs); the server's settings its tools read and the
  *  claim's own rows (settingReadable). Writes only under the claim. */
 const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["flush", always],
@@ -528,10 +530,19 @@ const answerBound = (method: string, answer: unknown, bound: Bound): boolean => 
   return (answer as { agentId?: unknown }).agentId === bound.agentId;
 };
 
+/** Whether run `id` is a replay the claim's run started on its own key, as its learning_work row names it (read here, on
+ *  the server's side): its row and launch are what the run's cap gates read beside it (learning-work.ts keyedBesideOf). */
+async function ownKeyedReplay(store: object, id: unknown, bound: Bound): Promise<boolean> {
+  if (typeof id !== "string") return false;
+  const children = await learningChildrenOf((store as Store).settings, bound.claim.runId);
+  return children.some((child) => child.run === id && child.kind === "replay" && child.keyed === true);
+}
+
 /** The store target: a call of `method` (`a.b`) with `args`, bound to the claim. */
 export async function storeCall(store: object, method: string, args: unknown[], bound: Bound, log: (line: string) => void): Promise<unknown> {
   const check = STORE_CALLS.get(method);
-  if (!check || !check(args, bound)) {
+  const replayRead = (method === "runs.get" || method === "runs.launch") && check !== undefined && !check(args, bound);
+  if (!check || !(replayRead ? await ownKeyedReplay(store, args[0], bound) : check(args, bound))) {
     log(`run ${bound.claim.runId}: its process asked the store for ${method}, which a run's process may not`);
     throw new ClaimRefused(`a run's process may not call the store's ${method}${check ? " of another run or agent" : ""}`);
   }
