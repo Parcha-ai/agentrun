@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -17,6 +18,17 @@ func chmod(t *testing.T, path string, mode os.FileMode) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(path, 0o755) })
+}
+
+// symlink makes link, and its folder, naming target.
+func symlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // A desktop file is out of a user's reach when the user owns neither it nor a folder above it, and the mode bits let
@@ -101,6 +113,47 @@ func TestWriterChangesADesktopFileItOwnsOrMayWriteOrMoveAside(t *testing.T) {
 			}
 			return link, ""
 		}, ""},
+		{"a link out of reach to a link in a folder everyone may write, on to a file out of reach", stranger, func(t *testing.T, dir string) (string, string) {
+			target := filepath.Join(dir, "system", "real", "a.desktop")
+			write(t, target, "x")
+			hop := filepath.Join(dir, "home", "hop")
+			symlink(t, target, hop)
+			chmod(t, filepath.Dir(hop), 0o757)
+			link := filepath.Join(dir, "system", "applications", "a.desktop")
+			symlink(t, hop, link)
+			return link, hop
+		}, "may write"},
+		{"a link out of reach naming, by a relative path, a link in a folder everyone may write", stranger, func(t *testing.T, dir string) (string, string) {
+			target := filepath.Join(dir, "system", "real", "a.desktop")
+			write(t, target, "x")
+			hop := filepath.Join(dir, "home", "hop")
+			symlink(t, target, hop)
+			chmod(t, filepath.Dir(hop), 0o757)
+			link := filepath.Join(dir, "system", "applications", "a.desktop")
+			symlink(t, filepath.Join("..", "..", "home", "hop"), link)
+			return link, hop
+		}, "may write"},
+		{"a link to a link to a file, all out of reach", stranger, func(t *testing.T, dir string) (string, string) {
+			target := filepath.Join(dir, "system", "real", "a.desktop")
+			write(t, target, "x")
+			hop := filepath.Join(dir, "system", "alternatives", "a.desktop")
+			symlink(t, filepath.Join("..", "real", "a.desktop"), hop)
+			link := filepath.Join(dir, "system", "applications", "a.desktop")
+			symlink(t, hop, link)
+			return link, ""
+		}, ""},
+		{"a link that names itself", stranger, func(t *testing.T, dir string) (string, string) {
+			link := filepath.Join(dir, "apps", "a.desktop")
+			symlink(t, link, link)
+			return link, ""
+		}, "more than 40 symbolic links"},
+		{"a named pipe, which is no desktop file", stranger, func(t *testing.T, dir string) (string, string) {
+			path := filepath.Join(dir, "a.desktop")
+			if err := syscall.Mkfifo(path, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return path, path
+		}, "not a regular file"},
 		{"a file that is not there", stranger, func(t *testing.T, dir string) (string, string) {
 			path := filepath.Join(dir, "gone.desktop")
 			return path, path
@@ -121,7 +174,8 @@ func TestWriterChangesADesktopFileItOwnsOrMayWriteOrMoveAside(t *testing.T) {
 				}
 				return
 			}
-			if !strings.Contains(got, c.says) || (names != "" && !strings.HasSuffix(got, " "+names) && !strings.HasPrefix(got, names+" ")) {
+			named := strings.HasSuffix(got, " "+names) || strings.HasPrefix(got, names+" ") || strings.Contains(got, " "+names+",")
+			if !strings.Contains(got, c.says) || (names != "" && !named) {
 				t.Fatalf("Changes(%s) = %q, want it saying %q of %s", path, got, c.says, names)
 			}
 		})

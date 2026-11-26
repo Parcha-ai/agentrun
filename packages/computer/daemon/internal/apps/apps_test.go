@@ -634,6 +634,80 @@ func TestAppsLeavesOutAnAppItsUserCouldChange(t *testing.T) {
 	}
 }
 
+// A desktop file that is a symbolic link is judged on every link and folder on its way: one whose way passes a link
+// in a folder the user may write is left out and refused, naming that link, and one whose way is all out of reach is
+// listed and launched as any other.
+func TestAppsJudgesEveryLinkOnADesktopFilesWay(t *testing.T) {
+	display := xvfbtest.Start(t, 640, 480)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	dir := filepath.Join(root, "system", "applications")
+	// passing: applications/passing.desktop -> home/hop (home is a folder everyone may write) -> system/real/passing.desktop.
+	passing := filepath.Join(root, "system", "real", "passing.desktop")
+	write(t, passing, fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Passing\nExec=%q %s passing Passing\n", self, helperWindow))
+	hop := filepath.Join(root, "home", "hop")
+	symlink(t, passing, hop)
+	chmod(t, filepath.Dir(hop), 0o757)
+	symlink(t, hop, filepath.Join(dir, "passing.desktop"))
+	// through: applications/through.desktop -> alternatives/through.desktop -> real/through.desktop, all out of reach.
+	through := filepath.Join(root, "system", "real", "through.desktop")
+	write(t, through, fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Through\nExec=%q %s through Through\n", self, helperWindow))
+	alternative := filepath.Join(root, "system", "alternatives", "through.desktop")
+	symlink(t, filepath.Join("..", "real", "through.desktop"), alternative)
+	symlink(t, alternative, filepath.Join(dir, "through.desktop"))
+	d := desktop.New(display)
+	t.Cleanup(d.Close)
+	table := process.NewTable(process.Options{})
+	handlers := Handlers(d, table, Options{Dirs: []string{dir}, Writer: &stranger})
+	call := func(method string, params any) (any, error) {
+		raw, err := json.Marshal(params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return handlers[method](ctx, raw)
+	}
+	t.Cleanup(func() {
+		for _, id := range []string{"passing", "through"} {
+			_, _ = call("apps.terminate", map[string]any{"id": id})
+		}
+	})
+	listed, err := call("apps.list", map[string]any{})
+	if err != nil {
+		t.Fatalf("apps.list: %v", err)
+	}
+	if apps := listed.(ListResult).Apps; !slices.Equal(apps, []App{{ID: "through", Name: "Through"}}) {
+		t.Errorf("apps.list = %+v, want only through: passing's way passes a link in a folder the user may write", apps)
+	}
+	_, err = call("apps.launch", map[string]any{"id": "passing"})
+	if kindOf(err) != rpc.KindDenied || !strings.Contains(fmt.Sprint(err), hop) {
+		t.Errorf("apps.launch passing: %v (%q), want denied naming %s", err, kindOf(err), hop)
+	}
+	if n := len(processes(t, table)); n != 0 {
+		t.Errorf("a refused launch started %d processes", n)
+	}
+	if _, err := call("apps.launch", map[string]any{"id": "through"}); err != nil {
+		t.Fatalf("apps.launch through: %v, want its window", err)
+	}
+	if n := len(processes(t, table)); n != 1 {
+		t.Errorf("apps.launch through started %d processes, want 1", n)
+	}
+}
+
+// processes are the table's processes, running or not.
+func processes(t *testing.T, table *process.Table) []process.Info {
+	t.Helper()
+	listed, err := table.List(process.ListParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return listed.Processes
+}
+
 // A launch that showed no window runs on (the timeout says terminate ends it), and terminate ends it before it answers,
 // though there is no window of it to go.
 func TestAppsTerminateEndsALaunchWithNoWindow(t *testing.T) {
