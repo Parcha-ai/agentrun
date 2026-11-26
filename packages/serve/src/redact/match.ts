@@ -764,8 +764,11 @@ const isTerminal = (code: number): boolean => code === 0x1b || code === 0x07 || 
  *  caller that marks places in a text with its own (secret-cut.ts) asks holds for `separated`. */
 export const SEPARATOR = "\uffff";
 /** A character that renders as nothing (a zero-width space, a soft hyphen, a byte order mark, a variation selector, a
- *  control character that is no whitespace: isControl), and SEPARATOR. */
-const IGNORABLE = /[\p{Default_Ignorable_Code_Point}\u0000-\u0008\u000e-\u001f\u007f-\u009f\uffff]+/gu;
+ *  control character that is no whitespace: isControl), and SEPARATOR; and one that renders as a box or a blank, which
+ *  a reader reads a value through: U+FFFE, the interlinear annotation characters (U+FFF9-FFFB), the noncharacters
+ *  U+FDD0-FDEF, a private use character (U+E000-F8FF), the braille blank (U+2800, no whitespace) and a lone surrogate
+ *  (with the u flag a surrogate pair is one character, and stays). */
+const IGNORABLE = /[\p{Default_Ignorable_Code_Point}\u0000-\u0008\u000e-\u001f\u007f-\u009f\u2800\ud800-\udfff\ue000-\uf8ff\ufdd0-\ufdef\ufff9-\ufffb\ufffe\uffff]+/gu;
 const GONE = /[\s\p{Default_Ignorable_Code_Point}]+/gu;
 
 /** Combining marks: an accent, a cedilla, an enclosing circle. */
