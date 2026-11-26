@@ -155,7 +155,7 @@ test('a script of a shape ci-shard does not know fails the shard, naming it, bef
   // This repository's own scripts, every shard: each either gets --test-timeout or is one ci-shard runs as it is.
   const listed = await shard(t, dirname(dirname(script)), '--list', { CI_SHARD_TEST_TIMEOUT_MS: '600000' });
   assert.equal(listed.status, 0, listed.output);
-  assert.match(listed.output, /npm exec -w @parcha\/agentrun-serve -c "node --test --test-timeout=600000 --test-concurrency=8 test\/[^"]*"/, listed.output);
+  assert.match(listed.output, /npm exec -w @parcha\/agentrun-serve -c "node --test --test-timeout=600000 --test-concurrency=8 (?:--import=\S+ )?test\/[^"]*"/, listed.output);
   assert.match(listed.output, /npm run test -w @parcha\/pi-browser/, listed.output, 'a whole suite runs as its script is');
 });
 

@@ -31,19 +31,20 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
   it, parseHome throws `ReadFailures`. An unreadable file is never taken for an empty one.
 - `env` names where a source keeps its own directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `COPILOT_HOME`, OpenCode's `XDG_DATA_HOME` and
   `OPENCODE_DB`); without it the home's.
-- `threads` reads the files on that many worker threads (default: the cores the process may run on, at most 8; `1`
-  reads them in order on the calling thread; at most 64). A read is kept only when it is the one the import's order would make; any
-  other file is read again in order, so the totals are the same whatever the count. A call with a `state`, or with
-  readers of its own, reads on the calling thread.
+- `threads` reads the files on that many worker threads (default: the cores the process may run on less one, two on
+  two, at most 16, and no more than the workers whose heaps, 80 MiB each at the default `workerOldMb`, fit in the memory
+  still free (the machine's, page cache counted as free, at most its container's limit) once `readAhead` is set aside;
+  `1` reads them in order on the calling thread; at most 64). A read is kept only when it is the one the import's order
+  would make; any other file is read again in order, so the totals are the same whatever the count. A call with a
+  `state`, or with readers of its own, reads on the calling thread; so does OpenCode in any call (its sessions are rows of
+  a database, not files of lines).
 - `readAhead` caps the bytes of finished reads waiting to be taken (default 1 GiB, or a sixteenth of the memory the
   process may use, its container's limit when one is set, when that is less: 512 MiB at 8 GiB). Under it, files of 64 MiB and over are read first, largest first, then
   the rest in order; at it, the threads read only the file the import waits on. It is a cap on finished reads waiting,
   plus at most one read in flight per thread (one of those can be a giant file), not on the process's memory.
-- `workerOldMb` caps each worker's old generation (default 64). A line over an eighth of it, or a file that runs a worker
+- `workerOldMb` caps each worker's old generation (default 64, at least 8, refused with a RangeError under it: at 1 or
+  2 MB V8 ends the whole process as a worker starts, and at 3 to 7 the workers run out of memory). A line over an eighth of it, or a file that runs a worker
   out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
-
-  On a 73.7 GB home, 8 threads took 90.9 s (median of 5) at a peak of 1.83 GiB, and 1 thread 441.1 s at 1.05 GiB
-  (x1); with `readAhead` at 256 MiB, 8 threads took 136.5 s (x1). Measured on a loaded machine (load 17 to 45).
 - A request two sources wrote is counted once. OpenCode's claude-agent provider runs Claude Code, which writes each
   request into its own session file too; OpenCode names that session on the request (`mirrors`). When the same call
   reads that Claude Code session (serve's import: or its store holds it), the request counts there and not in the OpenCode session (tokens, calls and cost),
@@ -216,8 +217,9 @@ read looks up afresh.
 
 The cursor is the reader's own: hand it back to the same reader for the same locator. A JSONL source builds its reader
 with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole
-line read, and the read's state. A file replaced or truncated since is read from its start, and a last line with no
-newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
+line read, and the read's state. A file replaced or truncated since is read from its start, as is a cursor whose state
+is of another shape than the reader's (its `stateVersion`: a Codex cursor saved by 0.1.0-beta.58 or before), and a last
+line with no newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
 `discover`, `idOf` and `read` itself and returns one locator per session, with its `id`, and `stat`: the session's own size and
 last write, which a caller's size caps and "still being written" check go by (`locatorSize`; without `stat`, the file's).
 

@@ -13,6 +13,7 @@ const manifest = ({ weekly = "{ type: boolean, required: false, default: false, 
 name: inbox
 version: 1.0.0
 description: Sorts an inbox and writes a digest.
+tools: []
 parameters:
   weekly: ${weekly}
   timezone: { type: string, format: timezone, required: false, default: UTC }

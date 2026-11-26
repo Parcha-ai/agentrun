@@ -85,6 +85,11 @@ export function RunGraphView({ data, actions = {}, fileUrl, initial = null, last
                 This run's workflow graph is withheld: a saved secret is split across two of its words, so none of them is shown.
               </p>
             )}
+            {typeof (data.nodes as unknown) === "string" && (
+              <p className="mb-4 border p-4 font-mono text-body text-muted-foreground" role="status">
+                This run's node states are withheld: a saved secret is split across them, so none is shown.
+              </p>
+            )}
             <WorkflowGraph graph={data.graph} marks={marks} onSelect={(hit) => setSelected((s) => (s && s.path === hit.path && (s.item ?? null) === hit.item ? null : hit))} label="The run's workflow graph" />
           </div>
         </div>

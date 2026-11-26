@@ -132,10 +132,11 @@ test('a 429 with Retry-After is sent again; one without, a 5xx, a 408 or a lost 
   assert.equal(unreachable.seen.length, 2, 'a connect error before sending is sent again');
 });
 
-test('a 404 (an unknown model) or 400 is invalid_request; 402 an http error', async () => {
-  for (const [status, code] of [[404, 'invalid_request'], [400, 'invalid_request'], [402, 'http']]) {
-    const { fetch } = fakeFetch([json({ error: { message: 'no' } }, status)]);
-    await assert.rejects(openrouterProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions: QUESTIONS }, ctx()), (e) => e instanceof DecisionProviderError && e.code === code);
+test('a 404 (an unknown model) or 400 is invalid_request; a 402 (out of credit) is payment_required, sent once and with no cost', async () => {
+  for (const [status, code] of [[404, 'invalid_request'], [400, 'invalid_request'], [402, 'payment_required']]) {
+    const { fetch, seen } = fakeFetch([json({ error: { message: 'no' } }, status)]);
+    await assert.rejects(openrouterProvider({ ...settings, fetch }).decide({ label: 'x', kind: 'judge', state: {}, questions: QUESTIONS }, ctx()), (e) => e instanceof DecisionProviderError && e.code === code && e.costUsd === undefined);
+    assert.equal(seen.length, 1, `${status} is not sent again`);
   }
 });
 

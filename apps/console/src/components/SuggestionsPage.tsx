@@ -3,7 +3,7 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Banner, Button, buttonVariants, Checkbox, Chip, Dialog, Field, Input, Picker, Spinner, useToast } from "@/components/ui";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { type Client, ClientError } from "@/lib/client";
 import { githubFormAction, githubOrgOf } from "@/lib/github";
 import { type Problem, problem } from "@/lib/problem";
@@ -91,12 +91,12 @@ export function SuggestionsPage({ v2, repo, go }: { v2: Client; repo?: string; g
     );
 
   return (
-    <section className="flex min-h-full flex-col">
+    <section className={pageClass}>
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
         <h1 className={pageTitleClass}><Sparkles className="size-4" aria-hidden />Suggested agents</h1>
         {list && <Button size="sm" variant="ghost" className="ml-auto" onClick={() => { setRound((n) => n + 1); void read(); }} aria-label="Read the suggestions and repositories again"><RefreshCw aria-hidden />Refresh</Button>}
       </header>
-      <div className="p-5 md:p-6">{body}</div>
+      <div data-page-body className={cn(pageBodyClass, "p-5 md:p-6")}>{body}</div>
       {creating && <CreateDialog v2={v2} suggestion={creating} onClose={() => setCreating(null)} onCreated={() => void read()} go={go} />}
     </section>
   );

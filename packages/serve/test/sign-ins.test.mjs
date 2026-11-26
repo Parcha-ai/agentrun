@@ -33,7 +33,7 @@ test("local Chrome keeps no saved sign-in, refused by name; an unavailable brows
   assert.deepEqual([vendorOf("browserbase"), vendorOf("kernel")], ["browserbase", "kernel"]);
 });
 
-test("the vendors' calls: Browserbase's context made with the project and deleted by id; Kernel's profile made under a random name, never one derived from the agent, and deleted by name", async () => {
+test("the vendors' calls, each its provider's profiles: Browserbase's context made with the project and deleted by id; Kernel's profile made under a random name, never one derived from the agent, and deleted by name", async () => {
   const asked = [];
   const fake = async (url, init) => (asked.push([init.method, String(url), init.headers, init.body ?? null]), init.method !== "POST" ? new Response(null, { status: 404 }) : String(url).endsWith("/profiles") ? Response.json({ id: "prof-1", name: JSON.parse(init.body).name }) : Response.json({ id: "ctx-9" }));
   const env = { BROWSERBASE_API_KEY: "bb-key", BROWSERBASE_PROJECT_ID: "proj-1", KERNEL_API_KEY: "k-key" };
@@ -44,7 +44,7 @@ test("the vendors' calls: Browserbase's context made with the project and delete
   assert.notEqual(one, two);
   await vendors.remove("browserbase", "ctx-9");
   await vendors.remove("kernel", one);
-  assert.deepEqual(asked.map(([method, url, headers, body]) => [method, url, headers["x-bb-api-key"] ?? headers.authorization, body]), [
+  assert.deepEqual(asked.map(([method, url, headers, body]) => [method, url, new Headers(headers).get("x-bb-api-key") ?? new Headers(headers).get("authorization"), body]), [
     ["POST", "https://api.browserbase.com/v1/contexts", "bb-key", JSON.stringify({ projectId: "proj-1" })],
     ["POST", "https://api.onkernel.com/profiles", "Bearer k-key", JSON.stringify({ name: one })],
     ["POST", "https://api.onkernel.com/profiles", "Bearer k-key", JSON.stringify({ name: two })],
@@ -193,16 +193,23 @@ test("a Kernel saving run whose session is refused in words that name its profil
 
 test("a vendor call that fails before an answer says only which vendor and the error's kind, never its URL, which holds the pointer: so DELETE's answer never carries it", async (t) => {
   const pointer = "agentrun-0123456789abcdef01234567";
-  for (const [vendor, env] of [["kernel", { KERNEL_API_KEY: "k", KERNEL_BASE_URL: "kernel.example" }], ["browserbase", { BROWSERBASE_API_KEY: "b", BROWSERBASE_BASE_URL: "browserbase.example" }]]) {
-    const vendors = vendorsOver(() => env, async () => fetch);
+  // Fetch's own words name the URL it could not reach, which holds the pointer on a delete.
+  const unreachable = async (url) => {
+    throw new TypeError(`could not reach ${url}`);
+  };
+  const envs = { kernel: { KERNEL_API_KEY: "k" }, browserbase: { BROWSERBASE_API_KEY: "b", BROWSERBASE_PROJECT_ID: "proj-1" } };
+  for (const [vendor, env] of Object.entries(envs)) {
+    const vendors = vendorsOver(() => env, async () => unreachable);
     await assert.rejects(vendors.remove(vendor, pointer), (error) => error.message === `${vendor} unreachable (TypeError)`);
   }
+  // A gateway that is no https URL is refused by the provider before any call, in words naming the setting, not a pointer.
+  await assert.rejects(vendorsOver(() => ({ ...envs.kernel, KERNEL_BASE_URL: "kernel.example" }), async () => unreachable).remove("kernel", pointer), (error) => /Kernel API URL/.test(error.message) && !error.message.includes(pointer));
   // The forget over the store (the switch's signInsOverStore) with those vendors: its answer says the kind, never the URL.
   const { store } = await storeOn(t);
   await agentWithRevision(store, "alpha", "alpha-rev");
   const key = randomBytes(32);
   await saveSignIn(store, key, { agentId: "alpha", provider: "kernel", pointer });
-  const answer = await signInsOverStore(store, key, vendorsOver(() => ({ KERNEL_API_KEY: "k", KERNEL_BASE_URL: "kernel.example" }), async () => fetch)).forget("alpha", "default");
+  const answer = await signInsOverStore(store, key, vendorsOver(() => envs.kernel, async () => unreachable)).forget("alpha", "default");
   assert.deepEqual(answer.removed, [{ provider: "kernel", at_vendor: "not_deleted", message: "Not deleted at kernel: kernel unreachable (TypeError). This server no longer points to it." }]);
   assert.ok(!JSON.stringify(answer).includes(pointer));
 });

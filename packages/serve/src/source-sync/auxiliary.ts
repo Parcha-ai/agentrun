@@ -1,7 +1,7 @@
 /** Host-only admission of learning work. Every auxiliary project is a fresh copy of its reserved revision, never the
  * served run's mutable files or private placement marker. Its execution settles without publishing project changes. */
 import { ApiError } from "../errors.js";
-import { withAgentRepo } from "../learning.js";
+import { inLearningQueue } from "../learning.js";
 import { resetAtOf } from "../learn/promote.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { withHeldFiles, type StartDeps } from "../runs-over-store.js";
@@ -48,7 +48,7 @@ export function auxiliaryAdmitter(store: Store, options: { data: string; project
     const existing = await admitted();
     if (existing) return { run: existing, created: false };
     if (source && !options.project) throw refused("This auxiliary learning run needs project placement before it can start.");
-    return withAgentRepo(options.data, agentId, async () => {
+    return inLearningQueue(options.data, agentId, async () => {
       const existing = await admitted();
       if (existing) return { run: existing, created: false };
       const reset = await resetAtOf(store.settings, agentId);

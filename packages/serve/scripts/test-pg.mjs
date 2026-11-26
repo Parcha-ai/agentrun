@@ -28,5 +28,5 @@ if (shardArgs.length) {
   if (!files.length) { console.error(`test-pg: share ${shard.k} of ${shard.n} has no test file`); process.exit(1); }
 }
 const env = { ...process.env, AGENTRUN_TEST_PG_URL: process.env.AGENTRUN_TEST_PG_URL || `postgres://agentrun:agentrun@127.0.0.1:${process.env.AGENTRUN_TEST_PG_PORT || "55433"}/agentrun` };
-const run = spawnSync(process.execPath, ["--test", "--test-concurrency=4", "--test-timeout=600000", "--test-force-exit", ...args.filter((arg) => !shardArgs.includes(arg)), ...files], { cwd: root, env, stdio: "inherit" });
+const run = spawnSync(process.execPath, ["--import=./test/fixtures/sqlite-guard-register.mjs", "--test", "--test-concurrency=4", "--test-timeout=600000", "--test-force-exit", ...args.filter((arg) => !shardArgs.includes(arg)), ...files], { cwd: root, env, stdio: "inherit" });
 process.exit(run.status ?? 1);

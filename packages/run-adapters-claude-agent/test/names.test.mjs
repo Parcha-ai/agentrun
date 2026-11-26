@@ -12,8 +12,9 @@ const ts = createRequire(import.meta.url)('typescript');
 const root = fileURLToPath(new URL('..', import.meta.url));
 const BANNED = /claude[\s_-]*code(?![\s_-]*(?:20\d{6}|_preset))/i;
 // API values the SDK and the CLI define, which the adapter must pass as they are: the system-prompt preset, the
-// tool-use id's metadata key, the CLI's environment variables, its own beta flag, and the SDK's spawn and executable options.
-const API_VALUES = /\bclaude_code\b|claudecode\/toolUseId|\bCLAUDE_CODE_[A-Z_]+|claude-code-20250219|claudeCodeVersion|spawnClaudeCodeProcess|pathToClaudeCodeExecutable/g;
+// tool-use id's metadata key, the CLI's environment variables, its own beta flag, the service name of its macOS Keychain
+// item, and the SDK's spawn and executable options.
+const API_VALUES = /\bclaude_code\b|claudecode\/toolUseId|\bCLAUDE_CODE_[A-Z_]+|claude-code-20250219|Claude Code-credentials\b|claudeCodeVersion|spawnClaudeCodeProcess|pathToClaudeCodeExecutable/g;
 
 function files(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : [join(dir, e.name)]));

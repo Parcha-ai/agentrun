@@ -6,7 +6,7 @@ import { type Agent, toolOffers } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 import { placesOf } from "@/lib/place";
 
-// The editor's Computer step: where the agent's runs execute and what they drive. It comes before Tools & skills (the
+// The editor's Computer step: where the agent's runs execute and what they drive. It comes before Tools (the
 // computer decides the tools), and a pick there is saved as definition.computer, the setting the server keeps place as
 // a view of.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -29,16 +29,16 @@ function mount(props: Record<string, unknown>) {
   const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
   const input = (sel: string) => host.querySelector(sel) as HTMLInputElement | null;
   const save = () => act(async () => { [...host.querySelectorAll("button")].find((b) => /^Save/.test(b.textContent ?? ""))!.click(); });
-  const rail = () => [...host.querySelectorAll("ol li")].map((li) => li.textContent ?? "");
+  const rail = () => [...host.querySelectorAll('nav[aria-label="Agent settings sections"] ul li')].map((li) => li.textContent ?? "");
   return { host, click, input, save, rail, saved: () => saved };
 }
 
 describe("AgentEditor, the Computer step", () => {
-  it("comes after Context and before Tools & skills", () => {
+  it("comes after General and before Tools", () => {
     const { rail } = mount({ agent: agent(), caps, step: "computer" });
-    const names = rail().map((text) => /^\d*\s*(Context|Computer|Tools & skills|Settings|History)/.exec(text)?.[1] ?? text);
-    expect(names.indexOf("Computer")).toBe(names.indexOf("Context") + 1);
-    expect(names.indexOf("Tools & skills")).toBe(names.indexOf("Computer") + 1);
+    const names = rail().map((text) => /^\d*\s*(General|Computer|Tools|Model & runtime|History)/.exec(text)?.[1] ?? text);
+    expect(names.indexOf("Computer")).toBe(names.indexOf("General") + 1);
+    expect(names.indexOf("Tools")).toBe(names.indexOf("Computer") + 1);
   });
 
   it("holds where the agent runs; the Settings step no longer does", () => {

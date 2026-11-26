@@ -1,6 +1,7 @@
 // The machine host: what a vendor writes to put computers on its machines. A host has eleven members: its descriptor
 // and its facts, five calls about its own machines (create, get, list, delete, exec), and four optional hooks (upload,
-// errorCode, extend, check). A host whose machines dial the server (facts.connect "dial") has no exec and no upload.
+// errorCode, extend, check). An exec host whose exec output is slow may also have download, a file's way out. A host
+// whose machines dial the server (facts.connect "dial") has no exec, no upload and no download.
 // HostedProvider (./hosted/provider.ts) owns everything else a ComputerProvider does: the spec's check, the daemon's
 // upload, install and start, the stdio bridge, the read-back and the probe, labels (packed where the host declares it),
 // list and attach, the deadline and extend, the wait after a delete, the sweep of a lost create, the Archil mount, and
@@ -90,6 +91,14 @@ export interface MachineHost {
 	 * streams the file through exec's stdin as base64 text, which root decodes (`base64 -d`, in coreutils and busybox).
 	 */
 	upload?(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void>;
+	/**
+	 * The bytes of the file at path in the machine, whole, read as root. Optional, on an exec host alone: one whose exec
+	 * output is slow has it (Daytona's: its toolbox's files/download, where exec's stdout is a log read at about 0.3 MB/s).
+	 * A files.read past one chunk then takes its first chunk from the daemon and the rest from one copy of the file the
+	 * adapter makes as the daemon's user (./hosted/download.ts), so root's read never shows what that user cannot read. A
+	 * path that is not there throws.
+	 */
+	download?(id: string, path: string, ctx: HostCall): Promise<Uint8Array>;
 	/**
 	 * What agentrun-dial wrote in a dial machine, for a create whose machine never dialed: the adapter adds its last lines
 	 * to the timeout's words. undefined when agentrun-dial never started there. A host that started agentrun-dial itself
@@ -274,9 +283,11 @@ export interface HostFacts {
 	 * value together, the adapter's at their longest. Past either, check() refuses, and so create, before any host call.
 	 * Absent: no bound. packed: the adapter packs the labels it gives create (packLabels, ./hosted/values.ts: one name to
 	 * list by, the map in parts of at most valueBytes each), unpacks those get and list answer, and asks list for that
-	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'.
+	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'. unpacked:
+	 * the host's machines may also carry their labels as given (made before it packed): one with no packed map reads as
+	 * its stored labels, and a listing by name asks for the labels as given beside the packed name.
 	 */
-	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number } };
+	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number; unpacked?: true } };
 	/**
 	 * Paths of the vendor's image that root runs or reads and whose permissions its template build sets wider than
 	 * root's: create makes each root's alone (owned by root, writable by no group or other user), and everything under a

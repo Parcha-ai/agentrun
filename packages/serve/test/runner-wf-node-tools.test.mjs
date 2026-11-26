@@ -26,6 +26,7 @@ const { parallelSearchFee } = await import("@parcha/agentrun-web");
 const { FAUX_PARALLEL_ENV } = await import("../dist/decisions.js");
 const { FAUX_ENV } = await import("../dist/model.js");
 const { paidRequestsOf } = await import("./fixtures/paid-requests.mjs");
+const { secretRedactor } = await import("../dist/runner/redact.js");
 
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel-search.mjs", import.meta.url).pathname;
 // A steady lease: these cases are about the node's tools, never a claim lapsing mid-request (a lapsed request books at its
@@ -44,11 +45,11 @@ const searchingFlow = (tools) => ({
   output: { schemaId: "Answer", path: "answer" },
   root: { node: "agent", label: "look", instructions: "Search, then answer.", tools, out: "Answer", as: "answer" },
 });
-const SCRIPT = [{ call: "web_search", args: { query: "agentrun", n: 3 } }, { call: "submit", args: { answer: 42 } }];
+const SCRIPT = [{ call: "web_search", args: { objective: "agentrun", n: 3 } }, { call: "submit", args: { answer: 42 } }];
 
 /** run-1, a workflow run of `workflow` (its revision with `toolSettings`), the model on the scripted origin and
  *  Parallel's search on the faux module; its row once it leaves running, with the store's files' text. */
-async function runOn(t, { workflow, toolSettings, specDeps }) {
+async function runOn(t, { workflow, toolSettings, specDeps, redact }) {
   globalThis.fauxParallelSearches = 0;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-wf-node-tools-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -69,7 +70,7 @@ async function runOn(t, { workflow, toolSettings, specDeps }) {
     policy: anthropicPolicy({ model: "faux-priced", tools: [] }), price: (_model, usage) => (usage.output ?? 0) * 100 / 1e6, capModel: PRICED, fetch,
   });
   const env = { [FAUX_ENV]: "1", [FAUX_PARALLEL_ENV]: FAUX_PARALLEL, PARALLEL_API_KEY: `not-a-secret-${"p"}` };
-  runner = startRunner({ store, createLoop: createWorkflowLoop(spec.workflowSpecOf({ store, providerOf, env, ...specDeps })), name: "runner-a", ...TIMING });
+  runner = startRunner({ store, createLoop: createWorkflowLoop(spec.workflowSpecOf({ store, providerOf, env, ...specDeps })), name: "runner-a", ...TIMING, ...(redact ? { redact } : {}) });
   const from = Date.now();
   for (;;) {
     const row = await server.runs.get("run-1");
@@ -99,6 +100,20 @@ test("a model node's web_search, allowed: offered with submit, called once, book
   const paid = await paidRequests();
   assert.ok(paid.length > 0, "the search's paid request is in the run's records");
   for (const request of paid) assert.equal(request.charged_by, "parallel", `charged by Parallel: ${JSON.stringify(request)}`);
+});
+
+test("a model node's tool answer is cut by the run's one redactor before the node's model or the run's records see it", async (t) => {
+  // A held value, made at runtime: no credential-shaped literal for the source export.
+  const held = ["not-a-secret", "node-tool", "0123456789abcdef"].join("-");
+  globalThis.fauxParallelExcerpt = `The key is ${held}.`;
+  t.after(() => void delete globalThis.fauxParallelExcerpt);
+  const { row, requests, text } = await runOn(t, { workflow: searchingFlow(["web_search"]), redact: secretRedactor([held]) });
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(globalThis.fauxParallelSearches, 1, "the search answered");
+  const after = JSON.stringify(requests.slice(1));
+  assert.ok(after.includes("The key is [redacted]."), `the node's model is handed the answer cut: ${after.slice(0, 2000)}`);
+  assert.ok(!after.includes(held), "never the held value");
+  assert.ok(!text.includes(held), "the run's records never hold it");
 });
 
 test("a model node's web_search set to deny: refused in deniedText's words, never run, nothing of it booked", async (t) => {

@@ -1,7 +1,8 @@
-// web_fetch's looking_for (FetchOptions.lookingFor): the agent says what it is looking for, the decider scores the
+// web_fetch's objective (FetchOptions.objective; looking_for, FetchOptions.lookingFor, its alias): the agent says what
+// it is looking for, the decider scores the
 // chunks of the whole page (read once a run, from the run's pages after), and the answer holds the FOUND_CHUNKS chunks
 // most likely to hold it, in page order, each at its offset in the page with its relevance. The decider is asked its usual judge request,
-// with the agent's need as the task. Without looking_for nothing changes.
+// with the agent's need as the task. Without an objective nothing changes; with no classifier the part says nothing of it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as web from "../dist/index.js";
@@ -18,7 +19,7 @@ const SCORES = { p5: 0.95, p11: 0.9, p2: 0.8, p9: 0.6, p7: { type: "refusal" } }
 const scores = (n) => ({ ...Object.fromEntries(Array.from({ length: n }, (_, i) => [`p${i + 1}`, 0.1])), ...SCORES });
 const priced = (provider) => deciderFrom(provider, { price: { requestUsd: 0.0002 } });
 const broken = { id: "fake", needs: [], decide: async () => { throw Object.assign(new Error("down"), { code: "provider_error" }); } };
-const SHOWN = "fake showed the 8 of 12 chunks of the page most likely to hold what you are looking for (relevance 0 to 1), in page order; to read on from one, call web_fetch with its offset and no looking_for";
+const SHOWN = "fake showed the 8 of 12 chunks of the page most likely to hold what your objective asks for (relevance 0 to 1), in page order; to read on from one, call web_fetch with its offset and no objective";
 
 /** A web on the fakes whose decider scores as `table` says, reading `content` as the page; `asked` its requests, and
  *  `extracts` how many times the page was read. */
@@ -105,13 +106,13 @@ test("looking_for blank, or not a string, is no looking_for: the part as before"
   }
 });
 
-test("looking_for with no classifier, or one that fails, gives the part asked for in page order and says looking_for was not applied", async () => {
+test("looking_for with no classifier gives the part asked for, word for word; with one that fails, the part in page order and that the objective was not applied", async () => {
   const none = await lookingWeb(THIRTY, {}, { decider: undefined }).web.fetch(PUBLIC, { lookingFor: NEED, offset: 100, maxChars: 500 });
   const part = await lookingWeb(THIRTY, {}, { decider: undefined }).web.fetch(PUBLIC, { offset: 100, maxChars: 500 });
-  assert.deepEqual(none.answer, { ...part.answer, sift: "looking_for not applied (no classifier in this run); this part is in page order" });
+  assert.deepEqual(none.answer, part.answer);
   assert.equal(none.receipt.classifier, "off");
   const failed = await lookingWeb(THIRTY, {}, { decider: priced(broken) }).web.fetch(PUBLIC, { lookingFor: NEED, offset: 100, maxChars: 500 });
-  assert.deepEqual(failed.answer, { ...part.answer, sift: "looking_for not applied (provider_error); this part is in page order" });
+  assert.deepEqual(failed.answer, { ...part.answer, sift: "objective not applied (provider_error); this part is in page order" });
   assert.deepEqual([failed.receipt.classifier.ran, failed.receipt.classifier.error.code, failed.receipt.classifier.items], [false, "provider_error", { in: 30, kept: 30 }]);
 });
 
@@ -156,7 +157,7 @@ test("a page of more chunks than a part's passages is judged in requests of at m
   assert.deepEqual(asked.map(({ request }) => Object.keys(request.questions).length), [50, 50, 20]);
   const record = receipt.classifier;
   assert.deepEqual([record.ran, record.requests, record.items, record.questions_sha256.length, record.scored.length], [true, 3, { in: 120, kept: 8 }, 3, 120]);
-  assert.deepEqual(receipt.cost.lines.filter((fee) => fee.by === "fake").map((fee) => fee.usd), [0.0002, 0.0002, 0.0002], "one fee line per request");
+  assert.deepEqual(receipt.cost.lines.filter((fee) => fee.by === "fake").map((fee) => fee.usd), [0.0001, 0.0001, 0.0001], "one fee line per request, each the cost it gave, under its hold");
 });
 
 test("a 120-chunk page makes 3 judge requests, and shows the same chunks as one call scoring the page alike", async () => {
@@ -177,7 +178,7 @@ test("a page's judge request that fails, among several, falls back as one: the p
   const w = decideWeb({ decider: priced(provider), send: { parallel: pagesOf(PAGE_120) } });
   const { answer, receipt } = await w.fetch(PUBLIC, { lookingFor: NEED, maxChars: 500 });
   const part = await decideWeb({ decider: undefined, send: { parallel: pagesOf(PAGE_120) } }).fetch(PUBLIC, { maxChars: 500 });
-  assert.deepEqual(answer, { ...part.answer, sift: "looking_for not applied (provider_error); this part is in page order" });
+  assert.deepEqual(answer, { ...part.answer, sift: "objective not applied (provider_error); this part is in page order" });
   const record = receipt.classifier;
   assert.deepEqual([record.ran, record.error.code, record.items, record.scored], [false, "provider_error", { in: 120, kept: 120 }, []]);
   assert.match(record.error.message, /^request 2 of 3: upstream 500/);

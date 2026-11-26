@@ -8,18 +8,20 @@ import { buildAgentPrompt } from "./codingAgentPrompts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const configFile = `${root}/vite.config.ts`;
-const devServer = (more: Parameters<typeof createServer>[0] = {}) => createServer({ root, configFile, logLevel: "silent", server: { host: "127.0.0.1", port: 0, hmr: false, watch: null }, ...more });
+// preTransformRequests off: a page asked for here is answered and nothing more. Left on, Vite goes on to transform the
+// whole console behind it, and closing the server waits for that, seconds on a busy machine.
+const devServer = (more: Parameters<typeof createServer>[0] = {}) => createServer({ root, configFile, logLevel: "silent", server: { host: "127.0.0.1", port: 0, hmr: false, watch: null, preTransformRequests: false }, ...more });
 
 // Each test names every variable the dev proxy reads, so the shell that runs the suite decides nothing.
-beforeEach(() => { for (const name of ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_URL"]) vi.stubEnv(name, ""); });
+beforeEach(() => { for (const name of ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "AGENTRUN_URL", "STORYBOOK"]) vi.stubEnv(name, ""); });
 afterEach(() => vi.unstubAllEnvs());
 
-it("fetches a development handoff's matching skill through the actual Vite server, preserving API proxy auth and origin", async () => {
+it("fetches a development handoff's matching skill through the actual Vite server, preserving API proxy auth and origin; another site's request goes on without the key", async () => {
   const skill = "# AgentRun Server\n\nInstructions from this configured server's build.\n";
   const seen: { path: string; authorization?: string; origin?: string }[] = [];
   // Only the paths this test asks for are recorded: a host agent that probes each new loopback listener with `GET /`
   // reaches this backend too, and would land in `seen`. A proxied request that lost its path still fails the body check.
-  const asked = new Set(["/skills/agentrun-serve/SKILL.md", "/v2/capabilities"]);
+  const asked = new Set(["/skills/agentrun-serve/SKILL.md", "/v2/capabilities", "/v2/files?path=from-elsewhere.txt", "/v2/agents"]);
   const backend = createHttpServer((request, response) => {
     if (asked.has(request.url!)) seen.push({ path: request.url!, authorization: request.headers.authorization, origin: request.headers.origin });
     response.setHeader("content-type", request.url === "/skills/agentrun-serve/SKILL.md" ? "text/markdown" : "application/json");
@@ -37,6 +39,10 @@ it("fetches a development handoff's matching skill through the actual Vite serve
     dev = await devServer();
     await dev.listen();
     const origin = `http://127.0.0.1:${(dev.httpServer!.address() as AddressInfo).port}`;
+    // The page that can act with the key says no other site may show it in a frame.
+    const page = await fetch(`${origin}/`);
+    expect(page.headers.get("content-security-policy")).toBe("frame-ancestors 'self'");
+    await page.text();
     const skillUrl = buildAgentPrompt(origin).match(/https?:\/\/[^\s]+\/skills\/agentrun-serve\/SKILL\.md/)![0];
     expect(new URL(skillUrl).origin).toBe(origin);
     const response = await fetch(skillUrl);
@@ -46,20 +52,45 @@ it("fetches a development handoff's matching skill through the actual Vite serve
     expect(seen).toEqual([{ path: "/skills/agentrun-serve/SKILL.md", authorization: undefined, origin: undefined }]);
     expect(await (await fetch(`${origin}/v2/capabilities`, { headers: { origin } })).json()).toEqual({ from: "configured server" });
     expect(seen[1]).toEqual({ path: "/v2/capabilities", authorization: "Bearer fake-test-dev-proxy", origin: target });
+    // A page of another site, open in the same browser, reaches this port too. An upload is a write it can send with no
+    // preflight: it goes on as the page sent it, without the developer's key, and the server answers it as it would anyone.
+    const elsewhere = "https://elsewhere.example.test";
+    await (await fetch(`${origin}/v2/files?path=from-elsewhere.txt`, { method: "POST", headers: { origin: elsewhere, "sec-fetch-site": "cross-site", "content-type": "text/plain" }, body: "x" })).text();
+    expect(seen[2]).toEqual({ path: "/v2/files?path=from-elsewhere.txt", authorization: undefined, origin: elsewhere });
+    // So does a read by another page on this machine, which a browser calls the same site.
+    await (await fetch(`${origin}/v2/agents`, { headers: { "sec-fetch-site": "same-site" } })).text();
+    expect(seen[3]).toEqual({ path: "/v2/agents", authorization: undefined, origin: undefined });
+    // A command line, which says nothing of where it came from, still carries the key.
+    await (await fetch(`${origin}/v2/agents`)).text();
+    expect(seen[4]).toEqual({ path: "/v2/agents", authorization: "Bearer fake-test-dev-proxy", origin: undefined });
+    expect(seen).toHaveLength(5);
   } finally {
     await dev?.close();
     await new Promise<void>((resolve, reject) => backend.close((error) => error ? reject(error) : resolve()));
   }
 });
 
-it("the dev server says, once, that a local server's token was not sent to a server elsewhere", async () => {
-  const warned: string[] = [];
+it("the dev server says, once, where it proxies with a key, and that a local server's token was not sent to a server elsewhere", async () => {
+  const said: string[] = [];
+  const customLogger = { ...createLogger("info"), info: (words: string) => { said.push(`info: ${words}`); }, warn: (words: string) => { said.push(`warn: ${words}`); } };
+  // Only the dev proxy's own lines: Vite and its plugins may say more.
+  const ours = () => said.filter((line) => /AGENTRUN_|Proxying \/v2/.test(line));
   vi.stubEnv("AGENTRUN_BASE_URL", "https://agentrun.example.test/v2");
   vi.stubEnv("AGENTRUN_TOKEN", "fake-test-dev-proxy");
-  const dev = await devServer({ logLevel: "warn", customLogger: { ...createLogger("warn"), warn: (words) => { warned.push(words); } } });
+  let dev = await devServer({ logLevel: "info", customLogger });
   try {
-    expect(warned).toEqual(["AGENTRUN_TOKEN is not sent to https://agentrun.example.test: it goes only to a server on this machine. Set AGENTRUN_API_KEY for this server, or sign in on the page."]);
-    expect(dev.config.server.proxy?.["/v2"]).toMatchObject({ target: "https://agentrun.example.test", headers: {} });
+    expect(ours()).toEqual(["warn: AGENTRUN_TOKEN is not sent to https://agentrun.example.test: it goes only to a server on this machine. Set AGENTRUN_API_KEY for this server."]);
+    expect(dev.config.server.proxy?.["/v2"]).toMatchObject({ target: "https://agentrun.example.test" });
+    expect((dev.config.server.proxy?.["/v2"] as { headers?: unknown }).headers).toEqual({});
+  } finally {
+    await dev.close();
+  }
+  said.length = 0;
+  vi.stubEnv("AGENTRUN_API_KEY", "fake-test-api-key");
+  dev = await devServer({ logLevel: "info", customLogger });
+  try {
+    expect(ours()).toEqual(["info: Proxying /v2 to https://agentrun.example.test with AGENTRUN_API_KEY."]);
+    expect((dev.config.server.proxy?.["/v2"] as { headers?: unknown }).headers).toEqual({ authorization: "Bearer fake-test-api-key" });
   } finally {
     await dev.close();
   }
@@ -74,4 +105,8 @@ it("the dev server refuses the older AGENTRUN_URL by name; a build and a test ru
     const loaded = await loadConfigFromFile(env, configFile, root, "silent");
     expect(loaded?.config.server?.proxy, `${env.command} in ${env.mode}`).toBeUndefined();
   }
+  // Nor does Storybook, which builds its own server block and never took this proxy: its process says who it is.
+  vi.stubEnv("STORYBOOK", "true");
+  const storybook = await loadConfigFromFile({ command: "serve", mode: "development" }, configFile, root, "silent");
+  expect(storybook?.config.server?.proxy).toBeUndefined();
 });
