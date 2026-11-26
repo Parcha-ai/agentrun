@@ -1,5 +1,5 @@
 // The `computer` object's declarations a codemode script reads (computer-surface.generated.ts): a script typed
-// against them compiles, and a computer's declarations hold only the members its groups offer.
+// against them compiles, and a computer's declarations hold only the members its groups offer, less the ops left out.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import ts from "typescript";
@@ -25,6 +25,21 @@ test("a computer's declarations offer only its groups' members, and each compile
   assert.deepEqual(errorsOf(computerDeclarations(["screen", "input.touch"]), `return computer.input.act([{ type: "tap", at: [1, 2] }]);`), []);
   const mac = computerDeclarations(["ui", "screen", "apps", "exec", "files", "input.pointer", "input.keys"]);
   assert.deepEqual(errorsOf(mac, `await computer.apps.open("com.apple.Notes"); const notes = computer.app("com.apple.Notes"); await notes.observe(); return notes.find({ role: "button" }).map((node) => node.ref);`), []);
+});
+
+test("ops left out of a computer's declarations don't compile, the rest of their member does, and a member left with none goes", () => {
+  const groups = ["exec", "files"];
+  const noRead = computerDeclarations(groups, ["files.read", "files.list", "files.stat"]);
+  assert.deepEqual(errorsOf(noRead, `await computer.files.write("/tmp/a", "x"); return (await computer.shell.run("ls")).stdout;`), []);
+  for (const call of [`computer.files.read("/a")`, `computer.files.list("/")`, `computer.files.stat("/a")`]) {
+    assert.match(errorsOf(noRead, `return ${call};`).join("\n"), /does not exist/, call);
+  }
+  assert.doesNotMatch(noRead, /FileInfo/, "a type only the ops left out reach goes with them");
+  const none = computerDeclarations(groups, ["files.read", "files.write", "files.list", "files.stat"]);
+  assert.doesNotMatch(none, /readonly files:/);
+  assert.match(errorsOf(none, `return computer.files;`).join("\n"), /Property 'files' does not exist/);
+  assert.deepEqual(errorsOf(none, `return (await computer.shell.run("ls")).stdout;`), []);
+  assert.equal(computerDeclarations(groups, []), computerDeclarations(groups), "nothing left out, the whole surface");
 });
 
 test("a computer's declarations hold only the types its members reach: no element types without the ui group", () => {
