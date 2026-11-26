@@ -49,7 +49,7 @@ export interface ClaimSecretsDeps {
  *  subagentTierKeys). Undefined outside a runner's loop (a server-side check), or where the reader is wrapped already (a
  *  run's own process: run-child-host.ts handed). */
 export interface PlanHandBack {
-  readonly handBack: (() => void) | undefined;
+  readonly handBack: (() => Promise<void>) | undefined;
   readonly signal: AbortSignal | undefined;
 }
 
