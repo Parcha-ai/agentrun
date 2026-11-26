@@ -168,9 +168,9 @@ test("bad arguments: the runner exits 2 in runnerArgs' words, and claims nothing
 });
 
 test("Archil settings in the runner's environment that are not whole: the runner exits 2 in words naming what is missing, and claims nothing", async (t) => {
-  const child = runnerChild(t, ["--data", scratch(t, "agentrun-runner-archil-")], { AGENTRUN_ARCHIL_REGION: "aws-us-east-1" });
+  const child = runnerChild(t, ["--data", scratch(t, "agentrun-runner-archil-")], { AGENTRUN_ARCHIL_REGION: "eu-test-9" });
   assert.deepEqual(await child.exited, { code: 2, signal: null });
-  assert.match(child.err.join("\n"), /started with AGENTRUN_ARCHIL_REGION but not AGENTRUN_ARCHIL_S3_URL/);
+  assert.match(child.err.join("\n"), /AGENTRUN_ARCHIL_S3_URL is needed for the region eu-test-9/);
 });
 
 test("the equals form: `runner --data=-odd-dir --loops=2 --name=runner-eq` opens that data directory (a name that starts with a dash) under those loops and that name", async (t) => {

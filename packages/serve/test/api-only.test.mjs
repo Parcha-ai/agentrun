@@ -381,7 +381,7 @@ test("an API-only server serves the computers list and the Archil settings with 
   assert.deepEqual([sandbox.secrets[0].name, sandbox.secrets[0].set, sandbox.secrets[0].source, typeof sandbox.ready], ["computer:faux-sandbox:FAUX_SANDBOX_KEY", true, "console", "boolean"], "the key's name and saved, and whether the provider is ready");
   const archil = await send(server, "GET", "/v2/workspace/archil");
   assert.equal(archil.status, 200, JSON.stringify(archil.body));
-  assert.deepEqual(archil.body, { on: true, source: "env", region: "aws-us-east-1", s3Url: "https://s3.archil.example", secret: { name: "workspace:archil", set: true, source: "console", changed_at: archil.body.secret.changed_at } });
+  assert.deepEqual(archil.body, { on: true, source: "env", region: "aws-us-east-1", s3Url: "https://s3.archil.example", s3UrlFrom: "given", regions: archil.body.regions, secret: { name: "workspace:archil", set: true, source: "console", changed_at: archil.body.secret.changed_at } });
   for (const [what, answer] of [["computers", computers], ["archil", archil]]) {
     const text = JSON.stringify(answer.body);
     for (const value of never) assert.ok(!text.includes(value), `${what} carries no planted value, sealed blob, seal key or token`);

@@ -1514,10 +1514,12 @@ class SqliteStore implements Store {
       projectCheckpoints: (filter) => readProjectCheckpoints(db, filter),
       learningStarts: (agentId) => readLearningStarts(db, agentId, NOT_A_LEARNING_RUN),
       seededBefore: (agentId, at) => readSeededBefore(db, agentId, at),
-      list: async ({ agentId, revisionId, state, archived, labels, disk, limit, purged = false }) => {
+      list: async ({ agentId, revisionId, state, archived, labels, disk, limit, purged = false, scope, before }) => {
         // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
         // count, stat or notice names it. A purged run is a tombstone: only the readers that sum or count ask for it.
-        const where: string[] = [NOT_A_LEARNING_RUN, ...(purged ? [] : ["purged_at IS NULL"])];
+        // The Agent Factory's active scope alone lists a learning run: there it is an execution like any other. Its review
+        // scope keeps the runs list's boundary (listed, below): no learning run and no audit's shadow run.
+        const where: string[] = [...(scope === "active" ? [] : [NOT_A_LEARNING_RUN]), ...(scope === "review" ? [NOT_A_SHADOW_RUN] : []), ...(purged ? [] : ["purged_at IS NULL"])];
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
@@ -1527,6 +1529,18 @@ class SqliteStore implements Store {
         for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("labels")), params.push(key, value));
         if (disk === null) where.push("disk IS NULL");
         else if (disk !== undefined) (where.push("disk = ?"), params.push(disk));
+        // Factory visibility is selected before the page limit: an old parked run must not disappear behind newer
+        // history. A person's stopped agentic turn remains continuable; an imported session never executes here.
+        if (scope !== undefined) {
+          where.push("imported_from IS NULL");
+          where.push(scope === "active"
+            ? `(state IN ('queued', 'running', 'parked') OR (state = 'stopped' AND outcome = 'stopped' AND ${NOT_A_LEARNING_RUN} AND ${NOT_A_SHADOW_RUN} AND EXISTS (SELECT 1 FROM revisions WHERE revisions.id = runs.revision_id AND revisions.kind = 'agentic')))`
+            : "((state = 'ended' AND outcome = 'escalated') OR state = 'failed') AND archived_at IS NULL AND NOT EXISTS (SELECT 1 FROM agents WHERE agents.id = runs.agent_id AND agents.archived_at IS NOT NULL)");
+        }
+        if (before !== undefined) {
+          where.push("(started_at < ? OR (started_at = ? AND id < ?))");
+          params.push(before.startedAt, before.startedAt, before.id);
+        }
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);
@@ -1568,6 +1582,22 @@ class SqliteStore implements Store {
           more: rows.length > limit,
         };
       },
+      // The same columns `listed` reads beside a row, for the runs named: one read, whatever their journals. A purged run
+      // is a tombstone, as it is to `listed`: it keeps no listing, and none is built for it.
+      listings: async (runIds) => {
+        if (runIds.length === 0) return [];
+        const n = clock();
+        const behind = listingBehind(n.sql);
+        const rows = await db.all<{ id: string; agent_archived_at: number | null; listing: string | null; list_mark: number; behind: number }>(
+          `SELECT runs.id, agents.archived_at AS agent_archived_at, runs.listing, runs.list_mark, ${behind.sql} AS behind
+             FROM runs JOIN agents ON agents.id = runs.agent_id WHERE runs.purged_at IS NULL AND runs.id IN (${runIds.map(() => "?").join(", ")})`,
+          ...behind.params(n.params), ...runIds,
+        );
+        return rows.map((row) => ({
+          id: row.id, agentArchivedAt: row.agent_archived_at, listMark: Number(row.list_mark), behind: Boolean(Number(row.behind)),
+          listing: row.listing === null ? null : (JSON.parse(row.listing) as KeptListing),
+        }));
+      },
       counts: async (agentId) => {
         const [row] = await db.all<{ count: number; live: number | null }>(
           `SELECT COUNT(*) AS count, SUM(CASE WHEN runs.state IN ('queued', 'running', 'parked')
@@ -1592,10 +1622,10 @@ class SqliteStore implements Store {
         );
         return rows.map((row) => ({ id: row.id, mark: Number(row.mark), held: Boolean(Number(row.held)) }));
       },
-      putListing: async (runId, mark, { item, cut, status, live, until, flags }) => {
+      putListing: async (runId, mark, { item, cut, status, live, until, flags, factory }) => {
         const [result] = await db.write([{
           sql: "UPDATE runs SET listing = ?, list_status = ?, listing_mark = ?, listing_live = ?, listing_until = ?, listing_flags = ? WHERE id = ? AND list_mark = ? RETURNING id",
-          params: [json({ item, cut }), status, mark, live ? 1 : 0, until, flags, runId, mark],
+          params: [json({ item, cut, ...(factory !== undefined ? { factory } : {}) }), status, mark, live ? 1 : 0, until, flags, runId, mark],
         }]);
         return (result?.rows.length ?? 0) > 0;
       },
@@ -2291,6 +2321,10 @@ class SqliteStore implements Store {
       },
       put: async (name, sealed) => {
         await db.write([{ sql: "INSERT INTO sealed_keys (name, sealed, updated_at) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET sealed = excluded.sealed, updated_at = excluded.updated_at", params: [name, sealed, now()] }]);
+      },
+      putIfAbsent: async (name, sealed) => {
+        const [result] = await db.write([{ sql: "INSERT INTO sealed_keys (name, sealed, updated_at) VALUES (?, ?, ?) ON CONFLICT (name) DO NOTHING", params: [name, sealed, now()] }]);
+        return result!.changes === 1;
       },
       replaceIf: async (name, was, sealed) => {
         const [result] = await db.write([{ sql: "UPDATE sealed_keys SET sealed = ?, updated_at = ? WHERE name = ? AND sealed = ?", params: [sealed, now(), name, was] }]);

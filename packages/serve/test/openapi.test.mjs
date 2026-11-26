@@ -193,14 +193,15 @@ test("the contract's operations are as vendored; this server's own are added and
       continue;
     }
     if (op.operationId === "listRuns") {
-      // runlabels/1: an agent's runs take GET /runs' `label` filter too: the contract's parameters, then this server's one,
-      // and the rest as vendored.
-      assert.deepEqual(Object.keys(changes), ["label"]);
-      assert.deepEqual(op.parameters.slice(0, -1), original.parameters);
-      assert.deepEqual([op.parameters.at(-1).name, op.parameters.at(-1).in, op.parameters.at(-1).required], ["label", "query", false]);
+      // factory/1 and runlabels/1: an agent's runs take GET /runs' `scope` and `label` filters too: the contract's
+      // parameters, then this server's two, and the rest as vendored.
+      assert.deepEqual(changes, { scope: "factory/1", label: "runlabels/1" });
+      assert.deepEqual(op.parameters.slice(0, -2), original.parameters);
+      assert.deepEqual(op.parameters.slice(-2).map((p) => [p.name, p.in, p.required]), [["scope", "query", false], ["label", "query", false]]);
+      assert.deepEqual(op.parameters.at(-2).schema, { enum: ["active", "review"] });
       const { parameters: _a, ...same } = rest;
       const { parameters: _b, ...vendoredSame } = original;
-      assert.ok(isDeepStrictEqual(same, vendoredSame), "listRuns is the contract's but for its label");
+      assert.ok(isDeepStrictEqual(same, vendoredSame), "listRuns is the contract's but for its scope and label");
       continue;
     }
     if (op.operationId === "listRunFiles" || op.operationId === "readRunFile") {

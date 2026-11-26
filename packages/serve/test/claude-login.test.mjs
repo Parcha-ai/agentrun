@@ -15,20 +15,20 @@ import { delimiter, dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
 import { API_ONLY_ROUTES } from "../dist/api-only.js";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
 import { agent, FAUX, follow, secretWritePath, serve, withEnv } from "./support.mjs";
 
 secretWritePath(["GET", "PUT", "DELETE"], /^\/settings\/claude-login$/);
-secretWritePath(["POST"], /^\/settings\/claude-login\/login$/);
+secretWritePath(["POST"], /^\/settings\/claude-login\/(login|sign-out)$/);
 secretWritePath(["PUT", "DELETE"], /^\/settings\/harness-keys\/[^/]+\/[^/]+$/);
 secretWritePath(["POST"], /^\/settings\/api-keys$/);
 secretWritePath(["DELETE"], /^\/settings\/api-keys\/[^/]+$/);
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SERVE_DEFAULT_MODEL", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_LOGIN_ENV, ...MODEL_KEYS.map((row) => row.field)];
-const OPERATIONS = [["GET", "/settings/claude-login", "getClaudeLogin"], ["PUT", "/settings/claude-login", "turnOnClaudeLogin"], ["DELETE", "/settings/claude-login", "turnOffClaudeLogin"], ["POST", "/settings/claude-login/login", "startClaudeLogin"]];
+const OPERATIONS = [["GET", "/settings/claude-login", "getClaudeLogin"], ["PUT", "/settings/claude-login", "turnOnClaudeLogin"], ["DELETE", "/settings/claude-login", "turnOffClaudeLogin"], ["POST", "/settings/claude-login/login", "startClaudeLogin"], ["POST", "/settings/claude-login/sign-out", "signOutClaudeLogin"]];
 const SIGNED_OUT = { loggedIn: false, authMethod: "none", apiProvider: "firstParty" };
 const SIGNED_IN = { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: "person@example.com", orgName: "Example", subscriptionType: "max" };
 /** A person's home for the tests that read paths alone: a folder of the test's own user, as the server's HOME must be to
@@ -356,7 +356,7 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   const saved = { get: async () => row };
   assert.equal(await loginForRun(saved, own, env, "claude-agent", { mode: "runner" }), undefined);
   // On, a runner place goes on the login (with the person's home, the env's HOME) and a sandbox place on the keys.
-  assert.deepEqual(await loginForRun(saved, own, { HOME: UP }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: UP });
+  assert.deepEqual(await loginForRun(saved, own, { HOME: UP }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: UP, own: true });
   assert.equal(await loginForRun(saved, own, {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
 });
 
@@ -719,7 +719,7 @@ test("this machine's login honours CLAUDE_SECURESTORAGE_CONFIG_DIR in the server
   assert.deepEqual(claude.claudeLoginEnv(folderEmpty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
   // A relative one is not taken, as with CLAUDE_CONFIG_DIR; AgentRun's own login never reads it.
   assert.deepEqual(claude.claudeSignInEnv(at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "secure" }), "linux"), { HOME: UP, ANTHROPIC_CONFIG_DIR: profiles });
-  assert.deepEqual(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: UP });
+  assert.deepEqual(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: UP, own: true });
 
   // A server started with it: the view names it, and the sign-in and every status check keep the tokens there.
   const secure = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-secure-dir-"));
@@ -877,13 +877,15 @@ async function loginRig(t) {
       const ended = new Promise((resolve) => { end = resolve; });
       return { ended, stop: () => { one.stopped = true; end({ end: "stopped" }); } };
     },
+    claudeLogout: async () => true,
   };
   const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
   const stale = (keeps) => started.filter((one) => !one.stopped && one.dir !== keeps);
   return { data, env, rows, settings, started, signIns, pinned, deps, stale };
 }
 
-// A sign-in reads the setting, then looks up the CLI, then starts it. A move of the login or a turn-off that lands in
+// A sign-in reads the setting, then looks up the CLI, then starts it. A move of the login, a turn-off or a sign-out (which
+// turns the mode off as a turn-off does, so a row of its own here) that lands in
 // between must not leave that sign-in waiting with what it read before: at a place the login no longer reads, or for a
 // login that is off, holding the browser's callback port. Here the sign-in is held inside that gap (its lookup of the
 // pinned CLI waits on the test), and the change is asked while it is held. Where nothing holds the change, it answers
@@ -893,6 +895,7 @@ async function loginRig(t) {
 const RACE_CHANGES = [
   ["a turn-on that moves the login to the other place", (deps) => turnOnClaudeLogin(deps, { only_me: true, place: "machine" }), "machine"],
   ["a turn-off", (deps) => turnOffClaudeLogin(deps), undefined],
+  ["a sign-out", async (deps) => (await signOutClaudeLogin(deps)).login, undefined],
 ];
 for (const [change, ask, place] of RACE_CHANGES) {
   test(`${change}, asked while a sign-in's start is between its read of the setting and the CLI's start, leaves no sign-in waiting with the setting it read`, { timeout: 10_000 }, async (t) => {
@@ -1334,7 +1337,7 @@ test("a HOME the server's user does not own is not the person's home: the login 
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const saved = { get: async () => settingFor("agentrun", data) };
-  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own, homeApart: true }, "a run's CLI runs in that user's own home");
+  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own, homeApart: true, own: true }, "a run's CLI runs in that user's own home");
 });
 
 // Where the server's user owns neither its HOME nor its own home (a service account whose home is /nonexistent, with a
@@ -2379,6 +2382,7 @@ const PICK_PACKAGE = `---
 name: on-plan
 version: 1.0.0
 description: Says hi.
+tools: []
 harness: [claude-agent, pi]
 model:
   tier: balanced

@@ -487,13 +487,14 @@ test("an approval that lands between a list's own build of a run's listing (its 
 });
 
 /** Counts the store calls each GET of a runs list makes, and the rows its reads hand back: every call on a store connection
- *  made while that request is handled (its async context), none of the server's own background work. */
+ *  made while that request is handled (its async context), none of the server's own background work. `transactions`: those
+ *  of them that opened a transaction, as a build of a run's view does (its one snapshot, which reads the run's journal). */
 function storeCallsPerList(t) {
   const request = new AsyncLocalStorage();
   let last;
   const emit = http.Server.prototype.emit;
   http.Server.prototype.emit = function (event, req, ...rest) {
-    if (event === "request" && req.method === "GET" && /^\/v2\/runs(\?|$)/.test(req.url)) return request.run((last = { calls: 0, rows: 0 }), () => emit.call(this, event, req, ...rest));
+    if (event === "request" && req.method === "GET" && /^\/v2\/runs(\?|$)/.test(req.url)) return request.run((last = { calls: 0, rows: 0, transactions: 0 }), () => emit.call(this, event, req, ...rest));
     return emit.call(this, event, req, ...rest);
   };
   t.after(() => (http.Server.prototype.emit = emit));
@@ -504,6 +505,7 @@ function storeCallsPerList(t) {
       const result = original.apply(this, args);
       if (!counted) return result;
       counted.calls++;
+      if (name === "transaction") counted.transactions++;
       if (name === "all") return result.then((rows) => ((counted.rows += rows.length), rows));
       if (name === "get") return result.then((row) => ((counted.rows += row === undefined ? 0 : 1), row));
       return result;
@@ -569,5 +571,40 @@ test("one runs list makes the same store calls, and reads the same rows, at 20 r
     assert.ok(at[200] <= 2, `${query}: one list makes at most two store calls with nothing behind (${at[200]})`);
     const read = rows[query];
     assert.equal(read[200], read[20], `${query}: one list reads ${read[20]} rows at 20 runs and ${read[200]} at 200: the same, its page cut in the query`);
+  }
+});
+
+// The Agent Factory's pages (GET /runs?scope=) are read from the same kept listings: 12 runs here, four working and four
+// failed, their journals 5 entries long and then 60. A page that built a run's view would open that run's snapshot and
+// read every entry of its journal in it, at each refresh of the board.
+test("one Agent Factory page builds no run's view once its runs' listings are kept: no snapshot is opened and its store calls are the same, whatever the length of the runs' journals", { timeout: 300_000 }, async (t) => {
+  const callsOfLast = storeCallsPerList(t);
+  const counted = {};
+  for (const entries of [5, 60]) {
+    const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-factory-rows-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const data = join(dir, "agents");
+    await storeOf(data, 12, entries);
+    const server = await startServe({ data, port: 0, faux: FAUX, listerIdleMs: Infinity });
+    try {
+      await server.listingSettled?.();
+      const api = client(server.baseUrl, server.token);
+      for (const scope of ["active", "review"]) {
+        const answer = await api("GET", `/runs?scope=${scope}`);
+        assert.equal(answer.status, 200, JSON.stringify(answer.body));
+        assert.equal(answer.body.runs.length, 4, `${scope}: its four runs`);
+        assert.ok(answer.body.runs.every((run) => run.factory.observation.basis === "runner"), `${scope}: each with its factory fields`);
+        (counted[scope] ??= {})[entries] = callsOfLast();
+      }
+    } finally {
+      await server.close();
+    }
+  }
+  for (const [scope, at] of Object.entries(counted)) {
+    assert.ok(Number.isInteger(at[5]?.calls) && at[5].calls > 0, `${scope}: the page's calls were counted (${JSON.stringify(at)})`);
+    for (const entries of [5, 60]) assert.equal(at[entries].transactions, 0, `${scope}: a page over journals of ${entries} entries opened ${at[entries].transactions} snapshots: none, so no run's journal was read`);
+    assert.deepEqual(at[60], at[5], `${scope}: one page makes the same store calls and reads the same rows over journals of 5 entries and of 60`);
+    // The page's rows, their listings and the runners' ticks, then each run's row and revision for its computer.
+    assert.ok(at[60].calls <= 3 + 2 * 4, `${scope}: one page of four runs makes at most 11 store calls (${at[60].calls})`);
   }
 });

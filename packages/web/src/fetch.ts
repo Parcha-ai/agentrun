@@ -233,13 +233,13 @@ function cameBy(via: unknown): string {
   return via === "none" ? "no provider after it read the page" : "this one was fetched directly";
 }
 
-/** A page as the tool `name` answers the model: its JSON, then a line for each picked provider that gave none saying why
+/** A page as the tool `name` answers the model: its JSON, then a line for each provider ahead that gave none saying why
  *  and what gave the page instead, and one saying where this part is in the page when it is not all of it. */
 export function webFetchText(page: WebPage | Page | FoundPage, name: string = "web_fetch"): string {
   const lines = [JSON.stringify(page)];
   const came = cameBy((page as { via?: unknown }).via);
   for (const [id, why] of Object.entries(missesOf(page))) {
-    if (why) lines.push(`${providerName(id)} was picked for web_fetch and gave no page (${why}); ${came}.`);
+    if (why) lines.push(`${providerName(id)} gave no page (${why}); ${came}.`);
   }
   const where = "found" in page ? undefined : partLine(page, name);
   if (where) lines.push(where);

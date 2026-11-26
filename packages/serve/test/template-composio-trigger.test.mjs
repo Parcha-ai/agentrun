@@ -31,6 +31,7 @@ const MANIFEST = (extra, { need = NEED, server = "github", event = "GITHUB_ISSUE
 name: issues
 version: 0.1.0
 description: Triages each new issue in one repository.
+tools: []
 budget: { per_run_usd: 0.5 }
 ${parameters.length ? `parameters:\n${parameters.map((line) => `  ${line}`).join("\n")}\n` : ""}mcp:
   - source: ${need.source}

@@ -103,7 +103,7 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
     if (root === "agents") {
       if (!id) {
         // Building an agent is part of the tour: it is made in the page's memory, and runs as a stand-in.
-        if (method === "POST" && body.definition && typeof body.definition === "object") return json(world.createAgent(body.definition as Record<string, unknown>), 201);
+        if (method === "POST" && body.definition && typeof body.definition === "object") return json(world.createAgent(body.definition as Record<string, unknown>, body.skills as Record<string, string> | undefined), 201);
         if (!get) return refused();
         const all = world.agents().filter((a) => !!a.archived_at === (q.get("archived") === "true"));
         const p = page(all, q, 100);
@@ -113,7 +113,9 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
       if (!agent) return notFound(`agent ${id}`);
       if (!sub) return get ? json(agent, 200, { etag: agent.home_etag }) : refused();
       if (sub === "definition" && method === "PUT" && body.definition && typeof body.definition === "object") {
-        const saved = world.saveDefinition(id, body.definition as Record<string, unknown>, typeof body.note === "string" ? body.note : null)!;
+        const etag = new Headers(init?.headers).get("if-match");
+        if (etag && etag !== agent.home_etag) return refusal(412, "precondition_failed", "The agent changed. Reload it before saving.");
+        const saved = world.saveDefinition(id, body.definition as Record<string, unknown>, typeof body.note === "string" ? body.note : null, body.skills as Record<string, string> | undefined)!;
         return json(saved, 200, { etag: saved.home_etag });
       }
       if (sub === "native" && get) return json({ native: agent.definition.native ?? null });
@@ -123,7 +125,14 @@ export function createDemoFetch({ real, world = createWorld() }: { real: typeof 
       }
       if ((sub === "archive" || sub === "unarchive") && method === "POST") return json(world.archiveAgent(id, sub === "archive"));
       if (sub === "current" && method === "POST") { const a = world.setCurrent(id, String(body.revision ?? "")); return a ? json(a, 200, { etag: a.home_etag }) : notFound(`revision ${String(body.revision ?? "")}`); }
-      if (sub === "revisions" && get) return json({ revisions: world.revisions(id), next_cursor: null });
+      if (sub === "revisions" && get) {
+        if (!rest.length) return json({ revisions: world.revisions(id), next_cursor: null });
+        if (rest.length === 2 && rest[1] === "skills") {
+          const files = world.revisionSkills(id, rest[0]);
+          return files ? json(files) : notFound(`revision ${rest[0]}`);
+        }
+        return notFound(path);
+      }
       if (sub === "runs" && get) {
         const p = page(world.runs({ agent: id, status: q.get("status") ?? undefined, archived: q.get("archived") === "true" }), q);
         return json({ runs: p.items, next_cursor: p.next_cursor });

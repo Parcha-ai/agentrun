@@ -79,7 +79,7 @@ function sandboxOverArchil(disk, scratch, mounts) {
 /** A Mode 2 run of a revision with one skill, over the Archil fake `disk`, in a fresh store (`learns`: a learning run, its seed
  *  the agent's first save in the store). `claimNext(build)` claims it (a claim taken over a lapsed one when there was
  *  one) and builds its spec; `t.after` lets every spec go. `mcp`: the run's MCP, its revision granted `grants` and
- *  pinned `pin`, `before(server)` registering the server, `deps` added to the claim's. `computer: false`: a revision with
+ *  pinned `pin`, its own tool settings `toolSettings`, `before(server)` registering the server, `deps` added to the claim's. `computer: false`: a revision with
  *  no computer, so nothing mounts the run's folder. */
 export async function mode2Run(t, { harness, disk, learns = false, mcp, computer = true }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-skills-"));
@@ -98,7 +98,7 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp, computer
   });
   await server.agents.create(
     { id: AGENT, name: "Agent" },
-    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write", ...(mcp?.grants ?? [])], skills: { "cite/SKILL.md": "0".repeat(64) }, ...(computer ? { computer: { kind: "sandbox", provider: "e2b" } } : {}), ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}) }, skills: { "cite/SKILL.md": SKILL }, ...(mcp?.pin ? { mcpPin: mcp.pin } : {}) },
+    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write", ...(mcp?.grants ?? [])], skills: { "cite/SKILL.md": "0".repeat(64) }, ...(computer ? { computer: { kind: "sandbox", provider: "e2b" } } : {}), ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}), ...(mcp?.toolSettings ? { toolSettings: mcp.toolSettings } : {}) }, skills: { "cite/SKILL.md": SKILL }, ...(mcp?.pin ? { mcpPin: mcp.pin } : {}) },
   );
   await mcp?.before?.(server);
   const learning = learns ? { seed: (await server.learning.seed(AGENT)).save.id, section: "" } : undefined;

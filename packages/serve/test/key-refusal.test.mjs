@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { agent, follow, serve, withEnv } from "./support.mjs";
+import { redactedAnswer, redactedCall } from "../dist/key-refusal.js";
 
 const KEY = `not-a-secret-${"openrouter-key"}`;
 const ONLY = { OPENROUTER_API_KEY: KEY };
@@ -101,3 +102,21 @@ for (const [what, text] of Object.entries(NOT_REFUSALS)) {
     }
   });
 }
+
+// Python's "\x20" is a space to the view that reads a single-quoted dict through Python's escapes, so padding of it
+// between a held value's head and its rest is nothing there: the read past a call's stop, and the tail of a run too long
+// to read, count it as the view does, and the value reads whole.
+const [PY_HEAD, PY_REST] = [["Wc3M", "hT8q", "Lz5N", "rB1v"].join(""), ["Xe6K", "pJ4d", "Ys9G", "fA2u"].join("")];
+const PY_PAD = String.raw`\x20`.repeat(60);
+
+test("kr-7: a held value split at a call's stop in a single-quoted string, Python's \\x20 padding past the read after the stop, is withheld", () => {
+  let text = "{'a': '";
+  while (text.length < 8192 - 100) text += "word ";
+  text += `see ${PY_HEAD} ${PY_PAD}${PY_REST} more'}`;
+  assert.equal(redactedCall(text, [`${PY_HEAD}${PY_REST}`], 200), "[redacted]");
+});
+
+test("kr-8: a held value whose head ends a run too long to read, Python's \\x20 padding after it, and whose rest follows is withheld", () => {
+  const text = `'${"a".repeat(9000)}${PY_HEAD}${PY_PAD} ${PY_REST} more'`;
+  for (const out of [redactedCall(text, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(text, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
+});

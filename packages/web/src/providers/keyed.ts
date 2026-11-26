@@ -31,6 +31,8 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn }: 
           method: "POST",
           headers: { ...headers, "content-type": "application/json" },
           body: JSON.stringify(body),
+          // It carries the key: a redirect is an error, never followed to an address the key was not meant for.
+          redirect: "error",
           signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]),
         });
         if (refuseOn.includes(response.status)) refused = true;

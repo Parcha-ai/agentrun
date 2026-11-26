@@ -14,7 +14,7 @@ import { withDecisions } from "./decision-rows.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, secretsShown } from "./learning.js";
 import { withLearning } from "./learning-run.js";
 import { runLearningEnd } from "./store-reads/learning.js";
-import { heldNumber, redacted, redactedCall, withheldWhole } from "./key-refusal.js";
+import { heldNumber, redactedCall } from "./key-refusal.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { answersOf, asksOf, type SignInReader, shownOf, stopAsked, withApprovalRows, withAsks, withBudgetRows, withOverCap } from "./run-view.js";
 import { launchOf } from "./handed-values.js";
@@ -22,7 +22,7 @@ import { capNowOf } from "./runner/journal-kinds.js";
 import { journalRecords } from "./runner/journal-reader.js";
 import { decisionsOverStore } from "./store-reads/decisions.js";
 import { readRun } from "./store-reads/runs.js";
-import { runTimeline, servedSince, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
+import { rowCutsOnce, runTimeline, servedSince, wholeAnswerFor, wholeAnswers } from "./store-reads/journal.js";
 import { FINAL_STATES, type Store } from "./store/store.js";
 
 export type ServedTimelineDeps = {
@@ -50,7 +50,8 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
   const read = await underCut(() => runCutValues(deps, store, runId), async (cut) => {
     if (cut === "unreadable") return undefined;
     const { values } = cut;
-    const redact = (text: string) => redacted(text, values);
+    // Each text cut once per held value set (rowCutsOnce): a reader that follows the run cuts only what an earlier read had not.
+    const { redact, holds } = rowCutsOnce(store, runId, cut, since);
     return { values, redact, ...(await store.snapshot(async (snapshot) => {
       // The rows a person reads: each call that waited for approval in order (held, your approval, what came of it), its
       // arguments and the person's notes through the cut (run-view.ts withApprovalRows), as main's served Timeline read them.
@@ -73,7 +74,7 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
         : stopAsked(view, run, await snapshot.commands(runId, 0)) ? "stopped" as const : undefined;
       // A call's arguments, or a web call's output, split across two strings are withheld whole in every read, with calls
       // or without (TimelineOptions.holds).
-      const options = { redact, holds: (text: string) => withheldWhole(text, values), settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), input: (text: string, shown: number) => redactedCall(text, values, shown), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
+      const options = { redact, holds, settled: ended, ended: view ? view.state !== "running" : false, ...(calls ? { calls: { result: CALL_RESULT_CHARS, redact: (text: string) => redactedCall(text, values, CALL_RESULT_CHARS, scrubUrls), input: (text: string, shown: number) => redactedCall(text, values, shown), held: (value: number | bigint) => heldNumber(value, values) } } : {}) };
       const timeline = await wholeAnswers(snapshot, runId, context, await runTimeline(snapshot, runId, context, options), options, wholeAnswerFor(values), since);
       // A run whose booked spend passed its cap says so, by how much, after its usage row (run-view.ts withOverCap, as main's
       // served Timeline did): at the cap as it stands (a raise taken counts, capNowOf).
@@ -85,7 +86,7 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       // A workflow's decisions: their rows among the model nodes' by time, each text shown through the cut set, with as many
       // characters held back from a text stored cut as a held value takes in its widest form (main's decisionShown).
       const receipts = await decisionsOverStore(snapshot, runId, context).catch(() => null);
-      const decisionShown = { redact: (text: string) => redacted(text, values), hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
+      const decisionShown = { redact, hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
       const own = receipts === null || receipts.length ? withDecisions(rows, receipts, decisionShown, { ended }) : rows;
       // The run's learning end, once its learning merged or dropped (runLearningEnd).
       const end = await runLearningEnd(snapshot, runId);

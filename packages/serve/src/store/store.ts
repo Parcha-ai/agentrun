@@ -218,10 +218,13 @@ export interface ListedRun {
   /** The listing is behind now (Runs.behind's three ways): a list builds it before it shows it. */
   readonly behind: boolean;
 }
-/** A run's listing as its row keeps it (Runs.putListing's item and cut). */
+/** A run's listing as its row keeps it (Runs.putListing's item and cut, and what it kept for the Agent Factory). */
 export interface KeptListing {
   readonly item: Record<string, unknown>;
   readonly cut: string;
+  /** What the build kept for the Agent Factory beside the list item (RunListing.factory), or none for a listing an
+   *  earlier server built. */
+  readonly factory?: unknown;
 }
 /** Whether `run`, of a revision of `kind`, was stopped by a person and waits for them (state 'stopped', outcome 'stopped',
  *  an agentic run started here): its turn is over, the run is not. A workflow's stop, a cancel and an imported run's stop
@@ -236,6 +239,9 @@ export interface RunListing {
   readonly live: boolean;
   readonly until: number | null;
   readonly flags: number;
+  /** What a scoped list (the Agent Factory's) shows of the run beside its list item, as the same build read it (JSON, the
+   *  server's own: store-view.ts KeptFactory). Kept with the item and cut of the same secrets; no runs list shows it. */
+  readonly factory?: unknown;
 }
 
 export function stoppedByPerson(run: Pick<RunRow, "state" | "outcome" | "importedFrom">, kind: string): boolean {
@@ -1182,8 +1188,11 @@ export interface Runs {
    *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value.
    *  `disk`: only the runs on that disk (RunRow.disk), null for the default disk's; not given, every disk's.
    *  A purged run (Runs.purge) only with `purged`: the readers of money and counts (usage, stats, analytics) and an
-   *  import's read of the sessions it holds, never a reader of a run's content. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean }): Promise<RunRow[]>;
+   *  import's read of the sessions it holds, never a reader of a run's content.
+   *  `scope` selects, before the limit, the runs the Agent Factory shows, never an imported one: `active`, every
+   *  execution still going (a resumable agentic stop and a built-in learning run included); `review`, unarchived ended
+   *  escalations and failures. `before` is an exclusive keyset boundary in descending (startedAt, id) order. */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean; scope?: "active" | "review"; before?: { startedAt: number; id: string } }): Promise<RunRow[]>;
   /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
    *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
    *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:
@@ -1191,6 +1200,11 @@ export interface Runs {
    *  another's from its listing); `going` keeps only runs still going whose listing is behind. A built-in learning run and
    *  an audit's shadow run are never listed. */
   listed(filter: ListedFilter): Promise<{ readonly rows: readonly ListedRun[]; readonly more: boolean }>;
+  /** The listings of the runs `runIds`, in one read: each run there is that is not purged, with its listing as its row
+   *  keeps it, its mark, whether it is behind and its agent's archive time, as `listed` gives them. Whatever the run
+   *  otherwise: a built-in learning run and an audit's shadow run too, which the Agent Factory's active scope shows
+   *  (`list`'s `scope`). In no order. */
+  listings(runIds: readonly string[]): Promise<readonly (Pick<ListedRun, "agentArchivedAt" | "listing" | "listMark" | "behind"> & { readonly id: string })[]>;
   /** Agent `agentId`'s runs counted in one read (an agent's view): every run it has (`count`), and those still going
    *  (`live`: queued, running or parked, or an agentic run a person stopped, which a message continues). A built-in learning
    *  run and an audit's shadow run are none of them. */
@@ -1560,6 +1574,9 @@ export interface SealedKeys {
   get(name: string): Promise<Uint8Array | undefined>;
   /** Saves `sealed` under `name`, inserted or replaced in place. */
   put(name: string, sealed: Uint8Array): Promise<void>;
+  /** Saves `sealed` under `name` only where no row is, in one statement: of two writers racing on one name, one's bytes
+   *  are kept. True when it was written; false, writing nothing, when a row was there. */
+  putIfAbsent(name: string, sealed: Uint8Array): Promise<boolean>;
   /** Saves `sealed` under `name` only while its row still holds `was` (the bytes as get read them), in one statement: a
    *  compare-and-set, so of two writers that read one row only one replaces it. Each seal is fresh bytes, so a row any
    *  writer saved since reads as changed. True when it was replaced; false, writing nothing, when it changed or is gone. */
