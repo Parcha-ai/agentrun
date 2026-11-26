@@ -289,6 +289,39 @@ test("pi: the reserve a cut's charge holds again on a claim that reopened the se
   await third.close();
 });
 
+/** Each browser charge of the run's root (BROWSER_CHARGED) whose money is not booked on the run's ledger: no step names
+ *  its ref (browser-cost.ts chargeRef), or the step that does was never settled. */
+const unbookedCharges = (records) => {
+  const requests = records.entries.filter((entry) => entry.kind === "runner.request" && entry.data?.tool === "browser" && typeof entry.data.ref === "string");
+  const settled = new Set(records.entries.filter((entry) => entry.kind === "runner.turn").map((entry) => `${entry.conversationId}:${entry.data.turn}`));
+  return chargesOf(records).filter((charge) => typeof charge.usd === "number" && charge.usd > 0).filter((charge) => {
+    const ref = `browser:${charge.tag}@${charge.at}${charge.final ? "/final" : ""}`;
+    return !requests.some((entry) => entry.data.ref === ref && settled.has(`${entry.conversationId}:${entry.data.turn}`));
+  });
+};
+const stoppedRun = async (server) => until(async () => { const row = await server.runs.get(RUN); return row.state !== "running" && row.state !== "queued" && row.state; }, "the run ended on its stop");
+
+for (const [label, hung] of [["its release answers: the release's charge", false], ["its release never answers: the cut's charge", true]]) {
+  test(`pi: a person's stop lets the run's browser go and books its charge on the run's ledger, as a shutdown does: ${label}`, { timeout: 120_000 }, async (t) => {
+    const { sendCommand } = await import("../dist/runner/commands.js");
+    const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
+    const { server, runner } = await piRun(t, "runner-stop-books-", { runnerOptions: { cleanupMs: CLEANUP_MS }, launch: { max_cost_usd: 1 }, env: hung ? { FAUX_BROWSER_RELEASE_HOLD: hold } : {} });
+    t.after(() => writeFileSync(hold, ""));
+    const said = warnings(t);
+    await sendCommand(server, RUN, { kind: "stop", body: {} });
+    const state = await stoppedRun(server);
+    const records = await recordsOf(server);
+    const charges = chargesOf(records);
+    assert.ok(charges.some((charge) => charge.final !== hung), `the ${hung ? "cut's" : "release's"} charge is on the run's root: ${JSON.stringify({ state, charges })}`);
+    assert.equal(cutsOf(records).length, hung ? 1 : 0, JSON.stringify(cutsOf(records)));
+    assert.ok(charges.filter((charge) => charge.usd > 0).length >= 2, `the session's time was charged, priced: ${JSON.stringify(charges)}`);
+    assert.deepEqual(unbookedCharges(records), [], `every charge is booked on the run's ledger: ${JSON.stringify({ charges, said: said.filter((line) => /browser|ledger|stopped/.test(line)) })}`);
+    // A release the cut left running fails once the run's Harness closes under it: that is the cut, not a refusal.
+    assert.deepEqual(said.filter((line) => /loop stopped \(command\)|releaseCut failed/.test(line) || (!hung && /beforeRelease failed/.test(line))), [], "no host's release or booking was refused by the stop");
+    await runner.close();
+  });
+}
+
 /** A vendor of --faux's desktops: create starts one, connect finds it, delete ends it. */
 function fauxDesktops(faux) {
   const entry = faux.kinds.PROVIDERS.find((one) => one.id === "faux-desktop");
