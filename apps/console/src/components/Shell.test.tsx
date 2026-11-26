@@ -131,9 +131,9 @@ describe("Shell's navigation", () => {
     return [...host.querySelectorAll('nav[aria-label="Navigation"] button')].map((b) => b.textContent?.trim());
   };
   it("offers Triggers where the server has them, after Runs, and not where it does not", () => {
-    expect(items(true)).toEqual(["Mission Control", "API playground", "Agents", "Suggested", "Templates", "Runs", "Triggers", "Learning Dojo"]);
+    expect(items(true)).toEqual(["Mission Control", "Agent Factory", "API playground", "Free", "Agents", "Suggested", "Templates", "Runs", "Triggers", "Learning Dojo"]);
     act(() => root?.unmount());
-    expect(items(false)).toEqual(["Mission Control", "API playground", "Agents", "Suggested", "Templates", "Runs", "Learning Dojo"]);
+    expect(items(false)).toEqual(["Mission Control", "Agent Factory", "API playground", "Free", "Agents", "Suggested", "Templates", "Runs", "Learning Dojo"]);
   });
 });
 

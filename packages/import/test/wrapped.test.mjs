@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { catalogOf, wrappedHome } from "../dist/index.js";
-import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, piFile, piMeta, piUser, tempHome, writeJsonl } from "./fixtures.mjs";
+import { catalogOf } from "../dist/index.js";
+import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, piFile, piMeta, piUser, tempHome, wrappedHome, writeJsonl } from "./fixtures.mjs";
 
 const WORDS = "Fixture prompt, never reported.";
 const answer = (n, i, usage = anthropicUsage(100, 10, 50, 5), model = "claude-fixture-1") => claudeAnswer({ uuid: `a${n}`, msg: `m${n}`, req: `r${n}`, usage, i, model });

@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { serve, client } from "./support.mjs";
 import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { askedForCompile } from "../dist/learn/compile.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const instructions = "Report release readiness using the existing backend status tool.";
 const tool = {
@@ -90,7 +91,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       assert.ok(claim);
       const launch = (await server.store.runs.launch(id)).body;
       const loop = createSdkLoop(launch, { store: server.store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => route)({
-        journal: () => server.store.journal(claim), flush: () => server.store.flush(), signal: new AbortController().signal,
+        redact: heldRedactor((text) => text), journal: () => server.store.journal(claim), flush: () => server.store.flush(), signal: new AbortController().signal,
       });
       assert.equal((await loop.start(claim)).state, "ended");
       const learning = await server.api("GET", `/runs/${id}/learning`);

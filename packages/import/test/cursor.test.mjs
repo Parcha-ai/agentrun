@@ -6,8 +6,8 @@ import { appendFile, rename, truncate, utimes, writeFile } from "node:fs/promise
 import { join } from "node:path";
 import { test } from "node:test";
 import { deserialize, serialize } from "node:v8";
-import { parseHome, READERS } from "../dist/index.js";
-import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, jsonl, tempHome, writeJsonl } from "./fixtures.mjs";
+import { READERS } from "../dist/index.js";
+import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, jsonl, parseHome, tempHome, writeJsonl } from "./fixtures.mjs";
 
 /** Claude Code's reader on one file, from `cursor`: its one session, with the read's cursor and bytes. */
 async function readFrom(file, cursor) {

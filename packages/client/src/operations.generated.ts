@@ -354,6 +354,8 @@ export type AgentList = {
 export type RunList = {
   runs: Array<RunSummary>;
   next_cursor: string | null;
+  scope?: "active" | "review";
+  observed_at?: string;
 };
 
 export type RunSummary = {
@@ -367,6 +369,18 @@ export type RunSummary = {
   created_at: Timestamp;
   ended_at: Timestamp | null;
   cost: Cost;
+  computer?: {
+    kind: "sandbox" | "desktop" | "phone" | "browser";
+    provider: string;
+    state: "starting" | "ready" | "taken_over" | "released" | "ended" | "failed";
+    why?: string;
+    held?: {
+      state: "starting" | "waiting" | "started" | "ended" | "released";
+      minutes: number;
+      until?: string;
+      why?: "timeout" | "lost";
+    };
+  };
   sdk?: {
     runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
     model: string | null;
@@ -440,6 +454,37 @@ export type RunSummary = {
     };
     model_requests: null;
   };
+  factory?: {
+    lifecycle_version: string;
+    source: "managed" | "native" | "sdk" | "cli";
+    runtime: string;
+    control: "managed" | "observed";
+    controls: {
+      stop: boolean;
+      cancel: boolean;
+      approve: boolean;
+    };
+    observation: {
+      basis: "runner" | "connector" | "unreported";
+      status: "current" | "offline" | "revoked" | "unreported";
+      last_seen_at: string | null;
+    };
+    last_activity_at: string | null;
+    github: null | {
+      repository: string;
+      issue: number | null;
+      pull_request: number | null;
+      head_sha: string | null;
+      provenance: "launch" | "github_trigger";
+    };
+    children: Array<{
+      id: string;
+      conversation_id: number;
+      parent_call_id: string;
+      status: "active" | "completed";
+      label: string | null;
+    }>;
+  };
   console_url?: string;
   revision: string;
   kind: "agentic" | "workflow";
@@ -451,7 +496,7 @@ export type RunSummary = {
   error?: RunError | null;
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
     detail: string | null;
     workflows?: Array<{
       file: string;
@@ -560,7 +605,6 @@ export type Cost = {
   followup_usd?: number | null;
   shadow_usd?: number | null;
   share_usd?: number | null;
-  degraded?: true;
   plan?: {
     requests: number;
     tokens: number;
@@ -717,6 +761,37 @@ export type Run = {
     };
     model_requests: null;
   };
+  factory?: {
+    lifecycle_version: string;
+    source: "managed" | "native" | "sdk" | "cli";
+    runtime: string;
+    control: "managed" | "observed";
+    controls: {
+      stop: boolean;
+      cancel: boolean;
+      approve: boolean;
+    };
+    observation: {
+      basis: "runner" | "connector" | "unreported";
+      status: "current" | "offline" | "revoked" | "unreported";
+      last_seen_at: string | null;
+    };
+    last_activity_at: string | null;
+    github: null | {
+      repository: string;
+      issue: number | null;
+      pull_request: number | null;
+      head_sha: string | null;
+      provenance: "launch" | "github_trigger";
+    };
+    children: Array<{
+      id: string;
+      conversation_id: number;
+      parent_call_id: string;
+      status: "active" | "completed";
+      label: string | null;
+    }>;
+  };
   console_url?: string;
   revision: string;
   kind: "agentic" | "workflow";
@@ -760,7 +835,7 @@ export type Run = {
   };
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
     detail: string | null;
     at: string;
     workflows?: Array<{
@@ -1047,7 +1122,7 @@ export type TimelineRow = {
   tool_result_text?: string | null;
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
     detail: string | null;
   };
 };
@@ -1119,7 +1194,7 @@ export type Capabilities = {
     } | {
       mode: "sandbox";
       box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
-    };
+    } | null;
     default_reason?: string;
     allow: Array<string>;
   };
@@ -1301,7 +1376,6 @@ export type Features = {
     routes: boolean;
     at_rest: "sealed";
     harnesses: Array<string>;
-    kept: Array<string>;
   };
   mcp_client?: {
     transports: Array<"streamable-http">;
@@ -2222,6 +2296,7 @@ export interface ListRunsParams {
   limit?: number;
   cursor?: string;
   status?: "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
+  scope?: "active" | "review";
   label?: string;
 }
 export type ListRunsResponse = RunList;
@@ -3432,6 +3507,45 @@ export type GetGitHubConnectionResponse = {
   }>;
 };
 
+/** This machine, its Ollama, the free local model recommended for them, and the pull here (GET /settings/local-model). */
+export type GetLocalModelResponse = {
+  machine: {
+    platform: string;
+    arch: string;
+    ram_bytes: number;
+    gpu: {
+      kind: "apple";
+      unified: true;
+    } | {
+      kind: "nvidia";
+      name: string;
+      memory_bytes: number;
+    } | {
+      kind: "unknown";
+    };
+  };
+  ollama: {
+    asked: boolean;
+    reachable: boolean;
+    version: string | null;
+  };
+  recommended: {
+    tag: string | null;
+    why: string;
+    pulled: boolean;
+  };
+  pull: null | {
+    tag: string;
+    state: "pulling" | "done" | "failed";
+    status: string;
+    completed_bytes: number;
+    total_bytes: number;
+    error?: string;
+  };
+  can_pull: boolean;
+  refused: string | null;
+};
+
 /** The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway). */
 export type GetModelGatewayResponse = {
   source: "env" | "console" | null;
@@ -3874,6 +3988,48 @@ export type ListSuggestionsResponse = {
       pull_error: string | null;
     };
   }>;
+};
+
+/** Pull a recommended model into the Ollama here (POST /settings/local-model/pull). */
+export type PullLocalModelBody = {
+  tag: "inkling-2-mini" | "qwen3:8b" | "qwen3:4b";
+};
+export type PullLocalModelResponse = {
+  machine: {
+    platform: string;
+    arch: string;
+    ram_bytes: number;
+    gpu: {
+      kind: "apple";
+      unified: true;
+    } | {
+      kind: "nvidia";
+      name: string;
+      memory_bytes: number;
+    } | {
+      kind: "unknown";
+    };
+  };
+  ollama: {
+    asked: boolean;
+    reachable: boolean;
+    version: string | null;
+  };
+  recommended: {
+    tag: string | null;
+    why: string;
+    pulled: boolean;
+  };
+  pull: null | {
+    tag: string;
+    state: "pulling" | "done" | "failed";
+    status: string;
+    completed_bytes: number;
+    total_bytes: number;
+    error?: string;
+  };
+  can_pull: boolean;
+  refused: string | null;
 };
 
 /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
@@ -5067,7 +5223,7 @@ export type HandBackRunComputerResponse = {
 export type GetRunLearningResponse = {
   run: string;
   state: "seeded" | "reflecting" | "merged" | "dropped";
-  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
   detail: string | null;
   at: string;
   seed: string | null;
@@ -5132,6 +5288,7 @@ export interface ListAllRunsParams {
   agent?: string;
   revision?: string;
   status?: "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
+  scope?: "active" | "review";
   archived?: boolean;
   label?: string;
   source?: string;
@@ -7539,7 +7696,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getAgentPackage: {"method":"GET","path":"/agents/{agent_id}/package","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   resolveSourceSync: {"method":"POST","path":"/agents/{agent_id}/source/resolve","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   reviewSourceProject: {"method":"POST","path":"/agents/{agent_id}/source/project-review","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  listRuns: {"method":"GET","path":"/agents/{agent_id}/runs","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor","status","label"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listRuns: {"method":"GET","path":"/agents/{agent_id}/runs","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor","status","scope","label"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   setSourceSync: {"method":"PATCH","path":"/agents/{agent_id}/source","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
@@ -7604,6 +7761,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getClaudeLogin: {"method":"GET","path":"/settings/claude-login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getEmailAccount: {"method":"GET","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getGitHubConnection: {"method":"GET","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getLocalModel: {"method":"GET","path":"/settings/local-model","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getModelGateway: {"method":"GET","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getSuggestion: {"method":"GET","path":"/suggestions/{suggestion_id}","pathParams":["suggestion_id"],"multiSegment":[],"query":["name"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getWorkspaceArchil: {"method":"GET","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7620,6 +7778,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listMcpServerNames: {"method":"GET","path":"/settings/mcp-server-names","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRunningComputers: {"method":"GET","path":"/computers/running","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listSuggestions: {"method":"GET","path":"/suggestions","pathParams":[],"multiSegment":[],"query":["repo","status"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  pullLocalModel: {"method":"POST","path":"/settings/local-model/pull","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   putWorkspaceArchil: {"method":"PUT","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   receiveHook_composio: {"method":"POST","path":"/hooks/composio/{hook}","pathParams":["hook"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   restoreSuggestion: {"method":"POST","path":"/suggestions/{suggestion_id}/restore","pathParams":["suggestion_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7671,7 +7830,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   handBackRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/hand-back","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunLearning: {"method":"GET","path":"/runs/{run_id}/learning","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunLearningDiff: {"method":"GET","path":"/runs/{run_id}/learning/diff","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  listAllRuns: {"method":"GET","path":"/runs","pathParams":[],"multiSegment":[],"query":["limit","cursor","agent","revision","status","archived","label","source","from","to","model"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listAllRuns: {"method":"GET","path":"/runs","pathParams":[],"multiSegment":[],"query":["limit","cursor","agent","revision","status","scope","archived","label","source","from","to","model"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   sendMessage: {"method":"POST","path":"/runs/{run_id}/messages","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pauseRun: {"method":"POST","path":"/runs/{run_id}/pause","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   raiseRunCap: {"method":"PATCH","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -7923,6 +8082,8 @@ export function resources(call: Call) {
       getEmailAccount: (options?: RequestOptions): Promise<GetEmailAccountResponse> => call("getEmailAccount", [], undefined, undefined, options),
       /** Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github). */
       getGitHubConnection: (options?: RequestOptions): Promise<GetGitHubConnectionResponse> => call("getGitHubConnection", [], undefined, undefined, options),
+      /** This machine, its Ollama, the free local model recommended for them, and the pull here (GET /settings/local-model). */
+      getLocalModel: (options?: RequestOptions): Promise<GetLocalModelResponse> => call("getLocalModel", [], undefined, undefined, options),
       /** The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway). */
       getModelGateway: (options?: RequestOptions): Promise<GetModelGatewayResponse> => call("getModelGateway", [], undefined, undefined, options),
       /** One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id}). */
@@ -7951,6 +8112,8 @@ export function resources(call: Call) {
       listRunningComputers: (options?: RequestOptions): Promise<ListRunningComputersResponse> => call("listRunningComputers", [], undefined, undefined, options),
       /** Suggested agents: each repository's scan and the agents it suggests (GET /suggestions). */
       listSuggestions: (params?: ListSuggestionsParams, options?: RequestOptions): Promise<ListSuggestionsResponse> => call("listSuggestions", [], undefined, params, options),
+      /** Pull a recommended model into the Ollama here (POST /settings/local-model/pull). */
+      pullLocalModel: (body: PullLocalModelBody, options?: RequestOptions): Promise<PullLocalModelResponse> => call("pullLocalModel", [], body, undefined, options),
       /** Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil). */
       putWorkspaceArchil: (body: PutWorkspaceArchilBody, options?: RequestOptions): Promise<PutWorkspaceArchilResponse> => call("putWorkspaceArchil", [], body, undefined, options),
       /** Fire a Composio trigger: a request it checks, no token (POST /hooks/composio/{hook}). */

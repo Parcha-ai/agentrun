@@ -20,6 +20,7 @@ import { RUNNER_RECORDS, sessionSpendOf } from "@parcha/agentrun-kernel";
 import { storeOn, T0 } from "./store-helpers.mjs";
 
 const { workflowSpecOf } = await import("../dist/runner/workflow-spec.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { WORKFLOW_SESSION } = await import("../dist/runner/journal-kinds.js");
 
@@ -71,7 +72,7 @@ function heldOrigin() {
  *  handed over (build), a Harness over the claim's journal on the spec's models with the host's extensions, then
  *  harnessReady, where the booking is made and an earlier claim's requests are booked (bookCut). */
 async function claimReady(closing, store, claim, providerOf) {
-  const spec = await workflowSpecOf({ store, providerOf })(claim, { journal: () => store.journal(claim) });
+  const spec = await workflowSpecOf({ store, providerOf })(claim, { redact: heldRedactor((text) => text), journal: () => store.journal(claim) });
   closing.push(() => spec.release());
   const parks = [];
   const { extensions } = spec.build({ park: (refusal) => void parks.push(refusal), paused: () => false, pause: () => {} });

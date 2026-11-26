@@ -33,6 +33,7 @@ import { waitingOf } from "@/lib/learning";
 import { appendRuns } from "@/lib/idempotency";
 import { freeRequestsNote, harnessDefault, type HarnessInfo, modelLabel, NO_MODEL_YET } from "@/lib/models";
 import { RunBar } from "@/components/RunBar";
+import { runsHere } from "@/lib/runHere";
 import { placeLabel, type Places } from "@/lib/place";
 import { providerLabel, resolution } from "@/lib/toolSettings";
 import { type Problem, problem } from "@/lib/problem";
@@ -173,11 +174,10 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   // A harness the server can't run: why, where its Run would fail (capabilities' harnesses[].reason).
   const off = workflow || native || sdk || cli ? undefined : harnesses?.find((h) => h.id === (d.harness ?? "pi") && h.available === false);
   const offText = off ? `${harnessLabel(off.id)} doesn't run on this server${off.reason ? `: ${off.reason}` : "."}` : undefined;
-  // Run from this page: an agent this server runs (not a native, SDK or CLI one, which run where they live), not archived.
-  const runHere = !agent.archived_at && !native && !sdk && !cli;
+  const runHere = runsHere(agent);
   // Where it runs: its own place, else the server's default place for it, marked as such (#1790: resolved at each run).
   const where = runsWhere(agent, places);
-  const runsLabel = `${placeLabel(where?.place)}${where?.byDefault ? " (server default)" : ""}`;
+  const runsLabel = `${placeLabel(where?.place)}${where?.byDefault && where.place ? " (server default)" : ""}`;
   // Explain a known absent default without blocking observation or the handoff that can configure it.
   // Explicit models and older servers leave readiness to the execution path.
   const needsModel = !sdk && !cli && !native && !workflow && !off && !d.model && !fallback && harnesses?.some((h) => h.id === (d.harness ?? "pi") && h.default_model === null);
@@ -442,7 +442,7 @@ function RunsTab({ agent, history }: TabProps) {
         <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{r.cost && (r.cost.usd !== null || soFar(r.cost)) ? cost(r.cost, { ended: runEnded(r.status) }) : "—"}</td>
       </tr>)}</tbody>
     </table>{!filtered.length && <p className="p-10 text-center text-body text-muted-foreground">No loaded runs match your search.</p>}</div>
-      : <div className="px-4 py-12 text-center text-body text-muted-foreground"><p>No runs of this agent yet.</p>{!agent.archived_at && <p className="mt-2">Choose Run agent to continue with your coding agent or the API playground.</p>}</div>}
+      : <div className="px-4 py-12 text-center text-body text-muted-foreground"><p>No runs of this agent yet.</p>{!agent.archived_at && <p className="mt-2">{runsHere(agent) ? "Start one from the Run box above." : "Choose Run agent to continue with your coding agent or the API playground."}</p>}</div>}
     {error && <div className="m-4 space-y-3"><ProblemCard problem={error} onRetry={refresh} className="" />{reloadLatest && <Button size="sm" onClick={reloadLatest} disabled={reading}>Reload latest runs</Button>}</div>}
     {cursor && <div className="flex justify-center p-4"><Button size="sm" onClick={loadMore} disabled={reading}>{more ? "Loading" : "Load more"}</Button></div>}
   </section>;

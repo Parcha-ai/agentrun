@@ -4,26 +4,25 @@ import { basename, dirname, join } from "node:path";
 import { addRequest, setUsage } from "../counts.js";
 import { type FileCursor, type LineSource, LineTooLong, lineReader, type ReadContext, resumes } from "../lines.js";
 import { entries, type Locator, type Reader, rememberUser } from "../reader.js";
+import type { Shape } from "../scan.js";
 import { argsOf, effortOf, isObject, str, textOf, timeOf } from "../text.js";
-import type { Answer, Turn } from "../types.js";
+import type { Turn, Usage } from "../types.js";
 import { normalizeUsage } from "../usage.js";
 
 /** Whether the file has user_message events, and its user messages, each with its place among the turns, held to the
- *  file's end. `open`: the request the model's output items join, until a result of one of its calls; `unpaid`, the
- *  latest request whose usage has not come (written after its calls' results at times); `records`, whether the file has
- *  token_usage_records, with the responses they counted, and `total`, the last token_count's total; `items`, whether
- *  each completed item failed, and `results`, each tool result by call id, with whether its output said; `provider`, the
- *  model provider its session_meta names; `forkedFrom`, the threads its session_meta says it forked or was spawned from;
- *  `replay`, the parent's history a fork copied in (forkReplay), null when there is none. */
+ *  file's end. `openAt`: the request the model's output items join, until a result of one of its calls (`openCalls`);
+ *  `unpaidAt`, the latest request whose usage has not come (written after its calls' results at times), each by its index
+ *  in the read's answers, or a totals read's counts; `records`, whether the file has token_usage_records, with the
+ *  responses they counted, and `total`, the last token_count's total; `items`, whether each completed item failed, and
+ *  `results`, each tool result by call id, with whether its output said; `provider`, the model provider its session_meta
+ *  names; `forkedFrom`, the threads its session_meta says it forked or was spawned from; `replay`, the parent's history
+ *  a fork copied in (forkReplay), null when there is none. */
 type Own = {
   forkedFrom?: Set<string>;
   replay?: Replay | null;
   looked?: Looked;
   events: boolean;
   held: { index: number; turn: Turn }[];
-  open?: Answer;
-  unpaid?: Answer;
-  /** A totals read's open and unpaid requests instead, by their index in its counts, and the open one's call ids. */
   openAt?: number;
   unpaidAt?: number;
   openCalls?: string[];
@@ -74,40 +73,41 @@ function codexFailed(output: unknown): boolean | undefined {
   return undefined;
 }
 
-function readRecord(value: Record<string, unknown>, at: number, { state, keep, add }: ReadContext<Own>): void {
+function readRecord(value: Record<string, unknown>, at: number, { state, keep, add, chain }: ReadContext<Own>): void {
   const { session, names, turns, own: codex, counts } = state;
   const payload = isObject(value.payload) ? value.payload : {};
   // One request's output items are one turn; its usage, when it comes, is that turn's. A usage with no request (a
-  // compaction's, one whose output is no item read here) is a turn of its own.
-  const answer = (): Answer => {
-    const turn: Answer = { role: "assistant", text: "", calls: [], at, ...(session.model ? { model: session.model } : {}), ...(state.effort ? { effort: state.effort } : {}) };
-    add(turn);
-    return turn;
+  // compaction's, one whose output is no item read here) is a turn of its own. Each is held by its index: in the read's
+  // answers, or a totals read's counts, each request its model, usage and time alone. A read's request is in the chain
+  // too (a totals read keeps none).
+  const answer = (): number => {
+    if (counts) return addRequest(counts, session.model, undefined, at);
+    add({ role: "assistant", text: "", calls: [], at, ...(session.model ? { model: session.model } : {}), ...(state.effort ? { effort: state.effort } : {}) });
+    chain?.push({ request: state.answers.length - 1 });
+    return state.answers.length - 1;
   };
-  const request = (): Answer => codex.open ?? (codex.open = codex.unpaid = answer());
-  // Each request's own counts (a token_count's last_token_usage), never the thread's running total.
-  const answered = (usage: unknown, response?: string) => {
-    const tokens = normalizeUsage("openai", usage);
-    const turn = codex.unpaid ?? answer();
-    if (tokens) turn.usage = tokens;
-    if (response) turn.key = response;
-    codex.open = codex.unpaid = undefined;
-  };
-  // A totals read's: the same, each request its model, usage and time alone.
-  const answerAt = (): number => addRequest(counts!, session.model, undefined, at);
-  const requestAt = (): number => {
+  const request = (): number => {
     if (codex.openAt === undefined) {
-      codex.openAt = codex.unpaidAt = answerAt();
+      codex.openAt = codex.unpaidAt = answer();
       codex.openCalls = [];
     }
     return codex.openAt;
   };
-  const answeredAt = (usage: unknown) => {
+  const usageOn = (i: number, tokens: Usage) => (counts ? setUsage(counts, i, tokens) : (state.answers[i]!.usage = tokens));
+  // Each request's own counts (a token_count's last_token_usage), never the thread's running total.
+  const answered = (usage: unknown, response?: string) => {
     const tokens = normalizeUsage("openai", usage);
-    const index = codex.unpaidAt ?? answerAt();
-    if (tokens) setUsage(counts!, index, tokens);
+    const i = codex.unpaidAt ?? answer();
+    if (tokens) usageOn(i, tokens);
+    if (response && !counts) state.answers[i]!.key = response;
     codex.openAt = codex.unpaidAt = undefined;
   };
+  // A rollout's prompt only grows, but for a compaction, which replaces the history with its summary: the chain holds the
+  // requests and the compactions, in their order, and no record ids (a rollout names none to rewind to).
+  if (value.type === "compacted") {
+    chain?.push({ compact: true });
+    return;
+  }
   if (value.type === "session_meta") {
     // A fork writes its parent's session_meta after its own (Codex 0.154): one whose id is the thread this rollout forked
     // from is that copy, and says nothing of this rollout. Any other later session_meta still counts, as Codex writes it.
@@ -128,7 +128,6 @@ function readRecord(value: Record<string, unknown>, at: number, { state, keep, a
     if (!session.cwd && str(payload.cwd)) session.cwd = payload.cwd as string;
     state.effort = effortOf(payload.effort);
     // A new turn: a request left open (aborted) has no usage to come.
-    codex.open = codex.unpaid = undefined;
     codex.openAt = codex.unpaidAt = undefined;
     return;
   }
@@ -140,7 +139,7 @@ function readRecord(value: Record<string, unknown>, at: number, { state, keep, a
     const id = str(payload.response_id);
     if (id && codex.responses.has(id)) return;
     if (id) codex.responses.add(id);
-    return counts ? answeredAt(payload.usage) : answered(payload.usage, id);
+    return answered(payload.usage, id);
   }
   if (value.type === "event_msg") {
     if (payload.type === "user_message") {
@@ -152,8 +151,7 @@ function readRecord(value: Record<string, unknown>, at: number, { state, keep, a
       const total = isObject(info.total_token_usage) ? JSON.stringify(info.total_token_usage) : undefined;
       if (total !== undefined && total === codex.total) return;
       codex.total = total;
-      if (counts) answeredAt(info.last_token_usage);
-      else answered(info.last_token_usage);
+      answered(info.last_token_usage);
     } else if (payload.type === "item_completed" && isObject(payload.item) && str(payload.item.id)) {
       // Whether a call failed is its result's turn's: none is kept without turns.
       if (!keep) return;
@@ -175,22 +173,23 @@ function readRecord(value: Record<string, unknown>, at: number, { state, keep, a
     if (text) codex.held.push({ index: turns.length, turn: { role: "user", text, at } });
   } else if (payload.type === "message" && payload.role === "assistant") {
     const text = textOf(payload.content);
-    if (text && counts) requestAt();
-    else if (text) {
-      const turn = request();
-      if (keep) turn.text = [turn.text, text].filter(Boolean).join("\n");
+    if (!text) return;
+    const i = request();
+    if (keep) {
+      const turn = state.answers[i]!;
+      turn.text = [turn.text, text].filter(Boolean).join("\n");
     }
-  } else if (typeof payload.type === "string" && CODEX_OUTPUTS.has(payload.type) && counts) {
-    requestAt();
-    if (payload.type === "function_call" || payload.type === "custom_tool_call") codex.openCalls!.push(String(payload.call_id ?? payload.id ?? ""));
   } else if (typeof payload.type === "string" && CODEX_OUTPUTS.has(payload.type)) {
-    const turn = request();
+    const i = request();
     if (payload.type !== "function_call" && payload.type !== "custom_tool_call") return;
     const id = String(payload.call_id ?? payload.id ?? "");
+    codex.openCalls!.push(id);
+    // A totals read keeps no call: the request's counts are all it holds.
+    if (counts) return;
     const name = String(payload.name ?? "");
     // A tool's name is for its result's turn: none is kept without turns.
     if (keep) names.set(id, name);
-    turn.calls.push({
+    state.answers[i]!.calls.push({
       type: "toolCall",
       id,
       name,
@@ -199,7 +198,6 @@ function readRecord(value: Record<string, unknown>, at: number, { state, keep, a
   } else if (payload.type === "function_call_output" || payload.type === "custom_tool_call_output") {
     const id = String(payload.call_id ?? "");
     // The model saw a result: what it writes next is another request.
-    if (codex.open?.calls.some((call) => call.id === id)) codex.open = undefined;
     if (codex.openAt !== undefined && codex.openCalls!.includes(id)) codex.openAt = undefined;
     // A result is a turn alone (no count): none is kept without turns.
     if (!keep) return;
@@ -218,6 +216,32 @@ function readRecord(value: Record<string, unknown>, at: number, { state, keep, a
     add(turn);
   }
 }
+
+/** What record reads of a line in a totals read (LineSource.fields). A call's arguments and output, and an item's
+ *  output, are left out: a totals read keeps no call's arguments nor result; so is everything of the records it reads
+ *  nothing of (compacted, reasoning's encrypted content). */
+const FIELDS = {
+  type: true,
+  payload: {
+    type: true,
+    id: true,
+    cwd: true,
+    model_provider: true,
+    parent_thread_id: true,
+    forked_from_id: true,
+    source: true,
+    model: true,
+    effort: true,
+    response_id: true,
+    usage: true,
+    message: true,
+    info: true,
+    item: { id: true },
+    role: true,
+    content: [{ type: true, text: true, content: true }],
+    call_id: true,
+  },
+} as const satisfies Shape;
 
 // A forked rollout (session_meta's forked_from_id, or a spawned subagent's thread_spawn parent) can begin with a copy of
 // its parent's history, token_counts and all, written at the fork's time: Codex 0.130 and 0.145 do. Those requests are
@@ -545,12 +569,12 @@ function record(value: Record<string, unknown>, at: number, context: ReadContext
     replay.seen += 1;
     if (!replay.skip.some(([from, to]) => ordinal >= from && ordinal < to)) return readRecord(value, at, context);
     own.total = replay.total;
-    own.open = own.unpaid = undefined;
+    own.openAt = own.unpaidAt = undefined;
     return false;
   }
   if (value.type === "turn_context") readRecord(value, at, context);
   else if (value.type === "token_usage_record") own.records = true;
-  own.open = own.unpaid = undefined;
+  own.openAt = own.unpaidAt = undefined;
   return false;
 }
 
@@ -573,6 +597,11 @@ const spec: LineSource<"codex", Own> = {
   start: () => ({ events: false, held: [], records: false, responses: new Set(), items: new Map(), results: new Map() }),
   record,
   totals: true,
+  fields: FIELDS,
+  // 2: a fork's copy of its parent's history (replay, looked, forkedFrom). 1 (never released): the open and unpaid
+  // requests by their index (openAt, unpaidAt). 0.1.0-beta.58 and before held them as Answers (open, unpaid), which this
+  // record never reads. A cursor of another shape goes on from nothing.
+  stateVersion: 2,
   // Older Codex writes each of the person's turns twice, as a user_message event and as a user message; current Codex
   // writes the user message alone. One source per file, so no turn counts twice.
   finish(out, turns, { state: { own }, keep }) {
@@ -633,28 +662,34 @@ async function parentOf({ file }: Locator): Promise<string | undefined> {
   }
 }
 
-const lines = lineReader(spec);
+/** Codex's reader over `source` (spec, or a test's variant of it): a read from a rollout's start first finds the parent's
+ *  history a fork copied in (forkReplay); a read going on from a cursor has it in the cursor's state. Whether a read goes
+ *  on is decided before reading, so each read reads the file once: a rollout the line reader would start over (rewritten
+ *  in place), and a fork whose copy was still open where the last read ended and that has grown since, are read from
+ *  their start with the copy found again. */
+export function codexReader(source: LineSource<"codex", Own>): Reader<"codex", FileCursor> {
+  const lines = lineReader(source);
+  return {
+    ...lines,
+    parentOf,
+    async read(locator, cursor, options) {
+      const fresh = async () => {
+        const { replay, looked } = await forkReplay(locator.file, options?.lookups, options?.maxLine);
+        return replay || looked ? lineReader({ ...source, start: () => ({ ...source.start(), replay, ...(looked ? { looked } : {}) }) }).read(locator, undefined, options) : lines.read(locator, undefined, options);
+      };
+      if (!cursor || !(await resumes(source, locator.file, cursor, options))) return fresh();
+      const own = (cursor.state as { own?: Own }).own;
+      if (own?.replay?.open === true && (await stat(locator.file)).size > cursor.offset) return fresh();
+      // The parent its last read looked for come or gone since (restored from an archive, archived): what the fork copied
+      // counts in one place again, as a read from its start would have it.
+      if (own?.looked && (await parentNow(locator.file, own.looked.parent, options?.lookups)) !== own.looked.path) return fresh();
+      // Rewritten between the check and this read, the line reader starts over without the copy and says so (resumed
+      // false): the caller reads again from nothing (parseHome), and that read is fresh.
+      return lines.read(locator, cursor, options);
+    },
+  };
+}
 
-/** Codex's reader: a read from a rollout's start first finds the parent's history a fork copied in (forkReplay); a read
- *  going on from a cursor has it in the cursor's state. Whether a read goes on is decided before reading, so each read
- *  reads the file once: a rollout the line reader would start over (rewritten in place), and a fork whose copy was still
- *  open where the last read ended and that has grown since, are read from their start with the copy found again. */
-export const codex: Reader<"codex", FileCursor> = {
-  ...lines,
-  parentOf,
-  async read(locator, cursor, options) {
-    const fresh = async () => {
-      const { replay, looked } = await forkReplay(locator.file, options?.lookups, options?.maxLine);
-      return replay || looked ? lineReader({ ...spec, start: () => ({ ...spec.start(), replay, ...(looked ? { looked } : {}) }) }).read(locator, undefined, options) : lines.read(locator, undefined, options);
-    };
-    if (!cursor || !(await resumes(spec, locator.file, cursor, options))) return fresh();
-    const own = (cursor.state as { own?: Own }).own;
-    if (own?.replay?.open === true && (await stat(locator.file)).size > cursor.offset) return fresh();
-    // The parent its last read looked for come or gone since (restored from an archive, archived): what the fork copied
-    // counts in one place again, as a read from its start would have it.
-    if (own?.looked && (await parentNow(locator.file, own.looked.parent, options?.lookups)) !== own.looked.path) return fresh();
-    // Rewritten between the check and this read, the line reader starts over without the copy and says so (resumed
-    // false): the caller reads again from nothing (parseHome), and that read is fresh.
-    return lines.read(locator, cursor, options);
-  },
-};
+export const codex = codexReader(spec);
+/** The source as lineReader takes it (a test reads with it, its fields or not). */
+export const codexLines = spec;

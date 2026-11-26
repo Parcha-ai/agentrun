@@ -19,6 +19,7 @@ import { basename, delimiter, dirname, isAbsolute, join } from "node:path";
 import type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "@parcha/agentrun-harness-claude";
 import { facts as claudeFacts, loginRefresh } from "@parcha/agentrun-harness-claude/facts";
 import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
+import { copyEnv } from "./secrets.js";
 import type { ClaudeSignIns, SignInView } from "./claude-sign-in.js";
 import type { Settings } from "./store/index.js";
 
@@ -445,13 +446,15 @@ export type LoginAt = { login: ClaudeAgentLogin; toMake: readonly string[]; refu
  *  runs on a copy of the account file (the harness's claudeLoginStatus). Every login carries the person's home as
  *  `userHome`, read here once (homeOf), so the status check, the sign-in and a run on macOS all run in that one home
  *  whatever reads it later (the harness's personHome), and `homeApart` where the env's HOME was not that home (homeOf's
- *  `apart`). The home and the folders the env gives are the real paths the walk ended in. */
+ *  `apart`). AgentRun's carries `own`. The home and the folders the env gives are the real paths the walk ended in. */
 export function loginAt(place: LoginPlace, data: string, env: Readonly<Record<string, string | undefined>> = process.env, uid: number | undefined = process.geteuid?.()): LoginAt {
   const checked = homeOf(env, uid);
   if (checked.refused !== undefined) return { refused: checked.refused };
   const { home, apart } = checked;
   const homeAt = { userHome: home, ...(apart ? { homeApart: true } : {}) };
-  if (place === "agentrun") return { login: { dir: agentRunLoginDir(data), profiles: join(agentRunLoginDir(data), "anthropic"), ...homeAt }, toMake: [] };
+  // `own`: no CLI of the person's uses AgentRun's folder, so the harness may delete the Keychain item a sign-in left
+  // there under "unknown" (its dropUnknownItem).
+  if (place === "agentrun") return { login: { dir: agentRunLoginDir(data), profiles: join(agentRunLoginDir(data), "anthropic"), ...homeAt, own: true }, toMake: [] };
   const real = new Map<string, string>();
   const toMake: string[] = [];
   for (const [name, folder] of envFolders(env)) {
@@ -509,10 +512,11 @@ export function withClaudeLogin<T extends object>(env: T, login: RunLogin | unde
 }
 
 /** `env` as a run at `place` reads it: a runner place keeps the login; any other place (a sandbox) gets a copy without it,
- *  so a revision's checks there ask for a key, as its run will. */
+ *  so a revision's checks there ask for a key, as its run will. The copy is copyEnv's, which keeps withSecrets' keys
+ *  (read by name, never enumerated), where a spread would keep none. */
 export function envAtPlace<T extends object>(env: T, place: { readonly mode: string } | undefined): T {
   if (place?.mode === "runner" || (env as Record<symbol, unknown>)[LOGIN] === undefined) return env;
-  return withClaudeLogin({ ...env }, undefined);
+  return withClaudeLogin(copyEnv(env), undefined);
 }
 
 /** The login `env` carries, unless the switch is off. */

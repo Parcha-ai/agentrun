@@ -25,8 +25,9 @@ test("a tool this host does not bind refuses the save, 422 at each tools[i] that
   const refused = await api("POST", "/agents", agent("shell", { tools: ["read", "bash", "not_a_tool"] }));
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "input_invalid");
-  assert.deepEqual(fields(refused), [["definition.tools[1]", "not_an_option"], ["definition.tools[2]", "not_an_option"]]);
-  assert.match(refused.body.error.fields[0].message, /bash/);
+  // bash with no place, where no box is set up, is refused at the place: name a box, or the runner (no-box-refuse.test.mjs).
+  assert.deepEqual(fields(refused), [["definition.place", "missing"], ["definition.tools[2]", "not_an_option"]]);
+  assert.match(refused.body.error.fields[0].message, /^name a box: /);
   await nothingSaved(api, "shell");
 });
 
@@ -88,7 +89,7 @@ test("an edit is checked the same way: 422 by field leaves the current revision,
   const before = (await api("GET", "/agents/edited")).body;
   const refused = await api("PUT", "/agents/edited/definition", { definition: { instructions: "Answer.", tools: ["bash"], model: "nope/nope" } });
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
-  assert.deepEqual(fields(refused), [["definition.tools[0]", "not_an_option"], ["definition.model", "not_an_option"]]);
+  assert.deepEqual(fields(refused), [["definition.place", "missing"], ["definition.model", "not_an_option"]]);
   assert.deepEqual((await api("GET", "/agents/edited")).body.home_etag, before.home_etag, "the current revision did not move");
   const edited = await api("PUT", "/agents/edited/definition", { definition: { instructions: "Answer briefly.", model: "openai/gpt-6.1-sol" } });
   assert.equal(edited.status, 200, JSON.stringify(edited.body));

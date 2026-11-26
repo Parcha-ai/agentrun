@@ -1,6 +1,6 @@
 // The shadow audit of a serving learned workflow, at a run's claim and its end (learn/audit.ts keeps the ledger).
 //   startAudit (withAudit: at the served run's end, before the end commits): a run the promoted workflow answered (path
-//     `workflow`; a run it handed back is never drawn and never counts as served) is drawn at 1 in k (auditDrawn, from its id), and a drawn one appends a `started` line to audits.jsonl (with the
+//     `workflow`; a run it handed back is never drawn and never counts as served) is drawn at 1 in k (auditDrawn, from its id), and a drawn one adds a `started` audit record (with the
 //     promotion serving it and the answer it audits, `turn`: the id of the run's newest answer row now), then starts its
 //     shadow run: the same agent and revision on the same input with learning off (no seed, no compile turn), marked as the
 //     audit of the served run (launch.audit), no row of the run list, billed to the agent as learning cost. Its cap is
@@ -38,11 +38,9 @@ import { runPathOverStore } from "../store-reads/learning.js";
 import { FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store/store.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isObject, type Json } from "../validate.js";
-import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
+import { addAuditLines, type AuditRow, type AuditStarted, auditableLaunch, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
 import { lastRunsOf, sinceReset } from "../learn/compile.js";
-import { readLearning, writeLearning, type LearningFolder } from "../learn/folder.js";
-import { type AuditDisagreement, CHECK_TEXT_MAX, comparedGrade, comparedOf, gradesOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
-import { refusedIn } from "../purged-workflow.js";
+import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedGrade, comparedOf, gradesOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
 import { excerptShown } from "../learn/secrets.js";
 import type { Shown } from "../learning.js";
 import { auditRoomOf } from "./learning-end.js";
@@ -56,7 +54,7 @@ import { held, heldEndOfRun } from "./held.js";
 const RUN_CAP_MIN_USD = 0.01;
 
 /** What the audit reads and writes at a claim (or the server's grade): the agent, the run claimed (none for a grade),
- *  its revision (whose definition holds the numbers) and launch, the agent's learning folder, the host's secrets as a
+ *  its revision (whose definition holds the numbers) and launch, the host's secrets as a
  *  hold's texts are cut of them (`shown`, as a check's are), the seal key (a shadow is handed the per_run MCP
  *  credentials its served run was). */
 export type AuditDeps = {
@@ -64,7 +62,6 @@ export type AuditDeps = {
   readonly agentId: string;
   readonly revisionId: string;
   readonly context: Context;
-  readonly folder: () => LearningFolder;
   readonly shown: () => Promise<Pick<Shown, "text">>;
   readonly log: (line: string) => void;
   readonly sealKey?: Buffer;
@@ -108,7 +105,7 @@ export async function agreeOnOfRevision(store: Pick<Store, "agents">, revisionId
 
 /** The served answer shadow run `shadowRun` audits: its open line's `turn`'s answer, read from the served run by that row's
  *  id (what settleAudits compares the shadow's answer with); null when no open line names it, or it names no turn. */
-export async function auditedAnswerOf(deps: Pick<AuditDeps, "store" | "context" | "folder">, shadowRun: string): Promise<string | null> {
+export async function auditedAnswerOf(deps: Pick<AuditDeps, "store" | "agentId" | "context">, shadowRun: string): Promise<string | null> {
   const open = openAudits(await readLedger(deps)).find((line) => line.shadow_run === shadowRun);
   return open ? auditedAnswer(deps, open) : null;
 }
@@ -137,7 +134,7 @@ export const AUDIT_PARKED = "the audit ended where it would wait on a person";
  *  it, read from its journal whatever claim it served on (servedOf), and, for a capped run, what its cap leaves once this
  *  end is counted (auditRoomOf: its job, its follow-ups, its compile turns). A run that
  *  could never be audited (no learning start, or not auditableLaunch) keeps `step` as it is. */
-export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }): EndOfRunTurn | undefined {
+export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch; readonly redact: (text: string) => string }): EndOfRunTurn | undefined {
   if (!deps.launch.learning || !auditableLaunch(deps.launch)) return step;
   // In a run's own process the whole step is its runner's (held.ts endOfRun), the audit's start with it: it reads the
   // run's journal and writes the ledger and a run, which no run's process may.
@@ -151,7 +148,7 @@ export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { re
 
 /** Only a run the workflow answered is drawn: its path `workflow` by the one classifier its record keeps
  *  (store-reads/learning.ts runPathOverStore, with the run's `redact`), never one it handed back. */
-async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }, runId: string): Promise<void> {
+async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch; readonly redact: (text: string) => string }, runId: string): Promise<void> {
   try {
     const entries = await runEntries(deps.store, runId, BACKGROUND_CONTEXT);
     const served = servedOf(entries);
@@ -206,7 +203,7 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
     // line with no shadow (a crash between the two) is made now.
     if (await store.runs.get(id)) return;
     if ((await readLedger(deps)).some((line) => line.run === runId && line.source === "shadow")) return;
-    const promoted = promotionStartOf(await promotionsOf(store.settings, agentId), serve.name, serve.digest);
+    const promoted = promotionStartOf(await promotionsOf(store.learning, agentId), serve.name, serve.digest);
     // The answer audited: the run's newest answer now, at the end that drew it, kept by its row's id so a follow-up's
     // answer since is never the one compared.
     const turn = turnOf((await answerRowOf(store, runId, deps.context))?.id);
@@ -237,7 +234,14 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
       audit: { of: runId, workflow: serve.name, digest: serve.digest },
     };
     const started: AuditStarted = { source: "started", run: runId, shadow_run: id, workflow: serve.name, digest: serve.digest, promoted_at: promoted?.at ?? null, ...turn, at: iso((deps.now ?? Date.now)()) };
-    await addLines(deps, [started]);
+    // The ledger after (`all`, never `added`): a started line already there (a crash between it and its shadow) is in it,
+    // and its shadow is made now. None there: the append refused it, as a purge took the digest since the draw (or the
+    // run), and settleAudits would never settle a shadow with no line, so none is made.
+    const { all } = await addLines(deps, [started]);
+    if (!all.some((line) => lineKey(line) === lineKey(started))) {
+      log(`workflow-first: ${serve.name} at ${serve.digest} served this run, drawn for its audit (1 in ${k}); no shadow: the workflow's version was purged since`);
+      return;
+    }
     const sealed = await handedTo(deps, runId, id);
     try {
       if (sourceSyncOf(revision?.body)) await deps.admitAuxiliary!({ runId: id, agentId, revisionId: deps.revisionId, launch: shadow, ...(sealed ? { sealed } : {}) });
@@ -269,7 +273,7 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
   const { store, log } = deps;
   try {
     // An agent with no promotion record never served a learned workflow: it has no ledger to read.
-    if (!(await promotionsOf(store.settings, deps.agentId)).length) return;
+    if (!(await promotionsOf(store.learning, deps.agentId)).length) return;
     const lines = await readLedger(deps);
     const now = (deps.now ?? Date.now)();
     const rows: { row: AuditRow; at: number }[] = [];
@@ -317,7 +321,7 @@ export async function gradeRow(deps: AuditDeps, run: RunRow, correct: boolean, e
   const m = metricsOf(run);
   if (m.path !== "workflow" || typeof m.workflow !== "string" || typeof m.workflow_digest !== "string") return;
   if ((run.disk ?? null) !== null || !(await sinceReset(deps.store, deps.agentId))(run)) return;
-  const promoted = promotionStartOf(await promotionsOf(deps.store.settings, deps.agentId), m.workflow, m.workflow_digest);
+  const promoted = promotionStartOf(await promotionsOf(deps.store.learning, deps.agentId), m.workflow, m.workflow_digest);
   // The answer graded: the run's newest now, kept by its row's id (as a shadow's audit keeps its turn).
   const turn = turnOf((await answerRowOf(deps.store, run.id, deps.context))?.id);
   const row: AuditRow = { run: run.id, shadow_run: null, workflow: m.workflow, digest: m.workflow_digest, promoted_at: promoted?.at ?? null, source: "grade", agreed: correct, served_cost: run.costUsd, shadow_cost: null, ...turn, at: iso((deps.now ?? Date.now)()) };
@@ -332,55 +336,30 @@ export async function gradeRow(deps: AuditDeps, run: RunRow, correct: boolean, e
   await holdByLedger(deps, rowsOf(all));
 }
 
-/** The ledger's lines on the agent's learning folder's main. */
-async function readLedger(deps: Pick<AuditDeps, "folder">): Promise<LedgerLine[]> {
-  const folder = deps.folder();
-  try {
-    return await readLearning(folder.workspace, ledgerOf);
-  } finally {
-    await folder.end().catch(() => undefined);
-  }
-}
+/** The agent's ledger (learn/audit.ts ledgerOf). */
+const readLedger = (deps: Pick<AuditDeps, "store" | "agentId">): Promise<LedgerLine[]> => ledgerOf(deps.store.learning, deps.agentId);
 
 /** Appends `lines` (each not in the ledger yet, lineKey; a row's verdict read by `agreed` once it is known to be new) in
  *  their order, and answers the ledger after (`all`) with the lines it appended. A grade's row (`again`) replaces an
  *  earlier grade of the same run. */
 async function addLines(deps: AuditDeps, lines: readonly LedgerLine[], agreed?: (row: AuditRow) => Promise<boolean | null>, again = false): Promise<{ all: LedgerLine[]; added: LedgerLine[] }> {
-  const folder = deps.folder();
-  try {
-    const verdicts = new Map<string, boolean | null>();
-    const done = await writeLearning(folder.workspace, async (read) => {
-      const before = (await ledgerOf(read)).filter((one) => !again || !lines.some((line) => lineKey(line) === lineKey(one)));
-      const known = new Set(before.map(lineKey));
-      const fresh: LedgerLine[] = [];
-      for (const line of lines) {
-        const key = lineKey(line);
-        if (known.has(key)) continue;
-        if (line.source === "started" || !agreed) {
-          fresh.push(line);
-          continue;
-        }
-        if (!verdicts.has(key)) verdicts.set(key, await agreed(line));
-        fresh.push({ ...line, agreed: verdicts.get(key)! });
-      }
-      const change = auditChange(before, fresh);
-      return { result: { all: [...before, ...change.added], added: change.added }, ...(change.change ? { change: change.change } : {}) };
-    });
-    return done.result;
-  } finally {
-    await folder.end().catch(() => undefined);
+  const known = new Set(again ? [] : (await readLedger(deps)).map(lineKey));
+  const fresh: LedgerLine[] = [];
+  for (const line of lines) {
+    if (known.has(lineKey(line))) continue;
+    fresh.push(line.source === "started" || !agreed ? line : { ...line, agreed: await agreed(line) });
   }
+  return addAuditLines(deps.store.learning, deps.agentId, fresh, again);
 }
 
 /** The hold rule over the ledger's rows `all` for each workflow that serves now (its champion's digest, skipping a
- *  record the purge gate refuses as a claim's does: purged-workflow.ts refusedOf), whether or not a row was just added:
+ *  as a claim's), whether or not a row was just added:
  *  idempotent (applyHold holds only a digest whose newest record still promotes it). */
 async function holdByLedger(deps: AuditDeps, all: readonly AuditRow[]): Promise<void> {
   if (!all.length) return;
   const loop = await auditLoopOfRevision(deps.store, deps.revisionId);
-  const records = await promotionsOf(deps.store.settings, deps.agentId);
-  const refused = await refusedIn(deps.folder, deps.store, deps.log)(records);
-  for (const { workflow, digest } of servingOf(records, refused)) {
+  const records = await promotionsOf(deps.store.learning, deps.agentId);
+  for (const { workflow, digest } of servingOf(records)) {
     if (digest !== null) await applyHold(deps, all, loop, workflow, digest);
   }
 }
@@ -392,7 +371,7 @@ async function holdByLedger(deps: AuditDeps, all: readonly AuditRow[]): Promise<
  *  one holds). */
 async function applyHold(deps: AuditDeps, rows: readonly AuditRow[], loop: AuditLoop, workflow: string, digest: string): Promise<void> {
   const { store, agentId, log } = deps;
-  const records = await promotionsOf(store.settings, agentId);
+  const records = await promotionsOf(store.learning, agentId);
   const current = promotionOf(records, workflow, digest);
   if (current?.decided !== "promote") return;
   const hold = holdOf(rows, workflow, digest, promotionStartOf(records, workflow, digest)?.at ?? null, loop);
@@ -406,7 +385,7 @@ async function applyHold(deps: AuditDeps, rows: readonly AuditRow[], loop: Audit
   const cut = (text: string) => excerptShown(text, shown, CHECK_TEXT_MAX);
   const disagreements: AuditDisagreement[] = [];
   // A grade's row shows the right answer its grade gave, the known answer the served one missed.
-  const grades = hold.disagreed.some((row) => row.source === "grade") ? await gradesOf(store.settings, agentId) : [];
+  const grades = hold.disagreed.some((row) => row.source === "grade") ? await gradesOf(store.learning, agentId) : [];
   for (const row of hold.disagreed) {
     const input = await store.runs.launch(row.run).then((one) => inputText(readLaunchBody(one.body)?.input ?? null), () => "");
     // The answer the row compared (its turn's), as the verdict read it: never a follow-up's since.
@@ -422,6 +401,6 @@ async function applyHold(deps: AuditDeps, rows: readonly AuditRow[], loop: Audit
     audit: { window: loop.hold_window, disagree: loop.hold_disagree, rows: hold.rows.length, disagreements, ...(stopped ? { stopped: true as const } : {}) },
     ...(current.commit ? { commit: current.commit } : {}),
   };
-  const kept = await recordPromotion(store.settings, agentId, record, (was) => was?.decided === "promote" && was.at === current.at, refusedIn(deps.folder, store, log));
+  const kept = await recordPromotion(store.learning, agentId, record, (was) => was?.decided === "promote" && was.at === current.at);
   if (kept.won) log(`workflow-first: ${workflow} at ${digest} ${stopped ? `stopped (${said}, a second hold within ${loop.stop_window} served runs)` : reason}`);
 }

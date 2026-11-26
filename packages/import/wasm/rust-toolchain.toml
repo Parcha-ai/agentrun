@@ -1,0 +1,5 @@
+# The toolchain build.mjs runs rustc from, and CI rebuilds src/scan-wasm.ts with: another rustc may write other bytes.
+[toolchain]
+channel = "1.95.0"
+targets = ["wasm32-wasip1"]
+profile = "minimal"

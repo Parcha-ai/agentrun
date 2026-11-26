@@ -82,7 +82,7 @@ function calendarTool(host: ToolHost): ToolRegistration {
       let secret: string[] = [saved.url];
       const clean = (text: string) => {
         const cut = scrubAddress(text, secret);
-        return host.redact ? host.redact(cut) : cut;
+        return host.redact(cut);
       };
       const failed = (words: string) => forModel(clean(calendarError(`${CALENDAR_EVENTS}: ${words}`)), { isError: true });
       const given = (isObject(args) ? args : {}) as { from?: unknown; to?: unknown };

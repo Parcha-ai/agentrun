@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { serve, client, follow } from "./support.mjs";
-import { learningFolderOf, seedOf } from "../dist/learning.js";
+import { learningOf } from "../dist/learn/rows.js";
 import { learningCommit } from "../dist/learn/commit.js";
 
 async function register(api, id, learning = false, runtime = "claude-agent-sdk") {
@@ -155,19 +155,13 @@ test("incomplete SDK evidence preserves successful task but drops learning witho
 
 for (const runtime of ["codex-sdk", "eve"]) test(`${runtime}: a fresh SDK run receives its agent's learned corrections as its seed, and another run's token cannot forge evidence`, async (t) => {
   const server = await serve(t),
-    { api, data } = server;
+    { api } = server;
   const id = await register(api, "sdk-learns", true, runtime);
   const first = await api("POST", `/agents/${id}/sdk-runs`, { ...startBody, runtime }, headers("learn-first"));
   assert.equal(first.status, 201, JSON.stringify(first.body));
-  // The owner's correction on the agent's learning main, as a run's merge lands one.
-  await seedOf(data, id);
-  const folder = learningFolderOf(data, id);
-  try {
-    const merged = await learningCommit(folder.workspace, { runId: "owner-correction", reason: "The owner's correction", files: [], correction: "Begin every answer with Verified." });
-    assert.equal(merged.ok, true, JSON.stringify(merged));
-  } finally {
-    await folder.end();
-  }
+  // The owner's correction in the agent's learning, as a run's merge lands one.
+  const merged = await learningCommit(learningOf(server.store, id), { runId: "owner-correction", reason: "The owner's correction", files: [], correction: "Begin every answer with Verified." });
+  assert.equal(merged.ok, true, JSON.stringify(merged));
   const second = await api(
     "POST",
     `/agents/${id}/sdk-runs`,

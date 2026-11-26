@@ -16,6 +16,28 @@ export const LEARNED_NODES = "agentrun.learned_nodes";
  *  however many nodes failed on the way and were recovered, a map's collected item say), or `failed` (it threw, or was
  *  refused before any node ran). */
 export type LearnedEnded = "complete" | "escalated" | "failed";
+/** The record of a learned_workflow call that ended `failed` with no node kept, where the tool kept none: an agent's call
+ *  a crash cut mid-call, refused when it was issued again (adapter-loop.ts learnedEntry, learnedCallRan). An earlier
+ *  attempt may have run nodes and spent, so it is no refusal: its $ is what its call id booked. */
+export const failedRecord = (call: string, workflow: string, digest: string, caller: "platform" | "agent") => ({ call, workflow, digest, caller, nodes: [], ended: "failed" as LearnedEnded });
+/** The record of a learned_workflow call refused before the tool saw it (`refused`: it ran nothing), which the loop keeps
+ *  where the tool never ran: the platform's call its gate refused (runner/adapter-loop.ts serveFirst), and an agent's its
+ *  gate refused with no attempt of it let go since its last refusal (adapter-loop.ts learnedEntry). Either reads
+ *  `failed` once anything was booked under its call id (runner/workflow-calls.ts workflowCallsOf). */
+export const refusedRecord = (call: string, workflow: string, digest: string, caller: "platform" | "agent") => ({ ...failedRecord(call, workflow, digest, caller), refused: true as const });
+/** The mark an agent's learned_workflow call on a CLI gets in the run's journal when its gate lets it go, before it runs:
+ *  `{ call }`, its call's id (adapter-loop.ts sessionGate). An attempt a crash cuts before its record is kept leaves
+ *  this, so a later refusal of the call issued again knows an attempt after any earlier refusal may have run. */
+export const LEARNED_ALLOWED = "agentrun.learned_allowed";
+/** Whether an attempt of learned_workflow call `call` may have run, from its root's `entries`: the newest of its allow
+ *  marks (LEARNED_ALLOWED) and its records (LEARNED_NODES) is a mark, or a record not `refused`. Neither: `replayed`, the
+ *  bridge's word that the call is issued again (a run begun before the marks existed has none), else no attempt was let
+ *  go, so none ran. */
+export function learnedCallRan(entries: readonly { readonly kind: string; readonly data?: unknown }[], call: string, replayed = false): boolean {
+  const newest = entries.findLast((entry) => (entry.kind === LEARNED_ALLOWED || entry.kind === LEARNED_NODES) && (entry.data as { call?: unknown } | undefined)?.call === call);
+  if (newest === undefined) return replayed;
+  return newest.kind === LEARNED_ALLOWED || (newest.data as { refused?: unknown }).refused !== true;
+}
 /** The most nodes a call keeps: a map over a long list runs its body once per item. */
 export const LEARNED_NODES_MAX = 64;
 /** One node of a learned workflow's run, as the DSL ended it (its `node.end` event): its label, its kind, how it ended

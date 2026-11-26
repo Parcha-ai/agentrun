@@ -26,7 +26,7 @@ import { beforeRequestOf } from "@parcha/agentrun-kernel/kernel/cap";
 import type { AdapterNeeds } from "./adapters.js";
 import { archivePlatform } from "./harness-archive.js";
 import { egressProxy, egressVars } from "./harness-egress.js";
-import { AGENT_VARS, installHolds, loadRecipe, recipeInstall, RecipeRefused, writeChecked } from "./harness-recipe.js";
+import { AGENT_VARS, installHolds, loadRecipe, recipeInstall, RecipeRefused, recipeSaid, writeChecked } from "./harness-recipe.js";
 import { recipeEntryOf } from "./harness-recipe-entry.js";
 import { providerModels } from "./model.js";
 import { capModelOf } from "./runner/cli-run-spec.js";
@@ -201,6 +201,7 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   held.push(...recipe.keys.map((name) => options.env[name]).filter((value): value is string => typeof value === "string"));
   const head = { recipe: { id: recipe.id, label: recipe.label, file: loaded.file, sha256: loaded.sha256 }, checkedAt } as const;
   const refuse = (code: string, message: string): HarnessCheckReport => ({ ok: false, ...head, refused: { code, message: `${code}: ${message}` }, failures: [`${code}: ${message}`] });
+  say(recipeSaid(recipe.label, loaded.file, loaded.bundled));
   say(`${recipe.label}: the recipe holds the five rules (${loaded.file})`);
   // What the agent runs on: the recipe's keys, read from this shell, alone (a proxy-billed one's: none, the model proxy's).
   // A check never runs on its owner's own sign-in, which a schedule, a check and a shared server never take

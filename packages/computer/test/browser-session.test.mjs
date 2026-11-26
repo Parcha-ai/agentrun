@@ -10,6 +10,10 @@ import test from "node:test";
 import { browserSpecRefusals, isBrowserProvider } from "../dist/index.js";
 import { BROWSERBASE_KEY, BROWSERBASE_URL, fakeBrowserbase, fakeKernel, KERNEL_KEY, KERNEL_URL } from "./fake-browser.mjs";
 
+/** A create's context with a request id of its own: each create here is a new request. */
+let requests = 0;
+const newRequest = (context = {}) => ({ requestId: `browser-session-${++requests}`, ...context });
+
 const HOUR = 3_600_000;
 const noSleep = async () => {};
 const spec = (browser, labels = { "agentrun.run": "run-1" }) => ({ image: "chromium", lifetimeMs: HOUR, network: "open", labels, ...(browser === undefined ? {} : { browser }) });
@@ -60,28 +64,28 @@ test("check() refuses an option the provider does not declare, in words, before 
 	assert.deepEqual(fields(refused), ["browser.profile"]);
 	assert.ok(!JSON.stringify(refused).includes("SECRET-POINTER"), "the words never carry a pointer");
 	assert.deepEqual(fields(browserSpecRefusals({ profile: { pointer: "p", save: false } }, { timeout: "wall-clock" }, "Bare")), ["browser.profile"], "a provider that declares no profiles refuses one");
-	const create = await bb.create(spec({ headless: true }));
+	const create = await bb.create(spec({ headless: true }), newRequest());
 	assert.equal(create.ok, false);
 	assert.equal(create.error.code, "refused");
 	assert.match(create.error.message, /browser\.headless: a Browserbase browser has no headless mode/);
 	assert.equal(bbFake.calls.length, 0, "no vendor call for a refused create");
-	assert.equal((await kn.create(spec({ stealth: true }))).ok, false);
+	assert.equal((await kn.create(spec({ stealth: true }), newRequest())).ok, false);
 	assert.equal(knFake.calls.length, 0);
 });
 
 test("Browserbase: spec.browser rides its create body as browserSettings", async () => {
 	const fake = fakeBrowserbase();
 	const a = await browserbase(fake);
-	const made = value(await a.create(spec({ viewport: { width: 1288, height: 711 }, stealth: true, profile: { pointer: "ctx_7", save: true } })), "create");
+	const made = value(await a.create(spec({ viewport: { width: 1288, height: 711 }, stealth: true, profile: { pointer: "ctx_7", save: true } }), newRequest()), "create");
 	const [body] = fake.only("POST", "/v1/sessions").map((call) => call.body);
 	assert.deepEqual(body.browserSettings, { viewport: { width: 1288, height: 711 }, solveCaptchas: true, verified: true, context: { id: "ctx_7", persist: true } });
 	assert.equal(body.extensionId, undefined);
 	assert.equal(body.keepAlive, true);
 	assert.ok(fake.sessions.has(made.id));
-	value(await a.create(spec({ viewport: { width: 1280, height: 800 } })), "a second create");
+	value(await a.create(spec({ viewport: { width: 1280, height: 800 } }), newRequest()), "a second create");
 	assert.deepEqual(fake.only("POST", "/v1/sessions")[1].body.browserSettings, { viewport: { width: 1280, height: 800 }, solveCaptchas: false }, "the solver is off unless stealth asks it, as Browserbase's default is on");
 	// A create that asks no browser options sends the body as before.
-	value(await a.create(spec()), "a plain create");
+	value(await a.create(spec(), newRequest()), "a plain create");
 	assert.equal(fake.only("POST", "/v1/sessions")[2].body.browserSettings, undefined);
 });
 
@@ -119,7 +123,7 @@ test("Browserbase: downloads lists a session's files page by page, and reads one
 	// The fake's first session is sess_1: its downloads, as Browserbase synced them.
 	const listed = fakeBrowserbase({ downloads: { sess_1: [...many, { id: "dl_big", filename: "big.bin", size: 10, createdAt: null, bytes: Buffer.alloc(10) }] } });
 	const q = await browserbase(listed);
-	const made = value(await q.create(spec()), "create");
+	const made = value(await q.create(spec(), newRequest()), "create");
 	assert.equal(made.id, "sess_1");
 	const files = value(await q.downloads.list(made), "downloads.list");
 	assert.equal(files.length, 131, "every page read, by total");
@@ -139,7 +143,7 @@ test("Browserbase: downloads lists a session's files page by page, and reads one
 test("Kernel: spec.browser rides its create body; a profile it does not know is made first", async () => {
 	const fake = fakeKernel();
 	const a = await kernel(fake);
-	value(await a.create(spec({ viewport: { width: 1288, height: 711 }, headless: true, profile: { pointer: "agentrun-p1", save: true } })), "create");
+	value(await a.create(spec({ viewport: { width: 1288, height: 711 }, headless: true, profile: { pointer: "agentrun-p1", save: true } }), newRequest()), "create");
 	const [body] = fake.only("POST", "/browsers").map((call) => call.body);
 	assert.equal(body.stealth, false);
 	assert.deepEqual(body.viewport, { width: 1288, height: 711 });
@@ -147,7 +151,7 @@ test("Kernel: spec.browser rides its create body; a profile it does not know is 
 	assert.deepEqual(body.profile, { name: "agentrun-p1", save_changes: true });
 	assert.equal(body.extensions, undefined);
 	assert.ok(fake.profiles.has("agentrun-p1"), "the profile was made before the browser named it");
-	value(await a.create(spec({ profile: { pointer: "agentrun-p1", save: false } })), "a second create");
+	value(await a.create(spec({ profile: { pointer: "agentrun-p1", save: false } }), newRequest()), "a second create");
 	assert.equal(fake.only("POST", "/profiles").length, 1, "a profile Kernel knows is not made again");
 });
 

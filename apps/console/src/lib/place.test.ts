@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { defaultPlaceOf, runsWhere } from "./agentForm";
-import { placeOf, placesOf } from "./place";
+import { defaultPlaceOf, runsWhere, sandboxReason } from "./agentForm";
+import { newAgentPlace, placeLabel, placeOf, placesOf } from "./place";
+import recorded from "../fixtures/capabilities.json";
 
 // The place shapes are the server's (definition.place, Run.place, capabilities.places); the console names no box itself.
 const BOXES = [{ id: "modal", available: false, reason: "modal is not set up on this server." }, { id: "docker", available: true }, { id: "daytona", available: false, reason: "runs in the daytona box are not available yet" }];
@@ -17,6 +18,40 @@ describe("places", () => {
     // default_place is the one field: where a new agent goes and where a revision with no place runs.
     expect(placesOf({ places: PLACES })).toEqual({ modes: PLACES.modes, boxes: BOXES, defaultPlace: { mode: "runner" } });
     expect(placesOf({ harnesses: [] })).toBeNull();
+  });
+
+  // A server with no default place (default_place null: no Docker box, and a runner with no shell) gives a new agent
+  // none: it names a box or the runner, and default_reason says so in the words the server refuses a create in.
+  it("reads a null default_place as no default, never as the runner or a box", () => {
+    const none = placesOf({ places: { ...PLACES, default_place: null, default_reason: "name a box: this server has no Docker box for a new agent." } });
+    expect(none).toEqual({ modes: PLACES.modes, boxes: BOXES, defaultPlace: null });
+    expect(newAgentPlace(none)).toBeUndefined();
+    expect(placeLabel(null)).toBe("No place yet: choose a box, or On the server");
+    // Missing or a shape this console does not know is still not read.
+    const { default_place: _gone, ...without } = PLACES;
+    expect(placesOf({ places: without })).toBeNull();
+    expect(placesOf({ places: { ...PLACES, default_place: { mode: "cloud" } } })).toBeNull();
+  });
+
+  // The recorded capabilities are a faux server's with no box and no shell on its runner (src/fixtures/README.md).
+  it("reads the recorded capabilities' places as today's server sends them there: no default place, with the reason", () => {
+    expect(placesOf(recorded.body)?.defaultPlace).toBeNull();
+    expect(recorded.body.places.default_reason).toMatch(/^name a box: /);
+  });
+
+  it("with no default place, a revision with no place and a shell tool has none to run in; one whose tools need no shell runs on the runner, as the server runs it", () => {
+    const none = placesOf({ places: { ...PLACES, default_place: null, default_reason: "name a box" } });
+    expect(defaultPlaceOf(false, ["read", "bash"], none)).toBeNull();
+    expect(defaultPlaceOf(false, ["read"], none)).toEqual({ mode: "runner" });
+    expect(defaultPlaceOf(false, ["bash", "browser"], none)).toEqual({ mode: "runner" });
+    expect(defaultPlaceOf(true, ["bash"], none)).toEqual({ mode: "runner" });
+    const agentic = (definition: Record<string, unknown>) => ({ kind: "agentic" as const, definition: { version: 1, name: "a", instructions: "", skills: [], tools: ["write", "bash"], ...definition } }) as never;
+    expect(runsWhere(agentic({}), none)).toEqual({ place: null, byDefault: true });
+    expect(runsWhere(agentic({ tools: ["write"] }), none)).toEqual({ place: { mode: "runner" }, byDefault: true });
+    // A shell tool's card on an agent with no place says to choose a box, never that the agent is on the runner.
+    const bash = { name: "bash", available: true, sandbox_only: true } as never;
+    expect(sandboxReason(bash, null)).toBe("Sandbox-only: it runs in a box, and this agent has no place yet: choose a box under Where it runs");
+    expect(sandboxReason(bash, { mode: "runner" })).toBe("Sandbox-only: it runs in a box, and this agent's place is the runner");
   });
 
   // Where an agent's current revision runs: its own place, else the server's default for it (byDefault); with no place
