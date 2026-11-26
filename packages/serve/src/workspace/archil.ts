@@ -1,7 +1,7 @@
 // ArchilWorkspace: a Workspace on a folder of the owner's Archil disk, through the disk's file API and its serverless
 // exec (archil-disk.ts, archil-exec.ts). Nothing is mounted on the server or a runner, and no program runs here.
 //
-// Keys. The workspace's root is a folder of the disk (paths.ts runKey or learningKey); every key, prefix, directory
+// Keys. The workspace's root is a folder of the disk (paths.ts runKey); every key, prefix, directory
 // and exec mount it sends is the root or under it, or its exec spill folder beside it (spillFolderOf: a run's
 // "exec-out"), built from paths paths.ts has checked. An exec mounts those two folders alone (each a mount's
 // subdirectory): the rest of the owner's disk is not in its container. The spill folder holds an exec's stdin and its
@@ -69,7 +69,7 @@ const GREP_CALL_GRACE_MS = 2_000;
 export type ArchilWorkspaceOptions = {
   /** How long a call waits for another client's hold on the folder (default 60 s). */
   readonly queueMs?: number;
-  /** The image every exec runs in, the same for every workspace serve makes (a run's or a learning folder's), pinned by
+  /** The image every exec runs in, the same for every workspace serve makes (a run's), pinned by
    *  digest (an image given without one is refused): a public image `<name>@sha256:…`, or one built through Archil's
    *  images API with its digest. With none, Archil's default exec image, whose git (2.34.1, measured) is older than a
    *  bash policy's floor; serve's claim always names one (archil-settings.ts DEFAULT_ARCHIL_EXEC_IMAGE). */

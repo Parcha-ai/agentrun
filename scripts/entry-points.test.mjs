@@ -22,7 +22,6 @@ const reviewed = new Map([
   ['packages/computer/src/entry.ts', realpathForm],
   ['packages/computer/test/fake-computerd.mjs', realpathForm],
   ['packages/serve/test/secret-custody.test.mjs', childScript],
-  ['packages/serve/test/learn-support.mjs', childScript],
   ['packages/computer/test/phone-provider.test.mjs', childScript],
   ['packages/serve/test/launcher-worker.test.mjs', childScript],
   ['packages/import/test/pool-oom.test.mjs', childScript],

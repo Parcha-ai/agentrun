@@ -5,8 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import { freeRequestLimitOf } from "@parcha/agentrun-kernel/kernel/cap";
-import { learningFolderOf, secretsShown } from "../learning.js";
-import { refusedIn } from "../purged-workflow.js";
+import { secretsShown } from "../learning.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { RunLaunch } from "../run-launch.js";
 import { cliPolicyOf, closeSdkInbox, type SdkInbox, sdkInbox } from "../sdk/runs.js";
@@ -117,7 +116,6 @@ export function createSdkLoop(
                 store: host.store, agentId: agent, launch, inbox,
                 shown: async () => secretsShown(Object.values(await storeSecrets(host.store, host.sealKey, host.data)), { local: true }),
                 log: (line) => host.log?.(line),
-                refused: refusedIn(() => learningFolderOf(host.data, agent), host.store, (line) => host.log?.(line)),
               });
             } catch (error) {
               host.log?.(`workflow-first: the connected agent's check on run ${claim.runId} could not be settled (${error instanceof Error ? error.message : String(error)}); it is decided at its deadline`);
@@ -292,7 +290,6 @@ export function createSdkLoop(
               const end = learningEndOfRun(launch, {
                 store: host.store,
                 data: host.data,
-                learningFolder: (id) => learningFolderOf(host.data, id),
                 env: host.env ?? process.env,
                 stored: () => storeSecrets(host.store, host.sealKey, host.data),
               });

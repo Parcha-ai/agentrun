@@ -21,13 +21,10 @@
 // (audits.jsonl, never served to a run), nothing else.
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import {
-  isWorkspaceError, type LearningPlace as OneLearningPlace, type LearningWorkspace as OneLearningWorkspace,
-  learningWorkspace as oneLearningWorkspace, type Workspace, WorkspaceError,
-} from "../workspace/index.js";
-import { CORRECTIONS_FILE } from "./corrections.js";
-import { learnedFront, learnedStatus, retiredFrom, WORKFLOW_NAME, WORKFLOWS_DIR } from "./workflow-draft.js";
-import { held, heldLearningFolder } from "../runner/held.js";
+import { isWorkspaceError, type Workspace, WorkspaceError } from "../../workspace/index.js";
+import { CORRECTIONS_FILE } from "../corrections.js";
+import { learnedFront, learnedStatus, retiredFrom, WORKFLOW_NAME, WORKFLOWS_DIR } from "../workflow-draft.js";
+import { type LearningPlace as OneLearningPlace, type LearningWorkspace as OneLearningWorkspace, learningWorkspace as oneLearningWorkspace } from "./place.js";
 
 /** The host's folder inside the learning folder: the snapshot, the diffs and the script. Never learned, never seeded. */
 export const HOST_DIR = ".agentrun";
@@ -442,8 +439,6 @@ export type LearningFolder = OneLearningWorkspace;
 /** Agent `place.agentId`'s learning folder as a Workspace: the one learningWorkspace, or the test's stand-in. */
 export function learningWorkspace(place: LearningPlace): LearningFolder {
   if (folderTestHooks.workspace) return folderTestHooks.workspace(place);
-  // A run's own process never opens a learning folder itself: its runner does, the claim's agent's (held.ts).
-  if (held()) return heldLearningFolder();
   return oneLearningWorkspace(place);
 }
 

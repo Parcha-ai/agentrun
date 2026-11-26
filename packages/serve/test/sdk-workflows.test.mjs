@@ -12,7 +12,7 @@ import { schemaProblems } from "./schema-support.mjs";
 // These tests isolate callback and schema admission after a workflow has passed its independent check.
 async function landPromoted(data, store, id, flows) {
   await landWorkflows(data, id, flows);
-  await promoteChecked(store.settings, id, flows);
+  await promoteChecked(store, id, flows);
 }
 
 const tool = { name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 };

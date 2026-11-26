@@ -64,7 +64,7 @@ export interface RunLaunch {
    *  The control marker is outside the run's tool workspace. No source path or credential is kept in this record. */
   readonly sourceProject?: SourceProjectLaunch;
   /** The run's learning start, when its agent learns and the server's learning is on, decided once here so the runner reads
-   *  no learning folder or git: `seed`, the learning commit's sha (or null when the seed could not be read); `section`,
+   *  no learning rows: `seed`, the learning save's id (or null when the seed could not be read); `section`,
    *  the exact # Learned text to lay into the prompt (its owner's corrections, learning.ts learnedSection); `workflows`,
    *  the names of the learned workflows the seed offers the run (chooseWorkflows), absent when none; `noWorkflows`, a run
    *  never answered by a learned workflow and asked for no workflow draft at its end (a native run, an SDK run with no
@@ -312,9 +312,9 @@ export const learningStartOf = (launch: RunLaunch): RunLaunch["learning"] => lau
 /** The same start read from a launch body's `learning` member alone (Store.runs.learningStarts), as readLaunchBody reads it. */
 export const learningStartOfStored = (stored: unknown): RunLaunch["learning"] => (stored === undefined ? undefined : readLearning(stored) ?? { seed: null, section: "" });
 
-/** Why a learning run starts with nothing learned, as main says it: its agent's learning folder could not be read
+/** Why a learning run starts with nothing learned, as main says it: its agent's learning could not be read
  *  (`unreadable`, STOPPED.unreadable), what was read could not be made into its start (`not_copied`,
- *  STOPPED.notCopied), or its launch names a disk of its own, whose learning folder the server does not read
+ *  STOPPED.notCopied), or its launch names a disk of its own, whose learning the server does not read
  *  (`other_disk`, STOPPED.otherDisk): a run on a named disk learns nothing (learn/learning-of.ts). */
 export type SeedFailed = "unreadable" | "not_copied" | "other_disk";
 const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied", "other_disk"];

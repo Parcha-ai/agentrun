@@ -317,7 +317,6 @@ export interface components {
     followup_usd?: number | null;
     shadow_usd?: number | null;
     share_usd?: number | null;
-    degraded?: true;
     plan?: {
       requests: number;
       tokens: number;
@@ -1026,7 +1025,7 @@ export interface components {
     };
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
       detail: string | null;
       at: string;
       workflows?: {
@@ -1332,7 +1331,7 @@ export interface components {
     error?: components["RunError"] | null;
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
       detail: string | null;
       workflows?: {
         file: string;
@@ -1531,7 +1530,7 @@ export interface components {
     tool_result_text?: string | null;
     learning?: {
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
       detail: string | null;
     };
   };
@@ -3536,7 +3535,7 @@ export interface operations {
     answer: {
       run: string;
       state: "seeded" | "reflecting" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
       detail: string | null;
       at: string;
       seed: string | null;
