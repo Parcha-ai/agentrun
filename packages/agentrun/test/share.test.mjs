@@ -600,6 +600,9 @@ test("share --to exports again with the restores, posts the bundle's bytes with 
   assert.equal(printed.restored, 1);
   assert.ok(result.err.includes(`Shared: ${printed.url}`), result.err);
   assert.ok(result.err.includes(`agentrun share delete ${printed.url}`), "says how to take it down");
+  // Who can open it is said before the upload, not after it.
+  const publicAt = result.err.indexOf("anyone with the link can open it");
+  assert.ok(publicAt >= 0 && publicAt < result.err.indexOf("Shared: "), result.err);
   silent(result, planted, token);
 });
 
@@ -691,6 +694,8 @@ test("a share host's refusal prints counts by rule and never a value: 422, 400 a
     assert.equal(result.code, exit, `${status}: ${result.err}`);
     for (const line of said) assert.match(result.err, line, `${status}`);
     assert.match(result.err, /Nothing was stored/, `${status}`);
+    // Said before the upload went out, so a refused one says it too.
+    assert.match(result.err, new RegExp(`Publishing to ${host.base.replace(/[.]/g, "\\.")}: a share is public, anyone with the link can open it`), `${status}`);
     assert.equal(result.out, "", `${status}`);
     assert.doesNotMatch(result.err, /"error"/, `${status}: never the host's JSON`);
     silent(result, planted, token);

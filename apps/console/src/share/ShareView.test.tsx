@@ -143,9 +143,12 @@ describe("ShareView over the golden bundle", () => {
     const footer = host.querySelector("footer")!;
     expect(footer.textContent).toContain("Nothing was sent. This is the exact page a share host would show.");
     expect(footer.textContent).toContain(bundle.sha256);
-    expect(footer.querySelector("code")?.textContent).toBe(`agentrun share run_golden --to https://agentrun.ai --expect ${bundle.sha256}`);
+    // No share host is named for the reader: the command takes the reader's own (no default host serves /r/ yet).
+    expect(footer.textContent).toContain("Publish to your share host with");
+    expect(footer.querySelector("code")?.textContent).toBe(`agentrun share run_golden --to <url> --expect ${bundle.sha256}`);
     // How the share host's token gets there, once: its own login entry, which no other command reads.
-    expect(footer.textContent).toContain("agentrun login --share https://agentrun.ai < TOKEN_FILE");
+    expect(footer.textContent).toContain("agentrun login --share <url> < TOKEN_FILE");
+    expect(footer.textContent).not.toContain("agentrun.ai");
     expect(footer.textContent).not.toContain("later beta");
   });
 
@@ -161,8 +164,8 @@ describe("ShareView over the golden bundle", () => {
 describe("the publish command and a cut's place", () => {
   it("names the run, the share host, the restored ids as the bundle lists them, and the sha256 to expect", () => {
     const restored = [{ id: "c_0000000000000002" }, { id: "c_0000000000000001" }] as ShareBundle["restored"];
-    expect(publishCommand("run_1", { ...bundle, restored })).toBe(`agentrun share run_1 --to https://agentrun.ai --restore c_0000000000000002,c_0000000000000001 --expect ${bundle.sha256}`);
-    expect(publishCommand("run_1", { ...bundle, restored: [] })).toBe(`agentrun share run_1 --to https://agentrun.ai --expect ${bundle.sha256}`);
+    expect(publishCommand("run_1", { ...bundle, restored })).toBe(`agentrun share run_1 --to <url> --restore c_0000000000000002,c_0000000000000001 --expect ${bundle.sha256}`);
+    expect(publishCommand("run_1", { ...bundle, restored: [] })).toBe(`agentrun share run_1 --to <url> --expect ${bundle.sha256}`);
   });
 
   it("says where a pointer is in words a person reads", () => {
