@@ -632,12 +632,16 @@ test("a CLI's learned_workflow call refused, then allowed after a crash and cut 
   await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
   assert.ok(runRecordOf(data, runId).epoch > held.epoch, "a third runner took the run up");
   const view = (await api("GET", `/runs/${runId}`)).body;
-  const booked = (await nodeBookings(server, runId)).turns.reduce((sum, turn) => sum + (turn.usd ?? 0), 0);
+  const { turns } = await nodeBookings(server, runId);
+  const booked = turns.reduce((sum, turn) => sum + (turn.usd ?? 0), 0);
   assert.ok(booked > 0, "the allowed attempt's first model node is booked under the call");
   assert.equal(view.workflow_calls?.length, 1, JSON.stringify(view.workflow_calls));
   const [called] = view.workflow_calls;
   assert.deepEqual({ workflow: called.workflow, caller: called.caller, outcome: called.outcome }, { workflow: "title-then-hold", caller: "agent", outcome: "failed" }, "the workflow's call, failed: never refused");
-  assert.ok(typeof called.usd === "number" && Math.abs(called.usd - booked) < 1e-9, `its $ is what its call booked, never 0: ${called.usd} vs ${booked}`);
+  // Its $ is what its call booked; unknown (null) only when the held node's request, cut by the crash, is booked with no
+  // figure (`cut`, usd null: no one knows what it cost), as callCostOf reads such a request. Never 0.
+  const cutUnpriced = turns.some((turn) => turn.cut === true && turn.usd === null);
+  assert.ok(typeof called.usd === "number" ? Math.abs(called.usd - booked) < 1e-9 : called.usd === null && cutUnpriced, `its $ is what its call booked, never 0: ${called.usd} vs ${booked}, turns ${JSON.stringify(turns)}`);
   assert.deepEqual([view.path, view.workflow?.name], ["handed_back", "title-then-hold"], "charged to the workflow, never the agent's path");
 });
 
