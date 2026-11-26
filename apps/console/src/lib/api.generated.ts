@@ -66,6 +66,7 @@ export interface components {
       provider_from?: "agent" | "server" | "default";
       default_provider?: string;
       resolved?: string;
+      ceiling?: string;
       permission: "allow" | "ask" | "deny";
       permission_from: "agent" | "server" | "default" | "unattended";
       default_permission: "allow" | "ask" | "deny";
@@ -2719,6 +2720,7 @@ export interface operations {
         provider_from?: "agent" | "server" | "default";
         default_provider?: string;
         resolved?: string;
+        ceiling?: string;
         permission: "allow" | "ask" | "deny";
         permission_from: "agent" | "server" | "default" | "unattended";
         default_permission: "allow" | "ask" | "deny";

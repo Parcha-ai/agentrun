@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-harness-acp
-kind: fix
----
-Under Antigravity, an MCP call that reaches AgentRun up to half a second before agy's announcement of it no longer takes another call's id. This happens when the call's arguments match another call's except for the `toolSummary` that the other call sent. Such a call now holds for half a second (`ANNOUNCE_GRACE_MS`) before it takes an announcement it matches only without `toolSummary`. So a call of a tool that declares `toolSummary`, where the model left it out and agy added its own, now starts at least half a second after it reaches AgentRun. An announcement that arrives while a call waits is handed to that call only when its arguments match exactly. An announcement whose call ended before its MCP call came is passed over for any live one, so a retry with the same arguments takes its own id, under Antigravity or any other ACP agent. A late MCP call of its own still takes it after half a second, when no other call's announcement matches it.

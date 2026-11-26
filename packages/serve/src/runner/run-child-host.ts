@@ -36,7 +36,7 @@ import { vendorsOver } from "../sign-ins.js";
 import { decisionProvidersIn, fauxFetch } from "../decisions.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
-import { cutDeep, type HeldRedact, mustHold, type Redact, runnerSecrets } from "./redact.js";
+import { cutDeep, type HeldRedact, mustHold, runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
 import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
@@ -70,7 +70,7 @@ import { workflowsAt } from "./learning-seed.js";
 import { claimMetering, heldMcpOf, mcpForClaim } from "./mcp-run.js";
 import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
-import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
+import { refuseRecipeTriggerRun, resolveRunnerLoop, underServerCeilings, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { loginForRun } from "../claude-login.js";
@@ -655,10 +655,10 @@ interface ClaimReads {
 /** The email tools a revision may grant. */
 const grantsEmail = (granted: readonly string[]): boolean => granted.some((tool) => tool.startsWith("email_"));
 
-/** The runner's redactor as the host side of a run's process holds it (LoopDeps.redact): its cut, and the carry of a
- *  value into what it cuts from the run's journal, which a token the runner hands the run needs (claudeLogin), and the
- *  hold of each credential the claim opens, refreshes or mints for the run. */
-export type RunnerCut = Redact & Partial<Pick<HeldRedact, "carry" | "hold">>;
+/** The runner's redactor as the host side of a run's process holds it (LoopDeps.redact): its cut, the carry of a value
+ *  into what it cuts from the run's journal, which a token the runner hands the run needs (claudeLogin), and the hold of
+ *  each credential the claim opens, refreshes or mints for the run, which its MCP will not start without (mustHold). */
+export type RunnerCut = HeldRedact;
 
 /** Held (held.ts) for one claim, on the runner: each answer the claim's own, read with the runner's seal key from the
  *  runner's own reads of the claim; every argument from the run's process is checked or ignored. `bigs`: the run's pieced
@@ -712,7 +712,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   };
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
   // Each credential the claim opens, refreshes or mints here (its MCP's, its GitHub App tokens) joins the runner's redactor.
-  const hold = (values: string[]) => cut.hold?.(values);
+  const hold = (values: string[]) => cut.hold(values);
   const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   /** The run's folder as the computer this claim made mounts it (Mode 2), where the claim's MCP files once it is made. */
   let mountedFolder: Workspace | undefined;
@@ -1328,7 +1328,10 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
         // host's default's now, where its revision names no model and a key saved since moved that default. On a --faux
         // runner, or pinned to the faux model, a run sends no model key (claim-secrets.ts sendsNoModelKey): its process is
         // handed none, not even its revision's model's.
-        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
+        // Its keys are its capped plane's (harness-loops.ts underServerCeilings), as the run's own loop reads that plane: a
+        // run kept on Parallel and claimed after the server set kernel or native is handed no Parallel key.
+        const capped = await underServerCeilings(claimDeps, launch, revisionRow as never);
+        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, capped, claim.runId);
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
@@ -1446,6 +1449,9 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
           const reach = await mcpReachOf(deps);
           const init = {
             claim, data: deps.data, signal: loopDeps.signal, where: deps.store.where, ...(traced ? { traced: true } : {}),
+            // The plane its keys were chosen by (`capped`): the process runs its tools on it, never on a later read of the
+            // server's settings, which may have moved since.
+            ...(capped.plane ? { plane: capped.plane } : {}),
             ...(reach.loopback ? { mcpLoopback: true, mcpOwn: reach.own ?? [] } : {}),
             ...(deps.githubApi ? { githubApi: deps.githubApi } : {}),
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),

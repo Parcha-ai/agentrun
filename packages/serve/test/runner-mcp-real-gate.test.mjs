@@ -24,6 +24,7 @@ const { deniedText } = await import("../dist/refusal-words.js");
 const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
 
 test.after(() => closeOpenSessions());
 
@@ -97,7 +98,7 @@ async function realGateRun(t, { harness, agentSettings = {}, serverSettings }) {
   const script = [{ call: "mcp__fake__add", args: { a: 1, b: 1 } }, { sayLastResult: true }];
   const base = harness === "pi" ? piAdapterSpec({ script, tools: {}, hooks: quiet }, { fetch: scriptedOrigin(script, sent) }) : undefined;
   const loop = createAdapterLoop(async (claim, run) => {
-    const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:fake/add"], harness: run.harness, work: () => work });
+    const mcp = await mcpForClaim({ redact: heldRedactor(keepText), claim, store, sealKey: KEY, grants: ["mcp:fake/add"], harness: run.harness, work: () => work });
     const gate = await adapterRunGate(store, claim, revision, work, undefined, { facts: builtinFacts(harness) });
     const own = harness === "pi"
       ? await base(claim, run)

@@ -453,8 +453,17 @@ test("a run on the host default books the Ollama model it ran on: its usage line
   assert.equal(view.status, "completed", JSON.stringify(view.error));
   assert.equal(view.cost.tokens.requests, 1, "the run view's request count, which the run header reads the usage again on");
   assert.equal(ollama.got.chat[0].model, TOOLS, "it ran on the default");
-  const lines = (await api("GET", `/runs/${started.body.run_id}/usage`)).body.lines.filter((line) => line.meter === "tokens");
+  const usage = (await api("GET", `/runs/${started.body.run_id}/usage`)).body;
+  const lines = usage.lines.filter((line) => line.meter === "tokens");
   assert.deepEqual(lines.map((line) => [line.provider, line.model, line.requests, line.usd]), [["ollama", TOOLS, 1, 0]], "provider/model is the id the console labels: ollama/<tag>");
+  // The console's $0 receipt shows only for usage it reads as all free (apps/console/src/lib/receipt.ts usageAllFree):
+  // a total of $0 with nothing unpriced, and no line above $0, unpriced, or with calls or requests no meter took or time
+  // no claim held. A real local run's usage reads so; every receipt test of the console's builds its usage by hand.
+  assert.deepEqual([usage.total?.usd, usage.total?.unpriced ?? 0], [0, 0], JSON.stringify(usage.total));
+  for (const line of usage.lines) {
+    const off = { usd: line.usd, basis: line.basis, unpriced: line.unpriced ?? 0, not_metered_calls: line.not_metered_calls ?? 0, unmetered_requests: line.unmetered_requests ?? 0, unheld_quantity: line.unheld_quantity ?? 0 };
+    assert.ok(off.usd === 0 && off.basis !== "unpriced" && !off.unpriced && !off.not_metered_calls && !off.unmetered_requests && !off.unheld_quantity, `a line the receipt would read as not free: ${JSON.stringify(line)}`);
+  }
 });
 
 test("with no key and Ollama up, the default is the first Ollama model that calls tools, listed in the picker and its free models, on pi and on every harness of a wire the route translates them onto (Anthropic's Messages, a harness module's too; OpenAI's Responses); any key wins", { timeout: 120_000 }, async (t) => {
