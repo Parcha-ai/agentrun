@@ -199,7 +199,8 @@ test("with no Docker box (Mode 1), the dry_run of an update whose package now na
     assert.deepEqual([plan.body.plan.action, plan.body.plan.agent_id], ["revise", made[name]], name);
     const done = await api("POST", `/templates/${name}/apply`, body);
     assert.equal(done.status, 200, `${name}: ${JSON.stringify(done.body)}`);
-    assert.equal("place" in (await api("GET", `/agents/${made[name]}`)).body.definition, false, `${name}: still no place`);
+    const { definition } = (await api("GET", `/agents/${made[name]}`)).body;
+    assert.deepEqual([definition.place, definition.tools], [undefined, name === "files" ? ["read", "write"] : []], `${name}: still no place`);
   }
 });
 
