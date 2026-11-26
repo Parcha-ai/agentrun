@@ -148,6 +148,11 @@ export interface ClaudeAgentAdapterOptions {
   /** The fetch the model proxy forwards with: the host's route for a model it translates onto this wire (a test's
    *  recorder, too); absent, the network. Forwarding it is the harness contract (HARNESS.md, the facts' `wire`). */
   fetch?: typeof fetch;
+  /** How long the CLI waits on a silent stream before it gives the stream up and asks again without one
+   *  (CLAUDE_STREAM_IDLE_TIMEOUT_MS). A host sets it for a model on its own machine (LOCAL_STREAM_IDLE_MS), which says
+   *  nothing while it loads, reads its prompt or thinks. Absent: the CLI's own limit (5 minutes), which a paid provider's
+   *  hung stream is held to. */
+  streamIdleMs?: number;
   /** The run's clock, when the host sets one (serve: a template eval case's `now`): a user turn's day is read from it
    *  (harness.ts dateLine), and the CLI's own date lines, which it reads from the machine's clock, are made to say its
    *  day in `zone` at the session's model proxy (policy.ts `day`). A session on a login has no proxy: there the CLI's
@@ -157,9 +162,9 @@ export interface ClaudeAgentAdapterOptions {
   zone?: string;
 }
 
-/** How long the CLI waits on a silent stream from a model the host's route translates: the longest the CLI takes
- *  (CLAUDE_STREAM_IDLE_TIMEOUT_MS, 30 minutes). */
-export const TRANSLATED_STREAM_IDLE_MS = 30 * 60_000;
+/** How long the CLI waits on a silent stream from a model on the host's own machine (an Ollama model): the longest the
+ *  CLI takes (CLAUDE_STREAM_IDLE_TIMEOUT_MS, 30 minutes). */
+export const LOCAL_STREAM_IDLE_MS = 30 * 60_000;
 
 /** The thinking levels a session runs at: the SDK's effort levels, with adaptive thinking. There is no off. */
 export type ClaudeAgentThinking = "low" | "medium" | "high" | "xhigh" | "max";
@@ -449,10 +454,10 @@ export function claudeAgentAdapter(options: ClaudeAgentAdapterOptions): AgentAda
         model: modelFor(spec),
         ...(skills.length ? { skills: { plugin: join(dir, "plugin"), names: writeSkillsPlugin(join(dir, "plugin"), skills) } } : {}),
         ...(options.smallModel ? { smallModel: options.smallModel } : {}),
-        // A model the host's route translates (an Ollama model) sends nothing while it loads, reads its prompt or thinks
-        // (the route holds its thinking to redact it whole): the CLI waits its longest on it, never dropping the stream
-        // at 5 minutes to ask again without one.
-        ...(options.fetch ? { streamIdleMs: TRANSLATED_STREAM_IDLE_MS } : {}),
+        // A model on the host's own machine (an Ollama model) sends nothing while it loads, reads its prompt or thinks (the
+        // route holds its thinking to redact it whole): the host has the CLI wait longer on it (streamIdleMs), never
+        // dropping the stream at 5 minutes to ask again without one. Any other route keeps the CLI's own limit.
+        ...(options.streamIdleMs ? { streamIdleMs: options.streamIdleMs } : {}),
         ...(spec.system.length ? { instructions: spec.system.join("\n\n") } : {}),
         ...(provider ? { credential: async () => provider.credential(), gatewayUrl: provider.origin } : { login: { at: login!, models: io.models } }),
         executable,

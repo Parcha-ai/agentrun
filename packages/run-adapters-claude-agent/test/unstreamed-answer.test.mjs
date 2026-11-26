@@ -72,6 +72,53 @@ test('a stream cut after some text, then answered whole: the whole answer is a m
   assert.deepEqual(live, [{ type: 'text', delta: 'Let me' }, { type: 'text_end' }, { type: 'text', delta: 'done' }]);
 });
 
+test('a stream that stalls partway, then answered whole from the start: the whole answer goes on from what streamed, one message, nothing said twice', () => {
+  const { b, live, entries } = builder();
+  b.observe(event({ type: 'message_start', message: { id: 'msg_stalled', role: 'assistant', content: [] } }));
+  b.observe(event({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'The ans' } }));
+  b.observe(assistant('msg_whole', { type: 'text', text: 'The answer is done.' }));
+  b.endTurn(b.observe(result));
+  assert.deepEqual(live, [{ type: 'text', delta: 'The ans' }, { type: 'text', delta: 'wer is done.' }]);
+  assert.deepEqual(entries.filter((entry) => entry.type === 'message'), [{ type: 'message', role: 'assistant', text: 'The answer is done.' }]);
+});
+
+test('a text block that streams in full and stalls before its message ends, then answered whole: said once', () => {
+  const { b, live } = builder();
+  b.observe(event({ type: 'message_start', message: { id: 'msg_stalled', role: 'assistant', content: [] } }));
+  b.observe(event({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'done' } }));
+  b.observe(assistant('msg_whole', { type: 'text', text: 'done' }));
+  b.endTurn(b.observe(result));
+  assert.deepEqual(live, [{ type: 'text', delta: 'done' }]);
+});
+
+test('two whole messages with different ids in one turn: a text_end between them', () => {
+  const { b, live } = builder();
+  b.observe(assistant('msg_one', { type: 'text', text: 'First.' }));
+  b.observe(assistant('msg_two', { type: 'text', text: 'Second.' }));
+  b.endTurn(b.observe(result));
+  assert.deepEqual(live, [{ type: 'text', delta: 'First.' }, { type: 'text_end' }, { type: 'text', delta: 'Second.' }]);
+});
+
+test('messages with no id: a whole one of two blocks is one message live; a streamed one says nothing more; a stalled partial answered whole goes on from it', () => {
+  const noId = (block) => ({ type: 'assistant', parent_tool_use_id: null, message: { role: 'assistant', content: [block] } });
+  const whole = builder();
+  whole.b.observe(noId({ type: 'text', text: 'The answer ' }));
+  whole.b.observe(noId({ type: 'text', text: 'is done.' }));
+  whole.b.endTurn(whole.b.observe(result));
+  assert.deepEqual(whole.live, [{ type: 'text', delta: 'The answer ' }, { type: 'text', delta: 'is done.' }]);
+  const streamed = builder();
+  streamed.b.observe(event({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'do' } }));
+  streamed.b.observe(event({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ne' } }));
+  streamed.b.observe(noId({ type: 'text', text: 'done' }));
+  streamed.b.endTurn(streamed.b.observe(result));
+  assert.deepEqual(streamed.live, [{ type: 'text', delta: 'do' }, { type: 'text', delta: 'ne' }]);
+  const stalled = builder();
+  stalled.b.observe(event({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'The ans' } }));
+  stalled.b.observe(noId({ type: 'text', text: 'The answer is done.' }));
+  stalled.b.endTurn(stalled.b.observe(result));
+  assert.deepEqual(stalled.live, [{ type: 'text', delta: 'The ans' }, { type: 'text', delta: 'wer is done.' }]);
+});
+
 test('through the adapter: a turn answered whole (thinking, then text) says its answer to the host, and ends completed', { timeout: 60_000 }, async (t) => {
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());

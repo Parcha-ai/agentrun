@@ -782,8 +782,12 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   let text = "";
   /** A model message was written at a request's start (flushSaid) and no other flush has come since. */
   let flushedAtRequest = false;
-  /** The end-of-run turn's answer while that turn runs (answering), else undefined. */
+  /** The end-of-run turn's answer while that turn runs (answering), else undefined: its last message, as pi's answer is,
+   *  the text since the turn's last message boundary. */
   let answer: string | undefined;
+  /** A message boundary (text_end, a call) came in the end-of-run turn: its next text starts the answer anew. A partial
+   *  stream the CLI asked again for whole is never read with the whole answer after it. */
+  let answerCut = false;
   // One write at a time, in the order they were asked for, a failed one never stopping the next.
   let chain: Promise<void> = Promise.resolve();
   const inTurn = (work: () => Promise<void>): Promise<void> => (chain = chain.then(work, work));
@@ -807,8 +811,15 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     onEvent(event) {
       if (event.type === "text") {
         if (answer === undefined) text += event.delta;
-        else answer += event.delta;
-      } else if (event.type === "tool_start" || event.type === "text_end") void flushText().catch(() => undefined);
+        else {
+          if (answerCut) answer = "";
+          answerCut = false;
+          answer += event.delta;
+        }
+      } else if (event.type === "tool_start" || event.type === "text_end") {
+        if (answer !== undefined) answerCut = true;
+        void flushText().catch(() => undefined);
+      }
       else if (event.type === "turn_end") void flushText(event).catch(() => undefined);
       else if (event.type === "notice") {
         // The adapter's own words (the ACP mirror past its budget): a phase row after what the model said before it.
@@ -935,6 +946,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       }),
     answering: async (requestId, prompt, keep) => {
       answer = "";
+      answerCut = false;
       await inTurn(async () => {
         if (askedAt.has(requestId)) return;
         await harness.commit(async (tx) => {
