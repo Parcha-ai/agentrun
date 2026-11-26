@@ -105,6 +105,14 @@ test("a stream trigger starts with no secret and refuses every request; once the
   const v1 = streamSignature(secret, third, now).split(",")[1];
   const rotating = await post(baseUrl, id, third, { "x-stream-signature": `t=${now},v1=${"0".repeat(64)},${v1},v2=later` });
   assert.equal(rotating.status, 202, JSON.stringify(rotating.body));
+
+  // A second PUT replaces Stream's secret (Stream's Regenerate): the old one signs nothing from then on, the new one fires.
+  const renewed = streamSecret();
+  assert.equal((await api("PUT", `/triggers/${id}/secret`, { secret: renewed })).status, 200);
+  const fourth = note("Arun, a fourth note.");
+  assert.equal((await post(baseUrl, id, fourth, { "x-stream-signature": streamSignature(secret, fourth) })).status, 401, "the old secret signs nothing");
+  const fresh = await post(baseUrl, id, fourth, { "x-stream-signature": streamSignature(renewed, fourth) });
+  assert.equal(fresh.status, 202, JSON.stringify(fresh.body));
 });
 
 test("a stream trigger's accept reads what was said: only a note that starts with the wake name starts a run", { timeout: 120_000 }, async (t) => {
