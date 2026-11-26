@@ -8,9 +8,8 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { saveSignIn, signInsOverStore } from "../dist/sign-ins-store.js";
 import { WITHHELD_LEARNING } from "../dist/handed-values.js";
-import { learningWorkspace } from "../dist/workspace/index.js";
 import { learningCommit } from "../dist/learn/commit.js";
-import { seedOf } from "../dist/learning.js";
+import { learningOf } from "../dist/learn/rows.js";
 import { agent, serve, withEnv } from "./support.mjs";
 
 /** Test pointers, never real ones: a Browserbase context the agent signs in with now, and a Kernel profile it forgot. */
@@ -18,7 +17,7 @@ const LIVE = `ctx/${randomBytes(16).toString("hex")}`;
 const FORGOTTEN = `agentrun-${randomBytes(10).toString("hex")}`;
 
 /** A server whose agent `alpha` learns, its sign-ins saved under `seal` (the server's own unless given), its Kernel one
- *  forgotten, and a correction on main that quotes both pointers. */
+ *  forgotten, and a correction saved on its learning that quotes both pointers. */
 async function world(t, { other } = {}) {
   const seal = randomBytes(32);
   withEnv(t, { AGENTRUN_SEAL_KEY: seal.toString("base64") }, ["AGENTRUN_SEAL_KEY"]);
@@ -28,14 +27,9 @@ async function world(t, { other } = {}) {
   await saveSignIn(server.store, key, { agentId: "alpha", provider: "kernel", pointer: FORGOTTEN });
   await signInsOverStore(server.store, key, { remove: async () => {} }).forget("alpha", (await server.store.signIns.list("alpha"))[0].name);
   await saveSignIn(server.store, key, { agentId: "alpha", provider: "browserbase", pointer: LIVE });
-  await seedOf(server.data, "alpha");
-  const folder = learningWorkspace({ mode: "local", data: server.data, agentId: "alpha" });
-  try {
-    const made = await learningCommit(folder.workspace, { runId: "run_signin", reason: "feedback", files: [], correction: `Open ${LIVE}, or the old ${FORGOTTEN}.` });
-    assert.equal(made.ok, true, JSON.stringify(made));
-  } finally {
-    await folder.end();
-  }
+  await server.store.learning.seed("alpha");
+  const made = await learningCommit(learningOf(server.store, "alpha"), { runId: "run_signin", reason: "feedback", files: [], correction: `Open ${LIVE}, or the old ${FORGOTTEN}.` });
+  assert.equal(made.ok, true, JSON.stringify(made));
   return server;
 }
 

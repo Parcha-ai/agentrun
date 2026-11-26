@@ -5,14 +5,10 @@
 // once, its price is booked on the run, and the workflow answers alone with no agent turn. pi, on the faux model.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, retried, serve as serveOf, withEnv } from "./support.mjs";
-import { agentFolderOf } from "../dist/files.js";
-import { seedOf } from "../dist/learning.js";
-import { git, resnap } from "./learn-support.mjs";
+import { putLearning } from "./learn-support.mjs";
 import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 
 const FAUX_MCP = new URL("./fixtures/faux-mcp.mjs", import.meta.url).pathname;
@@ -29,24 +25,15 @@ const ADD_FLOW = {
 
 test("served first, a learned workflow's MCP node runs once through the run's MCP: the workflow answers alone, its price on the run", { timeout: 120_000 }, async (t) => {
   const server = await serve(t);
-  const { api, data } = server;
+  const { api } = server;
   const fake = await startFakeMcp({ token: TOKEN });
   t.after(() => fake.close());
   assert.equal((await api("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer", token: TOKEN }, prices: { add: 0.05 } })).status, 200);
   assert.equal((await api("PUT", "/settings/tools", { "mcp:fake/*": { permission: "allow" } })).status, 200);
   assert.equal((await retried(api)("POST", "/agents", agent("adder", { learning: true, tools: ["mcp:fake/add"] }))).status, 201);
-  await seedOf(data, "adder");
-  const repo = join(agentFolderOf(data, "adder"), "learning");
-  const files = { "workflows/add-two/workflow.json": JSON.stringify(ADD_FLOW), "workflows/add-two/README.md": "---\nname: add-two\ndescription: Adds two numbers\n---\n" };
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, "adder");
+  await putLearning(server.store, "adder", { "workflows/add-two/workflow.json": JSON.stringify(ADD_FLOW), "workflows/add-two/README.md": "---\nname: add-two\ndescription: Adds two numbers\n---\n" });
   // Served first only once its check promoted it: the agent has no run to check it on here.
-  await promoteChecked(server.store.settings, "adder", [{ name: "add-two", workflow: ADD_FLOW }]);
+  await promoteChecked(server.store, "adder", [{ name: "add-two", workflow: ADD_FLOW }]);
   const started = await retried(api)("POST", "/agents/adder/runs", { input: { content: "Add two and three", a: 2, b: 3 }, max_cost_usd: 1 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;

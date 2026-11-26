@@ -306,11 +306,12 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
   }
 
   /** Agent `agentId`'s learning folder on disk `diskId` deleted over the disk's file API: agents/<agent>/learning and
-   *  everything under it (paths.ts learningKey), which a Mode 2 run's end writes on the disk its claim mounted, the
-   *  agent's own or one its launch named (the caller's: never made, renamed or removed here), and the folder a learning
-   *  exec spills beside it (workspace/archil.ts spillFolderOf: a write's input text, left by a failed cleanup). Nothing
-   *  else on the disk is touched: the agent's runs' folders stay. Done again, it does nothing: a folder not there is gone, and so is the
-   *  folder of a disk Archil says is gone. Archil off, or no account key, is 503 unavailable; a delete Archil refuses
+   *  everything under it, which a Mode 2 run's end wrote, before learning moved to the store's rows, on the disk its
+   *  claim mounted, the agent's own or one its launch named (the caller's: never made, renamed or removed here), and the
+   *  folder a learning exec spilled beside it (workspace/archil.ts spillFolderOf). Nothing reads it any more; a run's
+   *  purge removes it from a disk the run's launch named, as it did before (server.ts forgetRun). Nothing else on the
+   *  disk is touched: the agent's runs' folders stay. Done again, it does nothing: a folder not there is gone, and so is
+   *  the folder of a disk Archil says is gone. Archil off, or no account key, is 503 unavailable; a delete Archil refuses
    *  (a computer that still holds the folder, Archil not reached) is 424 upstream_failed, what was not deleted left for
    *  the next call. */
   async function removeLearningFolder(agentId: string, diskId: string): Promise<void> {

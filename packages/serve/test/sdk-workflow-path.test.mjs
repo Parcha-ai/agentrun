@@ -24,7 +24,7 @@ async function setup(t, runtime = "claude-agent-sdk") {
   const server = await serve(t, { runner: false });
   assert.equal((await server.api("POST", "/agents", { definition: { id: "sdk-path", name: "SDK path", instructions: "Read release status.", sdk: { runtime }, learning: true, tools: [] } })).status, 201);
   await landWorkflows(server.data, "sdk-path", [{ name: "release", description: "Read release status.", workflow }]);
-  await promoteChecked(server.store.settings, "sdk-path", [{ name: "release", workflow }]);
+  await promoteChecked(server.store, "sdk-path", [{ name: "release", workflow }]);
   let n = 0;
   const settle = async id => {
     const claim = await server.store.claim(id, "sdk-path-proof", { leaseMs: 60_000 });
