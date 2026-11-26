@@ -73,6 +73,18 @@ test("a run's recipe adds the binary, the run's model and the owner's limits, an
   for (const name of Object.keys(recipe.env ?? {})) assert.equal(RESERVED_ENV.has(name), false, name);
 });
 
+test("its instructions tell the model its own Write is refused, so a file is written with a shell command, never left unwritten", () => {
+  // The config above refuses every Write without asking (Cursor asks for none), and a model that tries its Write tool
+  // first can stop at the refusal and answer nothing (a race lane did on Cursor 2026.11.13). The recipe says so up front.
+  const file = recipeFile('cursor');
+  assert.equal(typeof file.instructions, 'string');
+  assert.match(file.instructions, /Write/);
+  assert.match(file.instructions, /refused/);
+  assert.match(file.instructions, /shell command/);
+  assert.match(file.instructions, /never stop/i);
+  assert.equal(cursorRecipe({ command: BINARY }).instructions, file.instructions, 'the run carries them');
+});
+
 test('a recipe that could not run is refused: a relative binary, a model that is no model id, limits that are no limits', () => {
   assert.throws(() => cursorRecipe({ command: 'cursor-agent' }), /absolute path/);
   for (const model of ['', 'two\nlines', 'a b', '-flag', 'x'.repeat(300)]) assert.throws(() => cursorRecipe({ command: BINARY, model }), /not a model id/, JSON.stringify(model));
@@ -88,6 +100,8 @@ test('recipeProblems refuses a key that is no variable name, one the adapter set
   assert.match(recipeProblems({ ...base, credentials: ['/etc/passwd'] }).join(' '), /inside the private HOME/);
   assert.match(recipeProblems({ ...base, refusals: [{ says: '', code: 'X', words: 'y' }] }).join(' '), /refusal/);
   assert.match(recipeProblems({ ...base, model: 'a b' }).join(' '), /model/);
+  for (const instructions of ['', '  ', 7, ['x']]) assert.match(recipeProblems({ ...base, instructions }).join(' '), /instructions/, JSON.stringify(instructions));
+  assert.deepEqual(recipeProblems({ ...base, instructions: 'Write files with a shell command.' }), []);
 });
 
 test('the pin: Cursor 2026.11.13-eacade1, its archive by the first digest recorded (the registry lists none), its launcher and every file it unpacks to by theirs', () => {

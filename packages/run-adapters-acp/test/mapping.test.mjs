@@ -240,6 +240,29 @@ test("the session's instructions go as the system prompt the agent advertises, e
   assert.equal(prompt[1], 'go');
 });
 
+test("a recipe's instructions reach the agent on their own, and after the session's own when it has some", async (t) => {
+  const told = 'Write files with a shell command.';
+  const alone = fakeRecipe(scratch(), { script: [{ say: 'ok' }], systemPrompt: true }, { instructions: told });
+  const a = await openSession(t, alone);
+  await a.session.send('go');
+  await a.session.turnEnd();
+  assert.equal(fakeEvents(alone).find((e) => e.type === 'new').system, told);
+  const both = fakeRecipe(scratch(), { script: [{ say: 'ok' }], systemPrompt: true }, { instructions: told });
+  const b = await openSession(t, both, { system: ['Be brief.'] });
+  await b.session.send('go');
+  await b.session.turnEnd();
+  assert.equal(fakeEvents(both).find((e) => e.type === 'new').system, `Be brief.\n\n${told}`);
+  // An agent with no system prompt gets them ahead of the first prompt, as it gets the session's own.
+  const plain = fakeRecipe(scratch(), { script: [{ say: 'ok' }] }, { instructions: told });
+  const c = await openSession(t, plain);
+  await c.session.send('go');
+  await c.session.turnEnd();
+  const prompt = fakeEvents(plain).find((e) => e.type === 'prompt').text;
+  assert.equal(prompt.length, 2);
+  assert.match(prompt[0], /Write files with a shell command\./);
+  assert.equal(prompt[1], 'go');
+});
+
 test('the agent runs in a private HOME with the environment allowlist, in a process group of its own', async (t) => {
   const recipe = fakeRecipe(scratch(), { script: [{ say: 'ok' }] }, { env: { FAKE_SETTING: '1' } });
   const sessionsDir = join(scratch(), 'sessions');
