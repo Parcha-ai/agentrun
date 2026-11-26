@@ -1,15 +1,16 @@
-// A learning child (a check's replay run, an audit's shadow run) carries its deadline in its launch (run-launch.ts
-// learningDeadlineOf): the bound its run's caller was promised (learning_work.deadline_at), past which none of it may
+// A learning child (a check's replay run, an audit's shadow run) carries its deadline in its launch (its replay's or
+// audit's deadline_at): the bound its run's caller was promised (learning_work.deadline_at), past which none of it may
 // spend on the run's key. Its runner reads that deadline as it claims the child, before any loop starts on it:
 //   - a child claimed at or past its deadline on the runner's learning clock never starts: no loop is made, and it ends
 //     cancelled as a person's cancel ends an unstarted run, at spend 0;
 //   - a child whose deadline cannot be read is not started either: its claim is given back, said on the runner's events,
 //     and a later claim reads it again (and starts it once the read answers and its deadline is ahead);
-//   - a child whose deadline is ahead starts as any run does.
+//   - a child whose deadline is ahead starts as any run does;
+//   - a poll's claims read their deadlines in one store read (store.runs.learningDeadlines), never a launch read a claim.
 // The runner's loops are faux (runner-support.mjs fauxLoops): a loop made is a loop started.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fauxLoops, release, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { fauxLoops, queue, release, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
@@ -52,13 +53,13 @@ test("a learning child whose deadline cannot be read as it is claimed is not sta
   const store = opened.runners[0];
   let unreadable = true;
   let reads = 0;
-  // The runner's store, its launch read of the child failing until the test lets it answer.
+  // The runner's store, its read of the batch's deadlines failing while it names the child, until the test lets it answer.
   const runs = new Proxy(store.runs, {
     get(target, prop) {
-      if (prop === "launch") return async (id, ...rest) => {
-        if (id === "replay-1") reads++;
-        if (id === "replay-1" && unreadable) throw new Error("the store did not answer");
-        return target.launch(id, ...rest);
+      if (prop === "learningDeadlines") return async (ids, ...rest) => {
+        if (ids.includes("replay-1")) reads++;
+        if (ids.includes("replay-1") && unreadable) throw new Error("the store did not answer");
+        return target.learningDeadlines(ids, ...rest);
       };
       const value = Reflect.get(target, prop, target);
       return typeof value === "function" ? value.bind(target) : value;
@@ -83,3 +84,36 @@ test("a learning child whose deadline cannot be read as it is claimed is not sta
   assert.equal(done.state, "ended", JSON.stringify(done));
   assert.deepEqual(faux.loops.map((loop) => loop.claim?.runId), ["replay-1"]);
 });
+
+test("a poll's claims read their learning deadlines in one store read, never a launch read a claim: forty runs claimed, a child past its deadline among them, no launch read, and that child still ends unstarted", async (t) => {
+  const opened = await stores();
+  // Loops that run well past the claims: forty held at once.
+  const faux = fauxLoops({ turns: 1_000, turnMs: 50 });
+  const store = opened.runners[0];
+  const counts = { launch: 0, deadlines: 0 };
+  // A spy on the runner's store: each launch read and each read of a batch's deadlines.
+  const runs = new Proxy(store.runs, {
+    get(target, prop) {
+      const value = Reflect.get(target, prop, target);
+      if (typeof value !== "function") return value;
+      if (prop === "launch") return (...args) => (counts.launch++, value.apply(target, args));
+      if (prop === "learningDeadlines") return (...args) => (counts.deadlines++, value.apply(target, args));
+      return value.bind(target);
+    },
+  });
+  const spied = new Proxy(store, { get: (target, prop) => (prop === "runs" ? runs : (typeof target[prop] === "function" ? target[prop].bind(target) : target[prop])) });
+  for (let i = 0; i < 39; i++) await queue(opened.server, `run-${String(i).padStart(2, "0")}`);
+  await queueReplay(opened.server, "replay-late", Date.now() - 60_000);
+  const runner = startRunner({ store: spied, name: "runner-a", ...TIMING, loops: 40, createLoop: faux.createLoop });
+  t.after(async () => {
+    await runner.close();
+    await release(opened);
+  });
+  const late = await ended(opened.server, "replay-late");
+  assert.deepEqual([late.state, late.outcome], ["stopped", "cancelled"], JSON.stringify([late.state, late.outcome, late.summary]));
+  await until(() => faux.loops.length === 39, "the 39 other runs' loops started", 10_000);
+  assert.equal(faux.loops.some((loop) => loop.claim?.runId === "replay-late"), false, "no loop on the child past its deadline");
+  assert.equal(counts.launch, 0, `no launch read for a claim: ${counts.launch}`);
+  assert.ok(counts.deadlines >= 1 && counts.deadlines <= 4, `one deadline read a poll that claimed, never one a run: ${counts.deadlines}`);
+});
+
