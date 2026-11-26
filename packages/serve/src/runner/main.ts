@@ -27,7 +27,7 @@ import { dockerPathsForRuns } from "../box-paths.js";
 import { COMPOSIO_KEY_ENV } from "../composio-made.js";
 import { hostCommandRefusals } from "../computers.js";
 import { hostAddressesOnce } from "../docker-host-addresses.js";
-import { stopRenewals } from "../chatgpt-plan.js";
+import { renewalDrainFor, stopRenewals } from "../chatgpt-plan.js";
 import { claimInstallsStopped } from "../harness-install.js";
 import { HARNESS_MODULES_ENV, HARNESS_MODULES_SETTING, HARNESS_RECIPES_ENV, HARNESS_RECIPES_SETTING, HARNESS_TABLE_ENV, harnessModulesEnv, harnessModulesOf, harnessRecipesEnv, harnessRecipesOf, harnessTable } from "../harness-table.js";
 import { DEFAULT_PORT, maxRunsOf } from "../host.js";
@@ -370,12 +370,12 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const close = () =>
     (closing ??= (async () => {
       floor.stop();
-      // Its claims' readers start no ChatGPT renewal on its store once the drain is over and its loops are told to stop
-      // (never before: a run the drain lets finish may need one); one OpenAI is answering saves its new pair before the
-      // store closes (awaited last, bounded by RENEWAL_DRAIN_MS from then: beside the loops' stop, inside the close's own
-      // bound, runnerCloseBoundMs).
+      // Its claims' readers start no ChatGPT renewal on its store once the drain is over (never before: a run the drain
+      // lets finish may need one); one OpenAI is answering saves its new pair before the store closes (awaited last,
+      // bounded by the rest of the close's window for the loops' stop, at most RENEWAL_DRAIN_MS: renewalDrainFor, so it
+      // ends inside the close's own bound, runnerCloseBoundMs).
       let renewalsStopped: Promise<void> | undefined;
-      const stopRenewing = () => (renewalsStopped ??= stopRenewals(store));
+      const stopRenewing = (by?: number) => (renewalsStopped ??= stopRenewals(store, renewalDrainFor(by)));
       // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
       await Promise.all([janitor?.close(), runner.close(stopRenewing)]);
       // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is

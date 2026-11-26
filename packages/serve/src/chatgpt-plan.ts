@@ -219,6 +219,10 @@ export const RENEWAL_DRAIN_MS = REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS;
 /** A plan's log with no log of its own (a runner's reader): this process's stderr, one line, never a token. */
 const stderrLog = (fields: Record<string, string>): void => void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`);
 
+/** How long a runner's close drains renewals from when it says its loops are stopping (runner.ts close): the rest of its
+ *  window, `by` (epoch ms), up to RENEWAL_DRAIN_MS; RENEWAL_DRAIN_MS when no window was given (a close already made). */
+export const renewalDrainFor = (by: number | undefined): number => (by === undefined ? RENEWAL_DRAIN_MS : Math.max(0, Math.min(RENEWAL_DRAIN_MS, by - Date.now())));
+
 /** A store's stop in this process (the server's, a runner's beside it or of its own), awaited before `store.close()`:
  *  from now no reader on the store starts a renewal, and this resolves once those out have ended, saved or not, or `ms`
  *  has gone, said in `log` (`renewal_drain_cut`, with how many were still out). So a refresh token OpenAI spent leaves
