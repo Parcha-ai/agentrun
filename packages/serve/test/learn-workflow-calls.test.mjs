@@ -166,6 +166,19 @@ test("a call whose record says refused is refused only while nothing was booked 
   assert.deepEqual(outcomes([allowed("c1"), start("c1"), start("r1", "read"), kept("c1", refused), end("r1"), end("c1"), kept("c1", refused)]), [["agent", "refused", 0]]);
   // Another call's mark is no attempt of this one.
   assert.deepEqual(outcomes([allowed("c2"), allowed("c1"), start("c1"), start("r1", "read"), kept("c1", refused), end("r1"), end("c1")]), [["agent", "refused", 0]]);
+  // Every attempt counts, not only the one before the newest: the oldest let go and cut after its node booked (no record),
+  // the next refused at runLearned, a crash again, the newest refused too. The oldest is still open: failed, $ unknown.
+  const twoEarlier = [
+    allowed("c1"), start("c1"), start("r1", "read"), ...node(2, 0.25),
+    allowed("c1"), kept("c1", refused), end("r1"), end("c1"),
+    allowed("c1"), start("c1"), kept("c1", refused), end("c1"),
+  ];
+  assert.deepEqual(outcomes(twoEarlier), [["agent", "failed", null]]);
+  // An attempt let go after the refused record, with none of its own kept since (a crash cut it): open, so failed, and
+  // its $ unknown: it spent past the refused record's window, which never closed on it.
+  assert.deepEqual(outcomes([allowed("c1"), start("c1"), kept("c1", refused), end("c1"), allowed("c1"), start("c1"), ...node(2, 0.25)]), [["agent", "failed", null]]);
+  // An attempt whose record says it ran (no node ended: it threw) is no refusal of it: failed.
+  assert.deepEqual(outcomes([allowed("c1"), start("c1"), kept("c1", { ended: "failed" }), end("c1"), allowed("c1"), start("c1"), kept("c1", refused), end("c1")]), [["agent", "failed", 0]]);
 });
 
 test("a CLI's own side request in a refused call's window (its title or summary helper on another model) is no proof the call spent: it stays refused at $0", () => {
