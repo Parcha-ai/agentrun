@@ -214,21 +214,28 @@ async function filedWhole(t, tools, redact) {
   return filed;
 }
 
-test("the gateway itself: a binary payload filed whole that carries a secret's shape no one holds (a JWT as the payload gives it, a private key or a JWT in the bytes it decodes to) is \"[redacted]\" alone, as the run's redactor cuts a shape in text; one with none is kept whole", { timeout: 60_000 }, async (t) => {
+test("the gateway itself: a binary payload filed whole whose bytes carry a secret's shape no one holds (a private key, a JWT) is \"[redacted]\" alone, as the run's redactor cuts a shape in text; one whose base64 only reads by chance as a shape is kept whole", { timeout: 60_000 }, async (t) => {
+  const { secretShapes } = await import("../dist/learn/secrets.js");
+  // Base64 characters in the run of a Google API key's shape, the bytes they decode to holding no shape.
+  const chance = `${PICTURE}AIza${"A".repeat(36)}${PICTURE}`;
+  assert.deepEqual(secretShapes(chance), ["Google API key"], "the base64 text reads as a shape");
+  assert.deepEqual(secretShapes(Buffer.from(chance, "base64").toString("latin1")), [], "its bytes do not");
   const filed = await filedWhole(t, {
-    as_given: [{ type: "image", data: `${PICTURE}\n${JWT}\n${PICTURE}`, mimeType: "image/png" }],
     key_in_bytes: [{ type: "resource", resource: { uri: "file:///notes.bin", mimeType: "application/octet-stream", blob: bytesAround(`\n${PEM}\n`) } }],
     jwt_in_bytes: [{ type: "image", data: bytesAround(` ${JWT} `), mimeType: "image/png" }],
+    jwt_in_audio: [{ type: "audio", data: bytesAround(`token=${JWT}`), mimeType: "audio/wav" }],
     clean: [{ type: "image", data: PICTURE, mimeType: "image/png" }],
+    chance: [{ type: "image", data: chance, mimeType: "image/png" }],
   }, runRedactor());
   const shown = {
-    as_given: filed.as_given.content[0].data,
     key_in_bytes: filed.key_in_bytes.content[0].resource.blob,
     jwt_in_bytes: filed.jwt_in_bytes.content[0].data,
+    jwt_in_audio: filed.jwt_in_audio.content[0].data,
   };
-  assert.deepEqual(Object.entries(shown).filter(([, payload]) => payload !== "[redacted]").map(([tool]) => tool), [], "each payload with a secret's shape is withheld");
+  assert.deepEqual(Object.entries(shown).filter(([, payload]) => payload !== "[redacted]").map(([tool]) => tool), [], "each payload whose bytes hold a secret's shape is withheld");
   assert.equal(filed.key_in_bytes.content[0].resource.uri, "file:///notes.bin", "and the block around it kept");
   assert.equal(filed.clean.content[0].data, PICTURE, "a payload with no secret's shape is filed whole, as the server sent it");
+  assert.equal(filed.chance.content[0].data, chance, "and so is one whose base64 text alone reads as a shape");
 });
 
 test("a claim's MCP does not start without the run's held redactor: it throws, naming itself, before it opens or mints any key", { timeout: 60_000 }, async () => {
