@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sendCommand } from "../dist/runner/commands.js";
 import { startRunner } from "../dist/runner/runner.js";
+import * as plan from "../dist/chatgpt-plan.js";
 import { commandRow, fauxLoops, queue, stores, until } from "./runner-support.mjs";
 
 const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 600_000 };
@@ -58,6 +59,40 @@ test("a close's read of the stop rows and its loops' stop share one window, the 
   const took = Date.now() - startedAt;
   // runnerCloseBoundMs's window after the drain (none here): 5 s, the read's 3 s inside it, never 3 s + 5 s.
   assert.ok(took >= 4_900 && took < 7_000, `the close took the one window: ${took} ms`);
+});
+
+test("a close tells its caller its loops are stopping as its window after the drain begins, with that window's end: a stalled read of the stop rows never pushes what the caller stops there (a ChatGPT renewal's drain) past the close's bound", async (t) => {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
+  t.after(() => faux.loops.forEach((loop) => (loop.halted = true)));
+  let stall = false;
+  const stalled = new Proxy(store, {
+    get(target, prop) {
+      if (prop === "commandsOf") return (...args) => (stall ? new Promise(() => {}) : target.commandsOf(...args));
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const window = { leaseMs: 8_000, stopMarginMs: 3_000, renewEveryMs: 1_000 };
+  const runner = startRunner({ store: stalled, createLoop: faux.createLoop, name: "runner-a", ...TIMING, ...window });
+  t.after(() => runner.close());
+  await queue(server, "run-1");
+  await until(() => faux.loops.length === 1, "the run claimed");
+  stall = true;
+  const told = [];
+  const startedAt = Date.now();
+  await runner.close((by) => told.push({ at: Date.now() - startedAt, by }));
+  assert.equal(told.length, 1, `told once: ${JSON.stringify(told)}`);
+  // Told before the read (stalled 3 s here), not after it, and handed the window's end: no drain, so 5 s from the start.
+  assert.ok(told[0].at < 1_000, `told as the window began: ${told[0].at} ms`);
+  assert.equal(typeof told[0].by, "number", "handed the window's end");
+  assert.ok(told[0].by - startedAt <= window.leaseMs - window.stopMarginMs + 50, `the end is the close's own: ${told[0].by - startedAt} ms`);
+  // What the wrappers drain renewals for from there: the window's rest, never past it, never over RENEWAL_DRAIN_MS.
+  const now = Date.now();
+  assert.ok(plan.renewalDrainFor(now + 5_000) <= 5_000 && plan.renewalDrainFor(now + 5_000) > 4_900, "a window shorter than RENEWAL_DRAIN_MS bounds the drain");
+  assert.equal(plan.renewalDrainFor(now + 600_000), plan.RENEWAL_DRAIN_MS, "a longer window leaves RENEWAL_DRAIN_MS");
+  assert.equal(plan.renewalDrainFor(now - 1_000), 0, "a window already over leaves none");
+  assert.equal(plan.renewalDrainFor(undefined), plan.RENEWAL_DRAIN_MS, "no window (a close already made) leaves RENEWAL_DRAIN_MS");
 });
 
 test("a loop a stop row stops, still going at the end of the close's window, has its signal aborted before the close gives up its claim: nothing of it outlives the close", async (t) => {
