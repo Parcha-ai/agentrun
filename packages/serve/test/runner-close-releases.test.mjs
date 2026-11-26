@@ -513,7 +513,9 @@ test("pi: a run that ends in the close's drain, its browser's release never answ
   const records = await recordsOf(server);
   const cuts = cutsOf(records);
   assert.equal(cuts.length, 1, `the run says its release was cut, once: ${JSON.stringify(cuts)}`);
-  assert.ok(cuts[0].bound_ms <= releaseBy - releaseFrom + 200, `cut where the close's window cuts the release, not a whole bound after its start: ${JSON.stringify({ cut: cuts[0], releaseFrom })}`);
+  // The release's own start comes a little before the vendor is asked, and the close's start a little after `began`, so the
+  // cut's bound is up to that much longer than seen here; a whole bound from the release's start would be `releaseBy`.
+  assert.ok(cuts[0].bound_ms <= releaseBy - releaseFrom + 1_000 && cuts[0].bound_ms < releaseBy, `cut where the close's window cuts the release, not a whole bound after its start: ${JSON.stringify({ cut: cuts[0], releaseFrom })}`);
   const asked = statSync(`${hold}.asked`).mtimeMs;
   const charges = chargesOf(records);
   assert.equal(charges.filter((charge) => !charge.final && Date.parse(charge.at) >= asked).length, 1, `the cut charged the session's time through the cut: ${JSON.stringify({ charges, asked: new Date(asked).toISOString() })}`);
