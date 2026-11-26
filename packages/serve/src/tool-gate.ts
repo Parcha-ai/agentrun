@@ -590,6 +590,8 @@ export class RunGate {
       // refuses whatever the arguments.
       const op = (args as { op: string }).op;
       if (this.opBar(op) === "not given") return { deny: notGivenText(`computer_op ${op}`, grantOf(op)!, "", ran) };
+      const kept = this.keptRefusal(op, held.args, ran);
+      if (kept) return { deny: kept };
       return this.onComputer().decide(held.tool, held.args, options);
     }
     const key = this.keyOf(name) ?? name;
@@ -766,6 +768,23 @@ export class RunGate {
       if (hit) return `${named.tool}${CANT_BE_CALLED}${given} is in ${hit.folder}/, the folder this agent's setting for ${hit.key} files that tool's answers in (its file setting), so the agent's own file tools are refused there. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
     }
     return undefined;
+  }
+
+  /** Why a script's file op `op` (every op held to a file tool: OP_HELD_AS but the shell's) at `args.path` is refused on a
+   *  computer that mounts the run's folder while a folder is filed, or undefined. That computer holds the filed folder
+   *  under COMPUTER_ROOT, and its kernel reaches a file by names no lexical check follows: /proc/self/root,
+   *  /proc/self/cwd, /dev/fd, any link already on the computer. So the path must resolve (posix, lexically) inside
+   *  COMPUTER_ROOT or another name of the run's folder (where.names), the filed folder itself then refused as the run's
+   *  own file tools are (filedRefusal); anything else is refused, whatever it names. With nothing filed, or a computer
+   *  that does not mount the folder (where.computer not true: it holds no filed folder), nothing changes. */
+  private keptRefusal(op: string, args: unknown, ran: "no" | "unknown"): string | undefined {
+    if (this.where.computer !== true || SHELL_OPS.has(op)) return undefined;
+    const folders = (this.filed ??= filedFolders(this.overrides));
+    if (!folders.length) return undefined;
+    const given = (args as { path?: unknown }).path;
+    if (typeof given === "string" && portPath(given, [COMPUTER_ROOT, ...(this.where.names ?? [])]) !== undefined) return undefined;
+    const [first] = folders;
+    return `computer_op ${op}${CANT_BE_CALLED}${typeof given === "string" ? given : JSON.stringify(given ?? null)} is outside ${COMPUTER_ROOT}, and while this agent's setting for ${first!.key} files that tool's answers in ${first!.folder}/ (its file setting), a script's file ops are kept in ${COMPUTER_ROOT}, the run's folder on the computer. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
   }
 
   private lastGood?: PermissionSettings;
