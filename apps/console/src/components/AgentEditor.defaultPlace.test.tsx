@@ -56,11 +56,12 @@ describe("AgentEditor, a new agent's default place", () => {
     expect(boxed.input('input[type="checkbox"][value="browser"]')!.checked).toBe(false);
     act(() => root?.unmount());
     document.body.innerHTML = "";
-    // The runner as the default (Mode 2, whose runner has a shell): no default_reason, which comes only with null.
+    // The runner as the default (Mode 2, whose runner has a shell): no default_reason, which comes only with null. Its
+    // shell runs bash, so bash is ticked there too.
     const runner = mount(served({ default_place: { mode: "runner" } }));
     expect(runner.input('input[name="place"][value="runner"]')!.checked).toBe(true);
     runner.step(/Tools/);
-    expect(runner.input('input[type="checkbox"][value="bash"]')!.checked).toBe(false);
+    expect(runner.input('input[type="checkbox"][value="bash"]')!.checked).toBe(true);
     expect(runner.input('input[type="checkbox"][value="browser"]')!.checked).toBe(true);
   });
 

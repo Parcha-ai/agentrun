@@ -134,10 +134,8 @@ describe("starting a race: an agent and a run of it per lane", () => {
       { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] },
       { name: "browser", available: true, harnesses: ["pi"] },
     ]);
-    // No box: the runner's tools (no shell).
+    // Places not read: the runner's tools, no shell.
     expect(laneKit("pi", offers, null)).toEqual({ tools: ["read", "write", "browser"] });
-    const runnerOnly: Places = { modes: ["runner"], boxes: [], defaultPlace: { mode: "runner" } };
-    expect(laneKit("pi", offers, runnerOnly)).toEqual({ tools: ["read", "write", "browser"] });
     // A box by default: pi gets the shell (no browser, which runs on the runner only), so the server runs it in the box.
     const boxed: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "daytona", available: true }], defaultPlace: { mode: "sandbox", box: "daytona" } };
     expect(laneKit("pi", offers, boxed)).toEqual({ tools: ["read", "write", "bash"] });
@@ -148,6 +146,24 @@ describe("starting a race: an agent and a run of it per lane", () => {
       expect(laneKit(harness, offers, boxed), harness).toEqual({ tools: ["read", "write"] });
       expect(defaultPlaceOf(false, laneKit(harness, offers, boxed).tools, boxed), harness).toEqual({ mode: "runner" });
     }
+  });
+
+  // Mode 2 serves the runner as a new agent's default place, since its runner has a shell (Archil's serverless exec),
+  // which runs bash: a pi lane gets bash there and runs on the runner. The background tools still need a box. Mode 1's
+  // runner has no shell, so with no default place (no Docker box) a lane gets no shell tool.
+  it("a pi lane keeps bash on the runner in Mode 2, and gets no shell tool in Mode 1 with no default place", () => {
+    const offers = toolOffers([
+      { name: "read", available: true, harnesses: ["pi", "codex"] },
+      { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] },
+      { name: "bash_background", available: true, sandbox_only: true, harnesses: ["pi"] },
+      { name: "browser", available: true, harnesses: ["pi"] },
+    ]);
+    const mode2: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "modal", available: true }], defaultPlace: { mode: "runner" } };
+    expect(laneKit("pi", offers, mode2)).toEqual({ tools: ["read", "bash", "browser"] });
+    expect(defaultPlaceOf(false, laneKit("pi", offers, mode2).tools, mode2)).toEqual({ mode: "runner" });
+    expect(laneKit("codex", offers, mode2)).toEqual({ tools: ["read"] });
+    const mode1: Places = { modes: ["runner", "sandbox"], boxes: [], defaultPlace: null };
+    expect(laneKit("pi", offers, mode1)).toEqual({ tools: ["read", "browser"] });
   });
 
   it("a new race's label is a label value the server takes, and two races get two labels", () => {

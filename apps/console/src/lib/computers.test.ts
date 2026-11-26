@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { computerFields, pickKind } from "./computers";
+import type { Places } from "./place";
 import type { Computer, ComputerKindView } from "./v2";
 
 // A switch of a computer's kind or provider carries what the old one set where the new one takes it, and says what it
@@ -35,13 +36,31 @@ describe("a sandbox's needs across a switch", () => {
 describe("computerFields with no tools listed", () => {
   const OFFERED = [{ name: "bash", sandbox_only: true as const }, { name: "read" }];
   it("the runner, tools listed: drops the box-only ones", () => {
-    expect(computerFields({ kind: "none" }, ["bash", "read"], OFFERED)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["read"] });
+    expect(computerFields({ kind: "none" }, ["bash", "read"], OFFERED, null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["read"] });
   });
   it("the runner, no tools listed, an agent with tools: null", () => {
-    expect(computerFields({ kind: "none" }, ["bash", "read"], [])).toBeNull();
+    expect(computerFields({ kind: "none" }, ["bash", "read"], [], null)).toBeNull();
   });
   it("no tools listed, but nothing to drop: an agent with no tools on the runner, or a pick of a box", () => {
-    expect(computerFields({ kind: "none" }, [], [])).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: [] });
-    expect(computerFields({ kind: "sandbox", provider: "docker" }, ["bash", "read"], [])).toEqual({ computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" } });
+    expect(computerFields({ kind: "none" }, [], [], null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: [] });
+    expect(computerFields({ kind: "sandbox", provider: "docker" }, ["bash", "read"], [], null)).toEqual({ computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" } });
+  });
+});
+
+// Mode 2: the runner has a shell (Archil's serverless exec), which capabilities say by serving the runner as a new
+// agent's default place. It runs bash, so a move to the runner keeps bash; the background tools still need a box. Mode 1:
+// the runner has no shell, so a move there drops every box-only tool.
+describe("computerFields to the runner, by mode", () => {
+  const OFFERED = [{ name: "bash", sandbox_only: true as const }, { name: "bash_background", sandbox_only: true as const }, { name: "read" }];
+  const MODE2: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "modal", available: true }], defaultPlace: { mode: "runner" } };
+  const MODE1: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }], defaultPlace: { mode: "sandbox", box: "docker" } };
+  const MODE1_NO_BOX: Places = { modes: ["runner", "sandbox"], boxes: [], defaultPlace: null };
+  it("Mode 2: keeps bash, drops the background tools", () => {
+    expect(computerFields({ kind: "none" }, ["bash", "bash_background", "read"], OFFERED, MODE2)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["bash", "read"] });
+  });
+  it("Mode 1: drops bash too, with a Docker box or with none", () => {
+    for (const places of [MODE1, MODE1_NO_BOX, null]) {
+      expect(computerFields({ kind: "none" }, ["bash", "bash_background", "read"], OFFERED, places)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["read"] });
+    }
   });
 });
