@@ -39,16 +39,16 @@ async function callFetch(spec) {
 }
 
 /** pi's spec for a run whose agent learned fetch-one, its revision's tool settings `toolSettings`, the server's `settings`. */
-async function piSpec(t, { toolSettings, settings } = {}) {
+async function piSpec(t, { toolSettings, settings, flows = FLOWS, granted = GRANTED } = {}) {
   const launch = {};
   return specFor(t, {
-    body: { learning: true, tools: GRANTED, ...(toolSettings ? { toolSettings } : {}) },
+    body: { learning: true, tools: granted, ...(toolSettings ? { toolSettings } : {}) },
     ...(settings ? { settings } : {}),
     launch,
     ledger,
     before: async (server, _key, dir) => {
-      launch.learning = startAt(await landWorkflows(dir, AGENT, FLOWS));
-      await promoteChecked(server, AGENT, FLOWS);
+      launch.learning = startAt(await landWorkflows(dir, AGENT, flows));
+      await promoteChecked(server, AGENT, flows);
     },
   });
 }
@@ -116,4 +116,28 @@ test("pi: a tool the server sets to deny after the run was claimed is refused as
   assert.equal(out.isError, true, out.text);
   assert.match(out.text, /The learned workflow fetch-one failed: .*web_fetch/, out.text);
   assert.match(out.text, /deny|denied/i, out.text);
+});
+
+// A call node's arguments are held as the agent's own call of its tool is: a path one names in the folder an MCP tool's
+// file setting files its answers in is refused before the tool runs, in the gate's words (tool-gate.ts filedRefusal), as
+// the agent's own read there is. pdf_pages is the one call node tool that opens a run file.
+const PAGES = { v: 2, name: "pages-one", schemas: { In: { type: "object", properties: { path: { type: "string" } }, required: ["path"] }, Pages: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Pages", path: "pages" }, root: { node: "call", label: "draw", via: "tool", tool: "pdf_pages", args: { path: "{path}" }, out: "Pages", as: "pages", deadline_s: 30 } };
+const FILED_KEY = "mcp:stripe/list_charges";
+const FILED = { [FILED_KEY]: { file: { folder: "stripe/pages", show: ["has_more"] } } };
+
+test("pi: a learned workflow's call node whose path is in a filed folder is refused before its tool runs, in the gate's words; one outside it runs", async (t) => {
+  const { spec } = await piSpec(t, { toolSettings: FILED, flows: [{ name: "pages-one", description: "Draws a PDF's pages", workflow: PAGES }], granted: ["read", "pdf_pages"] });
+  const tool = spec.session.tools.find((one) => one.name === LEARNED_WORKFLOW_TOOL);
+  assert.ok(tool, `the run lists learned_workflow: ${JSON.stringify(spec.session.tools.map(({ name }) => name))}`);
+  const call = (path, id) => tool.call({ name: "pages-one", input: { path } }, { callId: id, signal: new AbortController().signal });
+  for (const [path, id] of [["stripe/pages/list_charges-1.json", "c-1"], ["Stripe/Pages/a.pdf", "c-2"], ["notes/../stripe/pages/a.pdf", "c-3"]]) {
+    const out = await call(path, id);
+    assert.equal(out.isError, true, out.text);
+    assert.match(out.text, new RegExp(`pdf_pages can't be called: ${path.replace(/[.]/g, "\\.")} is in stripe/pages/, the folder this agent's setting for ${FILED_KEY} files that tool's answers in \\(its file setting\\)`), out.text);
+  }
+  // Outside the folder the tool runs: no such PDF here, in pdf_pages' own words.
+  const outside = await call("notes/a.pdf", "c-4");
+  assert.equal(outside.isError, true, outside.text);
+  assert.doesNotMatch(outside.text, /can't be called/, outside.text);
+  assert.match(outside.text, /pdf_pages/, outside.text);
 });
