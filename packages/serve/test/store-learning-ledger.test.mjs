@@ -4,7 +4,9 @@
 //   - an end records its row with why it was not served alone (`cost_stop`, `cut`); the ledger reads both tables as one
 //     read, scoped to the runs asked for;
 //   - a run's end again (after a reopen) writes its spend rows anew, none left from the end before; healCost records the
-//     row again with the healed cost; a purge takes the run's row and every spend row it booked or that audits it;
+//     row again with the healed cost; a purge takes the run's row and every spend row it booked or that audits it,
+//     but a figure it booked on another run's account: a keyed replay purged with its input keeps what it spent on the
+//     paying run's key, that run's learning, with no revision named (its view, the ledger and the learning total agree);
 //   - a run that ended with no row is recorded once, at the server's open (run-patch.ts backfillLedger), at the figures
 //     its end would have written, a page at a time; an open after a stop partway records the rest, and once the ledger
 //     is marked whole (store_meta.ledger_backfilled) no open reads the runs again; no read records one; each run is
@@ -30,6 +32,9 @@ const { BY_HAND_BEFORE } = await import("../dist/store/sqlite/run-patch.js");
 const { SCHEMA_VERSION, StoreAwaitsServer } = await import("../dist/store/index.js");
 const { PAST_RUNS, workflowCostsOf } = await import("../dist/runner/workflow-first.js");
 const { keepResetAt } = await import("../dist/learn/promote.js");
+const { noteLearningChild } = await import("../dist/learning-work.js");
+const { purgeRun } = await import("../dist/agent-delete.js");
+const { sealRunLaunch } = await import("../dist/store/seal.js");
 
 const C = "c".repeat(16);
 const D = "d".repeat(16);
@@ -42,15 +47,15 @@ const kept = (n, job, look, extra = {}) => ({ table: "learning_proposals", row: 
 
 /** A store with agent-1 and its revision, and `end`: run `id` made and ended at the clock's next second, its row's cost
  *  `costUsd` and its metrics, with `also`'s rows; on a named disk with `disk`; an audit's shadow with `audit`; a check's
- *  replay with `replay`; a launch that learns with `learns`. */
+ *  replay with `replay`; a launch that learns with `learns`; its input's words `input`; a sealed copy of a key `sealed`. */
 async function ledgerStore(t) {
   const clock = { now: T0 };
   const { store, file } = await storeOn(t, { clock });
   await agentWithRevision(store, "agent-1", "rev-1");
-  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit, replay, learns, revisionId = "rev-1" } = {}) => {
+  const end = async (id, costUsd, metrics = { path: "agent" }, { also = [], disk, audit, replay, learns, input = "q", sealed, revisionId = "rev-1" } = {}) => {
     clock.now += 1_000;
     const learning = learns ? { learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } } : {};
-    await store.runs.create({ id, agentId: "agent-1", revisionId }, { body: { input: { content: "q" }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}), ...(replay ? { replay } : {}), ...learning } });
+    await store.runs.create({ id, agentId: "agent-1", revisionId }, { body: { input: { content: input }, title: "t", place: { mode: "runner" }, ...(disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {}), ...(audit ? { audit } : {}), ...(replay ? { replay } : {}), ...learning }, ...(sealed ? { sealed } : {}) });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     clock.now += 1_000;
     await store.runs.update(claim, { state: "ended", costUsd, metrics }, also.length ? { also } : undefined);
@@ -110,6 +115,46 @@ test("a run's end again writes its spend rows anew, none left from the end befor
   const left = await store.learning.ledger("agent-1");
   assert.deepEqual(left.rows.map((row) => row.runId).sort(), ["audit.r1", "r2"], "the purged run's row is gone");
   assert.deepEqual(left.spend.filter((one) => one.runId === "r1" || one.ofRun === "r1"), [], "and every spend row it booked or that audits it");
+});
+
+// Review on #3914 (round 5, money): a keyed replay reads its input from `replay.of` and spends on the key of
+// `replay.paid_by`. A purge of that input purges the replay first (agent-delete.ts purgeRun), but the paying run is not
+// purged: what the replay spent stays its learning, read the same by its view, the agent's ledger and the learning total.
+// Only that figure stays: the replay's sealed copy of the key, its input, and the revision its spend row named go.
+test("a purge of a keyed replay's input keeps what the replay spent on the paying run's key: the run's view, the agent's ledger and the learning total read it as before; only the figure stays, the replay's sealed copy and input gone", async (t) => {
+  const { store, clock, end } = await ledgerStore(t);
+  const words = ["input", "words", process.pid].join("-");
+  await end("s0", 0.3, { path: "agent" }, { input: words });
+  await end("p1", 0.4);
+  await noteLearningChild(store.settings, "p1", { run: "rp1", kind: "replay", at: clock.now, keyed: true });
+  const sealed = sealRunLaunch(Buffer.alloc(32, 9), "rp1", { model: { key: "not-a-secret-run-key", origin: "https://gateway.test" } });
+  await end("rp1", 0.2, {}, { replay: { of: "s0", workflow: "answer", digest: C, paid_by: "p1" }, input: words, sealed });
+  const read = async () => {
+    const view = await runAllInOverStore(store, "p1");
+    const agent = await agentCostOverStore(store, "agent-1");
+    const row = agent.runs.find((run) => run.run_id === "p1");
+    return { view: [view.check_usd, view.learning_usd, view.all_in_usd], ledger: [row?.check_usd, row?.learning_usd, row?.total_usd], learning: agent.bill.learning_usd };
+  };
+  const before = await read();
+  assert.deepEqual([before.view[0], before.ledger], [0.2, before.view], `the replay's cost is p1's check, read the same by its view and the ledger: ${JSON.stringify(before)}`);
+
+  // The input's purge, as DELETE /v2/runs/{run_id} runs it: the replay made from it is purged first.
+  const KEPT_NONE = { meters: null, spend: { usd: 0, basis: "list" }, learning: null };
+  const host = { store, madeFrom: (id) => store.runs.madeFrom(id), forgetCopies: async () => {}, forgetRun: async () => {}, kept: async () => KEPT_NONE, turnOver: async () => false, waitMs: 60_000, pollMs: 20 };
+  await purgeRun(host, "s0");
+  assert.deepEqual([(await store.runs.get("s0")).purgedAt !== null, (await store.runs.get("rp1")).purgedAt !== null, (await store.runs.get("p1")).purgedAt], [true, true, null], "the input and its replay purged, the paying run not");
+  assert.deepEqual(await read(), before, "the paying run's check, learning and all-in, in its view, the agent's ledger and the learning total, as before the purge");
+
+  // Only the figure: the replay's spend row names no revision, and its launch (the sealed copy, the input) is gone.
+  const { spend } = await store.learning.ledger("agent-1", ["rp1"]);
+  assert.deepEqual(spend.map((one) => [one.runId, one.kind, one.ofRun, one.workflow, one.digest, one.usd]), [["rp1", "check", "p1", null, null, 0.2]], JSON.stringify(spend));
+  for (const id of ["rp1", "s0"]) {
+    const launch = await store.runs.launch(id).catch(() => undefined);
+    assert.deepEqual([launch?.sealed ?? null, JSON.stringify(launch?.body ?? null).includes(words)], [null, false], `${id}: no sealed copy and no input after the purge`);
+  }
+  // The paying run's own purge takes the row with it.
+  await purgeRun(host, "p1");
+  assert.deepEqual((await store.learning.ledger("agent-1")).spend.filter((one) => one.ofRun === "p1"), [], "gone with the paying run's purge");
 });
 
 test("a run that ended with no ledger row (a build before the ledger ended it) is recorded once, at the server's open, at the figures its end would have written; no read records it", async (t) => {
