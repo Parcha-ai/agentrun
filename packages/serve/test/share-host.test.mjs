@@ -34,7 +34,8 @@ async function portProbe(url) {
 const { exportBundle } = await import("../dist/run-export.js");
 const { packageSha256 } = await import("../dist/agent-package.js");
 const { stable } = await import("../dist/validate.js");
-const { checkShareBundle, screenShare, ShareStore, SHARE_QUOTA, SHARE_STRINGS, SHARE_HOST_CSP, SHARE_HOST_ROUTES } = await import("../dist/share-host.js");
+const { checkShareBundle, screenShare, ShareStore, SHARE_EFFECTS, SHARE_QUOTA, SHARE_STRINGS, SHARE_HOST_CSP, SHARE_HOST_ROUTES } = await import("../dist/share-host.js");
+const { commandFacts, commandFactsMade } = await import("../dist/secret-rules.js");
 const { SHARE_HOST_ENV, switchFrom } = await import("../dist/env-switch.js");
 const { banner } = await import("../dist/print.js");
 const { startServe } = await import("../dist/server.js");
@@ -416,10 +417,36 @@ test("a workflow call's output is read knowing its call: a credential file's pla
   await screenShare(body, []);
 });
 
-test("a call's long command is read once per call, never once per string of its output: ≥1 MiB of command over 5,000 strings screens in bounded time", { timeout: 900_000 }, async () => {
-  // Each string of a call's output is read with the call's context (its command): a read key, or any per-string work,
-  // that copies or re-reads the command costs strings × command, minutes and gigabytes here, while every other upload
-  // on the host waits. One effect, a long command that prints no environment, and many short distinct strings.
+test("a workflow call's output is read knowing its call at any index: one past a million empty effects still refuses", { timeout: 900_000 }, async () => {
+  // An effect's index is any number of digits: a pointer the host reads as no call's would leave the call's output to the
+  // context-free rules, and a bare .pgpass line passes those.
+  const pgpass = `db.example:5432:app:alice:orchard${nonce()}plain`;
+  const doc = JSON.parse(await bundleOf());
+  const read = { node: "step", executionPath: "step", item: null, tool: "bash", status: "done", input: { command: "cat ~/.pgpass" }, output: [`${pgpass}`], error: null, startedAt: "2026-01-02T03:04:05.000Z", endedAt: "2026-01-02T03:04:06.000Z" };
+  const effects = [...Array.from({ length: 1_000_000 }, () => ({})), read];
+  const body = resigned({ ...doc, graph: { ...GRAPH, effects, totals: { ...GRAPH.totals, effects: effects.length } } });
+  await assert.rejects(screenShare(body, []), (error) => error.code === "input_invalid" && (error.extra.details.counts["credential-file"] ?? 0) + (error.extra.details.counts["env-dump"] ?? 0) >= 1);
+});
+
+test("a graph holds no more effects than an export can write: one effect over the bound is 400", async () => {
+  // The graph view writes each effect with ten keys (graph-view.ts); with one character a value, the least any takes,
+  // and a comma between, an 8 MiB export holds no more effects than this.
+  const keys = ["node", "executionPath", "item", "tool", "status", "input", "output", "error", "startedAt", "endedAt"];
+  const least = JSON.stringify(Object.fromEntries(keys.map((key) => [key, 0]))).length + 1;
+  const bound = Math.floor((8 * 1024 * 1024) / least);
+  assert.equal(SHARE_EFFECTS, bound);
+  const doc = JSON.parse(await bundleOf());
+  const graphOf = (count) => resigned({ ...doc, graph: { ...GRAPH, effects: Array.from({ length: count }, () => ({})), totals: { ...GRAPH.totals, effects: count } } });
+  assert.throws(() => checkShareBundle(graphOf(bound + 1)), (error) => error.status === 400 && /effects/.test(error.message));
+  assert.equal(checkShareBundle(graphOf(bound)).sha256, JSON.parse(graphOf(bound)).sha256);
+});
+
+test("a call's long command is read once per call, never once per string of its output: ≥1 MiB of command over 5,000 strings makes its facts once", { timeout: 900_000 }, async () => {
+  // Each string of a call's output is read with the call's context (its command). The rules' reading of the command
+  // (its read path, its path words, whether it prints the environment) is made once for the context and handed to each
+  // read, so the count of those readings is the pin, not a clock. A command over 64 KiB counts as printing the
+  // environment (secret-rules.ts printsEnvironment), so this call's whole output is a dump and the upload is refused:
+  // no command that long is ever taken.
   const strings = Number(process.env.SHARE_LONG_COMMAND_STRINGS ?? 5_000);
   const doc = JSON.parse(await bundleOf());
   const script = Array.from({ length: Math.ceil((1 << 20) / 26) }, (_, i) => `printf '%s' row${String(i).padStart(8, "0")}x; `).join("");
@@ -427,12 +454,24 @@ test("a call's long command is read once per call, never once per string of its 
   const effect = { node: "step", executionPath: "step", item: null, tool: "bash", status: "done", input: { command: script }, output, error: null, startedAt: "2026-01-02T03:04:05.000Z", endedAt: "2026-01-02T03:04:06.000Z" };
   const body = resigned({ ...doc, graph: { ...GRAPH, effects: [effect], totals: { ...GRAPH.totals, effects: 1 } } });
   assert.ok(script.length >= 1 << 20);
-  const started = performance.now();
-  await screenShare(body, []).catch((error) => assert.ok(error.status === 413 || error.code === "input_invalid", String(error)));
-  const ms = performance.now() - started;
-  // Under a second at the fix on an idle box (a pass per string, the command read once; about 6 s at a load of 160, as
-  // with a two-character command): 60 s is far over that, and far under strings × command (about 5 minutes before).
-  assert.ok(ms < 60_000, `${Math.round(ms)} ms`);
+  const before = commandFactsMade.count;
+  await assert.rejects(screenShare(body, []), (error) => error.code === "input_invalid" && error.extra.details.reason === "scrub_found" && error.extra.details.counts["env-dump"] >= 1);
+  assert.equal(commandFactsMade.count - before, 1, "one reading of the call's command for all of its strings");
+});
+
+test("a context's command facts are its own: scrubs of two calls' outputs, interleaved, never read either command again", async () => {
+  // Facts the caller made once go with every read of that call's output, whatever other scrub runs between: nothing is
+  // kept between scrubs. A scrub given the command alone reads it once, not once per view of its text.
+  const commands = ["cat ~/.pgpass", "cat ~/.docker/config.json"].map((command) => `${command} # ${"x".repeat(20_000)}`);
+  const facts = commands.map((command) => commandFacts(command));
+  const before = commandFactsMade.count;
+  for (let i = 0; i < 40; i++) {
+    const result = await scrub(`db.example:5432:app:alice:orchard${i}plain\n`, { mode: "cut", commandFacts: facts[i % 2] });
+    assert.ok(result.ok);
+  }
+  assert.equal(commandFactsMade.count, before, "no scrub handed facts reads its command");
+  await scrub('{"a":"b\\u0041"} %41 one line', { mode: "cut", command: commands[0] });
+  assert.equal(commandFactsMade.count - before, 1, "a scrub reads a command it is given once, for every view of its text");
 });
 
 test("the string cap counts a text once per call context it is read under, and bounds the reads: past it is 413 before any scrub", async () => {
