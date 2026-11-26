@@ -109,6 +109,8 @@ test("a page is read once a run whatever its fragment or its host's case: a late
   assert.equal(second.receipt.cache, "hit");
   assert.equal(third.receipt.cache, "hit");
   assert.equal(second.answer.url, fresh.answer.url, "the page names the URL a fresh read would");
+  const freshCase = await web.createWeb({ order: { search: [], fetch: ["direct"] }, guard: guardOf().guard, now: () => START }).fetch("HTTP://Public.Example/");
+  assert.equal(third.answer.url, freshCase.answer.url);
 });
 
 test("a search's receipt keeps the fees of its own call: a sift stopped by the caller that pays later adds nothing to it", async () => {
