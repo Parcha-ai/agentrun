@@ -47,8 +47,10 @@ import {
 	pointerOk,
 	queryable,
 	type ReleaseConfirm,
+	RECOVER_MS,
 	recoverCreate,
 	releaseConfirmed,
+	boundedRelease,
 	restCall,
 	type RestInit,
 	type RestReply,
@@ -147,6 +149,12 @@ export interface KernelProviderOptions {
 	fetch?: typeof fetch;
 	confirm?: ReleaseConfirm;
 	sleep?: (ms: number) => Promise<void>;
+	/**
+	 * How long, in all, a cleanup a create runs for itself may take: the release of the browser its POST made once its
+	 * caller is gone, or once another create of the request made one first, and the search and release after a lost
+	 * reply. Default RECOVER_MS. The caller's signal never cuts it short.
+	 */
+	cleanupMs?: number;
 }
 
 const refOf = (id: string): ComputerRef => ({ id, name: id });
@@ -166,6 +174,8 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	readonly #live: UrlStore;
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
+	/** The bound of each cleanup a create runs for itself (cleanupMs). */
+	readonly #cleanupMs: number;
 	/** Idempotent create's in-process half: one browser per request id (provider.md). */
 	readonly #requests = new CreateRequests();
 	/** The request's name of each browser this provider made or found for a create, by id: its release ends the request. */
@@ -176,7 +186,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	 */
 	readonly #madeFor = new Map<string, string>();
 
-	constructor({ apiKey, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: KernelProviderOptions) {
+	constructor({ apiKey, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep, cleanupMs = RECOVER_MS }: KernelProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Kernel API key: the provider reads no environment");
 		const api = apiUrl || env.KERNEL_BASE_URL?.trim() || undefined;
 		this.#request = kernelRest({ apiKey, ...(api ? { apiUrl: api } : {}), ...(fetcher ? { fetch: fetcher } : {}) });
@@ -184,6 +194,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		this.#live = memoryUrls();
 		this.#confirm = confirm;
 		this.#sleep = sleep;
+		this.#cleanupMs = cleanupMs;
 	}
 
 	/**
@@ -311,12 +322,12 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 			if (listed.error.code !== "aborted" && !signal?.aborted) return undefined;
 			// The caller is gone: the browser this POST made is deleted, never under the caller's signal.
 			this.#requests.end(request);
-			const released = await this.#releaseBrowser(mine.id);
+			const released = await boundedRelease("browser", mine.id, this.#cleanupMs, (bound) => this.#releaseBrowser(mine.id, bound));
 			return fail("aborted", `create was aborted once Kernel had made the browser ${mine.id}; ${released.ok ? "the browser was released" : `the browser could not be released (${released.error.message}), and its tags let a sweep find it`}`);
 		}
 		const kept = convergedBrowser(listed.value.map(heldOf), heldOf(mine));
 		if (kept === "mine") return undefined;
-		const released = await this.#releaseBrowser(mine.id);
+		const released = await boundedRelease("browser", mine.id, this.#cleanupMs, (bound) => this.#releaseBrowser(mine.id, bound));
 		if (!released.ok) return fail(released.error.code, `${request} keeps the browser ${kept.id}, the older of its two, and the browser ${mine.id} made for it could not be deleted (${released.error.message})`);
 		const alive = await this.#alive(kept.id, signal);
 		if (!alive.ok) return alive;
@@ -404,7 +415,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 			const found = await this.#browsers(labels, signal);
 			return found.ok ? ok(found.value.map((b) => b.id)) : found;
 		};
-		return recoverCreate("browser", find, (id) => this.release(refOf(id), "delete"), this.#sleep);
+		return recoverCreate("browser", find, (id, signal) => this.release(refOf(id), "delete", { signal }), this.#sleep, this.#cleanupMs);
 	}
 
 	/**

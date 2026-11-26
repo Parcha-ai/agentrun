@@ -52,8 +52,10 @@ import {
 	pointerOk,
 	queryable,
 	type ReleaseConfirm,
+	RECOVER_MS,
 	recoverCreate,
 	releaseConfirmed,
+	boundedRelease,
 	restBytes,
 	restCall,
 	type UrlStore,
@@ -280,6 +282,12 @@ export interface BrowserbaseProviderOptions {
 	fetch?: typeof fetch;
 	confirm?: ReleaseConfirm;
 	sleep?: (ms: number) => Promise<void>;
+	/**
+	 * How long, in all, a cleanup a create runs for itself may take: the release of the browser its POST made once its
+	 * caller is gone, or once another create of the request made one first, and the search and release after a lost
+	 * reply. Default RECOVER_MS. The caller's signal never cuts it short.
+	 */
+	cleanupMs?: number;
 }
 
 /**
@@ -345,6 +353,8 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	readonly #urls: UrlStore;
 	readonly #confirm: ReleaseConfirm;
 	readonly #sleep: (ms: number) => Promise<void>;
+	/** The bound of each cleanup a create runs for itself (cleanupMs). */
+	readonly #cleanupMs: number;
 	/** Idempotent create's in-process half: one session per request id (provider.md). */
 	readonly #requests = new CreateRequests();
 	/** The request's name of each session this provider made or found for a create, by id: its release ends the request. */
@@ -355,7 +365,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 	 */
 	readonly #madeFor = new Map<string, string>();
 
-	constructor({ apiKey, projectId, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep }: BrowserbaseProviderOptions) {
+	constructor({ apiKey, projectId, apiUrl, env = {}, fetch: fetcher, confirm = DEFAULT_CONFIRM, sleep = defaultSleep, cleanupMs = RECOVER_MS }: BrowserbaseProviderOptions) {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("set options.apiKey to a Browserbase API key: the provider reads no environment");
 		const gateway = env.BROWSERBASE_BASE_URL?.trim() || undefined;
 		this.#connectBase = connectBaseOf(env.BROWSERBASE_CONNECT_BASE_URL?.trim() || undefined);
@@ -366,6 +376,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		this.#urls = memoryUrls();
 		this.#confirm = confirm;
 		this.#sleep = sleep;
+		this.#cleanupMs = cleanupMs;
 		this.#browser = {
 			timeout: "wall-clock",
 			stealth: true,
@@ -502,12 +513,12 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			if (listed.error.code !== "aborted" && !signal?.aborted) return undefined;
 			// The caller is gone: the session this POST made is released, never under the caller's signal.
 			this.#requests.end(request);
-			const released = await this.#releaseSession(mine.id);
+			const released = await boundedRelease("session", mine.id, this.#cleanupMs, (bound) => this.#releaseSession(mine.id, bound));
 			return fail("aborted", `create was aborted once Browserbase had made the session ${mine.id}; ${released.ok ? "the session was released" : `the session could not be released (${released.error.message}), and its labels let a sweep find it`}`);
 		}
 		const kept = convergedBrowser(listed.value.map(heldOf), heldOf(mine));
 		if (kept === "mine") return undefined;
-		const released = await this.#releaseSession(mine.id);
+		const released = await boundedRelease("session", mine.id, this.#cleanupMs, (bound) => this.#releaseSession(mine.id, bound));
 		if (!released.ok) return fail(released.error.code, `${request} keeps the session ${kept.id}, the older of its two, and the session ${mine.id} made for it could not be released (${released.error.message})`);
 		const alive = await this.#alive(kept.id, signal);
 		if (!alive.ok) return alive;
@@ -639,7 +650,7 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			const found = await this.#sessions(labels, signal);
 			return found.ok ? ok(found.value.map((s) => s.id)) : found;
 		};
-		return recoverCreate("session", find, (id) => this.release({ id, name: id }, "delete"), this.#sleep);
+		return recoverCreate("session", find, (id, signal) => this.release({ id, name: id }, "delete", { signal }), this.#sleep, this.#cleanupMs);
 	}
 
 	/**

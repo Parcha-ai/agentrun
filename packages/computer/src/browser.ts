@@ -161,23 +161,27 @@ export function createUncertain(error: unknown): boolean {
 	return !(typeof status === "number" && status >= 400 && status < 500);
 }
 
-/** How long a lost create's browser is looked for, in all, and how often: a vendor may list it a moment late. */
+/**
+ * How long a lost create's browser is looked for and released, in all, and how often: a vendor may list it a moment
+ * late. Also the default bound of every other release a create runs for itself (a provider's cleanupMs).
+ */
 export const RECOVER_MS = 30_000;
 const RECOVER_TRIES = 3;
 const RECOVER_GAP_MS = 2_000;
 
 /**
- * After a create whose outcome is unknown: the browsers carrying its create label, found under a signal of the
- * recovery's own (the caller's may be what ended the create), each released. The words say what became of them, for the
- * create's failure; they never carry a URL.
+ * After a create whose outcome is unknown: the browsers carrying its create label, found and released under a signal
+ * of the recovery's own, `ms` in all (the caller's may be what ended the create). The words say what became of them, for
+ * the create's failure; they never carry a URL.
  */
 export async function recoverCreate(
 	what: string,
 	find: (signal: AbortSignal) => Promise<Result<string[]>>,
-	release: (id: string) => Promise<Result<void>>,
+	release: (id: string, signal: AbortSignal) => Promise<Result<void>>,
 	sleep: (ms: number) => Promise<void>,
+	ms = RECOVER_MS,
 ): Promise<string> {
-	const signal = AbortSignal.timeout(RECOVER_MS);
+	const signal = AbortSignal.timeout(ms);
 	let found: Result<string[]> = ok([]);
 	for (let tries = 0; tries < RECOVER_TRIES; tries++) {
 		if (tries > 0) await sleep(RECOVER_GAP_MS);
@@ -188,8 +192,10 @@ export async function recoverCreate(
 	if (found.value.length === 0) return `no ${what} carries its create label, so none was made or the vendor does not list it yet; its labels let a sweep find it`;
 	const words: string[] = [];
 	for (const id of found.value) {
-		const released = await release(id);
-		words.push(released.ok ? `the ${what} it made (${id}) was released` : `the ${what} it made (${id}) was not released (${released.error.code}), and its labels let a sweep find it`);
+		const released = await release(id, signal);
+		if (released.ok) words.push(`the ${what} it made (${id}) was released`);
+		else if (signal.aborted) words.push(`the ${what} it made (${id}) may still be running: the search and its release did not finish within ${ms / 1000} s, and its labels let a sweep find it`);
+		else words.push(`the ${what} it made (${id}) was not released (${released.error.code}), and its labels let a sweep find it`);
 	}
 	return words.join("; ");
 }
@@ -262,6 +268,18 @@ export function browserClient(hello: HelloResult, alive: (signal?: AbortSignal) 
  * up to confirm.polls times. Done means the vendor says it no longer runs, not that the request was sent; a session the
  * vendor no longer knows ("gone") is released. A session still running is a failure carrying the request's own error.
  */
+/**
+ * A release a create runs for itself (its caller gone, or its browser the newer of the request's two), under a signal of
+ * its own that ends after `ms`, never the caller's: one that does not finish by then is a timeout that says the browser
+ * may still be running.
+ */
+export async function boundedRelease(what: string, id: string, ms: number, release: (signal: AbortSignal) => Promise<Result<void>>): Promise<Result<void>> {
+	const signal = AbortSignal.timeout(ms);
+	const released = await release(signal);
+	if (released.ok || !signal.aborted) return released;
+	return fail("timeout", `its release did not finish within ${ms / 1000} s, so the ${what} ${id} may still be running`);
+}
+
 export async function releaseConfirmed(o: {
 	request: () => Promise<Result<"gone" | "asked">>;
 	running: () => Promise<Result<boolean>>;

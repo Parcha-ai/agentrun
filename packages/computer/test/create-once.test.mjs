@@ -42,9 +42,9 @@ const VENDORS = {
 	browserbase: {
 		spec: (labels = {}) => ({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open", labels: { "agentrun.run": "run-once", ...labels } }),
 		vendor: () => fakeBrowserbase(),
-		async make(fake) {
+		async make(fake, options = {}) {
 			const { BrowserbaseProvider } = await import("../dist/browserbase.js");
-			return new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, fetch: fake.fetch, sleep: noSleep });
+			return new BrowserbaseProvider({ apiKey: BROWSERBASE_KEY, apiUrl: BROWSERBASE_URL, fetch: fake.fetch, sleep: noSleep, ...options });
 		},
 		made: (fake) => fake.only("POST", "/v1/sessions").length,
 		/** A session has no name: the request's name is its create label, and the ref's name is the session's id. */
@@ -53,9 +53,9 @@ const VENDORS = {
 	kernel: {
 		spec: (labels = {}) => ({ image: "chromium", lifetimeMs: 30 * 60_000, network: "open", labels: { "agentrun.run": "run-once", ...labels } }),
 		vendor: () => fakeKernel(),
-		async make(fake) {
+		async make(fake, options = {}) {
 			const { KernelProvider } = await import("../dist/kernel.js");
-			return new KernelProvider({ apiKey: KERNEL_KEY, apiUrl: KERNEL_URL, fetch: fake.fetch, sleep: noSleep });
+			return new KernelProvider({ apiKey: KERNEL_KEY, apiUrl: KERNEL_URL, fetch: fake.fetch, sleep: noSleep, ...options });
 		},
 		made: (fake) => fake.only("POST", "/browsers").length,
 		named: (_name, requestId, fake, id) => fake.browsers.get(id).tags["agentrun.create"] === computerNameFor(requestId),
@@ -446,6 +446,128 @@ for (const [nth, when] of [
 		if (nth === 1) assert.deepEqual(channel.calls, [], "nothing is uploaded or run for a caller that is gone");
 	});
 }
+
+/** The bound a test gives the cleanup a create runs for itself (cleanupMs), and the most a create may take past it. */
+const CLEANUP_MS = 300;
+const CLEANUP_MARGIN_MS = 2_000;
+const BOUNDED = { cleanupMs: CLEANUP_MS, confirm: { polls: 1, intervalMs: 1 } };
+
+/**
+ * A vendor's fetch whose releases (Browserbase's POST, Kernel's DELETE, on the browser's own path) never answer: each
+ * waits for its signal, and one sent with none waits for ever. `asked` counts them.
+ */
+const stallingRelease = (fetch) => {
+	const stalled = async (input, init = {}) => {
+		if ((init.method ?? "GET") !== "GET" && /\/(sessions|browsers)\/[^/]+$/.test(new URL(String(input)).pathname)) {
+			stalled.asked++;
+			// As fetch does: a signal already aborted rejects at once.
+			if (init.signal?.aborted) return Promise.reject(init.signal.reason);
+			return new Promise((_resolve, reject) => init.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true }));
+		}
+		return fetch(input, init);
+	};
+	stalled.asked = 0;
+	return stalled;
+};
+
+/** What `run` answers and how long it took; a test's own timeout stops one that never answers. */
+const timed = async (run) => {
+	const started = Date.now();
+	const result = await run();
+	return { result, ms: Date.now() - started };
+};
+
+for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
+	const vendor = VENDORS[id];
+
+	test(`${id}: a create aborted after its POST whose release never answers is aborted within its cleanup's bound, and a retry is refused`, { timeout: 15_000 }, async () => {
+		const fake = vendor.vendor();
+		const controller = new AbortController();
+		const fetch = stallingRelease(fake.fetch);
+		const provider = await vendor.make({ ...fake, fetch: abortingListing(fetch, cloud.post, cloud.post, 1, controller) }, BOUNDED);
+		const requestId = requestOf(`${id}-stalled-abort`);
+		const { result, ms } = await timed(() => provider.create(vendor.spec(), { requestId, signal: controller.signal }));
+		assert.equal(result.ok, false, "an aborted create");
+		assert.equal(result.error.code, "aborted", result.error.message);
+		assert.match(result.error.message, /may still be running/);
+		assert.ok(ms < CLEANUP_MS + CLEANUP_MARGIN_MS, `answered in ${ms} ms`);
+		assert.ok(fetch.asked > 0, "its release was asked");
+		const retry = await timed(() => provider.create(vendor.spec(), { requestId }));
+		assert.equal(retry.result.ok, false, "the retry");
+		assert.equal(retry.result.error.code, "exists", retry.result.error.message);
+		assert.ok(retry.ms < CLEANUP_MARGIN_MS, `the retry answered in ${retry.ms} ms`);
+		assert.equal(vendor.made(fake), 1, "no second browser");
+	});
+
+	test(`${id}: a create whose browser is the newer and whose release never answers fails within its cleanup's bound, and a retry answers the older`, { timeout: 15_000 }, async () => {
+		const fake = vendor.vendor();
+		const fetch = stallingRelease(fake.fetch);
+		const shared = { ...fake, fetch: createsTogether(fetch, cloud.post, 2) };
+		const [one, two] = [await vendor.make(shared, BOUNDED), await vendor.make(shared, BOUNDED)];
+		const requestId = requestOf(`${id}-stalled-newer`);
+		const { result, ms } = await timed(() => Promise.all([one.create(vendor.spec(), { requestId }), two.create(vendor.spec(), { requestId })]));
+		const [a, b] = result;
+		const kept = okOf(a, "the older's create");
+		assert.equal(b.ok, false, "the newer's create, its release stalled");
+		assert.match(b.error.message, /may still be running/);
+		assert.ok(ms < CLEANUP_MS + CLEANUP_MARGIN_MS, `answered in ${ms} ms`);
+		const retry = await timed(() => two.create(vendor.spec(), { requestId }));
+		assert.equal(okOf(retry.result, "the retry").id, kept.id, "the retry answers the older");
+		assert.ok(retry.ms < CLEANUP_MARGIN_MS, `the retry answered in ${retry.ms} ms`);
+	});
+
+	test(`${id}: a create whose reply is lost and whose release never answers fails within its cleanup's bound, and a retry is refused`, { timeout: 15_000 }, async () => {
+		const fake = vendor.vendor();
+		const stalled = stallingRelease(fake.fetch);
+		const fetch = async (input, init = {}) => {
+			if ((init.method ?? "GET") === "POST" && new URL(String(input)).pathname === cloud.post) {
+				await fake.fetch(input, init);
+				// The vendor made the browser, and its reply never comes.
+				throw new TypeError("fetch failed");
+			}
+			return stalled(input, init);
+		};
+		const provider = await vendor.make({ ...fake, fetch }, BOUNDED);
+		const requestId = requestOf(`${id}-stalled-lost`);
+		const { result, ms } = await timed(() => provider.create(vendor.spec(), { requestId }));
+		assert.equal(result.ok, false, "the lost create");
+		assert.match(result.error.message, /may still be running/);
+		assert.ok(ms < CLEANUP_MS + CLEANUP_MARGIN_MS, `answered in ${ms} ms`);
+		assert.ok(stalled.asked > 0, "its release was asked");
+		const retry = await timed(() => provider.create(vendor.spec(), { requestId }));
+		assert.equal(retry.result.ok, false, "the retry");
+		assert.equal(retry.result.error.code, "exists", retry.result.error.message);
+		assert.ok(retry.ms < CLEANUP_MARGIN_MS, `the retry answered in ${retry.ms} ms`);
+		assert.equal(vendor.made(fake), 1, "no second browser");
+	});
+}
+
+test("orgo: a create aborted after Orgo's answer whose delete never answers is aborted within Orgo's request bound, and a retry is refused", { timeout: 15_000 }, async () => {
+	const { api, channel } = VENDORS.orgo.vendor();
+	const controller = new AbortController();
+	let asked = 0;
+	const stalled = async (input, init = {}) => {
+		if (init.method === "DELETE" && /\/computers\/[^/]+$/.test(new URL(String(input)).pathname)) {
+			asked++;
+			if (init.signal?.aborted) return Promise.reject(init.signal.reason);
+			return new Promise((_resolve, reject) => init.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true }));
+		}
+		return api.fetch(input, init);
+	};
+	const provider = await VENDORS.orgo.make({ api: { ...api, fetch: abortingListing(stalled, "/computers", `/workspaces/${WORKSPACE}`, 1, controller) }, channel });
+	const requestId = requestOf("orgo-stalled-abort");
+	const { result, ms } = await timed(() => provider.create(VENDORS.orgo.spec(), { requestId, signal: controller.signal }));
+	assert.equal(result.ok, false, "an aborted create");
+	assert.equal(result.error.code, "aborted", result.error.message);
+	assert.match(result.error.message, /could not be deleted/);
+	assert.ok(ms < ORGO_TIMEOUTS.requestMs + CLEANUP_MARGIN_MS, `answered in ${ms} ms`);
+	assert.ok(asked > 0, "its delete was asked");
+	const retry = await timed(() => provider.create(VENDORS.orgo.spec(), { requestId }));
+	assert.equal(retry.result.ok, false, "the retry");
+	assert.equal(retry.result.error.code, "exists", retry.result.error.message);
+	assert.ok(retry.ms < CLEANUP_MARGIN_MS, `the retry answered in ${retry.ms} ms`);
+	assert.equal(VENDORS.orgo.made({ api }), 1, "no second computer");
+});
 
 test("a create with no request id is refused invalid on each, before any vendor call", async () => {
 	for (const [id, vendor] of Object.entries(VENDORS)) {

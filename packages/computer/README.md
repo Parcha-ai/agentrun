@@ -2600,8 +2600,11 @@ from another process compares the labels alone. A browser released here, or one 
 has ended on its own (its timeout), leaves its request refused `exists`: the provider keeps each request's browser id. A create whose outcome is unknown (its reply lost, cut short, answered 5xx or with no browser, or the caller's signal
 aborted it) never sends a second create: each POST also writes `agentrun.attempt` (`ATTEMPT_LABEL`), a random value of
 its own, and a lost create finds the browsers carrying its attempt label as list does, in every state not ended, under
-a signal of its own bounded at `RECOVER_MS`, releases each, and its failure says so; that request is then refused
-`exists`. Another create's browser of the same request, even one another process answered, carries another attempt
+a signal of its own, releases each under it, and its failure says so; that request is then refused `exists`. Every
+release a create runs for itself (this one, the newer browser's, and the one after an abort) is bounded by the
+provider's `cleanupMs` option (default `RECOVER_MS`, 30 s), never by the caller's signal: one that does not finish in
+time fails the create in words that say the browser may still be running, and a retry is answered as above, never
+stuck behind it. Another create's browser of the same request, even one another process answered, carries another attempt
 label and is left running. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own:
 `check()` refuses them in a spec, and no list or attach shows them.
 
