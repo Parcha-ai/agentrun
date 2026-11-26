@@ -2601,7 +2601,8 @@ has ended on its own (its timeout), leaves its request refused `exists`: the pro
 aborted it) never sends a second create: each POST also writes `agentrun.attempt` (`ATTEMPT_LABEL`), a random value of
 its own, and a lost create finds the browsers carrying its attempt label as list does, in every state not ended, under
 a signal of its own, releases each under it, and its failure says so; that request is then refused `exists`. Every
-release a create runs for itself (this one, the newer browser's, and the one after an abort) is bounded by the
+release a create runs for itself (this one, the newer browser's, the one after an abort, and that of a browser the
+vendor made with no usable CDP URL) is bounded by the
 provider's `cleanupMs` option (default `RECOVER_MS`, 30 s), never by the caller's signal: one that does not finish in
 time fails the create in words that say the browser may still be running, and a retry is answered as above, never
 stuck behind it. Another create's browser of the same request, even one another process answered, carries another attempt

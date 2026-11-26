@@ -299,9 +299,9 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		this.#requestOf.set(id, request);
 		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
-			// The browser is made and billed until its idle timeout: deleted here, not left to a later sweep.
-			const released = await this.release(refOf(id), "delete");
-			return vendorFail("kernel",`Kernel POST /browsers made a browser with no CDP URL to hand over: ${unusable}; ${released.ok ? "the browser was released" : `the browser was not released (${released.error.code}), and its tags let a sweep find it`}`);
+			// The browser is made and billed until its idle timeout: deleted here, under the cleanup's own bound.
+			const released = await boundedRelease("browser", id, this.#cleanupMs, (bound) => this.release(refOf(id), "delete", { signal: bound }));
+			return vendorFail("kernel",`Kernel POST /browsers made a browser with no CDP URL to hand over: ${unusable}; ${released.ok ? "the browser was released" : `the browser was not released (${released.error.message}), and its tags let a sweep find it`}`);
 		}
 		this.#urls.set(id, url);
 		const live = text(browser.browser_live_view_url);

@@ -492,9 +492,9 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 		this.#requestOf.set(made.id, request);
 		const unusable = cdpUrlProblem(made.connectUrl, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
-			// The session is made and billed (keepAlive, up to its timeout): released here, not left to a later sweep.
-			const released = await this.release(refOf(made), "delete");
-			return vendorFail("browserbase",`Browserbase POST /v1/sessions made a session with no CDP URL to hand over: ${unusable}; ${released.ok ? "the session was released" : `the session was not released (${released.error.code}), and its labels let a sweep find it`}`);
+			// The session is made and billed (keepAlive, up to its timeout): released here, under the cleanup's own bound.
+			const released = await boundedRelease("session", made.id, this.#cleanupMs, (bound) => this.release(refOf(made), "delete", { signal: bound }));
+			return vendorFail("browserbase",`Browserbase POST /v1/sessions made a session with no CDP URL to hand over: ${unusable}; ${released.ok ? "the session was released" : `the session was not released (${released.error.message}), and its labels let a sweep find it`}`);
 		}
 		this.#urls.set(made.id, made.connectUrl as string);
 		return ok(refOf(made));

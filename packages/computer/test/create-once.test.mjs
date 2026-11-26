@@ -211,6 +211,8 @@ test("orgo: two provider instances whose creates of one request start together a
 const CLOUD_BROWSERS = {
 	browserbase: {
 		post: "/v1/sessions",
+		/** A vendor whose sessions' CDP URL is on another host, one no driver is handed. */
+		unusable: () => fakeBrowserbase({ connectUrl: () => "wss://elsewhere.test/cdp" }),
 		/** Every session the fake made, in the order it made them. */
 		ids: (fake) => [...fake.sessions.keys()],
 		live: (fake, id) => fake.sessions.get(id).status === "RUNNING",
@@ -221,6 +223,7 @@ const CLOUD_BROWSERS = {
 	},
 	kernel: {
 		post: "/browsers",
+		unusable: () => fakeKernel({ cdpUrl: () => "wss://elsewhere.test/cdp" }),
 		ids: (fake) => [...fake.browsers.keys()],
 		live: (fake, id) => fake.browsers.get(id).deletedAt === undefined,
 		expire: (fake, id) => {
@@ -514,6 +517,24 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		const retry = await timed(() => two.create(vendor.spec(), { requestId }));
 		assert.equal(okOf(retry.result, "the retry").id, kept.id, "the retry answers the older");
 		assert.ok(retry.ms < CLEANUP_MARGIN_MS, `the retry answered in ${retry.ms} ms`);
+	});
+
+	test(`${id}: a create whose browser has no usable CDP URL and whose release never answers fails within its cleanup's bound, and a retry is refused`, { timeout: 15_000 }, async () => {
+		const fake = cloud.unusable();
+		const fetch = stallingRelease(fake.fetch);
+		const provider = await vendor.make({ ...fake, fetch }, BOUNDED);
+		const requestId = requestOf(`${id}-stalled-unusable`);
+		const { result, ms } = await timed(() => provider.create(vendor.spec(), { requestId }));
+		assert.equal(result.ok, false, "a create with no CDP URL to hand over");
+		assert.match(result.error.message, /no CDP URL to hand over/);
+		assert.match(result.error.message, /may still be running/);
+		assert.ok(ms < CLEANUP_MS + CLEANUP_MARGIN_MS, `answered in ${ms} ms`);
+		assert.ok(fetch.asked > 0, "its release was asked");
+		const retry = await timed(() => provider.create(vendor.spec(), { requestId }));
+		assert.equal(retry.result.ok, false, "the retry");
+		assert.equal(retry.result.error.code, "exists", retry.result.error.message);
+		assert.ok(retry.ms < CLEANUP_MARGIN_MS, `the retry answered in ${retry.ms} ms`);
+		assert.equal(vendor.made(fake), 1, "no second browser");
 	});
 
 	test(`${id}: a create whose reply is lost and whose release never answers fails within its cleanup's bound, and a retry is refused`, { timeout: 15_000 }, async () => {
