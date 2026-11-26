@@ -304,7 +304,7 @@ those at most, so `api_key=<key%20rest>%20region=us` holds the key and never `re
 `token=%3B<key>`, is held after that `;` too, whole and as its first piece of 8 characters or more, but not when that
 is a pair named like no credential (`token=;theme=dark`); a value in quotes, raw or written `%22` or `%27`, is held
 without them, and one with an opening quote and no closing one (a quoted key cut at its `%2C`) without that quote
-too; `theme=dark` is not held, nor is a value of only `=`, `;`, quotes, commas or spaces, as written or decoded, so
+too, 8 characters or more; `theme=dark` is not held, nor is a value of only `=`, `;`, quotes, commas or spaces, as written or decoded, so
 `api_key=%2C` cuts no comma from the `[otel]` lines), and the user, password and
 credential-named query parameters of every URL in it, one inside another's query or path too, scheme-relative
 (`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL's query, an endpoint's too, is read split at `&`
