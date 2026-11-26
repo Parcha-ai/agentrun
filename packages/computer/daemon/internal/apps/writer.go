@@ -16,7 +16,9 @@ type Writer struct {
 	GIDs []uint32
 }
 
-// Self is computerd's own user: its uid, its gid and its supplementary groups.
+// Self is computerd's own user, read when Handlers is called: its uid, its gid and its supplementary groups. That is the
+// tool user, the one the files group writes as and programs run as: an init started as root with --user has become that
+// user (daemon.Become) before daemon.Init makes the handlers, and with no capability left it runs no program as another.
 func Self() Writer {
 	w := Writer{UID: uint32(os.Geteuid()), GIDs: []uint32{uint32(os.Getegid())}}
 	groups, _ := os.Getgroups()
