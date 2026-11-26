@@ -1087,12 +1087,55 @@ const CASES = [
           text, values: [P24[0]], hides: ["Zq8VbN3x", "LmT6pR2w"], exact: all("[redacted]"),
         }));
       }),
-      // Prose stays prose: a word before the apostrophe that is no prefix ("C'est", "l'eau", "Ur", which Python 3 does
-      // not take), and a lone letter that is one ("Plan B's"), whose string ends at the line break.
+      // Every other prefix a language writes before a quote (Python 2's ur'...', SQL's N'...', E'...', X'...' and B'...',
+      // C's L'x', u'x', U'x' and u8'x', Rust's b'x', Delphi's #13'...'): as the first of the values, in a call's
+      // arguments, a list, a SQL row, and as a literal earlier on the line. Each withheld before the prose rule, and now.
+      ...(() => {
+        const [a, b] = ["Zq8VbN3x", "LmT6pR2w"];
+        return [
+          ...["ur", "UR", "Ur", "uR"].map((p) => [`the first of a dict's values with the string prefix ${p}`, `{'a': ${p}'${a}', 'b': '${b}'}`]),
+          ["a Python 2 dict whose first key has the prefix u", `{u'a': '${a}', 'b': '${b}'}`],
+          ["a bytes literal beside a str in a call's arguments", `print(b'${a}', '${b}')`],
+          ["a bytes literal beside a str in a list", `[b'${a}', '${b}']`],
+          ["an f-string beside a str in a call's arguments", `print(f'${a}', '${b}')`],
+          ["an earlier prefixed argument, the value in later plain ones", `log(f'key', '${a}', '${b}')`],
+          ["an earlier raw string on the same line", `p = r'abc'; d = {'a': '${a}', 'b': '${b}'}`],
+          ...["N", "E"].map((p) => [`a SQL ${p}'...' string beside a plain one`, `SELECT ${p}'${a}', '${b}'`]),
+          ...["X'00'", "N'x'", "B'0101'"].map((p) => [`a SQL ${p} in an earlier column`, `INSERT INTO t VALUES (${p}, '${a}', '${b}')`]),
+          ...["L", "u", "U", "u8"].map((p) => [`a C ${p}'x' character literal earlier on the line`, `c = ${p}'x'; d = {'a': '${a}', 'b': '${b}'}`]),
+          ["a Rust b'x' byte literal earlier on the line", `let c = b'x'; d = {'a': '${a}', 'b': '${b}'}`],
+          ["a Delphi control character before a literal", `s := #13'${a}', '${b}';`],
+        ].flatMap(([how, code]) => [[code, ""], [JSON.stringify({ path: "a.txt", content: `${code}\n` }), ", written in a JSON string"]].map(([text, where]) => ({
+          name: `a held value split across two single-quoted literals, ${how}${where}, withholds the text, as before`,
+          text, values: [P24[0]], hides: [a, b], exact: all("[redacted]"),
+        })));
+      })(),
+      // The values read with each "+" as nothing (the join's values pass), and each needle holding a "+" read so too: a
+      // held value's base64 across a property name, a key's line across one, a login with a ":" and a "+" across a
+      // single-quoted dict's values, a value of 8 characters with a "+", and the same split where an operator stands.
+      // Each withheld before the values read "+" as nothing, and now.
+      ...(() => {
+        const LOGIN = "pa55w0rd>Zq8VbN3xLmT";
+        const b64 = Buffer.from(LOGIN).toString("base64");
+        const PEM = ["-----BEGIN PRIVATE KEY-----", BODY, "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7", "-----END PRIVATE KEY-----"].join("\n");
+        return [
+          ["a held value's base64 across a title and a snippet", `{"title":"${b64.slice(0, 14)}","snippet":"${b64.slice(14)}"}`, LOGIN],
+          ["a key's base64 line across a title and a snippet", `{"title":"${BODY.slice(0, 20)}","snippet":"${BODY.slice(20)}"}`, PEM],
+          ["a login with a \":\" and a \"+\" across a single-quoted dict's values", "{'t': 'user:Zq8+Vb', 's': 'N3xLmT'}", "user:Zq8+VbN3xLmT"],
+          ["the same written in a JSON string", JSON.stringify({ path: "a.py", content: "d = {'t': 'user:Zq8+Vb', 's': 'N3xLmT'}\n" }), "user:Zq8+VbN3xLmT"],
+          ["a value of 8 characters with a \"+\" across a single-quoted dict's values", "{'a': 'Zq8+Vb', 'b': 'N3'}", "Zq8+VbN3"],
+          ["a value of 8 characters with a \"+\" across a JSON object's values", '{"a":"Zq8+Vb","b":"N3"}', "Zq8+VbN3"],
+          ["a held value's base64 split where its \"+\" is, an operator there", `x = "${b64.slice(0, 11)}" + "${b64.slice(12)}"`, LOGIN],
+          ["a login split where its \"+\" is, an operator there", "k = 'user:Zq8' + 'VbN3xLmT'", "user:Zq8+VbN3xLmT"],
+        ].map(([how, text, value]) => ({ name: `${how} withholds the text, as before`, text, values: [value], hides: [], exact: all("[redacted]") }));
+      })(),
+      // Prose stays prose: a word before the apostrophe that is no prefix ("C'est", "l'eau", "I'm", "O'Brien", "qu'il",
+      // "y'all", "o'clock"), and a word that is one ("Ur", "Plan B's"), whose string ends at the line break.
       ...[
         ["after French prose", "C'est l'eau:\n"],
         ['after "Ur\'" in prose', "Ur'a key:\n"],
         ['after "Plan B\'s" in prose', "Plan B's key:\n"],
+        ...["I'm sure", "O'Brien's", "d'accord", "n'est-ce pas", "qu'il", "y'all", "at 5 o'clock"].map((words) => [`after "${words}" on the same line`, `${words}: `]),
       ].map(([how, before]) => ({
         name: `a held value printed as single-quoted literals joined by "+" ${how} withholds the text`,
         text: `${before}key = '${P24[0]}' + '${P24[1]}'`, values: [P24.join("")], hides: [P24[0], P24[1]], exact: all("[redacted]"),
