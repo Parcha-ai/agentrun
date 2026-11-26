@@ -507,23 +507,31 @@ const separatorKind = (separator: string): string => (/^\s$/.test(separator) ? "
  *  whole rest; the others are taken pair by pair, shortest first within a pair, while PREFIX_BUDGET has room for all of
  *  one. Past the budget, a pair still holds its value as a reader that splits pairs at some kinds of separator
  *  (separatorKind) reads it, up to the first separator of one of those kinds: its prefix up to the next separator of
- *  each kind, but none past the next one of the kind before its name, since a reader that found the pair splits there
- *  too. So the pairs after one kind's separators each stop at the next one, and these prefixes hold at most the kinds'
- *  count squared times `text`'s length in all. One past the first with a raw `&` or space at an end is held only at the
+ *  each kind, until it has passed one of each kind that opens it. The kinds that open a pair are those of every
+ *  separator since the last `=` before its name (with the text's start while there is none): a reader that splits at
+ *  any of them finds the pair (`; session=`, `&foo;api_key=`), and one that splits at none of them never does. Each
+ *  pair's walk ends at the first separator of an opening kind, or at the text's end when one never comes; a later pair
+ *  that kind opens has one after this pair's `=`, so its name comes after this walk's end. So the walks that end at one
+ *  kind are disjoint, all walks take at most nine passes over the separators (eight kinds and the text's start), and
+ *  these prefixes hold at most eight times that, 72 times `text`'s length, in all. One past the first with a raw `&` or space at an end is held only at the
  *  floor or longer (RAW_EDGE). A prefix that ends at a `;` written as the one that opens it is not read after that `;`
  *  (sameSemicolon). */
 const credentialPrefixes = (text: string): string[] => {
   const separators = [...text.matchAll(SEPARATOR)].map((found) => ({ start: found.index, end: found.index + found[0].length, kind: separatorKind(found[0]), text: found[0] }));
   const startOf = (at: number): number => (at < separators.length ? separators[at].start : text.length);
-  const pairs: { value: number; first: number; opening: string }[] = [];
+  const pairs: { value: number; first: number; opening: Set<string> }[] = [];
+  // The kinds of the separators since the last `=`, and "" (the text's start) while no `=` has come.
+  let opening = new Set([""]);
   let equals = -1;
   for (let at = 0; at <= separators.length; at++) {
     const from = at === 0 ? 0 : separators[at - 1].end;
+    if (at > 0) opening.add(separators[at - 1].kind);
     if (equals < from) equals = text.indexOf("=", from);
     if (equals < 0) break;
-    if (equals <= from || equals >= startOf(at)) continue;
+    if (equals >= startOf(at)) continue;
     const name = text.slice(from, equals).split(/[/?#:]/).at(-1) ?? "";
-    if (credentialNamed(decoded(name) ?? name)) pairs.push({ value: equals + 1, first: at, opening: at === 0 ? "" : separators[at - 1].kind });
+    if (equals > from && credentialNamed(decoded(name) ?? name)) pairs.push({ value: equals + 1, first: at, opening });
+    opening = new Set();
   }
   let left = PREFIX_BUDGET;
   return pairs.flatMap(({ value, first, opening }, index) => {
@@ -540,12 +548,14 @@ const credentialPrefixes = (text: string): string[] => {
       }
     }
     const kinds = new Set<string>();
-    let next = first;
-    for (; next < separators.length && separators[next].kind !== opening; next++) {
-      if (!kinds.has(separators[next].kind)) ends.add(next);
-      kinds.add(separators[next].kind);
+    let unseen = opening.size;
+    for (let next = first; next < separators.length && unseen > 0; next++) {
+      const { kind } = separators[next];
+      if (kinds.has(kind)) continue;
+      kinds.add(kind);
+      ends.add(next);
+      if (opening.has(kind)) unseen--;
     }
-    if (next < separators.length) ends.add(next);
     return [...ends].flatMap((at) => {
       const prefix = text.slice(value, startOf(at));
       if (at !== first && RAW_EDGE.test(prefix) && !atFloor(prefix)) return [];
