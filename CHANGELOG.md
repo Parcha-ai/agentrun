@@ -2,6 +2,83 @@
 
 ## Unreleased
 
+## 0.1.0-beta.60 (2026-11-26)
+
+This release signs AgentRun's own Claude login out from Settings → Model keys (#3878), lets a template file an MCP tool's answers in the run's files for its skill's code, instead of returning them as the tool's result (#3890), and takes a known Archil region without its S3 URL (#3884). A followed run's rows are cut of held values once, not on every read, so a long run no longer slows as its Timeline is watched (#3896). It has no store migration: the runner floor stays 30, and SQLite stays at schema version 16.
+
+**Upgrading and going back:**
+
+- **No store migration.** The runner floor stays 30 and SQLite's schema version stays 16, so the server and its runners need not move together, and going back to beta.59 needs no store change.
+- Set an MCP tool's `file` option (`mcp[].file`) only once the server is on this release: an older server refuses a package that carries it (#3890).
+- If `<data>/claude-login` is a link, remove it before you turn AgentRun's own Claude login on again, and move what it led to into `<data>/claude-login` if you want that login kept (see Breaking, #3878).
+
+**Breaking:**
+
+- Turning on Claude Code's login on this machine at AgentRun's own login (`place` `agentrun`) is refused (403 `forbidden`) where `<data>/claude-login` is a link, in words that name the link and what it leads to: the new Sign out removes that folder whole, so it is a folder AgentRun keeps itself and never a link into another tree. Who breaks: a server whose `<data>/claude-login` was made a link to a folder elsewhere. What to do: remove the link (move what it led to into `<data>/claude-login` if you want that login kept), then turn the mode on again. (#3878) <!-- changes/claude-login-folder-link-refused.md -->
+
+**Known issues:**
+
+- In Mode 2, a run with no computer mounting its folder files no fal results (`evidence/fal`); the call works as before (#3777).
+- A learned workflow refused for a host setting (a tool gated, denied or missing) still reads `serving`, while every run it is given hands back to the agent. A workflow this release's DSL refuses is held.
+- For up to about 10 minutes after the release is published, an install can fail while npm shows the new packages one by one. Try again a few minutes later.
+- An API token's `GET /v2/settings/calendar` is refused 403 in the words for saving a secret. Reading the calendar's settings takes the owner's signed-in session in the console, as saving them does.
+- On Postgres a purge does not reach the database's bytes: `VACUUM` only makes a purged row's space reusable, `VACUUM FULL` rewrites the table, and Postgres's WAL, archived WAL and backups keep the old values for their own lifetimes.
+- A Daytona sandbox kept while the listing still leaves it out is found by a retry of its request on the same provider instance alone; `list()` leaves it out until the listing shows it (#3488).
+- A share bundle's files are cut the way the run's file reads cut them, and a run whose census erased a value exports no files (#3867). The run's fields, Timeline rows and graph pass through the scrubber alone, so they can still carry, uncut, part of a held value that wraps over a line break, and a value the census erased. Read a bundle before you share it.
+- An agent's "Edit agent" button opens the coding-agent menu, not the tools editor. To edit an agent's tools, use the Edit button on the agent's Tools card, or open the agent's Settings, then Tools.
+
+**Changes:**
+
+Runs and harnesses
+
+- A run's rows are cut of its held values once per text, not once per read. A reader that follows a run (the console's live Timeline, a run's view polled) renders its rows on each change, and each render cut every text of the run again, so a long run cost the server work that grew with the square of its turns and slowed the run itself: a run of 61 web searches spent most of its time redacting what it had already redacted. A second read now cuts no text again; a key saved, rotated or reordered since cuts them all again, what is kept is bounded at 32 MiB per store (the oldest dropped first), and a deleted or purged run's texts are dropped from memory with its answer. (#3896) <!-- changes/run-rows-cut-once.md -->
+
+Models and sign-in
+
+- Sign out of Claude Code's login on this machine: `POST /v2/settings/claude-login/sign-out` (operation `signOutClaudeLogin`), and a Sign out button on Settings → Model keys' Claude login row. Before, the row had no way to sign out or switch accounts: Turn off kept the login as the CLI holds it, so Turn on read the same account again with no sign-in page. (#3878) <!-- changes/claude-login-sign-out.md -->
+  - On AgentRun's own login (`<data>/claude-login`) the sign-out ends a sign-in that waits, turns the mode off, runs the pinned CLI's own `claude auth logout` there (its credentials file and, on macOS, its Keychain item for that folder), then removes the folder, the login's signed-in note and the runner's token reader whatever the CLI said. The next Turn on reads not signed in and offers the CLI's sign-in, for the same account or another. Each removal stands alone: one that fails is named in the answer, and the rest, the reader's drop and the server's reread of the keys still happen. `confirmed` false adds a `message` saying what may remain: the CLI didn't confirm its own sign-out, or its step failed (named), or a file could not be removed. A link found at `<data>/claude-login` is removed alone, with the login's signed-in note, no CLI run through it and nothing it leads to touched.
+  - This machine's own login (`place` `machine`, the person's `~/.claude` or `CLAUDE_CONFIG_DIR`) is never signed out: the route answers 403 in words that say to run `claude auth logout` in a terminal there, and the console offers no Sign out on it.
+  - Runs already going on the login are left as a turn-off leaves them: each fails saying the login is signed out at its next read of it. Where each run is a user of its own, a run claimed on the login and started while the mode is off is refused at its start ("turned off or moved to another folder since this run's claim"), as after a turn-off. The claim checks the login's folder, not its account: a run claimed before Sign out and started after a new sign-in may run on the new account.
+  - Not guaranteed for a run still going where runs stay in the runner's process: its CLI holds the refresh token and may write a renewed pair back into `<data>/claude-login` after the sign-out, and nothing removes it when the run ends. Once such runs end, a turn-on that reads signed in again means Sign out again.
+  - The harness exports `claudeLogout(cli, login, { timeoutMs, path, platform })`: the CLI's `auth logout` with the sign-in's variables in the person's home, true when it exited 0 within its limit (15 s), false otherwise; it never throws.
+
+MCP servers and Composio
+
+- An MCP tool's answers can go to the run's files, for the skill's code, instead of coming back as the tool's result. A template sets it per tool with `mcp[].file: {<tool>: {folder, show}}` beside `pin`, and apply writes it into the agent's own tool settings as `mcp:<server>/<tool>: {file: {folder, show}}`. Each answer is written whole, credentials scrubbed, at `<folder>/<tool>-<time>-<id>.json` before the model gets its turn back. The tool's result is three lines: the answer's size and path, the value at each `show` path (at most 8, a string cut at 200 characters), and the answer's shape (keys and types to depth 2, array lengths, never a value). The shape names only keys that read as short names (a letter or `_` first, at most 32 letters, digits or `_`) and counts the rest, so a map keyed by emails shows none of them. The answer goes through neither the 60,000-character clip nor `evidence/mcp/`, however long it is. (#3890) <!-- changes/mcp-filed-tool-results.md -->
+  - This keeps the answer out of the tool's result, not out of the model's reach. The model's own file tools (`read`, `grep`, `ls`, and `bash` on a computer) can still open the folder. A template that must keep the model off the answer shouldn't grant those tools, or should run its skill's code where the model can't read the output.
+  - An answer that is an error is filed the same way, and the tool's result is the same summary with `isError: true`, so the model can still react through a shown field such as `error.code`. Without the setting, error answers are shown as before.
+  - If the file can't be written, the call answers an error in the Workspace's words and shows none of the answer.
+  - A stored setting that no longer reads (a rule tightened since it was written, or a runner older than the server that wrote it) fails closed: every call of the tool is refused with an error naming the setting, and nothing is sent to the server. The owner sets it again or removes it.
+  - `folder` is 1 to 3 segments, none starting with a dot. A `show` path is 1 to 6 segments, each a key, an index or `-1` (the last item). A path that names a free-text field shows that text and defeats the option, so name only what the model needs to go on, such as the next page's cursor.
+  - The owner may change or remove the setting like any other in the agent's tool settings. With it removed, the tool's answers reach the model whole again, as before. The server's own tool settings and an MCP server's wildcard take no `file`.
+  - `GET /v2/templates` shows the setting on each tool that has one, and `GET /v2/agents/{id}/package` carries it back into the package's `mcp[].file`.
+  - An older serve refuses a package with `file` (an unknown field of its `mcp` entry), so a template that uses it needs this release.
+
+Computers and browser
+
+- Turning Archil on no longer asks for the region's S3 URL when serve knows the region. For `aws-us-east-1`, `aws-us-west-2`, `aws-eu-west-1` and `gcp-us-central1` (the regions Archil's SDK names a control plane for), `PUT /v2/workspace/archil` takes the region alone and saves that region's S3 endpoint (the control plane's host with `control.` made `s3.`, such as `https://s3.green.us-east-1.aws.prod.archil.com`); an `s3Url` given is still checked as https and used instead. The same holds where the server is started: `AGENTRUN_ARCHIL_REGION` alone is enough for a known region, and `AGENTRUN_ARCHIL_S3_URL` is needed only for another one. (#3884) <!-- changes/archil-s3-url-from-region.md -->
+  - A region serve doesn't know, with no `s3Url`, is `422 input_invalid` at `s3Url` saying the region needs one and naming the regions serve knows; a server started that way stops in the same words. An `s3Url` that is not https, or empty, for a known region is refused naming that region's URL.
+  - `GET /v2/workspace/archil` (`x-agentrun-serve: "archil/2"`) adds `regions`, each region serve knows with its S3 URL, and, while on, `s3UrlFrom`: `region` when `s3Url` is the region's own, `given` otherwise.
+  - Settings → Workspace offers the known regions in the Region field, and leaves S3 URL empty for one of them, showing the region's URL as its placeholder.
+  - A disk-free runner reads a server started with `AGENTRUN_ARCHIL_REGION` alone as in Archil mode.
+  - A runner given `AGENTRUN_ARCHIL_REGION` without `AGENTRUN_ARCHIL_S3_URL` claims nothing while the server's S3 URL may be another (the server is started with `AGENTRUN_ARCHIL_S3_URL`, or its saved settings hold an `s3Url` other than the region's), and says on its presence row to hand it the server's S3 URL, so a runner and its server never reach a run's folder at two endpoints. `runner --check` lists `AGENTRUN_ARCHIL_S3_URL` as missing on such a runner when the server is started with it.
+
+Triggers
+
+- In the console, editing a trigger, picking another agent and then picking the trigger's own agent again now brings back the input the trigger had. Before, the first pick discarded the stored input, so saving after the switch back sent the target again with the typed fields blank and without the keys no field shows (a `note` written through the API), and nothing on the page said so. (#3863) <!-- changes/trigger-edit-agent-switch-back.md -->
+
+Console
+
+- Every console page with a top bar now keeps the bar in view while the page scrolls under it. Before, these pages scrolled as a whole, bar and all: Agents, Templates and a template's page, Triggers, the Learning Dojo, Suggested agents, a connected agent's page, New race, a race, and Compare runs. Settings → Demo now scrolls under the Settings tabs as the other Settings pages do. (#3902) <!-- changes/console-page-bars-pinned.md -->
+
+Install and docs
+
+- `agentrun service install` writes the service file (the systemd unit or the LaunchAgent) whole or not at all, readable by its owner alone (0600): it writes a new file beside it and renames it over the old one, so a crash mid-write leaves the service as it was. A file an earlier install wrote 0644 becomes 0600 on the next install. `--env AGENT_MODEL_BASE_URL=` with a user name or password in the address is refused without repeating it: a key goes in the console (Settings → Model keys), never in a service file. (#3888) <!-- changes/service-file-atomic.md -->
+
+Internals
+
+- A server start that fails clears the timers it set before it closes the store (#3895), and a listing's secret set is digested as JSON, so no two sets share a digest (#3900). Tests: the second-run Codex test, the secret-scrub growth check, planted-run-reads and the computer's docker-logs test no longer flake (#3889, #3893, #3891, #3894).
+
 ## 0.1.0-beta.59 (2026-11-25)
 
 This release imports GitHub Copilot CLI and OpenCode sessions as runs, beside Claude Code, Codex and pi (#3529, #3499), and `GET /v2/runs` lists runs by when they started and the model they used (`from`, `to` and `model`, #3584). This machine's Ollama models run on codex and opencode too (#3620), and only on a harness that forwards the route (see Breaking, #3651). A run's census drops its "pending" state, which moves the Postgres store to migration 0029 (#3729); migration 0030 drops the learning ledger's `epoch` (#3787). Both are marked as breaking runners, so the server and its runners move together, and a SQLite store moves to version 16. A run's OpenTelemetry trace now names the agent, not the harness, in `gen_ai.agent.name` (see Breaking, #3831). The web tools gain keyed Exa and Firecrawl (#3715) and rank with Jev by default where a TypeSafe key is held (see Breaking, #3875). The owner's MCP server saves, sign-ins and edits are no longer lost to the API token's writes, and a server the token saved never reads as the owner's (#3731, #3798). A desktop's or a phone's agent can save a screenshot into the run's files (#3779), and a completed fal job's whole result is filed at `evidence/fal/<request_id>.json` (#3784). Docker, Chrome and adb start with only the environment names they read (#3736, #3785), a Docker computer's egress proxy goes with it (#3770), and a plain `npm install` of the server brings the vendor SDKs its computer providers load (#3757). The box image's recipe moved, so this release publishes a new box image (#3780).
