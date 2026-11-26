@@ -229,8 +229,9 @@ export interface Machine {
 	createdAt?: Date;
 	/** The vendor's words for a machine that is gone because it failed: a create stops in them. */
 	why?: string;
-	/** What the vendor's answer says the machine was given (its CPUs, memory, disk, GPUs), where it says it: a create
-	 *  returns these as its computer's resources. Absent where the answer says none. */
+	/** What the vendor's answer says the machine was given (its CPUs, memory, disk, GPUs), where it says it, or the
+	 *  limits its create set where the vendor reads none back and bills by use up to them (ComputerResources): a create
+	 *  returns these as its computer's resources. Absent where neither says any. */
 	resources?: ComputerResources;
 }
 
