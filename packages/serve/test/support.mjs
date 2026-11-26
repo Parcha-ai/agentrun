@@ -377,7 +377,7 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  disk's file API (`makeDisk`, AdapterSpecDeps.makeArchilDisk) and the control plane (`control`,
  *  AdapterSpecDeps.mountControl). `ownData`: a data directory of the runner's own, apart from the server's, for its
  *  scratch and everything a run's claim reads or writes on this machine (the store and the seal key stay the server's). */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, composioMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, failAgentsGet, fauxVendorApi, evalFakes, childRuns, census, archil, ownData, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, composioMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, failAgentsGet, fauxVendorApi, evalFakes, childRuns, census, archil, ownData, onEvent, ...switches } = {}) {
   const opened = await openStore({ dataDir: data, role: "runner" });
   // A runner commits to this store from this thread as a server does: the store is a live one from here until the runner
   // has closed (fixtures/sqlite-guard.mjs), also when its server closed before it.
@@ -478,7 +478,8 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
       memory: runnerMemory(store, undefined, env),
       onBeat: () => void beats++,
       // The run start and end lines go to the server's log, as the CLI's runner beside it prints them (print.ts runLine).
-      ...(log ? { onEvent: (event) => { const line = runLine(event); if (line) log(line); } } : {}),
+      // `onEvent`: a test's own, beside the log's, to wait on the runner's events by count, never by time.
+      ...(log || onEvent ? { onEvent: (event) => { onEvent?.(event); const line = log ? runLine(event) : undefined; if (line) log(line); } } : {}),
       // A test's fake GitHub, the server's githubApi seam: the runner mints the App's tokens there (never from the env). Its
       // fake GitHub MCP, the server's githubMcpOrigin seam: a github_app server there is the runner's GitHub MCP too. A
       // fake Composio's MCP origin, the server's composioMcpOrigin seam: the one a key read from the environment goes to. Its
