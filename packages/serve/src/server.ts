@@ -98,6 +98,7 @@ import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runner/presence.js";
+import { openRoundsOf } from "./learning-rounds.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
 import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
@@ -2555,6 +2556,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         },
       );
     },
+    // The agent's runs whose learning round is open as a run starts (learning-rounds.ts openRoundsOf): the run's claim
+    // reads its seed again once they end (runner/learning-reseed.ts).
+    openRounds: (agentId: string) => openRoundsOf(store, agentId),
     shown: () => secretsShown(serverSecrets(), { local: true }),
   };
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
@@ -3055,7 +3059,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // and the import's workerOldMb (64 MB) old one. Their finished reads wait for this thread mostly as transferred
         // ArrayBuffers (record indexes, request counts), memory outside this cap. So a Wrapped read holds IMPORT_HEAP_MB
         // for this thread's own heap, plus threads x (workerOldMb + 16) MB, plus readAhead for the replies waiting to be
-        // taken, with up to `threads` replies in flight on top: the pool checks readAhead before it starts a read.
+        // taken, with up to `threads` replies in flight on top: the pool checks readAhead before it starts a read. Each
+        // reading thread (this one and each read thread) also holds up to 8 MiB of scanner memory outside its heap: the
+        // import's JSON scanner's stack and tables, and room for the longest line it scanned; it scans no line that
+        // would take it past that.
         resourceLimits: { maxOldGenerationSizeMb: IMPORT_HEAP_MB },
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });

@@ -4,7 +4,7 @@
 // hook's reads is the server's own rule, over the store in place of the run's directory:
 //   - its cap and its spend so far, read as its gates read them;
 //   - its owner's words (ownerWords): a grade's, and each message they sent after the job's first, one line of
-//     corrections.md, checked against main first (learn/commit.ts correctionRefused);
+//     corrections.md, its own refusals checked first (learn/commit.ts correctionRefused);
 //   - the compile turn's facts (compileAskOf, learn/compile.ts): whether the job is due to be compiled (its completed
 //     runs, no learned workflow yet), or a workflow its promotion holds wants a revision (once per hold); its last runs'
 //     traces, the tools a workflow may name (draftTools) and the DSL's own language for writing one;
@@ -129,9 +129,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       const [entries, rows] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })]);
       return ownerWords(entries, rows);
     },
-    // A round whose merge is on main already (a stop after its commit, before its end was saved) is not checked for room
-    // again: its merge gives back what it did.
-    correctionRefused: ({ runId, agentId, round: at, text, refuse }) => correctionRefused(learningOf(deps.store, agentId), text, refuse, { runId, round: at }),
+    // The line alone: a kept one makes its own room on main (the file's oldest lines dropped), so main is not read here.
+    correctionRefused: async ({ text, refuse }) => correctionRefused(text, refuse),
     // A run with no workflow binding (an SDK run's `noWorkflows`) compiles nothing.
     ...(start.noWorkflows ? {} : {
       compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => compileAskOf(deps, { ...input, input: launch.input, ...(launch.sdk ? { sdkTask: sdkInputText(launch) } : {}), seedWorkflows: start.workflows?.length ?? 0, corrections: start.section }),
@@ -272,7 +271,7 @@ export async function commitDirect(deps: { readonly learning: AgentLearning; rea
 
 /** A merge's result as the hook reads it. */
 const committedOf = (done: LearningCommitResult): Committed =>
-  done.ok ? { ok: true, commit: done.commit, ...(done.refusedCorrection ? { refusedCorrection: done.refusedCorrection } : {}) } : done.reason === "unavailable" ? { ok: false, reason: "unavailable", problems: [] } : { ok: false, reason: done.reason, problems: done.problems };
+  done.ok ? { ok: true, commit: done.commit, ...(done.refusedCorrection ? { refusedCorrection: done.refusedCorrection } : {}), ...(done.droppedLines ? { droppedLines: done.droppedLines } : {}) } : done.reason === "unavailable" ? { ok: false, reason: "unavailable", problems: [] } : { ok: false, reason: done.reason, problems: done.problems };
 
 /** What a run's owner said of it, in order, each a line for corrections.md: the grade's words its end closes (a feedback
  *  round, feedback-round.ts pendingFeedbackOf over its root `entries`), and each message a person sent in this round of
