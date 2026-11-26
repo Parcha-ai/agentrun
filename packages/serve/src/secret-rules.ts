@@ -47,6 +47,8 @@ export type ScrubContext = {
   /** The shell command whose output the text is, when the caller knows it (ruling LVI): an env command's output is a
    *  dump though the command stands in no line of the text. */
   readonly command?: string;
+  /** The text is lines flattened onto one (a run's title): a prompt mid-line opens a command (flatDumps). */
+  readonly flattened?: boolean;
   readonly lint: () => Promise<readonly LintFind[]>;
   /** Where the line holding an offset starts and ends: a line break, or a JSON string's own quote the view decoded
    *  (ruling XXVIII). Absent: line breaks alone. */
@@ -2468,10 +2470,11 @@ function after(lines: readonly Line[], at: number, fits: (body: string) => boole
 /** A shell's prompt opening a line: the next command, where a file's printed contents end. */
 const PROMPT_LINE = /^\s{0,8}(?:[$#%❯]|>>?)\s{1,3}\S/;
 const notPrompt = (body: string): boolean => !PROMPT_LINE.test(body);
-/** A user's prompt opening a line, `$`, `%` or `❯`, and the command after it. `#` and `>` are left out: they open a
- *  markdown heading or quote far more often than a root prompt (`# Export`), and their env commands are read by
- *  ENV_COMMAND as before. */
-const PROMPT_HEAD = /^\s{0,8}[$%❯]\s{1,3}(?=\S)/;
+/** A user's prompt opening a line, `$`, `%` or `❯`, and the command after it; or a full PS1 prompt ending in `$` or
+ *  `#` (`user@host:~/app$`, `root@c:/#`, `[deploy@web-1 app]$`), a virtualenv's `(venv) ` before either. A bare `#`
+ *  and `>` are left out: they open a markdown heading or quote far more often than a root prompt (`# Export`), and
+ *  their env commands are read by ENV_COMMAND as before. */
+const PROMPT_HEAD = /^\s{0,8}(?:\([^()\n]{1,64}\)[ \t]{1,3})?(?:[$%❯]|(?:[A-Za-z0-9_.-]{1,64}@[A-Za-z0-9_.-]{1,128}:[^\s]{0,256}|\[[^\]@\n]{1,64}@[^\]\n]{1,192}\])[$#])\s{1,3}(?=\S)/;
 /** A line that is a dump's cut already made: no file's content (ruling VIII: a cut text read again is cut no more). */
 const DUMP_MARKER_LINE = /^\s{0,8}\[redacted:[a-z0-9-]{1,64}(?: \d{1,9} lines)?\]\s{0,8}$/;
 const notMarker = (body: string): boolean => !DUMP_MARKER_LINE.test(body);
@@ -2579,14 +2582,20 @@ const WORD_REDIRECT = /\d{0,2}[<>]/;
  *  `env.APP_SEED`, `o.environ`, `Bun.env`, `ENVIRON[`, `</proc/1/environ`, `$env:A`, `std::env`). */
 const ENV_TOKEN_BREAK = /[^a-z0-9_-]{1,4096}/;
 /** A dotfile `.env` (`.env`, `.env.example`, `src/.env`) named as a word or after a path's `/`, `=`, `<`, `>`, `,` or
- *  `:`: a file, which env-file reads, not the environment. `process.env`, `process?.env`, `Bun.env` keep the character
- *  before their dot and are read. */
-const DOT_ENV_FILE = /(^|[ \t/=<>,:])\.env(?![a-z0-9_-])/gi;
+ *  `:`, its whole name up to where a path ends: a file, which env-file reads, not the environment. `process.env`,
+ *  `process?.env`, `Bun.env` keep the character before their dot and are read. A glob or a brace (`.env*`, `.env.*`,
+ *  `.env.{local,production}`) names no one file env-file can test: it is no path end, so its env token stays (11-26).
+ *  Its case is env-file's (ENV_FILE_NAME): `.ENV` or `.Env.local` is no file env-file cuts, so its env token stays too. */
+const DOT_ENV_FILE = /(^|[ \t/=<>,:])\.env(?:\.[A-Za-z0-9_-]{1,64}){0,8}(?=$|[\s/;|&<>),:])/g;
+/** A line break before a member access's dot (`process` then `  .env` on the next line, a chained call's formatting):
+ *  dropped, so the member reads joined to what it is a member of. */
+const MEMBER_BREAK = /[ \t]{0,64}\r?\n\s{0,64}(?=\.[A-Za-z_$])/g;
 /** A token that runs, names or reads the environment wherever it stands in a line: env, printenv, envsubst, environ (a
- *  /proc file, awk's ENVIRON, Python's os.environ), getenv and GetEnvironmentVariables, PHP's $_ENV and $_SERVER,
- *  compgen, systemd's show-environment, a container's inspect, xtrace. An env token in a file's name is read so too
+ *  /proc file, awk's ENVIRON, Python's os.environ), environment (systemd's Environment property, /etc/environment),
+ *  getenv and GetEnvironmentVariables, PHP's $_ENV and $_SERVER, compgen, systemd's show-environment, a container's
+ *  inspect, xtrace. An env token in a file's name is read so too
  *  (`ls src/env.ts`, `cp .env.example .env`): an over-cut, ruled so. */
-const ENV_WORD = /^(?:(?:print)?env|envsubst|environ|compgen|show-environment|inspect|_env|_server|xtrace)$|^getenv/;
+const ENV_WORD = /^(?:(?:print)?env|envsubst|environ(?:ment)?|compgen|show-environment|inspect|_env|_server|xtrace)$|^getenv/;
 /** A variable's expansion: sh's `$NAME` and any `${...}` (`${!v}` too), cmd's `%NAME%`. */
 const VARIABLE_WORD = /\$(?:\{|[A-Za-z_])|%[A-Za-z_][A-Za-z0-9_]{0,127}%/;
 /** A flag that turns xtrace on (`set -x`, `set -ex`, `bash -x`, `sh -xc`): each command is printed with its variables
@@ -2596,8 +2605,11 @@ const XTRACE_FLAG = /^-[a-z]{0,8}x[a-z]{0,8}$/;
 const HERE_INPUT = /<</;
 /** export's or declare's flag that prints (`-p`, `-px`). */
 const PRINT_FLAG = /^-[A-Za-z]{0,8}p/;
-/** ps's BSD-style option word that adds each process's environment (`ps e`, `ps eww`, `ps auxe`). */
-const PS_ENV_OPTION = /^[a-z]{0,16}e[a-z]{0,16}$/;
+/** ps's option word that adds each process's environment: BSD-style `e` (`ps e`, `ps eww`, `ps auxe`), or `E` with or
+ *  without a dash (`ps auxE`, `ps -E`, `ps -wwE`). procps' `-e` (every process) is no such option. */
+const PS_ENV_OPTION = /^(?:[a-z]{0,16}e[a-z]{0,16}|-?[A-Za-z]{0,16}E[A-Za-z]{0,16})$/;
+/** heroku's config command and its subcommands (`heroku config`, `heroku config:get NAME`): a host's config vars. */
+const HEROKU_CONFIG = /^config(?::|$)/i;
 /** Commands that print their arguments: with a variable anywhere in the line, its value is read as printed. */
 const PRINT_WORDS = new Set(["echo", "printf", "print", "puts", "say", "write-output", "write-host"]);
 /** Builtins that print every variable given no name to set: with flags alone, or a printing flag. */
@@ -2621,13 +2633,15 @@ function argsAfter(words: readonly string[], at: number): string[] {
 
 /** Whether a command of a line, quotes dropped, prints the environment by its builtins' arguments: set with nothing
  *  after it, or set or a shell with an xtrace flag; export, declare, typeset or readonly with flags alone or a printing
- *  flag; ps with an `e` option. */
+ *  flag; ps with an `e` or `E` option; heroku's config. */
 function pieceDumps(piece: string): boolean {
   const words = piece.split(COMMAND_BLANKS).filter(Boolean);
   return words.some((word, at) => {
     const name = wordName(word);
-    if (!XTRACE_WORDS.has(name) && !DECLARE_WORDS.has(name) && name !== "ps") return false;
+    if (!XTRACE_WORDS.has(name) && !DECLARE_WORDS.has(name) && name !== "ps" && name !== "heroku") return false;
     const args = argsAfter(words, at);
+    // A redirect attached to the argument (`config>/tmp/x`) is no part of it, as wordName reads a command's name.
+    if (name === "heroku") return args.some((arg) => HEROKU_CONFIG.test(arg.split(WORD_REDIRECT)[0]!));
     if (XTRACE_WORDS.has(name) && args.some((arg) => XTRACE_FLAG.test(arg.toLowerCase()))) return true;
     if (name === "set") return args.length === 0;
     if (DECLARE_WORDS.has(name)) return args.every((arg) => arg.startsWith("-")) || args.some((arg) => PRINT_FLAG.test(arg));
@@ -2644,11 +2658,14 @@ function pieceDumps(piece: string): boolean {
  *  an earlier call set up (an alias, a symlink to an environ file, a script it wrote), which no line reader can. */
 function printsEnvironment(command: string): boolean {
   if (command.length > COMMAND_MAX) return true;
-  const line = command.replace(COMMAND_QUOTES, "").replace(DOT_ENV_FILE, "$1");
-  const tokens = line.toLowerCase().split(ENV_TOKEN_BREAK);
+  // Read twice: with a member access across a line break joined (`process\n  .env` is `process.env`), and as written,
+  // where that break still ends a command (`readonly\n.venv/bin/python`: readonly alone prints, joined it read as python).
+  const unquoted = command.replace(COMMAND_QUOTES, "");
+  const lines = [unquoted.replace(MEMBER_BREAK, "").replace(DOT_ENV_FILE, "$1"), unquoted.replace(DOT_ENV_FILE, "$1")];
+  const tokens = lines.flatMap((line) => line.toLowerCase().split(ENV_TOKEN_BREAK));
   if (tokens.some((token) => ENV_WORD.test(token))) return true;
   if (VARIABLE_WORD.test(command) && (HERE_INPUT.test(command) || tokens.some((token) => PRINT_WORDS.has(token)))) return true;
-  return line.split(COMMAND_SPLIT).some(pieceDumps);
+  return lines.some((line) => line.split(COMMAND_SPLIT).some(pieceDumps));
 }
 /** All of a call's output as one dump, from its first character that is not a blank to its last (11-25 read): its
  *  lines can't be told apart by command, a value can span lines, and a first line that opens like a JSON field or a
@@ -2658,6 +2675,33 @@ function wholeDump(text: string): Hit[] {
   const end = text.trimEnd().length;
   const start = text.length - text.trimStart().length;
   return end > start ? [{ start, end }] : [];
+}
+/** A prompt inside a line flattened from many (a run's title): one PROMPT_HEAD opens, after a blank or at the start. */
+const FLAT_PROMPT = /(?<=^|\s)(?:\([^()\n]{1,64}\)[ \t]{1,3})?(?:[$%❯]|(?:[A-Za-z0-9_.-]{1,64}@[A-Za-z0-9_.-]{1,128}:[^\s]{0,256}|\[[^\]@\n]{1,64}@[^\]\n]{1,192}\])[$#])[ \t]{1,3}(?=\S)/g;
+const FLAT_WORD = /\S{1,4096}/g;
+/** The most words a flattened command is read for before its output's first NAME=value. */
+const FLAT_COMMAND_WORDS = 16;
+/** A transcript flattened onto one line (11-26: a run's title is its first message with every run of blanks one
+ *  space, so `$ printenv\nAPP_SEED=v\n...` reads `$ printenv APP_SEED=v ...`): after each prompt, the fewest words that
+ *  print the environment (printsEnvironment) followed by a NAME=value word (ENV_LINE) are the command, and from that word
+ *  to the next prompt or the text's end is its output, cut. Where a flattened command ends can't be told from its
+ *  output's first word, so `$ env NAME=value command` is cut there too: an over-cut, fails closed, and only for a text
+ *  its caller says was flattened. */
+function flatDumps(text: string): Hit[] {
+  const prompts = [...text.matchAll(FLAT_PROMPT)];
+  const out: Hit[] = [];
+  for (const [at, prompt] of prompts.entries()) {
+    const from = prompt.index + prompt[0].length;
+    const segment = text.slice(from, at + 1 < prompts.length ? prompts[at + 1]!.index : text.length).trimEnd();
+    const words = [...segment.matchAll(FLAT_WORD)];
+    for (let next = 1; next < words.length && next <= FLAT_COMMAND_WORDS; next++) {
+      const head = words[next]!.index;
+      if (!ENV_LINE.test(segment.slice(head)) || !printsEnvironment(segment.slice(0, head).trimEnd())) continue;
+      out.push({ start: from + head, end: from + segment.length });
+      break;
+    }
+  }
+  return out;
 }
 /** A command's output, given apart from its command (ruling LVI): all of it is a dump when the command prints the
  *  environment or a variable's value, alone on its line or among others. An approval outcome's head line is cut with
@@ -2900,7 +2944,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
   rule("base64-pem", "format", (text, ctx) => base64Pems(nestedBlanked(text, ctx?.source), linesOfContext(text, ctx))),
   SECRETLINT,
   HELD,
-  rule("env-dump", "dump", (text, ctx) => [...envDumps(text), ...commandDumps(text, ctx.command)]),
+  rule("env-dump", "dump", (text, ctx) => [...envDumps(text), ...commandDumps(text, ctx.command), ...(ctx.flattened ? flatDumps(text) : [])]),
   rule("env-file", "dump", (text, ctx) => [...wholeText(text, ctx, envFilePath), ...fileReads(text, envFilePath, (body) => ENV_FILE_LINE.test(body))]),
   rule("credential-file", "dump", (text, ctx) => [...wholeText(text, ctx, credentialFilePath), ...fileReads(text, credentialFilePath, (body) => notPrompt(body) && notMarker(body))]),
   // A key file read (authorized_keys, known_hosts, a key) or a config read is a dump; key lines printed with no read
@@ -2949,7 +2993,7 @@ export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_BEGIN, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, BARE_STOP, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
   UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, NPM_COMMAND, NPM_SET_SCAN, NPM_SET_AUTH, NPM_AUTH_KEY, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, PASSWORD_FLAG, LOGIN_COMMAND,
   REDIS_COMMAND, LOGIN_SCAN, LOGIN_P, REDIS_SCAN, REDIS_A, MYSQL_SCAN, MYSQL_P, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_SCAN, CURL_USER, GLUED_STOP, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
-  ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, COMMAND_QUOTES, COMMAND_SPLIT, COMMAND_BLANKS, REDIRECT_WORD, REDIRECT_ALONE, WORD_REDIRECT, ENV_TOKEN_BREAK, DOT_ENV_FILE, ENV_WORD, VARIABLE_WORD, XTRACE_FLAG, HERE_INPUT, PRINT_FLAG, PS_ENV_OPTION, PROMPT_HEAD, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
+  ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, COMMAND_QUOTES, COMMAND_SPLIT, COMMAND_BLANKS, REDIRECT_WORD, REDIRECT_ALONE, WORD_REDIRECT, ENV_TOKEN_BREAK, DOT_ENV_FILE, MEMBER_BREAK, ENV_WORD, VARIABLE_WORD, XTRACE_FLAG, HERE_INPUT, PRINT_FLAG, PS_ENV_OPTION, HEROKU_CONFIG, PROMPT_HEAD, FLAT_PROMPT, FLAT_WORD, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
   CREDENTIAL_FILE, FILE_VARIABLE, ENV_FILE_LINE, KEY_LINE, SSH_CONFIG, COMMENT_LINE, PEM_LINE, BASE64_LINE, PEM_HEADER_LINE, HOME_UNIX, HOME_WINDOWS, SEGMENT_AFTER,
   TRAILING_SLASHES, HOME_USER, CLAUDE_SLUG, CLAUDE_PROJECTS_BEFORE, SLUG_OFF_CHARS, SLUG_USER, BOT_TRAILER, DUMP_MARKER_LINE, EMAIL, EXAMPLE_DOMAIN, NO_REPLY_LOCAL, NO_REPLY_DOMAIN, FORGE_NO_REPLY, USER_ONLY_BEFORE, PORT_PASSWORD, HOST_SHAPED, IPV4, VERSION_BEFORE, PRE_RELEASE_AFTER,
   BUILD_AFTER, RANGE_AFTER, IPV6, IPV6_GROUPS, ENV_PREFIX_BEFORE, ENV_PREFIX_AFTER, ENV_PREFIX_CHAIN, ENV_PREFIX_STATEMENT, ENV_FLAG, HELM_LIST_FLAG, HELM_SET, HELM_NAME, RESOURCE_NAME, SECRET_OBJECT_NAME, CONNECTION_PASSWORD, ADO_PAIR, CONNECTION_KEY_PAIR, BLANKS, LIBPQ_PAIR_AFTER, FORMAT_FIELD, PWD_PATH, QUERY_VALUE_STOP, QUERY_PASSWORD, ARGUMENT_TAIL, NEXT_ASSIGNMENT, ASSIGNMENT_BEFORE,
