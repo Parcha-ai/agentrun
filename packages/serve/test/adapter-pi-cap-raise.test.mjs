@@ -598,9 +598,9 @@ test("a covering raise that reaches a claim parking the run again (a refused rai
   const [pause] = await rootEntries(w.store, "agentrun.budget");
   covers = pause.pending.suggested_cap_usd;
   await w.raise(CAP);
-  await holding;
+  await reached(holding, "the refused raise's claim reaches its park");
   const covering = await w.raise(covers);
-  const outcome = await answered;
+  const outcome = await reached(answered, "the covering raise is answered");
   armed = false;
   open();
   assert.ok("later" in outcome, `the covering raise waits for the run's next claim: ${JSON.stringify(outcome)}`);
