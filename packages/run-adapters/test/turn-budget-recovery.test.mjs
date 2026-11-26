@@ -85,3 +85,24 @@ test("a budget that has read an answer is not taken back to the journal's: a lat
   journalTurn(turn, new NativeJournal(next));
   assert.equal(turn.claim('c1', WINDOW), (WINDOW - 12_000 - answerReserve(WINDOW)) * CHARS_PER_TOKEN, "its own answer's room, not the journal's");
 });
+
+test("a restart right after results were handed, before anything else was written: those results keep their part, and a pending call gets only what is left", async () => {
+  // MUTATION: a settled length written but not flushed before its result goes back: lost with the process, the pending
+  // call claims the room the handed results already took.
+  const store = memorySessionStore();
+  // A store whose writes land a moment after they are asked (as a database's do): a write still on its way when the
+  // process stops is lost with it (the next process's open fences it).
+  const writer = await store.open('r4');
+  const first = await openDrive({ writer: { ...writer, append: async (records) => (await new Promise((r) => setImmediate(r)), writer.append(records)) }, signal: new AbortController().signal });
+  const journal = new NativeJournal(first);
+  const turn = new TurnBudget();
+  journalTurn(turn, journal);
+  // An answer whose calls were not counted: each call claims what is left, in turn.
+  turn.open({ inputTokens: HELD, outputTokens: 0 });
+  const bridge = toolBridge(first, [bigTool(10_000)], { budget: { contextWindow: WINDOW, turn } });
+  const before = [await bridge.call('lookup', { q: 'c1' }, 'c1'), await bridge.call('lookup', { q: 'c2' }, 'c2')].map((r) => r.text.length);
+  // The process stops here: no flush after the results went back.
+  const [after] = await resumed(store, 'r4', ['c3'], 10_000);
+  const handed = before.reduce((a, b) => a + b, 0);
+  assert.ok(handed + after <= ROOM, `handed before the restart ${before.join(', ')}, after it ${after}: together within ${ROOM}`);
+});
