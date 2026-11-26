@@ -252,9 +252,11 @@ function SessionCard({ card, tone, link }: { card: FactoryCard; tone: ChipTone; 
   return (
     <article aria-current={open ? "true" : undefined} className={cn("min-w-0 space-y-2 border bg-card p-4", open && "border-border-strong")}>
       <h3 className="min-w-0">
-        <a href={link.href(card)} className="block break-words text-left hover:text-primary-text">
-          {/* A child is named by the task its parent gave it, which can run long: two lines here, whole on hover. */}
-          <span className="line-clamp-2 text-prose font-semibold underline underline-offset-2" title={card.agentName}>{card.agentName}</span>
+        <a href={link.href(card)} className="group block break-words text-left hover:text-primary-text">
+          {/* A child is named by the task its parent gave it, which can run long: two lines here, whole on hover.
+              The name is its card's heading, bold, with no underline at rest: one under every card made the board busy.
+              Under the pointer, or with the keyboard on the link, it is underlined as a list's names are elsewhere. */}
+          <span className="line-clamp-2 text-prose font-semibold underline-offset-2 group-hover:underline group-focus-visible:underline" title={card.agentName}>{card.agentName}</span>
           <span className="mt-1 line-clamp-2 text-body font-normal" title={card.title}>{card.title}</span>
         </a>
       </h3>
@@ -360,8 +362,8 @@ function SessionRow({ card, group, link }: { card: FactoryCard; group: Group; li
   return (
     <tr className={cn("border-b", link.open(card) && "bg-accent")} aria-current={link.open(card) ? "true" : undefined} data-factory-row={card.id} {...(nested ? { "data-factory-child": "" } : {})}>
       <td className={cn(CELL, COLUMNS.session, nested && "pl-8")}>
-        <a href={link.href(card)} className="block break-words text-left hover:text-primary-text">
-          <span className="line-clamp-1 font-semibold underline underline-offset-2" title={card.agentName}>{card.agentName}</span>
+        <a href={link.href(card)} className="group block break-words text-left hover:text-primary-text">
+          <span className="line-clamp-1 font-semibold underline-offset-2 group-hover:underline group-focus-visible:underline" title={card.agentName}>{card.agentName}</span>
           <span className="line-clamp-2 lg:line-clamp-1" title={card.title}>{card.title}</span>
         </a>
         <p data-factory-meta className="mt-1 break-words font-mono text-small text-muted-foreground">{card.sourceLabel} · <SessionRef card={card} link={link} />{said && <> · {card.stateLabel}</>}</p>

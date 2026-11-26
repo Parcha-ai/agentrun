@@ -108,6 +108,24 @@ describe("Agent Factory board", () => {
     expect(host.querySelectorAll('article p a[href^="#/runs/"]')).toHaveLength(0);
   });
 
+  it("leaves a session's name without an underline until the pointer or the keyboard is on it, on a card and on a row", () => {
+    for (const view of ["cards", "list"] as const) {
+      const { host } = mount({ view });
+      const names = [...host.querySelectorAll<HTMLElement>(view === "cards" ? "article h3 a > span:first-child" : "tr[data-factory-row] td > a > span:first-child")];
+      expect(names.length).toBeGreaterThan(3);
+      for (const name of names) {
+        const classes = name.className.split(" ");
+        // Its card's heading, bold: an underline under every one made the board busy. Under the pointer, or with the
+        // keyboard on its link, it is underlined as a list's names are elsewhere.
+        expect(classes, name.textContent ?? "").not.toContain("underline");
+        for (const c of ["font-semibold", "group-hover:underline", "group-focus-visible:underline"]) expect(classes, c).toContain(c);
+        expect(name.parentElement!.className.split(" ")).toContain("group");
+      }
+      act(() => root!.unmount());
+      document.body.innerHTML = "";
+    }
+  });
+
   it("names the next step on a session that waits on a person, as one more way into it, on its card and on its row", () => {
     const href = (runId: string) => `#/factory?session=${runId}`;
     const waiting = [card("asked", "attention", { action: "Answer", agentName: "Triage" }), card("call", "attention", { action: "Review" }), card("busy", "working")];
