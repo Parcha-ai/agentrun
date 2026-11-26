@@ -572,7 +572,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     if (!run.learning) return null;
     const merged = run.learning.state === "merged";
     const graded = h.grade ? { ...h.grade, feedback_status: h.grade.feedback ? (run.learning.state === "reflecting" ? "running" as const : "ended" as const) : null } : undefined;
-    return { ...(graded ? { graded } : {}), run: run.run_id, state: run.learning.state, reason: run.learning.reason, detail: run.learning.detail, at: run.learning.at, seed: hex("learn:1"), merged: merged ? hex("learn:2") : null, workflows: [], corrections: merged ? 1 : 0, problems: [], compiled: null, draft_errors: [], used: { workflows: h.story.path && h.story.path !== "agent" ? [{ name: LEARNING_WORKFLOW, calls: 1, failed: 0 }] : [] } };
+    return { ...(graded ? { graded } : {}), run: run.run_id, state: run.learning.state, reason: run.learning.reason, detail: run.learning.detail, at: run.learning.at, seed: hex("learn:1"), seed_failed: null, seed_waited: null, learned_chars: 0, merged: merged ? hex("learn:2") : null, workflows: [], corrections: merged ? 1 : 0, dropped_lines: 0, problems: [], compiled: null, draft_errors: [], used: { workflows: h.story.path && h.story.path !== "agent" ? [{ name: LEARNING_WORKFLOW, calls: 1, failed: 0 }] : [] } };
   };
 
   // ---- Files ----

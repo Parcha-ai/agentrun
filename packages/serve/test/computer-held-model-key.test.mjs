@@ -42,7 +42,8 @@ const { ApiError } = await import("../dist/errors.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { heldRefusedRoute } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
-const { claimSecrets, MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
+const { claimSecrets, MODEL_KEY_NAMES, subagentTierKeys, tierModelKeys } = await import("../dist/runner/claim-secrets.js");
+const { sdkCompileEnv } = await import("../dist/runner/harness-loops.js");
 const { childLoops, heldFor, LOGIN_MACHINE_NEEDS_SERVER_USER, staysInRunner } = await import("../dist/runner/run-child-host.js");
 const { cursorOptions } = await import("../dist/harness-table.js");
 const { cursorFacts } = await import("@parcha/agentrun-harness-acp");
@@ -585,6 +586,42 @@ test("claim secrets (claimSecrets) on a runner holding the seal key: a run that 
     assert.ok(reads.includes("PARALLEL_API_KEY"), `${where}: its tool's saved key is read as any claim's is: ${JSON.stringify(reads)}`);
   }
   assert.deepEqual(opened, { "held, its model kept from running": [], "on a --faux runner": [], "faux-pinned on a runner off faux": [] }, "a run that sends no model key reads no saved model key");
+});
+
+test("tier keys (tierModelKeys, subagentTierKeys) on a runner holding the seal key: on a --faux runner, where every tier's model is the faux model, they open no saved key at all; off faux they open the tiers' models' keys", async () => {
+  // Each saved key the runner would open, counted by name; none is saved, so nothing is opened.
+  const reads = [];
+  const depsOn = (env) => ({ store: { sealedKeys: { get: async (name) => (reads.push(name), undefined) }, settings: { get: async () => undefined } }, sealKey: Buffer.alloc(32, 7), env });
+  const host = { AGENT_MODEL_FAST: "openrouter/anthropic/claude-haiku-5.5" };
+  const calls = [
+    ["tierModelKeys", (env) => tierModelKeys(depsOn(env), ["fast"])],
+    ["subagentTierKeys", (env) => subagentTierKeys(depsOn(env), ["fast"], { fast: "openrouter/anthropic/claude-haiku-5.5" })],
+  ];
+  const off = {};
+  const faux = {};
+  for (const [what, call] of calls) {
+    reads.length = 0;
+    await call(host);
+    off[what] = reads.includes("OPENROUTER_API_KEY");
+    reads.length = 0;
+    await call({ ...host, [FAUX_ENV]: "1" });
+    faux[what] = [...reads];
+  }
+  assert.deepEqual(off, { tierModelKeys: true, subagentTierKeys: true }, "off faux, a tier's model's saved key is read");
+  assert.deepEqual(faux, { tierModelKeys: [], subagentTierKeys: [] }, "on a --faux runner no saved key is read for a tier");
+});
+
+test("an SDK run's compile turn (sdkCompileEnv) on a --faux runner, whose model is the faux model, opens no saved key and is not skipped for want of a gateway key; off faux it opens the saved model keys, and with none it is skipped", async () => {
+  const reads = [];
+  const depsOn = (env) => ({ store: { sealedKeys: { get: async (name) => (reads.push(name), undefined) }, settings: { get: async () => undefined } }, sealKey: Buffer.alloc(32, 7), env });
+  const claim = { runId: "run-1", turn: 1, attempt: 1 };
+  const gateway = { AGENT_MODEL_BASE_URL: "https://gateway.invalid/v1" };
+  const off = await sdkCompileEnv(depsOn(gateway), claim);
+  assert.ok(reads.includes(GATEWAY_KEY_ENV), `off faux, the compile turn reads the saved gateway key: ${JSON.stringify(reads)}`);
+  assert.match(off.off ?? "", /compile turn is skipped/, "off faux, with no gateway key held, the compile turn is skipped in words");
+  reads.length = 0;
+  const faux = await sdkCompileEnv(depsOn({ ...gateway, [FAUX_ENV]: "1" }), claim);
+  assert.deepEqual({ reads, off: faux.off }, { reads: [], off: undefined }, "on a --faux runner no saved key is read and the turn goes on, on the faux model");
 });
 
 /** A gateway's key saved in the console (model-gateway.ts saveGateway), a test's: never a real one. */

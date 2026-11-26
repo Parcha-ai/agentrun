@@ -73,7 +73,7 @@ import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } fr
 import { IMPORT_ASKED, IMPORT_HEAP_MB, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import { inLearningQueue, LEARNING_LABEL, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
+import { inLearningQueue, LEARNING_LABEL, SAID_MAX, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
 import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, learningLog, pendingCount, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/workflow-draft.js";
@@ -98,6 +98,7 @@ import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runner/presence.js";
+import { openRoundsOf } from "./learning-rounds.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
 import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
@@ -1183,7 +1184,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       archive: { agents: true, runs: true, list_param: "archived", routes: ["POST /agents/{id}/archive", "POST /agents/{id}/unarchive", "POST /runs/{id}/archive", "POST /runs/{id}/unarchive"] },
       home: { export: false, import: false, check: false },
       runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true },
-      messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
+      messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false, said: true },
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: true, read: true, range: true, during_run: true },
       quotes: false,
@@ -2555,6 +2556,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         },
       );
     },
+    // The agent's runs whose learning round is open as a run starts (learning-rounds.ts openRoundsOf): the run's claim
+    // reads its seed again once they end (runner/learning-reseed.ts).
+    openRounds: (agentId: string) => openRoundsOf(store, agentId),
     shown: () => secretsShown(serverSecrets(), { local: true }),
   };
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
@@ -3055,7 +3059,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // and the import's workerOldMb (64 MB) old one. Their finished reads wait for this thread mostly as transferred
         // ArrayBuffers (record indexes, request counts), memory outside this cap. So a Wrapped read holds IMPORT_HEAP_MB
         // for this thread's own heap, plus threads x (workerOldMb + 16) MB, plus readAhead for the replies waiting to be
-        // taken, with up to `threads` replies in flight on top: the pool checks readAhead before it starts a read.
+        // taken, with up to `threads` replies in flight on top: the pool checks readAhead before it starts a read. Each
+        // reading thread (this one and each read thread) also holds up to 8 MiB of scanner memory outside its heap: the
+        // import's JSON scanner's stack and tables, and room for the longest line it scanned; it scans no line that
+        // would take it past that.
         resourceLimits: { maxOldGenerationSizeMb: IMPORT_HEAP_MB },
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
@@ -5862,17 +5869,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
           const secrets = await handed();
           const seal = await messageSeal(run, secrets);
-          const extra = unknownFields(body, ["content"]);
+          const extra = unknownFields(body, ["content", "said"]);
           if (extra.length) throw invalid(extra);
           const given = body.content;
           if (typeof given !== "string" || !/\S/.test(given)) throw invalid([{ field: "content", reason: given === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (given.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
+          // The person's own words, when `content` is a host's text around them: what the run's learning keeps of the
+          // message (runner/learning-end.ts ownerWords); the model gets `content`. It need not be inside `content`; text
+          // shaped like a secret is the learning checker's to refuse, as any correction's is.
+          const words = body.said;
+          if (words !== undefined && typeof words !== "string") throw invalid([{ field: "said", reason: "wrong_type", message: "said is a string when sent: the person's own words" }]);
+          if (typeof words === "string" && !words.trim()) throw invalid([{ field: "said", reason: "empty", message: "said is not empty when sent: the person's own words" }]);
+          if (typeof words === "string" && words.length > SAID_MAX) throw invalid([{ field: "said", reason: "too_long", message: `said is at most ${SAID_MAX} characters` }]);
           // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
           // In its agent's delete turn (runWrite): a message that may open the run again never lands under its purge.
           // Its text is cut of what it hands and of what the run holds, read in that turn (cutHeld).
           const { mode, messageId } = await runWrite(run.agentId, run.id, async () => {
             const content = await cutHeld(run.id, given, handedSecretValues(secrets));
-            return message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
+            const said = typeof words === "string" ? await cutHeld(run.id, words, handedSecretValues(secrets)) : undefined;
+            return message(store, run, content, { ...(said !== undefined ? { said } : {}), ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
           });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);

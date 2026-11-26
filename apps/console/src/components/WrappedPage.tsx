@@ -76,6 +76,8 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
     let timer: ReturnType<typeof setTimeout> | undefined;
     setData(null);
     setError(null);
+    // The leak receipt is asked for again in each year: turned on for one, it is off in the next.
+    setLeakShown(false);
     const ask = () => v2.wrapped(shown, abort.signal).then(setData, (e: unknown) => {
       if (abort.signal.aborted) return;
       // A long home: the server goes on reading and says when to ask again. The skeleton stays until the year comes.

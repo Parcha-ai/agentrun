@@ -638,8 +638,8 @@ end to end. The [published image](#in-the-published-image) hosts Docker boxes th
 A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
 the providers under [Computers](#computers). `place` is the v2 view of the agent's computer setting: `runner` is kind
 `none`, and `sandbox` a sandbox on that provider. On the runner a run has no shell where its folder is on this
-server's disk (Mode 1), and `bash` on Archil's serverless exec where it is on Archil (Mode 2)
-([where `bash` runs](#computers)). In a sandbox the agent's `bash` runs in the named box and its
+server's disk (Mode 1), and `bash` on Archil's serverless exec where it is on Archil (Mode 2), except on an Archil
+region with no serverless exec (`gcp-us-central1`), where bash needs a box ([where `bash` runs](#computers)). In a sandbox the agent's `bash` runs in the named box and its
 file tools (`read`, `write`, `edit`) work on the `work/` the box has ([a run in a Docker box](#a-run-in-a-docker-box)),
 while the agent's loop, its log and every key stay on the server, whatever its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
 remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). One that names a
@@ -674,6 +674,10 @@ Where a new agent with no place goes, by mode:
 - **No Docker, in Mode 2:** not refused. The runner's shell is Archil's serverless exec, so a new agent with no place
   saves for the runner as before, and `default_place` is `{"mode": "runner"}`, no `default_reason`. A background tool
   still runs in a box alone, so naming one with no place is refused at the tool.
+- **Mode 2 on an Archil region with no serverless exec (`gcp-us-central1`), Docker or not: bash needs a box.** The
+  runner has no shell there and Docker's box can't mount Archil, so a new agent with a shell tool and no computer is
+  refused at `definition.computer`, "bash needs a box (a sandbox computer): …", and `default_place` is `null` with
+  those words in `default_reason` ([where `bash` runs](#computers)).
 
 A definition that names its place, the runner included, a workflow, and one whose tools need no shell save as before in
 every mode, and so does a package that names its tools (`tools: []` included) or its computer list. An agent saved
@@ -699,7 +703,8 @@ and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box, w
 
 `bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default, with
 the sandbox place as its `fix`), or, in Mode 2, by one on the runner, where `bash` runs on Archil's serverless exec
-([where `bash` runs](#computers)); the background tools run in a box alone, in either mode. A workflow's place is `runner`
+([where `bash` runs](#computers)), except on an Archil region with no serverless exec (`gcp-us-central1`), where bash
+needs a box; the background tools run in a box alone, in either mode. A workflow's place is `runner`
 or none (`422` on a sandbox, with the runner place as its `fix`). In `capabilities.tools`, `bash` is `available: false`
 with a `reason` (`no box is set up on this server: …`, each box's own reason) when no box this server has can run it and
 the server is in Mode 1.
@@ -1418,6 +1423,15 @@ A desktop, a phone and a browser run in either mode. The run's folder is at
   write does not keep a file's mode (a `0755` file is `0644` after a write), and a symbolic link a command made is never
   followed: reading one is refused, a write through a linked folder is refused, and `bash` refuses a working directory
   with a link on the way.
+- **On an Archil region with no serverless exec (`gcp-us-central1`), bash needs a box.** Archil's AWS regions have the
+  exec above; `gcp-us-central1` has none, so in Mode 2 there a run with no computer that mounts its folder has no shell,
+  as in Mode 1, and Docker's box can't mount Archil. Give the agent a sandbox computer, or leave `bash` out of its
+  tools. A new agent with `bash` (or another shell tool) and no computer is refused at its save or its `agentrun
+  deploy`, `422 input_invalid` at `definition.computer`: "bash needs a box (a sandbox computer): this server's Archil
+  region gcp-us-central1 has no serverless exec, …". One that names the runner (or computer kind `none`) is refused at
+  the tool: "bash runs only in a box, …". An agent saved with `bash` and no computer before is refused at each run,
+  `409 agent_not_runnable`, in the first words, and no run starts. `capabilities.places.default_place` is `null` there, with
+  those words in `default_reason`, and `bash` shows unavailable.
 
 **The run's scratch.** `bash`'s `TMPDIR` is `.agentrun/tmp` in the run's folder, and a cut answer's full output is in
 `.agentrun/output/`. The run's end removes both before its end commit: through the computer when it mounts the folder,
@@ -3790,7 +3804,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, `source=<name>` (`runsource/1`, once per request) keeps the runs imported from that source (its name as `imported_from.source` holds it: `claude-code`, `codex`, ...) and `source=live` the runs made here, not imported, `from` and `to` (`runwindow/1`, RFC 3339 date-times with their zone, each once) keep the runs started in [from, to), `model=<provider/model>` (`runmodel/1`, once) the runs that sent at least one request to that model (its exact name as their metrics hold it; a run counts from its first finished turn, as its metrics are written each time a turn ends), and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" \| "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis` `reported`, `estimate` or `unpriced`, with its model requests' `tokens`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis); $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. Beside the rows, `in_flight`: what a live run waits on now, each model request sent and not answered (from its booking's `runner.request`, stamped `at` when it left) and each tool call not returned, from when it was sent; empty once the run is final. A request sent or answered is a change of the page, as a row is. |
-| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). |
+| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). The model gets `content`; a host that wraps the person's words in its own text (an earlier report, turn instructions) sends their words alone as `said` (`messagesaid/1`), which the run's [learning](#learning) keeps in place of `content` (at most 4,000 characters, not empty after trimming, else `422 input_invalid` at `said`; `features.messages.said` says a server takes it). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw, one byte range at a time on asking (`Range`, `206`); and its screen recordings under `recordings/` ([A video of each run](#computers)). |
@@ -4906,7 +4920,7 @@ CLI `learning: "notes"` settings read publicly as `true`; that compatibility rea
 An agent's learning is kept by the server as versioned rows in its store, SQLite or Postgres alike. It reads as a
 folder, and the routes name its files by path:
 
-- `corrections.md`, its owner's standing corrections, one `- ` line each, at most 2048 bytes;
+- `corrections.md`, its owner's standing corrections, one `- ` line each, at most 8192 bytes;
 - one folder per learned workflow, `workflows/<name>/`, with its `workflow.json` and its `README.md` (front matter with
   `name` and `description`, and `status: pending` while it waits for its owner's OK).
 
@@ -4971,10 +4985,12 @@ agent's learning cannot be read, the run starts with nothing learned (`seed_fail
 When a run that learns answers or fails, its end step (`src/runner/reflect-hook.ts`) keeps two things, one save a
 round on the agent's learning, whatever its harness:
 
-- Its owner's words. A grade's words, or a message they sent after the job's first, become one line of
+- Its owner's words. A grade's words, or a message they sent after the job's first (its `said` when sent), become one line of
   `corrections.md`, with no model turn: `- ` and the words, whitespace folded. A line that holds one of the server's
-  secrets, text shaped like a secret or a hidden character, or that would take the file past 2048 bytes, is refused
-  whole, nothing of it written, and the run's learning says why (`problems`).
+  secrets, text shaped like a secret or a hidden character, or that is past 8192 bytes alone, is refused whole,
+  nothing of it written, and the run's learning says why (`problems`). A line that would take the file past 8192
+  bytes drops the file's oldest lines until it fits: the newest correction wins, and the run's learning says how many
+  lines went (`dropped_lines`).
 - Its job, when a compile is due: once the agent has its `learning.compile_after` completed runs (20 by default) and no
   learned workflow, or once per hold of one its promotion held, the server asks the same session one more turn, under
   the fixed request id `learn-reflect-<run id>` and the origin `reflect`, so a server that restarts mid-turn asks again
@@ -5103,7 +5119,7 @@ with the token, an archived agent's too:
 - `GET .../learning/corrections`: `corrections.md` at the newest save as `{text, etag, cap_bytes}` (empty text when there is
   none). `PUT .../learning/corrections` with `{text}` replaces it whole under `If-Match: <etag>`: a stale ETag is 412,
   none (or `If-Match: *`) 428 `precondition_required`. A text that holds one of the server's secrets, a secret's shape or
-  a hidden character, or passes 2048 bytes, is 422 with the problems, and nothing is written. A text read cut of a
+  a hidden character, or passes 8192 bytes, is 422 with the problems, and nothing is written. A text read cut of a
   secret and sent back keeps the cut: a person's write never puts a secret back. One save of the agent's learning,
   `edited by a person: corrections.md`, which the log shows as `by: {user: true}`.
 - `GET .../learning/files/{file}`: `corrections.md` or a workflow's file at the newest save, with its `ETag`, its text's

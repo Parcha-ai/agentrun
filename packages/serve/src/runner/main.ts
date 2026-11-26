@@ -66,6 +66,7 @@ import { keepPresence, type Presence } from "./presence.js";
 import { diskFreeGate } from "./disk-free.js";
 import { checkLines, checkRunnerEnv, type CheckRow } from "./runner-check.js";
 import { metricLine, startRunnerGauge } from "./runner-metrics.js";
+import { reseededLaunchOf, roundWaitMsOf, runnerShown } from "./learning-reseed.js";
 
 export { RUNNER_RENEW_EVERY_MS } from "./runner.js";
 
@@ -231,7 +232,7 @@ export function runnerLoop(store: Store, dataDir: string, env: NodeJS.ProcessEnv
   };
   // `isolation`: each run a process of its own (run-child-host.ts), as the runner subcommand runs them; none, in this one
   // (a test's runner).
-  const createLoop = isolation ? childLoops({ deps, isolation, log: deps.log }) : createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: resolveRunnerLoop(deps) });
+  const createLoop = isolation ? childLoops({ deps, isolation, log: deps.log }) : createDispatchLoop({ launchOf: reseededLaunchOf({ store, data: deps.data, shown: runnerShown(deps), log: deps.log, waitMs: roundWaitMsOf(deps.env) }), resolve: resolveRunnerLoop(deps) });
   return { createLoop, computers: computers.computerDeps, env: runs };
 }
 

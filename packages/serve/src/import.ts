@@ -1450,55 +1450,61 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     // The keys and tokens cut out of what it keeps, each once (its id, transcript, subagents, prompt, title and answer):
     // the run's leak count, a number alone (GET /v2/wrapped's `secrets`).
     const tallied = cut.tally();
-    // Its id as the plan keeps it (a key in it is one secretlint finds in what was read, the id among it); one
-    // holding a key counts among the keys removed.
-    const keptAs = text(session.id) === session.id ? session.id : redactedId(session.id);
-    session.id = keptAs;
-    const subagents = await readChildren(plan, session, searched, seen(listed.source), budget, cached(listed.source)).catch((error: unknown) => {
-      if (!(error instanceof RunTooLarge)) throw error;
-      report.skipped.push(tooLarge(listed));
-    });
-    if (!subagents) return void tallied();
-    for (const child of subagents) settled(child, mirrored);
-    const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf((await sizeOf(child)) ?? { bytes: -1, mtimeMs: -1 })));
-    if (moved.some(Boolean)) add(await keysInSessions(subagents));
-    // The transcript as the store's own write batches, each string cut; its subagents' requests marked after its turns,
-    // so its timeline's usage row counts what its metrics do, one number for the run.
-    const { batches, entries } = transcriptOf(session, json, subagents);
-    const metrics: RunMetrics & { activeMs: number; effort?: string; costUsdEst?: number; costBasis?: string; secrets?: number } = { ...withChildren(runMetricsOf(entries), subagents.map((child) => runMetricsOf(entriesOf(child)))), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
-    // Its cost with its subagents' where the source writes theirs apart (withSubagentCosts): unknown when one is.
-    const costUsd = withSubagentCosts(session.source, session.costUsd, subagents.map((child) => child.costUsd));
-    // A session its source did not price: the catalog's estimate, beside its cost (unknown), never written as it.
-    const estimate = costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
-    if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
-    // Its cache, for GET /v2/wrapped: numbers alone, from every file of it read (copies too, as cacheHome joins them).
-    if (cached(session.source)) Object.assign(metrics, { cache: await runCacheOf(searched, subagents, await catalog()) });
-    const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
-    // Cut, then put on one line and clipped: a key the clip cut short, or a passphrase whose spaces were changed, would
-    // match no cut.
-    const title = clip(text(runTitleOf(session, text)).replace(/\s+/g, " ").trim(), 120);
-    const firstPrompt = text(session.firstPrompt ?? "");
-    const summary = (answer ?? session.titleText) ? text(answer ?? session.titleText!) : undefined;
-    metrics.secrets = tallied();
-    await store.importRun({
-      id: randomUUID(),
-      agentId: project.agentId,
-      revisionId: revisions.get(session.source)!,
-      importedFrom: { source: session.source, session: session.id, file: read },
-      launch: { body: launchBody({ input: { content: firstPrompt }, title, place: { mode: "runner" } }) },
-      // An imported session is ended as it ended: a plain completion reads as 'ended', a stop or a failure as its own.
-      state: session.state === "completed" ? "ended" : session.state,
-      ...(costUsd !== undefined ? { costUsd } : {}),
-      ...(summary !== undefined ? { summary } : {}),
-      metrics,
-      startedAt: Date.parse(session.startedAt ?? epoch0),
-      endedAt: Date.parse(session.endedAt ?? session.startedAt ?? epoch0),
-      transcript: batches,
-    });
-    line.runs += 1;
-    // Saved: a request another run leaves to it (`mirrors`) is its from now on.
-    saved.add(`${listed.source}:${listed.id}`);
-    return undefined;
+    // Stopped however the run ends (written, left out, or thrown out of): a tally left open would go on counting every
+    // later run's keys for the rest of the import.
+    try {
+      // Its id as the plan keeps it (a key in it is one secretlint finds in what was read, the id among it); one
+      // holding a key counts among the keys removed.
+      const keptAs = text(session.id) === session.id ? session.id : redactedId(session.id);
+      session.id = keptAs;
+      const subagents = await readChildren(plan, session, searched, seen(listed.source), budget, cached(listed.source)).catch((error: unknown) => {
+        if (!(error instanceof RunTooLarge)) throw error;
+        report.skipped.push(tooLarge(listed));
+      });
+      if (!subagents) return;
+      for (const child of subagents) settled(child, mirrored);
+      const moved = await Promise.all(subagents.map(async (child) => scannedAs.get(locatorKey(locatorOf(child))) !== stampOf((await sizeOf(child)) ?? { bytes: -1, mtimeMs: -1 })));
+      if (moved.some(Boolean)) add(await keysInSessions(subagents));
+      // The transcript as the store's own write batches, each string cut; its subagents' requests marked after its turns,
+      // so its timeline's usage row counts what its metrics do, one number for the run.
+      const { batches, entries } = transcriptOf(session, json, subagents);
+      const metrics: RunMetrics & { activeMs: number; effort?: string; costUsdEst?: number; costBasis?: string; secrets?: number } = { ...withChildren(runMetricsOf(entries), subagents.map((child) => runMetricsOf(entriesOf(child)))), activeMs: session.activeMs, ...(session.effort ? { effort: session.effort } : {}) };
+      // Its cost with its subagents' where the source writes theirs apart (withSubagentCosts): unknown when one is.
+      const costUsd = withSubagentCosts(session.source, session.costUsd, subagents.map((child) => child.costUsd));
+      // A session its source did not price: the catalog's estimate, beside its cost (unknown), never written as it.
+      const estimate = costUsd === undefined ? await estimateOf([...entries, ...subagents.flatMap(entriesOf)], catalog) : undefined;
+      if (estimate !== undefined) Object.assign(metrics, { costUsdEst: estimate, costBasis: "catalog" });
+      // Its cache, for GET /v2/wrapped: numbers alone, from every file of it read (copies too, as cacheHome joins them).
+      if (cached(session.source)) Object.assign(metrics, { cache: await runCacheOf(searched, subagents, await catalog()) });
+      const answer = session.turns.findLast((t) => t.role === "assistant" && t.text)?.text;
+      // Cut, then put on one line and clipped: a key the clip cut short, or a passphrase whose spaces were changed, would
+      // match no cut.
+      const title = clip(text(runTitleOf(session, text)).replace(/\s+/g, " ").trim(), 120);
+      const firstPrompt = text(session.firstPrompt ?? "");
+      const summary = (answer ?? session.titleText) ? text(answer ?? session.titleText!) : undefined;
+      metrics.secrets = tallied();
+      await store.importRun({
+        id: randomUUID(),
+        agentId: project.agentId,
+        revisionId: revisions.get(session.source)!,
+        importedFrom: { source: session.source, session: session.id, file: read },
+        launch: { body: launchBody({ input: { content: firstPrompt }, title, place: { mode: "runner" } }) },
+        // An imported session is ended as it ended: a plain completion reads as 'ended', a stop or a failure as its own.
+        state: session.state === "completed" ? "ended" : session.state,
+        ...(costUsd !== undefined ? { costUsd } : {}),
+        ...(summary !== undefined ? { summary } : {}),
+        metrics,
+        startedAt: Date.parse(session.startedAt ?? epoch0),
+        endedAt: Date.parse(session.endedAt ?? session.startedAt ?? epoch0),
+        transcript: batches,
+      });
+      line.runs += 1;
+      // Saved: a request another run leaves to it (`mirrors`) is its from now on.
+      saved.add(`${listed.source}:${listed.id}`);
+      return undefined;
+    } finally {
+      tallied();
+    }
   };
   const runs: { place: Place; files: Session[] }[] = [];
   for (const project of plan.projects) {

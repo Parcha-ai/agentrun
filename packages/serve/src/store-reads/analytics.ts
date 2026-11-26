@@ -222,11 +222,13 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     for (const [cause, usd] of Object.entries(kept.extraCost ?? {})) cache.extraCost[cause] = Math.round(((cache.extraCost[cause] ?? 0) + num(usd)) * 1e6) / 1e6;
   }
 
-  // The keys cut over the runs in scope that keep a count, ended (an import writes its run ended).
+  // The keys the import cut over the imported runs in scope that keep a count, ended (an import writes its run ended).
+  // A live run is none of them whatever its metrics hold, and a count is a whole number of zero or more.
   const secrets: StoreAnalytics["secrets"] = { runs: 0, holding: 0, removed: 0 };
   for (const f of notPending) {
+    if (f.source === "live") continue;
     const kept = f.metered ? f.metrics?.secrets : undefined;
-    if (typeof kept !== "number" || !Number.isFinite(kept)) continue;
+    if (typeof kept !== "number" || !Number.isSafeInteger(kept) || kept < 0) continue;
     secrets.runs += 1;
     if (kept > 0) secrets.holding += 1;
     secrets.removed += kept;
