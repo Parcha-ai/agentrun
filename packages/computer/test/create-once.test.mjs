@@ -211,6 +211,8 @@ test("orgo: two provider instances whose creates of one request start together a
 const CLOUD_BROWSERS = {
 	browserbase: {
 		post: "/v1/sessions",
+		/** The release calls the vendor was asked for one session: POST /v1/sessions/{id}. */
+		releases: (fake, id) => fake.only("POST", `/v1/sessions/${id}`).length,
 		/** A vendor whose sessions' CDP URL is on another host, one no driver is handed. */
 		unusable: () => fakeBrowserbase({ connectUrl: () => "wss://elsewhere.test/cdp" }),
 		/** Every session the fake made, in the order it made them. */
@@ -223,6 +225,8 @@ const CLOUD_BROWSERS = {
 	},
 	kernel: {
 		post: "/browsers",
+		/** The release calls the vendor was asked for one browser: DELETE /browsers/{id}. */
+		releases: (fake, id) => fake.only("DELETE", `/browsers/${id}`).length,
 		unusable: () => fakeKernel({ cdpUrl: () => "wss://elsewhere.test/cdp" }),
 		ids: (fake) => [...fake.browsers.keys()],
 		live: (fake, id) => fake.browsers.get(id).deletedAt === undefined,
@@ -844,6 +848,7 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		assert.equal(cloud.live(fake, newer), true, "the browser A answered still runs");
 		assert.equal(cloud.live(fake, older), false, "the browser B's lost create made, answered by nobody, is released");
 		assert.match(b.error.message, /was released, since every newer .* still runs/);
+		assert.ok(cloud.releases(fake, older) > 0, "B's recovery asked the vendor to release its browser");
 		okOf(await one.release(kept, "delete"), "release");
 	});
 
@@ -857,6 +862,7 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		assert.equal(cloud.live(fake, newer), true, "A's own browser still runs (its failure says so)");
 		assert.equal(cloud.live(fake, older), false, "the browser B's lost create made, answered by nobody, is released");
 		assert.match(b.error.message, /was released, since every newer .* still runs/);
+		assert.ok(cloud.releases(fake, older) > 0, "B's recovery asked the vendor to release its browser");
 	});
 
 	test(`${id}: a lost create's browser left for a newer one whose create's converge is still releasing its own at the first read again is kept, and that create answers it`, async () => {
@@ -926,6 +932,7 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		assert.equal(cloud.live(fake, newer), false, "A's own browser is released");
 		assert.equal(cloud.live(fake, older), true, "B's browser is left: an ended newer one reads as a converge that answered it");
 		assert.match(b.error.message, /left running .*runs to its lifetime/);
+		assert.equal(cloud.releases(fake, older), 0, "no release of B's browser was asked");
 	});
 
 	test(`${id}: a lost create's browser left for a newer one whose create released its own and could not read the older runs to its lifetime, in words that say so`, async () => {
@@ -944,6 +951,7 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		assert.equal(cloud.live(fake, newer), false, "A's own browser is released");
 		assert.equal(cloud.live(fake, older), true, "B's browser is left: an ended newer one reads as a converge that answered it");
 		assert.match(b.error.message, /left running .*runs to its lifetime/);
+		assert.equal(cloud.releases(fake, older), 0, "no release of B's browser was asked");
 	});
 
 	test(`${id}: two lost creates of one request: the newer's recovery releases its own, and the older's browser runs to its lifetime, in words that say so`, async () => {
@@ -979,6 +987,7 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		assert.match(c.error.message, /was released/);
 		assert.equal(cloud.live(fake, older), true, "B's browser is left: an ended newer one reads as a converge that answered it");
 		assert.match(b.error.message, /left running .*runs to its lifetime/);
+		assert.equal(cloud.releases(fake, older), 0, "no release of B's browser was asked");
 	});
 }
 

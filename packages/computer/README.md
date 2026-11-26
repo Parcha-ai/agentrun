@@ -2665,9 +2665,9 @@ session that moves on while a list runs is found in a later answer, never missed
 list. A newer browser that ended for another reason reads the same as one a converge released: its create was aborted
 while it listed the request, or released its own and then failed (its release reported a failure, or its read of the
 older failed), or its own reply was lost too and its recovery released it. Nothing on the vendor tells those apart, so
-there the lost create's browser runs to its lifetime (Browserbase's `timeout`, Kernel's idle timeout); the create's
-failure says so, and its labels let a sweep find it. Where the lost create's browser is the request's only one it is
-released. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own: `check()` refuses
+there the lost create's browser runs to the vendor's lifetime: on Browserbase its `timeout`, up to the run's lifetime;
+on Kernel its idle timeout. The create's failure says so, and its labels let a sweep find it. This bound is not covered,
+and is tracked separately. Where the lost create's browser is the request's only one it is released. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own: `check()` refuses
 them in a spec, and no list or attach shows them.
 
 Two gaps are not covered, and are tracked separately. A lost create whose browser is the request's only one releases
