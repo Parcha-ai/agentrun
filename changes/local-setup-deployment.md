@@ -21,3 +21,5 @@ The selected Codex metadata directory may refresh its timestamps only while its 
 entry inventory remain unchanged; selected child files and account policy retain their independent checks.
 Codex 0.171.0 and 0.172.0 exports recognize the verified `shell_command` and `unified_exec` model-catalogue labels as
 the shell and interactive process capability. Other model-tool differences and unsupported integrations remain blockers.
+One-off CLI deployment captures have a two-minute time budget for larger skill collections. Connector captures retain
+their thirty-second default; file, byte and security limits apply unchanged to both paths.

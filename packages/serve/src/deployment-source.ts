@@ -62,7 +62,7 @@ export async function deploymentSource(options: DeploymentSourceOptions): Promis
   const snapshot = await exportSourceSnapshot({ target, home: sourceHome, environment,
     authorizedRoots: [...new Set(roots.map(root => root.path))], expectedRoots: [...new Map(roots.map(root => [root.path, root])).values()],
     ...(roots[2] ? { [facts.homeOption]: roots[2].path } : {}),
-    secretValues: runnerSecrets(environment, options.secretValues), signal: options.signal });
+    secretValues: runnerSecrets(environment, options.secretValues), signal: options.signal, limits: { timeoutMs: 120_000 } });
   // A deployment grant has setup authority only, even when the local discovery knows how to launch its source.
   return { target: { ...target, model: snapshot.configuration.model, skills: snapshot.skills.map(skill => skill.name),
     mcp_servers: snapshot.configuration.tools.map(tool => tool.name), capabilities: { ...target.capabilities, launch: false, approval: "unavailable" } }, snapshot };
