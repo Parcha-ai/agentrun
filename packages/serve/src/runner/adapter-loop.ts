@@ -1091,6 +1091,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let specNow: AdapterRunSpec | undefined;
   /** Whether this claim's tool host was let go (its beforeRelease run), once. */
   let hostReleased = false;
+  /** While the tool hosts' release runs: sets its cut again by its bound and LoopDeps.releaseBy as they read now (a
+   *  shutdown that comes while it runs, its close's window then known). */
+  let releaseRearm: (() => void) | undefined;
   /** A tool host's beforeRelease, once per claim: before a park's seal and before the end's commit (the end is the
    *  claim's release), so what it writes (a browser release's charge, its paid booking on run.ledger.paid) lands in its
    *  own commits under the live claim, just before. A shutdown seals the journal first, while the runner still holds the
@@ -1101,7 +1104,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  never silent. What the hooks booked before the cut stands; a hook still running then writes nothing more on a
    *  shutdown (the seal stands again). Before the cut is written each host's releaseCut books what it knows of the time
    *  it could not let go (a browser session's, through now), within RELEASE_MARGIN_MS. A runner's close bounds the
-   *  release by its own window too (LoopDeps.releaseBy), whichever ends first. */
+   *  release by its own window too (LoopDeps.releaseBy), whichever ends first, and a release already under way when the
+   *  shutdown comes (one a run began in the close's drain) takes both from then: its cut is set again by the window, and
+   *  its commits, the cut's charge and record among them, are taken through the seal the shutdown makes. */
   const releaseHost = async (on: Harness | undefined): Promise<void> => {
     endWait();
     if (hostReleased || !on) return;
@@ -1110,7 +1115,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       const hooks = specNow?.lifecycle?.beforeRelease ?? [];
       if (hooks.length === 0) return;
       const began = Date.now();
-      const boundMs = Math.max(0, Math.min(deps.releaseBoundMs ?? releaseBoundMs(), (deps.releaseBy?.() ?? Infinity) - began));
+      const boundMs = (): number => Math.max(0, Math.min(deps.releaseBoundMs ?? releaseBoundMs(), (deps.releaseBy?.() ?? Infinity) - began));
       let finished = 0;
       let cut = false;
       const running = (async () => {
@@ -1121,13 +1126,21 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         }
       })();
       let timer: NodeJS.Timeout | undefined;
-      const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), boundMs)));
+      const late = new Promise<"late">((resolve) => {
+        releaseRearm = () => {
+          clearTimeout(timer);
+          timer = setTimeout(() => resolve("late"), Math.max(0, began + boundMs() - Date.now()));
+        };
+        releaseRearm();
+      });
       const ended = await Promise.race([running.then(() => "done" as const), late]);
       clearTimeout(timer);
+      releaseRearm = undefined;
       if (ended === "done") return;
       cut = true;
-      const data = { bound_ms: boundMs, after_ms: Date.now() - began, hooks: hooks.length, finished };
-      console.warn(`[runner] the run's tool hosts did not let it go within ${boundMs} ms (${finished} of ${hooks.length} finished): the loop goes on without them`);
+      const bound = boundMs();
+      const data = { bound_ms: bound, after_ms: Date.now() - began, hooks: hooks.length, finished };
+      console.warn(`[runner] the run's tool hosts did not let it go within ${bound} ms (${finished} of ${hooks.length} finished): the loop goes on without them`);
       const books = specNow?.lifecycle?.releaseCut ?? [];
       if (books.length > 0) {
         let bookTimer: NodeJS.Timeout | undefined;
@@ -1138,7 +1151,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: KINDS.releaseCut, data }), BACKGROUND_CONTEXT).catch((error: unknown) => console.warn(`[runner] the release's cut could not be written: ${(error as Error)?.message ?? String(error)}`));
     };
     const journal = gate;
-    await (journal && shutDown() ? journal.through(release) : release());
+    await (journal ? journal.through(release, shutDown) : release());
   };
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: AdapterRunSpec["release"];
@@ -4611,6 +4624,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }
       stopReason ??= reason;
       if (reason.kind !== "command") gate?.seal(new Interrupted(reason.kind));
+      // A release under way takes the close's window as its cut from now (releaseHost).
+      if (reason.kind === "shutdown") releaseRearm?.();
       stopped();
       stopAbort.abort(new Interrupted(reason.kind));
       wakeInbox();

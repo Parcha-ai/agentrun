@@ -7,7 +7,7 @@
 // image's start) runs each run in a process of its own. image-custody.sh shows the same as the image's users.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -240,4 +240,40 @@ test("the server started with its runner beside it (serveWithRunner) runs each r
   const said = JSON.parse((await answerOf(api, runId)) ?? "{}");
   assert.equal(typeof said.pid, "number", JSON.stringify(said));
   assert.notEqual(said.pid, process.pid, "the run ran in the server's own process");
+});
+
+test("a person's stop of a run in a process of its own, its browser's release never answering, books the cut's charge and writes the cut before the runner ends the process", { timeout: 180_000 }, async (t) => {
+  const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+  const { journalRecords } = await import("../dist/runner/journal-reader.js");
+  const dir = scratchDir(t, "child-stop-cut-");
+  // The vendor is asked to release the session and never answers until the test lets it go (faux-browser.mjs).
+  const hold = join(dir, "let-go");
+  t.after(() => existsSync(dir) && writeFileSync(hold, ""));
+  withEnv(t, { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project", FAUX_BROWSER_RELEASE_HOLD: hold }, ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAUX_BROWSER_RELEASE_HOLD", "FAUX_BROWSER_PROVIDER"]);
+  const gate = join(dir, "gate");
+  const lines = [];
+  const { api, store } = await serve(t, { faux: new URL("./fixtures/faux-browse-gated.mjs", import.meta.url).pathname, fauxBrowser: new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname, childRuns: { log: (line) => void lines.push(line) } });
+  const records = async (runId) => (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries;
+  const charges = async (runId) => (await records(runId)).filter((entry) => entry.kind === "agentrun.browser_charged").map((entry) => entry.data);
+  // The run browses once and then waits, its session open, on a gate that never opens: only the person's stop ends it.
+  const runId = await started(api, "browse-stop", { tools: ["browser"] }, { input: { content: `Browse the example page 1 times, then answer once ${gate} exists.` } });
+  for (let waited = 0; (await charges(runId)).length === 0; waited += 100) {
+    assert.ok(waited < 60_000, `the snapshot's call was charged; ${lines.join("\n")}`);
+    await sleep(100);
+  }
+  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+  // The stop's end lands and the runner lets the run go once the run's process has ended, by itself or killed.
+  for (let waited = 0; ; waited += 200) {
+    const row = await store.runs.get(runId);
+    if (row.runner === null && row.state !== "running" && row.state !== "queued") break;
+    assert.ok(waited < 120_000, `the run's stop ended it: ${JSON.stringify({ state: row.state, runner: row.runner })}`);
+    await sleep(200);
+  }
+  assert.ok(existsSync(`${hold}.asked`), "the vendor was asked to release the session");
+  const asked = statSync(`${hold}.asked`).mtimeMs;
+  const entries = await records(runId);
+  const cuts = entries.filter((entry) => entry.kind === "agentrun.release.cut").map((entry) => entry.data);
+  assert.equal(cuts.length, 1, `the run says its release was cut, before its process was ended: ${JSON.stringify(cuts)}; ${lines.join("\n")}`);
+  const cut = (await charges(runId)).filter((charge) => !charge.final && Date.parse(charge.at) >= asked);
+  assert.equal(cut.length, 1, `the cut charged the session's time through the cut: ${JSON.stringify({ charges: await charges(runId), asked: new Date(asked).toISOString() })}`);
 });

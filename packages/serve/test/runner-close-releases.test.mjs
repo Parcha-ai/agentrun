@@ -379,7 +379,7 @@ async function cliRun(t, prefix, { runnerOptions = {}, hooks = (registered) => r
   const vendor = fauxDesktops(faux);
   const computerDeps = { kinds: faux.kinds, keyTable: faux.keyTable, providers: { "faux-desktop": () => vendor }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open", cpus: 2, memoryMb: 4096 }), check: { readBackOf } };
   // The harness table loads a test's module only under a test runner (harness-table.ts): the flag is handed the runner.
-  const env = { ...PRICES, ANTHROPIC_API_KEY: "not-a-secret-anthropic", ANTHROPIC_BASE_URL: gw.url, AGENTRUN_HARNESS_TABLE: fauxTable(FAUX_HARNESS), NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1" };
+  const env = { ...PRICES, ANTHROPIC_API_KEY: "fake-test-key", ANTHROPIC_BASE_URL: gw.url, AGENTRUN_HARNESS_TABLE: fauxTable(FAUX_HARNESS), NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1" };
   const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim, computerDeps };
   const specOf = async (claim, run, given) => {
     const spec = await cliRunSpecFromLaunch(given, run, deps, claim);
@@ -469,6 +469,58 @@ async function bystander(t, dir, name) {
   });
   return { runner, claims };
 }
+
+/** A model that calls the browser's snapshot and then answers only once `answering` resolves: its run ends then, its
+ *  session's release asked at its end. */
+const answeringOrigin = (answering) => (requests) => {
+  const scripted = scriptedOrigin([{ call: "snapshot" }, { say: "Done." }], requests);
+  return async (url, init = {}) => {
+    const step = (JSON.parse(String(init.body ?? "{}")).messages ?? []).filter((message) => message.role === "assistant").length;
+    if (step === 0) return scripted(url, init);
+    requests.push(JSON.parse(String(init.body ?? "{}")));
+    await answering;
+    return scripted(url, init);
+  };
+};
+
+test("pi: a run that ends in the close's drain, its browser's release never answering, has the cut's charge and record land when the drain's end stops it mid-release: the cut is set again by the close's window, and the shutdown's seal takes the release's commits", { timeout: 60_000 }, async (t) => {
+  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
+  const { runnerStopBy } = await import("../dist/runner/runner.js");
+  const said = warnings(t);
+  // A 4 s lease less its 1 s margin is a 3 s stop, after a 4 s drain: the close's window ends 7.5 s from its start, its
+  // release cut at 6.5 s (CLEANUP_MS and its margin). The run ends 2.5 s into the drain, so a release bound from its own
+  // start would be cut at 9 s, past the window; the drain's end at 4 s stops the run mid-release and seals its journal.
+  const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS };
+  const releaseBy = CLEANUP_MS + RELEASE_MARGIN_MS;
+  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS), releaseBy + window.stopMarginMs);
+  const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
+  t.after(() => writeFileSync(hold, ""));
+  let answer;
+  const answering = new Promise((resolve) => (answer = resolve));
+  const { server, runner, live } = await piRun(t, "runner-close-drain-release-", { runnerOptions: window, launch: { max_cost_usd: 1 }, env: { FAUX_BROWSER_RELEASE_HOLD: hold }, origin: answeringOrigin(answering) });
+
+  const began = Date.now();
+  const closing = runner.close();
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  answer();
+  await until(() => existsSync(`${hold}.asked`), "the run's end asked the vendor to release its session, in the drain");
+  const releaseFrom = statSync(`${hold}.asked`).mtimeMs - began;
+  assert.ok(releaseFrom < window.drainMs, `the release began in the drain: ${releaseFrom} ms`);
+  await closing;
+  const took = Date.now() - began;
+
+  assert.ok(took < releaseBy + window.stopMarginMs + 1_500, `the close ended inside its window (${releaseBy + window.stopMarginMs} ms): ${took} ms`);
+  const records = await recordsOf(server);
+  const cuts = cutsOf(records);
+  assert.equal(cuts.length, 1, `the run says its release was cut, once: ${JSON.stringify(cuts)}`);
+  assert.ok(cuts[0].bound_ms <= releaseBy - releaseFrom + 200, `cut where the close's window cuts the release, not a whole bound after its start: ${JSON.stringify({ cut: cuts[0], releaseFrom })}`);
+  const asked = statSync(`${hold}.asked`).mtimeMs;
+  const charges = chargesOf(records);
+  assert.equal(charges.filter((charge) => !charge.final && Date.parse(charge.at) >= asked).length, 1, `the cut charged the session's time through the cut: ${JSON.stringify({ charges, asked: new Date(asked).toISOString() })}`);
+  assert.deepEqual(charges.filter((charge) => charge.final), [], "no release was confirmed, so nothing billed final");
+  assert.equal(live().length, 1, "the vendor still holds the session");
+  assert.deepEqual(said.filter((line) => /could not be written|releaseCut failed|beforeRelease failed: (?!Harness is closed)/.test(line)), [], "nothing of the release was refused");
+});
 
 test("the close's window runs from its start: a drain, then a release that never ends, is cut where the providers' cleanup bound from the close's start ends, and the claim is renewed to the close's end, so no other runner claims the run before close() resolves", { timeout: 60_000 }, async (t) => {
   const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");

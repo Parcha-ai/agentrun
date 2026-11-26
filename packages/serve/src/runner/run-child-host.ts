@@ -109,8 +109,13 @@ export const RUN_SLOT_FIRST_ENV = "AGENTRUN_RUN_SLOT_FIRST";
 /** The helper's compiled range: slot s runs as uid and gid FIRST_RUN_ID + s. */
 export const FIRST_RUN_ID = 1001;
 export const RUN_SLOTS = 256;
-/** How long a run's process has to end once its loop was told to stop, before the runner ends it. */
+/** How long a run's process has to end once its loop was told to stop, before the runner ends it: its turn's stop and its
+ *  end. A person's stop also gives its tool hosts' release its whole bound and the cut's booking (commandGraceMs). */
 const STOP_GRACE_MS = 30_000;
+/** How long a person's stop gives the run's process before the runner ends it: the turn's stop and end (STOP_GRACE_MS),
+ *  and after it the tool hosts' release to its bound (`releaseBound`, LoopDeps.releaseBoundMs) and the cut's booking
+ *  (RELEASE_MARGIN_MS), so a release that never answers is cut, charged and written before the process is ended. */
+const commandGraceMs = (releaseBound: number): number => STOP_GRACE_MS + releaseBound + RELEASE_MARGIN_MS;
 /** How long a run's process has to exit once its loop ended, at the least: a lost create's recovery under way in it ends
  *  first (run-child.ts), so its exit is given the release's bound when that is longer (LoopDeps.releaseBoundMs). */
 const EXIT_GRACE_MS = 5_000;
@@ -1528,7 +1533,7 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
       // cut and the margin its booking takes, when that is later than its own.
       const releaseBy = reason.kind === "command" ? undefined : loopDeps.releaseBy?.();
       const told = channel.call("loop", "stop", releaseBy === undefined ? [reason] : [reason, releaseBy]).catch(() => undefined);
-      const grace = reason.kind === "command" ? STOP_GRACE_MS : Math.max(STOP_GRACE_MS / 3, releaseBy === undefined ? 0 : releaseBy - Date.now() + RELEASE_MARGIN_MS);
+      const grace = reason.kind === "command" ? commandGraceMs(loopDeps.releaseBoundMs ?? releaseBoundMs()) : Math.max(STOP_GRACE_MS / 3, releaseBy === undefined ? 0 : releaseBy - Date.now() + RELEASE_MARGIN_MS);
       let timer: NodeJS.Timeout | undefined;
       const late = await Promise.race([told.then(() => false), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(true), grace)))]);
       clearTimeout(timer);
