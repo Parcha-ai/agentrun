@@ -65,6 +65,7 @@ export type Agent = {
     provider_from?: "agent" | "server" | "default";
     default_provider?: string;
     resolved?: string;
+    ceiling?: string;
     permission: "allow" | "ask" | "deny";
     permission_from: "agent" | "server" | "default" | "unattended";
     default_permission: "allow" | "ask" | "deny";
@@ -181,7 +182,7 @@ export type DefinitionInput = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
   };
   computer?: {
     kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -819,7 +820,7 @@ export type Run = {
     mode: "runner";
   } | {
     mode: "sandbox";
-    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+    box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
   };
   computer?: {
     kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -1181,7 +1182,7 @@ export type Capabilities = {
   places: {
     modes: Array<"runner" | "sandbox">;
     boxes: Array<{
-      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+      id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
       available: boolean;
       state: "ready" | "unavailable";
       reason?: string;
@@ -1193,7 +1194,7 @@ export type Capabilities = {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
     } | null;
     default_reason?: string;
     allow: Array<string>;
@@ -1693,6 +1694,7 @@ export type GetAgentResponse = Agent & ({
     provider_from?: "agent" | "server" | "default";
     default_provider?: string;
     resolved?: string;
+    ceiling?: string;
     permission: "allow" | "ask" | "deny";
     permission_from: "agent" | "server" | "default" | "unattended";
     default_permission: "allow" | "ask" | "deny";
@@ -7671,6 +7673,27 @@ export type GetWrappedResponse = {
     runs: number;
   }>;
   unread_files: number;
+  cache: {
+    runs: number;
+    hit_rate: number | null;
+    breaks: {
+      model: number;
+      idle: number;
+      compaction: number;
+      edited: number;
+      sidechain: number;
+      unknown: number;
+    };
+    extra_cost_usd: {
+      model: number;
+      idle: number;
+      compaction: number;
+      edited: number;
+      sidechain: number;
+      unknown: number;
+    };
+    unpriced_breaks: number;
+  } | null;
 };
 
 /** Each operation as the runtime sends it, by operationId. */

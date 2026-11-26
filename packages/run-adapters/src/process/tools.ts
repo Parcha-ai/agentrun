@@ -257,11 +257,15 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
     };
     /** A tool that `nests`: asked at the gate as itself, then run with the session's tools as its nested calls, no effect
      *  of its own written. Its error result is its answer; a throw while the drive or the call is aborted (a nested call
-     *  parked, the session let go) halts the drive, as an effect's does, so the harness is never handed a result. */
+     *  parked, the session let go) halts the drive, as an effect's does, so the harness is never handed a result. Asked
+     *  as `replayed` when the log holds an effect of an earlier attempt's (a value it fixed, a call nested in it), as a
+     *  call whose own start is in the log is: that attempt was let go and may have spent. */
     const runNesting = async (args: unknown, callId: string, signal?: AbortSignal, nested?: true): Promise<ToolResult> => {
       const aborted = signal ? AbortSignal.any([signal, ctx.signal]) : ctx.signal;
       if (options.gate) {
-        const refused = await askGate(options.gate, { callId, tool: tool.name, args: (args ?? {}) as Record<string, unknown>, ...(nested ? { nested } : {}) }, aborted);
+        const under = [`nested:${callId}/`, `${toolKey(callId)}/`];
+        const replayed = [...ctx.state().effects.keys()].some((key) => under.some((prefix) => key.startsWith(prefix)));
+        const refused = await askGate(options.gate, { callId, tool: tool.name, args: (args ?? {}) as Record<string, unknown>, ...(replayed ? { replayed: true as const } : {}), ...(nested ? { nested } : {}) }, aborted);
         if (refused) return { text: refused.deny, isError: true, refused: true };
       }
       if (live) ctx.live({ type: 'tool_start', name: tool.name, args, callId });

@@ -49,6 +49,13 @@ export const REASK_LIMIT = 3;
 export const TOOLS_STREAM = "acp.tools";
 /** The model chosen for the agent's session (recipe.model, as the agent lists it), one record each time one is chosen. */
 export const MODEL_STREAM = "acp.model";
+/** Instructions a prompt carried ahead of its words (an agent with no system prompt), one record each time, written only
+ *  with a copy of the agent's history taken after it answered that prompt: `sessionId` the session, `text` the recipe's
+ *  part, `whole` when the session's own came too (its first prompt). A loaded session is given the recipe's again when
+ *  they differ from the last of its records (a recipe that gained or changed them since), and all of them when it was
+ *  opened to get them in a prompt (SESSION_STREAM `prompted`) and has no `whole` record: a crash before the copy
+ *  leaves a history without them. */
+export const INSTRUCTIONS_STREAM = "acp.instructions";
 
 /** How long a session waits for the agent to start and answer initialize, or open its session. */
 export const START_MS = 60_000;
@@ -148,6 +155,9 @@ interface Runtime {
   fresh: boolean;
   /** What the next prompt carries ahead of its own words (the instructions, the context note), once. */
   firstBlocks: string[];
+  /** The instructions among firstBlocks (INSTRUCTIONS_STREAM's record of them), written once the agent's history holding
+   *  the prompt that carries them is copied back. */
+  told?: { text?: string; whole?: true };
   calls: CallIds;
   /** The name our MCP server is given to the agent under at this start (mcpServerName). */
   server: string;
@@ -320,15 +330,17 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   const whyEnded = (agent: { stderrTail(): string; ended(): string | undefined }, error: unknown): string =>
     hushed ? `${agent.ended() ?? "its end is not known yet"}; what it printed is kept nowhere on this run` : lastWords(agent.stderrTail()) || lastWords(message(error)) || "it said nothing";
 
-  /** Mirror the agent's session store into `journal` (the caller flushes). A failure is said and never thrown: the next
-   *  point takes the mirror again, and a turn's outcome is never lost to it. */
-  const mirrorInto = (rt: Runtime, journal: NativeJournal) => {
+  /** Mirror the agent's session store into `journal` (the caller flushes); true once taken. A failure is said and never
+   *  thrown: the next point takes the mirror again, and a turn's outcome is never lost to it. */
+  const mirrorInto = (rt: Runtime, journal: NativeJournal): boolean => {
     // A HOME removed with its process holds nothing to take: read now, it would say the agent deleted its whole store.
-    if (rt.wiped) return;
+    if (rt.wiped) return false;
     try {
       rt.mirror.take(journal);
+      return true;
     } catch (error) {
       log("acp: the mirror of the agent's session store failed; the next point takes it again", { error: said(error) });
+      return false;
     }
   };
 
@@ -745,7 +757,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         recipe.declares.mcp === "http"
           ? { type: "http", name: rt.server, url: mcp.url, headers: [{ name: "Authorization", value: `Bearer ${key}` }] }
           : { name: rt.server, command: process.execPath, args: [STDIO_BRIDGE], env: [{ name: "AGENTRUN_MCP_URL", value: mcp.url }, { name: "AGENTRUN_MCP_KEY", value: key }] };
-      const instructions = options.instructions?.trim() ? options.instructions : undefined;
+      // The session's own, then the recipe's (how it runs the agent, which the agent cannot see).
+      const instructions = [options.instructions, recipe.instructions].filter((each): each is string => !!each?.trim()).join("\n\n") || undefined;
       const systemPrompt: SystemPrompt | undefined = instructions && caps.sessionCapabilities?.systemPrompt ? { mode: "append", content: [{ type: "text", text: instructions }] } : undefined;
       const last = journalRecords<{ sessionId?: unknown }>(ctx.state(), SESSION_STREAM).map((r) => r.data?.sessionId).filter((id): id is string => typeof id === "string").at(-1);
       /** What session/load or session/new answered: the models it lists, for one. */
@@ -764,13 +777,32 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
           rt.loading = false;
         }
       }
+      // session/load carries no instructions for an agent with no system prompt: they are in its history once a copy of
+      // it taken after the prompt that carried them says so (INSTRUCTIONS_STREAM). The session's own come again when
+      // that prompt was cut (a crash before the copy); the recipe's too, or when they came or changed since (an upgrade).
+      const recipeTold = recipe.instructions?.trim() ? recipe.instructions : undefined;
+      if (!rt.fresh && instructions && !systemPrompt) {
+        const prompted = journalRecords<{ sessionId?: unknown; prompted?: unknown }>(ctx.state(), SESSION_STREAM).some((r) => r.data?.sessionId === last && r.data?.prompted === true);
+        const given = journalRecords<{ sessionId?: unknown; text?: unknown; whole?: unknown }>(ctx.state(), INSTRUCTIONS_STREAM).map((r) => r.data).filter((d) => d?.sessionId === last);
+        if (prompted && !given.some((d) => d?.whole === true)) {
+          rt.firstBlocks.push(`Instructions for this session, from the host that runs you:\n\n${instructions}`);
+          rt.told = { text: recipeTold, whole: true };
+        } else if (recipeTold && given.map((d) => d?.text).at(-1) !== recipeTold) {
+          rt.firstBlocks.push(`Instructions for this session, from the host that runs you:\n\n${recipeTold}`);
+          rt.told = { text: recipeTold };
+        }
+      }
       if (rt.fresh) {
         const opened = await ask("session/new", () => live.connection.agent.request("session/new", { cwd: root, mcpServers: [server], ...(systemPrompt ? { systemPrompt } : {}) }));
         rt.sessionId = opened.sessionId;
-        journal.append(SESSION_STREAM, { sessionId: opened.sessionId });
+        // `prompted`: its instructions go in its first prompt, so a load checks they reached its history.
+        journal.append(SESSION_STREAM, { sessionId: opened.sessionId, ...(instructions && !systemPrompt ? { prompted: true } : {}) });
         mirrorInto(rt, journal);
         await journal.flush();
-        if (instructions && !systemPrompt) rt.firstBlocks.push(`Instructions for this session, from the host that runs you:\n\n${instructions}`);
+        if (instructions && !systemPrompt) {
+          rt.firstBlocks.push(`Instructions for this session, from the host that runs you:\n\n${instructions}`);
+          rt.told = { text: recipeTold, whole: true };
+        }
         const context = contextNote(ctx.state());
         if (context) rt.firstBlocks.push(context);
         opening = opened;
@@ -889,6 +921,10 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       }
       // The send's mark, in the log first: a crash between the two reads "marked, maybe sent", never sent twice.
       journal.append(PROMPT_STREAM, { submission, ...(covers.length ? { covers: [...covers] } : {}) });
+      // The instructions this prompt carries are recorded given only with a copy of the agent's history taken after it
+      // answered (below): a crash before that leaves a copy without them, and the next load gives them again.
+      const telling = agent.told;
+      agent.told = undefined;
       await journal.flush();
       const prompt: ContentBlock[] = [...agent.firstBlocks.splice(0), ...body].map((text) => ({ type: "text", text }));
       let ended!: () => void;
@@ -925,7 +961,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         ended();
       }
       if (ctx.signal.aborted) throw ctx.signal.reason;
-      mirrorInto(agent, journal);
+      if (mirrorInto(agent, journal) && telling && answer !== undefined) journal.append(INSTRUCTIONS_STREAM, { sessionId: agent.sessionId, ...telling });
       // Cancelled by the session's interrupt: no end is written, the turn stays open (its host settles it).
       if (interrupting) {
         await journal.flush();

@@ -23,7 +23,8 @@ export const failedRecord = (call: string, workflow: string, digest: string, cal
 /** The record of a learned_workflow call refused before the tool saw it (`refused`: it ran nothing), which the loop keeps
  *  where the tool never ran: the platform's call its gate refused (runner/adapter-loop.ts serveFirst), and an agent's its
  *  gate refused with no attempt of it let go since its last refusal (adapter-loop.ts learnedEntry). Either reads
- *  `failed` once anything was booked under its call id (runner/workflow-calls.ts workflowCallsOf). */
+ *  `failed` once anything was booked under its call id, or while an attempt of it its gate let go was closed by no
+ *  refusal (runner/workflow-calls.ts workflowCallsOf). */
 export const refusedRecord = (call: string, workflow: string, digest: string, caller: "platform" | "agent") => ({ ...failedRecord(call, workflow, digest, caller), refused: true as const });
 /** The mark an agent's learned_workflow call on a CLI gets in the run's journal when its gate lets it go, before it runs:
  *  `{ call }`, its call's id (adapter-loop.ts sessionGate). An attempt a crash cuts before its record is kept leaves

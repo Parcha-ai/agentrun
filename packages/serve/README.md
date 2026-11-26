@@ -333,7 +333,12 @@ and a line with the endpoint's origin and the time (`[otel] a trace export to ..
 dropped: Request timed out`), then at most one line a minute, said by the next failure once a minute has passed, that
 counts the failures since the last line (`[otel] 25 more trace exports to ... failed since ..., the last at ...`); never
 a line per span or per batch. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads, nothing is sent and
-nothing is said.
+nothing is said. The headers go to the endpoint, so it takes the rule of a URL a key goes to, over http or https: one
+with a user, a password, a query or a fragment, or one that is not a URL, is refused, and tracing is off for it. The
+server and its runs carry on, no OpenTelemetry code loads, nothing is sent, and the runner's start says why once, with
+the variable and the origin alone: `[otel] tracing is off: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT takes no user or
+password, since the key goes to it: https://collector.example:4318` (or `takes no query or fragment: ...`, or `is not a
+URL`). Put a credential in `OTEL_EXPORTER_OTLP_HEADERS` instead.
 
 [otel-agent-spans]: https://github.com/open-telemetry/semantic-conventions-genai/blob/d0e74ba6c48bcc4ded473b1828a8212f06b23753/docs/gen-ai/gen-ai-agent-spans.md#L213-L272
 
@@ -1023,10 +1028,18 @@ command (`shell.run`) is held to the agent's `bash` setting, a started process t
 `write`, and a file read, listed or looked up to `read`, after the kind's own setting for `computer_op`. A file op needs
 its tool among the agent's tools first, as the run's own file tools do: `files.write` needs `write`, and `files.read`,
 `files.list` and `files.stat` need `read`. An agent not given one is refused the op whatever its setting says, on every
-desktop, mounted or not, and is not offered it: `computer_op`'s op list and the script's `computer` declarations leave it
-out. Naming a desktop does not grant its file ops. The shell's ops (`shell.run`, `processes.start`) follow `bash`'s
-setting alone, not a grant. Input ops on a desktop with a terminal app can do what a shell does: to deny that, don't
-grant input ops on that desktop, or use an image without a terminal. A script's call of a computer tool answers the
+desktop, mounted or not. Naming a desktop does not grant its file ops. The shell's ops (`shell.run`, `processes.start`)
+follow `bash`'s setting alone, not a grant. `computer_op`'s op list and the script's `computer` declarations leave out
+an op held to a tool (the file ops to `read` and `write`, `shell.run` to `bash`, `processes.start` to
+`bash_background`) that the gate refuses whatever its arguments: its tool not given, set to deny, or set to ask on a
+server where no one can approve, or `bash`'s policy refusing it whatever its command (`processes.start` under the
+read-only policy). Apps and raw input are held to no tool, so they stay in the list. Leaving `read` out
+keeps no file from an agent that has the shell, paired machines included: on a desktop with exec on,
+`computer.shell.run` reads and writes any file the desktop's user can, held to `bash`'s setting alone, which allows by
+default. To keep files from such an agent, set `bash` to deny or turn the desktop's exec off. Input ops on a desktop
+with a terminal app or a GUI file manager, and `apps.open` with a URL or a path, can do what a shell or the file ops
+do, whatever `bash`'s, `read`'s or `write`'s setting: to deny that, don't grant input ops or apps on that desktop, or
+use an image with neither a terminal nor a file manager. A script's call of a computer tool answers the
 tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
 `computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as
 JSON. A run whose `codemode` is set to deny lists them the same way, so its computer stays in reach. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
@@ -1069,7 +1082,7 @@ seals it in its store as every saved key under `AGENTRUN_SEAL_KEY`, and register
 key each restart, the old one left on the workspace), `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
 `BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `GROUNDBOX_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
-`packages/computer/relays/cloudflare`), and `FLY_API_TOKEN` and `FLY_APP`; Docker takes none.
+`packages/computer/relays/cloudflare`), `FLY_API_TOKEN` and `FLY_APP`, and `RENDER_API_KEY` and `RENDER_WORKSPACE_ID`; Docker takes none.
 `GET /v2/computers/running` lists every run still going (queued, working, paused or waiting on its person) whose agent
 has a computer, newest first, each as `GET /v2/runs/{run_id}` answers it: its `computer` says the kind and provider,
 `starting`, `ready` or `taken_over` while its owner drives it, and a held run's hold. The runs list carries no
@@ -1854,7 +1867,11 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   CLI said. Each removal stands alone: one that fails is named in the answer and the rest still happen. It answers
   `{ "confirmed": true, "login": <the view, off> }`; `confirmed` false adds a `message` saying what may remain: the
   CLI didn't confirm its own sign-out, or its step failed, named (on macOS its Keychain item may remain), or a file it
-  could not remove, by path. The CLI's sign-out runs where the folder is already gone too, so a retry after an
+  could not remove, by path, or, on macOS, an older Keychain item a sign-in left under the account `unknown`, which
+  holds a refresh token and which the sign-out deletes too, could not be removed, with how to delete that item alone:
+  its exact service, `Claude Code-credentials-` and 8 hex of AgentRun's folder, to search in Keychain Access, and the
+  one `security delete-generic-password -a unknown -s "<that service>"` command. The words never name the bare
+  `Claude Code-credentials`, the person's own CLI's item. The CLI's sign-out runs where the folder is already gone too, so a retry after an
   unconfirmed sign-out confirms only where the CLI does. The next turn-on reads `signed_out` and the sign-in starts as
   before. `<data>/claude-login`
   is a folder AgentRun keeps itself: a turn-on where it is a link is refused, and a sign-out that finds a link there
@@ -2282,19 +2299,32 @@ off for a run, `web_search` answers `search is unavailable for the rest of this 
 sees the URL, its query string included, so a token in a URL's query goes to Firecrawl with it. A URL first passes the
 guard's own check, and one it refuses (a private, loopback, link-local or intranet address, a name that resolves to one,
 or a URL holding a user name or password) is refused as the guarded direct fetch refuses it, and never sent to Firecrawl,
-to Exa or to Parallel. To keep every URL on the server, pick `kernel` for `web_fetch`, or hold a Parallel key, where
-`auto` is the guarded direct fetch. A server's pick is the default only, an agent's own `tool_settings` (an imported
+to Exa or to Parallel. To keep every URL on the server, pick `kernel` for `web_fetch` (with a Parallel key, `auto`
+is Parallel's extract, which sends Parallel each URL). A server's pick is the default only, an agent's own `tool_settings` (an imported
 template's among them) over it, except for these. The server's `kernel` for `web_fetch`, and its `native` or `off` for
 `web_search`, are a ceiling: an agent's pick of `firecrawl-keyless`, `exa-keyless`, `auto` or `parallel` resolves as the
 server's setting does, so nothing goes to Firecrawl, to Exa or to Parallel, and capabilities' `why` says so ("the
-server's setting, kernel, is a ceiling over this agent's pick of auto"). Under `off`, an agent's `native` is off too;
+server's setting, kernel, is a ceiling over this agent's pick of auto"). An agent's own view (`GET /agents/{agent_id}`,
+its `tools`) keeps the agent's pick as `provider`, shows what runs as `resolved`, and names the server's setting that
+capped it as `ceiling`. Under `off`, an agent's `native` is off too;
 under `native`, it is the ceiling's own. To let agents use Parallel, set `parallel` server-wide; any server pick but
 these three (`auto`, `firecrawl-keyless`, `exa-keyless`, `parallel`) is only a default an agent's pick replaces. A
 server's `deny` is absolute: set `web_fetch` or `web_search` to `deny` to refuse every agent's calls, whatever it picks.
 A server setting applies at a run's next claim (its start, a follow-up, a resume or a reclaim): a claim keeps the plane
-it began with to its end, through any approval it waits on while it holds the run. Tool settings a claim cannot read
-fail closed: a capability kept on a keyless service or on Parallel runs nothing, its tool saying the settings could not
-be read.
+it began with to its end, through any approval it waits on while it holds the run. `deny` is read at each call, so it
+is the setting that stops a claim already running. Tool settings a claim cannot read fail closed: a capability kept on a
+keyless service or on Parallel runs nothing, its tool saying the settings could not be read.
+
+The ceiling covers `web_search` and `web_fetch`, not every way a run reaches the web:
+- `browser` sends each URL to its provider, and `bash` (`curl`) and MCP or catalog tools reach the web on their own; set
+  them to `deny` to stop them.
+- Jev, where it is on, sends a kernel fetch's page text, or a native pi search's query and result URLs, to TypeSafe;
+  `AGENTRUN_WEB_JEV_OFF=1` turns it off.
+- A workflow's typed questions on the `parallel` decision provider send the workflow's state to Parallel, which answers
+  from live web research, whatever `web_search` says. A server `deny` on `parallel` refuses it to learned workflows; a
+  workflow agent's own decision nodes run on it wherever the server holds `PARALLEL_API_KEY`.
+- A native job runs the user's own Claude Code or Codex CLI with that CLI's own configuration, which these settings do
+  not reach.
 
 A `web_fetch` through keyless Firecrawl takes at most about 95 s: up to 30 s for the guard's check of the URL, 30 s for
 Firecrawl, then, where Firecrawl gives no page, the guarded fetch's 30 s and 5 s to read the page.
@@ -3856,6 +3886,10 @@ serves these routes alone:
 - a run's usage lines (`GET /runs/{id}/usage`): what its `cost.usd` joins, by meter, cut of the host's secrets as the
   run's read is;
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
+- an ended run's share bundle (`GET /runs/{id}/export`, with its `?restore=`), the `agentrun.share/1` document the full
+  server answers, cut by the same scrubber: `409` before the run ends. A workflow run's bundle carries its graph, cut,
+  where `GET /runs/{id}/graph` stays refused. The share preview page (`/share/{run}`) is the console's, refused here:
+  `agentrun share RUN --out FILE` writes the bundle;
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
   the backend whose inline runs made it;
@@ -3994,6 +4028,53 @@ whole server, as before; any value other than these and `1` or `true` stops the 
 
 So on an API-only server a run is launched inline (`POST /runs` with its definition), on an agent a template's apply
 made, or on an agent made before the profile was turned on.
+
+### Share host
+
+`agentrun-serve --share-host` (or `AGENTRUN_SHARE_HOST=1`) is the server behind a public share link such as
+`https://agentrun.ai/r/<id>`. It answers under `/r/` alone, so a site in front of it routes one path to it:
+
+- `/r/<id>`: the share's page, the console's `share.html`, with its asset URLs under `/r/_assets/` and a CSP that loads
+  nothing from another origin;
+- `/r/<id>/bundle.json`: the bytes that were uploaded, exactly (`nosniff`, `X-Robots-Tag: noindex`);
+- `POST /r/v2/shares`: stores a run's `agentrun.share/1` bundle (`GET /v2/runs/{id}/export`'s body) and answers
+  `201 {id, url, sha256}`;
+- `GET /r/v2/shares`: the caller's own shares and its quota; `DELETE /r/v2/shares/<id>`: deletes one;
+- `GET /r/v2/health`: without a credential.
+
+Every other address is `404 not_found`, answered before the request is read further: the console, `/v2`, MCP and
+every run, agent, key, computer and trigger route. It starts no runner and has no owner, accounts or console session.
+Its API takes one of its tokens (`AGENTRUN_TOKENS`, `id:secret` entries) as a Bearer header: the token's id owns the
+shares it uploads.
+
+An upload is checked in this order, and refused with nothing stored at the first failure: the token; its quota (100
+shares a token, `403 forbidden` with `details.reason: share_quota`; shares never expire, and a delete makes room); the
+body, at most 8 MiB of canonical JSON (`413` over it); the bundle's closed fields and the export's caps, each file's size
+and digest, and the document's sha256 (`400`); then the scrubber in cut mode, with the values this host holds (its keys and
+tokens), over the whole body and over each of its strings alone. A value the scrubber finds is refused unless the bundle
+declares it restored: a `restored` record naming it exactly (its string's pointer, rule, start and end) and a kind the
+host's own scrub says may be restored (label, personal, jev; never a key format, a held value or a dump, whatever the
+record says). Each refusal is `422 input_invalid` with `details.reason` and counts by rule id, never a value:
+`scrub_found` (a value no restore declares), `restored_unmatched` (a restored record naming no value the host finds: a
+stale or edited bundle) or `scrub_failed` (the scrub failed or threw). The one record taken unchecked is a restore of
+Jev's rule (Scrubber beta 3): the host never runs Jev, so it can't find that value, and the answer counts such records
+in `restored_unchecked`; the value is still scrubbed by every other rule, and a hit there needs its own record.
+
+The bounds on what one upload asks of the host: the body is at most 8 MiB (`413` past it, from its `Content-Length`
+before a byte is read), the scrubber reads that body once whole, and then reads each distinct string alone, at most
+50,000 of them (`SHARE_STRINGS`; `413` with `details.reason: share_strings` past it, before any scrub), which together
+hold no more than the body. The host never repairs a bundle:
+what it serves is what was uploaded and scanned. Shares are kept in `DIR/shares/<id>/` (`bundle.json` and `meta.json`,
+`0600`). Only the token that made a share deletes it (`204`); its bytes go, and its page and bundle then answer `410`.
+
+A share's URL is on `AGENTRUN_PUBLIC_URL`, never a request's Host header. A share host on an address other than
+loopback refuses to start without it.
+
+Not yet checked: the share page drawn in a real browser. Its HTML, CSP and every asset it references were fetched from a
+real console build on a loopback share host; the page's own reads are covered by the console's unit tests.
+
+Run one replica, with `DIR` on a persistent volume. The quota and the share index are kept by the one process (a
+second replica would neither see the other's shares nor hold the quota), and a share lives only in `DIR`.
 
 ### Launch hook
 
@@ -4306,7 +4387,9 @@ A module exports `entries(builtins, kit)`, which returns new entries by id. [HAR
 writing one, and [examples/harness-module](../../examples/harness-module/README.md) is a whole one.
 
 An entry made without `kit` gives `label`, `steer`, `runMib`, `oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`,
-`refusal` and its `runner`, and may give `promises`; a run of it runs on its runner's `adapter(launch, extra)`. Every
+`refusal` and its `runner`, and may give `promises`; a run of it runs on its runner's `adapter(launch, extra)`, where
+`launch.redact` is the run's redactor (required: it holds every key the run's claim opens) and `extra` the harness's
+own options. Every
 harness is admitted by the `runMib` its entry declares. A module adds harnesses and never replaces one: the built-in
 harnesses' facts, offers, key rows, default models and tool names are the same with any module loaded. The start of the
 server, or of a separate runner, is refused, naming the module and the id, when a module:
@@ -5248,6 +5331,7 @@ is unpriced.
   seconds between the end's booking and its delete included), and one whose delete failed run on with no claim to hold
   them. Their time is on the usage read (`unheld_quantity`, and the
   interval's `booked_seconds` beside its life) but in no cap and no cost: check `computer_intervals` for such a computer.
+  On a provider that bills nothing (Docker) both are 0: its time costs nothing, held or not.
   A computer a later claim takes back is held again from then on.
 - A run whose process keeps no ledger here (a runner of its own with no run ledger) holds and books nothing, as if
   unpriced.

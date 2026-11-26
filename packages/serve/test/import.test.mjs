@@ -1159,7 +1159,8 @@ async function importedOne(t, write) {
  *  usage row. Returns the metrics (its counts plus activeMs and effort) and the transcript's answers. */
 async function metricsOf(store, runId) {
   const entries = await entriesOf(store, runId);
-  const { activeMs, effort, costUsdEst, costBasis, ...counted } = await storedMetrics(store, runId);
+  // `cache` is the import's analysis of the session files (import-cache.test.mjs), not a count of the transcript.
+  const { activeMs, effort, costUsdEst, costBasis, cache: _cache, ...counted } = await storedMetrics(store, runId);
   assert.deepEqual(counted, runMetricsOf(entries), "the metrics are what the run's own transcript says");
   assert.equal(timelineOf(entries, { settled: true }).findLast((r) => r.kind === "usage")?.usage.requests, counted.requests, "the timeline's usage row counts the same requests");
   return { metrics: { ...counted, activeMs, ...(effort ? { effort } : {}) }, answers: entries.filter((e) => e.kind === "pi.assistant").map((e) => e.model[0]), kinds: entries.map((e) => e.kind) };

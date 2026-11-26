@@ -43,9 +43,12 @@ test("runner harnesses: the shared runner of a table-run entry refuses to build 
 });
 
 test("runner harnesses: each builds its adapter from the launch", async () => {
-  // pi's redactor is its own option, as the run's spec gives it (adapter-run-spec.ts: run.redact, the runner's held one).
-  assert.equal((await resolveHarness("pi").adapter(launch(), { redact: heldRedactor(secretRedactor([])) })).id, "pi");
+  // pi's redactor is the launch's (HarnessLaunch.redact), as the run's spec gives it (adapter-run-spec.ts: run.redact, the
+  // runner's held one); one among the harness's own options is not read.
+  const held = heldRedactor(secretRedactor([]));
+  assert.equal((await resolveHarness("pi").adapter(launch({ redact: held }))).id, "pi");
   await assert.rejects(async () => resolveHarness("pi").adapter(launch()), /was given no redactor that holds keys/, "pi given no redactor builds no adapter");
+  await assert.rejects(async () => resolveHarness("pi").adapter(launch(), { redact: held }), /was given no redactor that holds keys/, "pi reads its redactor off the launch alone");
   process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = "1";
   try {
     // A stand-in CLI and a scripted SDK are a test's own options, passed on as given.
