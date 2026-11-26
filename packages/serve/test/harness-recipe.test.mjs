@@ -1944,7 +1944,7 @@ test("a run's process on its owner's sign-in, its run stopped while queued: a tr
     assert.notEqual(run.state, "running", JSON.stringify(run));
     // A known gap, not this case's: the reopen's claim sends the launch's own input to the vendor, and the run ends ended
     // with no outcome, not at the stop it had. Once that is fixed, these hold and the todo comes off.
-    await t.test("the run is back at the end it had, stopped by the person, and no turn reached the vendor", { todo: "a refused reopen of a run stopped while queued still works the launch's input" }, () => {
+    await t.test("a run stopped while queued ends stopped and the vendor hears nothing (fixed by the queued-stop reopen change)", { todo: "a refused reopen of a run stopped while queued still works the launch's input" }, () => {
       assert.equal(origin.messages().length, heard, "no turn of it reached the vendor");
       assert.deepEqual([run.state, run.outcome], ["stopped", "stopped"], JSON.stringify(run));
     });
