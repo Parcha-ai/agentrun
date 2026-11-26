@@ -388,6 +388,10 @@ test("GET and PUT /v2/settings/tools: the defaults, a PUT that replaces them, ke
   const capped = await fetchView();
   meets("/agents/{agent_id}", "get", capped);
   assert.deepEqual(capped.tools, [{ name: "web_fetch", blurb: "Read a public web page", ...allowed(), provider: "firecrawl-keyless", provider_from: "agent", default_provider: "kernel", resolved: "kernel", ceiling: "kernel" }], "the server's kernel caps the agent's Firecrawl: it runs kernel, and says why");
+  // The server denies web_fetch too: the deny is why nothing runs, so the view names no ceiling beside it.
+  assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "exa-keyless" }, web_fetch: { provider: "kernel", permission: "deny" } })).status, 200);
+  const denied = (await fetchView()).tools[0];
+  assert.deepEqual([denied.resolved, denied.ceiling, denied.provider], ["unavailable: denied", undefined, "firecrawl-keyless"], "denied: resolved says so, and no ceiling");
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "exa-keyless" } })).status, 200);
   for (const [tool_settings, field, reason] of [[{ web_search: { permission: "maybe" } }, "definition.tool_settings.web_search.permission", "not_an_option"], [{ web_fetch: { provider: "exa-keyless" } }, "definition.tool_settings.web_fetch.provider", "not_an_option"], [{ ask_person: { provider: "native" } }, "definition.tool_settings.ask_person.provider", "not_allowed"]]) {
     const refused = await api("POST", "/agents", agent("refused", { tools: ["web_search"], tool_settings }));

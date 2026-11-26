@@ -121,11 +121,11 @@ function callUsdOf(entries: readonly EntryLike[], callId: string, recordAt: numb
   return window ? callCostOf(entries, callId, window.from, window.to) : null;
 }
 
-/** Whether anything was booked under call `callId` (runner/metrics.ts callTurnsOf, as proof): a request named under it,
- *  or one of host work in its window while that window is its alone, never the harness's own side request there. */
+/** Whether anything was booked under call `callId` (runner/metrics.ts callTurnsOf): a request named under it, or one of
+ *  host work in its window while that window is its alone, never the harness's own side request there. */
 function bookedUnder(entries: readonly EntryLike[], callId: string, recordAt: number): boolean {
   const window = callWindowOf(entries, callId, recordAt);
-  return callTurnsOf(entries, callId, window?.from ?? -1, window?.to ?? -1, true).size > 0;
+  return callTurnsOf(entries, callId, window?.from ?? -1, window?.to ?? -1).size > 0;
 }
 
 /** The attempts of an agent's learned_workflow call `callId` its gate let go (each allow mark, LEARNED_ALLOWED) that no

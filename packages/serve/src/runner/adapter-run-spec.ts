@@ -58,7 +58,8 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, keyedNow, hostDecisionKeys, learnedDecisionKeys, type PlanHandBack, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { atRunEnd } from "../learning-work.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
 import { catalogSessionNames, claimMetering, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
@@ -94,7 +95,7 @@ import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
-import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
+import { type Checkout, checkoutWhereNoExec, prCheckoutForClaim } from "./pr-checkout.js";
 import type { AgenticBody } from "../store/agent-body.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
@@ -345,14 +346,14 @@ export async function graderRouteOf(
   claimed: NodeJS.ProcessEnv,
   cut: HeldRedact,
   log: (line: string) => void,
-  deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf">,
+  deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf"> & PlanHandBack,
   holds: readonly HeldRedact[] = [cut],
   claim?: Pick<Claim, "runId" | "turn" | "attempt">,
 ): Promise<ModelRoute | undefined> {
   if (agreeOnOf(body.learning)?.length) return undefined;
   const { tiers, refs } = routedSubagentTiers(body, deps.env ?? {});
   if (!tiers.includes("fast")) return undefined;
-  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, ["fast"], refs);
+  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env, handBack: deps.handBack, signal: deps.signal }, ["fast"], refs);
   for (const redact of new Set(holds)) holdClaimed(redact, savedKeys);
   // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
   const env = claimModelEnv(deps.env, [claimed, savedKeys], runKey, claim);
@@ -377,13 +378,13 @@ export async function subagentTierRoutes(
   runKey: ClaimModelKey | undefined,
   toolEnv: NodeJS.ProcessEnv,
   cut: HeldRedact,
-  deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf">,
+  deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf"> & PlanHandBack,
   claim?: Pick<Claim, "runId" | "turn" | "attempt">,
 ): Promise<{ readonly routes: Map<string, ModelRoute>; readonly why: Map<SubagentTier, string> }> {
   const routes = new Map<string, ModelRoute>();
   const why = new Map<SubagentTier, string>();
   const { tiers, refs } = routedSubagentTiers(body, deps.env ?? {});
-  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, tiers, refs);
+  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env, handBack: deps.handBack, signal: deps.signal }, tiers, refs);
   holdClaimed(cut, savedKeys);
   const tierEnv = claimModelEnv(deps.env, [toolEnv, savedKeys], runKey, claim);
   for (const tier of tiers) {
@@ -444,7 +445,7 @@ export type RunPermissions = {
   readonly refresh: () => Promise<void>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined; readonly turnedOff?: boolean; readonly onComputerOff?: (kind: string) => Promise<void> }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void; readonly computerOff: () => boolean; /** Whether the run can write a file now, as its gate decides a save_as (RunGate.writeBar): what its files note and computer_screenshot's save_as are offered by. */ readonly writes: () => boolean; /** The computer ops the gate refuses whatever their arguments (RunGate.opsRefused: not given, denied, or an ask no one can approve): what computer_op and a script's `computer` leave out. */ readonly opsRefused: () => readonly string[] }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined; readonly names?: readonly string[]; readonly turnedOff?: boolean; readonly onComputerOff?: (kind: string) => Promise<void> }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void; readonly computerOff: () => boolean; /** Whether the run can write a file now, as its gate decides a save_as (RunGate.writeBar): what its files note and computer_screenshot's save_as are offered by. */ readonly writes: () => boolean; /** The computer ops the gate refuses whatever their arguments (RunGate.opsRefused: not given, denied, or an ask no one can approve): what computer_op and a script's `computer` leave out. */ readonly opsRefused: () => readonly string[] }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -452,7 +453,8 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // Where the run's shell is (run-tools.ts shell): with no computer, a tool no setting names takes the kernel's ruled
   // default (tool-gate.ts defaultPermission): bash asks first, the background tools are refused.
   // An MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf): what "allow reads" lifts an ask by.
-  const where = { root: folder, work: folder, ...(options.effectOf ? { effectOf: options.effectOf } : {}), ...(options.argumentsOf ? { argumentsOf: options.argumentsOf } : {}), facts: options.facts };
+  // Every name of the run's folder its file tools take (RunTools.names: a CLI's scratch folder among them), for its filed folders.
+  const where = { root: folder, work: folder, ...(options.names ? { names: options.names } : {}), ...(options.effectOf ? { effectOf: options.effectOf } : {}), ...(options.argumentsOf ? { argumentsOf: options.argumentsOf } : {}), facts: options.facts };
   const gate = runGate({ ...where, ...(shell === undefined ? {} : { computer: shell === "computer" }) }, claim.runId, revision, () => current, approvers);
   if (options.turnedOff) gate.turnOff();
   // Whether the run's journal has the computer off already (an earlier claim's, or this claim's first deny's): written once.
@@ -649,8 +651,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The pull request's checkout, when the revision asks for one (pr-checkout.ts): the server's own fetch before the first
   // turn, with the GitHub App's read-only token for that one repository (or none); the run is told what it holds, or why
   // there is none. Held from the fetch's start, so the release (after the tools' end) removes it however the claim ends; a
-  // person's stop ends the fetch at once (run.stopped).
-  const checkout = body.checkout ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part }), body.checkout) : undefined;
+  // person's stop ends the fetch at once (run.stopped). On an Archil region with no serverless exec (noExec) the disk runs
+  // no command: the checkout waits for the run's computer (below, checkoutWhereNoExec).
+  let checkout = body.checkout && noExec === undefined ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part }), body.checkout) : undefined;
   holds.hold({ checkout });
 
   // The run's skills and its learning seed, laid in its folder through the run's Workspace now, before its computer
@@ -735,6 +738,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   filedIn = tools.workspace;
   let remoteProjectCapture = false;
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
+  // On an Archil region with no serverless exec, the checkout now: in the computer that mounts the run's folder, through
+  // its own exec, writing through its mount; with none, the run is told why there is none (pr-checkout.ts).
+  if (body.checkout && noExec !== undefined) {
+    checkout = await checkoutWhereNoExec(deps, tools.shell === "computer" ? tools.workspace : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
+    holds.hold({ checkout });
+  }
 
   // The run's model route: its model through routeOf (NEVER re-resolved — the launch's model, pinned at start), the catalog
   // price with tiers for the cap, and the proxy's price (pi-ai calculateCost, tiered).
@@ -744,7 +753,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The run's secrets for this claim, read from the one store (never this process's environment or a pipe): the keys its
   // tools unlock and its model needs, scoped to the run as the old per-run environment was, so one run's keys never reach
   // another's on this runner (claim-secrets.ts). MCP credentials are the other per-claim secret and come through mcp-claim.
-  const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env, redact: run.redact }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch, claim.runId);
+  const toolEnv = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env, redact: run.redact, handBack: run.handBack, signal: run.signal }, revisionRow as unknown as Parameters<typeof claimSecrets>[1], launch, claim.runId);
   // The run's own model key, when its caller handed one (model_key, sealed in its launch): opened at every claim, a reclaim
   // after a crash among them, and held by the run's one redactor. Its model routes read it alone; its tools never do.
   // A run that starts on the server's key holds the claim's key holder too: a message's first key reaches its next request.
@@ -791,7 +800,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const tierWhy = new Map<SubagentTier, string>();
   if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL) && heldRefusal === undefined) {
     // A run with its own model key: its subagents' models carry that key too, and no saved key is read.
-    const subagent = await subagentTierRoutes(body, keyed, runKey, toolEnv, cut, deps, claim);
+    const subagent = await subagentTierRoutes(body, keyed, runKey, toolEnv, cut, { ...deps, handBack: run.handBack, signal: run.signal }, claim);
     for (const [key, at] of subagent.routes) tierRoutes.set(key, at);
     for (const [tier, why] of subagent.why) tierWhy.set(tier, why);
   }
@@ -810,6 +819,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(route.price ? { price: route.price as never } : {}),
     sessionsDir: join(harnesses, String(claim.epoch)),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    ...(route.local ? { local: true } : {}),
     redact: cut,
   }, {
     // Read when the session opens (pi.ts), so the browser's extension pushed by bindNonHandTools below is in it.
@@ -834,7 +844,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // are its entry's on the owner's table (factsOf): none for pi, nor for a module's harness on a runner of its own.
   const facts = factsOf(deps.env, revision.body.harness);
   // The run's computer off for the run (its first deny's, this claim's or an earlier one's) is on the run's journal.
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts, turnedOff: offAlready !== undefined, onComputerOff: (kind) => recordComputerOff(run.harness, kind) });
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts, names: tools.names, turnedOff: offAlready !== undefined, onComputerOff: (kind) => recordComputerOff(run.harness, kind) });
   // A park lets a computer the gate turned off go rather than keep it (SpecHolds Held.computerOff).
   holds.hold({ computerOff: gate.computerOff });
 
@@ -893,12 +903,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
   const admitAuxiliary = runnerSeam() ? undefined : sourceAuxiliaryAdmitter(deps.store, { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   // None for a held run, so its claim reads no saved key for spend beside it (claimSpendOff).
-  const audits = heldRefusal === undefined ? { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, shown, sealKey: deps.sealKey, spendOff: await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey), admitAuxiliary } : undefined;
+  // A claim on the run's own key runs its learning work on that key (keyed), its check at the run's end (atEnd).
+  const audits = heldRefusal === undefined ? { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, shown, sealKey: deps.sealKey, spendOff: await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey), keyed: keyedNow(runKey), atEnd: atRunEnd(log), admitAuxiliary } : undefined;
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself. A held run its model kept from
   // running takes none of them: it settles no audit and starts no replay run, starts on no workflow, and its tool runs
   // none (so no learned tier is routed, below).
-  const learned: LearnedFirst = audits ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, shown, spendOff: audits.spendOff, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: { reason: "held" }, workflows: [] };
+  const learned: LearnedFirst = audits ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, shown, spendOff: audits.spendOff, keyed: audits.keyed, atEnd: audits.atEnd, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: { reason: "held" }, workflows: [] };
   const firstChoice = learned.choice;
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsOver, learn/replay-calls.ts).
@@ -914,7 +925,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // run's own model), held by the run's one redactor, on the tiers' route env alone (withModelKeys, never enumerable),
     // never on the tools' (toolEnv).
     // A run with its own model key: its learned nodes' tiers carry that key too, and no saved key is read.
-    const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
+    const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env, handBack: run.handBack, signal: run.signal }, learnedTiers(workflows));
     holdClaimed(cut, tierKeys);
     const tierEnv = claimModelEnv(deps.env, [tierKeys, toolEnv], runKey, claim);
     for (const [tier, routed] of await learnedTierRoutes(workflows, tierEnv, (tier) => deps.routeOf(undefined, tierEnv, tier, PI_WIRES, undefined, cut))) {
@@ -928,7 +939,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a route of its own beside the session's, on the
   // session's booking under the run's one cap. None: the pair is compared whole, in words saying so. None for a held run
   // its model kept from running, whose model runs nowhere.
-  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, deps, [cut], claim) : undefined;
+  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, { ...deps, handBack: run.handBack, signal: run.signal }, [cut], claim) : undefined;
   if (graderRoute) tierRoutes.set(GRADER, graderRoute);
 
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the

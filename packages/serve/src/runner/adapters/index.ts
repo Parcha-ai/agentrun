@@ -28,6 +28,8 @@ export interface HarnessLaunch {
   readonly sessionsDir: string;
   /** The proxy's upstream fetch (a test's scripted origin). */
   readonly fetch?: typeof fetch;
+  /** The model runs on this machine (the route's `local`: an Ollama model): a CLI waits longer on its silent stream. */
+  readonly local?: boolean;
   /** The runner's one redactor (LoopDeps.redact), holding the keys the claim opens: pi's session proxy cuts a provider's
    *  error with it before pi has it. */
   readonly redact: HeldRedact;
@@ -42,7 +44,7 @@ export interface RunnerHarness {
   adapter(launch: HarnessLaunch, extra?: Readonly<Record<string, unknown>>): Promise<AgentAdapter>;
 }
 
-type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; verifyClaudeAgentCliAsync(path: string | undefined): Promise<unknown>; claudeAgentExecutable(): string | undefined };
+type ClaudePackage = { LOCAL_STREAM_IDLE_MS: number; claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; verifyClaudeAgentCliAsync(path: string | undefined): Promise<unknown>; claudeAgentExecutable(): string | undefined };
 const CLAUDE_PACKAGE = "@parcha/agentrun-harness-claude";
 type CodexPackage = { codexAdapter(options: Record<string, unknown>): AgentAdapter; verifyCodexAsync(found?: { path: string; packageVersion?: string }): Promise<unknown> };
 const CODEX_PACKAGE = "@parcha/agentrun-harness-codex";
@@ -75,6 +77,9 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
         provider: { origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}) },
         ...(launch.price ? { price: launch.price } : {}),
         ...(launch.fetch ? { fetch: launch.fetch } : {}),
+        // A local model says nothing while it loads, reads its prompt or thinks: the CLI waits it out. A paid route's hung
+        // stream keeps the CLI's own limit, so it holds the run's slot and its cap no longer than that.
+        ...(launch.local ? { streamIdleMs: claude.LOCAL_STREAM_IDLE_MS } : {}),
         sessionsDir: launch.sessionsDir,
         ...extra,
       });

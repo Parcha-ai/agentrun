@@ -48,9 +48,14 @@ export interface LearningResetHost {
   /** How long step 1 waits for the agent's learning runs to be final, and how often it reads them meanwhile. */
   readonly waitMs: number;
   readonly pollMs: number;
+  /** The longest the reset waits, by the monotonic clock, for the wall clock to pass its watermark before it answers
+   *  (default PAST_WATERMARK_MS). */
+  readonly pastWatermarkMs?: number;
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** The longest a reset waits, by the monotonic clock, for the wall clock to pass its watermark before it answers. */
+const PAST_WATERMARK_MS = 1_000;
 const isFinal = (state: RunState) => (FINAL_STATES as readonly RunState[]).includes(state);
 
 /** Whether run `runId` exists only for its agent's learning: an audit's shadow, a replay (a check's or an owner's), or a
@@ -88,9 +93,10 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
     // What the agent's kept runs carry of their revisions' compile and check, kept before the records it is read from go.
     await keepResetLedger(host.store.settings, agentId, await promotionsOf(host.store.learning, agentId));
     // The watermark, before anything goes: learning reads no run that started, or read its seed, at or before it (each
-    // seed is read in this queue, so one read before this moment never holds a later time). A seed read after the reset
-    // in the same millisecond counts as before it: its run learns nothing (reason reset) and an SDK start is refused, to
-    // start again, never a run given what the reset deleted. Set first, so no moment has the folder gone and the old runs
+    // seed is read in this queue, so one read before this moment never holds a later time). A seed read in the same
+    // millisecond counts as before it: its run learns nothing (reason reset) and an SDK start is refused, to start again,
+    // never a run given what the reset deleted; the reset answers only once the clock is past it (below), so no seed read
+    // after its answer shares it. Set first, so no moment has the folder gone and the old runs
     // still read. A delete refused before it removed anything (LearningInFlight) puts the earlier one back, its learning
     // left as it was; one that failed on the way (a disk, a file, a record) may have removed some of it, so the watermark
     // stays and the next call finishes the reset: the old runs never feed a compile into a folder emptied part way.
@@ -104,6 +110,12 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
       await (earlier === undefined ? host.store.settings.remove(resetAtKey(agentId)) : keepResetAt(host.store.settings, agentId, earlier));
       throw busy(agentId, error.runs, "its learning work is in flight");
     }
+    // The answer, only once the clock is past the watermark, still holding the queue: a reset with nothing to wait for
+    // can end in the millisecond it began, and a seed read or a run started after its answer must never read as before
+    // it (at most a millisecond's wait). A wall clock stepped back past it answers after a second of the monotonic one:
+    // the watermark cannot hold then anyway, and the queue is never held for it.
+    const bound = performance.now() + (host.pastWatermarkMs ?? PAST_WATERMARK_MS);
+    while (Date.now() <= at && performance.now() < bound) await sleep(1);
   });
 }
 

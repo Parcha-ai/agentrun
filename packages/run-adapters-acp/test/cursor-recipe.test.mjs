@@ -183,7 +183,11 @@ test("its facts: plan billed (no wire of the host's), its own model, no steer, t
   assert.equal(CURSOR_INSTALL, 'agentrun harness install cursor');
   assert.equal(cursorFacts.install.spec, 'cursor@2026.11.13-eacade1');
   assert.equal(cursorFacts.install.codes.pins, ACP_CODES.binaryMismatch);
-  assert.equal(cursorFacts.hostName('agentrun-read: read'), 'read');
+  // Our server goes by its start's own name under Cursor (ar and 6 hex digits), so a title under `agentrun` is another
+  // server's and keeps its own words.
+  assert.equal(cursorFacts.hostName('ar3f12ab-read: read'), 'read');
+  assert.equal(cursorFacts.hostName('ar3f12ab: read'), 'read');
+  assert.equal(cursorFacts.hostName('agentrun-read: read'), 'agentrun-read: read');
   assert.equal(cursorFacts.hostName('read'), 'read');
   assert.throws(() => cursorFacts.policy({ model: 'x', tools: [] }), /plan/);
 });

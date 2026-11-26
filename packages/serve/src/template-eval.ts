@@ -2171,8 +2171,9 @@ async function sameAsLocal(ctx: Ctx, one: EvalCase, agent: Json, used: Readonly<
   }
   const served = ctx.served;
   const view = JSON.parse(JSON.stringify(packageView(pkg))) as Json;
-  // computer_here is the server's answer to the package's computer list, never the package: not compared.
-  const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => key !== "computer_here" && !same(view[key], served[key]));
+  // computer_here and model_tiers_here are the server's answers to the package's computer list and tiers, never the
+  // package: not compared.
+  const differs = [...new Set([...Object.keys(view), ...Object.keys(served)])].filter((key) => key !== "computer_here" && key !== "model_tiers_here" && !same(view[key], served[key]));
   const { parameters } = applyBodyOf(pkg, { parameters: one.parameters, grants: one.grants });
   const local = compiled(applied, parameters, { mcp: [], defaultTools: [], grants: [] }).agent;
   const sha = (text: string) => createHash("sha256").update(text).digest("hex");

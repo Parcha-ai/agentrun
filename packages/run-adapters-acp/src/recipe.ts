@@ -27,10 +27,10 @@ export const AUTH_METHOD = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const ALLOW_FORMS = {
   /** Goose 1.59.2's permission file (PermissionConfig under `user`, every field present: none has a default, and a
    *  file that does not parse stops Goose at its start): each tool always allowed by the name Goose calls it,
-   *  `agentrun__<tool>`, nothing asked before or never allowed. Written as JSON, which YAML reads. Goose's own tools are
-   *  not named, so they still ask. */
-  "goose-permission": (tools: readonly string[]) => `${JSON.stringify({ user: { always_allow: tools.map((tool) => `${MCP_SERVER}__${tool}`), ask_before: [], never_allow: [] } })}\n`,
-} satisfies Record<string, (tools: readonly string[]) => string>;
+   *  `<server>__<tool>` (`server`: our MCP server's name at this start, mcpServerName), nothing asked before or never
+   *  allowed. Written as JSON, which YAML reads. Goose's own tools are not named, so they still ask. */
+  "goose-permission": (tools: readonly string[], server: string) => `${JSON.stringify({ user: { always_allow: tools.map((tool) => `${server}__${tool}`), ask_before: [], never_allow: [] } })}\n`,
+} satisfies Record<string, (tools: readonly string[], server: string) => string>;
 
 /** The forms an allowFile may take, by name: a recipe loader's check (serve's) reads them from here. */
 export const ALLOW_FILE_FORMS: readonly string[] = Object.freeze(Object.keys(ALLOW_FORMS));
@@ -41,9 +41,9 @@ export type AcpAllowForm = keyof typeof ALLOW_FORMS;
 /** A recipe's allowFile: where in HOME the agent reads which tools run unasked, and in what form. */
 export type AcpAllowFile = { readonly path: string; readonly form: AcpAllowForm };
 
-/** The text of an allowFile in `form` for a start whose MCP server lists `tools`. */
-export function allowFileText(form: AcpAllowForm, tools: readonly string[]): string {
-  return ALLOW_FORMS[form](tools);
+/** The text of an allowFile in `form` for a start whose MCP server, given to the agent as `server`, lists `tools`. */
+export function allowFileText(form: AcpAllowForm, tools: readonly string[], server: string = MCP_SERVER): string {
+  return ALLOW_FORMS[form](tools, server);
 }
 
 export interface AcpRecipe {

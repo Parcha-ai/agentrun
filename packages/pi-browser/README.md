@@ -359,8 +359,10 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
   final, state }`, called in the commit that writes it on the session's record, so a host that books it in `tx` books
   exactly what the record bills: at a browser call (`call.callId`), what the session ran since its last charge; at its
   release, or when custody gives up releasing it (`lost`) (`final`), the rest, topped up to `prices.sessionMinimumS`. A session already billed in full is never charged
-  again. `state` is `priced`, or `unpriced`/`invalid` with `usd` 0 (no price, not $0). It must not throw: a throw fails the
-  commit, and a call's charge is then carried by the session's next one.
+  again. `state` is `priced`, or `unpriced`/`invalid` with `usd` 0 (no price, not $0). `overbookedS`, when present: an
+  earlier charge billed the session past this one's `at` (a `handle.charge` taken while its release was under way, the
+  release confirmed before it), by that many seconds; this charge bills none of it again and never a negative. It must
+  not throw: a throw fails the commit, and a call's charge is then carried by the session's next one.
 - `onRaceReleased({ conversationId, tag, ids })`: a release by a session's tag ended sessions besides that session's own
   (a create retried behind the provider's API, or a create race of that tag, left them running), and no record bills
   their time. Called with their ids once each release answered, again for an id a later attempt finds again, so a host
@@ -372,7 +374,10 @@ package's defaults to spread and override) in the conversation's creating commit
 selects the extensions for it, and calls `handle.release(conversation, "close", ctx)` when the conversation ends. Releases run
 as background tasks, which `waitForIdle` skips and closing the harness aborts: before it closes, a host calls
 `handle.drain(harness, ctx, signal?)`, which resolves once none is live. A host that closes with no drain after its `close`
-releases gets them at the provider all the same: `handle.close()` waits, 30 s at most, for every one no drain since covered. A release the store cannot record (a storage error)
+releases gets them at the provider all the same: `handle.close()` waits, 30 s at most, for every one no drain since covered.
+A host that stops waiting on a release calls `handle.charge(conversation, ctx)` to book the time known so far: each session
+still open (live, held, or releasing) is billed through now, not final, its `chargedThrough` moved in the same commit, and
+the release's own charge, when it lands, bills only the time after it. A release the store cannot record (a storage error)
 is still made at the provider, and the record is left for the next run's reconcile; once the store has failed,
 `handle.close()` releases every session the process still holds, and over a healthy store it releases nothing. At run open,
 after the extensions are installed and

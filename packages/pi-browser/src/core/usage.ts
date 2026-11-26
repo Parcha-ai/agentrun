@@ -35,13 +35,16 @@ export function withEstimate(before: Spent, after: Spent, listPriced: boolean): 
   return estimated > 0 ? { ...after, estimatedUsd: estimated } : after;
 }
 
-/** `final` (the release) tops up to the provider's minimum and marks the record, so a retried release adds nothing. */
-export function sessionCharge(spent: Spent, at: string, prices: PriceTable, state: PriceState = "priced", final = false): { spent: Spent; usage: ToolUsage } {
+/** `final` (the release) tops up to the provider's minimum and marks the record, so a retried release adds nothing. A
+ *  charge through an `at` before the record's `chargedThrough` bills no time (an earlier charge billed past it), and says
+ *  by how much in `overbookedS`. */
+export function sessionCharge(spent: Spent, at: string, prices: PriceTable, state: PriceState = "priced", final = false): { spent: Spent; usage: ToolUsage; overbookedS?: number } {
   if (spent.final) return { spent, usage: toolUsage(0, state === "invalid" ? "invalid" : prices.sessionUsdPerHour === null || state !== "priced" ? "unpriced" : "priced") };
   // Integer milliseconds, converted once: a session topped up to the minimum bills exactly the minimum, not
   // 59.99999999999999 s.
   const before = Math.round(spent.seconds * 1000);
   const elapsed = Math.max(0, Date.parse(at) - Date.parse(spent.chargedThrough));
+  const overbooked = Math.max(0, Date.parse(spent.chargedThrough) - Date.parse(at));
   const charged = elapsed + (final ? Math.max(0, Math.round(prices.sessionMinimumS * 1000) - (before + elapsed)) : 0);
   const price = prices.sessionUsdPerHour;
   const priced = price !== null && state === "priced";
@@ -51,5 +54,5 @@ export function sessionCharge(spent: Spent, at: string, prices: PriceTable, stat
   const picos = Number(owed / HOUR_MS);
   const carry = Number(owed % HOUR_MS);
   const gap: PriceState = priced ? "priced" : state === "invalid" ? "invalid" : "unpriced";
-  return { spent: { seconds: (before + charged) / 1000, usd: (Math.round(spent.usd * PICO) + picos) / PICO, chargedThrough: elapsed > 0 ? at : spent.chargedThrough, ...(final ? { final: true as const } : {}), ...(carry ? { carry } : {}) }, usage: toolUsage(picos / PICO, gap) };
+  return { spent: { seconds: (before + charged) / 1000, usd: (Math.round(spent.usd * PICO) + picos) / PICO, chargedThrough: elapsed > 0 ? at : spent.chargedThrough, ...(final ? { final: true as const } : {}), ...(carry ? { carry } : {}) }, usage: toolUsage(picos / PICO, gap), ...(overbooked > 0 ? { overbookedS: overbooked / 1000 } : {}) };
 }

@@ -49,14 +49,15 @@ const STARTED = `const fs = require("node:fs"); const net = require("node:net");
 const namesIn = (bytes) => bytes.toString("utf8").split("\0").filter(Boolean).map((pair) => pair.slice(0, pair.indexOf("=")));
 
 /** The key names the process of a run of `revision` launched on `model` (and `plane`, if given) is handed by its runner,
- *  with `saved` sealed, `gateway`, if given, saved in the console, and the server's tool settings `settings`, if given. */
-async function handed(t, { revision, model, plane, saved, env = {}, gateway, settings }, script = DUMP, read = (bytes) => namesIn(bytes)) {
+ *  with `saved` sealed, `gateway`, if given, saved in the console, and the server's tool settings `settings`, if given,
+ *  started on `harness` (pi unless given). */
+async function handed(t, { revision, model, plane, saved, env = {}, gateway, settings, harness = "pi" }, script = DUMP, read = (bytes) => namesIn(bytes)) {
   const { store, dir: data } = await storeOn(t);
   if (settings) await store.settings.put("tool-settings", settings);
   for (const [name, value] of Object.entries(saved)) await putSealedKey(store, SEAL_KEY, name, value);
   if (gateway) await saveGateway({ store, sealKey: SEAL_KEY, env: {}, changed: async () => {} }, gateway);
   await store.agents.create({ id: "agent", name: "Pinned" }, { id: "rev", kind: "agentic", body: { instructions: "Work.", ...revision } });
-  await store.runs.create({ id: "run", agentId: "agent", revisionId: "rev" }, { body: launchBody({ input: { content: "Work." }, title: "Work", place: { mode: "runner" }, harness: "pi", model, ...(plane ? { plane } : {}) }) });
+  await store.runs.create({ id: "run", agentId: "agent", revisionId: "rev" }, { body: launchBody({ input: { content: "Work." }, title: "Work", place: { mode: "runner" }, harness, model, ...(plane ? { plane } : {}) }) });
   const out = join(data, "handed.bin");
   const deps = { store, data, sealKey: SEAL_KEY, env, computerForClaim: async () => { throw new Error("no computer here"); } };
   const loop = childLoops({ deps, isolation: { kind: "process", why: "a test's runner" }, log: () => {}, argv: [process.execPath, "-e", script, out] })({
@@ -105,6 +106,31 @@ test("a run kept on Parallel for web_search, claimed after the server is set to 
   const capped = await handed(t, { ...run, settings: { web_search: { provider: "native" } } });
   assert.ok(!capped.includes("PARALLEL_API_KEY"), `under the server's native: no Parallel key on its pipe: ${capped}`);
   assert.deepEqual(modelKeysOf(capped), ["ANTHROPIC_API_KEY"], "its pinned model's key still");
+});
+
+test("each other ceiling hands no key its capped plane never uses: web_fetch kernel over Parallel's extract, web_search off over Parallel's search, and TypeSafe's key on a CLI harness whose search is moved to its own native one", { timeout: 60_000 }, async (t) => {
+  const PARALLEL_SAVED = `not-a-secret-${"parallel-saved"}`;
+  const TYPESAFE_SAVED = `not-a-secret-${"typesafe-saved"}`;
+  const model = { provider: "anthropic", modelId: "claude-sonnet-5-5" };
+  // Kept on Parallel's extract for web_fetch: its key with no ceiling, none under the server's kernel.
+  const fetches = { revision: { tools: ["web_fetch"], toolSettings: { web_fetch: { provider: "parallel" } } }, model, plane: { web_fetch: "parallel" }, saved: { ANTHROPIC_API_KEY: ANTHROPIC_SAVED, PARALLEL_API_KEY: PARALLEL_SAVED } };
+  assert.ok((await handed(t, fetches)).includes("PARALLEL_API_KEY"), "kept on Parallel's extract with no ceiling: its key");
+  const kernel = await handed(t, { ...fetches, settings: { web_fetch: { provider: "kernel" } } });
+  assert.ok(!kernel.includes("PARALLEL_API_KEY"), `under the server's kernel: no Parallel key on its pipe: ${kernel}`);
+  assert.deepEqual(modelKeysOf(kernel), ["ANTHROPIC_API_KEY"], "its pinned model's key still");
+  // Kept on Parallel's search, the server's web_search off: no search runs, so no Parallel key.
+  const searches = { revision: { tools: ["web_search"], toolSettings: { web_search: { provider: "parallel" } } }, model, plane: { web_search: "parallel" }, saved: { ANTHROPIC_API_KEY: ANTHROPIC_SAVED, PARALLEL_API_KEY: PARALLEL_SAVED } };
+  assert.ok((await handed(t, searches)).includes("PARALLEL_API_KEY"), "kept on Parallel's search with no ceiling: its key");
+  const off = await handed(t, { ...searches, settings: { web_search: { provider: "off" } } });
+  assert.ok(!off.includes("PARALLEL_API_KEY"), `under the server's off: no Parallel key on its pipe: ${off}`);
+  // On claude-agent, a search of AgentRun's own (Parallel's) is ranked by Jev on TypeSafe's key; moved to the CLI's own
+  // native search, with no web_fetch, nothing of AgentRun's searches, so neither key is handed.
+  const cli = { ...searches, harness: "claude-agent", revision: { ...searches.revision, harness: "claude-agent" }, saved: { ...searches.saved, TYPESAFE_API_KEY: TYPESAFE_SAVED } };
+  const ranked = await handed(t, cli);
+  assert.ok(ranked.includes("TYPESAFE_API_KEY") && ranked.includes("PARALLEL_API_KEY"), `on Parallel's search with no ceiling: TypeSafe's key and Parallel's: ${ranked}`);
+  const native = await handed(t, { ...cli, settings: { web_search: { provider: "native" } } });
+  assert.ok(!native.includes("TYPESAFE_API_KEY") && !native.includes("PARALLEL_API_KEY"), `under the server's native: neither key on its pipe: ${native}`);
+  assert.deepEqual(modelKeysOf(native), ["ANTHROPIC_API_KEY"], "its pinned model's key still");
 });
 
 test("a run's process is told the plane its runner capped and chose its keys by, so a setting changed after the runner's read can't run its tools on a key it was not handed", { timeout: 60_000 }, async (t) => {

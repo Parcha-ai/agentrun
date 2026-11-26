@@ -86,6 +86,8 @@ test("each deploy generates a token and a seal key this server takes, with 256 b
     assert.equal(sealKeyOf(env.AGENTRUN_SEAL_KEY)?.length, 32, env.AGENTRUN_SEAL_KEY.length);
     assert.equal(env.AGENTRUN_PUBLIC_URL, "https://agentrun-production-ab12.up.railway.app");
     assert.deepEqual([env.PORT, env.RAILWAY_RUN_UID, env.AGENTRUN_RUN_USER], ["7340", "0", "same"]);
+    // Railway's SIGTERM-to-SIGKILL wait (its default 0): the runner's 31 s stop and a ChatGPT renewal's save inside it.
+    assert.equal(env.RAILWAY_DEPLOYMENT_DRAINING_SECONDS, "35");
   }
   const bits = (v) => {
     const [, n, alphabet] = /secret\((\d+), "([^"]+)"\)/.exec(v.defaultValue);

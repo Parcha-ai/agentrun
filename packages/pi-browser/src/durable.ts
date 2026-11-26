@@ -120,6 +120,12 @@ export type BrowserExtensionHandle = {
    *  the tag goes, its idle window starts again from then. Releases for any other reason (the tool, a close, its end)
    *  are not held. */
   keepForPerson(tag: string): () => void;
+  /** Bills each session of the conversation still open (live, held, or releasing: its release asked, not yet confirmed)
+   *  through now, not final, in one commit that moves each one's `chargedThrough` with its charge (onCharge): what a host
+   *  that stops waiting on a release books of the time known so far. The release's own charge, when it lands, bills only
+   *  the time after it, and an `at` before it bills nothing and says so (SessionCharge.overbookedS). Resolves to the
+   *  sessions charged. */
+  charge(conversation: Pick<Conversation, "id" | "commit">, context: Context): Promise<number>;
 };
 
 export { CONFIRM_POLLS, RELEASE_ATTEMPTS } from "./durable/store.js";
@@ -780,6 +786,21 @@ async function releasePlane<D extends PageDriver>(c: Custody<D>, conversation: P
   }
 }
 
+/** The open sessions' time through now, not final, in one commit (BrowserExtensionHandle.charge): no lock is taken, so a
+ *  release under way (its record `releasing`) never holds it back. */
+async function chargeOpen<D extends PageDriver>(c: Custody<D>, conversation: Pick<Conversation, "id" | "commit">, context: Context): Promise<number> {
+  return conversation.commit(async (tx) => {
+    const state = await tx.doc(c.Sessions, conversation.id);
+    const at = now();
+    let charged = 0;
+    for (const record of state.sessions) {
+      if ((record.state !== "live" && record.state !== "held" && record.state !== "releasing") || record.resourceId === null || record.spent.final) continue;
+      if (await c.bill(tx, conversation.id, record, at, false)) charged += 1;
+    }
+    return charged;
+  }, context);
+}
+
 async function chargeCall<D extends PageDriver>(c: Custody<D>, api: ToolExecutionApi, context: Context): Promise<ToolUsage | null> {
   if (currentRecord(await api.snapshot(c.Sessions, api.conversationId, context), PLANE)?.state !== "live") return null;
   return api.commit(async (tx) => {
@@ -873,15 +894,15 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
   const listPriced = options.prices?.sessionUsdPerHour === undefined && prices.sessionUsdPerHour !== null;
   const meter = (spent: SessionRecord["spent"], at: string, final = false) => {
     const charged = sessionCharge(spent, at, prices, priceState, final);
-    return { spent: { ...withEstimate(spent, charged.spent, listPriced), state: charged.usage.state }, usage: charged.usage };
+    return { spent: { ...withEstimate(spent, charged.spent, listPriced), state: charged.usage.state }, usage: charged.usage, ...(charged.overbookedS === undefined ? {} : { overbookedS: charged.overbookedS }) };
   };
   const bill: Bill = async (tx, conversationId, record, at, final, call) => {
     const before = record.spent;
     if (before.final) return null;
-    const { spent, usage } = meter(before, at, final);
+    const { spent, usage, overbookedS } = meter(before, at, final);
     record.spent = spent;
     const seconds = Math.round((spent.seconds - before.seconds) * 1000) / 1000;
-    await options.onCharge?.({ conversationId, tag: record.tag, provider: record.provider, at, seconds, usd: usage.usage.cost.total, final, state: usage.state }, tx, call);
+    await options.onCharge?.({ conversationId, tag: record.tag, provider: record.provider, at, seconds, usd: usage.usage.cost.total, final, state: usage.state, ...(overbookedS === undefined ? {} : { overbookedS }) }, tx, call);
     return usage;
   };
   const leaving = new Map<string, () => void>();
@@ -918,6 +939,7 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     docs: { Config, Sessions, Inventory: store.Inventory },
     tools,
     release: (conversation, reason, context) => releasePlane(c, conversation, reason, context),
+    charge: (conversation, context) => chargeOpen(c, conversation, context),
     async reconcile(harness, isActive, context) {
       c.opened = { harness, context };
       c.ending = endingOf(harness);

@@ -582,6 +582,7 @@ __all__ = [
     "GetTemplateResponseTemplateMcpItemToolsItemPinValue",
     "GetTemplateResponseTemplateModel",
     "GetTemplateResponseTemplateModelChoicesItem",
+    "GetTemplateResponseTemplateModelTiersHere",
     "GetTemplateResponseTemplateOutput",
     "GetTemplateResponseTemplateToolPolicy",
     "GetTimelineResponse",
@@ -644,6 +645,7 @@ __all__ = [
     "GetWrappedResponseHarnessesItem",
     "GetWrappedResponseImportedItem",
     "GetWrappedResponseModelsItem",
+    "GetWrappedResponseSecrets",
     "GetWrappedResponseSourcesItem",
     "GetWrappedResponseTokens",
     "GradeRunBody",
@@ -685,6 +687,7 @@ __all__ = [
     "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
     "ImportTemplateResponseTemplateModelChoicesItem",
+    "ImportTemplateResponseTemplateModelTiersHere",
     "ImportTemplateResponseTemplateOutput",
     "ImportTemplateResponseTemplateToolPolicy",
     "InputIssue",
@@ -837,6 +840,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
     "ListTemplatesResponseTemplatesItemModelChoicesItem",
+    "ListTemplatesResponseTemplatesItemModelTiersHere",
     "ListTemplatesResponseTemplatesItemOutput",
     "ListTemplatesResponseTemplatesItemToolPolicy",
     "ListToolKeysResponse",
@@ -1068,6 +1072,7 @@ __all__ = [
     "RunFileList",
     "RunImportedFrom",
     "RunLearning",
+    "RunLearningWork",
     "RunLearningWorkflowsItem",
     "RunList",
     "RunNative",
@@ -3534,6 +3539,7 @@ class Cost(_CostRequired, total=False):
     compile_usd: float | None
     followup_usd: float | None
     shadow_usd: float | None
+    check_usd: float | None
     share_usd: float | None
     plan: CostPlan
 
@@ -4706,6 +4712,7 @@ class GetLearningCostResponseRunsItem(_GetLearningCostResponseRunsItemRequired, 
     compile_usd: float | None
     followup_usd: float | None
     shadow_usd: float | None
+    check_usd: float | None
     share_usd: float | None
     not_served: Literal["cost_stop", "cut"] | None
 
@@ -5904,6 +5911,7 @@ class _RunRequired(TypedDict):
     kind: Literal["agentic", "workflow"]
     archived_at: str | None
     place: RunPlace1 | RunPlace2
+    learning_work: RunLearningWork
 
 
 class Run(_RunRequired, total=False):
@@ -6217,6 +6225,13 @@ class RunImportedFrom(TypedDict):
 class RunTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunLearningWork(TypedDict):
+    state: Literal["none", "running", "ended"]
+    runs: list[str]
+    ended_at: str | None
+    deadline_at: str | None
 
 
 class RunWorkflow(TypedDict):
@@ -9663,6 +9678,7 @@ class GetTemplateResponseTemplate(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: GetTemplateResponseTemplateComputerHere | None
+    model_tiers_here: GetTemplateResponseTemplateModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[GetTemplateResponseTemplateMcpItem]
@@ -9731,6 +9747,13 @@ class _GetTemplateResponseTemplateComputerHereComputerRequired(TypedDict):
 class GetTemplateResponseTemplateComputerHereComputer(_GetTemplateResponseTemplateComputerHereComputerRequired, total=False):
     provider: str
     needs: list[str]
+
+
+class GetTemplateResponseTemplateModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
 
 
 class GetTemplateResponseTemplateMcpItem(TypedDict):
@@ -9815,6 +9838,7 @@ class ImportTemplateResponseTemplate(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: ImportTemplateResponseTemplateComputerHere | None
+    model_tiers_here: ImportTemplateResponseTemplateModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[ImportTemplateResponseTemplateMcpItem]
@@ -9885,6 +9909,13 @@ class ImportTemplateResponseTemplateComputerHereComputer(_ImportTemplateResponse
     needs: list[str]
 
 
+class ImportTemplateResponseTemplateModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
+
+
 class ImportTemplateResponseTemplateMcpItem(TypedDict):
     source: Literal["composio", "github", "url"]
     toolkit: str
@@ -9948,6 +9979,7 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: ListTemplatesResponseTemplatesItemComputerHere | None
+    model_tiers_here: ListTemplatesResponseTemplatesItemModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[ListTemplatesResponseTemplatesItemMcpItem]
@@ -10016,6 +10048,13 @@ class _ListTemplatesResponseTemplatesItemComputerHereComputerRequired(TypedDict)
 class ListTemplatesResponseTemplatesItemComputerHereComputer(_ListTemplatesResponseTemplatesItemComputerHereComputerRequired, total=False):
     provider: str
     needs: list[str]
+
+
+class ListTemplatesResponseTemplatesItemModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
 
 
 class ListTemplatesResponseTemplatesItemMcpItem(TypedDict):
@@ -12171,6 +12210,7 @@ class GetWrappedResponse(TypedDict):
     imported: list[GetWrappedResponseImportedItem]
     unread_files: int
     cache: GetWrappedResponseCache | None
+    secrets: GetWrappedResponseSecrets | None
 
 
 class GetWrappedResponseTokens(TypedDict):
@@ -12237,6 +12277,12 @@ class GetWrappedResponseCacheExtraCostUsd(TypedDict):
     edited: float
     sidechain: float
     unknown: float
+
+
+class GetWrappedResponseSecrets(TypedDict):
+    runs: int
+    runs_holding: int
+    removed: int
 
 
 # Each operation as the runtime sends it, by operationId.

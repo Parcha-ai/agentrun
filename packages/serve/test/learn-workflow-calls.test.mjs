@@ -186,8 +186,9 @@ test("a CLI's own side request in a refused call's window (its title or summary 
   const outcomes = (entries) => workflowCallsOf(entries).map(({ caller, outcome, usd }) => [caller, outcome, usd]);
   const helper = (turn) => booked(turn, 0.01, { model: "small", side: true });
   assert.deepEqual(outcomes([...booked(1, 1), start("c1"), ...helper(2), kept("c1", refused), end("c1")]), [["agent", "refused", 0]]);
-  // A host's request in the window (a node's, or a host tool's a call node ran) is the call's own: failed at its window's $.
-  assert.deepEqual(outcomes([start("c1"), ...node(2, 0.25), ...helper(3), start("c1"), kept("c1", refused), end("c1")]), [["agent", "failed", 0.26]]);
+  // A host's request in the window (a node's, or a host tool's a call node ran) is the call's own: failed at its window's $,
+  // which leaves the helper's out as well: it is never the call's, so it is never in its price either.
+  assert.deepEqual(outcomes([start("c1"), ...node(2, 0.25), ...helper(3), start("c1"), kept("c1", refused), end("c1")]), [["agent", "failed", 0.25]]);
   assert.deepEqual(outcomes([start("c1"), ...booked(2, 0.1, { host: "web_fetch", side: true }), start("c1"), kept("c1", refused), end("c1")]), [["agent", "failed", 0.1]]);
 });
 

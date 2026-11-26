@@ -96,7 +96,7 @@ test("a read in flight is cut at once by its signal (the server's close), its cl
   await mkdir(bin);
   await mkdir(join(state, "containers"), { recursive: true });
   const fake = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
-  await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o755 });
+  await writeFile(join(bin, "docker"), `#!/bin/sh\nexport FAKE_DOCKER_STATE='${state}'\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o755 });
   await writeFile(join(state, "host-addresses-hold"), "");
   const held = join(state, "host-addresses-held");
   execFileSync("mkfifo", [held]);
@@ -127,7 +127,7 @@ test("the stop's signal cuts a read another caller started with no signal: the s
   await mkdir(bin);
   await mkdir(join(state, "containers"), { recursive: true });
   const fake = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
-  await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o755 });
+  await writeFile(join(bin, "docker"), `#!/bin/sh\nexport FAKE_DOCKER_STATE='${state}'\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o755 });
   await writeFile(join(state, "host-addresses-hold"), "");
   const held = join(state, "host-addresses-held");
   execFileSync("mkfifo", [held]);
@@ -161,7 +161,7 @@ test("reads asked again on one long-lived signal leave no abort listener on it o
   await mkdir(bin);
   await mkdir(join(state, "containers"), { recursive: true });
   const fake = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
-  await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o755 });
+  await writeFile(join(bin, "docker"), `#!/bin/sh\nexport FAKE_DOCKER_STATE='${state}'\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o755 });
   const answering = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state };
   assert.deepEqual(await hostRead.hostAddressesOnce(answering, stopping.signal), { addresses: [] });
   assert.equal(getEventListeners(stopping.signal, "abort").length, 0, "after a read that answered");
@@ -176,7 +176,7 @@ test("a stalled read's container is removed through the fake docker, and the rea
   await mkdir(bin);
   await mkdir(join(state, "containers"), { recursive: true });
   const fake = new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname;
-  await writeFile(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o755 });
+  await writeFile(join(bin, "docker"), `#!/bin/sh\nexport FAKE_DOCKER_STATE='${state}'\nexec '${process.execPath}' '${fake}' "$@"\n`, { mode: 0o755 });
   await writeFile(join(state, "host-addresses-hold"), "");
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state };
   const name = helperName();

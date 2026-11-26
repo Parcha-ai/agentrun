@@ -7,8 +7,8 @@
 //   load: advertise session/load and keep sessions in $HOME/.fake-acp/sessions (default true);
 //   advertiseLoad / advertiseHttp: what initialize says, when it should differ from what the agent does;
 //   http: advertise MCP over HTTP (default true); the client then picks the transport;
-//   style: "goose" (titles agentrun__<tool>, every tool asks permission, allow_always offered first) or "cursor"
-//          (titles agentrun-<tool>: <tool>; MCP and execute ask, edits do not; a refused native call still reports
+//   style: "goose" (titles <server>__<tool>, every tool asks permission, allow_always offered first) or "cursor"
+//          (titles <server>-<tool>: <tool>, <server> the name the client gave its MCP server; MCP and execute ask, edits do not; a refused native call still reports
 //          completed), or "goose-1.59" (as "goose", but titled as Goose 1.59.2 titles a call of an extension's tool:
 //          `agentrun: <tool, its underscores as spaces>`), or "antigravity" (an MCP call as agy 1.5.14 announces and asks
 //          about it: named `mcp_<server>_<tool>`, titled `Run mcp_<server>_<tool>`, <server> the name the client gave
@@ -25,18 +25,21 @@
 //   ignoreCancel: log session/cancel and go on as if it never came (an agent that keeps spending);
 //   keepMcpOnCancel: on session/cancel, answer the prompt `cancelled` at once and leave an MCP call in flight open;
 //   announce: with style "cursor", "late" (the default): an MCP call as Cursor 2026.11.13 announces it, a tool_call
-//             titled "MCP: tool" with no input, then a tool_call_update titled `agentrun: <tool>` whose rawInput is
-//             {providerIdentifier, toolName, args}; its permission request is titled `agentrun-<tool>: <tool>`.
-//             "early": one tool_call titled `agentrun-<tool>: <tool>` with the arguments as its rawInput, naming the
+//             titled "MCP: tool" with no input, then a tool_call_update titled `<server>: <tool>` whose rawInput is
+//             {providerIdentifier: <server>, toolName, args}; its permission request is titled `<server>-<tool>: <tool>`,
+//             <server> the name the client gave its MCP server.
+//             "early": one tool_call titled `<server>-<tool>: <tool>` with the arguments as its rawInput, naming the
 //             tool in no field (no Cursor release measured sends this);
 //   lateTitle: with announce "late", that update's title instead (a release that words it otherwise);
 //   (a call step's `ask`, {kind, title}: what its permission request says instead of the call's own kind and title;)
 //   (a native step's `lateInput`: a tool_call_update after its tool_call with that rawInput, a release that echoes the
-//   model's arguments in a later update;)
+//   model's arguments in a later update; in it and in the step's title, `<server>` is the name the client gave its MCP
+//   server, so a test can name the start's own server, whatever name the start gave it;)
 //   (a native step's `narrate`: text the agent writes after the call's tool_call and before it ends, as Cursor
 //   2026.11.13 does;)
 //   (styles "goose" and "goose-1.59": each tool_call names its tool in _meta.goose.toolCall.toolName, as Goose 1.59.2
-//   does: `agentrun__<tool>` for ours, a native step's `toolName` or `developer__<kind>` for the agent's own;)
+//   does: `<server>__<tool>` for ours, a native step's `toolName` or `developer__<kind>` for the agent's own; a native
+//   step whose `toolName` the permission file always allows runs unasked, as Goose's would;)
 //   models: the models session/new and session/load list ({modelId, name}), the first current; session/set_model
 //           takes one of them and refuses any other;
 //   writeAuth: at session/new and session/load, write $HOME/.config/cursor/auth.json holding the sha256 of the
@@ -130,7 +133,7 @@ const pgid = (() => {
 })();
 said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid, ...(config.cursorDirs ? { cursorDir, deniesWrite } : {}) });
 /** The title of a call of our `tool`, the client's MCP server given as `server` (agy names it in its title). */
-const titleOf = (tool, server = "agentrun") => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "antigravity" ? `Run mcp_${server}_${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}${config.titleSummary ? ` · ${config.titleSummary}` : ""}` : `agentrun__${tool}`);
+const titleOf = (tool, server = "agentrun") => (style === "cursor" ? `${server}-${tool}: ${tool}` : style === "antigravity" ? `Run mcp_${server}_${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}${config.titleSummary ? ` · ${config.titleSummary}` : ""}` : `${server}__${tool}`);
 const late = style === "cursor" && config.announce !== "early";
 /** Goose's field naming a tool_call's tool, on its first tool_call only, in the shape goose-acp's goose_tool_call_meta
  *  builds (conversion.rs:65-91 at v1.59.2): `toolName` the name the model called, `extensionName` the part before `__`
@@ -298,17 +301,17 @@ async function takeTurn(client, session, prompt, signal) {
       const reported = "toolSummary" in args ? args : { ...args, toolSummary: `Call ${s.call}` };
       const update = style === "antigravity"
         ? { toolCallId: id, name: `mcp_${session.server}_${s.call}`, title: titleOf(s.call, session.server), kind: "other", status: "pending", rawInput: reported, args: reported }
-        : { toolCallId: id, title: titleOf(s.call), kind: "other", status: "pending", rawInput: args };
+        : { toolCallId: id, title: titleOf(s.call, session.server), kind: "other", status: "pending", rawInput: args };
       const entry = { kind: "call", id, tool: s.call, args, status: "pending" };
       session.history.push(entry);
       save(session);
       if (late) {
         // Cursor 2026.11.13: the call is announced with no name, then named by an update, then asked about by its own title.
         await notify({ sessionUpdate: "tool_call", toolCallId: id, title: "MCP: tool", kind: "other", status: "pending", rawInput: {} });
-        await notify({ sessionUpdate: "tool_call_update", toolCallId: id, title: config.lateTitle ?? `agentrun: ${s.call}`, rawInput: { providerIdentifier: "agentrun", toolName: s.call, args } });
+        await notify({ sessionUpdate: "tool_call_update", toolCallId: id, title: config.lateTitle ?? `${session.server}: ${s.call}`, rawInput: { providerIdentifier: session.server, toolName: s.call, args } });
         await notify({ sessionUpdate: "tool_call_update", toolCallId: id, status: "in_progress" });
-      } else await notify({ sessionUpdate: "tool_call", ...update, ...gooseMeta(`agentrun__${s.call}`) });
-      if (askMcp && !alwaysAllowed.has(`agentrun__${s.call}`) && !(await permitted(client, session, { ...(late ? { toolCallId: id, title: titleOf(s.call), kind: "other", status: "pending" } : update), ...(s.ask ?? {}) }))) {
+      } else await notify({ sessionUpdate: "tool_call", ...update, ...gooseMeta(`${session.server}__${s.call}`) });
+      if (askMcp && !alwaysAllowed.has(`${session.server}__${s.call}`) && !(await permitted(client, session, { ...(late ? { toolCallId: id, title: titleOf(s.call, session.server), kind: "other", status: "pending" } : update), ...(s.ask ?? {}) }))) {
         if (signal.aborted) return { stopReason: "cancelled" };
         entry.status = "failed";
         entry.result = "the client refused the call";
@@ -349,16 +352,18 @@ async function takeTurn(client, session, prompt, signal) {
       const id = `native_${step - 1}`;
       // A model that, taking a step again (after a restart), writes another command for it (retitled).
       const again = s.retitled?.length ? tally(step - 1) : 0;
-      const title = again > 0 ? s.retitled[Math.min(again, s.retitled.length) - 1] : (s.title ?? s.native);
+      const named = (value) => JSON.parse(JSON.stringify(value).replaceAll("<server>", session.server));
+      const title = again > 0 ? s.retitled[Math.min(again, s.retitled.length) - 1] : named(s.title ?? s.native);
       const update = { toolCallId: id, title, kind: s.native, status: "pending", rawInput: again > 0 ? { ...(s.input ?? {}), command: title } : (s.input ?? {}), ...(style === "antigravity" ? { name: s.toolName ?? s.native } : {}) };
       const entry = { kind: "native", id, title: update.title, status: "pending" };
       session.history.push(entry);
       save(session);
       // {announce: false}: a permission request for a call no tool_call announced.
       if (s.announce !== false) await notify({ sessionUpdate: "tool_call", ...update, ...gooseMeta(s.toolName ?? `developer__${s.native}`) });
-      if (s.lateInput) await notify({ sessionUpdate: "tool_call_update", toolCallId: id, rawInput: s.lateInput });
+      if (s.lateInput) await notify({ sessionUpdate: "tool_call_update", toolCallId: id, rawInput: named(s.lateInput) });
       if (s.narrate) await notify({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: s.narrate } });
-      const allowed = deniesWrite && EDITS.has(s.native) ? false : askNative.has(s.native) ? await permitted(client, session, update) : true;
+      // Goose runs a tool its permission file always allows by the name it calls it (s.toolName), unasked.
+      const allowed = deniesWrite && EDITS.has(s.native) ? false : s.toolName !== undefined && alwaysAllowed.has(s.toolName) ? true : askNative.has(s.native) ? await permitted(client, session, update) : true;
       if (signal.aborted) return { stopReason: "cancelled" };
       if (allowed && config.nativeLog) appendFileSync(config.nativeLog, `${update.title}\n`);
       entry.status = allowed ? "completed" : "failed";
