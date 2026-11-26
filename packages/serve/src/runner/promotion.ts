@@ -386,12 +386,13 @@ const checkable = (deps: Pick<PromotionDeps, "runId">, row: RunRow): boolean =>
  *  never push them out of the read. And `audited`: an audit hold's disagreeing shadow runs (auditInputsOf), each ended.
  *  Of those, the ones whose input `workflow` takes (fits), each with its launch read back; one with an uploaded file is
  *  never an input. With how many of the agent's runs it looked at (`looked`) and why each it looked at is no input
- *  (`unfit`, `files`). Every one of them a run on no named disk (one on a named disk learns nothing, learn/learning-of.ts)
- *  since the agent's learning's reset (sinceReset), the named and audited ones included. */
+ *  (`unfit`, `files`). Every one of them a run of the agent's own (the named and audited ones are read by bare id, so a
+ *  record naming another agent's run never makes it an input) on no named disk (one on a named disk learns nothing,
+ *  learn/learning-of.ts) since the agent's learning's reset (sinceReset). */
 async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runId">, workflow: LearnedWorkflow, pick: { readonly of: readonly string[]; readonly n: number }, audited: readonly string[] = []): Promise<{ inputs: ReplayInput[]; looked: number; unfit: number; files: number }> {
   const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
   const since = await sinceReset(deps.store, deps.agentId);
-  const learns = (row: RunRow) => (row.disk ?? null) === null && since(row);
+  const learns = (row: RunRow) => row.agentId === deps.agentId && (row.disk ?? null) === null && since(row);
   const named = (await Promise.all(pick.of.map((id) => deps.store.runs.get(id)))).filter((row): row is RunRow => row !== undefined && checkable(deps, row) && learns(row));
   const last = pick.n ? await lastOwnRuns(deps.store, deps.agentId, pick.n + pick.of.length, deps.runId) : [];
   const own = [...named, ...last.filter((row) => !pick.of.includes(row.id)).slice(0, pick.n)];
