@@ -115,7 +115,8 @@ instructions.
 - The workflow is checked as a save checks one (the DSL's checks and the durable runner's refusal), compiled with a
   sample of each parameter, at the server's start, at an import or upload and by `agentrun template validate`, each
   problem at its path in the file (`router.workflow.json/root/steps/0: ...`). Each trigger's input is checked against
-  the workflow's own input, as a run's is before its first node, here and again at apply with the parameters given.
+  the workflow's own input in the form a firing gives the run (its content followed by a pushed source's payload and
+  the line saying what fired it), as a run's is before its first node, here and again at apply with the parameters given.
 - Apply makes the agent with no model: its model nodes run on this server's model for their tiers, so it takes no
   `overrides.model` (`422`). Its budget is the agent's `max_cost_usd`, and its approvals as any package's.
 - `GET /v2/templates` shows the file as `workflow` (null for an agentic package); a read answers the workflow whole as

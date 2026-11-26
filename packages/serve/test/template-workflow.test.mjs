@@ -149,6 +149,16 @@ test("a trigger input filled from a parameter with no default is the apply's to 
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
 });
 
+test("a trigger's input is checked as a firing gives it to the run, its content followed by the payload and the line saying what fired it: a workflow wanting more content than the trigger's own takes it", async (t) => {
+  // The workflow takes a content of at least 40 characters; the webhook's own is "A note arrived." and the schedule's
+  // "Go", and each run is given more: a pushed payload's block, then the line saying what fired it.
+  const flow = { ...FLOW, schemas: { ...FLOW.schemas, Note: { type: "object", required: ["content"], properties: { content: { type: "string", minLength: 40 } } } } };
+  const manifest = MANIFEST().replace('    target: { kind: start_run, input: { content: "A note arrived." } }\n', '    target: { kind: start_run, input: { content: "A note arrived." } }\n  - name: daily\n    source: { kind: schedule, cron: "0 8 * * *" }\n    target: { kind: start_run, input: { content: "Go" } }\n');
+  const p = readPackage(await pkg(t, { manifest, flow }));
+  assert.equal(p.triggers.length, 2);
+  assert.deepEqual(await workflowPackageProblems(p), []);
+});
+
 test("a workflow package takes no model override or choice at apply: its nodes run on this host's models for their tiers", async (t) => {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
   const server = await serve(t, { templates: join(await pkg(t), "..") });

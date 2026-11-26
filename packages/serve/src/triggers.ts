@@ -1834,19 +1834,31 @@ export class Triggers {
     return { kind: "trigger", trigger_id: trigger.id, source: trigger.source.kind as Extract<MessageOrigin, { kind: "trigger" }>["source"], owner: this.adapter(trigger.source).owner };
   }
 
-  /** The run's input: the trigger's, then a pushed firing's payload marked untrusted (tagged with its source and what the
-   *  source says of it), then a line saying what fired it and when, in the trigger's zone. */
+  /** The run's input (firedInput). */
   private inputOf(trigger: Trigger, firing: Pick<FiringRow, "by" | "nominalAt" | "payload"> & { attrs?: unknown }): Json {
-    const adapter = this.adapter(trigger.source);
-    const when = local(firing.nominalAt, adapter.zone?.(trigger.source) ?? "UTC");
-    const what = `the ${adapter.label} "${trigger.name}"`;
-    const line = firing.by === "manual" ? `(Started by hand from ${what} at ${when}.)` : eventful(adapterIn(this.adapters, firing.by)) ? `(From ${what}, received at ${when}.)` : `(Started by ${what} for ${when}.)`;
-    // The payload is whatever its sender wrote: an instruction in it is data, and its closing tag, in any case, cannot end
-    // the block.
-    const payload = firing.payload === null ? "" : `\n\n<trigger-payload source="${firing.by}"${tagAttrs(firing.attrs)} untrusted>\n${firing.payload.replace(/<(\/trigger-payload)/gi, "<\\$1")}\n</trigger-payload>`;
-    const { input } = trigger.target;
-    return typeof input.content === "string" ? { ...input, content: `${input.content}${payload}\n\n${line}` } : input;
+    return firedInput(this.adapters, trigger, firing);
   }
+}
+
+/** The input a run a trigger starts is given: the trigger's, then a pushed firing's payload marked untrusted (tagged with
+ *  its source and what the source says of it), then a line saying what fired it and when, in the trigger's zone. */
+export function firedInput(adapters: readonly TriggerAdapter[], trigger: Pick<Trigger, "name" | "source" | "target">, firing: Pick<FiringRow, "by" | "nominalAt" | "payload"> & { attrs?: unknown }): Json {
+  const adapter = adapterIn(adapters, trigger.source.kind)!;
+  const when = local(firing.nominalAt, adapter.zone?.(trigger.source) ?? "UTC");
+  const what = `the ${adapter.label} "${trigger.name}"`;
+  const line = firing.by === "manual" ? `(Started by hand from ${what} at ${when}.)` : eventful(adapterIn(adapters, firing.by)) ? `(From ${what}, received at ${when}.)` : `(Started by ${what} for ${when}.)`;
+  // The payload is whatever its sender wrote: an instruction in it is data, and its closing tag, in any case, cannot end
+  // the block.
+  const payload = firing.payload === null ? "" : `\n\n<trigger-payload source="${firing.by}"${tagAttrs(firing.attrs)} untrusted>\n${firing.payload.replace(/<(\/trigger-payload)/gi, "<\\$1")}\n</trigger-payload>`;
+  const { input } = trigger.target;
+  return typeof input.content === "string" ? { ...input, content: `${input.content}${payload}\n\n${line}` } : input;
+}
+
+/** The input a firing of `trigger` gives its run (firedInput), for checking it before any firing comes (a template
+ *  workflow's input, templates.ts): fired by its own source at the epoch, a pushed source's payload an empty object. */
+export function sampleFiredInput(adapters: readonly TriggerAdapter[], trigger: Pick<Trigger, "name" | "source" | "target">): Json {
+  const by = trigger.source.kind;
+  return firedInput(adapters, trigger, { by, nominalAt: 0, payload: eventful(adapterIn(adapters, by)) ? "{}" : null });
 }
 
 /** A trigger row as the engine reads it: its source and target of their types (create and PATCH check them). */

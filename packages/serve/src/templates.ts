@@ -28,7 +28,7 @@ import { type FileSetting, fileIssues } from "./filed-tool.js";
 import { BOUND_TOOLS, toolOf } from "./tools.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { MOVE_FIELD } from "./trigger-composio.js";
-import { triggerBodyIssues } from "./triggers.js";
+import { sampleFiredInput, triggerBodyIssues } from "./triggers.js";
 import { definitionBodyIssues, inputIssues, inputSchemaOf, isObject, type Json, MODEL_REF, MODEL_TIER_NAMES, unknownFields } from "./validate.js";
 import { schemaCheck } from "./answer-json.js";
 import { webFixtureOf } from "./web-fake.js";
@@ -1098,12 +1098,14 @@ export function madeTriggerIssues(made: Json[], now: number, inputSchema?: Json,
 
 /** Every package in `dir`: each folder in it, by name. One that does not check throws, so a broken one never serves. */
 /** Each trigger whose input a workflow does not take, as the DSL checks a run's input before its first node (each under
- *  `triggers.<i>.target.input`): a workflow package's triggers start its workflow's runs. */
+ *  `triggers.<i>.target.input`): a workflow package's triggers start its workflow's runs. The input checked is the one a
+ *  firing gives its run (triggers.ts firedInput: the content followed by a pushed source's payload and the line saying
+ *  what fired it), never the trigger's own alone, which no run is given. */
 export async function workflowTriggerInputIssues(workflow: Json, made: readonly Json[]): Promise<InputIssue[]> {
   const { validateWorkflow } = await import("@parcha/agentrun-dsl");
   return made.flatMap((trigger, i) => {
-    const input = isObject(trigger.target) ? trigger.target.input : undefined;
-    if (!isObject(input)) return [];
+    if (!isObject(trigger.target) || !isObject(trigger.target.input) || !isObject(trigger.source) || typeof trigger.source.kind !== "string") return [];
+    const input = sampleFiredInput(TRIGGER_ADAPTERS, trigger as never);
     const checked = validateWorkflow(workflow as never, { executeCode: false, input });
     if (checked.ok) return [];
     const why = checked.issues.map((issue) => `${issue.message}${issue.path ? ` (at ${issue.path})` : ""}`).join("; ");
