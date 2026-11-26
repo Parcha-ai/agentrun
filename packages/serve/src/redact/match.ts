@@ -1056,6 +1056,13 @@ const OPERATORS: ReadonlySet<string> = new Set(["+", "\\", "+\\"]);
 /** A letter or a digit, of any script: an apostrophe with one on each side ("Here's", "I've", "l'eau") is prose. */
 const WORDY = /^[\p{L}\p{N}]$/u;
 
+/** A character of a word: a letter or a digit, of any script, or "_". */
+const WORD_CHAR = /^[\p{L}\p{N}_]$/u;
+
+/** Python's string prefixes, lower case: a word that is exactly one before an apostrophe (r'...', Rb'...') makes it
+ *  open a string, whatever follows. */
+const STRING_PREFIXES: ReadonlySet<string> = new Set(["r", "u", "b", "f", "br", "rb", "fr", "rf"]);
+
 /** JSON's punctuation between its values. */
 const STRUCTURE = only("{}[],:");
 
@@ -1086,7 +1093,8 @@ function unitAt(text: string, at: number, to: number, level: 0 | 1): { char: str
  *  `quoted`, an apostrophe opens a string too, closed by the next apostrophe or a line break, as a single-quoted literal
  *  of Python or JavaScript is (a quote inside it is text, as an apostrophe inside a "..." string is), except one with a
  *  letter or a digit on each side, prose's ("Here's"), which opens none: so an odd number of them before code does not
- *  turn its literals the wrong way round. At level 0, with `written`, the span of each value written in quotes is added
+ *  turn its literals the wrong way round. One after a word that is exactly a Python string prefix (r'...', fR'...') opens
+ *  a string all the same. At level 0, with `written`, the span of each value written in quotes is added
  *  to it (the again join reads it one level down). Each character is read at most three times (at level 0, at level 1,
  *  and in the whitespace after a string looking for a ":"). */
 function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], kind: JoinKind = "nested", written?: Span[]): void {
@@ -1097,8 +1105,10 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
   let lone = "";
   let string = false;
   let operators: Part[] = [];
-  // The character before this one at this level (after a string, its quote).
+  // The character before this one at this level (after a string, its quote), and the word that ends there, lower case
+  // (its first three characters; "" when no word ends there).
   let last = "";
+  let word = "";
   let plus = false;
   const endBare = (end: number) => {
     if (bare >= 0) {
@@ -1116,9 +1126,10 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
     if (kind === "quoted" && char === "'") {
       // The character after it as it stands (an escape there is no letter).
       if (end < to) scanned.chars++;
-      quote = !(WORDY.test(last) && end < to && WORDY.test(text[end]!));
+      quote = STRING_PREFIXES.has(word) || !(WORDY.test(last) && end < to && WORDY.test(text[end]!));
     }
     last = char;
+    word = WORD_CHAR.test(char) ? (word.length < 3 ? word + char.toLowerCase() : word) : "";
     if (!quote) {
       if (isSpace(code)) endBare(at);
       else if (STRUCTURE(code)) {
