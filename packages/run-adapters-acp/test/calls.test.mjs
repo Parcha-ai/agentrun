@@ -158,6 +158,40 @@ test("an extra our tool's input schema declares is its argument, never agy's own
   assert.equal(await other.take('look_up', { q: 'c' }, signal, 50), 'call_c');
 });
 
+test("two calls of a tool with the same other arguments, one passing a declared extra and one leaving it out for agy to fill: neither takes the other's id, whichever MCP call comes first", async () => {
+  const { announceCall } = calls;
+  const agy = (toolCallId, rawInput) => ({ toolCallId, name: 'mcp_agentrun_look_up', title: 'Run mcp_agentrun_look_up', kind: 'other', rawInput });
+  const signal = new AbortController().signal;
+  const declared = new Map([['look_up', new Set(['toolSummary'])]]);
+  const hurry = (taking) => Promise.race([taking, new Promise((resolve) => setTimeout(() => resolve('waited'), 2_000).unref())]);
+  // call_a's model passed toolSummary 'a'; call_b's left it out and agy announced one of its own. call_b's MCP call,
+  // with none, comes first: { q: 'x' } matches both only without the extra, so it waits until call_a's MCP call takes
+  // call_a by its full form, and then takes call_b.
+  const ids = new calls.CallIds();
+  announceCall(ids, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
+  announceCall(ids, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
+  const b = ids.take('look_up', { q: 'x' }, signal, 60_000);
+  const a = ids.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000);
+  assert.deepEqual(await hurry(Promise.all([b, a])), ['call_b', 'call_a'], 'each its own id, the one without the extra first');
+  // call_a's MCP call first: its own by its full form, and call_b's is then the one left.
+  const other = new calls.CallIds();
+  announceCall(other, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
+  announceCall(other, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
+  assert.equal(await hurry(other.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000)), 'call_a');
+  assert.equal(await hurry(other.take('look_up', { q: 'x' }, signal, 60_000)), 'call_b');
+  // One announced with exactly the MCP call's arguments is taken at once, before one that matches only without the extra.
+  const exact = new calls.CallIds();
+  announceCall(exact, agy('call_c', { q: 'x', toolSummary: 'generated c' }), AGY, TOOLS, declared);
+  announceCall(exact, agy('call_d', { q: 'x' }), AGY, TOOLS, declared);
+  assert.equal(await hurry(exact.take('look_up', { q: 'x' }, signal, 60_000)), 'call_d');
+  // Still two that match only so when the wait ends: the oldest, as before.
+  const both = new calls.CallIds();
+  announceCall(both, agy('call_e', { q: 'x', toolSummary: 'generated e' }), AGY, TOOLS, declared);
+  announceCall(both, agy('call_f', { q: 'x', toolSummary: 'generated f' }), AGY, TOOLS, declared);
+  assert.equal(await both.take('look_up', { q: 'x' }, signal, 50), 'call_e');
+  assert.equal(await hurry(both.take('look_up', { q: 'x' }, signal, 60_000)), 'call_f', 'one left: at once');
+});
+
 test("a schema declares an argument at its top, in allOf, anyOf or oneOf at any depth, or behind a $ref to its own $defs; a $ref it cannot read may", () => {
   const summary = { toolSummary: { type: 'string' } };
   for (const schema of [
