@@ -237,4 +237,4 @@ export async function pullLocalModel(deps: LocalModelDeps, body: unknown) {
 }
 
 /** The real pull: through the Ollama `env` names (ollama-provider.ts ollamaPull). */
-export const pullThrough = (env: () => NodeJS.ProcessEnv) => (tag: string, onLine: (line: OllamaPullLine) => void, signal: AbortSignal) => ollamaPull(env(), tag, onLine, { signal });
+export const pullThrough = (env: () => NodeJS.ProcessEnv, stallMs?: number) => (tag: string, onLine: (line: OllamaPullLine) => void, signal: AbortSignal) => ollamaPull(env(), tag, onLine, { signal, ...(stallMs !== undefined ? { stallMs } : {}) });

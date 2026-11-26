@@ -3992,7 +3992,7 @@ export type ListSuggestionsResponse = {
 
 /** Pull a recommended model into the Ollama here (POST /settings/local-model/pull). */
 export type PullLocalModelBody = {
-  tag: string;
+  tag: "inkling-2-mini" | "qwen3:8b" | "qwen3:4b";
 };
 export type PullLocalModelResponse = {
   machine: {

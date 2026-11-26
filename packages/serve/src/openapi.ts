@@ -3216,7 +3216,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: `Starts pulling \`tag\` through this server's own Ollama (POST /api/pull) and answers at once; GET /settings/local-model shows its progress, and once it is \`done\` the model is in capabilities' models with no restart. Only a tag the recommendation can name, ${LOCAL_MODEL_TAGS.join(", ")} (422 input_invalid for any other). Only on one owner's own server on their own machine, and never under the faux model or a model gateway: 403 forbidden in words otherwise. One pull at a time: 409 local_model_pulling while one is under way. The owner's signed-in session alone (ownerSession).`,
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["tag"], properties: { tag: { type: "string", minLength: 1, maxLength: 200, description: "The tag to pull: the recommendation's (`recommended.tag`)." } } } } } },
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["tag"], properties: { tag: { enum: [...LOCAL_MODEL_TAGS], description: "The tag to pull: the recommendation's (`recommended.tag`), one of the tags a recommendation names (any other: 422)." } } } } } },
       responses: { "202": json(LOCAL_MODEL_VIEW, "The pull started: `pull` is under way."), ...errors(401, 403, 409, 415, 422, 429, 500) },
       "x-agentrun-serve": "localmodel/1",
     },

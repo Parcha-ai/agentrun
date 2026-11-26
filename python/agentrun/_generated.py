@@ -6358,7 +6358,7 @@ class ListSuggestionsResponseSuggestionsItemCreatedPullRequest(TypedDict):
 
 
 class PullLocalModelBody(TypedDict):
-    tag: str
+    tag: Literal["inkling-2-mini", "qwen3:8b", "qwen3:4b"]
 
 
 class PullLocalModelResponse(TypedDict):

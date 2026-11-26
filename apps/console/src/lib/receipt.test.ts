@@ -45,7 +45,7 @@ describe("receiptFacts", () => {
   it("reads the run, its usage and its trace into the receipt's facts", () => {
     expect(receiptFacts(run(), "Field monitor", usage, trace, 60)).toEqual({
       run_id: "run_free_1", agent_name: "Field monitor", finished_at: "2026-11-23T10:01:30.500Z", wall_s: 90.5,
-      cost: { usd: 0, basis: "known", free: true, free_reason: "local", free_words: "local model on your machine (Ollama)" },
+      cost: { usd: 0, basis: "known", free: true, free_reason: "local", free_words: "local model (Ollama)" },
       model: { id: "qwen3:8b", provider: "ollama", local: true },
       requests: 7, tokens: { input: 15000, output: 1000 },
       // One entry per tool and what its calls went through; a call whose result head does not say has no via.
@@ -53,21 +53,51 @@ describe("receiptFacts", () => {
     });
   });
 
+  // cost.free speaks of model requests alone; the usage says what else the run used, and a receipt is shared.
+  it("none where the usage total is not exactly $0: browser time no charge was booked for, or no total read", () => {
+    expect(receiptFacts(run(), "A", { ...usage, total: { usd: null } }, trace)).toBeNull();
+    expect(receiptFacts(run(), "A", { ...usage, total: null }, trace)).toBeNull();
+    expect(receiptFacts(run(), "A", { ...usage, total: { usd: 0.42 } }, trace)).toBeNull();
+    expect(receiptFacts(run(), "A", { ...usage, total: { usd: 0, unpriced: 1 } }, trace)).toBeNull();
+    expect(receiptFacts(run(), "A", undefined, trace)).toBeNull();
+  });
+  it("none where a line has no figure: computer time no price was set for (basis unpriced, usd null)", () => {
+    const compute = line({ meter: "compute_time", model: null, provider: "daytona", unit: "vcpu_second", quantity: 90, basis: "unpriced", usd: null, billable: true, requests: undefined, tokens: undefined, resource: "vcpu" });
+    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, compute] }, trace)).toBeNull();
+    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, { ...compute, basis: "estimate" }] }, trace)).toBeNull();
+    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, { ...compute, basis: "unpriced", usd: 0 }] }, trace)).toBeNull();
+  });
+  it("none where compute time is left unheld by any price (unheld_quantity), even at a $0 line", () => {
+    const compute = line({ meter: "compute_time", model: null, provider: "e2b", unit: "vcpu_second", quantity: 90, usd: 0, requests: undefined, tokens: undefined, unheld_quantity: 90 });
+    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, compute] }, trace)).toBeNull();
+    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, { ...compute, unheld_quantity: 0 }] }, trace)).not.toBeNull();
+  });
+  it("none where MCP calls no price meters ran (not_metered_calls), or model requests none metered", () => {
+    const tools = line({ meter: "tools", model: null, provider: null, unit: "call", quantity: 3, requests: undefined, tokens: undefined, not_metered_calls: 3 });
+    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, tools] }, trace)).toBeNull();
+    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, line({ unmetered_requests: 1 })] }, trace)).toBeNull();
+  });
+  it("none where browser time cost anything, or any line above $0", () => {
+    const browser = line({ meter: "browser_time", model: null, provider: "browserbase", unit: "second", quantity: 60, usd: 0.02, billable: true, requests: undefined, tokens: undefined });
+    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, browser] }, trace)).toBeNull();
+    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, { ...browser, usd: null }] }, trace)).toBeNull();
+  });
+
   it("a trace cut at its cap: the rows it left out ride along, so the tool counts read as a floor", () => {
     expect(receiptFacts(run(), "A", usage, { ...trace, dropped: 12 })?.tools_uncounted).toBe(12);
     expect(receiptFacts(run(), "A", usage, trace)).not.toHaveProperty("tools_uncounted");
   });
   it("a free catalog model: not local, its words with the run's request limit", () => {
-    const facts = receiptFacts(run(), "A", { lines: [line({ provider: "openrouter", model: "example/free-model:free", requests: 3 })] }, undefined, 60);
+    const facts = receiptFacts(run(), "A", { total: { usd: 0 }, lines: [line({ provider: "openrouter", model: "example/free-model:free", requests: 3 })] }, undefined, 60);
     expect(facts).toMatchObject({ model: { id: "example/free-model:free", provider: "openrouter", local: false }, requests: 3, tools: [],
       cost: { free_reason: "free_model", free_words: "free model, up to 60 requests a run" } });
-    expect(receiptFacts(run(), "A", { lines: [line({ provider: "openrouter", model: "example/free-model:free" })] }, undefined)?.cost.free_words).toBe("free model");
+    expect(receiptFacts(run(), "A", { total: { usd: 0 }, lines: [line({ provider: "openrouter", model: "example/free-model:free" })] }, undefined)?.cost.free_words).toBe("free model");
   });
 
   it("local and catalog requests in one run: both", () => {
-    const facts = receiptFacts(run(), "A", { lines: [line({ requests: 4 }), line({ provider: "openrouter", model: "example/free-model:free", requests: 1 })] }, undefined, 20);
+    const facts = receiptFacts(run(), "A", { total: { usd: 0 }, lines: [line({ requests: 4 }), line({ provider: "openrouter", model: "example/free-model:free", requests: 1 })] }, undefined, 20);
     expect(facts?.model).toEqual({ id: "qwen3:8b", provider: "ollama", local: true });
-    expect(facts?.cost).toMatchObject({ free_reason: "local_and_free_model", free_words: "local model on your machine (Ollama) and free model, up to 20 requests a run" });
+    expect(facts?.cost).toMatchObject({ free_reason: "local_and_free_model", free_words: "local model (Ollama) and free model, up to 20 requests a run" });
   });
 
   it("is null for a run with no receipt, and for one whose usage names no model", () => {

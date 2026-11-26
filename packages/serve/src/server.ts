@@ -142,8 +142,6 @@ import { deleteLearning } from "./learn/delete.js";
 import { forgetLegacyRunLearning, legacyGradesKey, legacyPromotionsKey } from "./learn/legacy/scrub.js";
 import { runModelRef } from "./model.js";
 import { fullTag, type LocalModelDeps, localModelView, localPulls, type Machine, pullLocalModel, pullThrough, readMachine } from "./local-model.js";
-/** How many times a pull's end reads the Ollama listing for its tag before it fails (server.ts ollamaPulled). */
-const PULL_LISTED_TRIES = 6;
 import { ollamaForget, ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels, ollamaReading } from "./ollama-provider.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -495,6 +493,9 @@ export type ServeOptions = {
   /** For tests: this machine as GET /settings/local-model reads it (local-model.ts Machine), in place of the real one, so no
    *  test reads the hardware it runs on. */
   machine?: () => Promise<Machine>;
+  /** For tests: how long a local model pull may go with no byte from Ollama before it stops (ollama-provider.ts
+   *  PULL_STALL_MS, two minutes, by default). */
+  pullStallMs?: number;
   /** No runner beside this server in its process (the CLI's --no-runner, the image's server-and-runner): a paired
    *  computer's socket is held here while no run holds it, and relayed to the runner that holds a run of it
    *  (workspace/paired-route.ts); while no runner relays, a pairing code, the pair answer and each paired computer say no
@@ -1810,6 +1811,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     void ollamaModels(env);
     if (offersFrom && !offersMadeFrom(offersInputs(env))) await keysChanged();
   };
+  /** How many times a pull's end reads the Ollama listing for its tag before it fails (ollamaPulled). */
+  const PULL_LISTED_TRIES = 6;
   /** After a pull of `tag` here ends (local-model.ts): the kept listing dropped and read again at once until it lists
    *  `tag` (a listing whose ask of one model failed lists it not), and the reading made again where it differs, so the
    *  model is in the picker and is the default with no wait for OLLAMA_TTL_MS before the pull says done. Never listed
@@ -1827,7 +1830,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** This machine, read once (local-model.ts readMachine), or a test's. */
   let machineRead: Promise<Machine> | undefined;
   const machineOf = () => (machineRead ??= (options.machine ?? readMachine)());
-  const pulls = localPulls({ pull: pullThrough(() => env), finished: ollamaPulled, ...(log ? { log } : {}), signal: stopping.signal });
+  const pulls = localPulls({ pull: pullThrough(() => env, options.pullStallMs), finished: ollamaPulled, ...(log ? { log } : {}), signal: stopping.signal });
   const localModelDeps = (): LocalModelDeps => ({ env, notOwn, machine: machineOf, pulls });
   /** After a harness key is saved or removed (harness-keys.ts): the listings built again, cut of it, and the offers probed
    *  again, as a recipe is offered once every key it runs on is saved here (harnessKeysSavedHere). No environment changes. */

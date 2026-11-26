@@ -6054,7 +6054,7 @@ export interface operations {
   };
   pullLocalModel: {
     body: {
-      tag: string;
+      tag: "inkling-2-mini" | "qwen3:8b" | "qwen3:4b";
     };
     answer: {
       machine: {

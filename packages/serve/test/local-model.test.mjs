@@ -8,7 +8,7 @@ import { fakeOllama } from "./fixtures/fake-ollama.mjs";
 import { serve, withEnv } from "./support.mjs";
 
 const { INKLING, INKLING_OLLAMA, LOCAL_MODEL_TAGS, OLLAMA_DOWNLOAD, QWEN3_DEFAULT, RAM_FLOOR_GIB, localModelView, nvidiaOf, ollamaElsewhere, pullRefusal, recommendLocalModel, versionAtLeast } = await import("../dist/local-model.js");
-const { ollamaClock } = await import("../dist/ollama-provider.js");
+const { PULL_LINE_MAX, ollamaClock, ollamaPull } = await import("../dist/ollama-provider.js");
 
 // The suites turn every Ollama off (support.mjs, OLLAMA_OFF_ENV); this file asks its own fakes alone.
 delete process.env.AGENTRUN_SERVE_FAUX_NO_OLLAMA;
@@ -293,4 +293,49 @@ test("a pull whose tag Ollama never lists ends failed, saying to pull again, nev
   }
   assert.deepEqual([pull.state, pull.error], ["failed", `Ollama finished pulling ${QWEN3_DEFAULT} but does not list it yet. Press Pull again.`]);
   assert.ok(!(await piModels(api)).includes(`ollama/${QWEN3_DEFAULT}`));
+});
+
+test("a pull Ollama stops streaming ends failed once nothing came for the stall deadline, and frees the one pull here", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  // The registry stalls after the first layer's 400 bytes: Ollama holds the stream open and sends nothing more.
+  const ollama = await fakeOllama(t, { models: [], pullable: { [QWEN3_DEFAULT]: PULLED }, pullHold: new Promise(() => {}) });
+  withEnv(t, { OLLAMA_HOST: ollama.host });
+  const server = await serve(t, { faux: undefined, runner: false, machine: async () => LINUX(32), pullStallMs: 400 });
+  const { api } = server;
+  assert.equal((await api("POST", "/settings/local-model/pull", { tag: QWEN3_DEFAULT })).status, 202);
+  const stalled = await until(async () => {
+    const pull = (await api("GET", "/settings/local-model")).body.pull;
+    return pull?.state !== "pulling" ? pull : undefined;
+  }, "the stalled pull's end");
+  assert.equal(stalled.state, "failed");
+  assert.equal(stalled.completed_bytes, 400);
+  // Its words round the deadline to seconds (two minutes by default; 400 ms here).
+  assert.equal(stalled.error, "Ollama sent nothing for 0 s, so the pull stopped. Press Pull again.");
+  // The slot is free: the next pull starts (202), never 409 local_model_pulling.
+  const again = await api("POST", "/settings/local-model/pull", { tag: QWEN3_DEFAULT });
+  assert.equal(again.status, 202, JSON.stringify(again.body));
+  assert.deepEqual(ollama.got.pull, [QWEN3_DEFAULT, QWEN3_DEFAULT]);
+});
+
+test("ollamaPull: a stream that moves is let run past the stall deadline; one that sends no newline stops at the line cap", { timeout: 60_000 }, async () => {
+  const env = { OLLAMA_HOST: "http://127.0.0.1:9" };
+  const streamOf = (parts, gapMs) => new Response(new ReadableStream({
+    async start(controller) {
+      for (const part of parts) {
+        await new Promise((resolve) => setTimeout(resolve, gapMs));
+        controller.enqueue(new TextEncoder().encode(part));
+      }
+      controller.close();
+    },
+  }), { status: 200 });
+  // Six chunks 150 ms apart, 900 ms in all, under a 400 ms stall deadline: each byte resets it.
+  const progress = [...Array.from({ length: 5 }, (_, i) => `${JSON.stringify({ status: "pulling x", digest: "sha256:x", total: 10, completed: i })}\n`), `${JSON.stringify({ status: "success" })}\n`];
+  const seen = [];
+  await ollamaPull(env, QWEN3_DEFAULT, (line) => seen.push(line.status), { fetch: async () => streamOf(progress, 150), stallMs: 400 });
+  assert.equal(seen.at(-1), "success");
+  // A head that never comes is a stall too.
+  await assert.rejects(ollamaPull(env, QWEN3_DEFAULT, () => {}, { fetch: (_url, init) => new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))), stallMs: 200 }), /Ollama sent nothing for 0 s, so the pull stopped/);
+  // A stream with no newline grows no buffer past the cap.
+  const long = Array.from({ length: 5 }, () => "x".repeat(PULL_LINE_MAX / 4));
+  await assert.rejects(ollamaPull(env, QWEN3_DEFAULT, () => {}, { fetch: async () => streamOf(long, 1), stallMs: 5_000 }), new RegExp(`longer than ${PULL_LINE_MAX} bytes`));
 });

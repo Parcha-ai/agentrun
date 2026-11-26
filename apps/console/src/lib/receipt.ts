@@ -1,5 +1,5 @@
 import { isLocalModel, runModel } from "./models";
-import type { Run, RunTrace, RunUsage } from "./v2";
+import type { Run, RunTrace, RunUsage, UsageLine } from "./v2";
 
 // A completed free run's receipt: the one place the run's reads (GET /v2/runs/{id}, /usage, /trace) become the facts a
 // receipt card shows, and the rule for when there is one. components/Receipt.tsx renders them; any renderer that takes
@@ -52,16 +52,29 @@ function viaOf(preview: string | null): string | undefined {
 /** The reason's words. `freeRequests`: the server's limit on a run's free-model requests (capabilities'
  *  `limits.free_model_requests`), said where a free catalog model ran; a local model's requests count toward none. */
 function freeWords(reason: FreeReason, freeRequests: number | undefined): string {
-  const local = "local model on your machine (Ollama)";
+  // Not "on your machine": OLLAMA_HOST may put the server's Ollama on another one, which a run's reads do not say.
+  const local = "local model (Ollama)";
   const free = typeof freeRequests === "number" ? `free model, up to ${freeRequests} requests a run` : "free model";
   return reason === "local" ? local : reason === "free_model" ? free : `${local} and ${free}`;
 }
 
+/** Whether a run's usage says it cost nothing at all: a usage total of exactly $0, and every line at exactly $0 with
+ *  nothing left out of it. `cost.free` speaks of model requests only, so a run that also used computer or browser time,
+ *  or tool calls, that nothing priced or booked is no free run: a line with no figure (`usd` null, `basis` unpriced), MCP
+ *  calls no price meters (`not_metered_calls`), model requests none meters (`unmetered_requests`), or compute time no
+ *  price holds (`unheld_quantity`). */
+export function usageAllFree(usage: Pick<RunUsage, "lines" | "total"> | undefined): boolean {
+  if (!usage || usage.total?.usd !== 0 || (usage.total.unpriced ?? 0) > 0) return false;
+  return (usage.lines ?? []).every((line: UsageLine) => line.usd === 0 && line.basis !== "unpriced" && !(line.unpriced ?? 0)
+    && !(line.not_metered_calls ?? 0) && !(line.unmetered_requests ?? 0) && !(line.unheld_quantity ?? 0));
+}
+
 /** The receipt's facts from the run, its usage (the model, its requests and tokens, every attempt's line summed) and its
- *  trace (the tool calls; a trace cut at its cap carries how many rows it left out, `tools_uncounted`). Null for a run with no receipt (showsReceipt), and for one whose usage names no model: a
- *  receipt never guesses one. */
-export function receiptFacts(run: Run, agentName: string, usage: Pick<RunUsage, "lines"> | undefined, trace: Pick<RunTrace, "spans"> & Partial<Pick<RunTrace, "dropped">> | undefined, freeRequests?: number): ReceiptFacts | null {
-  if (!showsReceipt(run) || !run.ended_at) return null;
+ *  trace (the tool calls; a trace cut at its cap carries how many rows it left out, `tools_uncounted`). Null for a run with no receipt (showsReceipt), for one whose usage says
+ *  anything it used was unpriced, unbooked or above $0 (usageAllFree), and for one whose usage names no model: a receipt
+ *  never guesses one. */
+export function receiptFacts(run: Run, agentName: string, usage: Pick<RunUsage, "lines" | "total"> | undefined, trace: Pick<RunTrace, "spans"> & Partial<Pick<RunTrace, "dropped">> | undefined, freeRequests?: number): ReceiptFacts | null {
+  if (!showsReceipt(run) || !run.ended_at || !usageAllFree(usage)) return null;
   const top = runModel(usage);
   if (!top) return null;
   let requests = 0, input = 0, output = 0, local = false, catalog = false;

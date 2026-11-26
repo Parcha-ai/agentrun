@@ -304,41 +304,65 @@ export async function ollamaVersion(env: NodeJS.ProcessEnv, { fetch: send = glob
 /** One line of a pull's progress as Ollama streams it (POST /api/pull): its status, and a layer's digest with its bytes. */
 export type OllamaPullLine = { readonly status: string; readonly digest?: string; readonly total?: number; readonly completed?: number };
 
+/** How long a pull may go with no byte from Ollama before it stops (ollamaPull): a registry that stalls, or an Ollama
+ *  that wedges, frees the one pull here instead of holding it at `pulling` until the server restarts. */
+export const PULL_STALL_MS = 120_000;
+/** The longest progress line a pull takes: Ollama's are a few hundred bytes, so a stream that sends no newline ends. */
+export const PULL_LINE_MAX = 64 * 1024;
+
 /**
  * Pulls `tag` through the Ollama `env` names (POST /api/pull, streamed as NDJSON), each line of progress to `onLine` as it
  * comes. Resolves once Ollama says `success`; throws, in Ollama's words, on an `error` line, a refusal, a stream that ends
- * before `success`, or `signal`. No deadline of its own: a model is gigabytes, and the caller stops it (`signal`).
+ * before `success`, or `signal`; in its own, on `stallMs` with no byte from Ollama (the answer's head or a chunk of the
+ * stream) or a line past PULL_LINE_MAX. No deadline on the whole: a model is gigabytes, and a pull that moves is let run.
  */
-export async function ollamaPull(env: NodeJS.ProcessEnv, tag: string, onLine: (line: OllamaPullLine) => void, { fetch: send = globalThis.fetch, signal }: { fetch?: typeof fetch; signal?: AbortSignal } = {}): Promise<void> {
+export async function ollamaPull(env: NodeJS.ProcessEnv, tag: string, onLine: (line: OllamaPullLine) => void, { fetch: send = globalThis.fetch, signal, stallMs = PULL_STALL_MS }: { fetch?: typeof fetch; signal?: AbortSignal; stallMs?: number } = {}): Promise<void> {
   const base = baseOf(env);
   if (base === undefined) throw new Error("no Ollama is asked here");
-  const response = await send(`${base}/api/pull`, { method: "POST", redirect: "error", ...(signal ? { signal } : {}), headers: { "content-type": "application/json" }, body: JSON.stringify({ model: tag, stream: true }) });
-  if (!response.ok || !response.body) {
-    const said = safeJson(await response.text().catch(() => "")) as { error?: unknown } | undefined;
-    throw new Error(typeof said?.error === "string" ? said.error : `/api/pull: ${response.status}`);
-  }
-  const decoder = new TextDecoder();
-  let rest = "";
-  let succeeded = false;
-  const take = (text: string) => {
-    const line = safeJson(text) as { status?: unknown; error?: unknown; digest?: unknown; total?: unknown; completed?: unknown } | undefined;
-    if (!line || typeof line !== "object") return;
-    if (typeof line.error === "string") throw new Error(line.error);
-    if (typeof line.status !== "string") return;
-    if (line.status === "success") succeeded = true;
-    onLine({ status: line.status, ...(typeof line.digest === "string" ? { digest: line.digest } : {}), ...(line.total !== undefined ? { total: count(line.total) } : {}), ...(line.completed !== undefined ? { completed: count(line.completed) } : {}) });
+  const stall = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const moved = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => stall.abort(), stallMs);
   };
-  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
-    rest += decoder.decode(chunk, { stream: true });
-    let cut: number;
-    while ((cut = rest.indexOf("\n")) >= 0) {
-      const text = rest.slice(0, cut).trim();
-      rest = rest.slice(cut + 1);
-      if (text) take(text);
+  const stopped = signal ? AbortSignal.any([signal, stall.signal]) : stall.signal;
+  moved();
+  try {
+    const response = await send(`${base}/api/pull`, { method: "POST", redirect: "error", signal: stopped, headers: { "content-type": "application/json" }, body: JSON.stringify({ model: tag, stream: true }) });
+    if (!response.ok || !response.body) {
+      const said = safeJson(await response.text().catch(() => "")) as { error?: unknown } | undefined;
+      throw new Error(typeof said?.error === "string" ? said.error : `/api/pull: ${response.status}`);
     }
+    const decoder = new TextDecoder();
+    let rest = "";
+    let succeeded = false;
+    const take = (text: string) => {
+      const line = safeJson(text) as { status?: unknown; error?: unknown; digest?: unknown; total?: unknown; completed?: unknown } | undefined;
+      if (!line || typeof line !== "object") return;
+      if (typeof line.error === "string") throw new Error(line.error);
+      if (typeof line.status !== "string") return;
+      if (line.status === "success") succeeded = true;
+      onLine({ status: line.status, ...(typeof line.digest === "string" ? { digest: line.digest } : {}), ...(line.total !== undefined ? { total: count(line.total) } : {}), ...(line.completed !== undefined ? { completed: count(line.completed) } : {}) });
+    };
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+      moved();
+      rest += decoder.decode(chunk, { stream: true });
+      let cut: number;
+      while ((cut = rest.indexOf("\n")) >= 0) {
+        const text = rest.slice(0, cut).trim();
+        rest = rest.slice(cut + 1);
+        if (text) take(text);
+      }
+      if (rest.length > PULL_LINE_MAX) throw new Error(`Ollama sent a progress line longer than ${PULL_LINE_MAX} bytes, so the pull stopped. Press Pull again.`);
+    }
+    if (rest.trim()) take(rest.trim());
+    if (!succeeded) throw new Error("the pull ended before Ollama said success");
+  } catch (error) {
+    if (stall.signal.aborted && !signal?.aborted) throw new Error(`Ollama sent nothing for ${Math.round(stallMs / 1000)} s, so the pull stopped. Press Pull again.`);
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  if (rest.trim()) take(rest.trim());
-  if (!succeeded) throw new Error("the pull ended before Ollama said success");
 }
 
 /** `env`'s Ollama listing as last kept (ollamaKept), in one string: each model's tag, capabilities and trained context.

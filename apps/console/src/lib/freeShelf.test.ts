@@ -92,6 +92,24 @@ describe("runsFree", () => {
     expect(runsFree(template({ model: { tier: "balanced", prefer: "anthropic/claude-x" } }), harnesses)).toBe(false);
     expect(runsFree(template({ tags: ["research"] }), harnesses)).toBe(false);
   });
+  // A tag is the package author's own claim, and "Use free" swaps only the model: what else it asks for is read too.
+  it("never one that asks for a key, an MCP toolkit, a browser, or a computer that is not this server's own", () => {
+    const tagged = { tags: ["free"] };
+    expect(runsFree(template({ ...tagged, secrets: ["MONID_API_KEY"] }), harnesses)).toBe(false);
+    expect(runsFree(template({ ...tagged, mcp: [{ source: "composio", toolkit: "gmail", required: true, reason: null, tools: [] }] }), harnesses)).toBe(false);
+    expect(runsFree(template({ ...tagged, tools: ["read", "mcp:github/get_file_contents"] }), harnesses)).toBe(false);
+    expect(runsFree(template({ ...tagged, tools: ["browser_navigate"] }), harnesses)).toBe(false);
+    const here = (computer: { kind: string; provider?: string }, shell: string | null) => ({ computer_here: { entry: "shell" as const, computer, shell, dropped: [], note: null } });
+    expect(runsFree(template({ ...tagged, ...here({ kind: "sandbox", provider: "daytona" }, "the daytona sandbox") }), harnesses)).toBe(false);
+    expect(runsFree(template({ ...tagged, ...here({ kind: "none" }, "Archil's serverless exec") }), harnesses)).toBe(false);
+    expect(runsFree(template({ ...tagged, ...here({ kind: "sandbox", provider: "docker" }, "the docker sandbox"), tools: ["read", "bash", "web_fetch"] }), harnesses)).toBe(true);
+    expect(runsFree(template({ ...tagged, ...here({ kind: "none" }, null) }), harnesses)).toBe(true);
+  });
+  it("a free model only on a choice that needs no key", () => {
+    const choice = (secrets: string[]) => ({ model: { tier: "fast" as const, choices: [{ id: "c", label: "C", model: LOCAL.id, harness: "pi", warning: null, note: null, secrets }] } });
+    expect(runsFree(template(choice(["OPENROUTER_API_KEY"])), harnesses)).toBe(false);
+    expect(runsFree(template(choice([])), harnesses)).toBe(true);
+  });
   it("freeModelFor: the free default of the harness apply makes the agent on, the first of its harnesses available here", () => {
     expect(freeModelFor(template({ harness: ["codex", "pi"] }), harnesses)).toBe(LOCAL.id);
     expect(freeModelFor(template({ harness: null }), harnesses)).toBe(LOCAL.id);

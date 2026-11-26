@@ -46,7 +46,7 @@ describe("a run's $0 receipt", () => {
     expect(card.textContent).toContain("$0.00");
     expect(card.textContent).toContain("qwen3:8b · local (Ollama)");
     expect(card.textContent).toContain("6 requests");
-    expect(card.textContent).toContain("local model on your machine (Ollama)");
+    expect(card.textContent).toContain("local model (Ollama)");
     expect(card.textContent).toContain("web_search");
     expect(card.textContent).toContain("exa-keyless");
     expect(t.reads).toContain("usage");

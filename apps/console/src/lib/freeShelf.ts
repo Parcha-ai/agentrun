@@ -50,12 +50,26 @@ export function webTools(tools: unknown, harness: string): ShelfTool[] {
   });
 }
 
-/** Whether a template runs free, by its package's own mark: its `free` tag, or a model it prefers or offers as a choice
- *  that is one of this server's free models. */
+/** Whether a template asks for nothing that costs money besides its model: no key (`secrets`), no MCP toolkit (`mcp`, or a
+ *  tool named `mcp:…`), no browser tool, and no computer but this server's own Docker sandbox or none. A package's tags
+ *  are its author's own claim, and "Use free" swaps only the model. */
+export function asksNothingPaid(t: TemplateView): boolean {
+  if (t.secrets.length || t.mcp.length) return false;
+  if ((t.tools ?? []).some((name) => name.startsWith("mcp:") || name.startsWith("browser"))) return false;
+  const here = t.computer_here;
+  if (!here?.computer) return true;
+  if (here.computer.kind === "sandbox") return here.computer.provider === "docker";
+  return here.computer.kind === "none" && here.shell === null;
+}
+
+/** Whether a template runs free here: it asks for nothing paid besides its model (asksNothingPaid), and its package marks
+ *  it free (its `free` tag) or prefers or offers as a choice one of this server's free models, a choice that needs no
+ *  key. */
 export function runsFree(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): boolean {
+  if (!asksNothingPaid(t)) return false;
   if (t.tags.includes("free")) return true;
   const free = new Set(freeModels(harnesses).map((m) => m.id));
-  return [t.model?.prefer, ...(t.model?.choices ?? []).map((c) => c.model)].some((id) => !!id && free.has(id));
+  return [t.model?.prefer, ...(t.model?.choices ?? []).filter((c) => !c.secrets.length).map((c) => c.model)].some((id) => !!id && free.has(id));
 }
 
 /** The harness apply makes a template's agent on, as the server picks it (server.ts, apply): the first of its harnesses
