@@ -935,7 +935,7 @@ test("ArchilWorkspace: on a fresh folder of an Archil that makes no parent for a
   assert.deepEqual(disk.calls.filter(isPut).slice(puts).map((call) => call.key), [`${ROOT}/.agents/skills/review/SKILL.md`, `${ROOT}/.agents/skills/review/`, `${ROOT}/.agents/skills/review/SKILL.md`]);
 });
 
-test("ArchilWorkspace: a folder Archil still will not make names the call that failed, the path and Archil's words", async () => {
+test("ArchilWorkspace: a folder Archil still will not make names the call that failed and the path, in serve's words alone", async () => {
   const disk = new FakeArchilDisk();
   disk.parentless = true;
   disk.dirs.add(ROOT);
@@ -945,7 +945,7 @@ test("ArchilWorkspace: a folder Archil still will not make names the call that f
     if (key === `${ROOT}/.agents/`) throw Object.assign(new Error("404 NoSuchKey: no such key"), { status: 404 });
     return putObject(key, body);
   };
-  await assert.rejects(workspace.mkdir(".agents/skills"), (error) => error.code === "NOT_FOUND" && /^"\.agents" is not there \(mkdir; Archil: 404 NoSuchKey: no such key\)/.test(error.message));
+  await assert.rejects(workspace.mkdir(".agents/skills"), (error) => error.code === "NOT_FOUND" && /^"\.agents" is not there \(mkdir\)/.test(error.message) && !/NoSuchKey/.test(error.message));
 });
 
 test("ArchilWorkspace: an append refused for a missing folder that then can't be made says none of it landed, never that it may have", async () => {
@@ -962,7 +962,8 @@ test("ArchilWorkspace: an append refused for a missing folder that then can't be
     await assert.rejects(workspace.append("logs/out.txt", bytes), (error) => {
       assert.equal(error.code, "NOT_FOUND");
       assert.doesNotMatch(error.message, /may also have landed|unknown/);
-      assert.match(error.message, /"logs" is not there \(mkdir; Archil: 404 NoSuchKey: no such key\)/);
+      assert.match(error.message, /"logs" is not there \(mkdir\)/);
+      assert.doesNotMatch(error.message, /NoSuchKey/, "Archil's own words for a 404 stay out of the agent's");
       if (bytes.length > APPEND_MAX) assert.match(error.message, /0 of \d+ bytes were appended/);
       return true;
     });
@@ -970,10 +971,10 @@ test("ArchilWorkspace: an append refused for a missing folder that then can't be
   assert.equal(disk.files.has(`${ROOT}/logs/out.txt`), false);
 });
 
-test("ArchilWorkspace: a file or folder that is not there stays NOT_FOUND with Archil's words kept, and a fresh folder's skills are laid", async () => {
+test("ArchilWorkspace: a file or folder that is not there stays NOT_FOUND in serve's words, none of Archil's, and a fresh folder's skills are laid", async () => {
   const disk = new FakeArchilDisk();
   const workspace = archilWorkspace(disk, ROOT);
-  await assert.rejects(workspace.read("missing.md"), (error) => error.code === "NOT_FOUND" && error.message.startsWith('"missing.md" is not there') && /NoSuchKey/.test(error.message));
+  await assert.rejects(workspace.read("missing.md"), (error) => error.code === "NOT_FOUND" && error.message === '"missing.md" is not there (read)');
   await assert.rejects(workspace.list(".agents/skills"), (error) => error.code === "NOT_FOUND");
   await layOwnSkills(workspace, { "triage/SKILL.md": "# triage\n" });
   assert.equal(text(await workspace.read(".agents/skills/triage/SKILL.md")), "# triage\n");

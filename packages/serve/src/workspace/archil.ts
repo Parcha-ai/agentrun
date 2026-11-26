@@ -127,7 +127,8 @@ function failed(error: unknown, path: string, what: string, tell: ProviderTell):
   if (error instanceof FolderNotMade) return error.why;
   const status = statusOf(error);
   const at = { path, cause: error };
-  if (status === 404 && !(error instanceof ArchilDiskMissing)) return new WorkspaceError("NOT_FOUND", `${show(path)} is not there (${what}; Archil: ${describe(error)})`, at);
+  // Serve's words alone: Archil's own for a 404 add nothing the agent acts on, and name the disk's keys.
+  if (status === 404 && !(error instanceof ArchilDiskMissing)) return new WorkspaceError("NOT_FOUND", `${show(path)} is not there (${what})`, at);
   if (status === 413 || (error as { code?: unknown })?.code === "EntityTooLarge") return new WorkspaceError("TOO_LARGE", `${what} ${show(path)}: more than the disk takes in one call`, at);
   // A disk gone at Archil is the machine gone: its own words say so, and no status does.
   const said = providerFailed(error instanceof ArchilDiskMissing ? { code: "gone", message: error.message } : error, DISK_AT, tell);
