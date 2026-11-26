@@ -56,8 +56,8 @@ the new state.
 types for this desktop: its apps, its windows, its screen and input, and, where the desktop has them, its shell
 (`computer.shell.run`) and its files (`computer.files`). The body is an async function: `await` the calls and `return`
 what you need. Each call is a call of its own, asked about and recorded like the tools': a command is held to your
-bash setting, a file written to your write setting, a file read to your read setting. A call that needs a person's OK
-stops the script until they answer.
+bash setting; a file written needs write among your tools, and a file read, listed or looked up needs read, each then
+held to that tool's setting. A call that needs a person's OK stops the script until they answer.
 
 ```js
 const notes = computer.app("com.apple.Notes");
@@ -87,7 +87,8 @@ file from Finder into a Mail message), or anything outside every window.
 
 **Only what you were given.** An agent's computer setting may leave some out: a code-only agent drives the desktop from
 `codemode` alone, with no `computer_observe`, `computer_act` or `computer_screenshot` in its tool list; an agent whose
-exec is off has no `computer.shell`, no `computer.processes` and no bash. Where the desktop has the `apps` group a
+exec is off has no `computer.shell`, no `computer.processes` and no bash; one not given read has no `computer.files`
+read, list or stat, and one not given write no `computer.files.write`. Where the desktop has the `apps` group a
 script opens apps with `computer.apps`, and on a desktop with no ui group the tools open the app they name (below);
 otherwise it uses the desktop's own launcher through the screen. Use what your tool list and codemode's types show.
 

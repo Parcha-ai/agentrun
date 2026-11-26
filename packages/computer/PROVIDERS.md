@@ -248,7 +248,9 @@ AgentRun polls `get`. The exception is a vendor that applies a machine's setting
 its egress allowlist (`["none"]`, network none) and its idle hibernation timer: there `create` may wait until the
 machine is ready, within `ctx.timeoutMs`, set them, and answer then. Store `req.labels` on the machine, since `list`
 finds machines by them. Where your API keeps fewer or shorter labels than AgentRun writes, declare
-`labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
+`labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`. Packed,
+a machine's labels are stored as `agentrun` (its name) and `agentrun-0`, `agentrun-1` and on, and a caller's label
+under one of those names is refused at `check()`. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
 `HostError("exists", …)`: AgentRun lists that name and adopts the machine, as a retry of the request does. `req.egress` is `false` for a computer whose network is `none`, except with an Archil storage
 mount. There AgentRun asks `true` so its root can reach Archil, and the agent's programs still have no network. It is
 `true` under `open` or a list: the egress proxy init starts goes out through the machine's network, and the agent's

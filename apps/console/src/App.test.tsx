@@ -219,6 +219,8 @@ describe("App, the race form when the capabilities can't be read", () => {
         tools: [{ name: "read", available: true, harnesses: ["pi"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }],
         places: { modes: ["runner", "sandbox"], boxes: [{ id: "local", available: true }], default_place: { mode: "sandbox", box: "local" } },
       });
+      // The computers list a race waits for: Mode 1's, whose no-computer choice has no shell.
+      if (path === "/v2/computers") return json(200, { kinds: [{ kind: "none", offered: true, groups: [], tools: [], settings: [], record: { available: false }, providers: [], shell: "none" }] });
       if (path === "/v2/agents" && init?.method === "POST") {
         const { definition } = JSON.parse(String(init.body)) as { definition: { id: string; tools?: string[] } };
         made.push(definition);

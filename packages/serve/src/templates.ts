@@ -822,7 +822,10 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   const learningIssue = f.learning === undefined ? undefined : learningSettingIssue(f.learning, "learning");
   if (learningIssue) bad(MANIFEST, learningIssue);
   if (f.approvals !== undefined && f.approvals !== "ask" && f.approvals !== "never") bad(MANIFEST, "approvals is ask (the agent asks its person before a tool runs) or never (it runs unattended; deny and pins still hold)");
-  const triggers = f.triggers === undefined ? [] : Array.isArray(f.triggers) ? (f.triggers as unknown[]) : (bad(MANIFEST, "triggers is a list of POST /v2/triggers bodies"), []);
+  const written = f.triggers === undefined ? [] : Array.isArray(f.triggers) ? (f.triggers as unknown[]) : (bad(MANIFEST, "triggers is a list of POST /v2/triggers bodies"), []);
+  // A composio trigger written with no config is for an event whose config needs no field (Slack's new channel): its
+  // config is the empty one, as POST /v2/triggers takes it.
+  const triggers = written.map((trigger) => (isObject(trigger) && isObject(trigger.source) && trigger.source.kind === "composio" && trigger.source.config === undefined ? { ...trigger, source: { ...trigger.source, config: {} } } : trigger));
   const triggerNames = new Set<string>();
   triggers.forEach((trigger, i) => {
     const target = isObject(trigger) ? trigger.target : undefined;
