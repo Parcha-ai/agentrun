@@ -96,7 +96,7 @@ describe("AgentEditor, bash on a runner-placed computer (Mode 2)", () => {
   const KINDS = [
     { kind: "none", offered: true, groups: [], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [], shell: "local" },
     { kind: "sandbox", offered: true, groups: ["exec"], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no screen" }, providers: [provider("docker", "computer")] },
-    { kind: "desktop", offered: true, groups: ["screen"], tools: ["read", "screen.shot"], settings: ["surface", "exec", "record"], record: { available: false, why: "fixture: no ffmpeg" }, providers: [provider("e2b", "computer"), provider("unmounted", "local")] },
+    { kind: "desktop", offered: true, groups: ["screen"], tools: ["read", "screen.shot"], settings: ["surface", "exec", "record"], record: { available: false, why: "fixture: no ffmpeg" }, providers: [provider("e2b", "computer"), provider("unmounted", "local"), provider("unmounted2", "local")] },
   ];
   const agent = (computer: Record<string, unknown>): Agent => ({
     ...SERVED_AGENT, agent_id: "shelly", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
@@ -167,5 +167,21 @@ describe("AgentEditor, bash on a runner-placed computer (Mode 2)", () => {
     const sent = await form.save();
     expect(sent).toMatchObject({ computer: { kind: "desktop", provider: "unmounted" } });
     expect(sent?.tools).toContain("bash");
+  });
+
+  // serve's runShellOf: a computer set to run no programs of its own (exec: false) has no shell anywhere, not its
+  // computer's and not Archil's exec, though its provider serves the runner's own shell ("local").
+  it("a desktop set to run no programs (exec: false) whose provider's shell is the runner's own: a provider change drops bash, and its card is not offered", async () => {
+    const form = open(agent({ kind: "desktop", provider: "unmounted", exec: false }));
+    form.click(form.input('input[name="computer-provider"][value="unmounted2"]'));
+    expect(form.host.textContent).toMatch(/Bash is turned off/);
+    form.step(/Tools/);
+    const bash = form.input('input[type="checkbox"][value="bash"]')!;
+    expect(bash.checked).toBe(false);
+    expect(bash.disabled).toBe(true);
+    expect(bash.closest("label")!.textContent).toContain("Sandbox-only");
+    const sent = await form.save();
+    expect(sent).toMatchObject({ computer: { kind: "desktop", provider: "unmounted2", exec: false }, place: { mode: "runner" } });
+    expect(sent?.tools).not.toContain("bash");
   });
 });

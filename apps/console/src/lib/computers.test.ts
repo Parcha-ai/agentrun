@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computerFields, pickKind } from "./computers";
+import { computerFields, pickKind, runnerShellOf } from "./computers";
 import type { Computer, ComputerKindView } from "./v2";
 
 // A switch of a computer's kind or provider carries what the old one set where the new one takes it, and says what it
@@ -70,5 +70,15 @@ describe("computerFields to the runner, by the choice's served shell", () => {
     const fields = (kinds: ComputerKindView[] | null) => computerFields({ kind: "desktop", provider: "e2b" }, ["bash", "read"], OFFERED, kinds);
     expect(fields(desktop("local"))?.tools).toEqual(["bash", "read"]);
     for (const kinds of [desktop("computer"), desktop("none"), served(none("local")), null]) expect(fields(kinds)?.tools).toEqual(["read"]);
+  });
+  // serve's runShellOf: a computer that runs no programs of its own (exec: false) has no shell anywhere, not its
+  // computer's and not Archil's exec, whatever its provider's served shell.
+  it("Mode 2, a desktop or phone set to run no programs (exec: false): no shell tools, though its provider's shell is the runner's own", () => {
+    const kinds = served(none("local"), { kind: "desktop", providers: [{ id: "e2b", shell: "local" }] }, { kind: "phone", providers: [{ id: "orgo", shell: "local" }] });
+    for (const computer of [{ kind: "desktop", provider: "e2b", exec: false }, { kind: "phone", provider: "orgo", exec: false }] as Computer[]) {
+      expect([...runnerShellOf(computer, kinds)], computer.kind).toEqual([]);
+      expect(computerFields(computer, ["bash", "read"], OFFERED, kinds)?.tools, computer.kind).toEqual(["read"]);
+    }
+    expect([...runnerShellOf({ kind: "desktop", provider: "e2b", exec: true } as Computer, kinds)]).toEqual(["bash"]);
   });
 });
