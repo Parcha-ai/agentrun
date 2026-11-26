@@ -241,12 +241,6 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
 
 - **The shell** is a 220px sidebar and a main column. The `roomy:` variant shows the sidebar at 768px wide and 501px tall; smaller or shorter windows use a top bar with a menu.
   Banners sit above the page, outside its scroller. `main` is the page's only scroller.
-- **A panel over a page** shows one thing from a list without leaving it (Agent Factory's open session,
-  `FactorySession`): an `<aside>` placed over the right side of the page's body (`absolute inset-y-0 right-0`, in a
-  `relative` box under the top bar), `xl:w-3/5 xl:max-w-3xl` and the whole body below `xl`, on `z-sticky` with
-  `shadow-float`, since it floats while the list scrolls under it. The list is never reflowed or hidden, so it keeps
-  its place. The address names what is open; Close and Escape drop it, and the keyboard goes back to what opened it.
-  Escape from a field being typed in, or from a menu or dialog inside the panel, is theirs.
 - **Breakpoints** are Tailwind's: write mobile first and add `md:` for the desktop layout. `max-sm:` tightens a
   phone. `short:` is for a viewport at most 500px tall (a phone on its side). `roomy:` combines a minimum width of 768px and height of 501px for the desktop shell. Do not add a breakpoint.
 - **A part beside a panel** is laid out by the width of its pane, not the window's: a panel that takes part of the page
@@ -254,6 +248,12 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
   `@5xl:` (64rem) on the part. The Dev tools table shows its time axis and its Size column this way beside an open call.
   The stylesheet writes these before the breakpoints, so one never undoes a breakpoint's class: write the breakpoint's
   side as a range (`hidden max-xl:table-cell @4xl:table-cell`). Do not add a width.
+- **A panel over a page** shows one thing from a list without leaving it (Agent Factory's open session,
+  `FactorySession`): an `<aside>` placed over the right side of the page's body (`absolute inset-y-0 right-0`, in a
+  `relative` box under the top bar), `xl:w-3/5 xl:max-w-3xl` and the whole body below `xl`, on `z-sticky` with
+  `shadow-float`, since it floats while the list scrolls under it. The list is never reflowed or hidden, so it keeps
+  its place. The address names what is open; Close and Escape drop it, and the keyboard goes back to what opened it.
+  Escape from a field being typed in, or from a menu or dialog inside the panel, is theirs.
 - **Widths.** A page fills the width it has, so nothing is left empty beside it on a wide screen. What changes with
   the width is how its parts are laid out, never a margin:
   - A page of data (Mission Control, a list, a table) is fluid: its tables stretch and its card grids take more columns.
