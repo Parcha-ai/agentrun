@@ -435,9 +435,11 @@ const LAYER_READS = SEQUENCE_LAYERS.map(({ names, strings }) => {
  *    view that decodes fewer layers can read an ST where the first two read its backslash with what follows as one
  *    escape: a JSON writer's "\u001b" and two backslashes before a quote, a letter of JSON's escapes, or "u" and four
  *    hex digits; Python's before "x" and two hex digits; a raw ESC and backslash before any of them.
- *  The end taken is rounded up to the end of the unit (as the first two read units) it falls in, so the read past it
- *  resumes where those reads resume, never inside an escape they read whole; what it passes over then counts as
- *  nothing. Read no further than a piece of text.
+ *  Where the end taken falls inside a unit (as the first two read units), the read past it resumes at that unit's
+ *  start, where those reads resume, never inside an escape they read whole. Not at its end: what a view that decodes
+ *  fewer layers reads after its sequence can be the rest of the next sequence's opener (a percent-encoded ESC in a
+ *  title, the BEL after it and the backslash of the next "\u001b" read as an ST), and that opener must still open.
+ *  Read no further than a piece of text.
  *
  *  The invariant every count here keeps is one-sided: this read may count fewer characters than the views show
  *  (it then reads further), never more, so no padding the views read past pushes a held value's other half out of
@@ -464,8 +466,9 @@ function sequenceEnd(text: string, from: number, at: number, to: number, intro: 
   }
   const sequence = reads.reduce((far, one) => (one && (!far || one.end > far.end) ? one : far), undefined);
   if (!sequence) return [at, found];
-  let end = at;
-  while (end < sequence.end) end = units.next(end);
+  let [start, end] = [at, at];
+  while (end < sequence.end) [start, end] = [end, units.next(end)];
+  if (end > sequence.end) end = start;
   let count = found;
   for (let n = 0; n < sequence.backspaces; n++) count = counted(count, "\b", false);
   return [end, count];
