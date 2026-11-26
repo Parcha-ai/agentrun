@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Changelog fragments: one file per pull request in changes/, folded into the CHANGELOGs by the release. Nothing but the release
 // edits an Unreleased section, so two pull requests never touch the same lines.
-//   node scripts/changes.mjs --check [--base <commit>]   validate fragments; fail an edit of any Unreleased section
+//   node scripts/changes.mjs --check [--base <commit>]   validate fragments; fail one a release already folded, and an edit of any Unreleased section
 //   node scripts/changes.mjs --fold <version> [--date YYYY-MM-DD]   move each fragment into the CHANGELOG its package names
 // The release pull request folds what main holds then; the release workflow folds what its tag still carries (fragments of pull
 // requests that merged after that fold) into the archives it publishes, uncommitted, and the next release's fold puts those into
@@ -257,10 +257,12 @@ export function sectionDate(text, version) {
  * (file name to text), and the package directories held at it (their manifest there says `"private": true`). The release workflow
  * folds every fragment its tag carries into the archives it publishes, so a fragment of a name the tag carried shipped in that release,
  * in the text the tag carried, for every package it names that the release published. Null when there is no such tag (or no repository).
+ * With no `version` (`--check`, which folds nothing), the newest `v*` tag reachable from HEAD.
  */
 export async function previousRelease(root, version) {
   let tag;
-  try { tag = (await git(root, ['describe', '--tags', '--abbrev=0', '--match', 'v*', '--exclude', `v${version}`, 'HEAD'])).trim(); } catch { return null; }
+  const exclude = version === undefined ? [] : ['--exclude', `v${version}`];
+  try { tag = (await git(root, ['describe', '--tags', '--abbrev=0', '--match', 'v*', ...exclude, 'HEAD'])).trim(); } catch { return null; }
   if (!tag) return null;
   const carried = new Map();
   for (const path of (await git(root, ['ls-tree', '--name-only', tag, 'changes/'])).split('\n')) {
@@ -288,6 +290,44 @@ const anyPackage = { has: () => true, *[Symbol.iterator]() {} };
 function sectionHolds(lines, version, file) {
   const at = lines.findIndex(line => isVersionHeading(line, version));
   return at >= 0 && markersIn(lines.slice(at + 1, sectionEnd(lines, at)).join('\n')).includes(file);
+}
+
+/**
+ * The fragments in changes/ a release already folded, `[{ file, changelog, version, by }]`: a released section (any but Unreleased) of
+ * a changelog a fold writes carries the fragment's marker (`by: 'marker'`), or holds the first line of the bullet the fold would write
+ * for it with the marker dropped by hand (`by: 'bullet'`). The next fold would write that bullet a second time. One entry per fragment,
+ * changelog and section, the marker's when both match.
+ *
+ * One window is the fold's own and passes: a fragment the newest release's tag carried (its pull request merged after that release
+ * pull request's fold, before the tag) while that release's section carries its marker, on any line, curated by hand before the next
+ * fold. That fold reads the same tag as its previous release, finds the marker with this same `sectionHolds`, writes nothing more for
+ * it and deletes it. Where the section holds only the bullet's words, that fold writes the bullet again, so the match stands.
+ */
+export async function releasedFragments(root, fragments) {
+  if (fragments.length === 0) return [];
+  const previous = await previousRelease(root);
+  const bullets = new Map(fragments.map(fragment => [fragment.file, bulletOf(fragment.body).split('\n')[0].trimEnd()]));
+  const found = new Map();
+  for (const changelog of await changelogPaths(root)) {
+    const text = await readOptional(join(root, changelog));
+    if (text === null) continue;
+    const lines = text.split('\n');
+    const inWindow = (version, file) => previous?.version === version && previous.carried.has(file) && sectionHolds(lines, version, file);
+    let version = null;
+    for (const line of lines) {
+      if (line.startsWith('## ')) { version = unreleasedHeading(line) ? null : line.slice(3).replace(/^\[/, '').split(/[\],\s]/)[0]; continue; }
+      if (!version) continue;
+      const markers = markersIn(line);
+      const plain = line.replace(marker, '').trimEnd();
+      for (const { file } of fragments) {
+        if (inWindow(version, file)) continue;
+        const by = markers.includes(file) ? 'marker' : plain === bullets.get(file) ? 'bullet' : null;
+        const key = `${file}\n${changelog}\n${version}`;
+        if (by && found.get(key)?.by !== 'marker') found.set(key, { file, changelog, version, by });
+      }
+    }
+  }
+  return [...found.values()];
 }
 
 /**
@@ -572,6 +612,8 @@ async function main() {
   const root = defaultRoot;
   if (args[0] === '--check') {
     const fragments = await loadFragments(root);
+    const released = await releasedFragments(root, fragments);
+    if (released.length) throw new Error(released.map(({ file, changelog, version, by }) => `changes/${file}: ${changelog} has it in its ${version} section (its ${by}); this fragment was released in ${version}; delete it (git rm changes/${file})`).join('\n'));
     const given = option('--base');
     if (!given || /^0+$/.test(given)) { console.log(`Changes: ${fragments.length} fragment(s) valid. No base commit given, so the Unreleased sections were not compared.`); return; }
     const base = await checkBase(root, given);

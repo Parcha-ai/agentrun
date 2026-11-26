@@ -902,6 +902,8 @@ export function startRunner(options: RunnerOptions): Runner {
       // loop ended interrupted on its own and the run is tried again. The next claim works its turn again.
       const cut = end.state !== "interrupted" ? undefined : closedItself ? "retry" as const : held.stoppedFor === "shutdown" ? "drain" as const : undefined;
       await release(claim, {
+        // Parked again with nothing written (LoopEnd `again`): the release parks the row, its words left as they stood.
+        ...(end.state === "parked" && end.again ? { state: "parked" as const } : {}),
         ...(end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt }
         : inARow > 0 ? { backoffUntil: now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
         : {}),

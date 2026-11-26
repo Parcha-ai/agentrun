@@ -873,14 +873,17 @@ Route: `GET /capabilities, then its device sign-in; else GET /agents?limit=1, to
 
 - `--to URL|cloud` (string, this CLI's own): the server, /v2 added when its address's path holds none; cloud is AgentRun cloud (AGENTRUN_CLOUD_URL, else https://api.agentrun.ai). When its capabilities offer a device sign-in, prints an address and a code to approve there, else reads the token from stdin
 - `--base-url URL` (string, this CLI's own): the server, /v2 added as for --to (default AGENTRUN_BASE_URL); the token from stdin, or on a terminal a device sign-in when the server offers one
+- `--share URL` (string, this CLI's own): a share host (agentrun share RUN --to URL publishes there): its token from stdin, checked at URL/r/v2/shares and kept in the config file's own share entry; the server's address and token stay as they are
 
 ## logout
 
 ### `agentrun logout`
 
-Remove the config file login wrote, its address and token.
+Remove the config file login wrote, its address and token (with --share, the share host's entry alone).
 
 Route: none, it runs on this machine.
+
+- `--share` (boolean, this CLI's own): remove the share host's entry alone (agentrun login --share); the server's address and token stay
 
 ## mcp-servers
 
@@ -1397,15 +1400,22 @@ Route: none, it runs on this machine.
 
 ### `agentrun share RUN`
 
-Show what sharing a run would send (--dry-run): its bundle checked and summed up, its page opened here; nothing is published.
+Share an ended run: publish its bundle to a share host (--to), or show what that would send (--dry-run: its bundle checked and summed up, its page opened here) or write it (--out).
 
-Route: `GET /runs/{run_id}/export; the page it opens is <origin>/share/{run_id}`.
+Route: `GET /runs/{run_id}/export; with --to, then POST <host>/r/v2/shares on the share host; the page --dry-run opens is <origin>/share/{run_id}`.
 
+- `--to URL` (string, this CLI's own): publish: the bundle, exported again with --restore and checked against --expect before anything is sent, posted to the share host at URL with the token agentrun login --share URL kept; prints the share's URL
 - `--dry-run` (boolean, this CLI's own): fetch the run's share bundle, print its summary and open its preview page; nothing is sent anywhere
 - `--out FILE` (string, this CLI's own): write the bundle as the server sent it, byte for byte (0600, never over a file); alone, it opens nothing
 - `--restore IDS` (string, this CLI's own): cut ids to keep in place, comma-separated (restorable ones only: a label, personal or jev cut)
 - `--expect SHA` (string, this CLI's own): refuse a bundle whose sha256 is another (the page's publish command carries it)
 - `--no-open` (boolean, this CLI's own): open no browser; print the page's link
+
+### `agentrun share delete URL`
+
+Take a published share down with the share host's login: its page and bundle then answer 410.
+
+Route: `DELETE <host>/r/v2/shares/{id}, on the share host the URL is on`.
 
 ## skill
 

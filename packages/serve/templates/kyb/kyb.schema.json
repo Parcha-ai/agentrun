@@ -105,7 +105,7 @@
             "properties": {
               "list": { "enum": ["OFAC SDN", "OFAC Consolidated (non-SDN)", "UN Security Council Consolidated", "EU Consolidated Financial Sanctions", "UK Sanctions List"] },
               "version": { "type": "string", "minLength": 1, "maxLength": 100, "description": "the list's publication or generation date as the list or its index states it, or 'unknown'" },
-              "checked": { "type": "boolean", "description": "whether this list was screened in this run by any method of SANCTIONS.md (rows in the input, a screening tool, an index with the owner's records); false when every subject's result on it is not_checked" },
+              "checked": { "type": "boolean", "description": "whether this list was screened in this run by any method of SANCTIONS.md (rows in the input, a screening tool, the list's own file saved and searched, an index with the owner's records); false when every subject's result on it is not_checked" },
               "source": { "$ref": "#/$defs/sourceId" }
             }
           }
@@ -132,7 +132,7 @@
                   "properties": {
                     "list": { "enum": ["OFAC SDN", "OFAC Consolidated (non-SDN)", "UN Security Council Consolidated", "EU Consolidated Financial Sanctions", "UK Sanctions List"] },
                     "result": { "enum": ["no_hit", "confirmed_hit", "possible_match", "false_positive", "not_checked"] },
-                    "method": { "enum": ["list_rows_in_input", "full_list_read", "screening_tool", "index_then_source_record", "index_only", "not_checked"] },
+                    "method": { "enum": ["list_rows_in_input", "full_list_grep", "full_list_read", "screening_tool", "index_then_source_record", "index_only", "not_checked"] },
                     "matches": {
                       "type": "array",
                       "maxItems": 5,

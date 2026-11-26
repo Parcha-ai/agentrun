@@ -1,0 +1,10 @@
+# Applied with these parameters (POST /v2/templates/kyb/apply). Pass: 3 of 3 runs.
+# fixtures/web.json serves the list owners' own files as web_save fetches them, each under the type its owner sends
+# (OFAC text/csv, UN application/xml, EU text/plain, UK application/octet-stream): real rows from the files of
+# 2026-11-20 (OFAC, EU), 2026-11-24 (UK) and 2026-11-25 (UN), each cut to a few leading rows and every row of
+# PETROPARS UK and AL RASHID TRUST (the UK's 847 AL RASHID TRUST rows to one per name). Searches find nothing and pages
+# answer 404, so the lists' own files are the only sources: the case measures the screening, not the registry work.
+parameters:
+  risk_appetite: medium
+  jurisdictions_of_interest: ""
+web: fixtures/web.json

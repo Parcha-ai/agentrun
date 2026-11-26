@@ -62,6 +62,16 @@ test("the phone skill's scrolls pass foreground: true, and its script expects no
   assert.doesNotMatch(phone, /expect: \{ ?text: "Android version" ?\}/, "no expect on a row below the fold");
 });
 
+// Beta.58 QA (E2B desktop, Archil): the run's folder was mounted at /workspace, but the desktop's terminal opens in the
+// desktop user's home, and the skill never named the folder, so what was saved from the terminal never reached the run.
+// A mounted folder is at /workspace on every computer (the mount conformance case); a desktop without one gets the
+// server's files note instead (computerFilesNote).
+test("the desktop skill names /workspace as the run's folder where it is mounted, and says the terminal opens elsewhere", () => {
+  const desktop = KIND_SKILLS.desktop.text.replace(/\s+/g, " ");
+  assert.match(desktop, /the run's folder is mounted on the desktop, it is `\/workspace`/);
+  assert.match(desktop, /terminal opens in the desktop user's home, not in `\/workspace`/);
+});
+
 test("a desktop or phone run's claim lays its kind's skill beside the agent's own", async () => {
   for (const kind of ["desktop", "phone"]) {
     const work = scratch();

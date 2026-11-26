@@ -1,5 +1,6 @@
 // The commands that take a secret, from stdin and never from the command line: `login` (the token for a server, checked
-// and kept in the config file, or one a device sign-in ends with: device.mjs) and `logout`. No command writes a key or any other secret to the server: those are set in
+// and kept in the config file, or one a device sign-in ends with: device.mjs; with --share, the token for a share host,
+// kept in the file's own `share` entry, which no other command reads) and `logout`. No command writes a key or any other secret to the server: those are set in
 // the console, signed in, and the server refuses the token on them (secret-writes.ts). A secret is never in argv, so
 // never in shell history or `ps`, and never in any output or error. Each command is `{ command, pathParams, summary,
 // route?, help, options, run }`; cli.mjs runs it with `{ values, args, env, io, cli }`, where `cli` is its own
@@ -9,7 +10,7 @@ import { chmodSync, closeSync, constants, existsSync, fsyncSync, mkdirSync, open
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { SignInError, capabilitiesOf, deviceOffer, deviceSignIn } from "./device.mjs";
-import { CLOUD_URL, toUrl } from "./target.mjs";
+import { CLOUD_URL, shareBase, toUrl } from "./target.mjs";
 
 /** The config file `login` writes and every command reads (cli.mjs's targetOf, which refuses it unless it is a private
  *  file of this user's): $XDG_CONFIG_HOME/agentrun/config.json, else
@@ -127,13 +128,50 @@ function syncFolder(dir) {
 
 const print = (io, value) => io.stdout.write(`${io.stdout.isTTY ? JSON.stringify(value, null, 2) : JSON.stringify(value)}\n`);
 
-/** `{ base_url, api_key }` in the config file, then its path printed: what every login ends with, whichever way the token
- *  came. */
-function keep(base, token, env, io, cli) {
+/** The config file's object as it is, for a login to write its own entry into and keep the rest: `{}` when there is none,
+ *  or one that is not a private file of this user's or not a JSON object (no command takes such a file: a login writes
+ *  it whole, as it always has). */
+function configNow(file, cli) {
+  try {
+    const value = JSON.parse(cli.privateFile(file) ?? "{}");
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The share host's entry of the config file (`agentrun login --share`): `{ base_url, api_key }` under `share`, beside
+ *  the server's base_url and api_key. Only share.mjs reads it, and its token goes only to the address it was kept with,
+ *  so a share host's login never repoints another command and a server's token never reaches a share host. */
+const SHARE_ENTRY = "share";
+
+/** The share host's target for `base` (target.mjs shareBase): its API, `<base>/r/v2`, and the token the share entry keeps
+ *  for that same address. Refused, exit 4, with the command that signs in, when the entry is for another address or
+ *  there is none; `nothing` ends the refusal (what was not done). */
+export function shareTargetOf(base, env, cli, nothing) {
   const file = configFileOf(env);
-  // Written whole beside it under a name no one could have planted (random, opened only if it is new, through no
-  // link), then moved over it: a reader never sees half a file, and it is never wider than 0600. Any failure is said
-  // plainly, its code alone, and leaves nothing behind.
+  const how = `agentrun login --share ${base} < TOKEN_FILE`;
+  const text = cli.privateFile(file);
+  let config;
+  try {
+    config = text === undefined ? {} : JSON.parse(text);
+  } catch {
+    throw cli.fail(4, `${file} is not valid JSON; refusing it. ${nothing}`);
+  }
+  const entry = config?.[SHARE_ENTRY];
+  if (entry === null || typeof entry !== "object" || typeof entry.base_url !== "string" || shareBase(entry.base_url) !== base) {
+    throw cli.fail(4, `No share host login for ${base}: sign in to it once with \`${how}\` (its token goes in the config file's own share entry, which no other command reads). ${nothing}`);
+  }
+  if (typeof entry.api_key !== "string" || !entry.api_key || cli.BAD_HEADER.test(entry.api_key) || /\s/.test(entry.api_key)) {
+    throw cli.fail(4, `The share entry in ${file} holds no usable token; sign in again with \`${how}\`. ${nothing}`);
+  }
+  return { base: `${base}/r/v2`, token: entry.api_key };
+}
+
+/** `config` written as the config file, whole: beside it under a name no one could have planted (random, opened only if
+ *  it is new, through no link), then moved over it, so a reader never sees half a file, and it is never wider than
+ *  0600. Any failure is said plainly, its code alone, and leaves nothing behind. */
+function writeConfig(file, config, cli) {
   const temp = join(dirname(file), `.config.json.${randomBytes(8).toString("hex")}.tmp`);
   let made = false;
   try {
@@ -144,7 +182,7 @@ function keep(base, token, env, io, cli) {
     try {
       // Every byte, however few one write takes (a full disk, a quota), and on the disk before it takes the old one's
       // place: the rename never puts half a config where a whole one was.
-      const bytes = Buffer.from(`${JSON.stringify({ base_url: base, api_key: token }, null, 2)}\n`);
+      const bytes = Buffer.from(`${JSON.stringify(config, null, 2)}\n`);
       for (let at = 0; at < bytes.length; ) {
         const wrote = writeSync(fd, bytes, at, bytes.length - at);
         if (!(wrote > 0)) throw Object.assign(new Error("a write wrote nothing"), { code: "EIO" });
@@ -162,8 +200,45 @@ function keep(base, token, env, io, cli) {
   } finally {
     if (made) rmSync(temp, { force: true });
   }
-  print(io, { base_url: base, config_file: file });
+}
+
+/** `{ base_url, api_key }` in the config file (under `entry`, the share host's, when given), every other entry of it
+ *  kept, then its path printed: what every login ends with, whichever way the token came. */
+function keep(base, token, env, io, cli, entry) {
+  const file = configFileOf(env);
+  const login = { base_url: base, api_key: token };
+  writeConfig(file, { ...configNow(file, cli), ...(entry ? { [entry]: login } : login) }, cli);
+  print(io, entry ? { [entry]: { base_url: base }, config_file: file } : { base_url: base, config_file: file });
   return 0;
+}
+
+/** `agentrun login --share URL < FILE`: a share host's token, read from stdin (a share host offers no device sign-in),
+ *  checked against its own list of the token's shares (GET <URL>/r/v2/shares), and kept in the share entry. */
+async function shareLogin(given, env, io, cli) {
+  const base = shareBase(given);
+  if (base === undefined) throw cli.fail(2, "--share must be a share host's http or https address with no query, fragment, user or password (an agentrun-serve --share-host).");
+  const token = (await readSecret(io, cli.fail, "The share host's token", `agentrun login --share ${base} < FILE`)).trim();
+  if (!token) throw cli.fail(2, "stdin holds no token: one line, the token alone.");
+  if (cli.BAD_HEADER.test(token) || /\s/.test(token)) throw cli.fail(4, "The token is not a valid header value (it holds a space, a line break, a control character or a character outside Latin-1); nothing was written.");
+  const client = secretClient(cli.clientOf, { base: `${base}/r/v2`, token }, io, [token]);
+  client.unreachable = (error) => cli.fail(3, `Cannot reach the share host at ${base} (${error?.cause?.code ?? error?.name}); nothing was written.`);
+  const checked = await cli.request(client, { method: "GET", path: "/shares", headers: {} });
+  if (checked.code !== undefined) {
+    client.io.stderr.write(`${checked.code === 4 ? `The share host at ${base} refused the token` : `The share host at ${base} did not take the check`}; nothing was written.\n`);
+    return checked.code;
+  }
+  // The answer must be the token's own list of shares: a 200 from another route or another kind of server checks nothing.
+  let list;
+  try {
+    list = JSON.parse(checked.bytes.toString("utf8"));
+  } catch {
+    list = undefined;
+  }
+  if (!Array.isArray(list?.shares) || list.quota === null || typeof list.quota !== "object") {
+    client.io.stderr.write(`${base} answered the check with ${checked.response.status}, not a share host's list of shares; nothing was written.\n`);
+    return 1;
+  }
+  return keep(base, token, env, io, cli, SHARE_ENTRY);
 }
 
 export const LOGIN = {
@@ -174,10 +249,15 @@ export const LOGIN = {
   help: [
     ["--to URL|cloud", `the server, /v2 added when its address's path holds none; cloud is AgentRun cloud (AGENTRUN_CLOUD_URL, else ${CLOUD_URL}). When its capabilities offer a device sign-in, prints an address and a code to approve there, else reads the token from stdin`],
     ["--base-url URL", "the server, /v2 added as for --to (default AGENTRUN_BASE_URL); the token from stdin, or on a terminal a device sign-in when the server offers one"],
+    ["--share URL", "a share host (agentrun share RUN --to URL publishes there): its token from stdin, checked at URL/r/v2/shares and kept in the config file's own share entry; the server's address and token stay as they are"],
     ["(stdin)", "the token: agentrun login --base-url URL < FILE"],
   ],
-  options: { to: { type: "string" } },
+  options: { to: { type: "string" }, share: { type: "string" } },
   async run({ values, env, io, cli }) {
+    if (values.share !== undefined) {
+      if (values.to !== undefined || values["base-url"] !== undefined) throw cli.fail(2, "agentrun login --share signs in to a share host alone: --share, or --to / --base-url for a server, not both.");
+      return shareLogin(values.share, env, io, cli);
+    }
     if (values.to !== undefined && values["base-url"] !== undefined) throw cli.fail(2, "agentrun login takes the server once: --to or --base-url, not both.");
     const named = values.to !== undefined;
     const flagged = values["base-url"] !== undefined;
@@ -222,11 +302,33 @@ export const LOGIN = {
 export const LOGOUT = {
   command: ["logout"],
   pathParams: [],
-  summary: "Remove the config file login wrote, its address and token",
-  help: [],
-  options: {},
-  async run({ env, io }) {
+  summary: "Remove the config file login wrote, its address and token (with --share, the share host's entry alone)",
+  help: [["--share", "remove the share host's entry alone (agentrun login --share); the server's address and token stay"]],
+  options: { share: { type: "boolean" } },
+  async run({ values, env, io, cli }) {
     const file = configFileOf(env);
+    if (values.share) {
+      // Read strictly: a file refused or unreadable as a config may still hold the share token, so it is said, never
+      // taken for an empty one.
+      const text = cli.privateFile(file);
+      let config;
+      try {
+        config = JSON.parse(text ?? "{}");
+      } catch {
+        config = undefined;
+      }
+      if (config === null || typeof config !== "object" || Array.isArray(config)) throw cli.fail(4, `${file} is not a config file login writes (a JSON object); refusing it. Nothing was removed.`);
+      const removed = Object.hasOwn(config, SHARE_ENTRY);
+      if (removed) {
+        delete config[SHARE_ENTRY];
+        // The rest written back as a login writes it; nothing left, no file.
+        const { base_url: base, api_key: token, ...rest } = config;
+        if (base === undefined && token === undefined && !Object.keys(rest).length) rmSync(file, { force: true });
+        else writeConfig(file, config, cli);
+      }
+      print(io, { config_file: file, share: { removed } });
+      return 0;
+    }
     const removed = existsSync(file);
     rmSync(file, { force: true });
     print(io, { config_file: file, removed });

@@ -18,6 +18,7 @@ import { queued, storeOn } from "./store-helpers.mjs";
 const { mcpServersOverStore } = await import("../dist/mcp-servers-store.js");
 const { savePrivateOAuthHosts } = await import("../dist/mcp-private-hosts.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
 
 const KEY = randomBytes(32);
 const PAGE = "Settings → MCP servers";
@@ -176,7 +177,7 @@ test("on the runner, a pinned server whose name resolves to a private address at
   // The revision as its save pinned it: the granted tool, the server's URL then.
   await queued(store, "run-1", { mcpPin: { corp: { url, tools: [{ name: "add", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }] } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:corp/add"], harness: { commit: async () => undefined }, work: () => dir, network });
+  const mcp = await mcpForClaim({ redact: heldRedactor(keepText), claim, store, sealKey: KEY, grants: ["mcp:corp/add"], harness: { commit: async () => undefined }, work: () => dir, network });
   t.after(() => mcp.release());
   const add = mcp.tools.find((tool) => tool.name === "mcp__corp__add");
   const call = (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
@@ -208,7 +209,7 @@ test("on the runner, a server whose saved URL carries a credential in its query 
   // A revision saved before a save refused such a URL: its pin holds it.
   await queued(store, "run-1", { mcpPin: { old: { url: `${fake.url}?api_key=${secret}`, tools: [{ name: "add", inputSchema: { type: "object" } }] } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  await assert.rejects(mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants: ["mcp:old/add"], harness: { commit: async () => undefined }, work: () => dir }), (error) => {
+  await assert.rejects(mcpForClaim({ redact: heldRedactor(keepText), loopback: true, claim, store, sealKey: KEY, grants: ["mcp:old/add"], harness: { commit: async () => undefined }, work: () => dir }), (error) => {
     assert.equal(error.message, "The MCP server old can't be used: api_key in the URL's query looks like a credential; send it as a header instead (Headers). Nothing was sent.");
     return true;
   });
@@ -225,7 +226,7 @@ test("on the runner beside a local install, a server saved on loopback at that s
   const addOn = async (runId, own) => {
     await queued(store, runId, { mcpPin: { inward: { url: fake.url, tools: [{ name: "add", inputSchema: tools.add }] } } });
     const claim = await store.claim(runId, "runner-local", { leaseMs: 60_000 });
-    const mcp = await mcpForClaim({ loopback: true, own, claim, store, sealKey: KEY, grants: ["mcp:inward/add"], harness: { commit: async () => undefined }, work: () => dir });
+    const mcp = await mcpForClaim({ redact: heldRedactor(keepText), loopback: true, own, claim, store, sealKey: KEY, grants: ["mcp:inward/add"], harness: { commit: async () => undefined }, work: () => dir });
     t.after(() => mcp.release());
     const add = mcp.tools.find((tool) => tool.name === "mcp__inward__add");
     return (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
@@ -260,7 +261,7 @@ test("on the runner beside a local install, a token refresh whose authorization 
   const addOn = async (runId, own) => {
     await queued(store, runId, { mcpPin: pin });
     const claim = await store.claim(runId, "runner-local", { leaseMs: 10 * 3_600_000 });
-    const mcp = await mcpForClaim({ loopback: true, own, claim, store, sealKey: KEY, grants: ["mcp:docs/add"], harness: { commit: async () => undefined }, work: () => dir });
+    const mcp = await mcpForClaim({ redact: heldRedactor(keepText), loopback: true, own, claim, store, sealKey: KEY, grants: ["mcp:docs/add"], harness: { commit: async () => undefined }, work: () => dir });
     t.after(() => mcp.release());
     const add = mcp.tools.find((tool) => tool.name === "mcp__docs__add");
     return add.call({ a: 2, b: 3 }, { callId: `call-${runId}`, signal: new AbortController().signal });
@@ -292,7 +293,7 @@ test("on the runner beside a local install, a run whose revision has no pin is p
     await store.agents.create({ id: `agent-${runId}`, name: `agent-${runId}` }, { id: `rev-${runId}`, kind: "agentic", body: { instructions: "Answer.", tools: ["mcp:inward/add"] } });
     await store.runs.create({ id: runId, agentId: `agent-${runId}`, revisionId: `rev-${runId}` });
     const claim = await store.claim(runId, "runner-local", { leaseMs: 60_000 });
-    return mcpForClaim({ loopback: true, own, claim, store, sealKey: KEY, grants: ["mcp:inward/add"], harness: { commit: async () => undefined }, work: () => dir });
+    return mcpForClaim({ redact: heldRedactor(keepText), loopback: true, own, claim, store, sealKey: KEY, grants: ["mcp:inward/add"], harness: { commit: async () => undefined }, work: () => dir });
   };
   const at = new URL(fake.url);
   const sent = fake.log.length;
@@ -318,7 +319,7 @@ test("two runners on one store, one beside a local install and one not: a server
   const addOn = async (runId, runner, loopback) => {
     await queued(store, runId, { mcpPin: { local: { url: fake.url, tools: [{ name: "add", inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } } } }] } } });
     const claim = await store.claim(runId, runner, { leaseMs: 60_000 });
-    const mcp = await mcpForClaim({ claim, store, sealKey: KEY, grants: ["mcp:local/add"], harness: { commit: async () => undefined }, work: () => dir, ...(loopback === undefined ? {} : { loopback }) });
+    const mcp = await mcpForClaim({ redact: heldRedactor(keepText), claim, store, sealKey: KEY, grants: ["mcp:local/add"], harness: { commit: async () => undefined }, work: () => dir, ...(loopback === undefined ? {} : { loopback }) });
     t.after(() => mcp.release());
     const add = mcp.tools.find((tool) => tool.name === "mcp__local__add");
     return (callId) => add.call({ a: 2, b: 3 }, { callId, signal: new AbortController().signal });
