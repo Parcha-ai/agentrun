@@ -129,37 +129,6 @@ export interface HeldBrowser {
 }
 
 /**
- * The request's running browsers for a create's lookup (heldBrowser), read again while more than one runs: every
- * RECOVER_GAP_MS, for up to `ms` and as many reads as fit in it (one at least), until one is left. Two run while one
- * create's converge releases its own, and while a lost create's recovery reads the request before it releases its own
- * (recoverCreate): the oldest of them may be the one that recovery releases, so the lookup answers what is left. A read
- * that fails, or the bound reached, gives the last listing, whose oldest the lookup answers as before. Refused aborted
- * once the caller's signal ends.
- */
-export async function lookupSettled(
-	found: HeldBrowser[],
-	read: (signal?: AbortSignal) => Promise<Result<HeldBrowser[]>>,
-	sleep: (ms: number) => Promise<void>,
-	ms: number,
-	vendor: string,
-	signal?: AbortSignal,
-): Promise<Result<HeldBrowser[]>> {
-	const by = Date.now() + ms;
-	const reads = Math.max(1, Math.ceil(ms / RECOVER_GAP_MS));
-	let last = found;
-	for (let n = 0; n < reads && last.length > 1; n++) {
-		const left = by - Date.now();
-		if (n > 0 && left <= 0) break;
-		await sleep(Math.max(0, Math.min(RECOVER_GAP_MS, left)));
-		if (signal?.aborted) return fail("aborted", `create was aborted while two or more ${vendor} browsers of its request ran`);
-		const again = await read(signal);
-		if (!again.ok) break;
-		last = again.value;
-	}
-	return ok(last);
-}
-
-/**
  * The order a request's browsers are read in (heldBrowser, a create's converge): the oldest first, by the time the
  * vendor made each, then by id. The same browsers give the same order in every process.
  */

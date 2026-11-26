@@ -2650,10 +2650,8 @@ JSON.
 Each create writes one more label beside the spec's, `agentrun.create` (`CREATE_LABEL`), whose value is the request's
 name, `computer-<12 hex of sha256(requestId)>`. Before it makes a browser, create lists the running and starting
 browsers with that label: one with the spec's labels is answered, so a retried create, in this process or another,
-makes no second browser, and one with other labels is refused `exists`; where it finds several, it lists the label again every 2 s, for up to
-`cleanupMs` (as many reads as fit, one at least), until one is left, since the oldest may be a lost create's browser
-that its recovery is about to release (below); a read that fails, or the bound reached, leaves it to take the oldest
-(by the time the vendor made each, then id). Two processes whose creates of one request both find nothing make two
+makes no second browser, and one with other labels is refused `exists`; where it finds several, it takes the oldest (by
+the time the vendor made each, then id). Two processes whose creates of one request both find nothing make two
 browsers, so after the vendor's answer a create lists the label again: where an older browser of the request is
 there, it releases its own and answers the older, refused `exists` when the older has ended by then, and the oldest
 keeps its own. A caller's signal that aborts that listing releases the create's own browser (not under that signal)
@@ -2700,9 +2698,11 @@ it even when another process's create answered it by its lookup, or when the los
 other create's POST landed and that create's converge answered it: nothing on the vendor says so, and that create
 holds a browser that has ended. The same holds when a converge lists the lost create's browser running just before the
 lost create's last read again and ends its own just after: the lost create releases it, and that create's read of it
-most often finds it ended and fails the request. A lookup that finds several reads again for its own `cleanupMs`
-alone: a lost create in another process whose `cleanupMs` is longer can release the oldest after that, and the lookup
-that answered it holds a browser that has ended. On Orgo, a create whose POST got no answer deletes the computer by its exact name; that
+most often finds it ended and fails the request. Nor does a newer browser that still runs prove that nothing answered
+the lost create's: another create's lookup answers the request's oldest without a converge and ends nothing, so a
+lookup that lists the lost create's browser while a newer one runs answers it, and the lost create's last read again
+still finds every newer one running and releases it; nothing on the vendor tells that lookup apart. A pi-browser host
+recovers there: its next call finds the browser ended and opens a fresh one. On Orgo, a create whose POST got no answer deletes the computer by its exact name; that
 name can be the computer another process's create answered through Orgo's 409 (name in use), which then holds a
 deleted computer.
 
