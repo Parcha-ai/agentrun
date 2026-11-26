@@ -29,7 +29,8 @@ const json = (res, status, value) => res.writeHead(status, { "content-type": "ap
  * done_reason, "stop" when absent; "length" for an answer cut at its output limit), or `{ status, error }` for a refusal;
  * `got`, where each counted request is kept: `tags` (a count), `show` (each model asked), `chat` (each body).
  * `hangOn(route, body)`: true for a request it takes, counts and never answers (`tags`, `show` or `chat`), the rest
- * answered (an Ollama whose listing is stuck, or one model's /api/show).
+ * answered (an Ollama whose listing is stuck, or one model's /api/show). `refuseOn(route, body)`: true for a request it
+ * answers 500 (one model's /api/show failing, so a listing that is otherwise whole leaves it out).
  * `version`: what GET /api/version says (`got.version` counts them). `pullable`: the models a pull adds, by tag; a pull of
  * any other tag streams Ollama's error line. A pull streams the manifest, one layer of 1,000 bytes at 400, then waits for
  * `pullHold` (a promise; none, at once), then the layer whole, `success`, and lists the model from then on (`got.pull`:
@@ -37,7 +38,7 @@ const json = (res, status, value) => res.writeHead(status, { "content-type": "ap
  * The handler keeps a copy of `models`: a test changes what it lists through its `remove(tag)` (`ollama rm`), never by
  * changing the array it gave.
  */
-export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ text: "Done." }), hang = false, hangOn = () => false, version = "0.40.17", pullable = {}, pullHold, got = { tags: 0, show: [], chat: [], version: 0, pull: [] } } = {}) {
+export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ text: "Done." }), hang = false, hangOn = () => false, refuseOn = () => false, version = "0.40.17", pullable = {}, pullHold, got = { tags: 0, show: [], chat: [], version: 0, pull: [] } } = {}) {
   const models = [...given];
   let tagsDelayMs = 0;
   const handle = (req, res) => {
@@ -77,6 +78,7 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
       }
       if (route === "show") {
         got.show.push(body?.model);
+        if (refuseOn(route, body)) return json(res, 500, { error: "synthetic show failure" });
         const model = models.find((m) => m.name === body?.model);
         if (!model) return json(res, 404, { error: `model '${body?.model}' not found` });
         return json(res, 200, { ...remoteOf(model), details: { family: model.family }, model_info: { "general.architecture": model.family, ...(model.context_length === undefined ? {} : { [`${model.family}.context_length`]: model.context_length }) }, capabilities: model.capabilities });

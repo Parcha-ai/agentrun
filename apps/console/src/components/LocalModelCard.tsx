@@ -69,6 +69,15 @@ export function LocalModelCard({ v2, onReady, onDone, onPulling, pollMs = PULL_P
     return () => clearTimeout(timer);
   }, [view, reads, gone]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (state === "pulling") onPulling?.(); }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Back on the page (Ollama installed or started in another window meanwhile): the machine read again, so the card
+  // offers the pull with no reload. A pull's own reads are the poll's.
+  useEffect(() => {
+    if (gone || state === "pulling") return;
+    const again = () => { if (document.visibilityState === "visible") void read(); };
+    window.addEventListener("focus", again);
+    document.addEventListener("visibilitychange", again);
+    return () => { window.removeEventListener("focus", again); document.removeEventListener("visibilitychange", again); };
+  }, [gone, state]); // eslint-disable-line react-hooks/exhaustive-deps
   // Ready once per tag: the capabilities read again, so the picker and the default have it.
   useEffect(() => {
     const tag = view?.recommended.tag;
@@ -98,6 +107,7 @@ export function LocalModelCard({ v2, onReady, onDone, onPulling, pollMs = PULL_P
           {view ? <p className="font-mono text-small text-muted-foreground" data-machine>{machineLine(view)}</p>
             : !problem && <p className="text-body text-muted-foreground" role="status">Reading this machine…</p>}
           {view && state !== "ready" && <p className="text-body text-muted-foreground">{view.ollama.asked === false ? view.refused ?? view.recommended.why : view.recommended.why}</p>}
+          {view && view.ollama.asked !== false && !view.ollama.reachable && <Button type="button" size="sm" onClick={() => void read()}>Check again</Button>}
           {state === "recommend" && view && (view.can_pull
             ? <Button type="button" size="sm" variant="primary" disabled={starting} onClick={() => void pull(view.recommended.tag!)}>{starting ? "Starting…" : failed ? "Try again" : `Pull ${view.recommended.tag}`}</Button>
             : <p className="text-body" role="status">{view.refused}</p>)}

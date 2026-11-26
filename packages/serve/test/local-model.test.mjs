@@ -256,3 +256,41 @@ for (const [name, options, env, refusal] of [
     assert.equal(ollama.got.tags, 0, "nor its tags");
   });
 }
+
+test("a pull is done only once Ollama lists its tag: a listing whose ask of the new model fails keeps it pulling, so the card never runs a template on another model; never listed, it fails in words", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  ollamaClock(() => 1_000_000);
+  t.after(() => ollamaClock());
+  // The first ask of the pulled model's /api/show fails: that listing, whole otherwise, is kept without it.
+  let shows = 0;
+  const ollama = await fakeOllama(t, { models: [], pullable: { [QWEN3_DEFAULT]: PULLED }, refuseOn: (route, body) => route === "show" && body?.model === QWEN3_DEFAULT && ++shows === 1 });
+  withEnv(t, { OLLAMA_HOST: ollama.host });
+  const { api } = await serve(t, { faux: undefined, runner: false, machine: async () => LINUX(32) });
+  assert.equal((await api("POST", "/settings/local-model/pull", { tag: QWEN3_DEFAULT })).status, 202);
+  const ended = await until(async () => {
+    const pull = (await api("GET", "/settings/local-model")).body.pull;
+    return pull?.state !== "pulling" ? pull : undefined;
+  }, "the pull's end");
+  assert.equal(ended.state, "done", JSON.stringify(ended));
+  assert.ok(shows >= 2, "the listing asked again after the one that missed it");
+  assert.ok((await piModels(api)).includes(`ollama/${QWEN3_DEFAULT}`), "in the picker the moment the pull says done");
+  assert.equal((await api("GET", "/capabilities")).body.models.default, `ollama/${QWEN3_DEFAULT}`);
+});
+
+test("a pull whose tag Ollama never lists ends failed, saying to pull again, never done", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, OWNER);
+  ollamaClock(() => 1_000_000);
+  t.after(() => ollamaClock());
+  const ollama = await fakeOllama(t, { models: [], pullable: { [QWEN3_DEFAULT]: PULLED }, refuseOn: (route, body) => route === "show" && body?.model === QWEN3_DEFAULT });
+  withEnv(t, { OLLAMA_HOST: ollama.host });
+  const { api } = await serve(t, { faux: undefined, runner: false, machine: async () => LINUX(32) });
+  assert.equal((await api("POST", "/settings/local-model/pull", { tag: QWEN3_DEFAULT })).status, 202);
+  const end = Date.now() + 60_000;
+  let pull;
+  while ((pull = (await api("GET", "/settings/local-model")).body.pull)?.state === "pulling") {
+    assert.ok(Date.now() < end, "the pull's end within 60 s");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.deepEqual([pull.state, pull.error], ["failed", `Ollama finished pulling ${QWEN3_DEFAULT} but does not list it yet. Press Pull again.`]);
+  assert.ok(!(await piModels(api)).includes(`ollama/${QWEN3_DEFAULT}`));
+});

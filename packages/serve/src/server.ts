@@ -141,7 +141,9 @@ import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { forgetLegacyRunLearning, legacyGradesKey, legacyPromotionsKey } from "./learn/legacy/scrub.js";
 import { runModelRef } from "./model.js";
-import { type LocalModelDeps, localModelView, localPulls, type Machine, pullLocalModel, pullThrough, readMachine } from "./local-model.js";
+import { fullTag, type LocalModelDeps, localModelView, localPulls, type Machine, pullLocalModel, pullThrough, readMachine } from "./local-model.js";
+/** How many times a pull's end reads the Ollama listing for its tag before it fails (server.ts ollamaPulled). */
+const PULL_LISTED_TRIES = 6;
 import { ollamaForget, ollamaHostOf, ollamaHostRefused, ollamaListing, ollamaModels, ollamaReading } from "./ollama-provider.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -1808,11 +1810,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     void ollamaModels(env);
     if (offersFrom && !offersMadeFrom(offersInputs(env))) await keysChanged();
   };
-  /** After a pull here ends (local-model.ts): the kept listing dropped and read again at once, and the reading made again
-   *  where it differs, so the model is in the picker and is the default with no wait for OLLAMA_TTL_MS. */
-  const ollamaPulled = async () => {
-    ollamaForget(env);
-    await ollamaModels(env);
+  /** After a pull of `tag` here ends (local-model.ts): the kept listing dropped and read again at once until it lists
+   *  `tag` (a listing whose ask of one model failed lists it not), and the reading made again where it differs, so the
+   *  model is in the picker and is the default with no wait for OLLAMA_TTL_MS before the pull says done. Never listed
+   *  after PULL_LISTED_TRIES reads, the pull fails in words, so the card never runs a template on another model. */
+  const ollamaPulled = async (tag: string) => {
+    for (let tries = 1; ; tries++) {
+      ollamaForget(env);
+      const listed = await ollamaModels(env);
+      if (listed.some((model) => model.name === fullTag(tag))) break;
+      if (tries >= PULL_LISTED_TRIES) throw new Error(`Ollama finished pulling ${tag} but does not list it yet. Press Pull again.`);
+      await new Promise((resolve) => setTimeout(resolve, 250 * tries));
+    }
     await ollamaNow();
   };
   /** This machine, read once (local-model.ts readMachine), or a test's. */

@@ -159,13 +159,37 @@ describe("LocalModelCard", () => {
     expect(calls.every((c) => c.method === "GET")).toBe(true);
   });
 
-  it("none: no Ollama, or nothing fits: the why, and no button", async () => {
-    const { v2 } = server([base({ ollama: { asked: true, reachable: false, version: null }, recommended: { tag: null, why: "Ollama isn't running on this machine. Install it from https://ollama.com/download, start it, then come back here.", pulled: false } })]);
+  const noOllama = base({ ollama: { asked: true, reachable: false, version: null }, recommended: { tag: null, why: "Ollama isn't running on this machine. Install it from https://ollama.com/download, start it, then come back here.", pulled: false } });
+  it("none: no Ollama: the why, and only Check again; nothing fits: the why, and no button", async () => {
+    const { v2 } = server([noOllama]);
     const card = await open(v2);
     expect(card.face()).toBe("none");
     expect(card.host.textContent).toContain("Install it from https://ollama.com/download");
     expect(card.host.querySelector("[data-machine]")?.textContent).toContain("no Ollama running");
-    expect(card.host.querySelectorAll("button")).toHaveLength(0);
+    expect([...card.host.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Check again"]);
+    root?.unmount();
+    const small = await open(server([base({ recommended: { tag: null, why: "This machine has 4.0 GiB of memory.", pulled: false } })]).v2);
+    expect(small.face()).toBe("none");
+    expect(small.host.querySelectorAll("button")).toHaveLength(0);
+  });
+
+  it("none: Ollama installed and started after the card said it was not running: Check again, or coming back to the page, offers the pull with no reload", async () => {
+    const { v2, calls } = server([noOllama, base()]);
+    const card = await open(v2);
+    expect(card.face()).toBe("none");
+    await act(async () => { card.button(/^Check again$/)!.click(); });
+    await card.settle();
+    expect(card.face()).toBe("recommend");
+    expect(card.button(/^Pull qwen3:8b$/)).toBeDefined();
+    root?.unmount();
+    const back = server([noOllama, base()]);
+    const again = await open(back.v2);
+    expect(again.face()).toBe("none");
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await again.settle();
+    expect(again.face()).toBe("recommend");
+    expect(back.calls.filter((call) => call.method === "GET")).toHaveLength(2);
+    expect(calls.filter((call) => call.method === "GET")).toHaveLength(2);
   });
 
   it("a server that pulls nothing here says why in place of the button", async () => {

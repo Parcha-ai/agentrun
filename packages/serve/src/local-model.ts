@@ -62,7 +62,7 @@ const QWEN3_FITS = QWEN3_LADDER.slice(Math.max(0, QWEN3_LADDER.indexOf(QWEN3_DEF
 export const LOCAL_MODEL_TAGS: readonly string[] = Object.freeze([INKLING, ...QWEN3_FITS]);
 
 /** A tag as Ollama lists it: with no `:`, `:latest`. */
-const fullTag = (tag: string): string => (tag.includes(":") ? tag : `${tag}:latest`);
+export const fullTag = (tag: string): string => (tag.includes(":") ? tag : `${tag}:latest`);
 const gib = (bytes: number): string => `${(bytes / GIB).toFixed(1)} GiB`;
 const fits = (machine: Machine, tag: string): boolean => machine.ram_bytes >= (RAM_FLOOR_GIB[tag] ?? Infinity) * GIB;
 const needs = (tag: string): string => `${tag} needs ${RAM_FLOOR_GIB[tag]} GiB of memory`;
@@ -141,7 +141,7 @@ export type PullView = { tag: string; state: "pulling" | "done" | "failed"; stat
 
 /** One pull at a time, through `pull`; `finished` once it succeeds (the listing dropped and read again), before it reads
  *  done. A log line at its start, its end and its failure: the tag, the bytes and the milliseconds, nothing else. */
-export function localPulls({ pull, finished, log, signal }: { pull: (tag: string, onLine: (line: OllamaPullLine) => void, signal: AbortSignal) => Promise<void>; finished: () => Promise<void>; log?: (line: string) => void; signal: AbortSignal }) {
+export function localPulls({ pull, finished, log, signal }: { pull: (tag: string, onLine: (line: OllamaPullLine) => void, signal: AbortSignal) => Promise<void>; finished: (tag: string) => Promise<void>; log?: (line: string) => void; signal: AbortSignal }) {
   let current: PullView | undefined;
   return {
     view: (): PullView | null => (current ? { ...current } : null),
@@ -162,7 +162,7 @@ export function localPulls({ pull, finished, log, signal }: { pull: (tag: string
         }
       };
       void pull(tag, onLine, signal)
-        .then(finished)
+        .then(() => finished(tag))
         .then(() => {
           Object.assign(mine, { state: "done", status: "success", completed_bytes: mine.total_bytes });
           log?.(logLine("local_model_pull_end", { tag, bytes: mine.total_bytes, ms: Math.round(performance.now() - started) }));
