@@ -402,14 +402,18 @@ export function boundResult(text: string, budget?: ResultBudget): { text: string
   return truncated ? { text: bounded, truncated } : { text: bounded };
 }
 
-/** The most of a failed call's first line its refusal keeps (errorRefusedNote). */
-const ERROR_FIRST_LINE_CHARS = 300;
-
 /** What a failed call's error too large for a window too small to cut it in reads as: its first line (what went wrong),
- *  then that the rest is not shown. */
+ *  as much of it as fits beside the note in RESULT_ALWAYS_WHOLE_CHARS, then that the rest is not shown. Within that
+ *  length, so bounding it again (pi bounds a result twice) leaves it as it is. */
 function errorRefusedNote(text: string, max: number): string {
-  const first = clip(text.split('\n', 1)[0] ?? '', ERROR_FIRST_LINE_CHARS);
-  return `${first}\n[the rest of this error (${text.length} characters in all) is not shown: this model's context window leaves room for at most ${max} characters of a tool result.]`;
+  const rest = `\n[the rest of this error (${text.length} characters in all) is not shown: this model's context window leaves room for at most ${max} characters of a tool result.]`;
+  const line = text.split('\n', 1)[0] ?? '';
+  const room = RESULT_ALWAYS_WHOLE_CHARS - rest.length;
+  if (line.length <= room) return `${line}${rest}`;
+  // Cut before a character written as a surrogate pair rather than between its halves, and mark the cut.
+  let kept = room - 1;
+  if ((line.charCodeAt(kept - 1) & 0xfc00) === 0xd800 && (line.charCodeAt(kept) & 0xfc00) === 0xdc00) kept -= 1;
+  return `${line.slice(0, kept)}…${rest}`;
 }
 
 /** What a script's JSON read too large for its bound reads as: none of it, since part of a JSON document does not parse,
