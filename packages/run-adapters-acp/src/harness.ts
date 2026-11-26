@@ -181,7 +181,7 @@ type CallRecord = { type: "seen" | "answered"; callId: string; tool?: string; ar
  *  - `answered`: what the gate said; `settled` when a resume took it before the agent started again, in `turn`.
  *  - `given`: the answer was handed to the agent, which uses it up.
  *  - `reasked`: this call was asked while an allow (`instead`) was still not asked for again. */
-type PermissionRecord = { type: "asked" | "answered" | "given" | "reasked"; callId: string; toolCallId?: string; title?: string; kind?: string; input?: unknown; answer?: "allow" | "deny"; words?: string; settled?: true; turn?: string; instead?: string };
+type PermissionRecord = { type: "asked" | "answered" | "given" | "reasked"; callId: string; toolCallId?: string; title?: string; kind?: string; input?: unknown; answer?: "allow" | "deny"; words?: string; settled?: true; turn?: string; instead?: string; ungranted?: true };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 /** An agent that ended, or whose connection closed: its stderr read to the end (its process's close), for at most
@@ -425,6 +425,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const input = asked?.input === undefined || asked.input === null ? "" : JSON.stringify(asked.input);
     const shown = input ? ` Its input: ${clip(input, 1500)}${input.length > 1500 ? " (cut here: ask with the whole input you first sent)" : ""}.` : "";
     const named = `${kind} ${JSON.stringify(clip(asked?.title ?? kind, 300))}.${shown}`;
+    if (answer.ungranted) return `- ${named} Refused, with no person asked: ${clip(answer.words ?? "", 500)}.`;
     return answer.answer === "deny"
       ? `- ${named} The person refused it.${answer.words ? ` Their words: ${clip(answer.words, 500).replace(/\n/g, " ")}` : ""}`
       : `- ${named} The person allowed it once. Ask for it again exactly as before (the same kind, title and input) and it runs; any other request waits for the person again.`;
@@ -451,6 +452,21 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     for (const request of waiting) {
       const kind = request.kind ?? "other";
       const title = request.title ?? kind;
+      // A request for a tool of ours this start does not give the agent (ungrantedTool), left waiting by a run that
+      // parked on it: refused here as onPermission refuses a new one, never asked of a person. Settled, so the agent's
+      // ask again takes the deny. Not under a recipe whose server name is its start's own (agy's): an earlier start's
+      // name is in the title, and this one's is new.
+      const ungranted = joinsByOne(recipe.announces) ? undefined : ungrantedTool({ title, kind }, names);
+      if (ungranted !== undefined) {
+        const words = toolNotGranted(recipe.label ?? recipe.id, ungranted);
+        const answer = { type: "answered", callId: request.callId, answer: "deny", words, settled: true, turn: turnId, ungranted: true } satisfies PermissionRecord;
+        journal.append(PERMISSION_STREAM, answer);
+        await journal.flush();
+        ctx.live({ type: "notice", text: words });
+        said.push(answerLine(request, answer));
+        records.push(answer);
+        continue;
+      }
       const refused = await askGate(gate, permissionGateCall(request.callId, request.toolCallId, kind, title, request.input ?? null), ctx.signal);
       const answer = { type: "answered", callId: request.callId, answer: refused ? "deny" : "allow", ...(refused?.deny ? { words: refused.deny } : {}), settled: true, turn: turnId } satisfies PermissionRecord;
       journal.append(PERMISSION_STREAM, answer);

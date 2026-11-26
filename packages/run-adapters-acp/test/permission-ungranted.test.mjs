@@ -145,3 +145,50 @@ for (const load of [true, false]) {
     assert.deepEqual(answered.map((r) => [r.callId, r.answer]), [[parked, 'allow']], 'one answer, the person\'s, for the parked shell');
   });
 }
+
+/** A request for `snapshot` left waiting in the records, as a run parked on it keeps it: asked while the agent was given
+ *  snapshot (its recipe without Goose's permission file or Cursor's tie, so the request is the gate's), the gate parking,
+ *  the runner letting the session go. The store, the recipe, and the parked request's id. */
+async function parkedOnSnapshot(t, style, over) {
+  const store = memorySessionStore();
+  const recipe = fakeRecipe(scratch(), { script: [{ call: 'snapshot', args: {} }, { sayLastResult: true }], style, askMcp: true }, over);
+  const asked = [];
+  const first = await openSession(t, recipe, { store, tools: [tool('snapshot', () => 'the page')], gate: async (call) => (asked.push(call), PARK) });
+  await first.session.send('go');
+  await until(() => asked.length === 1, 'the gate to be asked about snapshot');
+  first.stop(new Error('the run parked'));
+  await first.session.turnEnd().catch(() => undefined);
+  assert.equal(asked[0].tool, 'acp_other');
+  assert.deepEqual((await streamRecords(store, 'acp.permission')).map((r) => r.type), ['asked'], 'the request waits in the records');
+  return { store, recipe, parked: asked[0].callId };
+}
+
+for (const [style, over] of [['goose', { allowFile: undefined }], ['cursor', { quirks: undefined }]]) {
+  test(`(${style}) a request for a tool the agent is no longer given, left waiting in the records by a parked run, is refused on the resume: the gate is never asked, a settled deny is journaled in the words, and the turn goes on`, async (t) => {
+    const { store, recipe, parked } = await parkedOnSnapshot(t, style, over);
+    const asked = [];
+    const second = await openSession(t, recipe, { store, tools: [tool('lookup', () => 'found')], gate: async (call) => (asked.push(call), PARK) });
+    await second.session.recover();
+    const end = await endOrAsked(second.session, asked);
+    assert.deepEqual(asked.map((c) => [c.tool, c.callId]), [], 'no person is asked');
+    assert.equal(end?.status, 'completed', end?.error);
+    const answered = (await streamRecords(store, 'acp.permission')).filter((r) => r.type === 'answered');
+    assert.deepEqual(answered.map((r) => [r.callId, r.answer, r.settled]), [[parked, 'deny', true]], 'the waiting request is answered, settled');
+    assert.match(answered[0].words ?? '', /tool "snapshot" isn't granted to this agent/);
+    assert.match(notices(second.events).join(' | '), /tool "snapshot" isn't granted to this agent/);
+    const told = fakeEvents(recipe).filter((e) => e.type === 'prompt').map((e) => e.text.join('\n')).join('\n');
+    assert.match(told, /Refused, with no person asked: tool "snapshot" isn't granted to this agent/, 'the agent\'s recovery note says why');
+  });
+}
+
+test("(goose) a request for a tool the agent is still given, left waiting in the records by a parked run, is the gate's on the resume, as before", async (t) => {
+  const { store, recipe, parked } = await parkedOnSnapshot(t, 'goose', { allowFile: undefined });
+  const asked = [];
+  const second = await openSession(t, recipe, { store, tools: [tool('snapshot', () => 'the page')], gate: async (call) => (asked.push(call), PARK) });
+  void second.session.recover().catch(() => undefined);
+  await until(() => asked.length > 0, 'the gate to be asked on the resume');
+  assert.deepEqual(asked.map((c) => [c.tool, c.callId]), [['acp_other', parked]], 'the waiting request is the gate\'s');
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(fakeEvents(recipe).filter((e) => e.type === 'prompt').length, 1, 'parked again: the agent is not prompted on the resume');
+  assert.deepEqual(notices(second.events), []);
+});
