@@ -257,9 +257,10 @@ function inPieces(text: string, secrets: readonly string[], enough = Number.POSI
  *  single-quoted dict through them does) and HTML's character references (named and numeric), so a "+", an encoded
  *  byte, an escape and a reference that decode to whitespace count no more than whitespace does, and any other escape
  *  counts as what the view keeps of the character it decodes to. A character that renders as nothing (a zero-width
- *  space, a soft hyphen, a control character that is no whitespace: a NUL, an escape, a delete; U+FFFF, U+FFFE, a private
- *  use character, the braille blank, a lone surrogate (match.ts IGNORABLE); as it stands or as
- *  "\u0001", "\x01", "%01" or "&#1;" decodes) or a combining mark counts as nothing too: the views drop it (kept). So does a quote, an apostrophe
+ *  space, a soft hyphen, a control character that is no whitespace: a NUL, an escape, a delete; U+FFFF) or as a box or a
+ *  blank (U+FFFE, a private use character, the braille blank, a lone surrogate: match.ts IGNORABLE), as it stands or as
+ *  "\u0001", "\x01", "%01" or "&#1;" decodes, or a combining mark counts as nothing too: the views drop it. A whole
+ *  terminal sequence counts nothing (sequenceEnd), and a backspace one less (counted). So does a quote, an apostrophe
  *  or JSON's punctuation ("{", "}", "[", "]", ",", ":"), which the join views drop between a text's strings, and, with
  *  `fold` (a held value folds: learn/secrets.ts foldsHeld), a separator ("-", "_", ":", "."), which the fold view
  *  drops. Padding of any of them never hides the rest of a value split before it. Undefined, so the caller withholds
