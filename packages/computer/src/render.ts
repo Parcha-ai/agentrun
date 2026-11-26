@@ -12,8 +12,9 @@
 // Render's sandboxes carry no labels: a sandbox's name (computer-<12 hex>) gives the adapter's own two, and create writes
 // every label to a file in the sandbox, root's alone, which get and list read back through runs/sync where a label asked
 // is not the name's, and keep: a computer's labels never change (Render moves no timeout, so there is no extend). That
-// read needs a healthy guest, so one that fails, or has no answer within the call's own bound, gives the name's two:
-// enough for release to find and terminate a wedged sandbox, never a reason it is left to bill to its timeout.
+// read needs a healthy guest, so one that fails, or has no answer within the call's own bound, gives get the name's two:
+// enough for release to find and terminate a wedged sandbox, never a reason it is left to bill to its timeout. A listing
+// by a label beyond the name's fails closed on it instead, naming the sandbox: it can't tell whether that one is a match.
 //
 // Every vendor fact below is from @renderinc/sdk 1.11.0's OpenAPI schema (dist/generated/schema.d.ts, S) or its client
 // (dist/sandboxes/index.js, C), a live probe (11-25: root, HOME=/root, a Render kernel, egress https, and a command
@@ -313,29 +314,31 @@ class RenderHost implements MachineHost {
 	 * and kept. `need`: a listing's labels; when the name's hold every one asked, no file is read. A sandbox not named as a
 	 * computer carries none; one not running, one this host terminated, or one with no file yet, its name's. The read is
 	 * held to `end` (epoch ms, the call's own bound): one that fails or has no answer by then gives the name's, kept for
-	 * nothing, so the next read tries again. Only the caller's own abort throws.
+	 * nothing, so the next read tries again, with `unread`, why: get answers the name's (release needs no more), and a
+	 * listing fails closed on it. Only the caller's own abort throws.
 	 */
-	async #labelsOf(found: RenderSandbox, ctx: HostCall, end: number, need?: Record<string, string>): Promise<Record<string, string>> {
+	async #labelsOf(found: RenderSandbox, ctx: HostCall, end: number, need?: Record<string, string>): Promise<{ labels: Record<string, string>; unread?: string }> {
 		const name = found.name;
-		if (typeof name !== "string" || !COMPUTER_NAME.test(name)) return {};
+		if (typeof name !== "string" || !COMPUTER_NAME.test(name)) return { labels: {} };
 		const known = this.#labels.get(found.id);
-		if (known !== undefined) return known;
+		if (known !== undefined) return { labels: known };
 		const own = { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name };
-		if ((need !== undefined && Object.keys(need).every((key) => key in own)) || found.status !== "running" || this.#ending.has(found.id)) return own;
+		if ((need !== undefined && Object.keys(need).every((key) => key in own)) || found.status !== "running" || this.#ending.has(found.id)) return { labels: own };
+		const late = { labels: own, unread: `no answer within ${seconds(ctx.timeoutMs)}` };
 		const left = end - Date.now();
-		if (left <= 0) return own;
+		if (left <= 0) return late;
 		const bound = AbortSignal.timeout(left);
 		let file: Record<string, string> | undefined;
 		try {
 			file = await this.#labelsFile(found.id, { timeoutMs: left, signal: ctx.signal ? AbortSignal.any([ctx.signal, bound]) : bound });
 		} catch (error) {
 			if (ctx.signal?.aborted) throw error;
-			return own;
+			return bound.aborted ? late : { labels: own, unread: error instanceof Error ? error.message : String(error) };
 		}
-		if (file === undefined) return own;
+		if (file === undefined) return { labels: own };
 		const labels = { ...file, ...own };
 		this.#labels.set(found.id, labels);
-		return labels;
+		return { labels };
 	}
 
 	/** The labels file read through runs/sync: undefined when it is not there yet; a read that fails throws in words. */
@@ -450,7 +453,8 @@ class RenderHost implements MachineHost {
 
 	/**
 	 * GET /v1/sandboxes/{id}; 404 is not_found, which the adapter reads as none, and a terminated sandbox is none: either
-	 * lets go of what this host kept of it. Its labels are read within this call's own bound (#labelsOf).
+	 * lets go of what this host kept of it. Its labels are read within this call's own bound (#labelsOf), and a read that
+	 * fails gives the name's two: enough for the adapter to know its computer and release it.
 	 */
 	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
 		const end = Date.now() + ctx.timeoutMs;
@@ -466,7 +470,7 @@ class RenderHost implements MachineHost {
 			this.#forget(id);
 			return undefined;
 		}
-		return machineOf(found, await this.#labelsOf(found, ctx, end));
+		return machineOf(found, (await this.#labelsOf(found, ctx, end)).labels);
 	}
 
 	/**
@@ -474,9 +478,12 @@ class RenderHost implements MachineHost {
 	 * asked ("exactly this name"), every page by its last item's cursor while a page is full. Only sandboxes named as
 	 * computers; a label asked that is not the name's is read from each running one's labels file (#labelsOf), LABEL_READS
 	 * at once, all within this call's own bound, and only those that carry every label asked are answered. A file that
-	 * can't be read fails nothing: that sandbox carries its name's labels, so a listing by its name still finds it. What
-	 * this host kept of a sandbox the listing no longer shows (one of the name asked, or any for a listing by no name) is
-	 * let go: Render ended it, at its timeout or by another's hand.
+	 * can't be read by then fails the listing closed, once every read has ended, naming each such sandbox and why: the
+	 * listing can't tell whether it carries the labels asked, and leaving it out would let a run's listing miss a newer
+	 * epoch's fence or call a partial cleanup whole (janitor.ts releaseOlder). A listing by the name alone reads no file,
+	 * and one this host terminated is never read, so neither fails so. What this host kept of a sandbox the listing no
+	 * longer shows (one of the name asked, or any for a listing by no name) is let go: Render ended it, at its timeout or
+	 * by another's hand.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
 		const end = Date.now() + ctx.timeoutMs;
@@ -502,11 +509,14 @@ class RenderHost implements MachineHost {
 		const shown = new Set(live.map(({ id }) => id));
 		for (const id of kept) if (!shown.has(id) && (name === undefined || this.#labels.get(id)?.[NAME_LABEL] === name)) this.#forget(id);
 		const ours = live.filter((found) => typeof found.name === "string" && COMPUTER_NAME.test(found.name));
-		const read = await eachAtMost(ours, LABEL_READS, async (found) => {
-			const carried = await this.#labelsOf(found, ctx, end, labels);
-			return Object.entries(labels).every(([key, value]) => carried[key] === value) ? machineOf(found, carried) : undefined;
-		});
-		return read.flatMap((machine) => machine ?? []);
+		const read = await eachAtMost(ours, LABEL_READS, async (found) => ({ found, ...(await this.#labelsOf(found, ctx, end, labels)) }));
+		const unread = read.flatMap(({ found, unread: why }) => (why === undefined ? [] : [`${found.id}: ${why}`]));
+		if (unread.length > 0) {
+			const asked = Object.entries(labels).filter(([key]) => key !== COMPUTER_LABEL && key !== NAME_LABEL);
+			const carry = unread.length === 1 ? "it carries" : "they carry";
+			throw new HostError("vendor", `could not read the labels of ${unread.join("; ")}; the listing can't tell whether ${carry} ${asked.map(([key, value]) => `${key}=${value}`).join(", ")}`);
+		}
+		return read.flatMap(({ found, labels: carried }) => (Object.entries(labels).every(([key, value]) => carried[key] === value) ? (machineOf(found, carried) ?? []) : []));
 	}
 
 	/**
