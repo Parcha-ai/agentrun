@@ -120,3 +120,35 @@ test("kr-8: a held value whose head ends a run too long to read, Python's \\x20 
   const text = `'${"a".repeat(9000)}${PY_HEAD}${PY_PAD} ${PY_REST} more'`;
   for (const out of [redactedCall(text, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(text, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
 });
+
+// A control character that is no whitespace (a NUL, U+0001, an escape, a delete) is nothing to the views, as it stands
+// and as JSON's or Python's escape writes it, so padding of it between a held value's head and its rest is nothing
+// too: the read past a call's stop, and the tail of a run too long to read, count it as the views do, and the value
+// reads whole. Each padding is longer than what the read after the stop takes when each control counts as a character.
+const CONTROL_PADS = [
+  ["raw NULs", "\u0000".repeat(300), "json"],
+  ["raw U+0001 to U+001F and DEL", Array.from({ length: 300 }, (_, i) => String.fromCharCode([1, 8, 14, 27, 31, 127][i % 6])).join(""), "json"],
+  ["JSON's \\u0001", String.raw`\u0001`.repeat(250), "json"],
+  ["Python's \\x01", String.raw`\x01`.repeat(250), "python"],
+];
+const wrapped = (kind, body) => (kind === "python" ? `{'a': '${body}'}` : `{"a": "${body}"}`);
+
+for (const [what, pad, kind] of CONTROL_PADS) {
+  test(`kr-9 (${what}): a held value split at a call's stop, control padding past the read after the stop, is withheld`, () => {
+    let body = "";
+    while (body.length < 8192 - 100) body += "word ";
+    assert.equal(redactedCall(wrapped(kind, `${body}see ${PY_HEAD} ${pad}${PY_REST} more`), [`${PY_HEAD}${PY_REST}`], 200), "[redacted]");
+  });
+
+  test(`kr-10 (${what}): a held value whose head ends a run too long to read, control padding after it, and whose rest follows is withheld`, () => {
+    const text = wrapped(kind, `${"a".repeat(9000)}${PY_HEAD}${pad} ${PY_REST} more`);
+    for (const out of [redactedCall(text, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(text, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
+  });
+}
+
+test("kr-11: control padding after a word, with no held value split around it, is shown (control)", () => {
+  let body = "";
+  while (body.length < 8192 - 100) body += "word ";
+  const text = wrapped("json", `${body}see ${PY_HEAD} ${"\u0000".repeat(300)}zzzzzzzzzzzzzzzz more`);
+  assert.equal(redactedCall(text, [`${PY_HEAD}${PY_REST}`], 200).startsWith(`{"a": "word word`), true);
+});

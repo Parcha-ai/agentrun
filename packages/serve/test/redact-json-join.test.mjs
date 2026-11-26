@@ -127,6 +127,22 @@ test("a read with no calls (the run's view, its Timeline): a held value split ac
   assert.equal(rowOf(read({ command: `echo ${KEY}` }), "tool_use").tool_input_preview, "echo [redacted]");
 });
 
+test("a held value split by a control character in a call's argument (JSON's \\u0000 on the wire) or in its result: tool_input is withheld, its preview \"[redacted]\", the result \"[redacted]\", and the grader's prompt shows no half", () => {
+  for (const control of ["\u0000", "\u0001", "\u001b", "\u001f", "\u007f"]) {
+    const rows = rowsOf("bash", { command: `echo ${HEAD}${control}${REST}` }, "ok");
+    const use = rowOf(rows, "tool_use");
+    assert.equal(use.tool_input, undefined, JSON.stringify(control));
+    assert.equal(use.tool_input_preview, "[redacted]", JSON.stringify(control));
+    assert.deepEqual(shows(JSON.stringify(rows)), [], JSON.stringify(control));
+    assert.deepEqual(shows(promptOf(rows)), [], JSON.stringify(control));
+    const read = rowsOf("read", { path: "notes.txt" }, `see ${HEAD}${control}${REST} more`);
+    assert.equal(rowOf(read, "tool_result").tool_result_text, "[redacted]", JSON.stringify(control));
+    assert.deepEqual(shows(JSON.stringify(read)), [], JSON.stringify(control));
+  }
+  // Control: a control after the value's head with no rest after it keeps the call's arguments as they came.
+  assert.deepEqual(rowOf(rowsOf("bash", { command: `echo ${HEAD}\u0000 done` }, "ok"), "tool_use").tool_input, { command: `echo ${HEAD}\u0000 done` });
+});
+
 test("a held value whole in one argument is cut in place: tool_input keeps the call's shape (control)", () => {
   const use = rowOf(rowsOf("bash", { command: `echo ${KEY}`, note: "x" }, "ok"), "tool_use");
   assert.deepEqual(use.tool_input, { command: "echo [redacted]", note: "x" });

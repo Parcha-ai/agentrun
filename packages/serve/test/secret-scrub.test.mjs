@@ -93,6 +93,18 @@ test("held: a value shorter than 8 characters is not held (it would match text b
   await kept("the word abc appears", ["abc"]);
 });
 
+test("held: a marker the cut leaves between two halves of a held value still separates them in the final check", async () => {
+  // The final check reads each marker as a character no held value holds and the views keep (match.ts SEPARATOR): a
+  // NUL there would be dropped by the views, which drop control characters, and the halves would read as the value.
+  const other = ["Zq8V", "bN3x", "LmT6", "pR2w"].join("");
+  const [head, rest] = [HELD.slice(0, 14), HELD.slice(14)];
+  const out = await cutOf(`printed ${head}${other}${rest} end`, [HELD, other]);
+  assert.equal(out.text, `printed ${head}[redacted:held-value]${rest} end`);
+  // A control character between the halves, with no cut there, is nothing to the views: the value is left whole in a
+  // form no cut finds, and the scrub fails closed.
+  assert.deepEqual(await scrub(`printed ${head}\u0000${rest} end`, { mode: "cut", held: [HELD] }), { ok: false, counts: {} });
+});
+
 test("held: a value left in the text in a form the pass cannot cut in place fails closed", async () => {
   // Partly percent-encoded: valueMatcher's decoded view sees it, no held form stands in place (a split by a blank is
   // cut whole since ruling XIV).

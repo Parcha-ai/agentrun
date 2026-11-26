@@ -91,6 +91,22 @@ test("a JSON string's text read again for a dict written in it is closed off fro
   }
 });
 
+test("the joins' separators still separate where the views drop control characters: a control at a part's edge, raw or escaped, reads no held value across a pass or across the two quoted joins", () => {
+  // The same seams as above, each part's edge holding a control the views drop (raw, or JSON's \u escape): the
+  // controls go, and each pass, and the quoted join and the again join, stay apart.
+  for (const [nul, unit] of [["\u0000", "\u0001"], ["\\u0000", "\\u0001"]]) {
+    for (const [text, value] of [
+      [`{"don't":"${nul}abcd${unit}","x":"${unit}efgh${nul}"}`, "efghabcd"],
+      [`{"x":"{'a': '${unit}efgh${nul}'} ${nul}abcd${unit}"}`, "abcdefgh"],
+      // The values pass then the names pass: a value's end and the first name's start.
+      [`{"abcd":"x","y":"z ${unit}efgh${nul}"}`, "efghabcd"],
+    ]) assert.equal(withheldWhole(text, [value]), false, text);
+  }
+  // Control: the controls themselves are nothing inside one part, so a held value split by one there is withheld.
+  assert.equal(withheldWhole(`{"x":"abcd\\u0000efgh"}`, ["abcdefgh"]), true);
+  assert.equal(withheldWhole(`{'a': 'abcd\\x00efgh'}`, ["abcdefgh"]), true);
+});
+
 test("a dict in a call's arguments with no Python escape is read through both levels of JSON's: \\\\t between a held value's halves", () => {
   // The source of a dict with a tab written "\t", in a JSON string: "\\t" on the wire, a tab two levels down. withheldWhole
   // reads the text as JSON only, never each argument string by itself.
