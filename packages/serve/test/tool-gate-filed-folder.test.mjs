@@ -159,3 +159,47 @@ test("the gate's spelling of a path is pi's own: piToolPath answers what pi's re
   assert.equal(piToolPath("@stripe/pages/a.json"), "stripe/pages/a.json");
   assert.equal(piToolPath("stripe　pages/a.json"), "stripe pages/a.json");
 });
+
+// A computer that mounts the run's folder holds the filed folder too, under /workspace, and its kernel reaches a file by
+// names no lexical check can follow: a proc or fd link, or any link the computer already holds. So while a folder is filed,
+// a script's file op there must name a path inside /workspace (or another name of the run's folder): anything else is
+// refused, whatever it names.
+/** The refusal of a script's `op` at `given` outside /workspace, in a run whose list_charges files in stripe/pages. */
+const outside = (op, given) => `computer_op ${op} can't be called: ${given} is outside /workspace, and while this agent's setting for ${KEY} files that tool's answers in stripe/pages/ (its file setting), a script's file ops are kept in /workspace, the run's folder on the computer. ${NOT_RUN}`;
+const OPS = { "files.read": {}, "files.list": {}, "files.write": { data: "x" }, "files.stat": {} };
+/** A run's gate on a computer that mounts its folder (`computer: true`) or one that does not (`false`). */
+const mountedGate = (computer, overrides = FILED, names) => runnerGate({ settings: ALLOW, overrides, harness: "pi", root: RUN, tools: ["read", "write", "edit", "bash"], computer, ...(names ? { names } : {}) });
+const LINKS = ["/proc/self/root/workspace/stripe/pages/x", "/proc/self/cwd/stripe/pages/x", "/dev/fd/3/stripe/pages/x", "/proc/1/root/workspace/stripe/pages/x"];
+const DOWNLOADS = "/home/agentrun-tool/Downloads/x";
+
+test("on a computer that mounts the run's folder, while a folder is filed, a script's file op outside /workspace is refused in words: a proc or fd link to the folder, and any other path", async () => {
+  const gate = mountedGate(true);
+  for (const [op, extra] of Object.entries(OPS)) {
+    for (const given of [...LINKS, DOWNLOADS, "/", "/workspace-old/x", "~/x", "file:///workspace/x"]) {
+      assert.equal(await verdictOf(gate, "computer_op", { op, args: { path: given, ...extra } }), outside(op, given), `${op} ${given}`);
+    }
+  }
+});
+
+test("on that computer, a path inside /workspace or another name of the run's folder still runs, and the filed folder itself is refused as before", async () => {
+  const gate = mountedGate(true, FILED, ["/workspace", SCRATCH]);
+  for (const [op, extra] of Object.entries(OPS)) {
+    for (const given of ["/workspace/other/x", "/workspace", "notes/a.json", "/workspace/stripe/x", `${SCRATCH}/notes/a.json`]) {
+      assert.equal(await verdictOf(gate, "computer_op", { op, args: { path: given, ...extra } }), "allow", `${op} ${given}`);
+    }
+  }
+  assert.equal(await verdictOf(gate, "computer_op", { op: "files.read", args: { path: "/workspace/stripe/pages/a.json" } }), refusal("read", "/workspace/stripe/pages/a.json"));
+  assert.equal(await verdictOf(gate, "computer_op", { op: "files.write", args: { path: "/workspace/notes/../stripe/pages/a.json", data: "x" } }), refusal("write", "/workspace/notes/../stripe/pages/a.json"));
+});
+
+test("with no folder filed, or on a computer that does not mount the run's folder, a script's file op outside /workspace runs as before", async () => {
+  for (const [label, gate] of [["mounted, nothing filed", mountedGate(true, {})], ["not mounted, filed", mountedGate(false)], ["shell unknown, filed", gateOn("pi")]]) {
+    for (const [op, extra] of Object.entries(OPS)) {
+      for (const given of [DOWNLOADS, ...LINKS]) {
+        assert.equal(await verdictOf(gate, "computer_op", { op, args: { path: given, ...extra } }), "allow", `${label}: ${op} ${given}`);
+      }
+    }
+  }
+  // A script's shell is not a file op: on the mounted computer with a folder filed, its command runs as bash's setting says.
+  assert.equal(await verdictOf(mountedGate(true), "computer_op", { op: "shell.run", args: { command: "cat /proc/self/cwd/stripe/pages/x" } }), "allow");
+});

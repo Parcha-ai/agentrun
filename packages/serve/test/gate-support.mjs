@@ -32,10 +32,11 @@ export function liveSettings(value) {
 /** A run's gate: the server's stored `settings` (a value, or a reader), the revision's own `overrides`, `harness`,
  *  `approvers` and `approvals`, its folder `root`, `argumentsOf`, the arguments its pinned listing
  *  declares of each MCP tool (ClaimMcp.argumentsOf), `tools`, the agent's (none given, none), and `names`, the other
- *  names of the run's folder its file tools take (RunTools.names). */
-export function runnerGate({ settings, overrides = {}, harness = "pi", approvers = true, approvals = "ask", root = "/nonexistent/run", work, argumentsOf, tools, names } = {}) {
+ *  names of the run's folder its file tools take (RunTools.names), and `computer`, whether the run's computer mounts its
+ *  folder (where its shell runs; unset, unknown). */
+export function runnerGate({ settings, overrides = {}, harness = "pi", approvers = true, approvals = "ask", root = "/nonexistent/run", work, argumentsOf, tools, names, computer } = {}) {
   const read = typeof settings === "function" ? settings : () => storedSettings(settings);
-  return new RunGate({ root, work: work ?? root, runId: "r1", ...(harness ? { harness } : {}), ...(argumentsOf ? { argumentsOf } : {}), ...(tools ? { tools } : {}), ...(names ? { names } : {}), facts: builtinFacts(harness) }, read, overrides, approvers, approvals);
+  return new RunGate({ root, work: work ?? root, runId: "r1", ...(harness ? { harness } : {}), ...(argumentsOf ? { argumentsOf } : {}), ...(tools ? { tools } : {}), ...(names ? { names } : {}), ...(computer === undefined ? {} : { computer }), facts: builtinFacts(harness) }, read, overrides, approvers, approvals);
 }
 
 /** The words a call the gate refuses is answered with, or its verdict ("allow" or "ask"). */
