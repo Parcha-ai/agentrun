@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { heldRedactor } from "../dist/runner/redact.js";
 import { createSdkLoop } from "../dist/runner/sdk-loop.js";
 import { SdkRuns, sdkInbox } from "../dist/sdk/runs.js";
 import { runEntries } from "../dist/store-reads/journal.js";
@@ -35,7 +36,7 @@ async function endedRunOf(t, events) {
   const claim = await server.store.claim(id, "sdk-held-proof", { leaseMs: 60_000 });
   const launch = (await server.store.runs.launch(id)).body;
   // No paid request: the reflection route is scripted unavailable.
-  const loop = createSdkLoop(launch, { store: server.store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => { throw new Error("the test reflection route is unavailable"); })({ journal: () => server.store.journal(claim), flush: () => server.store.flush(), signal: new AbortController().signal });
+  const loop = createSdkLoop(launch, { store: server.store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => { throw new Error("the test reflection route is unavailable"); })({ redact: heldRedactor((text) => text), journal: () => server.store.journal(claim), flush: () => server.store.flush(), signal: new AbortController().signal });
   assert.equal((await loop.start(claim)).state, "ended");
   const journal = JSON.stringify(await runEntries(server.store, id, BACKGROUND_CONTEXT));
   assert.equal(journal.includes(HEAD) || journal.includes(REST.slice(0, 8)), false, "the journal holds no part of the held value");
