@@ -23,6 +23,7 @@
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
+import { shownMessage } from "../timeline/timeline.js";
 import type { AgentLearning } from "../learn/rows.js";
 import { correctionRefused, learningCommit, type LearningChange, type LearningCommitResult } from "../learn/commit.js";
 import { CAPS, type Change, checkDraft, problemWords, type Problem, unstorable } from "../learn/index.js";
@@ -44,7 +45,7 @@ import type { RunPath } from "../learning-cost.js";
 import { said, seedStopped } from "../learning-words.js";
 import { learningStartOf, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
 import type { SignInReader } from "../run-view.js";
-import { type AlsoRow, FINAL_STATES, type LearningProposal, type McpServerRow, type Store } from "../store/store.js";
+import { type AlsoRow, type Command, FINAL_STATES, type LearningProposal, type McpServerRow, type Store } from "../store/store.js";
 import { shadowRunId } from "../learn/audit.js";
 import { keyedBesideOf, noteLearningDeadline } from "../learning-work.js";
 import { getMcpServer } from "../mcp-store.js";
@@ -126,8 +127,8 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       // A source hook uploads task dialogue, not owner feedback addressed to AgentRun.
       // CLI corrections are written explicitly through the owner corrections API.
       if (launch.cli_learning) return [];
-      const [entries, rows] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false })]);
-      return ownerWords(entries, rows);
+      const [entries, rows, commands] = await Promise.all([runEntries(deps.store, runId, BACKGROUND_CONTEXT), runTimeline(deps.store, runId, BACKGROUND_CONTEXT, { settled: false }), deps.store.commands(runId, 0)]);
+      return ownerWords(entries, rows, messagesOf(commands));
     },
     // The line alone: a kept one makes its own room on main (the file's oldest lines dropped), so main is not read here.
     correctionRefused: async ({ text, refuse }) => correctionRefused(text, refuse),
@@ -273,17 +274,57 @@ export async function commitDirect(deps: { readonly learning: AgentLearning; rea
 const committedOf = (done: LearningCommitResult): Committed =>
   done.ok ? { ok: true, commit: done.commit, ...(done.refusedCorrection ? { refusedCorrection: done.refusedCorrection } : {}), ...(done.droppedLines ? { droppedLines: done.droppedLines } : {}) } : done.reason === "unavailable" ? { ok: false, reason: "unavailable", problems: [] } : { ok: false, reason: done.reason, problems: done.problems };
 
+/** A message a person sent that the run took: its whole text, as the run's commands keep it, and their own words beside
+ *  it when they sent some (POST /runs/{id}/messages `said`), which its learning keeps in place of that text. */
+export type TakenMessage = { readonly text: string; readonly said?: string };
+
+/** The messages a person sent of a run's command rows `commands`, in the order they were written, each whole with its
+ *  `said` when sent with one: a steer's text, or the note of a deny (a message makes one of an approval it found
+ *  waiting, runs-over-store.ts message). A refused row took no turn, and a trigger's or the server's steer (`origin`)
+ *  and a grade's feedback round's (`feedback`) are no person's message of the job's: all are left out. The one place a message's whole text and its `said` are read back for learning. */
+export function messagesOf(commands: readonly Command[]): TakenMessage[] {
+  return commands.flatMap((command) => {
+    const body = (command.body ?? {}) as { text?: unknown; note?: unknown; said?: unknown; origin?: unknown; feedback?: unknown };
+    const text = command.kind === "steer" ? body.text : command.kind === "deny" ? body.note : undefined;
+    // A grade's feedback round (its steer's `feedback`, written by the server alone: feedback-round.ts openFeedbackRound)
+    // is no message of the job's: its rows are left out (withoutFeedbackRounds), so its command is too, or a later message
+    // with its text would pair with it and keep the grade's words in place of its own.
+    if (command.refused !== null || typeof text !== "string" || !text.trim() || body.origin !== undefined || body.feedback !== undefined) return [];
+    return [{ text: text.trim(), ...(typeof body.said === "string" ? { said: body.said } : {}) }];
+  });
+}
+
+/** A person's words of each of `rows` (their messages after the job's first, in order). A `user_message` row is paired
+ *  with the first message of `taken` not yet paired whose text, as the row shows it (timeline.ts shownMessage: cut at
+ *  CAPS.text), is the row's, so a long message's cut row still finds its own and the same text sent twice keeps each its
+ *  own. A paired row's words are the message's `said` when sent with one, else its whole text, never the cut row; a row
+ *  no message pairs (the job's first input, a sign-in) keeps the row's text. */
+function personWords(rows: readonly TimelineEvent[], taken: readonly TakenMessage[]): Map<TimelineEvent, string> {
+  const left = [...taken];
+  return new Map(rows.map((row) => {
+    const text = String(row.text ?? row.summary ?? "");
+    const at = row.kind === "user_message" && row.text !== null ? left.findIndex((one) => shownMessage(one.text) === row.text) : -1;
+    if (at < 0) return [row, text];
+    const [message] = left.splice(at, 1);
+    return [row, message!.said ?? message!.text];
+  }));
+}
+
 /** What a run's owner said of it, in order, each a line for corrections.md: the grade's words its end closes (a feedback
  *  round, feedback-round.ts pendingFeedbackOf over its root `entries`), and each message a person sent in this round of
  *  its timeline `rows`: after the job's first on its first round, after its previous end on a later one (a follow-up
  *  opened it again). A grade's round's rows, the end-of-run turn's and a subagent's (a child conversation's rows carry
- *  its spawning call, parent_tool_use_id: its task prompt is the job's, not the owner's) are left out. */
-export function ownerWords(entries: readonly EntryLike[], rows: readonly TimelineEvent[]): string[] {
+ *  its spawning call, parent_tool_use_id: its task prompt is the job's, not the owner's) are left out. Each message is
+ *  read whole from the run's commands (`taken`, messagesOf), never as its row cuts it: one sent with `said` is the
+ *  person's own words, its text the host's, so `said` is kept; one without keeps its whole text. */
+export function ownerWords(entries: readonly EntryLike[], rows: readonly TimelineEvent[], taken: readonly TakenMessage[] = []): string[] {
   const graded = pendingFeedbackOf(entries)?.text;
   const ended = entries.findLast((entry) => entry.kind === KINDS.end)?.id;
   const messages = withoutFeedbackRounds(rows).filter((row) => row.agent_label !== LEARNING_LABEL && !row.parent_tool_use_id && isMessageRow(row));
+  // Read over every round's messages, so an earlier round's row pairs with its own message first.
+  const words = personWords(messages.slice(1), taken);
   const said = ended === undefined ? messages.slice(1) : messages.filter((row) => Number(row.id.split(":")[1]) > ended);
-  return [...(graded ? [graded] : []), ...said.filter((row) => row.kind === "user_message").map((row) => String(row.text ?? row.summary ?? ""))];
+  return [...(graded ? [graded] : []), ...said.filter((row) => row.kind === "user_message").map((row) => words.get(row) ?? String(row.text ?? row.summary ?? ""))];
 }
 
 /** learned_workflow by every name a harness calls it: its own, and claude-agent's host-tool alias (`mcp__hands__<name>`).
@@ -515,7 +556,8 @@ const TRACE_TEXT = 600;
 
 /** One earlier run as the compile turn reads it (learn/compile.ts CompileTrace), from its timeline (traceFrom). */
 export async function traceOf(store: Store, runId: string, refuse: readonly string[]): Promise<CompileTrace> {
-  return traceFrom(await runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }), refuse);
+  const [timeline, commands] = await Promise.all([runTimeline(store, runId, BACKGROUND_CONTEXT, { settled: false }), store.commands(runId, 0)]);
+  return traceFrom(timeline, refuse, messagesOf(commands));
 }
 
 /** A run's trace from its timeline rows, the end-of-run turn's (LEARNING_LABEL) left out: its first message (the
@@ -523,8 +565,9 @@ export async function traceOf(store: Store, runId: string, refuse: readonly stri
  *  each message the person sent after the first (`user_message`: their feedback), never the server's words (an
  *  approval's resume, which can carry a call's result, a raised cap's follow-up, a hand-back), a trigger's or a grade's
  *  (its feedback round is no turn of the job's: withoutFeedbackRounds); every text cut of `refuse` and every secret's
- *  shape. */
-export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly string[]): CompileTrace {
+ *  shape. A person's message is read as ownerWords reads it (`taken`, messagesOf over the run's commands): its `said`
+ *  when sent with one, else its whole text. */
+export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly string[], taken: readonly TakenMessage[] = []): CompileTrace {
   const rows = withoutFeedbackRounds(timeline).filter((row) => row.agent_label !== LEARNING_LABEL);
   const shown = { text: (text: string) => redactSecrets(text, refuse, Number.POSITIVE_INFINITY).replace(/\s+/g, " ").trim() };
   const cut = (text: string | null | undefined) => excerptShown(String(text ?? ""), shown, TRACE_TEXT);
@@ -534,7 +577,8 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
   const calls = rows.filter((row) => row.kind === "tool_use" && models(row)).slice(0, TRACE_CALLS).map((row) => ({ tool: cut(row.tool_name), input: cut(row.tool_input_preview), ...(failed.has(row.tool_use_id) ? { failed: true as const } : {}) }));
   const answer = rows.findLast((row) => row.kind === "final_answer")?.text;
   const first = messages[0];
-  return { input: first ? cut(first.text ?? first.summary) : "", calls, answer: cut(answer), feedback: messages.slice(1).filter((row) => row.kind === "user_message").map((row) => cut(row.text ?? row.summary)) };
+  const words = personWords(messages.slice(1), taken);
+  return { input: first ? cut(first.text ?? first.summary) : "", calls, answer: cut(answer), feedback: messages.slice(1).filter((row) => row.kind === "user_message").map((row) => cut(words.get(row))) };
 }
 
 /** The compile turn's facts for run `runId` of agent `agentId` (learn/compile.ts): a revision of the learned workflow

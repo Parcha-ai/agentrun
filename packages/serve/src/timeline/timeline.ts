@@ -103,6 +103,11 @@ export type AgentEventLike = { type: string; [key: string]: unknown };
 
 /** The base caps, so a row is the same on both sides. `thinking` cuts the first sentence of a thinking summary. */
 export const CAPS = { summary: 500, preview: 500, text: 2000, thinking: 100 };
+
+/** A person's message as its `user_message` row's text shows it: trimmed, then cut at `max` (CAPS.text). The one rule
+ *  every such row is made by, so a reader that pairs a row with the message it came from (runner/learning-end.ts
+ *  messagesOf) reads the message's text by it, never by a rule of its own. */
+export const shownMessage = (text: string, max: number = CAPS.text): string => cut(text.trim(), max);
 /** The most of a call's output a read for a grader shows (`calls`, tool_result_text): as much as a grader's whole prompt
  *  takes (template-eval.ts GRADER_PROMPT_MAX), so a grader judges what the run read, not a head of it; the grader's own
  *  fit (fitCalls) shares that room among the calls. The run's redaction reads it in pieces of an answer's size
@@ -1216,7 +1221,7 @@ function createProjector(options: TimelineOptions) {
       else if (origin.reason === "approval_declined") {
         const said = redactText(origin.said.trim());
         add(make("phase", conv, `${base}${BESIDE_SUFFIX}`, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
-        add(make("user_message", conv, base, { summary: `You: ${firstLine(said)}`, text: said }));
+        add(make("user_message", conv, base, { summary: `You: ${firstLine(said)}`, text: shownMessage(said, caps.text) }));
       } else add(make("phase", conv, base, { summary: `AgentRun: ${firstLine(text)}`, text, origin: "server" }));
       provisional.delete(conv);
     } else if (message?.role === "user" && (entry.kind === "pi.user" || !entry.kind.startsWith("pi."))) {
@@ -1225,7 +1230,7 @@ function createProjector(options: TimelineOptions) {
       // A person can paste a held key: their row shows it redacted, as the host's `redact` makes it. The entry, which the
       // model reads, keeps what they typed.
       const text = redactText(textOf(message));
-      add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text }));
+      add(make("user_message", conv, base, { summary: `${author ?? "You"}${steer ? " (steer)" : ""}: ${firstLine(text)}`, text: shownMessage(text, caps.text) }));
       provisional.delete(conv);
     }
     if (["pi.user", "pi.assistant", "pi.tool-result"].includes(entry.kind)) previous.set(conv, entry.kind);

@@ -994,6 +994,7 @@ export type RunFile = {
 
 export type MessageCreate = {
   content: string;
+  said?: string;
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
@@ -1336,6 +1337,7 @@ export type Features = {
     answer: boolean;
     follow_up: boolean;
     steer_workflow_runs: boolean;
+    said?: boolean;
   };
   timeline: {
     long_poll: boolean;
