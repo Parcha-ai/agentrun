@@ -1,0 +1,10 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+The tool gate's filed-folder check now covers three more cases.
+- On a computer that mounts the run's folder, while a folder is filed, a script's file ops (`files.read`, `files.list`, `files.write` and `files.stat`) must name an absolute path inside `/workspace`. A relative path is refused, with an error saying it is not an absolute path: the computer is handed the path as written, so the gate holds only the form it checked. The computer's own file service already refused a relative path, so no script that worked before is refused now.
+- On that computer, a path under the run folder's name on the runner's machine, such as a bind's source folder or a CLI harness's working folder, is refused as outside `/workspace`. Before, the gate took those names as the run's folder, but on the computer they are other folders, and `files.write` could create them on the computer's own disk.
+- A learned workflow's call node is held by its arguments, not only by its tool's name. A `pdf_pages` call node whose path is in a filed folder is refused before it runs, in the gate's words, as the agent's own `read` there is.
+
+The docs now say that keeping the model off a filed answer takes giving the run no desktop, or setting the desktop kind to `deny`. A desktop whose model is handed no screen tools (`surface: code`) still gives its scripts `apps.open` and input ops.
