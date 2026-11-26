@@ -75,6 +75,14 @@ test("a run's learning read says its grade and the round it opened: none before 
   assert.equal(again.graded.feedback, "correction", "after the round ended, the read still says the grade opened a correction round");
   assert.deepEqual([again.state, again.corrections], ["merged", 1], `the round kept the reviewer's words as a correction: ${JSON.stringify(again)}`);
   meets(again);
+
+  // A refused grade changes nothing: `__proto__` in `expected` (at the top or nested) and a bare `expected` are refused,
+  // and the kept grade reads back whole, its `graded_at` and its round's `feedback` too. A refusal that still wrote would
+  // replace it.
+  for (const body of [JSON.parse('{"correct":false,"expected":{"__proto__":{"answer":42}}}'), JSON.parse('{"correct":true,"expected":{"verdict":{"__proto__":42}}}'), { correct: true, expected: "42" }]) {
+    assert.equal((await api("PUT", `/runs/${run}/grade`, body)).status, 422, JSON.stringify(body));
+  }
+  assert.deepEqual((await api("GET", `/runs/${run}/learning`)).body.graded, again.graded, "a refused grade replaced the kept one");
 });
 
 // Review on #2644 (round 4, security): every text of a promotion record the route returns is cut of the host's secrets as
