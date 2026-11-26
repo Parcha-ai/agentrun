@@ -29,7 +29,7 @@ const { putSealedKey } = await import("../dist/server-keys.js");
 const FAUX_JEV = new URL("./fixtures/faux-jev-web.mjs", import.meta.url).pathname;
 const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
 const FAUX_WEB = new URL("./fixtures/faux-web.mjs", import.meta.url).pathname;
-const ON = "Jev (jev-1.14.0) ranks results against the objective, or the query when none is given; each search sends that and each result's URL, title and snippet to TypeSafe, billed per request on the server's TypeSafe key";
+const ON = "Jev (jev-1.14.0) ranks results against the objective, or the query when none is given; each search sends that and each result's URL, title, snippet and published date to TypeSafe, billed per request on the server's TypeSafe key";
 /** What capabilities' why adds for a web_fetch the run's own Web serves, where Jev runs on TypeSafe's key. */
 const FETCH_ON = "a fetch given an objective sends the page's text and the objective to TypeSafe for Jev (jev-1.14.0) to pick its chunks, billed per request on the server's TypeSafe key; a fetch with none sends TypeSafe nothing";
 

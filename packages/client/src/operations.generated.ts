@@ -354,6 +354,8 @@ export type AgentList = {
 export type RunList = {
   runs: Array<RunSummary>;
   next_cursor: string | null;
+  scope?: "active" | "review";
+  observed_at?: string;
 };
 
 export type RunSummary = {
@@ -367,6 +369,18 @@ export type RunSummary = {
   created_at: Timestamp;
   ended_at: Timestamp | null;
   cost: Cost;
+  computer?: {
+    kind: "sandbox" | "desktop" | "phone" | "browser";
+    provider: string;
+    state: "starting" | "ready" | "taken_over" | "released" | "ended" | "failed";
+    why?: string;
+    held?: {
+      state: "starting" | "waiting" | "started" | "ended" | "released";
+      minutes: number;
+      until?: string;
+      why?: "timeout" | "lost";
+    };
+  };
   sdk?: {
     runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
     model: string | null;
@@ -440,6 +454,37 @@ export type RunSummary = {
     };
     model_requests: null;
   };
+  factory?: {
+    lifecycle_version: string;
+    source: "managed" | "native" | "sdk" | "cli";
+    runtime: string;
+    control: "managed" | "observed";
+    controls: {
+      stop: boolean;
+      cancel: boolean;
+      approve: boolean;
+    };
+    observation: {
+      basis: "runner" | "connector" | "unreported";
+      status: "current" | "offline" | "revoked" | "unreported";
+      last_seen_at: string | null;
+    };
+    last_activity_at: string | null;
+    github: null | {
+      repository: string;
+      issue: number | null;
+      pull_request: number | null;
+      head_sha: string | null;
+      provenance: "launch" | "github_trigger";
+    };
+    children: Array<{
+      id: string;
+      conversation_id: number;
+      parent_call_id: string;
+      status: "active" | "completed";
+      label: string | null;
+    }>;
+  };
   console_url?: string;
   revision: string;
   kind: "agentic" | "workflow";
@@ -451,7 +496,7 @@ export type RunSummary = {
   error?: RunError | null;
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
     detail: string | null;
     workflows?: Array<{
       file: string;
@@ -560,7 +605,6 @@ export type Cost = {
   followup_usd?: number | null;
   shadow_usd?: number | null;
   share_usd?: number | null;
-  degraded?: true;
   plan?: {
     requests: number;
     tokens: number;
@@ -717,6 +761,37 @@ export type Run = {
     };
     model_requests: null;
   };
+  factory?: {
+    lifecycle_version: string;
+    source: "managed" | "native" | "sdk" | "cli";
+    runtime: string;
+    control: "managed" | "observed";
+    controls: {
+      stop: boolean;
+      cancel: boolean;
+      approve: boolean;
+    };
+    observation: {
+      basis: "runner" | "connector" | "unreported";
+      status: "current" | "offline" | "revoked" | "unreported";
+      last_seen_at: string | null;
+    };
+    last_activity_at: string | null;
+    github: null | {
+      repository: string;
+      issue: number | null;
+      pull_request: number | null;
+      head_sha: string | null;
+      provenance: "launch" | "github_trigger";
+    };
+    children: Array<{
+      id: string;
+      conversation_id: number;
+      parent_call_id: string;
+      status: "active" | "completed";
+      label: string | null;
+    }>;
+  };
   console_url?: string;
   revision: string;
   kind: "agentic" | "workflow";
@@ -760,7 +835,7 @@ export type Run = {
   };
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
     detail: string | null;
     at: string;
     workflows?: Array<{
@@ -1047,7 +1122,7 @@ export type TimelineRow = {
   tool_result_text?: string | null;
   learning?: {
     state: "seeded" | "reflecting" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
     detail: string | null;
   };
 };
@@ -1119,7 +1194,7 @@ export type Capabilities = {
     } | {
       mode: "sandbox";
       box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
-    };
+    } | null;
     default_reason?: string;
     allow: Array<string>;
   };
@@ -1301,7 +1376,6 @@ export type Features = {
     routes: boolean;
     at_rest: "sealed";
     harnesses: Array<string>;
-    kept: Array<string>;
   };
   mcp_client?: {
     transports: Array<"streamable-http">;
@@ -2222,6 +2296,7 @@ export interface ListRunsParams {
   limit?: number;
   cursor?: string;
   status?: "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
+  scope?: "active" | "review";
   label?: string;
 }
 export type ListRunsResponse = RunList;
@@ -5067,7 +5142,7 @@ export type HandBackRunComputerResponse = {
 export type GetRunLearningResponse = {
   run: string;
   state: "seeded" | "reflecting" | "merged" | "dropped";
-  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | null;
+  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | "reset" | "purged_since_seed" | null;
   detail: string | null;
   at: string;
   seed: string | null;
@@ -5132,6 +5207,7 @@ export interface ListAllRunsParams {
   agent?: string;
   revision?: string;
   status?: "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
+  scope?: "active" | "review";
   archived?: boolean;
   label?: string;
   source?: string;
@@ -7539,7 +7615,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getAgentPackage: {"method":"GET","path":"/agents/{agent_id}/package","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   resolveSourceSync: {"method":"POST","path":"/agents/{agent_id}/source/resolve","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   reviewSourceProject: {"method":"POST","path":"/agents/{agent_id}/source/project-review","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  listRuns: {"method":"GET","path":"/agents/{agent_id}/runs","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor","status","label"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listRuns: {"method":"GET","path":"/agents/{agent_id}/runs","pathParams":["agent_id"],"multiSegment":[],"query":["limit","cursor","status","scope","label"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   setSourceSync: {"method":"PATCH","path":"/agents/{agent_id}/source","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveAgent: {"method":"POST","path":"/agents/{agent_id}/unarchive","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   updateDefinition: {"method":"PUT","path":"/agents/{agent_id}/definition","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
@@ -7671,7 +7747,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   handBackRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/hand-back","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunLearning: {"method":"GET","path":"/runs/{run_id}/learning","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunLearningDiff: {"method":"GET","path":"/runs/{run_id}/learning/diff","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  listAllRuns: {"method":"GET","path":"/runs","pathParams":[],"multiSegment":[],"query":["limit","cursor","agent","revision","status","archived","label","source","from","to","model"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  listAllRuns: {"method":"GET","path":"/runs","pathParams":[],"multiSegment":[],"query":["limit","cursor","agent","revision","status","scope","archived","label","source","from","to","model"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   sendMessage: {"method":"POST","path":"/runs/{run_id}/messages","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   pauseRun: {"method":"POST","path":"/runs/{run_id}/pause","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   raiseRunCap: {"method":"PATCH","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
