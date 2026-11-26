@@ -124,8 +124,8 @@ for (const [style, title, recipeOver] of [
   ['goose-1.59', 'agentrun: write', { allowFile: undefined }],
   ['goose-1.59', 'agentrun: write · proof.txt', { allowFile: undefined }],
   ['goose', 'agentrun__write', { allowFile: undefined }],
-  ['cursor', 'agentrun-write: write', { quirks: undefined }],
-  // agy is given our server under its start's own name (ar and 6 hex digits), which its title carries.
+  // Cursor and agy are given our server under its start's own name (ar and 6 hex digits), which their titles carry.
+  ['cursor', '<start>-write: write', { quirks: undefined }],
   ['antigravity', 'Run mcp_<start>_write', { quirks: undefined }],
 ]) {
   test(`a recipe without the title tie never answers allow_once on the title: ${JSON.stringify(title)} (${style}) asks the host's gate, journaled; a deny answers reject_once`, async (t) => {
