@@ -106,3 +106,16 @@ test("a restart right after results were handed, before anything else was writte
   const handed = before.reduce((a, b) => a + b, 0);
   assert.ok(handed + after <= ROOM, `handed before the restart ${before.join(', ')}, after it ${after}: together within ${ROOM}`);
 });
+
+test("a result whose length the journal could not keep is never handed: the call fails", async () => {
+  // MUTATION: a sink that drops its flush's failure hands the result anyway, and a resume after it claims that room again.
+  const store = memorySessionStore();
+  const drive = await driveOf(store, 'r5');
+  const turn = new TurnBudget();
+  // A journal that cannot write (as a poisoned NativeJournal's flush rejects); its answer's record fails too, unawaited.
+  const broken = { append: () => true, flush: () => Promise.reject(new Error('the journal could not write')), records: () => [] };
+  journalTurn(turn, broken);
+  turn.open({ inputTokens: HELD, outputTokens: 0, calls: 1 });
+  const bridge = toolBridge(drive, [bigTool(10_000)], { budget: { contextWindow: WINDOW, turn } });
+  await assert.rejects(bridge.call('lookup', { q: 'c1' }, 'c1'), /could not write/);
+});

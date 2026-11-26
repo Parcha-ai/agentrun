@@ -109,3 +109,71 @@ test("pi, a 16k window, 4,000 tokens held: a call of the four that waits for its
   assert.ok(chars <= ROOM, `the four together (${texts.map((x) => x.length).join(", ")}) fit what the turn left (${ROOM})`);
   for (const text of texts) assert.match(text, /^START-\d /, "each keeps its start");
 });
+
+/** `run` whose harness's conversation fails its first entries read (a store that could not read, once). */
+function failingFirstRead(run, failures) {
+  const bound = (target, value) => (typeof value === "function" ? value.bind(target) : value);
+  const conversationOf = (conversation) => new Proxy(conversation, {
+    get(target, key) {
+      if (key !== "entries" || failures.count > 0) return bound(target, Reflect.get(target, key, target));
+      return async () => {
+        failures.count += 1;
+        throw new Error("the store could not read the conversation");
+      };
+    },
+  });
+  const harness = new Proxy(run.harness, {
+    get(target, key) {
+      if (key !== "conversation") return bound(target, Reflect.get(target, key, target));
+      return async (...args) => {
+        const conversation = await target.conversation(...args);
+        return conversation ? conversationOf(conversation) : conversation;
+      };
+    },
+  });
+  return new Proxy(run, { get: (target, key) => (key === "harness" ? harness : bound(target, Reflect.get(target, key, target))) });
+}
+
+test("pi, a 16k window, 4,000 tokens held: a fresh session whose read of the turn fails runs no call on a fresh budget; the next read takes the turn back", async (t) => {
+  // MUTATION: a failed read of the turn kept as if it were read: the waiting call, run on a budget that knows nothing of
+  // its answer, takes its whole bound past what the turn left.
+  const body = (n) => `START-${n} ${"r".repeat(SIZE - 8)}`;
+  const read = { name: "read_big", description: "Answers ten thousand characters.", inputSchema: { type: "object", properties: { n: { type: "number" } } }, replay: "safe", call: async (args) => ({ text: body(args?.n ?? 0) }) };
+  const asked = { ...read, name: "read_asked" };
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  await queue(server, "run-1");
+  const requests = [];
+  const script = [{ calls: [{ call: asked.name, args: { n: 0 } }, ...[1, 2, 3].map((n) => ({ call: read.name, args: { n } }))] }, { say: "done" }];
+  const inputOf = (b) => ((b.messages ?? []).some((m) => m.role === "assistant") ? 100 : HELD);
+  let claims = 0;
+  const failures = { count: 0 };
+  const loop = createAdapterLoop(async (_claim, run) => ({
+    // The second claim's session (the one the person's answer resumes) meets a store that fails its first read.
+    adapter: piAdapter({ run: (claims += 1) > 1 ? failingFirstRead(run, failures) : run, redact: run.redact, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script, requests, { inputOf }), price: () => 0 }),
+    session: { key: "root", label: "root", system: ["Follow the script."], tools: [asked, read], context: "fresh", contextWindow: WINDOW },
+    input: "Follow the script.",
+    hooks: { beforeIntent: async () => {}, beforeResult: async () => {} },
+    gate: (call) => (call.tool === asked.name ? "ask" : "allow"),
+    runCap: { capUsd: () => undefined, modelOf: () => undefined },
+  }));
+  const runner = startRunner({ store, createLoop: loop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  const settled = (states) => until(async () => {
+    const now = await server.runs.get("run-1");
+    return states.includes(now.state) && now.runner === null && now;
+  }, `the run ${states.join("/")}`, 30_000);
+  const parked = await settled(["parked", "ended", "failed"]);
+  assert.equal(parked.state, "parked", "the run waits for its person");
+  const records = journalRecords(server.journal({ runId: "run-1", runner: "reader", epoch: parked.epoch, until: 0, from: parked.state }), BACKGROUND_CONTEXT);
+  const [ask] = (await records).entries.filter((entry) => entry.kind === "agentrun.ask").map((entry) => entry.data);
+  await sendCommand(server, "run-1", { kind: "approve", body: { approval: ask.callId } });
+  assert.equal((await settled(["ended", "failed"])).state, "ended");
+  assert.equal(failures.count, 1, "the read failed once");
+  const next = requests.findLast((b) => (b.messages ?? []).some((m) => Array.isArray(m.content) && m.content.some((p) => p.type === "tool_result")));
+  const results = next.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).filter((p) => p.type === "tool_result");
+  assert.equal(results.length, 4, "the four results");
+  const texts = results.map((r) => (typeof r.content === "string" ? r.content : (r.content ?? []).filter((b) => b.type === "text").map((b) => b.text).join("")));
+  const chars = texts.reduce((sum, text) => sum + text.length, 0);
+  assert.ok(chars <= ROOM, `the four together (${texts.map((x) => x.length).join(", ")}) fit what the turn left (${ROOM})`);
+  assert.ok(texts.some((text) => /could not read the conversation/.test(text)), `the waiting call says why it did not run: ${texts.map((x) => x.slice(0, 120)).join(" | ")}`);
+});
