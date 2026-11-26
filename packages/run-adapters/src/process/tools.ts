@@ -324,6 +324,9 @@ export interface ResultBudget {
   baseInputTokens?: number;
   /** The session's turn budget (turn-budget.ts): what the window has left this turn, which a bridge's calls share. */
   turn?: TurnBudget;
+  /** The most one result may take, where it is known for that result alone (its claim on `turn`, for a result a harness
+   *  builds from its log, not through the bridge): the bound never passes it. */
+  maxChars?: number;
 }
 
 /** The most of a model's context window one tool result may take: a quarter, so a turn has room for its prompt, a few
@@ -353,7 +356,9 @@ export function resultMaxChars(budget?: ResultBudget): number {
   if (typeof window !== 'number' || !Number.isFinite(window) || window <= 0) return HOST_RESULT_MAX_CHARS;
   const base = budget?.baseInputTokens;
   const room = Math.max(0, window - (typeof base === 'number' && Number.isFinite(base) && base > 0 ? base : 0));
-  return Math.min(HOST_RESULT_MAX_CHARS, Math.floor(room * RESULT_WINDOW_SHARE * RESULT_CHARS_PER_TOKEN));
+  const own = budget?.maxChars;
+  const max = Math.min(HOST_RESULT_MAX_CHARS, Math.floor(room * RESULT_WINDOW_SHARE * RESULT_CHARS_PER_TOKEN));
+  return typeof own === 'number' && Number.isFinite(own) && own >= 0 ? Math.min(max, Math.floor(own)) : max;
 }
 
 /** A harness's `resultBudget` option for a model of `contextWindow`, with the session's turn budget (its fixed text,

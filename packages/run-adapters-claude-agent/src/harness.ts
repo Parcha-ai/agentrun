@@ -18,6 +18,7 @@ import {
   gatewayHandler,
   gatewayUrl,
   isBrandedMachine,
+  journalTurn,
   NativeJournal,
   openTurn,
   placeSubmissions,
@@ -513,6 +514,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       if (!sandbox) throw sandboxRequired();
       const { query } = await loadSdk();
       const journal = new NativeJournal(ctx);
+      // The turn's budget kept on this drive's journal: a resume answers the calls it left on its answer's facts.
+      journalTurn(options.resultBudget?.turn, journal);
       const records = await journal.read();
       const store = new JournalSessionStore(journal, { records, coalesceMs: options.coalesceMs ?? 150, ...(options.barrierTimers ? { timers: options.barrierTimers } : {}) });
       // The handler reads the credential per request, in the drive's async

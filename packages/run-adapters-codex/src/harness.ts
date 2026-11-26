@@ -17,6 +17,7 @@ import {
   isBrandedMachine,
   type MachineTail,
   ModelSteps,
+  journalTurn,
   Mutex,
   NativeJournal,
   placeSubmissions,
@@ -381,6 +382,8 @@ export function codexHarness(options: CodexHarnessOptions = {}): Harness {
   /** One drive on one attach of the session's VM. */
   async function driveOn(ctx: DriveContext, spec: CodexMachine, deadline: number, invocation: Invocation, held: { lost?: boolean }): Promise<void> {
     const journal = new NativeJournal(ctx);
+    // The turn's budget kept on this drive's journal: a resume answers the calls it left on its answer's facts.
+    journalTurn(options.resultBudget?.turn, journal);
     // A rollout that keeps being tampered with (only possible under
     // danger-full-access): the turn ends, instead of a redelivery that boots
     // the VM and spends model calls again.

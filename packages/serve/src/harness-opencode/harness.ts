@@ -19,7 +19,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize } from "node:path";
 import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
-import { journalRecords, NativeJournal, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, transcriptOf, type ResultBudget, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
+import { journalRecords, journalTurn, NativeJournal, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, transcriptOf, type ResultBudget, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import { startModelProxy, type ModelProxyHooks, type ModelProxyOptions, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { openCodeConfig } from "./config.js";
 import { danglingCalls, settleCall } from "./transcript.js";
@@ -244,6 +244,8 @@ export function openCodeHarness(options: OpenCodeHarnessOptions, control?: (driv
     const configFile = join(dirs.config, "agentrun-opencode.json");
 
     const journal = new NativeJournal(ctx);
+    // The turn's budget kept on this drive's journal: a resume answers the calls it left on its answer's facts.
+    journalTurn(options.resultBudget?.turn, journal);
     const mirrored: SyncEvent[] = (await journal.read<unknown>(SYNC_STREAM)).map((r) => r.data).filter(isSyncEvent);
     const prompts = (await journal.read<{ submission?: string; messageID?: string; covers?: string[] }>(PROMPT_STREAM)).map((r) => r.data);
     let sessionID: string | undefined = mirrored[0]?.aggregate_id;

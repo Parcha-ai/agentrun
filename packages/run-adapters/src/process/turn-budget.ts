@@ -46,6 +46,10 @@ export interface TurnSpan {
   end(): void;
 }
 
+/** What a turn budget journals as it happens (journalTurn): an answer's facts as it opened the turn (`open`, null when its
+ *  input was unknown), and a result's length as it was handed (`settled`). */
+export type TurnRecord = { open: { inputTokens: number; outputTokens: number; calls?: number } | null } | { settled: { callId: string; chars: number } };
+
 const count = (n: unknown): number | undefined => (typeof n === 'number' && Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined);
 const usableWindow = (window: unknown): window is number => typeof window === 'number' && Number.isFinite(window) && window > 0;
 
@@ -59,6 +63,9 @@ export class TurnBudget {
   readonly #claims = new Map<string, { max: number; settled: boolean }>();
   #reading = 0;
   readonly #waiting = new Set<() => void>();
+  /** An answer was read into this budget (open, or restore): a journal's records never replace it. */
+  #read = false;
+  #sink: ((record: TurnRecord) => void) | undefined;
 
   /** `fixed`: the session's own text every request carries (its system prompt), counted when no answer was read. */
   constructor(fixed: readonly string[] = []) {
@@ -99,6 +106,37 @@ export class TurnBudget {
     this.#facts = inputTokens === undefined ? undefined : { inputTokens, outputTokens: count(facts.outputTokens) ?? 0, ...(calls ? { calls } : {}) };
     this.#held = 0;
     this.#claims.clear();
+    this.#read = true;
+    this.#sink?.({ open: this.#facts ? { ...this.#facts } : null });
+  }
+
+  /** Each answer's facts and each result's length, as they happen, to `sink` (the session's journal: journalTurn), in place of any before. */
+  journal(sink: (record: TurnRecord) => void): void {
+    this.#sink = sink;
+  }
+
+  /** The turn `records` (journal's, in order) leave: the last answer's facts, and each result handed since, held. Only a
+   *  budget that has read no answer of its own takes them (a new process resuming its session's turn); else nothing. */
+  restore(records: readonly TurnRecord[]): void {
+    if (this.#read) return;
+    let last = -1;
+    records.forEach((record, i) => void (record && 'open' in record && (last = i)));
+    if (last < 0) return;
+    const opened = (records[last] as Extract<TurnRecord, { open: unknown }>).open;
+    const inputTokens = count(opened?.inputTokens);
+    const calls = count(opened?.calls);
+    this.#facts = inputTokens === undefined ? undefined : { inputTokens, outputTokens: count(opened?.outputTokens) ?? 0, ...(calls ? { calls } : {}) };
+    this.#held = 0;
+    this.#claims.clear();
+    for (const record of records.slice(last + 1)) {
+      if (!record || !('settled' in record)) continue;
+      const chars = count(record.settled?.chars);
+      const callId = record.settled?.callId;
+      if (typeof callId !== 'string' || chars === undefined || this.#claims.has(callId)) continue;
+      this.#claims.set(callId, { max: chars, settled: true });
+      this.#held += chars;
+    }
+    this.#read = true;
   }
 
   /** Resolves once no answer is being read (or READY_WAIT_MS passed), and, with none read yet, once the fixed text is counted. */
@@ -152,7 +190,33 @@ export class TurnBudget {
     if (!claimed || claimed.settled) return;
     claimed.settled = true;
     this.#held += Math.min(chars, claimed.max) - claimed.max;
+    this.#sink?.({ settled: { callId, chars: Math.min(chars, claimed.max) } });
   }
+}
+
+/** The journal stream of a session's turn budget (TurnRecord). */
+export const TURN_STREAM = 'kernel.turn';
+
+/** A drive's journal, as journalTurn writes and reads it (NativeJournal). */
+export interface TurnJournal {
+  append(stream: string, data: unknown): unknown;
+  flush(): Promise<void>;
+  records<T = unknown>(stream?: string): readonly { data: T | undefined }[];
+}
+
+/**
+ * `turn` kept on `journal` (a drive's; the next drive's replaces it): a budget that has read no answer yet (a new process
+ * resuming the session) first takes back the turn the journal holds, so the calls its resume answers split what their
+ * answer left; then each answer's facts and each result's length go to the journal as they happen. An answer's facts are
+ * flushed at once: they must outlast a process that stops while its calls run.
+ */
+export function journalTurn(turn: TurnBudget | undefined, journal: TurnJournal): void {
+  if (!turn) return;
+  turn.restore(journal.records<TurnRecord>(TURN_STREAM).flatMap((r) => (r.data ? [r.data] : [])));
+  turn.journal((record) => {
+    journal.append(TURN_STREAM, record);
+    if ('open' in record) void journal.flush().catch(() => {});
+  });
 }
 
 /** The client tool calls an answer's event-stream line starts (`data: ...`): a Messages `tool_use` block, a Responses

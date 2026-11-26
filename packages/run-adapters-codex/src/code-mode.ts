@@ -414,6 +414,11 @@ export function codeMode(deps: CodeModeDeps) {
       // held to the host's below. The calls whose outcome they tell, for the turn's recovery note.
       const built = new Set<number>();
       const shown: string[] = [];
+      // Each output is one result the model reads in this turn: it claims its room in the turn's budget (the answer's facts,
+      // taken back from the journal by a new process), as a call through the bridge does, and is held to that claim.
+      const turn = deps.budget?.turn;
+      await turn?.ready();
+      const budgets = dangling.map((c) => (deps.budget && turn ? { ...deps.budget, maxChars: turn.claim(c.callId, deps.budget.contextWindow) } : deps.budget));
       dangling.forEach((c, i) => {
         if (!isExec(c)) {
           // Code mode's `wait` on a cell had started: the generic answer, that the call never started, would be false.
@@ -424,7 +429,7 @@ export function codeMode(deps: CodeModeDeps) {
           const done = state.effects.get(toolKey(c.callId));
           const pictured = cell === undefined && done?.status === "completed" ? imagesNoted(done.output) : undefined;
           const answered = cell !== undefined && i === carrier && yieldedTies.length > 0 ? yieldedTies.map((tie) => ({ ...factOf(state, rolled, tie, told), resumed: resumed.get(tie.callId)! })) : undefined;
-          const recovered = answered && cell !== undefined ? waitResumed(cell, answered, deps.budget) : undefined;
+          const recovered = answered && cell !== undefined ? waitResumed(cell, answered, budgets[i]) : undefined;
           const waited = cell === undefined ? undefined : recovered ? recovered.output : waitStoppedText(cell);
           if (recovered) {
             built.add(i);
@@ -438,14 +443,15 @@ export function codeMode(deps: CodeModeDeps) {
         }
         const { own, loose } = listed.get(c.callId)!;
         // Only the calls the output still tells after its bound: a call cut from it is not said to be above.
-        const recovered = execRecovery(own, loose, deps.budget);
+        const recovered = execRecovery(own, loose, budgets[i]);
         items[i] = { type: "custom_tool_call_output", call_id: c.callId, output: recovered.output };
         journal.append(RECOVERED_END_STREAM, { exec: c.callId, failed: recoveredFailed(own) });
         built.add(i);
         shown.push(...recovered.shown);
       });
       items.forEach((item, i) => {
-        if (!built.has(i) && typeof item.output === "string") item.output = boundResult(item.output, deps.budget).text;
+        if (!built.has(i) && typeof item.output === "string") item.output = boundResult(item.output, budgets[i]).text;
+        if (typeof item.output === "string") turn?.settle(dangling[i]!.callId, item.output.length);
       });
       if (resume && shown.length > 0) journal.append(SHOWN_STREAM, { since, callIds: shown });
       // Every record above is in the log before the outputs are injected.
