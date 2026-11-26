@@ -8810,7 +8810,6 @@ class FeaturesHarnessKeys(TypedDict):
     routes: bool
     at_rest: Literal["sealed"]
     harnesses: list[str]
-    kept: list[str]
 
 
 class FeaturesMcpClient(TypedDict):

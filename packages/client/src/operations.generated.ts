@@ -1377,7 +1377,6 @@ export type Features = {
     routes: boolean;
     at_rest: "sealed";
     harnesses: Array<string>;
-    kept: Array<string>;
   };
   mcp_client?: {
     transports: Array<"streamable-http">;
