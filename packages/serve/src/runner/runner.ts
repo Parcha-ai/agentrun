@@ -901,6 +901,7 @@ export function startRunner(options: RunnerOptions): Runner {
       // A run let go unfinished says why on its claim's attempt (run_attempts cut): a runner's close drained it, or its
       // loop ended interrupted on its own and the run is tried again. The next claim works its turn again.
       const cut = end.state !== "interrupted" ? undefined : closedItself ? "retry" as const : held.stoppedFor === "shutdown" ? "drain" as const : undefined;
+      // A reopen since this end's commit (the run's release) has moved the epoch: this release has nothing left to write.
       await release(claim, {
         // Parked again with nothing written (LoopEnd `again`): the release parks the row, its words left as they stood.
         ...(end.state === "parked" && end.again ? { state: "parked" as const } : {}),
@@ -908,6 +909,8 @@ export function startRunner(options: RunnerOptions): Runner {
         : inARow > 0 ? { backoffUntil: now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
         : {}),
         ...(cut ? { cut } : {}),
+      }).catch((error: unknown) => {
+        if (!held.landed || !isFenced(error)) throw error;
       });
       emit({ type: "released", runId: claim.runId, epoch: claim.epoch, end: end.state });
       // Left running for another claim: a hand-back, by its cause (this runner's close stopped its loop, or it ended so).
@@ -1149,9 +1152,11 @@ export function startRunner(options: RunnerOptions): Runner {
           continue;
         }
         const before = runs.get(claim.runId);
-        if (closed || killed || (before && !before.fence.lost)) {
+        // A hold whose end landed holds nothing: that end commit released the run, and a message may have reopened it since.
+        const holding = before !== undefined && !before.fence.lost && !before.landed;
+        if (closed || killed || holding) {
           // Closed while the batch was claimed (or a run this runner still holds, which a claim cannot be): given back.
-          if (before && !before.fence.lost) emit({ type: "error", runId: claim.runId, step: "claim", message: "claimed a run this runner still holds" });
+          if (holding) emit({ type: "error", runId: claim.runId, step: "claim", message: "claimed a run this runner still holds" });
           await release(claim, {}).then(() => emit({ type: "handed-back", runId: claim.runId, epoch: claim.epoch, cause: "give_back" }), () => {});
           continue;
         }
