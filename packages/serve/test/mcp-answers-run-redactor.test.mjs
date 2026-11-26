@@ -118,7 +118,7 @@ test("a run's own process (its runner's MCP, heldFor), Mode 1: the runner's reda
   await assertCut(callOf(mcp.tools, (one) => one.catalog), runFolder(data, "agent-own", "run-own"));
 });
 
-test("the gateway itself: with the run's redactor, an error answer and an answer with a block that is not text (filed whole as JSON) are cut of its value; with none, the call's own scrub alone, as before", { timeout: 60_000 }, async (t) => {
+test("the gateway itself: with the run's redactor, an error answer and an answer with a block that is not text (filed whole as JSON) are cut of its value; given none, it does not start", { timeout: 60_000 }, async (t) => {
   const { mcpGateway } = await import("../dist/mcp-gateway.js");
   const { localWorkspace } = await import("../dist/workspace/index.js");
   const fake = await startFakeMcp({ token: TOKEN });
@@ -130,7 +130,7 @@ test("the gateway itself: with the run's redactor, an error answer and an answer
   const said = async (redact) => {
     const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "mcp-gateway-run-redactor-"));
     t.after(() => rmSync(work, { recursive: true, force: true }));
-    const gateway = mcpGateway({ pin, credentials, work: () => localWorkspace(work), ...(redact ? { redact } : {}) });
+    const gateway = mcpGateway({ pin, credentials, work: () => localWorkspace(work), redact });
     const failed = await gateway.call("acme", "fails", {}, { signal: new AbortController().signal });
     const pictured = await gateway.call("acme", "pictured", {}, { signal: new AbortController().signal });
     assert.equal(failed.isError, true);
@@ -140,9 +140,13 @@ test("the gateway itself: with the run's redactor, an error answer and an answer
   const cut = await said(runRedactor());
   assert.equal(cut.length, 3, "two answers and the filed JSON");
   for (const text of cut) assert.ok(!text.includes(HELD), `cut of the run's value: ${text.slice(0, 200)}`);
-  const asBefore = await said(undefined);
-  for (const text of asBefore) assert.ok(text.includes(HELD), `no run redactor: the server's answer as it came, its own credentials aside: ${text.slice(0, 200)}`);
-  for (const text of [...cut, ...asBefore]) assert.ok(!text.includes(TOKEN));
+  for (const text of cut) assert.ok(!text.includes(TOKEN));
+  for (const redact of [undefined, "[redacted]"]) {
+    assert.throws(() => mcpGateway({ pin, credentials, work: () => tmpdir(), ...(redact !== undefined ? { redact } : {}) }), (error) => {
+      assert.match(error.message, /^An MCP gateway was given no redactor \(the run's\), so it does not start/);
+      return true;
+    }, `a gateway given ${redact === undefined ? "no redactor" : "a redactor that is no function"} does not start`);
+  }
 });
 
 test("the gateway itself: a binary payload filed whole (a screenshot's image, a resource's blob) past a piece of the run's redactor is kept whole; one whose bytes hold a value the run holds is \"[redacted]\" alone", { timeout: 60_000 }, async (t) => {
@@ -174,4 +178,111 @@ test("the gateway itself: a binary payload filed whole (a screenshot's image, a 
   assert.equal(filed.blob.content[0].resource.blob, picture, "a resource's blob is filed whole");
   assert.equal(filed.leaks.content[0].data, "[redacted]", "a payload whose bytes hold the run's value is withheld");
   assert.equal(filed.leaks.content[0].mimeType, "image/png", "and the block around it kept");
+});
+
+// 12 KB of bytes, so a payload of them is base64 past the run's redactor's 8,192-character piece.
+const BYTES = Buffer.from(Array.from({ length: 12_288 }, (_, i) => (i * 7) % 251));
+const PICTURE = BYTES.toString("base64");
+/** `inside` between two copies of BYTES, as base64. */
+const bytesAround = (inside) => Buffer.concat([BYTES, Buffer.from(inside), BYTES]).toString("base64");
+const b64url = (text) => Buffer.from(text).toString("base64url");
+/** A JWT's shape, signed by no one and held by no redactor here. */
+const JWT = [b64url('{"alg":"none"}'), b64url('{"sub":"not-a-secret"}'), b64url("not-a-signature")].join(".");
+/** A private key block's shape, of no key, held by no redactor here. */
+const PEM = [`-----BEGIN ${"PRIVATE KEY"}-----`, ...Array.from({ length: 3 }, (_, i) => `MIIE${String(i).repeat(60)}`), `-----END ${"PRIVATE KEY"}-----`].join("\n");
+
+/** Each of `tools` (a tool's name, and the content blocks it answers) called once through a gateway with `redact`, and the
+ *  JSON its answer was filed whole as, by tool. Every tool answers a block that is not text, so each is filed. */
+async function filedWhole(t, tools, redact) {
+  const { mcpGateway } = await import("../dist/mcp-gateway.js");
+  const { localWorkspace } = await import("../dist/workspace/index.js");
+  const fake = await startFakeMcp({ token: TOKEN });
+  t.after(() => fake.close());
+  for (const [name, content] of Object.entries(tools)) fake.tools[name] = { description: `The ${name} tool.`, input: SCHEMA, run: () => ({ content }) };
+  const pin = { acme: { url: fake.url, tools: Object.keys(tools).map((name) => ({ name, inputSchema: SCHEMA })) } };
+  const credentials = { acme: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } };
+  const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "mcp-gateway-filed-whole-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const gateway = mcpGateway({ pin, credentials, work: () => localWorkspace(work), redact });
+  const filed = {};
+  for (const tool of Object.keys(tools)) {
+    const result = await gateway.call("acme", tool, {}, { signal: new AbortController().signal });
+    const path = result.content.map((block) => block.text).join("").match(/evidence\/mcp\/acme\/[^ \]]+\.json/)?.[0];
+    assert.ok(path, `${tool} filed whole: ${result.content.map((block) => block.text).join("")}`);
+    filed[tool] = JSON.parse(readFileSync(join(work, path), "utf8"));
+  }
+  return filed;
+}
+
+test("the gateway itself: a binary payload filed whole that carries a secret's shape no one holds (a JWT as the payload gives it, a private key or a JWT in the bytes it decodes to) is \"[redacted]\" alone, as the run's redactor cuts a shape in text; one with none is kept whole", { timeout: 60_000 }, async (t) => {
+  const filed = await filedWhole(t, {
+    as_given: [{ type: "image", data: `${PICTURE}\n${JWT}\n${PICTURE}`, mimeType: "image/png" }],
+    key_in_bytes: [{ type: "resource", resource: { uri: "file:///notes.bin", mimeType: "application/octet-stream", blob: bytesAround(`\n${PEM}\n`) } }],
+    jwt_in_bytes: [{ type: "image", data: bytesAround(` ${JWT} `), mimeType: "image/png" }],
+    clean: [{ type: "image", data: PICTURE, mimeType: "image/png" }],
+  }, runRedactor());
+  const shown = {
+    as_given: filed.as_given.content[0].data,
+    key_in_bytes: filed.key_in_bytes.content[0].resource.blob,
+    jwt_in_bytes: filed.jwt_in_bytes.content[0].data,
+  };
+  assert.deepEqual(Object.entries(shown).filter(([, payload]) => payload !== "[redacted]").map(([tool]) => tool), [], "each payload with a secret's shape is withheld");
+  assert.equal(filed.key_in_bytes.content[0].resource.uri, "file:///notes.bin", "and the block around it kept");
+  assert.equal(filed.clean.content[0].data, PICTURE, "a payload with no secret's shape is filed whole, as the server sent it");
+});
+
+test("a claim's MCP does not start without the run's held redactor: it throws, naming itself, before it opens or mints any key", { timeout: 60_000 }, async () => {
+  const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+  const reached = [];
+  const store = new Proxy({}, { get: (_, name) => (reached.push(`store.${String(name)}`), undefined) });
+  const options = { claim: { runId: "run-own", epoch: 1 }, store, sealKey: SEAL_KEY, grants: GRANTS, harness: { commit: async () => undefined }, work: () => tmpdir(), githubAppAccess: async () => void reached.push("githubAppAccess") };
+  for (const [what, redact] of [["no redactor", undefined], ["a redactor that holds nothing more (secretRedactor)", secretRedactor([HELD])], ["a bare cut", (text) => text]]) {
+    await assert.rejects(mcpForClaim({ ...options, ...(redact ? { redact } : {}) }), (error) => {
+      assert.match(error.message, /^A claim's MCP was given no redactor that holds keys/, `${what}: ${error.message}`);
+      return true;
+    }, what);
+  }
+  assert.deepEqual(reached, [], "nothing was read or minted");
+});
+
+test("the gateway itself: a held value in a binary payload at each byte offset (0, 1 and 2 mod 3), in an audio block, and as hex that only the decoded bytes show is \"[redacted]\"; two payloads in one answer each go back to their own block", { timeout: 60_000 }, async (t) => {
+  const { valueLeft } = await import("../dist/learn/secrets.js");
+  const at = (shift) => bytesAround(`${"\u0000".repeat(shift)}${HELD}`);
+  const hex = bytesAround(` ${Buffer.from(HELD).toString("hex")} `);
+  assert.equal(valueLeft(hex, [HELD], []), false, "the base64 text of the hex form does not show the value: only the bytes it decodes to do");
+  for (const shift of [0, 1, 2]) assert.equal((BYTES.length + shift) % 3, shift, `the value starts at a byte ${shift} mod 3`);
+  const filed = await filedWhole(t, {
+    offset_0: [{ type: "image", data: at(0), mimeType: "image/png" }],
+    offset_1: [{ type: "image", data: at(1), mimeType: "image/png" }],
+    offset_2: [{ type: "resource", resource: { uri: "file:///shot.png", mimeType: "image/png", blob: at(2) } }],
+    audio: [{ type: "audio", data: at(1), mimeType: "audio/wav" }],
+    audio_clean: [{ type: "audio", data: PICTURE, mimeType: "audio/wav" }],
+    hex: [{ type: "image", data: hex, mimeType: "image/png" }],
+    two: [{ type: "text", text: "two files" }, { type: "image", data: PICTURE, mimeType: "image/png" }, { type: "resource", resource: { uri: "file:///b.bin", blob: at(2) } }],
+    two_turned: [{ type: "image", data: at(0), mimeType: "image/png" }, { type: "text", text: "two files" }, { type: "resource", resource: { uri: "file:///a.bin", blob: PICTURE } }],
+  }, runRedactor());
+  const leaked = Object.entries({
+    offset_0: filed.offset_0.content[0].data,
+    offset_1: filed.offset_1.content[0].data,
+    offset_2: filed.offset_2.content[0].resource.blob,
+    audio: filed.audio.content[0].data,
+    hex: filed.hex.content[0].data,
+    "two's resource": filed.two.content[2].resource.blob,
+    "two_turned's image": filed.two_turned.content[0].data,
+  }).filter(([, payload]) => payload !== "[redacted]").map(([where]) => where);
+  assert.deepEqual(leaked, [], "every payload holding the run's value is withheld");
+  assert.equal(filed.audio_clean.content[0].data, PICTURE, "a clean audio payload is filed whole");
+  assert.equal(filed.two.content[1].data, PICTURE, "the clean image beside a leaking resource is kept byte for byte");
+  assert.equal(filed.two.content[0].text, "two files");
+  assert.equal(filed.two_turned.content[2].resource.blob, PICTURE, "the clean resource after a leaking image is kept byte for byte");
+  assert.equal(filed.two_turned.content[2].resource.uri, "file:///a.bin");
+});
+
+test("the gateway itself: with a run's redactor that names none of its values (no heldValues), a binary payload past a piece is \"[redacted]\": cut as the rest is, never kept unread", { timeout: 60_000 }, async (t) => {
+  const held = runRedactor();
+  const bare = (text) => held(text);
+  assert.equal(bare.heldValues, undefined);
+  const filed = await filedWhole(t, { shot: [{ type: "image", data: PICTURE, mimeType: "image/png" }], small: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }] }, bare);
+  assert.equal(filed.shot.content[0].data, "[redacted]", "a payload past a piece");
+  assert.equal(filed.small.content[0].data, "iVBORw0KGgo=", "a payload within a piece is read as text is");
 });
