@@ -24,7 +24,7 @@ import { type BoundTimer, REAL_TIMER } from "./loop.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import { FrameTooLarge } from "./run-channel.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
-import { FINAL_STATES, RunFinal, type RunPatch, type RunState } from "../store/store.js";
+import { FINAL_STATES, RunFinal, type RunPatch, type RunState, StoreLaunchMissing } from "../store/store.js";
 import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
 import { clearBrowserHeld } from "../browser-hold.js";
@@ -1265,6 +1265,8 @@ export function startRunner(options: RunnerOptions): Runner {
     try {
       return learningDeadlineOf((await store.runs.launch(runId)).body);
     } catch (error) {
+      // A run with no launch row was started by no check or audit (a learning child's launch is written with it).
+      if (error instanceof StoreLaunchMissing) return undefined;
       emit({ type: "error", runId, step: "learning deadline", message: message(error) });
       return "unread";
     }
