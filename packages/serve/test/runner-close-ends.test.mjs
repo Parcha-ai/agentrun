@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sendCommand } from "../dist/runner/commands.js";
-import { startRunner } from "../dist/runner/runner.js";
+import { runnerStopBy, startRunner } from "../dist/runner/runner.js";
 import { commandRow, fauxLoops, queue, stores, until } from "./runner-support.mjs";
 
 const TIMING = { leaseMs: 60_000, renewEveryMs: 1_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 600_000 };
@@ -33,7 +33,7 @@ for (const kind of ["cancel", "stop"]) {
   });
 }
 
-test("a close's read of the stop rows and its loops' stop share one window, the lease less its margin: a stalled read and a loop that never stops end the close at that window, never later", async (t) => {
+test("a close's read of the stop rows and its loops' stop share one window (runnerStopBy): a stalled read and a loop that never stops end the close at that window, never later", async (t) => {
   const { server, runners: [store] } = await stores({ runners: 1 });
   // A loop that ignores its stop and keeps committing, beside a read that never answers.
   const faux = fauxLoops({ stubborn: true, turnMs: 20 });
@@ -47,7 +47,11 @@ test("a close's read of the stop rows and its loops' stop share one window, the 
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
-  const window = { leaseMs: 8_000, stopMarginMs: 3_000, renewEveryMs: 1_000 };
+  // No computer provider here: no cleanup bound to wait out (cleanupMs 0), so the window is the release's margin and the
+  // stop's (8 s), longer than the lease less its margin (5 s).
+  const window = { leaseMs: 8_000, stopMarginMs: 3_000, renewEveryMs: 1_000, cleanupMs: 0 };
+  const bound = runnerStopBy(0, 0, window.leaseMs, window.stopMarginMs, window.cleanupMs);
+  assert.equal(bound, 8_000);
   const runner = startRunner({ store: stalled, createLoop: faux.createLoop, name: "runner-a", ...TIMING, ...window });
   t.after(() => runner.close());
   await queue(server, "run-1");
@@ -56,8 +60,8 @@ test("a close's read of the stop rows and its loops' stop share one window, the 
   const startedAt = Date.now();
   await runner.close();
   const took = Date.now() - startedAt;
-  // runnerCloseBoundMs's window after the drain (none here): 5 s, the read's 3 s inside it, never 3 s + 5 s.
-  assert.ok(took >= 4_900 && took < 7_000, `the close took the one window: ${took} ms`);
+  // runnerStopBy's window (no drain here): 8 s, the read's 3 s inside it, never 3 s + 8 s.
+  assert.ok(took >= bound - 100 && took < bound + 2_000, `the close took the one window: ${took} ms`);
 });
 
 test("a loop a stop row stops, still going at the end of the close's window, has its signal aborted before the close gives up its claim: nothing of it outlives the close", async (t) => {

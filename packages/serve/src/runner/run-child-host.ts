@@ -79,7 +79,7 @@ import { agentRunLogin, LOGIN_CHANGED_SINCE_CLAIM, loginRunnerInProcess, loginTo
 import { logLine } from "../print.js";
 import type { Held, HeldComputerAsk } from "./held.js";
 import { heardComputerHold } from "./computer-journal.js";
-import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
+import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, RELEASE_MARGIN_MS, releaseBoundMs, type StopReason, ClaimRefused } from "./loop-contract.js";
 import { Channel, ChannelClosed } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
 import { exposeSaveSlots } from "./save-slots.js";
@@ -110,7 +110,8 @@ export const FIRST_RUN_ID = 1001;
 export const RUN_SLOTS = 256;
 /** How long a run's process has to end once its loop was told to stop, before the runner ends it. */
 const STOP_GRACE_MS = 30_000;
-/** How long a run's process has to exit once its loop ended. */
+/** How long a run's process has to exit once its loop ended, at the least: a lost create's recovery under way in it ends
+ *  first (run-child.ts), so its exit is given the release's bound when that is longer (LoopDeps.releaseBoundMs). */
 const EXIT_GRACE_MS = 5_000;
 
 /** How this runner's runs are kept apart: each a process of its own, and with the helper each a uid of its own. */
@@ -1283,7 +1284,8 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
    *  a slot, the slot reaped. */
   const end = async (slot: number | undefined, tops: readonly string[]): Promise<boolean> => {
     let timer: NodeJS.Timeout | undefined;
-    const gone = exited ? Promise.race([exited, new Promise((resolve) => (timer = setTimeout(resolve, EXIT_GRACE_MS)))]) : Promise.resolve();
+    const grace = Math.max(EXIT_GRACE_MS, loopDeps.releaseBoundMs ?? releaseBoundMs());
+    const gone = exited ? Promise.race([exited, new Promise((resolve) => (timer = setTimeout(resolve, grace)))]) : Promise.resolve();
     channel?.close();
     await gone;
     clearTimeout(timer);
@@ -1450,6 +1452,7 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),
             ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}),
             ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}),
+            ...(loopDeps.releaseBoundMs === undefined ? {} : { releaseBoundMs: loopDeps.releaseBoundMs }),
           };
           const ended = channel.call("loop", "start", [init]) as Promise<LoopEnd>;
           // From here a command or a stop goes to the run's process, after its start on the channel.
@@ -1498,8 +1501,11 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
       if (!started) return;
       await up;
       if (!channel || channel.closed) return;
-      const told = channel.call("loop", "stop", [reason]).catch(() => undefined);
-      const grace = reason.kind === "command" ? STOP_GRACE_MS : STOP_GRACE_MS / 3;
+      // A shutdown's stop says when the runner's close cuts the release (LoopDeps.releaseBy), and its grace runs to that
+      // cut and the margin its booking takes, when that is later than its own.
+      const releaseBy = reason.kind === "command" ? undefined : loopDeps.releaseBy?.();
+      const told = channel.call("loop", "stop", releaseBy === undefined ? [reason] : [reason, releaseBy]).catch(() => undefined);
+      const grace = reason.kind === "command" ? STOP_GRACE_MS : Math.max(STOP_GRACE_MS / 3, releaseBy === undefined ? 0 : releaseBy - Date.now() + RELEASE_MARGIN_MS);
       let timer: NodeJS.Timeout | undefined;
       const late = await Promise.race([told.then(() => false), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(true), grace)))]);
       clearTimeout(timer);

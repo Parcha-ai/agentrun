@@ -54,7 +54,7 @@ const outputRetried = (entries: readonly { readonly kind?: string; readonly data
   const at = entries.findLastIndex((entry) => entry.kind === KINDS.input && (originOf((entry.data as { origin?: unknown } | undefined)?.origin) as { reason?: string } | undefined)?.reason === OUTPUT_RETRY_ORIGIN.reason);
   return at >= 0 && entries.slice(at + 1).some((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
 };
-import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
+import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, RELEASE_MARGIN_MS, releaseBoundMs, stopEnd, type StopReason } from "./loop-contract.js";
 import { type HeldRedact, mustHold } from "./redact.js";
 import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
@@ -313,6 +313,9 @@ export interface HostLifecycle {
   readonly onConversation: readonly ((tx: Tx, conversationId: number) => void | Promise<void>)[];
   readonly beforeResume: readonly ((harness: Harness) => void | Promise<void>)[];
   readonly beforeRelease: readonly ((harness: Harness) => void | Promise<void>)[];
+  /** Run when the claim stops waiting on its beforeRelease (the release's bound passed), with the Harness still open and
+   *  their writes still taken: what a host books of the time it knows so far, for what it could not let go. */
+  readonly releaseCut?: readonly ((harness: Harness) => void | Promise<void>)[];
   /** Asked when the run's turn ends on its question to the person (ask_person), before it parks: a tool host holding
    *  something the person may still use while they answer (the browser's open session, its live view, its page) holds the
    *  person's time for it under the run's cap and answers a PersonWait, and the run waits in its claim (the browser's
@@ -398,18 +401,20 @@ export interface PersonWait {
 
 /** A HostLifecycle and the ToolHost members that fill it: what a spec's ToolHost takes, and hands the loop. */
 export function hostLifecycle(): HostLifecycle & {
-  register: { onConversation(write: HostLifecycle["onConversation"][number]): void; beforeResume(settle: HostLifecycle["beforeResume"][number]): void; beforeRelease(stop: HostLifecycle["beforeRelease"][number]): void; personWait(hold: NonNullable<HostLifecycle["personWait"]>[number]): void };
+  register: { onConversation(write: HostLifecycle["onConversation"][number]): void; beforeResume(settle: HostLifecycle["beforeResume"][number]): void; beforeRelease(stop: HostLifecycle["beforeRelease"][number]): void; releaseCut(book: NonNullable<HostLifecycle["releaseCut"]>[number]): void; personWait(hold: NonNullable<HostLifecycle["personWait"]>[number]): void };
 } {
   const onConversation: HostLifecycle["onConversation"][number][] = [];
   const beforeResume: HostLifecycle["beforeResume"][number][] = [];
   const beforeRelease: HostLifecycle["beforeRelease"][number][] = [];
   const personWait: NonNullable<HostLifecycle["personWait"]>[number][] = [];
+  const releaseCut: NonNullable<HostLifecycle["releaseCut"]>[number][] = [];
   return {
-    onConversation, beforeResume, beforeRelease, personWait,
+    onConversation, beforeResume, beforeRelease, releaseCut, personWait,
     register: {
       onConversation: (write) => void onConversation.push(write),
       beforeResume: (settle) => void beforeResume.push(settle),
       beforeRelease: (stop) => void beforeRelease.push(stop),
+      releaseCut: (book) => void releaseCut.push(book),
       personWait: (hold) => void personWait.push(hold),
     },
   };
@@ -1072,15 +1077,47 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  claim's release), so what it writes (a browser release's charge, its paid booking on run.ledger.paid) lands in its
    *  own commits under the live claim, just before. A shutdown seals the journal first, while the runner still holds the
    *  claim: the hooks' commits are taken through the seal then (Gate.through), so the runner's close resolves only once
-   *  they have landed. A hook that throws is logged; the run's end or park stands. */
+   *  they have landed. A hook that throws is logged; the run's end or park stands. The hooks run in the order they were
+   *  registered, all of them within the release's bound (releaseBoundMs): past it the loop goes on without the hook under
+   *  way and those after it, and writes the cut on the run's root (KINDS.releaseCut), so a release that did not finish is
+   *  never silent. What the hooks booked before the cut stands; a hook still running then writes nothing more on a
+   *  shutdown (the seal stands again). Before the cut is written each host's releaseCut books what it knows of the time
+   *  it could not let go (a browser session's, through now), within RELEASE_MARGIN_MS. A runner's close bounds the
+   *  release by its own window too (LoopDeps.releaseBy), whichever ends first. */
   const releaseHost = async (on: Harness | undefined): Promise<void> => {
     endWait();
     if (hostReleased || !on) return;
     hostReleased = true;
     const release = async (): Promise<void> => {
-      for (const stop of specNow?.lifecycle?.beforeRelease ?? []) {
-        await Promise.resolve().then(() => stop(on)).catch((error: unknown) => console.warn(`[runner] a tool host's beforeRelease failed: ${(error as Error)?.message ?? String(error)}`));
+      const hooks = specNow?.lifecycle?.beforeRelease ?? [];
+      if (hooks.length === 0) return;
+      const began = Date.now();
+      const boundMs = Math.max(0, Math.min(deps.releaseBoundMs ?? releaseBoundMs(), (deps.releaseBy?.() ?? Infinity) - began));
+      let finished = 0;
+      let cut = false;
+      const running = (async () => {
+        for (const stop of hooks) {
+          if (cut) return;
+          await Promise.resolve().then(() => stop(on)).catch((error: unknown) => console.warn(`[runner] a tool host's beforeRelease failed: ${(error as Error)?.message ?? String(error)}`));
+          finished += 1;
+        }
+      })();
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), boundMs)));
+      const ended = await Promise.race([running.then(() => "done" as const), late]);
+      clearTimeout(timer);
+      if (ended === "done") return;
+      cut = true;
+      const data = { bound_ms: boundMs, after_ms: Date.now() - began, hooks: hooks.length, finished };
+      console.warn(`[runner] the run's tool hosts did not let it go within ${boundMs} ms (${finished} of ${hooks.length} finished): the loop goes on without them`);
+      const books = specNow?.lifecycle?.releaseCut ?? [];
+      if (books.length > 0) {
+        let bookTimer: NodeJS.Timeout | undefined;
+        const booking = Promise.all(books.map((book) => Promise.resolve().then(() => book(on)).catch((error: unknown) => console.warn(`[runner] a tool host's releaseCut failed: ${(error as Error)?.message ?? String(error)}`))));
+        await Promise.race([booking, new Promise<void>((resolve) => (bookTimer = setTimeout(resolve, RELEASE_MARGIN_MS)))]);
+        clearTimeout(bookTimer);
       }
+      await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: KINDS.releaseCut, data }), BACKGROUND_CONTEXT).catch((error: unknown) => console.warn(`[runner] the release's cut could not be written: ${(error as Error)?.message ?? String(error)}`));
     };
     const journal = gate;
     await (journal && shutDown() ? journal.through(release) : release());

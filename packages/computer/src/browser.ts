@@ -197,6 +197,17 @@ export const RECOVER_MS = 30_000;
 const RECOVER_TRIES = 3;
 const RECOVER_GAP_MS = 2_000;
 
+/** A recovery under way in this process (recoverCreate): `by`, when its own bound ends (ms since the epoch), and `done`,
+ *  settled once it has ended, never rejected. */
+export type RecoveryInFlight = { readonly by: number; readonly done: Promise<void> };
+const recovering = new Set<RecoveryInFlight>();
+
+/** Every recovery under way in this process (recoverCreate), as it starts: what a process that is about to exit waits
+ *  for, each to its own bound, so a browser a lost create made is released before the process goes. */
+export function recoveriesInFlight(): readonly RecoveryInFlight[] {
+	return [...recovering];
+}
+
 /**
  * After a create whose outcome is unknown: the browsers carrying its create label, found and released under a signal
  * of the recovery's own, `ms` in all (the caller's may be what ended the create). Where `made` reads the request's
@@ -214,6 +225,21 @@ export async function recoverCreate(
 	sleep: (ms: number) => Promise<void>,
 	ms = RECOVER_MS,
 	made?: (signal: AbortSignal) => Promise<Result<MadeBrowser[]>>,
+): Promise<string> {
+	const running = recoverOnce(what, find, release, sleep, ms, made);
+	const entry: RecoveryInFlight = { by: Date.now() + ms, done: running.then(() => undefined, () => undefined) };
+	recovering.add(entry);
+	void entry.done.then(() => recovering.delete(entry));
+	return running;
+}
+
+async function recoverOnce(
+	what: string,
+	find: (signal: AbortSignal) => Promise<Result<string[]>>,
+	release: (id: string, signal: AbortSignal) => Promise<Result<void>>,
+	sleep: (ms: number) => Promise<void>,
+	ms: number,
+	made: ((signal: AbortSignal) => Promise<Result<MadeBrowser[]>>) | undefined,
 ): Promise<string> {
 	const signal = AbortSignal.timeout(ms);
 	const settleBy = Date.now() + ms / 2;

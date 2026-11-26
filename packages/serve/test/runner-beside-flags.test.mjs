@@ -15,6 +15,7 @@ import { durationMs } from "../dist/print.js";
 import { DEADLINE_MARGIN_MS } from "../dist/stop-signals.js";
 import { RUNNER_DRAIN_TIMEOUT, runnerArgs, runnerHolds } from "../dist/runner/main.js";
 import { RUNNER_LEASE_MS, RUNNER_STOP_MARGIN_MS, runnerCloseBoundMs, startRunner } from "../dist/runner/runner.js";
+import { releaseBoundMs } from "../dist/runner/loop-contract.js";
 import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 20 };
@@ -107,17 +108,20 @@ test("a runner process of its own (`agentrun-serve runner`, beside a --no-runner
   assert.doesNotThrow(() => runnerHolds({}, { AGENTRUN_FREE_MODEL_REQUESTS: "200" }));
 });
 
-test("the CLI's stop deadline covers the runner's whole close: its drain, then the stop of the loops left, from the runner's own lease and margin", () => {
+test("the CLI's stop deadline covers the runner's whole close: its drain, then the stop of the loops left, or a release's cleanup bound from the close's start", () => {
   const stopWindow = RUNNER_LEASE_MS - RUNNER_STOP_MARGIN_MS;
   assert.equal(stopWindow, 25_000, "a loop that does not stop is given up 25 s after the drain");
-  assert.equal(runnerCloseBoundMs(6_000), 6_000 + stopWindow);
-  assert.deepEqual(besideStopping({ runs: 0, boundMs: 0 }, 1, 6_000), { runs: 1, boundMs: 31_000 }, "the image's 6 s drain: 31 s, then the stop's margin");
+  const releaseWindow = releaseBoundMs() + RUNNER_STOP_MARGIN_MS;
+  assert.equal(releaseWindow, 40_000, "a provider's 30 s cleanup bound, the release's 5 s margin and the stop's 5 s, from the close's start");
+  assert.equal(runnerCloseBoundMs(6_000), releaseWindow, "the image's 6 s drain and the loops' stop (31 s) end inside the release's window");
+  assert.equal(runnerCloseBoundMs(20_000), 20_000 + stopWindow, "a drain over 15 s and the loops' stop outlast it");
+  assert.deepEqual(besideStopping({ runs: 0, boundMs: 0 }, 1, 6_000), { runs: 1, boundMs: 40_000 }, "the image's 6 s drain: 40 s, then the stop's margin");
   assert.deepEqual(besideStopping({ runs: 2, boundMs: 90_000 }, 3, 30_000), { runs: 5, boundMs: 90_000 }, "a longer server bound stands");
-  assert.equal(besideStopping({ runs: 0, boundMs: 0 }, 0, 0).boundMs, stopWindow, "with no drain, still the loops' stop");
+  assert.equal(besideStopping({ runs: 0, boundMs: 0 }, 0, 0).boundMs, releaseWindow, "with no drain, still the release's window");
   assert.ok(DEADLINE_MARGIN_MS > 0);
 });
 
-test("a runner of its own stops inside the stop grace of compose, the Helm chart and the Coolify and Dokploy templates: its default drain and the loops' stop after it", async () => {
+test("a runner of its own stops inside the stop grace of compose, the Helm chart, Fly and the Coolify and Dokploy templates: its default drain and the loops' stop after it, or a release's window", async () => {
   const compose = await readFile(new URL("../../../deploy/compose.yaml", import.meta.url), "utf8");
   const runner = /x-runner: &runner\n(?:  .*\n)*?  stop_grace_period: (\d+)s/.exec(compose);
   assert.ok(runner, "compose's runners name their stop_grace_period");
@@ -125,13 +129,15 @@ test("a runner of its own stops inside the stop grace of compose, the Helm chart
   const pod = /^terminationGracePeriodSeconds: (\d+)$/m.exec(values);
   assert.ok(pod, "the chart names its pod's terminationGracePeriodSeconds");
   const bound = runnerCloseBoundMs(durationMs(RUNNER_DRAIN_TIMEOUT));
-  assert.equal(bound, 31_000, "6 + 25 = 31 s");
+  assert.equal(bound, 40_000, "max(6 + 25, 30 + 5 + 5) = 40 s");
   assert.ok(bound < Number(runner[1]) * 1_000, `the runner's close (${bound} ms) is inside compose's ${runner[1]} s`);
   assert.ok(bound < Number(pod[1]) * 1_000, `the runner's close (${bound} ms) is inside the chart's ${pod[1]} s`);
   for (const path of ["deploy/coolify/agentrun.yaml", "deploy/dokploy/agentrun/docker-compose.yml"]) {
     const grace = /^(\d+)s$/.exec(parseYaml(await readFile(new URL(`../../../${path}`, import.meta.url), "utf8")).services.agentrun.stop_grace_period);
     assert.ok(grace && bound < Number(grace[1]) * 1_000, `the runner's close (${bound} ms) is inside ${path}'s stop_grace_period`);
   }
+  const fly = /^kill_timeout = (\d+)$/m.exec(await readFile(new URL("../../../deploy/fly/fly.toml", import.meta.url), "utf8"));
+  assert.ok(fly && bound < Number(fly[1]) * 1_000, `the runner's close (${bound} ms) is inside Fly's kill_timeout`);
 });
 
 test("--max-runs 2 with 4 runs queued: the runner holds 2 at once, the other 2 wait queued, then run as places free", async (t) => {

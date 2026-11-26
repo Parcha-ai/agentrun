@@ -190,6 +190,46 @@ test("where runs have users of their own, a claude-agent run on AgentRun's own C
   }
 });
 
+test("a lost create's recovery under way in a run's process when its loop ends is waited for there: the browser it finds is released before the process exits", { timeout: 120_000 }, async (t) => {
+  const dir = scratchDir(t, "child-recovery-");
+  const pidFile = join(dir, "pid");
+  const releasedFile = join(dir, "released");
+  const computer = new URL("../../computer/dist/index.js", import.meta.url).href;
+  // The run's model starts a recovery in the run's process (its vendor lists the browser 1.5 s later) and answers at
+  // once: the run's loop ends, and its process is told to go, while the recovery is under way.
+  const reply = join(dir, "faux-recovery.mjs");
+  writeFileSync(reply, `import { writeFileSync } from "node:fs";
+import { recoverCreate } from ${JSON.stringify(computer)};
+let started = false;
+export default function reply(context, faux) {
+  if (!started) {
+    started = true;
+    writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+    const listed = () => new Promise((resolve) => setTimeout(() => resolve({ ok: true, value: ["b-lost"] }), 1_500));
+    void recoverCreate("browser", listed, async (id) => (writeFileSync(${JSON.stringify(releasedFile)}, id), { ok: true, value: undefined }), async () => {}, 4_000).catch(() => {});
+  }
+  return faux.message("Done.");
+}
+`);
+  const lines = [];
+  const server = await serve(t, { faux: reply, childRuns: { log: (line) => void lines.push(line) } });
+  const runId = await started(server.api, "recovering", {}, { input: { content: "Go." } });
+  await follow(server.api, runId, ["completed"], { deadlineMs: 60_000 });
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  assert.notEqual(pid, process.pid, "the recovery ran in the run's own process");
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (let waited = 0; alive() && waited < 15_000; waited += 50) await sleep(50);
+  assert.equal(alive(), false, "the run's process exited");
+  assert.equal(existsSync(releasedFile) ? readFileSync(releasedFile, "utf8") : null, "b-lost", `the browser the recovery found was released before the process exited; ${lines.join("\n")}`);
+});
+
 test("the server started with its runner beside it (serveWithRunner) runs each run in a process of its own", { timeout: 90_000 }, async (t) => {
   const data = join(scratchDir(t, "beside-"), "agents");
   const started_ = await serveWithRunner({ data, port: 0, faux: FAUX_CHANNEL, drainTimeout: "5s", mcpLoopback: true, webhookLookup });

@@ -20,7 +20,7 @@ import { HAND_BACK } from "./hand-back.js";
 import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import { type BoundTimer, REAL_TIMER } from "./loop.js";
-import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
+import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, recoveriesDone, releaseBoundMs, stopEnd, type StopReason } from "./loop-contract.js";
 import { FrameTooLarge } from "./run-channel.js";
 import { isFenced, type RunnerStore } from "./store-port.js";
 import { FINAL_STATES, type RunPatch, type RunState } from "../store/store.js";
@@ -49,10 +49,18 @@ export const RUNNER_LOOPS = 300;
 export const RUNNER_LEASE_MS = 30_000;
 /** A claim not renewed by its until less this is lost here, unless told (RunnerOptions.stopMarginMs). */
 export const RUNNER_STOP_MARGIN_MS = 5_000;
-/** The longest close() takes with the default lease (Runner.close): the drain, then the loops' stop, which waits for a
- *  loop that does not stop until its claim would run out (the lease less its margin, 25 s). A stop deadline that cuts the
- *  process sooner cuts a run's end short, and the run waits out its lease before another runner resumes it. */
-export const runnerCloseBoundMs = (drainMs: number): number => drainMs + RUNNER_LEASE_MS - RUNNER_STOP_MARGIN_MS;
+/** When close()'s stop of the loops ends (ms since the epoch), from when the close began (`closedAt`) and when the stop
+ *  after the drain began (`stopFrom`): the lease less its margin after the stop's start, or, when later, a computer
+ *  provider's cleanup bound and RELEASE_MARGIN_MS from the close's start (releaseBoundMs of `cleanupMs`: a recovery
+ *  under way when the close began, or a tool host's release, ends inside it) and the stop's margin for the loops'
+ *  release to be cut and written. Claims are renewed until then. */
+export const runnerStopBy = (closedAt: number, stopFrom: number, leaseMs: number, stopMarginMs: number, cleanupMs?: number): number => Math.max(stopFrom + leaseMs - stopMarginMs, closedAt + releaseBoundMs(cleanupMs) + stopMarginMs);
+/** The longest close() takes with the default lease and cleanup bound (Runner.close, runnerStopBy): its drain and the
+ *  lease less its margin, or the providers' cleanup bound and its margins, whichever is longer (40 s with the default
+ *  6 s drain). A stop deadline that cuts the process sooner cuts a run's end or release short, and the run waits out its
+ *  lease before another runner resumes it. */
+export const runnerCloseBoundMs = (drainMs: number): number => runnerStopBy(0, drainMs, RUNNER_LEASE_MS, RUNNER_STOP_MARGIN_MS);
+
 /** How often a runner renews the claims it holds, unless told (RunnerOptions.renewEveryMs). */
 export const RUNNER_RENEW_EVERY_MS = 10_000;
 /** A runner's name when none is given: its host, its process and a part of a random id. */
@@ -139,6 +147,9 @@ export interface RunnerOptions {
    *  run's own process drained on the server's stop) before it stops the rest for a shutdown, to resume. Its commands
    *  still reach it meanwhile (a person's stop ends it at once). Default 0: every loop stopped at once. */
   drainMs?: number;
+  /** A computer provider's own cleanup bound (its cleanupMs; default the providers' RECOVER_MS): each loop waits that and
+   *  a margin for its tool hosts to let its run go (releaseBoundMs), and close() gives the loops' stop that long. */
+  cleanupMs?: number;
   /** Claiming by memory as well as by count: a waiting run is claimed only while the runs this runner holds and it weigh
    *  no more than `budgetMib` together (each run's weight, `weigh`'s, is what a run of its harness reserves:
    *  runner/memory-claim.ts). Waiting runs are taken oldest first, and one that does not fit stops the claim there, so the
@@ -295,6 +306,7 @@ export function startRunner(options: RunnerOptions): Runner {
     unknownBackoffMs = 200,
     endWaitMs = 5_000,
     drainMs = 0,
+    cleanupMs,
     memory,
     census,
     censusMs = CENSUS_MS,
@@ -982,6 +994,8 @@ export function startRunner(options: RunnerOptions): Runner {
         await deliver(heldNow);
       },
       redact,
+      releaseBoundMs: releaseBoundMs(cleanupMs),
+      releaseBy: () => releaseBy,
     });
     const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib };
     heldNow = held;
@@ -1031,6 +1045,9 @@ export function startRunner(options: RunnerOptions): Runner {
   /** Until close() sets it, no bound: the time by which every re-read after an Unanswered commit must be over, the same
    *  window as the close's stop (the lease less its margin), so a shutdown is never held longer than its grace allows. */
   let recoverBy = Infinity;
+  /** Until close() sets it, no bound: the time by which a loop's tool hosts' release is cut (Runner.close: the stop's
+   *  window less its margin, so the cut's booking lands inside it). */
+  let releaseBy: number | undefined;
   /** The claims (`runId:epoch`) an ending with no loop is writing (endRetried): they live in `endings`, not in `runs`, so the
    *  sweep must not take them for claims nothing holds. */
   const endingClaims = new Set<string>();
@@ -1314,6 +1331,7 @@ export function startRunner(options: RunnerOptions): Runner {
     async close() {
       if (closed || killed) return;
       closed = true;
+      const closedAt = Date.now();
       clearTimeout(pollTimer);
       // A claim the poll already has in flight lands first: one it makes now is given back at once (claimMore, closed),
       // all before close resolves, so nothing is claimed by this runner after it (a raise sent then wakes no claim here).
@@ -1339,10 +1357,13 @@ export function startRunner(options: RunnerOptions): Runner {
       if (going.length > 0) emit({ type: "drained", ms: Date.now() - drainFrom, held: going.length, left: going.filter((held) => !held.ending && !held.fence.lost).length });
       clearTimeout(commandTimer);
       const live = [...runs.values()].filter((held) => !held.fence.lost);
-      // One window for the stop after the drain, the one runnerCloseBoundMs counts (the lease less its margin): the read
-      // below and the loops' stop share it, so the close is never longer than a deployment's stop grace allows for.
-      const stopBy = Date.now() + leaseMs - stopMarginMs;
+      // One window for the stop after the drain, the one runnerCloseBoundMs counts (runnerStopBy): the read below and
+      // the loops' stop, their tool hosts' release included, share it, so the close is never longer than a deployment's
+      // stop grace allows for.
+      const stopBy = runnerStopBy(closedAt, Date.now(), leaseMs, stopMarginMs, cleanupMs);
       recoverBy = stopBy;
+      // A loop's release is cut the stop's margin before the window ends, so its cut and what it books land inside it.
+      releaseBy = stopBy - stopMarginMs;
       // A stop or cancel a person sent before the close is the run's end, never a resume: one no delivery has handed on
       // yet (the command poll's tick had not come) is read here, once, for every run still going, and stops its loop as
       // its delivery would. Its end is in the store when the close is done, and the next start never resumes the turn.
@@ -1359,12 +1380,16 @@ export function startRunner(options: RunnerOptions): Runner {
         stopLoop(held, { kind: "shutdown" });
         held.abort.abort(new Error("the runner is closing"));
       }
-      // Claims are renewed while the loops stop; a loop that never stops is given up when its claim would run out (the end
-      // of the window the read above began).
+      // Claims are renewed while the loops stop; a loop that never stops is given up at the end of the window the read
+      // above began (runnerStopBy).
       let timeout: NodeJS.Timeout | undefined;
       const late = new Promise<void>((resolve) => (timeout = setTimeout(resolve, Math.max(0, stopBy - Date.now()))));
       await Promise.race([Promise.all([...live.map((held) => held.done), ...endings]), late]);
       clearTimeout(timeout);
+      // A lost create's recovery in this process (one under way at the close's start, or one a create the stop cut began)
+      // ends before the close does, so the browser it finds is released before the process goes: each waited for to
+      // its own bound from the close's start, or the drain, whichever is later, and its margin, within the window.
+      await recoveriesDone(closedAt, drainMs, stopBy);
       // A loop still going at the window's end (one a stop row stops, whose signal was kept whole for its end) has its
       // signal aborted before its claim is given up: no request of it outlives the close.
       for (const held of live) if (!held.ending && !held.abort.signal.aborted) held.abort.abort(new Error("the runner is closing"));

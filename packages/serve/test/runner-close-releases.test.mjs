@@ -3,9 +3,12 @@
 // run's ledger (its final charge on the root) and a priced computer's last stretch is booked, each once. Nothing is let
 // go after close() has resolved, and no tool host's beforeRelease fails for a loop already stopped. On pi (the browser
 // tool, on the faux browser) and on a CLI harness (claude-agent's faux harness, on a priced faux desktop), each through
-// the real loop: startRunner over createDispatchLoop and the adapter or CLI spec, on a real store.
+// the real loop: startRunner over createDispatchLoop and the adapter or CLI spec, on a real store. The release is
+// bounded: a provider's cleanup bound and a margin (releaseBoundMs). A release under the cleanup bound is awaited; a tool
+// host that never lets go holds close() only to the bound, what the release booked before it stands, and the run's root
+// says the release was cut.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -37,6 +40,8 @@ const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pat
 /** Test keys, no real ones. */
 const BROWSERBASE = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" };
 const TIMING = { leaseMs: 30_000, renewEveryMs: 5_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
+/** A provider's cleanup bound for the tests of a release's bound, short: the release's bound is it and RELEASE_MARGIN_MS. */
+const CLEANUP_MS = 1_500;
 /** How long after close() a late release would still land: longer than any the loop's teardown takes. */
 const AFTER_CLOSE_MS = 3_500;
 /** $0.01 a vCPU-second and $0.001 a GiB-second on faux-desktop. */
@@ -99,50 +104,118 @@ function holdingOrigin(script, requests) {
   };
 }
 
-test("pi: a runner's graceful close releases the run's browser session once and books its release before close() resolves, with no beforeRelease refused", { timeout: 120_000 }, async (t) => {
-  const said = warnings(t);
-  const { dir, server, store } = await stores(t, "runner-close-browser-");
+/** The computer's time on the run's ledger: each hold and each booking (a runner.request of tool compute), and each
+ *  request's settle (its runner.turn). */
+const compute = (records) => {
+  const requests = records.entries.filter((entry) => entry.kind === "runner.request" && entry.data?.tool === "compute");
+  const settled = new Set(records.entries.filter((entry) => entry.kind === "runner.turn").map((entry) => `${entry.conversationId}:${entry.data.turn}`));
+  return { holds: requests.filter((entry) => entry.data.hold === true).length, booked: requests.filter((entry) => entry.data.hold !== true).length, open: requests.filter((entry) => !settled.has(`${entry.conversationId}:${entry.data.turn}`)).map((entry) => entry.data) };
+};
+/** The cuts of the run's release on its root (KINDS.releaseCut). */
+const cutsOf = (records) => records.entries.filter((entry) => entry.kind === "agentrun.release.cut").map((entry) => entry.data);
+/** A pi run with the browser (the faux browser, as Browserbase) whose turn is in flight after its snapshot opened a
+ *  session, under runner-a of `runnerOptions`; `launch` adds to the run's launch, `env` to the process's for the test.
+ *  `again()` starts runner-b, of the same options, on the same store. */
+async function piRun(t, prefix, { runnerOptions = {}, launch = {}, env = {} } = {}) {
+  const { dir, server, store } = await stores(t, prefix);
   for (const [name, value] of Object.entries(BROWSERBASE)) await putSealedKey(server, SEAL_KEY, name, value);
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Browse.", tools: ["browser"] } });
-  await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Browse." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, plane: { browser: "browserbase" } } });
+  await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Browse." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" }, plane: { browser: "browserbase" }, ...launch } });
   await server.flush?.();
   // The vendor's sessions (FAUX_BROWSER_STATE: each live one) and its every call (FAUX_BROWSER_LOG: its releases).
   const state = join(dir, "faux-browser-state.json");
   const log = join(dir, "faux-browser.log");
-  const before = { state: process.env.FAUX_BROWSER_STATE, log: process.env.FAUX_BROWSER_LOG };
-  process.env.FAUX_BROWSER_STATE = state;
-  process.env.FAUX_BROWSER_LOG = log;
+  const set = { FAUX_BROWSER_STATE: state, FAUX_BROWSER_LOG: log, ...env };
+  const before = Object.fromEntries(Object.keys(set).map((name) => [name, process.env[name]]));
+  Object.assign(process.env, set);
   t.after(() => {
-    for (const [name, value] of [["FAUX_BROWSER_STATE", before.state], ["FAUX_BROWSER_LOG", before.log]]) value === undefined ? delete process.env[name] : (process.env[name] = value);
+    for (const [name, value] of Object.entries(before)) value === undefined ? delete process.env[name] : (process.env[name] = value);
   });
   const requests = [];
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: holdingOrigin([{ call: "snapshot" }], requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const deps = { env: { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
-  const runner = startRunner({
-    store, name: "runner-a", ...TIMING,
-    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
-  });
-  t.after(() => runner.close().catch(() => {}));
+  const start = (name) => {
+    const runner = startRunner({
+      store, name, ...TIMING, ...runnerOptions,
+      createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (harness, given) => (harness === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
+    });
+    t.after(() => runner.close().catch(() => {}));
+    return runner;
+  };
+  const runner = start("runner-a");
   // The snapshot opened a session, and the turn's next request is in flight.
   await until(() => requests.length >= 2, "the request after the snapshot is in flight");
   const live = () => (existsSync(state) ? JSON.parse(readFileSync(state, "utf8")) : []);
   assert.equal(live().length, 1, "the snapshot opened one session");
   const releases = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((row) => row.op === "release") : []);
+  return { dir, server, store, runner, live, releases, requests, again: () => start("runner-b") };
+}
+
+/** The browser's charges the run's root records (BROWSER_CHARGED), in order. */
+const chargesOf = (records) => records.entries.filter((entry) => entry.kind === "agentrun.browser_charged").map((entry) => entry.data);
+/** The browser's holds on the run's ledger (each runner.request of tool browser held, not booked) not yet settled. */
+const browserHolds = (records) => {
+  const settled = new Set(records.entries.filter((entry) => entry.kind === "runner.turn").map((entry) => `${entry.conversationId}:${entry.data.turn}`));
+  return records.entries.filter((entry) => entry.kind === "runner.request" && entry.data?.tool === "browser" && entry.data.hold === true && !settled.has(`${entry.conversationId}:${entry.data.turn}`)).map((entry) => entry.data);
+};
+
+test("pi: a runner's graceful close releases the run's browser session once and books its release before close() resolves, with no beforeRelease refused", { timeout: 120_000 }, async (t) => {
+  const said = warnings(t);
+  const { server, runner, live, releases } = await piRun(t, "runner-close-browser-");
 
   await runner.close();
 
   const closedAt = { live: live(), releases: releases().length, records: await recordsOf(server) };
-  const charged = (records) => records.entries.filter((entry) => entry.kind === "agentrun.browser_charged" && entry.data?.final === true);
+  const charged = (records) => chargesOf(records).filter((charge) => charge.final === true);
   assert.deepEqual(closedAt.live, [], "the session was let go by the time close() resolved");
   assert.equal(closedAt.releases, 1, "released once, before close() resolved");
-  assert.equal(charged(closedAt.records).length, 1, `its release was charged on the run's ledger before close() resolved: ${JSON.stringify(closedAt.records.entries.filter((entry) => entry.kind === "agentrun.browser_charged").map((entry) => entry.data))}`);
+  assert.equal(charged(closedAt.records).length, 1, `its release was charged on the run's ledger before close() resolved: ${JSON.stringify(chargesOf(closedAt.records))}`);
   assert.deepEqual(said.filter((line) => /beforeRelease failed/.test(line)), [], "no tool host's beforeRelease was refused");
+  assert.deepEqual(cutsOf(closedAt.records), [], "the release finished: no cut on the run");
 
   // Nothing more is let go or written after close() resolved.
   await new Promise((resolve) => setTimeout(resolve, AFTER_CLOSE_MS));
   assert.equal(releases().length, 1, "still released once");
   assert.equal(charged(await recordsOf(server)).length, 1, "still charged once");
   assert.deepEqual(said.filter((line) => /beforeRelease failed/.test(line)), [], "and no beforeRelease failed after close() either");
+});
+
+test("pi: a vendor's release that never answers is cut at the release's bound: the session's time to the cut is charged, not final, and the run says its release was cut; the next runner's claim gives back what the cut left held, and its release bills only the rest", { timeout: 120_000 }, async (t) => {
+  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
+  const bound = CLEANUP_MS + RELEASE_MARGIN_MS;
+  const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
+  const { server, runner, live, releases, again } = await piRun(t, "runner-close-browser-cut-", { runnerOptions: { cleanupMs: CLEANUP_MS }, launch: { max_cost_usd: 1 }, env: { FAUX_BROWSER_RELEASE_HOLD: hold } });
+
+  const began = Date.now();
+  await runner.close();
+  const took = Date.now() - began;
+
+  assert.ok(existsSync(`${hold}.asked`), "the vendor was asked to release the session");
+  const asked = statSync(`${hold}.asked`).mtimeMs;
+  assert.ok(took < bound + 4_000, `close() returned within the release's bound (${bound} ms) and the loop's teardown: ${took} ms`);
+  const records = await recordsOf(server);
+  const cuts = cutsOf(records);
+  assert.equal(cuts.length, 1, `the run says its release was cut, once: ${JSON.stringify(cuts)}`);
+  assert.ok(cuts[0].finished < cuts[0].hooks, `a host's release had not finished: ${JSON.stringify(cuts[0])}`);
+  const charges = chargesOf(records);
+  assert.deepEqual(charges.filter((charge) => charge.final), [], `no release was confirmed, so nothing billed final: ${JSON.stringify(charges)}`);
+  const cut = charges.at(-1);
+  assert.ok(cut && Date.parse(cut.at) >= asked, `the cut charged the session's time through the cut, past the vendor's ask: ${JSON.stringify({ charges, asked: new Date(asked).toISOString() })}`);
+  assert.equal(live().length, 1, "the vendor still holds the session");
+  const heldAtClose = browserHolds(records);
+
+  // The next runner claims the run: what the cut's claim left held is given back by the claim's reopen, and the release
+  // it resumes, once the vendor answers, bills only the time after the cut.
+  const next = again();
+  await until(async () => (await server.runs.get(RUN)).runner === "runner-b", "the next runner claimed the run");
+  writeFileSync(hold, "");
+  const final = await until(async () => chargesOf(await recordsOf(server)).find((charge) => charge.final), "the resumed release was billed");
+  const after = await recordsOf(server);
+  const left = browserHolds(after);
+  for (const held of heldAtClose) assert.ok(!left.some((one) => JSON.stringify(one) === JSON.stringify(held)), `the cut's claim's hold was given back: ${JSON.stringify({ heldAtClose, left })}`);
+  assert.equal(releases().length >= 1 && live().length, 0, "the session was let go");
+  assert.ok(final.seconds <= (Date.parse(final.at) - Date.parse(cut.at)) / 1000 + 1, `the release billed only the time after the cut: ${JSON.stringify({ cut, final })}`);
+  await next.close();
 });
 
 /** A vendor of --faux's desktops: create starts one, connect finds it, delete ends it. */
@@ -186,9 +259,11 @@ function fauxDesktops(faux) {
   };
 }
 
-test("claude-agent (faux harness): a runner's graceful close books the run's priced computer's last stretch before close() resolves, every hold settled, with no beforeRelease refused", { timeout: 120_000 }, async (t) => {
-  const said = warnings(t);
-  const { dir, server, store } = await stores(t, "runner-close-computer-");
+
+/** A claude-agent run (the faux harness) on a priced faux desktop, held in its turn after its first request, under a
+ *  runner of `runnerOptions`; `hooks` makes the spec's beforeRelease from the one it built (the computer's settle). */
+async function cliRun(t, prefix, { runnerOptions = {}, hooks = (registered) => registered } = {}) {
+  const { dir, server, store } = await stores(t, prefix);
   const gw = await startFauxGateway();
   t.after(() => gw.close());
   // The turn's first request, then a hold with no request open (writing `<at>.held`) until `<at>` exists: never, here.
@@ -202,29 +277,161 @@ test("claude-agent (faux harness): a runner's graceful close books the run's pri
   // The harness table loads a test's module only under a test runner (harness-table.ts): the flag is handed the runner.
   const env = { ...PRICES, ANTHROPIC_API_KEY: "not-a-secret-anthropic", ANTHROPIC_BASE_URL: gw.url, AGENTRUN_HARNESS_TABLE: fauxTable(FAUX_HARNESS), NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1" };
   const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim, computerDeps };
+  const specOf = async (claim, run, given) => {
+    const spec = await cliRunSpecFromLaunch(given, run, deps, claim);
+    return { ...spec, lifecycle: { ...spec.lifecycle, beforeRelease: hooks(spec.lifecycle?.beforeRelease ?? []) } };
+  };
   const runner = startRunner({
-    store, name: "runner-a", ...TIMING,
-    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "claude-agent" ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
+    store, name: "runner-a", ...TIMING, ...runnerOptions,
+    createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "claude-agent" ? createAdapterLoop((claim, run) => specOf(claim, run, given)) : undefined) }),
   });
   t.after(() => runner.close().catch(() => {}));
   await until(() => existsSync(`${at}.held`), "the turn holds after its first request");
+  return { dir, server, runner };
+}
+
+test("claude-agent (faux harness): a runner's graceful close books the run's priced computer's last stretch before close() resolves, every hold settled, with no beforeRelease refused", { timeout: 120_000 }, async (t) => {
+  const said = warnings(t);
+  const { server, runner } = await cliRun(t, "runner-close-computer-");
 
   await runner.close();
 
-  /** The computer's time on the run's ledger: each hold and each booking (a runner.request of tool compute), and each
-   *  request's settle (its runner.turn). */
-  const compute = (records) => {
-    const requests = records.entries.filter((entry) => entry.kind === "runner.request" && entry.data?.tool === "compute");
-    const settled = new Set(records.entries.filter((entry) => entry.kind === "runner.turn").map((entry) => `${entry.conversationId}:${entry.data.turn}`));
-    return { holds: requests.filter((entry) => entry.data.hold === true).length, booked: requests.filter((entry) => entry.data.hold !== true).length, open: requests.filter((entry) => !settled.has(`${entry.conversationId}:${entry.data.turn}`)).map((entry) => entry.data) };
-  };
   const closedAt = compute(await recordsOf(server));
   assert.ok(closedAt.holds >= 1, `the computer's time was held: ${JSON.stringify(closedAt)}`);
   assert.ok(closedAt.booked >= 1, `its time was booked before close() resolved: ${JSON.stringify(closedAt)}`);
   assert.deepEqual(closedAt.open, [], "every hold and booking was settled before close() resolved: none left open on the ledger");
   assert.deepEqual(said.filter((line) => /beforeRelease failed/.test(line)), [], "no tool host's beforeRelease was refused");
+  assert.deepEqual(cutsOf(await recordsOf(server)), [], "the release finished: no cut on the run");
 
   await new Promise((resolve) => setTimeout(resolve, AFTER_CLOSE_MS));
   assert.deepEqual(compute(await recordsOf(server)), closedAt, "nothing more is booked after close() resolved");
   assert.deepEqual(said.filter((line) => /beforeRelease failed/.test(line)), [], "and no beforeRelease failed after close() either");
+});
+
+
+test("a tool host whose beforeRelease never resolves holds close() no longer than the release's bound: the computer's time is booked, and the run says its release was cut", { timeout: 60_000 }, async (t) => {
+  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
+  const bound = CLEANUP_MS + RELEASE_MARGIN_MS;
+  const { server, runner } = await cliRun(t, "runner-close-hung-", { runnerOptions: { cleanupMs: CLEANUP_MS }, hooks: (registered) => [...registered, () => new Promise(() => {})] });
+
+  const began = Date.now();
+  await runner.close();
+  const took = Date.now() - began;
+
+  assert.ok(took < bound + 4_000, `close() returned within the release's bound (${bound} ms) and the loop's teardown: ${took} ms`);
+  const records = await recordsOf(server);
+  const closedAt = compute(records);
+  assert.ok(closedAt.booked >= 1, `the time known by the cut was booked: ${JSON.stringify(closedAt)}`);
+  assert.deepEqual(closedAt.open, [], "every hold and booking the settle made was settled");
+  const cuts = cutsOf(records);
+  assert.equal(cuts.length, 1, `the run says its release was cut, once: ${JSON.stringify(cuts)}`);
+  assert.equal(cuts[0].bound_ms, bound);
+  assert.ok(cuts[0].after_ms >= bound, `cut at the bound: ${cuts[0].after_ms}`);
+  assert.deepEqual([cuts[0].hooks, cuts[0].finished], [2, 1], "the settle finished, the hung host did not");
+});
+
+test("a release that takes just under a provider's cleanup bound is awaited, under a lease shorter than it, and what comes after it in the release is booked before close() resolves", { timeout: 60_000 }, async (t) => {
+  // A tool host whose release takes just under the cleanup bound (a lost create's recovery), let go before the computer's
+  // settle: the settle runs only once it is done. The lease less its margin (1 s) is shorter than that release: the
+  // close's window is the cleanup bound's, from its start.
+  const slow = () => new Promise((resolve) => setTimeout(resolve, CLEANUP_MS - 100));
+  const { server, runner } = await cliRun(t, "runner-close-slow-", { runnerOptions: { cleanupMs: CLEANUP_MS, leaseMs: 2_000, renewEveryMs: 300, stopMarginMs: 1_000 }, hooks: (registered) => [slow, ...registered] });
+
+  await runner.close();
+
+  const records = await recordsOf(server);
+  const closedAt = compute(records);
+  assert.ok(closedAt.booked >= 1, `the computer's time was booked after the slow release: ${JSON.stringify(closedAt)}`);
+  assert.deepEqual(closedAt.open, [], "every hold and booking was settled before close() resolved");
+  assert.deepEqual(cutsOf(records), [], "nothing was cut");
+});
+
+/** A runner on `dir`'s store that claims what it can and records each claim, its loops ending at their stop. */
+async function bystander(t, dir, name) {
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  const claims = [];
+  const runner = startRunner({
+    store, name, ...TIMING, leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000,
+    createLoop: (deps) => {
+      let end;
+      const ended = new Promise((resolve) => (end = resolve));
+      deps.signal.addEventListener("abort", () => end({ state: "interrupted" }), { once: true });
+      return { start: async (claim) => (claims.push({ runId: claim.runId, at: Date.now() }), ended), command: async () => ({ taken: true }), stop: async () => end({ state: "interrupted" }) };
+    },
+  });
+  t.after(async () => {
+    await runner.close().catch(() => {});
+    await store.close().catch(() => {});
+  });
+  return { runner, claims };
+}
+
+test("the close's window runs from its start: a drain, then a release that never ends, is cut where the providers' cleanup bound from the close's start ends, and the claim is renewed to the close's end, so no other runner claims the run before close() resolves", { timeout: 60_000 }, async (t) => {
+  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
+  const { runnerStopBy } = await import("../dist/runner/runner.js");
+  // A 4 s lease less its 1 s margin is a 3 s stop; a 4 s drain first. The release's window from the close's start is
+  // CLEANUP_MS and its margin (6.5 s), the cut's booking the stop's margin after it (7.5 s): past the old 3 s stop after
+  // the drain (7 s from the start), and past the lease, so the claim lives only by its renewals.
+  const window = { leaseMs: 4_000, renewEveryMs: 500, stopMarginMs: 1_000, drainMs: 4_000, cleanupMs: CLEANUP_MS };
+  const releaseBy = CLEANUP_MS + RELEASE_MARGIN_MS;
+  assert.equal(runnerStopBy(0, window.drainMs, window.leaseMs, window.stopMarginMs, CLEANUP_MS), releaseBy + window.stopMarginMs);
+  const { dir, server, runner } = await cliRun(t, "runner-close-window-", { runnerOptions: window, hooks: (registered) => [...registered, () => new Promise(() => {})] });
+  const other = await bystander(t, dir, "runner-b");
+  const holders = [];
+  let watching = true;
+  const watched = (async () => {
+    while (watching) {
+      const row = await server.runs.get(RUN);
+      if (holders.at(-1) !== row.runner) holders.push(row.runner);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  })();
+
+  const began = Date.now();
+  await runner.close();
+  const took = Date.now() - began;
+  watching = false;
+  await watched;
+
+  assert.ok(took >= window.drainMs && took < releaseBy + window.stopMarginMs + 1_500, `the close ended inside its window from its start (${releaseBy + window.stopMarginMs} ms): ${took} ms`);
+  const cuts = cutsOf(await recordsOf(server));
+  assert.equal(cuts.length, 1, `the release was cut, once: ${JSON.stringify(cuts)}`);
+  assert.ok(cuts[0].bound_ms <= releaseBy - window.drainMs + 200, `cut where the window from the close's start ends, not a whole bound after the drain: ${JSON.stringify(cuts[0])}`);
+  assert.deepEqual(other.claims, [], `no other runner claimed the run before close() resolved: ${JSON.stringify(other.claims)}`);
+  assert.ok(!holders.includes("runner-b"), `the run's row named only runner-a while it closed: ${JSON.stringify(holders)}`);
+});
+
+test("a lost create's recovery under way when a runner's close begins is waited for: the browser it finds is released before close() resolves", { timeout: 30_000 }, async (t) => {
+  const { recoverCreate } = await import("@parcha/agentrun-computer");
+  const { store } = await stores(t, "runner-close-recovery-");
+  const runner = startRunner({ store, name: "runner-a", ...TIMING, cleanupMs: CLEANUP_MS, createLoop: () => assert.fail("no run to claim") });
+  const released = [];
+  // Found just under its bound: a vendor that lists the browser late.
+  const recovering = recoverCreate("browser", () => new Promise((resolve) => setTimeout(() => resolve({ ok: true, value: ["b-lost"] }), CLEANUP_MS - 100)), async (id) => (released.push(id), { ok: true, value: undefined }), async () => {}, CLEANUP_MS);
+
+  await runner.close();
+
+  assert.deepEqual(released, ["b-lost"], "the browser the recovery found was released before close() resolved");
+  assert.match(await recovering, /was released/);
+});
+
+test("a recovery that never ends holds a runner's close only to its own bound, from when it began, and the release's margin", { timeout: 30_000 }, async (t) => {
+  const { RELEASE_MARGIN_MS } = await import("../dist/runner/loop-contract.js");
+  const { recoverCreate, recoveriesInFlight } = await import("@parcha/agentrun-computer");
+  const { store } = await stores(t, "runner-close-recovery-hung-");
+  const runner = startRunner({ store, name: "runner-a", ...TIMING, cleanupMs: CLEANUP_MS, createLoop: () => assert.fail("no run to claim") });
+  // A search that does not answer until the test is over, deaf to its signal: the recovery outlives the close. It began
+  // 1 s before the close.
+  let answer;
+  t.after(() => answer({ ok: true, value: [] }));
+  void recoverCreate("browser", () => new Promise((resolve) => (answer = resolve)), async () => ({ ok: true, value: undefined }), async () => {}, CLEANUP_MS).catch(() => {});
+  const [recovery] = recoveriesInFlight().slice(-1);
+  await new Promise((resolve) => setTimeout(resolve, 1_000));
+
+  const began = Date.now();
+  await runner.close();
+  const ended = Date.now();
+
+  const until = recovery.by + RELEASE_MARGIN_MS;
+  assert.ok(ended >= until - 50 && ended < until + 600, `the close waited to the recovery's own bound and the margin, ${until - began} ms after it began: ${ended - began} ms`);
 });

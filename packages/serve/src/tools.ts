@@ -110,6 +110,9 @@ export type ToolHost = {
   beforeResume(settle: (harness: Harness) => void | Promise<void>): void;
   /** Runs when the run's process lets the run go (its work done, or a SIGTERM), while the Harness is still open. */
   beforeRelease(stop: (harness: Harness) => void | Promise<void>): void;
+  /** Runs when the run's process stops waiting on beforeRelease (its bound passed), while the Harness is still open: what
+   *  a binding books of the time it knows so far, for what its release has not let go yet. Absent: none is asked. */
+  releaseCut?(book: (harness: Harness) => void | Promise<void>): void;
   /** On the runner: asked when the run's turn ends on its question to the person (ask_person, call `callId`), before the
    *  run parks. A binding that keeps something open the person may still use while they answer holds the person's time for
    *  it and answers a hold, and the run waits in its claim instead (adapter-loop.ts HostLifecycle.personWait); `lapsed`
@@ -750,6 +753,18 @@ const browserTool: ToolEntry = {
         // opens its own): one left open would keep the process from exiting.
         if ("browser" in made) await closeHeldSockets(made.browser);
       }
+    });
+    // The release did not finish within its bound (a vendor's release that does not answer): each session still open is
+    // charged through now, its watermark moved with the charge, so the release's own charge, when it lands (here, or at
+    // the next claim, whose reopen books it), bills only the time after. The session's reserve stays held until then.
+    host.releaseCut?.(async (harness) => {
+      if (refused) return;
+      const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
+      for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
+        const conversation = await harness.conversation(id as never, context);
+        if (conversation) await browser.charge(conversation as never, context);
+      }
+      await spend.ledgerIdle();
     });
     return { tools, extensions: [extension] };
   },

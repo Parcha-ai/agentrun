@@ -21,7 +21,8 @@ export function besideRunnerOptions(serve: { maxRuns?: number; drainTimeout?: st
 
 /** What the CLI's stop waits on (stop-signals.ts StopDeps.stopping) with a runner beside the server: the server's runs
  *  and the runs the runner holds, and the longer of the server's bound and the runner's whole close (its drain, then
- *  the stop of the loops left: runnerCloseBoundMs), so the stop's deadline never cuts a run's end and release short. */
+ *  the stop of the loops left, or a release's window from the close's start: runnerCloseBoundMs), so the stop's deadline
+ *  never cuts a run's end and release short. */
 export function besideStopping(server: { runs: number; boundMs: number }, held: number, drainMs: number): { runs: number; boundMs: number } {
   return { runs: server.runs + held, boundMs: Math.max(server.boundMs, runnerCloseBoundMs(drainMs)) };
 }
