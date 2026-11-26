@@ -234,7 +234,14 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
       audit: { of: runId, workflow: serve.name, digest: serve.digest },
     };
     const started: AuditStarted = { source: "started", run: runId, shadow_run: id, workflow: serve.name, digest: serve.digest, promoted_at: promoted?.at ?? null, ...turn, at: iso((deps.now ?? Date.now)()) };
-    await addLines(deps, [started]);
+    // The ledger after (`all`, never `added`): a started line already there (a crash between it and its shadow) is in it,
+    // and its shadow is made now. None there: the append refused it, as a purge took the digest since the draw (or the
+    // run), and settleAudits would never settle a shadow with no line, so none is made.
+    const { all } = await addLines(deps, [started]);
+    if (!all.some((line) => lineKey(line) === lineKey(started))) {
+      log(`workflow-first: ${serve.name} at ${serve.digest} served this run, drawn for its audit (1 in ${k}); no shadow: the workflow's version was purged since`);
+      return;
+    }
     const sealed = await handedTo(deps, runId, id);
     try {
       if (sourceSyncOf(revision?.body)) await deps.admitAuxiliary!({ runId: id, agentId, revisionId: deps.revisionId, launch: shadow, ...(sealed ? { sealed } : {}) });

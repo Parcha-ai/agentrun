@@ -103,14 +103,16 @@ export const pendingTestHooks = { reads: 0 };
 const statusBy = new Map<string, { main: string; status: ReadonlyMap<string, ItemStatus> }>();
 
 /** Each workflow draft's status at agent `agentId`'s newest save, by its workflow.json (as its README.md says it):
- *  `active`, `pending` or `retired`. Built once per save (a list asks for many runs). An agent with no save holds none;
- *  one whose learning cannot be read is undefined. */
-export async function statusesOf(rows: Rows, agentId: string): Promise<ReadonlyMap<string, ItemStatus> | undefined> {
+ *  `active`, `pending` or `retired`. Built once per save (a list asks for many runs): the newest save's id (of any kind,
+ *  a purge's too) is read first, and the view, its items and their history, only when it moved. An agent with no save
+ *  holds none; one whose learning cannot be read is undefined. */
+export async function statusesOf(rows: { readonly learning: LearningRows & Pick<Store["learning"], "newestSave"> }, agentId: string): Promise<ReadonlyMap<string, ItemStatus> | undefined> {
   try {
+    const known = statusBy.get(agentId);
+    const newest = await rows.learning.newestSave(agentId);
+    if (newest !== undefined && known?.main === newest) return known.status;
     const view = await readView(learningOf(rows, agentId));
     if (!view) return new Map();
-    const known = statusBy.get(agentId);
-    if (known?.main === view.main) return known.status;
     pendingTestHooks.reads += 1;
     const status = new Map<string, ItemStatus>(view.workflows.map((item): [string, ItemStatus] => [`${WORKFLOWS_DIR}/${item.name}/workflow.json`, { status: item.status }]));
     statusBy.set(agentId, { main: view.main, status });
@@ -122,7 +124,7 @@ export async function statusesOf(rows: Rows, agentId: string): Promise<ReadonlyM
 
 /** How many of agent `agentId`'s workflow drafts wait for its owner's OK at its newest save (statusesOf). An agent with
  *  no save has none waiting; one that cannot be read is undefined (the caller shows no count). */
-export async function pendingCount(rows: Rows, agentId: string): Promise<number | undefined> {
+export async function pendingCount(rows: Parameters<typeof statusesOf>[0], agentId: string): Promise<number | undefined> {
   const status = await statusesOf(rows, agentId);
   return status === undefined ? undefined : [...status.values()].filter((value) => value.status === "pending").length;
 }

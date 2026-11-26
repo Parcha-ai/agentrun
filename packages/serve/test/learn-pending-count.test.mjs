@@ -74,6 +74,34 @@ test("a purge of a run that wrote a waiting draft is read again: its draft count
   assert.equal(pendingTestHooks.reads, reads + 1, "one read for the purge");
 });
 
+// Review on #3746 (PRRT_kwDOUmdVMs68K745): a list asks the count of every agent; while an agent's newest save stays, its
+// count is answered from the newest save's id alone, never by loading its items and their history (rows.newest).
+test("a warm count reads only the newest save's id: statusesOf again loads no item (rows.newest), and a new save reads again", async (t) => {
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { statusesOf } = await import("../dist/learning-routes.js");
+  const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "pending-warm-"));
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  t.after(async () => {
+    await store.close();
+    rmSync(data, { recursive: true, force: true });
+  });
+  await commit(store, "warm", draft("held-one", true));
+  let loads = 0;
+  const counted = { learning: { ...store.learning, newest: async (agentId) => (loads++, store.learning.newest(agentId)) } };
+  const pending = async () => [...(await statusesOf(counted, "warm")).values()].filter((one) => one.status === "pending").length;
+  assert.equal(await pending(), 1);
+  const cold = loads;
+  assert.ok(cold >= 1, "the first count loads the agent's learning");
+  assert.equal(await pending(), 1);
+  assert.equal(loads, cold, "a warm count loads none of it");
+  await commit(store, "warm", draft("held-two", true));
+  assert.equal(await pending(), 2, "a new save is read again");
+  assert.ok(loads > cold);
+});
+
 test("pendingCount: learning it cannot read counts as unknown (undefined), not 0; an agent with no save counts 0", async (t) => {
   const { mkdtempSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");

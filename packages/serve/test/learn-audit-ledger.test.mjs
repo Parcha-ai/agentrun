@@ -775,6 +775,41 @@ test("(r4) a drawn run whose cap leaves under a run's smallest cap (or a spend n
   assert.equal((await readAudits(learned, "agent-1")).filter((row) => row.run === "room-short").length, 1);
 });
 
+// Review on #3746 (PRRT_kwDOUmdVMs68K74_): a started line whose digest a purge took since the draw is refused in the append's
+// own transaction (appendLines' held). With no line, settleAudits would never settle a shadow, so none is made. A started
+// line already there (a crash between the line and its shadow) still makes the shadow.
+test("a drawn run whose workflow version a purge took after the draw starts no shadow and keeps no started line; a started line already there still makes its shadow", async (t) => {
+  const { startAudit } = await import("../dist/runner/audit.js");
+  const { addAuditLines, ledgerOf } = await import("../dist/learn/audit.js");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-audit-purged-"));
+  const real = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => { await real.close().catch(() => {}); rmSync(dir, { recursive: true, force: true }); });
+  await landWorkflows(real, "agent-1", [{ name: "answer", description: "Answers a question", workflow: FIRST }]);
+  const serve = { name: "answer", digest: DIGEST };
+  const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, learning: startAt("0".repeat(40)) };
+  const endOf = async (runId, room) => {
+    const { store, made } = servedStore(3, { audit_every: 1 }, DIGEST);
+    store.learning = real.learning;
+    const logs = [];
+    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, shown: async () => ({ text: (text) => text }), log: (line) => logs.push(line), runId, launch, ...(room ? { room } : {}) }, serve);
+    return { made, logs };
+  };
+  const started = async () => (await ledgerOf(real.learning, "agent-1")).filter((line) => line.source === "started").map((line) => line.run);
+  // A crash after the started line was written, before its shadow: the end again finds the line and makes the shadow.
+  await addAuditLines(real.learning, "agent-1", [{ source: "started", run: "crashed", shadow_run: "audit.crashed", workflow: "answer", digest: DIGEST, promoted_at: null, at: new Date().toISOString() }]);
+  assert.deepEqual((await endOf("crashed")).made, ["audit.crashed"], "a started line already there: its shadow is made now");
+  assert.deepEqual((await endOf("held")).made, ["audit.held"], "while a version holds the digest, a drawn run's line is kept and its shadow made");
+  assert.deepEqual(await started(), ["crashed", "held"]);
+  // The run that wrote the workflow's version is purged after the draw, before the line's append (the cap's room is read between).
+  const purged = await endOf("after-purge", async () => {
+    await real.learning.purgeRun("agent-1", "run-learned-1");
+    return undefined;
+  });
+  assert.deepEqual(purged.made, [], `no shadow: no line would settle it: ${purged.logs.join(" | ")}`);
+  assert.deepEqual(await started(), [], "no started line of the purged digest: the purge took the two before, and the drawn run's was never kept");
+  assert.match(purged.logs.join("\n"), /purged since/, "it says why no shadow was made");
+});
+
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64QkBr): A8's rule, null while unknown, never $0.
 test("(r4) a served run's all-in is unknown while its shadow is queued or running, never $0; once the shadow ended it is served + shadow", async () => {
   const { figuresOf, record, shadowCostOf, spendByRun } = await import("../dist/learn/ledger.js");
