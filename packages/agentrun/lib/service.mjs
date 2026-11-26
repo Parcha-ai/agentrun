@@ -27,7 +27,9 @@ const xml = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(
 const unxml = (text) => text.replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
 
 /** The LaunchAgent: started at login (RunAtLoad), started again when it exits with a failure (KeepAlive), its output in
- *  `log`, with the PATH of the shell that installed it (launchd's own has no Homebrew, so no docker) and `env`. */
+ *  `log`, with the PATH of the shell that installed it (launchd's own has no Homebrew, so no docker) and `env`. A stop
+ *  gets 35 s before launchd's SIGKILL (ExitTimeOut; its default is 20 s): a signed-in server's stop takes up to 27 s, and
+ *  a ChatGPT renewal its runner sends (served at most 4 s into the stop) up to 25 s more to save its new pair. */
 export function plistText({ program, args, path, log, env = {} }) {
   const strings = [program, ...args].map((arg) => `    <string>${xml(arg)}</string>`).join("\n");
   const vars = Object.entries({ PATH: path, ...env }).map(([key, value]) => `    <key>${xml(key)}</key>\n    <string>${xml(value)}</string>`).join("\n");
@@ -52,6 +54,8 @@ ${vars}
     <key>SuccessfulExit</key>
     <false/>
   </dict>
+  <key>ExitTimeOut</key>
+  <integer>35</integer>
   <key>StandardOutPath</key>
   <string>${xml(log)}</string>
   <key>StandardErrorPath</key>

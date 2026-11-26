@@ -87,7 +87,7 @@ import { heldTokenLogin } from "../claude-login-token.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
-import { type Checkout, prCheckoutForClaim } from "./pr-checkout.js";
+import { type Checkout, checkoutWhereNoExec, prCheckoutForClaim } from "./pr-checkout.js";
 import type { AgenticBody } from "../store/agent-body.js";
 import { holdStored, storeSecrets } from "./store-secrets.js";
 import { bashPolicyOf } from "../bash-read-only.js";
@@ -434,8 +434,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, redact: run.redact, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...(facts.toolsFixedAtStart ? { toolsFixedAtStart: true } : {}), ...claimMetering(deps, web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
-  // The pull request's checkout, when the revision asks for one, as the pi spec makes it (pr-checkout.ts).
-  const checkout = body.checkout ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part }), body.checkout) : undefined;
+  // The pull request's checkout, when the revision asks for one, as the pi spec makes it (pr-checkout.ts): on an Archil
+  // region with no serverless exec, in the run's computer once it mounts the folder (below, checkoutWhereNoExec).
+  let checkout = body.checkout && noExec === undefined ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part }), body.checkout) : undefined;
   holds.hold({ checkout });
   // A run's own process copies nothing: its runner placed them before the process started (run-child-host.ts).
   if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
@@ -503,6 +504,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   filedIn = tools.workspace;
   let remoteProjectCapture = false;
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
+  // On an Archil region with no serverless exec, the checkout now, as the pi spec makes it (pr-checkout.ts).
+  if (body.checkout && noExec !== undefined) {
+    checkout = await checkoutWhereNoExec(deps, tools.shell === "computer" ? tools.workspace : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
+    holds.hold({ checkout });
+  }
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
 
   // The system prompt, as main's harness branch builds it: the environment line, the instructions with what the agent

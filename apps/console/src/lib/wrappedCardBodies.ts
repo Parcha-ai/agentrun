@@ -8,11 +8,11 @@ import { compact, dollars } from "@/lib/format";
 import type { Wrapped } from "@/lib/v2";
 import type { CardWait, WrappedCard } from "@/lib/wrappedCards";
 
-/** The waits met in this build: the card renderer and the cache analyzer (the year's `cache`, from the runs imported
- *  here). The leak scan's counts-only mode and the launch benchmark have not landed, and no card's derived rules can be
- *  computed from the year alone (the agent type's need subagent shares and parallelism; the laptop's need last month's
- *  cost and an electricity estimate). */
-export const SATISFIED_WAITS: ReadonlySet<CardWait> = new Set<CardWait>(["race-card-renderer", "cache-analyzer"]);
+/** The waits met in this build: the card renderer, the cache analyzer (the year's `cache`, from the runs imported here)
+ *  and the import's key count (the year's `secrets`). `opt-in` is met only on the page, when the person turns the card
+ *  on. The launch benchmark has not landed, and no card's derived rules can be computed from the year alone (the agent
+ *  type's need subagent shares and parallelism; the laptop's need last month's cost and an electricity estimate). */
+export const SATISFIED_WAITS: ReadonlySet<CardWait> = new Set<CardWait>(["race-card-renderer", "cache-analyzer", "secret-count"]);
 
 /** A card's body from the year, or null to draw nothing. Reads only the fields its card's `reads` names. */
 export type BodyOf = (data: Wrapped) => CardBody | null;
@@ -190,8 +190,26 @@ const cache: BodyOf = (data) => {
   };
 };
 
-/** The cards with a body, by id. The others (laptop, leak, type, launch) need what the year does not hold. */
-export const CARD_BODIES: Readonly<Record<string, BodyOf>> = { cover, split, hours, cache, summary };
+/** The year's leak receipt: the keys and tokens the import cut out of the sessions imported here, how many sessions held
+ *  one and how many were counted. Counts alone, never a key; none drawn with no run counted. Off the page until the person
+ *  turns it on (its `opt-in` wait). */
+const leak: BodyOf = (data) => {
+  const year = data.secrets;
+  if (!year) return null;
+  return {
+    eyebrow: eyebrow(data),
+    title: "Your leak receipt",
+    figure: { value: count(year.removed), unit: year.removed === 1 ? "key or token cut" : "keys and tokens cut" },
+    rows: [
+      { label: "Sessions with a key", value: count(year.runs_holding) },
+      { label: "Sessions checked", value: count(year.runs) },
+    ],
+    footnote: `Cut on import from the ${plural(year.runs, "run", "runs")} imported here; counts only, no key shown.`,
+  };
+};
+
+/** The cards with a body, by id. The others (laptop, type, launch) need what the year does not hold. */
+export const CARD_BODIES: Readonly<Record<string, BodyOf>> = { cover, split, hours, cache, leak, summary };
 
 /** `card`'s body from `data`: none for an empty year (no sessions or no requests) or a card with no body in `bodies`. */
 export function toBody(card: WrappedCard, data: Wrapped, bodies: Readonly<Record<string, BodyOf>> = CARD_BODIES): CardBody | null {
