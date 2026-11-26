@@ -38,9 +38,12 @@ async function owner(server, first) {
   return (runId, approvalId) => call(server.port, { method: "POST", path: `/v2/runs/${runId}/approvals/${approvalId}`, headers: { ...json, cookie, origin }, body: { decision: "allow" } });
 }
 
+/** The most of ps's listing read: a busy box's whole process list (thousands of processes, long command lines) runs
+ *  past exec's default 1 MiB, which throws ENOBUFS. */
+const PS_MAX_BUFFER = 256 * 1024 * 1024;
 /** The processes ps lists that are this test process's children (the ps that looks is left out) or name the runs' data
  *  `data` (a run's process, or a harness CLI reparented when its parent died), each as its pid and the start of its args. */
-const leftOf = (data) => execFileSync("ps", ["-eo", "pid=,ppid=,args="]).toString().split("\n").map((line) => line.trim()).filter(Boolean)
+const leftOf = (data) => execFileSync("ps", ["-eo", "pid=,ppid=,args="], { maxBuffer: PS_MAX_BUFFER }).toString().split("\n").map((line) => line.trim()).filter(Boolean)
   .map((line) => line.match(/^(\d+)\s+(\d+)\s+(.*)$/)).filter((m) => m && !m[3].startsWith("ps -eo") && (Number(m[2]) === process.pid || m[3].includes(data)))
   .map((m) => `${m[1]} ${m[3].slice(0, 120)}`);
 
