@@ -735,6 +735,25 @@ test("the watermark: runs before the reset never reach a later compile, even pas
   assert.ok(!(await w.textOf(WORKFLOW_JSON)).includes(PRE), "and the workflow holds nothing of a run before it");
 });
 
+// The watermark is the millisecond the reset began, and learning reads no run that started, or read its seed, at or before
+// it. A reset with nothing to wait for can end in that same millisecond, so a run its caller started right after the
+// answer read as one before the reset (the watermark test above, 0 compiles on a fast box). The reset answers only once
+// the clock is past its watermark: whatever its caller does after the answer is after it.
+test("a reset answers only once the clock is past its watermark, so whatever its caller starts after the answer is after the reset", async (t) => {
+  const w = await storeWorld(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 3 } });
+  const T = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now: T });
+  const answered = w.reset();
+  // Only Date stands still: the reset's reads and this window's timer run as ever.
+  const early = await Promise.race([answered, new Promise((resolve) => setTimeout(() => resolve("waiting"), 250))]);
+  assert.equal(early, "waiting", "the reset answered while the clock still read its watermark");
+  assert.equal((await w.server.settings.get(resetAtKey("agent-1"))).at, T, "its watermark is the millisecond it began");
+  t.mock.timers.tick(1);
+  assert.equal(await answered, 204);
+  assert.ok(Date.now() > T, "after its answer the clock is past the watermark");
+  t.mock.timers.reset();
+});
+
 const FLOW_DIGEST = createHash("sha256").update(JSON.stringify(answerFlow)).digest("hex").slice(0, 16);
 
 test("the watermark's readers: a run before the reset, or one whose seed was read before it (its row made after), is in no learning read: compile_after's count and a check's inputs (lastOwnRuns), an owner's replay inputs, the audit's served-run count, the money rule's past runs, the loop view", async (t) => {
