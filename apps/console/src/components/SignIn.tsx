@@ -173,10 +173,18 @@ function ImportChooser({ offer, chosen, onChange }: { offer: ImportOffer; chosen
   const picked = candidates.filter((c) => chosen.includes(c.id));
   const all = picked.length === candidates.length;
   const now = Date.now();
+  // The totals count every project, but the tools are known only for the listed ones: with all listed they go with the
+  // totals; with only the latest listed, with those.
+  const from = inWords(sourcesOf(candidates));
+  const tick = "Tick the projects to import: each becomes an agent, each session a run you can read. Nothing is imported unless you tick it.";
+  const totals = `${count(offer.sessions, "session")} in ${count(offer.projects, "project")}`;
+  const note = offer.projects > candidates.length
+    ? `${totals}. ${tick} The ${candidates.length.toLocaleString("en-US")} most recently active are listed, with sessions from ${from}.`
+    : `${totals}, from ${from}. ${tick}`;
   return (
     <Field group label={IMPORT_LABEL}
       aside={<Button type="button" size="xs" variant="ghost" onClick={() => onChange(all ? [] : candidates.map((c) => c.id))}>{all ? "Clear" : "Select all"}</Button>}
-      note={`${count(offer.sessions, "session")} in ${count(offer.projects, "project")}, from ${inWords(sourcesOf(candidates))}. Tick the projects to import: each becomes an agent, each session a run you can read. Nothing is imported unless you tick it.${offer.projects > candidates.length ? ` The ${candidates.length.toLocaleString("en-US")} most recently active are listed.` : ""}`}
+      note={note}
       hint={<span aria-live="polite">{picked.length ? `${count(picked.length, "project")}, ${count(picked.reduce((n, c) => n + c.sessions, 0), "session")} chosen.` : "None chosen: nothing will be imported."}</span>}>
       <div className="max-h-56 space-y-3 overflow-y-auto border p-3">
         {candidates.map((c) => (

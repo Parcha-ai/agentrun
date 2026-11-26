@@ -141,12 +141,14 @@ describe("App, setup's import of this machine's sessions", () => {
     expect(sent).toEqual([{ password: PASSWORD, import: [ONE.id, TWO.id, THREE.id] }]);
   });
 
-  it("says when the server lists only the latest of more projects", async () => {
-    server({ offer: [200, { projects: 640, sessions: 9000, candidates: [ONE, TWO] }] });
+  it("says when the server lists only the latest of more projects, and names the tools of those it lists, not of all", async () => {
+    server({ offer: [200, { projects: 640, sessions: 9000, candidates: [ONE, { ...TWO, sources: ["pi"] }] }] });
     const host = await render();
     await until(host, () => box(host));
-    expect(host.textContent).toContain("9,000 sessions in 640 projects");
-    expect(host.textContent).toContain("The 2 most recently active are listed.");
+    // The totals count every project; the tools are known only for the listed ones, so they go with those.
+    expect(host.textContent).toContain("9,000 sessions in 640 projects. Tick");
+    expect(host.textContent).toContain("The 2 most recently active are listed, with sessions from Claude Code and pi.");
+    expect(host.textContent).not.toContain("640 projects, from");
   });
 
   it("sends the projects ticked, then shows the import running, then done (a failed read tried again), and reads the page and the agents again", async () => {
