@@ -177,16 +177,22 @@ test("an extra our tool's input schema declares is its argument, never agy's own
   stale.settle('call_s');
   announceCall(stale, agy('call_a', { q: 'x', toolSummary: 'Look x up again' }), AGY, TOOLS, declared);
   assert.equal(await hurry(stale.take('look_up', { q: 'x' }, signal, 60_000)), 'call_a', 'the live one, not the ended one');
-  // A call that waited for its own while others took the last of them takes one named for nothing that was already
-  // there when it came, as a call that never waited does, rather than wait out the wait.
-  const drained = new calls.CallIds();
-  announceCall(drained, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
-  announceCall(drained, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
-  const firstBare = drained.take('look_up', { q: 'x' }, signal, 60_000);
-  const whole = drained.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000);
-  drained.add('call_n', undefined, undefined);
-  const lastBare = drained.take('look_up', { q: 'x' }, signal, 60_000);
-  assert.deepEqual(await hurry(Promise.all([firstBare, whole, lastBare])), ['call_b', 'call_a', 'call_n'], 'the last, by the one already there');
+  // Its call ended with no MCP call yet (a cancel can report it failed while the MCP call is on its way): the
+  // announcement no longer holds a later call matching it and another only without the extra (above), but a late MCP
+  // call of its own still takes it, rather than wait out the wait for nothing.
+  const late = new calls.CallIds();
+  announceCall(late, agy('call_a', { q: 'x', toolSummary: 'Look x up' }), AGY, TOOLS, declared);
+  late.settle('call_a');
+  assert.equal(await hurry(late.take('look_up', { q: 'x' }, signal, 60_000)), 'call_a', 'its own, though its call ended');
+  // An announcement keyed again, to its whole arguments alone, wakes a call already past its hold: here it leaves that
+  // call the one other announcement it matches, which it then takes, never after the wait.
+  const rekeyed = new calls.CallIds(20);
+  announceCall(rekeyed, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
+  announceCall(rekeyed, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
+  const past = rekeyed.take('look_up', { q: 'x' }, signal, 60_000);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  rekeyed.add('call_a', 'look_up', { q: 'x', toolSummary: 'a' });
+  assert.equal(await hurry(past), 'call_b', 'woken by the change');
   // Another tool's declaration keeps nothing for this one.
   const other = new calls.CallIds();
   announceCall(other, agy('call_c', { q: 'c', toolSummary: 'Look c up' }), AGY, TOOLS, new Map([['check_echo', new Set(['toolSummary'])]]));
