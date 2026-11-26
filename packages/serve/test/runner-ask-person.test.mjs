@@ -53,9 +53,10 @@ const driveAsk = ({ body }) => {
  *  `sessionOf(session, claim)`: the n-th claim's session as the loop sees it, in place of the one its adapter opened.
  *  `outputSchema`: the agent's output contract. `stoppedBeforeInput`: the first claim's spec waits until the run is stopped
  *  and then fails, as a harness's first-use install does when a person stops the run during it, so the run ends stopped
- *  with its session never sent its input. The runner stays up so a test may resume it; its store, server and gateway are
- *  returned. */
-async function askRun(t, { tools, personWait, beforeRelease, settled, loopOptions = {}, upstream, drive = driveAsk, outcomes = [], mcpOf, sessionOf, personOnly, beforeStart, outputSchema, stoppedBeforeInput = false }) {
+ *  with its session never sent its input. `endCheckout(claim, own)`: the n-th claim's end checkout (writeEnd runs it
+ *  before the end commits), handed the spec's own. The runner stays up so a test may resume it; its store, server and
+ *  gateway are returned. */
+async function askRun(t, { tools, personWait, beforeRelease, settled, loopOptions = {}, upstream, drive = driveAsk, outcomes = [], mcpOf, sessionOf, personOnly, beforeStart, outputSchema, stoppedBeforeInput = false, endCheckout }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-ask-person-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -86,7 +87,7 @@ async function askRun(t, { tools, personWait, beforeRelease, settled, loopOption
     claims += 1;
     const nth = claims;
     const adapter = sessionOf ? new Proxy(made.adapter, { get: (target, key) => (key === "open" ? async (...args) => sessionOf(await target.open(...args), nth) : Reflect.get(target, key, target)) }) : made.adapter;
-    const spec = { ...made, adapter, ...(mcpOf ? { mcp: mcpOf(claims) } : {}), ...(personOnly ? { personOnly } : {}) };
+    const spec = { ...made, adapter, ...(mcpOf ? { mcp: mcpOf(claims) } : {}), ...(personOnly ? { personOnly } : {}), ...(endCheckout ? { endCheckout: () => endCheckout(nth, made.endCheckout) } : {}) };
     // `beforeRelease`: a tool host's release (HostLifecycle.beforeRelease, as the browser's session release is), which a
     // park runs before its seal.
     const lifecycle = { ...spec.lifecycle, ...(personWait ? { personWait: [personWait] } : {}), ...(beforeRelease ? { beforeRelease: [...(spec.lifecycle?.beforeRelease ?? []), beforeRelease] } : {}) };
@@ -548,11 +549,11 @@ const TRIGGER_BODY = { text: "A push came in.", answers: false, origin: { kind: 
 const SIGN_IN_ONLY = "this session runs on its owner's sign-in: a trigger's message is not placed in it";
 const JOB = "Pick a region.";
 
-/** A run stopped before its first input, then reopened (no runner up meanwhile) by the trigger's message and the steers
- *  `then` after it, settled once the reopen's claim let it go: its row when it stopped, its row now, the model requests,
- *  each text a claim's session was sent or steered (with the claim's number), and the loop's answers to the rows. */
-async function stoppedThenReopened(t, { then = [], done, ...options } = {}) {
-  const outcomes = [];
+/** A run stopped before its first input, then reopened (no runner up meanwhile) by the trigger's message, settled once
+ *  the reopen's claim let it go (and `done(server, rows)` holds): its row when it stopped, its row now, the model
+ *  requests, each text a claim's session was sent or steered (with the claim's number), and the loop's answers to the
+ *  rows. */
+async function stoppedThenReopened(t, { done, outcomes = [], ...options } = {}) {
   const placed = [];
   const sessionOf = (session, claim) => new Proxy(session, {
     get: (target, key) => {
@@ -572,10 +573,8 @@ async function stoppedThenReopened(t, { then = [], done, ...options } = {}) {
   } });
   assert.deepEqual(placed, [], "nothing was sent before the stop");
   let trigger;
-  const sent = [];
   await restart(async () => {
     trigger = await server.runs.reopen(RUN, { kind: "steer", body: TRIGGER_BODY });
-    for (const text of then) sent.push(await sendCommand(server, RUN, { kind: "steer", body: { text } }));
   });
   const row = await until(async () => {
     const now = await server.runs.get(RUN);
@@ -583,7 +582,7 @@ async function stoppedThenReopened(t, { then = [], done, ...options } = {}) {
     const refused = rows.find((one) => one.id === trigger.id)?.refused != null;
     return refused && now.runner === null && ["parked", "ended", "stopped", "failed"].includes(now.state) && now.epoch > stopped.epoch && (await (done ?? (() => true))(server, rows)) && now;
   }, "the reopen's claim let the run go");
-  return { stopped, row, server, gw, placed, outcomes, trigger, sent };
+  return { stopped, row, server, gw, placed, outcomes, trigger };
 }
 
 test("reopen of a run stopped before its first input, by a trigger's message its session refuses: the run is back at its stop, nothing sent and no model request", async (t) => {
@@ -603,14 +602,25 @@ test("reopen of a run stopped before its first input, with an output schema, by 
   assert.equal(modelCalls(gw).length, 0, "no model request");
 });
 
-test("reopen of a run stopped before its first input, by a trigger's message its session refuses, then a person's message: that message is left for the run's next claim, never placed into the session that never started, and runs there after the job's input", async (t) => {
+test("reopen of a run stopped before its first input, by a trigger's message its session refuses, then a person's message as the claim ends: that message is left for the run's next claim, never placed into the session that never started, and runs there after the job's input", async (t) => {
   const PERSON = "Use the cheapest region.";
-  const { row, gw, placed, outcomes, sent } = await stoppedThenReopened(t, { then: [PERSON], drive: () => undefined, done: async (_server, rows) => rows.find((one) => JSON.stringify(one.body ?? {}).includes(PERSON))?.takenAt != null });
-  const [person] = sent;
+  // The person's message comes once the reopen's claim, woken by the refusal, ends the run: while its end is written.
+  let server;
+  let person;
+  const outcomes = [];
+  const endCheckout = async (claim, own) => {
+    if (claim === 2 && !person) {
+      person = await sendCommand(server, RUN, { kind: "steer", body: { text: PERSON } });
+      await until(() => outcomes.some((one) => one.id === person.id), "the loop answered the person's message");
+    }
+    await own?.();
+  };
+  const done = async (_server, rows) => rows.find((one) => one.id === person?.id)?.takenAt != null;
+  const { row, gw, placed } = await stoppedThenReopened(t, { outcomes, endCheckout, drive: () => undefined, done, beforeStart: (s) => void (server = s) });
   const first = outcomes.find((one) => one.id === person.id)?.outcome;
   assert.ok(first && "later" in first, `left for the run's next claim, never reported taken on the claim that sends nothing: ${JSON.stringify(outcomes)}`);
-  const ran = placed.filter((one) => one.text.includes(PERSON));
-  assert.ok(ran.length > 0 && ran.every((one) => one.claim > 2), `placed only on a claim after the reopen's: ${JSON.stringify(placed)}`);
+  const sentPerson = placed.filter((one) => one.text.includes(PERSON));
+  assert.ok(sentPerson.length > 0 && sentPerson.every((one) => one.claim > 2), `placed only on a claim after the reopen's: ${JSON.stringify(placed)}`);
   assert.equal(row.state, "ended", JSON.stringify(row));
   const asked = JSON.stringify(modelCalls(gw).at(0)?.body?.messages ?? []);
   assert.ok(asked.includes(JOB) && asked.includes(PERSON) && asked.indexOf(JOB) < asked.indexOf(PERSON), `its turn carries the job's input, then the message: ${asked.slice(0, 600)}`);
