@@ -9,6 +9,7 @@
 // hand-over to the person and the person's own take-over in the live view, each on every one of them. Goose and Cursor
 // also run the snapshot and click on their own ACP adapter, with the ACP package's fake agent as their binary.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer, connect } from "node:net";
@@ -38,8 +39,14 @@ const { browserHandBack, handBackTarget } = await import("../dist/browser-comman
 const { readLiveViewers } = await import("../dist/browser-live.js");
 const { KINDS: JOURNAL, HANDOVER_WAITING } = await import("../dist/runner/journal-kinds.js");
 const { blockersOf } = await import("../dist/runnable.js");
+const { FAUX_BROWSER_ENV } = await import("../dist/tools.js");
+const { FAUX_ENV } = await import("../dist/model.js");
+const { saveSignIn } = await import("../dist/sign-ins-store.js");
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;
+const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
+/** The faux model module (model.ts FAUX_ENV): the faux browser stands in for the plane's vendor only on a faux run. */
+const FAUX_MODEL = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
 /** A test seal key, no real one. */
 const SEAL_KEY = Buffer.alloc(32, 7);
@@ -101,8 +108,9 @@ const computerDepsOver = (url, record) => ({
   check: { readBackOf },
 });
 
-/** A store on a new data directory with Browserbase's keys saved, an agent of `body`, and run-1 launched with `launch`. */
-async function storeWith(t, body, launch) {
+/** A store on a new data directory with Browserbase's keys saved (and `keys`), an agent of `body`, and run-1 launched
+ *  with `launch`. */
+async function storeWith(t, body, launch, keys = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-browser-computer-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -111,7 +119,7 @@ async function storeWith(t, body, launch) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  for (const [name, value] of Object.entries(BROWSERBASE)) await putSealedKey(server, SEAL_KEY, name, value);
+  for (const [name, value] of Object.entries({ ...BROWSERBASE, ...keys })) await putSealedKey(server, SEAL_KEY, name, value);
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Browse.", ...body } });
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -179,21 +187,23 @@ const CLI = Object.keys(CLI_HARNESSES);
 /** A claim on CLI harness `harness` of an agent whose computer is the browser `computerDepsOver` gives over `cdpUrl`, its
  *  tools `tools`, on run-adapters' faux harness (fauxTable) whose model is a faux gateway: `start(name, timing)` starts a runner on
  *  it through the runner's dispatch, `rested()` waits for the run's row to rest and reads its timeline and the tool lists
- *  its harness was handed. */
-async function cliClaim(t, harness, cdpUrl, record, tools, instructions = "Snapshot the browser and click its Add button.", table = fauxTable(FAUX_HARNESS), runnerOptions = {}) {
+ *  its harness was handed. `options`: `runner`, more of the runner's options; `computer: null`, an agent with no
+ *  computer; `plane`, the launch's tool plane; `env`, more of the runner's env; `keys`, more keys saved sealed. */
+async function cliClaim(t, harness, cdpUrl, record, tools, instructions = "Snapshot the browser and click its Add button.", table = fauxTable(FAUX_HARNESS), options = {}) {
   const gw = await startFauxGateway();
   t.after(() => gw.close());
   const { model, env: gatewayEnv } = CLI_HARNESSES[harness];
-  const opened = await storeWith(t, { harness, instructions, tools, computer: BROWSER_COMPUTER }, { ...PI_LAUNCH, harness, model });
+  const computer = options.computer === null ? {} : { computer: options.computer ?? BROWSER_COMPUTER };
+  const opened = await storeWith(t, { harness, instructions, tools, ...computer }, { ...PI_LAUNCH, harness, model, ...(options.plane ? { plane: options.plane } : {}) }, options.keys);
   const handed = join(opened.dir, "handed.jsonl");
-  const env = { ...gatewayEnv(gw.url), AGENTRUN_HARNESS_TABLE: table, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1", AGENTRUN_TEST_FAUX_HARNESS_OPENED: handed };
+  const env = { ...gatewayEnv(gw.url), AGENTRUN_HARNESS_TABLE: table, NODE_TEST_CONTEXT: process.env.NODE_TEST_CONTEXT ?? "1", AGENTRUN_TEST_FAUX_HARNESS_OPENED: handed, ...options.env };
   const prior = process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED;
   process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED = handed;
   t.after(() => (prior === undefined ? delete process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED : (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED = prior)));
   const deps = { env, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim, computerDeps: computerDepsOver(cdpUrl, record) };
   const start = (name, timing = {}) => {
     const runner = startRunner({
-      store: opened.store, name, ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000, ...runnerOptions, ...timing,
+      store: opened.store, name, ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000, ...options.runner, ...timing,
       createLoop: createDispatchLoop({ launchOf: (runId) => opened.store.runs.launch(runId), resolve: (id, given) => (id === harness ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
     });
     t.after(() => runner.close().catch(() => {}));
@@ -315,6 +325,54 @@ for (const [harness, on, table] of RUNS_ON) for (const [how, tools] of [["grante
   });
 }
 
+// The other way a CLI run gets the browser: an agent granted `browser` with no computer of its own gets the vendor its tool
+// plane picked when the run was made (the launch's plane, checked again against the keys the claim read: Kernel here,
+// over the Browserbase keys saved beside it), on the key saved for that vendor and the agent's sign-in saved for it, as
+// pi's does (tools.ts). The vendor is the faux browser (fixtures/faux-browser.mjs), named for the vendor it stands in
+// for, which logs the vendor, key and sign-in it was handed and each session it makes and releases; the claim's browser
+// computer (the stand-in provider over the fake page) is never asked for anything.
+for (const [harness, on, table] of RUNS_ON) {
+  test(`${harness}${on}: an agent granted the browser with no computer gets the vendor its tool plane picked: Kernel, on the key saved for it and the agent's saved sign-in, takes the snapshot and the click, its one session made once and released once, and the claim's browser computer is never used`, { timeout: 120_000 }, async (t) => {
+    const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-browser-plane-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const log = join(dir, "browser.jsonl");
+    writeFileSync(log, "");
+    const prior = process.env.FAUX_BROWSER_LOG;
+    process.env.FAUX_BROWSER_LOG = log;
+    t.after(() => (prior === undefined ? delete process.env.FAUX_BROWSER_LOG : (process.env.FAUX_BROWSER_LOG = prior)));
+    // The claim's browser computer, over a page of its own: nothing of this run may reach it.
+    const page = await fakeAxPage();
+    t.after(() => page.close());
+    const record = { created: [], released: [], connects: 0 };
+    const claim = await cliClaim(t, harness, `${page.url}?${SIGNED}`, record, ["read", "browser"], undefined, table, {
+      computer: null, plane: { browser: "kernel" }, keys: { KERNEL_API_KEY: fake("kernel") }, env: { [FAUX_ENV]: FAUX_MODEL, [FAUX_BROWSER_ENV]: FAUX_BROWSER },
+    });
+    const pointer = `kernel-profile-${randomBytes(8).toString("hex")}`;
+    await saveSignIn(claim.opened.server, SEAL_KEY, { agentId: "agent-1", provider: "kernel", pointer });
+    await claim.opened.server.flush?.();
+    claim.start("runner-a");
+    const { row, timeline, lists, answers } = await claim.rested(page);
+    const ops = () => readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+
+    assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary, ops: ops() }));
+    for (const name of ["snapshot", "run"]) assert.ok(lists.length > 0 && lists.every((list) => list.filter((one) => one === name).length === 1), `the harness is handed ${name} once: ${JSON.stringify(lists)}`);
+    assert.deepEqual(ops().filter((op) => op.op === "vendor"), [{ op: "vendor", vendor: "kernel", KERNEL_API_KEY: "set" }], "the run's browser is Kernel's, the plane's pick, on the key saved for it");
+    assert.deepEqual(ops().filter((op) => op.op === "sign-in").map(({ provider, ref, ref_in_env }) => ({ provider, ref, ref_in_env })), [{ provider: "kernel", ref: pointer, ref_in_env: false }], "handed the agent's saved Kernel sign-in, in no environment");
+    assert.deepEqual(ops().filter((op) => op.op === "profile").map((op) => op.pointer), [pointer], "its session opened on that sign-in");
+    const snapshot = answers.find((one) => one.tool === "snapshot");
+    assert.match(String(snapshot?.text), /This browser is kernel's\./, `the snapshot read Kernel's page: ${JSON.stringify(answers)}`);
+    assert.notEqual(answerOf(timeline, "snapshot").result?.tool_status, "failed");
+    const click = answerOf(timeline, "run");
+    assert.ok(click.use && click.result && click.result.tool_status !== "failed", `the click ran on it: ${JSON.stringify(click)}`);
+    const created = ops().filter((op) => op.op === "create");
+    assert.equal(created.length, 1, `one session made: ${JSON.stringify(ops())}`);
+    await until(() => ops().some((op) => op.op === "release"), "the session is released");
+    assert.deepEqual(ops().filter((op) => op.op.startsWith("release")).map((op) => [op.op, op.id]), [["release", created[0].id]], "released once, at the run's end");
+    assert.deepEqual([record.created, record.connects, record.released, page.calls.length], [[], 0, [], 0], "the claim's browser computer was never asked for anything");
+    assert.ok(!JSON.stringify(timeline).includes(pointer), "the sign-in's pointer reaches no row of the run's");
+  });
+}
+
 // A browser call's answer on a CLI harness is the page's own text, and a page can show a value the run must not leak (a key
 // the runner holds, shown back in a form field or a title): the answer the harness is handed passes through the run's
 // redactor (LoopDeps.redact, the runner's one), as every other host tool answer does, so the value reaches the CLI only as
@@ -325,7 +383,7 @@ for (const [harness, on, table] of RUNS_ON) {
     const page = await fakeAxPage({ title: `Account ${PAGE_VALUE}` });
     t.after(() => page.close());
     const record = { created: [], released: [], connects: 0 };
-    const claim = await cliClaim(t, harness, `${page.url}?${SIGNED}`, record, ["read", "browser"], undefined, table, { redact: secretRedactor([PAGE_VALUE]) });
+    const claim = await cliClaim(t, harness, `${page.url}?${SIGNED}`, record, ["read", "browser"], undefined, table, { runner: { redact: secretRedactor([PAGE_VALUE]) } });
     claim.start("runner-a");
     const { row, timeline, answers } = await claim.rested(page);
 
