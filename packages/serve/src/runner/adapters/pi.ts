@@ -18,7 +18,7 @@ import { anthropicPolicy, withWebSearches } from "@parcha/agentrun-harness-claud
 import { type AdapterSession, type AgentAdapter, HOST_RESULT_MAX_CHARS, type HostTool, type NestedCalls, type SessionIO, type SessionSpec, type ToolImage, type TurnStatus, type Wire } from "@parcha/agentrun-kernel";
 import { conversationLabel, type ModelProxy, NATIVE_SEARCH_USD, type ProviderPolicy, startModelProxy } from "@parcha/agentrun-kernel/host";
 import { INTERRUPTED_TEXT } from "@parcha/agentrun-kernel/kernel";
-import { boundTo, resultMaxChars, TurnBudget, type TurnRecord } from "@parcha/agentrun-kernel/process";
+import { boundTo, RESULT_ALWAYS_WHOLE_CHARS, resultMaxChars, TurnBudget, type TurnRecord } from "@parcha/agentrun-kernel/process";
 import { randomBytes } from "node:crypto";
 import { DEFAULT_HARNESS } from "../../harness.js";
 import { durableWait } from "../../workflow/pi-versions.js";
@@ -421,18 +421,21 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
   // A session opened again in a turn (a park, a lost claim) has a budget that has read no answer: before its first claim
   // it takes the turn back from the conversation's own entries (turnRecordsOf), once per conversation, so the calls this
   // process answers split what their answer left beside the results handed before it. A budget that has read an answer
-  // here keeps its own (TurnBudget.restore).
+  // here keeps its own (TurnBudget.restore). A read that fails is not the turn: it rejects, naming the failure, and is
+  // not kept, so the next call reads again; the call that met it runs no tool (piTool) and hands no result (afterTool).
   const restoring = new Map<string, Promise<void>>();
   const restoreOf = (conversationId: unknown, context: Context): Promise<void> => {
     const key = String(conversationId);
-    let restored = restoring.get(key);
-    if (!restored) {
-      restored = (async () => {
-        const conversation = await run.harness.conversation(conversationId as never, context);
-        if (conversation) turnOf(key).restore(await turnRecordsOf((cursor) => conversation.entries({}, TURN_PAGE, cursor as Cursor | undefined, context)));
-      })().catch(() => {});
-      restoring.set(key, restored);
-    }
+    const known = restoring.get(key);
+    if (known) return known;
+    const restored = (async () => {
+      const conversation = await run.harness.conversation(conversationId as never, context);
+      if (conversation) turnOf(key).restore(await turnRecordsOf((cursor) => conversation.entries({}, TURN_PAGE, cursor as Cursor | undefined, context)));
+    })().catch((error: unknown) => {
+      if (restoring.get(key) === restored) restoring.delete(key);
+      throw new Error(`This call's turn could not be read back from its conversation, so what the turn has left for its result is unknown: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    restoring.set(key, restored);
     return restored;
   };
   const tools = [...spec.tools.filter((tool) => !owned.has(tool.name)).map((tool) => piTool(tool, io, (callId) => (io.gate ? (passed.has(callId) ? 0 : 1) : undefined), touched, nestedRefusals, windowOf, turnOf, restoreOf)), ...(options.tools ?? []).map((tool) => announcing(tool, io))];
@@ -475,7 +478,10 @@ async function sessionOn(proxy: ModelProxy, options: PiAdapterOptions, spec: Ses
           const refused = refusals.resultOf(call.id, result, call.parent !== undefined);
           if (refused) return refused as never;
           const agent = (await api.snapshot(AgentDoc, api.conversationId, hookContext).catch(() => undefined)) as { readonly model?: { readonly provider: string } } | undefined;
-          if (call.parent === undefined) await restoreOf(api.conversationId, hookContext);
+          // A turn that could not be read: the result is not handed (a bound of a fresh budget's would take room the
+          // turn may not have), its call an error naming why.
+          const unread = call.parent === undefined ? await restoreOf(api.conversationId, hookContext).then(() => undefined, (error: unknown) => (error instanceof Error ? error.message : String(error))) : undefined;
+          if (unread !== undefined) return { output: [{ type: "text", text: boundTo(unread, RESULT_ALWAYS_WHOLE_CHARS, { error: true }).text }], isError: true } as never;
           return (await boundPiResult(result, windowOf(agent?.model), call.parent === undefined ? { turn: turnOf(api.conversationId), callId: call.id } : undefined)) as never;
         },
       }),
