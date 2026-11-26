@@ -18,8 +18,8 @@ import { createRequire, syncBuiltinESMExports } from "node:module";
 const [dist, fixture, chars, which, options, shape, stopAt] = process.argv.slice(1);
 // The read yields the loop through timers/promises' setImmediate, between steps: each yield is counted, and each step's
 // work is the CPU time this thread spent since the last yield came back (threadCpuUsage: the worker's is its own, and
-// a process the machine stops spends none). At the stopAt-th yield the process stops itself, as a loaded machine stops
-// a process mid-step, until the parent continues it.
+// a process the machine stops spends none). At the stopAt-th yield the process stops itself, inside the step that ends
+// there, as a loaded machine stops a process mid-step, until the parent continues it; it says so once it runs again.
 const timers = createRequire(import.meta.url)("node:timers/promises");
 const yieldToLoop = timers.setImmediate;
 const cpuMs = () => { const { user, system } = process.threadCpuUsage(); return (user + system) / 1000; };
@@ -29,8 +29,8 @@ let since = 0;
 let abortedAt = null;
 const stepEnds = () => { heaviestMs = Math.max(heaviestMs, cpuMs() - since); };
 timers.setImmediate = (...args) => {
+  if (++steps === Number(stopAt)) { process.stderr.write("stopping\\n"); process.kill(process.pid, "SIGSTOP"); process.stderr.write("resumed\\n"); }
   stepEnds();
-  if (++steps === Number(stopAt)) { process.stderr.write("stopping\\n"); process.kill(process.pid, "SIGSTOP"); }
   return yieldToLoop(...args).then((value) => { since = cpuMs(); return value; });
 };
 syncBuiltinESMExports();
@@ -58,24 +58,30 @@ process.stdout.write(JSON.stringify({ workMs, steps, heaviestMs, stepsAfterAbort
 
 /** `which` ("readPage", "abort" or "publicFetch") on a generated page of `chars` characters (downloadsPage's, or
  *  shapedPage's `shape`), in a child process: `{ hung: true }` when it does not answer within GUARD_MS. `stop`: the
- *  child stops itself at the read's `at`-th yield, mid-step, and is continued `ms` later, as a loaded machine stops it. */
+ *  child stops itself at the read's `at`-th yield, mid-step, and is continued `ms` later, as a loaded machine stops it:
+ *  continued again every 50 ms until it says it runs, since a continue that comes before its stop is lost. */
 function inChild(which, chars, options = {}, shape = "", stop = { at: 0, ms: 0 }) {
   return new Promise((resolve, reject) => {
     const args = [new URL("../dist/index.js", import.meta.url).href, new URL("./fixtures/downloads-page.mjs", import.meta.url).href, String(chars), which, JSON.stringify(options), shape, String(stop.at)];
     const child = spawn(process.execPath, ["--input-type=module", "-e", CHILD, ...args], { stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
     let err = "";
+    let continuing;
     child.stdout.setEncoding("utf8").on("data", (chunk) => { out += chunk; });
     child.stderr.setEncoding("utf8").on("data", (chunk) => {
       err += chunk;
-      if (stop.at && err.includes("stopping\n") && !err.includes("continued\n")) {
-        err += "continued\n";
-        setTimeout(() => child.kill("SIGCONT"), stop.ms);
+      if (stop.at && err.includes("stopping\n") && continuing === undefined) {
+        continuing = setTimeout(() => {
+          child.kill("SIGCONT");
+          continuing = setInterval(() => child.kill("SIGCONT"), 50);
+        }, stop.ms);
       }
+      if (err.includes("resumed\n")) clearInterval(continuing);
     });
     const guard = setTimeout(() => child.kill("SIGKILL"), GUARD_MS);
     child.on("close", (code, signal) => {
       clearTimeout(guard);
+      clearInterval(continuing);
       if (signal === "SIGKILL") resolve({ hung: true });
       else if (code !== 0) reject(new Error(`the child exited ${code ?? signal}: ${err.slice(0, 2000)}`));
       else resolve(JSON.parse(out));
