@@ -16,6 +16,7 @@ import { CredentialUnavailable } from "@parcha/agentrun-kernel/host";
 import { holdSecret } from "./secrets.js";
 import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
 import { putSealedKey } from "./server-keys.js";
+import { logLine } from "./print.js";
 import { held } from "./runner/held.js";
 import { type SealedKeys, sealColumn, sealedAt, type Settings, StoreBusy, StoreClosed, StoreDeadline, STORE_WRITE_DEADLINE_MS, unsealColumn } from "./store/index.js";
 
@@ -215,16 +216,25 @@ const renewalsOf = (store: ChatGPTPlanDeps["store"]): { flights: Set<Promise<str
  *  before the stop began (none is sent after it: renewUnder). */
 export const RENEWAL_DRAIN_MS = REFRESH_CALL_MS + STORE_WRITE_DEADLINE_MS;
 
-/** A store's stop in this process (the server's, a runner's beside it or of its own), called as it begins and awaited
- *  before `store.close()`: from now no reader on the store starts a renewal, and this resolves once those out have ended,
- *  saved or not, or `ms` has gone. So a refresh token OpenAI spent leaves its new pair saved, never lost to the close. */
-export function stopRenewals(store: ChatGPTPlanDeps["store"], ms = RENEWAL_DRAIN_MS): Promise<void> {
+/** A plan's log with no log of its own (a runner's reader): this process's stderr, one line, never a token. */
+const stderrLog = (fields: Record<string, string>): void => void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`);
+
+/** A store's stop in this process (the server's, a runner's beside it or of its own), awaited before `store.close()`:
+ *  from now no reader on the store starts a renewal, and this resolves once those out have ended, saved or not, or `ms`
+ *  has gone, said in `log` (`renewal_drain_cut`, with how many were still out). So a refresh token OpenAI spent leaves
+ *  its new pair saved, never lost to the close. A runner calls it once its loops are told to stop (Runner.close's
+ *  `loopsStopping`), never before: a run its drain lets finish may need a renewal. */
+export function stopRenewals(store: ChatGPTPlanDeps["store"], ms = RENEWAL_DRAIN_MS, log: (fields: Record<string, string>) => void = stderrLog): Promise<void> {
   const of = renewalsOf(store);
   of.stopping = true;
   if (of.flights.size === 0) return Promise.resolve();
   let timer: NodeJS.Timeout | undefined;
-  const ended = Promise.allSettled([...of.flights]).then(() => undefined);
-  return Promise.race([ended, new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
+  const ended = Promise.allSettled([...of.flights]).then(() => true);
+  return Promise.race([ended, new Promise<false>((done) => (timer = setTimeout(() => done(false), ms)))])
+    .then((drained) => {
+      if (!drained && of.flights.size > 0) log({ chatgpt: "renewal_drain_cut", out: String(of.flights.size) });
+    })
+    .finally(() => clearTimeout(timer));
 }
 
 /** A store fault's class for the log (one of the store's own, or Postgres's Unanswered, else "other"), never its words. */
@@ -808,6 +818,8 @@ export class ChatGPTPlan implements PlanReader {
       // The write back faulted. Refused unsent (the store closed): no row holds the new pair, so it is revoked, never
       // left live and saved nowhere. Any other fault (busy, a deadline): the row read back says how it ended.
       if (error instanceof StoreClosed) {
+        // Said before the revocation, which a process's exit may cut short: never a pair lost with no line.
+        this.#deps.log?.({ chatgpt: "renewed_pair_unsaved", write: "refused" });
         await this.revoke(renewed.credential);
         throw new PlanUnavailable(RENEW_LATER);
       }
@@ -850,6 +862,7 @@ export class ChatGPTPlan implements PlanReader {
     } catch (error) {
       if (!(error instanceof StoreClosed)) return unknown(error);
       if (!rolledBack(fault)) return unknown(fault);
+      this.#deps.log?.({ chatgpt: "renewed_pair_unsaved", write: "refused" });
       await this.revoke(renewed.credential);
       throw new PlanUnavailable(RENEW_LATER);
     }
@@ -871,8 +884,19 @@ export class ChatGPTPlan implements PlanReader {
   private async carry(credential: Credential): Promise<void> {
     const giveUp = this.now() + REFRESH_LEASE_MS + REFRESH_CALL_MS;
     for (;;) {
-      const now = await this.readSealed();
-      if (!now) return;
+      let now: { row: Row; bytes: Uint8Array } | undefined;
+      try {
+        now = await this.readSealed();
+      } catch (error) {
+        // The store closed or faulted: the pair is carried nowhere, said by its fault's class.
+        this.#deps.log?.({ chatgpt: "renewed_pair_unsaved", carry: "store", fault: faultClass(error) });
+        return;
+      }
+      if (!now) {
+        // Signed out meanwhile: no row to carry it in (the sign-out says OpenAI's word is not the whole answer).
+        this.#deps.log?.({ chatgpt: "renewed_pair_unsaved", carry: "signed_out" });
+        return;
+      }
       if (now.row.lease && now.row.lease.until > (await this.storeNow())) {
         // Past the bound, or its store stopping (a wait here would outlast the stop's drain).
         if (this.now() > giveUp || this.stopping()) {
@@ -976,6 +1000,6 @@ export async function planBeforeRun(env: NodeJS.ProcessEnv, model: { provider: s
 export async function planReaderOf(store: ChatGPTPlanDeps["store"], sealKey: Buffer | undefined): Promise<PlanReader | undefined> {
   // A run's own process holds no seal key: its runner's reader, for a claim whose models reach the plan (held.ts).
   if (!sealKey) return held()?.plan();
-  const plan = await new ChatGPTPlan({ store, sealKey }).load();
+  const plan = await new ChatGPTPlan({ store, sealKey, log: stderrLog }).load();
   return plan.state === "signed_out" ? undefined : plan;
 }

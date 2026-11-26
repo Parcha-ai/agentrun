@@ -1973,6 +1973,42 @@ test("a stop waits for a renewal already spent at OpenAI to save its pair before
   assert.equal(openai.refreshes, 1);
 });
 
+test("a stop whose drain bound runs out with a renewal still out says so, and a write-back the closed store then refuses says the pair goes unsaved before it is revoked, with no token in the log", { timeout: 30_000 }, async (t) => {
+  const openai = fakeOpenAI(t);
+  const { ChatGPTPlan, stopRenewals } = await import("../dist/chatgpt-plan.js");
+  const store = mapStore();
+  let closed = false;
+  const replaceIf = store.sealedKeys.replaceIf;
+  store.sealedKeys.replaceIf = async (...args) => {
+    if (closed) throw new (await import("../dist/store/index.js")).StoreClosed();
+    return replaceIf(...args);
+  };
+  const sealKey = randomBytes(32);
+  await seatRow(store, sealKey, -1_000);
+  let release;
+  openai.holdRefresh = new Promise((resolve) => (release = resolve));
+  t.after(() => release());
+  // Each line with how many revocations OpenAI had heard when it was said.
+  const lines = [];
+  const log = (fields) => lines.push({ ...fields, heard: openai.revoked.length });
+  const plan = new ChatGPTPlan({ store, sealKey, log });
+  const renewing = plan.token().catch((error) => error);
+  await until(() => openai.refreshes === 1, "the renewal is out at OpenAI");
+  await stopRenewals(store, 50, log);
+  assert.deepEqual(lines, [{ chatgpt: "renewal_drain_cut", out: "1", heard: 0 }], "the cut drain says how many renewals were still out");
+  // The store closes; OpenAI answers the refresh after it.
+  closed = true;
+  release();
+  const error = await renewing;
+  assert.match(String(error?.message), /try again in a moment/);
+  const issued = openai.issued.at(-1);
+  const unsaved = lines.find((line) => line.chatgpt === "renewed_pair_unsaved");
+  assert.deepEqual(unsaved, { chatgpt: "renewed_pair_unsaved", write: "refused", heard: 0 }, `said before the revocation: ${JSON.stringify(lines)}`);
+  assert.equal(openai.revocationsOf(issued.refresh), 1, "and the pair saved nowhere is revoked at OpenAI");
+  const said = JSON.stringify(lines);
+  assert.ok(!said.includes(issued.refresh) && !said.includes(issued.access), "no token in the log");
+});
+
 test("a renewal's write-back that faults: refused unsent by a closed store, its pair is revoked; any other fault, the row is read back: the pair saved is kept, the lease still ours is written again, and only a read back that faults too leaves it unknown, said by its fault's class", { timeout: 30_000 }, async (t) => {
   const openai = fakeOpenAI(t);
   const { ChatGPTPlan } = await import("../dist/chatgpt-plan.js");

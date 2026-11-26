@@ -370,18 +370,21 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   const close = () =>
     (closing ??= (async () => {
       floor.stop();
-      // From here its claims' readers start no ChatGPT renewal on its store; one OpenAI is answering saves its new pair
-      // before the store closes (awaited last, bounded by RENEWAL_DRAIN_MS from now: inside the close's own bound).
-      const renewalsStopped = stopRenewals(store);
+      // Its claims' readers start no ChatGPT renewal on its store once the drain is over and its loops are told to stop
+      // (never before: a run the drain lets finish may need one); one OpenAI is answering saves its new pair before the
+      // store closes (awaited last, bounded by RENEWAL_DRAIN_MS from then: beside the loops' stop, inside the close's own
+      // bound, runnerCloseBoundMs).
+      let renewalsStopped: Promise<void> | undefined;
+      const stopRenewing = () => (renewalsStopped ??= stopRenewals(store));
       // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
-      await Promise.all([janitor?.close(), runner.close()]);
+      await Promise.all([janitor?.close(), runner.close(stopRenewing)]);
       // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
       // there: it claims no more.
       await relayed?.close();
       await kept.close();
       // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
       await claimInstallsStopped();
-      await renewalsStopped;
+      await stopRenewing();
       await store.close();
       held.release();
     })());

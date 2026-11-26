@@ -22,8 +22,8 @@ export function besideRunnerOptions(serve: { maxRuns?: number; drainTimeout?: st
 /** What the CLI's stop waits on (stop-signals.ts StopDeps.stopping) with a runner beside the server: the server's runs
  *  and the runs the runner holds, and the longer of the server's bound and the runner's whole close (its drain, then
  *  the stop of the loops left: runnerCloseBoundMs), so the stop's deadline never cuts a run's end and release short. The
- *  runner's ChatGPT renewals drain beside that close, from its start (stopRenewals, RENEWAL_DRAIN_MS = 25 s), which the
- *  close's bound (the drain, then the lease less its margin: 25 s) already holds. */
+ *  runner's ChatGPT renewals stop once the drain is over and drain beside the loops' stop (stopRenewals,
+ *  RENEWAL_DRAIN_MS = 25 s), which the close's bound (the drain, then the lease less its margin: 25 s) already holds. */
 export function besideStopping(server: { runs: number; boundMs: number }, held: number, drainMs: number): { runs: number; boundMs: number } {
   return { runs: server.runs + held, boundMs: Math.max(server.boundMs, runnerCloseBoundMs(drainMs)) };
 }
@@ -152,18 +152,20 @@ export async function runnerBeside(dataDir: string, { loops, loopsTold, drainMs,
   // Its gauge (runner-metrics.ts): the runs it holds of its loops, and the process's memory (the server's with it), every
   // minute until its close.
   const gauge = startRunnerGauge({ runner: name, held: () => runner.held().length, slots: held ?? RUNNER_LOOPS, write: (line) => (onLine ?? console.log)(line) });
-  // Its close stops the ChatGPT renewals its claims' readers make on its store as it begins, and drains the ones out
-  // before the store closes: a refresh token OpenAI spent leaves its new pair saved (chatgpt-plan.ts stopRenewals).
+  // Its close stops the ChatGPT renewals its claims' readers make on its store once the drain is over and its loops are
+  // told to stop (a run the drain lets finish may need one), and drains the ones out before the store closes: a refresh
+  // token OpenAI spent leaves its new pair saved (chatgpt-plan.ts stopRenewals).
   const { stopRenewals } = await import("../chatgpt-plan.js");
   return {
     runner,
     close: async () => {
       gauge.stop();
-      const renewalsStopped = stopRenewals(store);
-      await Promise.all([swept?.close(), runner.close()]);
+      let renewalsStopped: Promise<void> | undefined;
+      const stopRenewing = () => (renewalsStopped ??= stopRenewals(store));
+      await Promise.all([swept?.close(), runner.close(stopRenewing)]);
       paired?.stop();
       await claimInstallsStopped();
-      await renewalsStopped;
+      await stopRenewing();
       await store.close();
       seal.release();
     },
