@@ -81,7 +81,7 @@ import { runPathMetricsOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, archilWhereHeld, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
-import { loadArchilSettings } from "../archil-settings.js";
+import { loadArchilSettings, noExecRegionOf } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
 import { type claimComputer, type ComputerDeps, computerFilesNote, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
@@ -172,6 +172,10 @@ export interface AdapterSpecDeps {
   readonly journal: (claim: Claim) => Journal;
   /** The one store: `runs` and `agents` for the run's revision, and the live-viewer seam for the browser tool. */
   readonly store: Store & LiveViewerStore;
+  /** The plane the claim's runner capped (run-child-host.ts, by underServerCeilings) and chose the run's keys by, handed to
+   *  the run's own process (run-child.ts): taken as it is there, never capped again on settings read later, so the run's
+   *  tools and the keys it was handed are of one reading. Absent: the claim caps its launch itself. */
+  readonly claimedPlane?: RunLaunch["plane"];
   /** The key the store's sealed values are opened under (store/seal.ts): the runner's. Undefined in a run's own process
    *  (run-child.ts), which never holds it: what a claim opens with it is asked of the runner there (held.ts). */
   readonly sealKey: Buffer | undefined;
@@ -610,6 +614,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // claim's memory only); else Mode 1, the run's local folder. The same for the pi and the CLI spec.
   const archilSettings = await loadArchilSettings(deps.store, deps.env);
   const mode: 1 | 2 = archilSettings === undefined ? 1 : 2;
+  // Its region with no serverless exec, where it has none: a run with no computer that mounts its folder has no shell.
+  const noExec = noExecRegionOf(archilSettings);
   const archil = archilSettings === undefined
     ? undefined
     // The run's mount credential is minted per run the first time a computer's mount asks (archil-mount-credential.ts), on
@@ -710,7 +716,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // row names the disk that credential is on (mountDisk), asked only at the park: a run's own process hands its claim to
     // its runner, whose computerForClaim asks its own Archil claim. A recording of its screen (computer.record) goes in
     // the run's recordings folder, beside its folder, said on its timeline.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(offAlready ? { turnedOff: offAlready } : {}), recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit(), mountDisk: () => archil.disk.id } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    { ...deps.computerDeps, mode, noExec, workspace: ws.workspace, sealKey: deps.sealKey, ...(offAlready ? { turnedOff: offAlready } : {}), recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit(), mountDisk: () => archil.disk.id } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
@@ -725,7 +731,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The computer's tools are the run's own host tools, as on every harness: the host's codemode (meta-tools.ts) calls them
   // as `tools.<name>`, each a nested call, gated and recorded as the model's own call is. A computer that replaced an
   // earlier claim's holds its acts to what it showed.
-  const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
+  const tools = await runTools(ws.workspace, computer.computer, { mode, noExec, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
   filedIn = tools.workspace;
   let remoteProjectCapture = false;
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
