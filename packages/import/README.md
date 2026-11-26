@@ -165,7 +165,7 @@ read looks up afresh.
 The cursor is the reader's own: hand it back to the same reader for the same locator. A JSONL source builds its reader
 with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole
 line read, and the read's state. A file replaced or truncated since is read from its start, as is a cursor whose state
-is of another shape than the reader's (its `stateVersion`: a Codex cursor saved by 0.1.0-beta.58 or before), and a last
+is of another shape than the reader's (its `stateVersion`: a Codex cursor saved by 0.1.0-beta.59 or before), and a last
 line with no newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
 `discover`, `idOf` and `read` itself and returns one locator per session, with its `id`, and `stat`: the session's own size and
 last write, which a caller's size caps and "still being written" check go by (`locatorSize`; without `stat`, the file's).
