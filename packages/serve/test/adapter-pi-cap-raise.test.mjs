@@ -458,3 +458,24 @@ test("a raised run taken over by another runner after its raise entry landed is 
   assert.equal(followUpsSent(w.sent, 1), 1, `the follow-up's request reached the provider, admitted under $1: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
   assert.equal(row.state, "ended", JSON.stringify(row));
 });
+
+// A raise the cap's rule refuses leaves the run's pause as it was: no second agentrun.budget entry at the same cap (and so
+// no second "Paused at the run's cap" row on its timeline), the row parked again in the pause's words, and a later raise
+// that covers the need resumes that same pause, once.
+test("a refused raise leaves the run's budget entries as they were: one pause, parked in its words, and a later raise resumes it", async (t) => {
+  const w = await cappedRun(t, [{ say: "done" }]);
+  const parked = await w.settled("parked");
+  const [pause] = await rootEntries(w.store, "agentrun.budget");
+  const refused = await w.raise(CAP);
+  await until(async () => (await commandOf(w.server, refused.id))?.takenAt != null, "the refused raise taken");
+  assert.equal((await commandOf(w.server, refused.id)).refused, cap.checkRaise({ capUsd: CAP }, CAP).refused);
+  const again = await w.settled("parked");
+  assert.deepEqual(await rootEntries(w.store, "agentrun.budget"), [pause], "the refused raise wrote no budget entry");
+  assert.equal(again.summary, parked.summary, "parked again in the pause's words");
+  assert.equal(again.summary, pause.words);
+  const raised = await w.raise(pause.pending.suggested_cap_usd);
+  await until(async () => (await commandOf(w.server, raised.id))?.takenAt != null, "the covering raise taken");
+  await w.settled("ended");
+  assert.equal(followUpsSent(w.sent, pause.pending.suggested_cap_usd), 1, `one follow-up, at the covering cap: ${JSON.stringify(w.sent.map((body) => body.messages))}`);
+  assert.deepEqual(await rootEntries(w.store, "agentrun.budget"), [pause], "one pause in the run's life");
+});
