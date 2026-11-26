@@ -191,14 +191,16 @@ export function callCostOf(entries: readonly EntryLike[], callId: string, from: 
 
 /** The turns of the requests call `callId` booked, by callCostOf's rule: each request whose record names it or one nested
  *  in it, and each of host work admitted in its window (`from` < at <= `to`; -1 for both: no window, those named alone).
- *  None: nothing was booked under the call. */
-export function callTurnsOf(entries: readonly EntryLike[], callId: string, from: number, to: number): Set<unknown> {
+ *  None: nothing was booked under the call. `proof`: the turns that prove the call spent (workflow-calls.ts bookedUnder),
+ *  not its price: a harness's own side request (`side` with no host label: a CLI's request on another model, its title or
+ *  summary helper, proxy.ts) is left out, as it is never the call's. */
+export function callTurnsOf(entries: readonly EntryLike[], callId: string, from: number, to: number, proof = false): Set<unknown> {
   const keyed = sessionConversations(entries);
   const hosted = new Set([keyed.get(TOOL_SESSION), keyed.get(DECISION_SESSION)].filter((one) => one !== undefined));
   const ours = (e: EntryLike, at: number) => {
     const d = (e.data ?? {}) as { call?: unknown; host?: unknown; side?: unknown };
     if (typeof d.call === "string" && (d.call === callId || d.call.startsWith(`${callId}/`))) return true;
-    return at > from && at <= to && (typeof d.host === "string" || d.side === true || hosted.has(Number(e.conversationId)));
+    return at > from && at <= to && (typeof d.host === "string" || (d.side === true && !proof) || hosted.has(Number(e.conversationId)));
   };
   return new Set(entries.flatMap((e, at) => (e.kind === RUNNER_RECORDS.request && ours(e, at) ? [turnOf(e)] : [])));
 }
