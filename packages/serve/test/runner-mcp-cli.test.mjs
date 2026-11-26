@@ -27,6 +27,7 @@ const { KINDS } = await import("../dist/runner/journal-kinds.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { TOOL_UNMETERED } = await import("../dist/timeline/index.js");
 const { mcpForClaim } = await import("../dist/runner/mcp-run.js");
+const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
 const { adapterRunGate } = await import("../dist/runner/adapter-run-spec.js");
 const { STOPPED_WHILE_WAITING } = await import("../dist/refusal-words.js");
 const { CODEMODE } = await import("../dist/meta-tool-names.js");
@@ -123,7 +124,7 @@ async function cliRun(t, { settings = {}, grants = ["mcp:fake/add"], before, gat
   const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mcp-cli-work-"));
   t.after(() => rmSync(work, { recursive: true, force: true }));
   const loop = createAdapterLoop(async (claim, run) => {
-    const mcp = await mcpForClaim({ loopback: true, claim, store, sealKey: KEY, grants, harness: run.harness, work: () => work });
+    const mcp = await mcpForClaim({ redact: heldRedactor(keepText), loopback: true, claim, store, sealKey: KEY, grants, harness: run.harness, work: () => work });
     return {
       adapter: bridgeCli(seen),
       session: { key: "root", label: "root", system: [], tools: [lookup], context: "fresh" },

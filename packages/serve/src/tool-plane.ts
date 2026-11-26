@@ -264,7 +264,8 @@ const searchesOwn = (resolves: string, facts: AdapterFacts | undefined): boolean
 const ranksOwn = (resolves: Resolution, input: ResolveInput): boolean => searchesOwn(resolves, input.facts);
 
 /** The server's settings that are a ceiling an agent's pick cannot raise: web_fetch `kernel` keeps every URL on the
- *  server; web_search `native` keeps every query with the harness's own search, and `off` sends none. Under one, an
+ *  server; web_search `native` sends every query to the harness's own search, and `off` sends none (Jev, where it is
+ *  on, still sees a kernel fetch's page or a native pi search's results: web-run.ts jevWebOf). Under one, an
  *  agent's pick that would send anywhere but the ceiling's own resolves as the server's setting does: a keyless third
  *  party (Firecrawl, Exa), Parallel even when the agent names it, and under `off` a native search even when the agent
  *  names it (ceilingOver). An operator who wants Parallel sets it server-wide; that is no ceiling. */
@@ -810,6 +811,9 @@ export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, ag
     const pick = name as Pickable;
     const own = agent.overrides?.[pick]?.provider;
     const server = settings[pick]?.provider;
-    return { ...shown, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]! };
+    // The server's setting a ceiling over the agent's own pick (ceilingOver): the pick named past it, or what the pick
+    // would resolve to with no server setting past it. `resolved` is then the server's, and `ceiling` says why.
+    const ceiling = own === undefined ? undefined : ceilingOver(pick, server, own, planeFor(env, agent, { ...settings, [pick]: { ...settings[pick], provider: undefined } })[pick]);
+    return { ...shown, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]!, ...(ceiling ? { ceiling } : {}) };
   });
 }

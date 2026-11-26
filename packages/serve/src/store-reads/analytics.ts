@@ -28,12 +28,19 @@ export type StoreAnalytics = {
   byDay: Array<AnalyticsGroup & { day: string }>;
   bySource: Array<AnalyticsGroup & { source: "live" | ImportSource }>;
   tools: Array<{ tool: string; calls: number; errors: number }>;
+  /** The imported runs' cache, summed (import.ts RunCache): how many runs were analyzed, their cache read and whole
+   *  prompt (the hit rate's parts), breaks by cause, extra cost by cause (USD) and unpriced breaks. A run imported
+   *  before the import analyzed it, or of a source with no chain, is in no figure here. */
+  cache: StoredCache & { runs: number };
 };
+
+/** A run's cache as the import keeps it in the run's metrics (import.ts RunCache). */
+type StoredCache = { read: number; prompt: number; breaks: Record<string, number>; extraCost: Record<string, number>; unpriced: number };
 
 /** A run's metrics as the end commit wrote them (the row's JSON): what analytics sums. */
 type StoredMetrics = {
   input?: number | null; cacheRead?: number | null; cacheWrite?: number | null; output?: number | null; requests?: number | null; unmetered?: number | null;
-  activeMs?: number; effort?: string; tools?: Record<string, { calls?: number; errors?: number }>;
+  activeMs?: number; effort?: string; tools?: Record<string, { calls?: number; errors?: number }>; cache?: Partial<StoredCache>;
 };
 
 const num = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
@@ -197,6 +204,20 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
   }
   const tools = [...calls.entries()].map(([tool, c]) => ({ tool, calls: c.calls, errors: c.errors })).sort((a, b) => b.calls - a.calls || (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : 0)).slice(0, 20);
 
+  // The cache over the runs in scope that keep one, ended (an import writes its run ended).
+  const cache: StoreAnalytics["cache"] = { runs: 0, read: 0, prompt: 0, breaks: {}, extraCost: {}, unpriced: 0 };
+  for (const f of notPending) {
+    const kept = f.metered ? f.metrics?.cache : undefined;
+    if (!kept || typeof kept !== "object") continue;
+    cache.runs += 1;
+    cache.read += num(kept.read);
+    cache.prompt += num(kept.prompt);
+    cache.unpriced += num(kept.unpriced);
+    for (const [cause, n] of Object.entries(kept.breaks ?? {})) cache.breaks[cause] = (cache.breaks[cause] ?? 0) + num(n);
+    // Summed in micro-dollars: USD figures of six places added as floats drift.
+    for (const [cause, usd] of Object.entries(kept.extraCost ?? {})) cache.extraCost[cause] = Math.round(((cache.extraCost[cause] ?? 0) + num(usd)) * 1e6) / 1e6;
+  }
+
   const totalsGroup = counted(facts);
   return {
     totals: { ...totalsGroup, input:unknownTokens.has('input')?null:input, cacheRead:unknownTokens.has('cacheRead')?null:cacheRead, cacheWrite:unknownTokens.has('cacheWrite')?null:cacheWrite, output:unknownTokens.has('output')?null:output, requests: unknownRequests ? null : requests, unmetered: unknownRequests ? null : unmetered },
@@ -205,5 +226,6 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
     byDay,
     bySource,
     tools,
+    cache,
   };
 }
