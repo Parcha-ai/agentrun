@@ -108,6 +108,9 @@ const cutId = (runId: string, at: string, rule: string, ordinal: number): string
 /** An RFC 6901 pointer's token for `key`. */
 const token = (key: string | number): string => String(key).replace(/~/g, "~0").replace(/\//g, "~1");
 
+/** What a string is cut knowing: its call's (CallContext), and whether it is lines flattened onto one (the run's title). */
+type CutContext = CallContext & { readonly flattened?: true };
+
 /** The run's allowlisted view: SHARE_RUN_FIELDS (those it has), and `imported_from` with its `source` alone. */
 function runOf(view: Readonly<Record<string, unknown>>): Record<string, unknown> {
   const run: Record<string, unknown> = {};
@@ -205,7 +208,7 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   const restored: RestoredRecord[] = [];
   const seen = new Map<string, boolean>(); // every cut's id: whether it is restorable
   // `restoring` false: every cut stays cut, whatever the restore names (the files' choice, below).
-  const cutString = async (text: string, at: string, context?: CallContext, restoring = true): Promise<string> => {
+  const cutString = async (text: string, at: string, context?: CutContext, restoring = true): Promise<string> => {
     // keep() is asked of restorable cuts alone, in the order of the string's cuts; a rule's cuts are all of one kind, so
     // counting a rule's cuts here gives the ordinals the records below are named by.
     const asked = new Map<string, number>();
@@ -216,7 +219,7 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
     };
     let result: ScrubResult;
     try {
-      result = await cutPass(text, { mode: "cut", held: input.held, keep, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.command !== undefined ? { command: context.command } : {}) });
+      result = await cutPass(text, { mode: "cut", held: input.held, keep, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.command !== undefined ? { command: context.command } : {}), ...(context?.flattened ? { flattened: true } : {}) });
     } catch {
       throw new ExportFailed("a scrub threw");
     }
@@ -265,8 +268,11 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
     const context = effectContext(effect);
     return context === undefined ? walk(effect, at) : each(effect, at, (item, here, key) => walk(item, here, key === "output" ? context : undefined));
   };
+  // The run's title is its first message flattened onto one line (runs-over-store.ts prepareLaunch): it is cut as such,
+  // so a transcript's env command and its output, one line there, is still a dump (secret-cut.ts ScrubOptions.flattened).
   const walkPart = (key: string, value: unknown, at: string): Promise<unknown> =>
-    key === "rows" ? each(value, at, walkRow)
+    key === "run" ? each(value, at, (item, here, field) => (field === "title" && typeof item === "string" ? cutString(item, here, { flattened: true }) : walk(item, here)))
+      : key === "rows" ? each(value, at, walkRow)
       : key === "graph" ? each(value, at, (item, here, field) => (field === "effects" ? each(item, here, walkEffect) : walk(item, here)))
       : walk(value, at);
   // A file's content is cut knowing its path (a .env* file or one under ~/.ssh is dropped whole); then its bytes and digest

@@ -47,6 +47,8 @@ export type ScrubContext = {
   /** The shell command whose output the text is, when the caller knows it (ruling LVI): an env command's output is a
    *  dump though the command stands in no line of the text. */
   readonly command?: string;
+  /** The text is lines flattened onto one (a run's title): a prompt mid-line opens a command (flatDumps). */
+  readonly flattened?: boolean;
   readonly lint: () => Promise<readonly LintFind[]>;
   /** Where the line holding an offset starts and ends: a line break, or a JSON string's own quote the view decoded
    *  (ruling XXVIII). Absent: line breaks alone. */
@@ -2658,6 +2660,33 @@ function wholeDump(text: string): Hit[] {
 /** A command's output, given apart from its command (ruling LVI): all of it is a dump when the command prints the
  *  environment or a variable's value, alone on its line or among others. An approval outcome's head line is cut with
  *  it (ruled so: never split on run-view's words). */
+/** A prompt inside a line flattened from many (a run's title): one PROMPT_HEAD opens, after a blank or at the start. */
+const FLAT_PROMPT = /(?<=^|\s)(?:\([^()\n]{1,64}\)[ \t]{1,3})?(?:[$%❯]|(?:[A-Za-z0-9_.-]{1,64}@[A-Za-z0-9_.-]{1,128}:[^\s]{0,256}|\[[^\]@\n]{1,64}@[^\]\n]{1,192}\])[$#])[ \t]{1,3}(?=\S)/g;
+const FLAT_WORD = /\S{1,4096}/g;
+/** The most words a flattened command is read for before its output's first NAME=value. */
+const FLAT_COMMAND_WORDS = 16;
+/** A transcript flattened onto one line (11-26: a run's title is its first message with every run of blanks one
+ *  space, so `$ printenv\nHOME=/root\n...` reads `$ printenv HOME=/root ...`): after each prompt, the fewest words that
+ *  print the environment (printsEnvironment) followed by a NAME=value word (ENV_LINE) are the command, and from that word
+ *  to the next prompt or the text's end is its output, cut. Where a flattened command ends can't be told from its
+ *  output's first word, so `$ env NAME=value command` is cut there too: an over-cut, fails closed, and only for a text
+ *  its caller says was flattened. */
+function flatDumps(text: string): Hit[] {
+  const prompts = [...text.matchAll(FLAT_PROMPT)];
+  const out: Hit[] = [];
+  for (const [at, prompt] of prompts.entries()) {
+    const from = prompt.index + prompt[0].length;
+    const segment = text.slice(from, at + 1 < prompts.length ? prompts[at + 1]!.index : text.length).trimEnd();
+    const words = [...segment.matchAll(FLAT_WORD)];
+    for (let next = 1; next < words.length && next <= FLAT_COMMAND_WORDS; next++) {
+      const head = words[next]!.index;
+      if (!ENV_LINE.test(segment.slice(head)) || !printsEnvironment(segment.slice(0, head).trimEnd())) continue;
+      out.push({ start: from + head, end: from + segment.length });
+      break;
+    }
+  }
+  return out;
+}
 const commandDumps = (text: string, given: string | undefined): Hit[] => (given !== undefined && given.trim() !== "" && printsEnvironment(given) ? wholeDump(text) : []);
 
 const PATH_SEPARATOR = /[\\/]/;
@@ -2887,7 +2916,7 @@ export const SCRUB_RULES: readonly ScrubRule[] = Object.freeze([
   rule("base64-pem", "format", (text, ctx) => base64Pems(nestedBlanked(text, ctx?.source), linesOfContext(text, ctx))),
   SECRETLINT,
   HELD,
-  rule("env-dump", "dump", (text, ctx) => [...envDumps(text), ...commandDumps(text, ctx.command)]),
+  rule("env-dump", "dump", (text, ctx) => [...envDumps(text), ...commandDumps(text, ctx.command), ...(ctx.flattened ? flatDumps(text) : [])]),
   rule("env-file", "dump", (text, ctx) => [...wholeText(text, ctx, envFilePath), ...fileReads(text, envFilePath, (body) => ENV_FILE_LINE.test(body))]),
   rule("credential-file", "dump", (text, ctx) => [...wholeText(text, ctx, credentialFilePath), ...fileReads(text, credentialFilePath, (body) => notPrompt(body) && notMarker(body))]),
   // A key file read (authorized_keys, known_hosts, a key) or a config read is a dump; key lines printed with no read
@@ -2936,7 +2965,7 @@ export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_BEGIN, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, BARE_STOP, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
   UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, NPM_COMMAND, NPM_SET_SCAN, NPM_SET_AUTH, NPM_AUTH_KEY, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, PASSWORD_FLAG, LOGIN_COMMAND,
   REDIS_COMMAND, LOGIN_SCAN, LOGIN_P, REDIS_SCAN, REDIS_A, MYSQL_SCAN, MYSQL_P, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_SCAN, CURL_USER, GLUED_STOP, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
-  ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, COMMAND_QUOTES, COMMAND_SPLIT, COMMAND_BLANKS, REDIRECT_WORD, REDIRECT_ALONE, WORD_REDIRECT, ENV_TOKEN_BREAK, DOT_ENV_FILE, MEMBER_BREAK, ENV_WORD, VARIABLE_WORD, XTRACE_FLAG, HERE_INPUT, PRINT_FLAG, PS_ENV_OPTION, HEROKU_CONFIG, PROMPT_HEAD, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
+  ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, COMMAND_QUOTES, COMMAND_SPLIT, COMMAND_BLANKS, REDIRECT_WORD, REDIRECT_ALONE, WORD_REDIRECT, ENV_TOKEN_BREAK, DOT_ENV_FILE, MEMBER_BREAK, ENV_WORD, VARIABLE_WORD, XTRACE_FLAG, HERE_INPUT, PRINT_FLAG, PS_ENV_OPTION, HEROKU_CONFIG, PROMPT_HEAD, FLAT_PROMPT, FLAT_WORD, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
   CREDENTIAL_FILE, FILE_VARIABLE, ENV_FILE_LINE, KEY_LINE, SSH_CONFIG, COMMENT_LINE, PEM_LINE, BASE64_LINE, PEM_HEADER_LINE, HOME_UNIX, HOME_WINDOWS, SEGMENT_AFTER,
   TRAILING_SLASHES, HOME_USER, CLAUDE_SLUG, CLAUDE_PROJECTS_BEFORE, SLUG_OFF_CHARS, SLUG_USER, BOT_TRAILER, DUMP_MARKER_LINE, EMAIL, EXAMPLE_DOMAIN, NO_REPLY_LOCAL, NO_REPLY_DOMAIN, FORGE_NO_REPLY, USER_ONLY_BEFORE, PORT_PASSWORD, HOST_SHAPED, IPV4, VERSION_BEFORE, PRE_RELEASE_AFTER,
   BUILD_AFTER, RANGE_AFTER, IPV6, IPV6_GROUPS, ENV_PREFIX_BEFORE, ENV_PREFIX_AFTER, ENV_PREFIX_CHAIN, ENV_PREFIX_STATEMENT, ENV_FLAG, HELM_LIST_FLAG, HELM_SET, HELM_NAME, RESOURCE_NAME, SECRET_OBJECT_NAME, CONNECTION_PASSWORD, ADO_PAIR, CONNECTION_KEY_PAIR, BLANKS, LIBPQ_PAIR_AFTER, FORMAT_FIELD, PWD_PATH, QUERY_VALUE_STOP, QUERY_PASSWORD, ARGUMENT_TAIL, NEXT_ASSIGNMENT, ASSIGNMENT_BEFORE,

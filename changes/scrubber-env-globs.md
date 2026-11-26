@@ -11,3 +11,5 @@ The env-dump reader now also catches:
 - `ps` with an uppercase `E` (`ps auxE`, `ps -E`).
 
 A transcript's cut now also starts and ends at a full PS1 prompt: `user@host:~$`, `root@c:/#`, `[user@host dir]$`, with or without a `(venv) ` prefix.
+
+A shared run's title now gets the same env-dump cut. The title is the first message on one line, so `$ printenv` and its `NAME=value` output sat on the same line there and were shared uncut. The export now cuts the title as a flattened transcript: after a prompt, the command that prints the environment keeps its words and everything from its first `NAME=value` to the next prompt is cut. Only the title is read this way; a row or file keeps reading `$ env NAME=value command` as a command.
