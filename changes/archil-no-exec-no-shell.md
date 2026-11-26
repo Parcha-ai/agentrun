@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+On a Mode 2 server whose Archil region has no serverless exec (`gcp-us-central1`), a new agent that names `bash` (or another shell tool) and no computer is refused at its save or deploy and told to name a sandbox computer, instead of being saved with a shell that never runs (every bash call failed with "Exec is not enabled"). A new agent that names no tools is not refused: it saves on the runner with no tools, as Mode 2 always saved it. An agent already saved with `bash` and no computer is now refused at each run, `409 agent_not_runnable` at `definition.computer` in the same words, and no run starts; this holds for runs started by hand, by a schedule and by a trigger, and is intended: bash cannot run there, so give the agent a sandbox computer or remove `bash` from its tools. Capabilities' `places.default_place` is null there with a `default_reason` saying why, bash shows unavailable, and `GET /v2/computers` gives the no-computer choice no shell. Servers on Archil's AWS regions, and on a region serve doesn't know, are unchanged.
