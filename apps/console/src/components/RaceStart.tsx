@@ -10,7 +10,7 @@ import { keepersByRun } from "@/lib/idempotency";
 import type { Places } from "@/lib/place";
 import { type LaneChoice, laneKit, type LaneStart, laneStart, MAX_LANES, MIN_LANES, newRaceLabel, raceFilter } from "@/lib/race";
 import { cn } from "@/lib/utils";
-import type { Run } from "@/lib/v2";
+import type { ComputerKindView, Run } from "@/lib/v2";
 
 /** A harness as capabilities list it: whether it runs here, and the models a person may pick for it. */
 type RaceHarness = { id: string; available: boolean; default_model?: string | null; models?: string[] };
@@ -34,10 +34,12 @@ function firstPick(runnable: RaceHarness[], i: number): LaneChoice {
   return { harness: h.id, model: models[(start + Math.floor(i / runnable.length)) % models.length] };
 }
 
-/** Whether `e` is the server saying no, nothing started: a 4xx with its error object, other than an idempotency answer
- *  (a start under this key it may still be making). A lost answer, a timeout or a 5xx may have started the run. */
+/** Whether `e` is the server saying no, nothing started: a 4xx with its error object that isn't retryable, and isn't an
+ *  idempotency answer (a start under this key it may still be making). A retryable answer may follow a saved run: a
+ *  busy store (home_busy) can answer after the run was saved, and Start sends the same request again to find it. A lost
+ *  answer, a timeout or a 5xx may have started the run too. */
 const refused = (e: unknown): e is ClientError =>
-  e instanceof ClientError && e.status >= 400 && e.status < 500 && e.code !== "http_error" && !e.code.startsWith("idempotency_");
+  e instanceof ClientError && e.status >= 400 && e.status < 500 && e.code !== "http_error" && !e.retryable && !e.code.startsWith("idempotency_");
 
 /** Makes a lane's agent, or finds it made, and answers its first revision, the one the lane's run runs. Its id is already
  *  here only when an earlier send of this same lane made it (laneStart), so its version 1 is that send's definition,
@@ -66,9 +68,26 @@ const pickKey = (n: number, agent: Pick<LaneStart["agent"], "harness" | "model" 
  *  server refuses says why in its own place and the others start all the same. Once every lane has a run it opens the
  *  race (#/races/<label>). A second Start sends only the lanes left, each as it was sent, so no lane ever starts twice.
  *  `label`: the race's (a test's), else a new one (newRaceLabel). `tools` and `places`: capabilities' tool offers and
- *  places, which give each lane a new agent's tools and box (laneKit). */
-export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { v2: Pick<Client, "createAgent" | "listRevisions" | "startRun" | "archiveAgent">; harnesses: RaceHarness[]; tools: ToolOffer[]; places: Places | null; go: (to: string) => void; label?: string }) {
+ *  places, which give each lane a new agent's tools and box (laneKit), with the computers list (GET /v2/computers, read
+ *  here, and waited for by Start), whose no-computer choice's shell says what a lane on the runner runs there. */
+export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { v2: Pick<Client, "createAgent" | "listRevisions" | "startRun" | "archiveAgent" | "computers">; harnesses: RaceHarness[]; tools: ToolOffer[]; places: Places | null; go: (to: string) => void; label?: string }) {
   const runnable = harnesses.filter((h) => h.available && choices(h).length > 0);
+  // The computers list (null while it is read), whose no-computer choice's shell fixes a lane's shell tools when its agent
+  // is made: a race never starts without it. A Start pressed before it answers waits for it, and one that fails to read
+  // says why and is read again on the person's word (`reads` counts the reads asked for).
+  const [computers, setComputers] = useState<{ kinds: ComputerKindView[] } | { failed: string } | null>(null);
+  const [reads, setReads] = useState(0);
+  useEffect(() => {
+    let live = true;
+    setComputers(null);
+    v2.computers().then((r) => { if (live) setComputers({ kinds: r.kinds }); }, (e: unknown) => { if (live) setComputers({ failed: e instanceof Error ? e.message : String(e) }); });
+    return () => { live = false; };
+  }, [v2, reads]);
+  const [waiting, setWaiting] = useState(false);
+  const startNow = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (waiting && computers && "kinds" in computers) { setWaiting(false); startNow.current(); }
+  }, [waiting, computers]);
   const label = useRef(given ?? newRaceLabel()).current;
   const keys = useRef(keepersByRun()).current;
   // Each pick the form has sent (pickKey), numbered in turn: the same pick is the same agent.
@@ -78,9 +97,10 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
     if (!picks.has(key)) picks.set(key, ++counted.current);
     return picks.get(key)!;
   };
-  // Each lane's agent made for a run that has not started (refused): archived when the lane is removed or picked again,
-  // and its pick forgotten, so that pick sent again makes a new agent. Best effort: an agent the archive misses stays in
-  // the Agents list, archivable there.
+  // Each lane's agent made for a run that has not started yet: archived as soon as the server refuses that run (a refusal
+  // started nothing), so a person who leaves the form keeps none of it, and its pick forgotten, so that pick sent again
+  // makes a new agent. One whose run's answer was lost is kept: its run may have started, and Start sends it again. Best
+  // effort: an agent the archive misses stays in the Agents list, archivable there.
   const idle = useRef(new Map<number, { id: string; key: string }>()).current;
   const letGo = (i: number) => {
     const made = idle.get(i);
@@ -120,13 +140,13 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   const left = lanes.map((_, i) => i).filter((i) => !(outcomes[i] && "run" in outcomes[i]));
   // A lane picked again after a refusal drops the refusal's words: they were about the pick it had.
   const pick = (i: number, lane: LaneChoice) => {
-    letGo(i);
     setLanes((all) => all.map((l, j) => (j === i ? lane : l)));
     setOutcomes((all) => Object.fromEntries(Object.entries(all).filter(([j]) => Number(j) !== i)));
   };
 
+  const kinds = computers && "kinds" in computers ? computers.kinds : null;
   const fresh = (i: number) => {
-    const kit = laneKit(lanes[i].harness, tools, places);
+    const kit = laneKit(lanes[i].harness, tools, places, kinds);
     return laneStart(label, i + 1, lanes[i], task.trim(), capUsd, kit, pickOf(pickKey(i + 1, { ...lanes[i], tools: kit.tools })));
   };
   const opened = (all: Record<number, Outcome>, count: number) => Array.from({ length: count }, (_, i) => all[i]).every((o) => o && "run" in o);
@@ -136,7 +156,6 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   const removable = !last || "error" in last;
   const remove = () => {
     const count = lanes.length - 1;
-    letGo(count);
     const kept = Object.fromEntries(Object.entries(outcomes).filter(([j]) => Number(j) < count));
     setLanes((all) => all.slice(0, count));
     setOutcomes(kept);
@@ -146,6 +165,7 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   const start = async () => {
     setAsked(true);
     if (busy.current || taskMissing || capWrong || lanes.length < MIN_LANES) return;
+    if (!kinds) { setWaiting(true); return; }
     busy.current = true;
     setSending(true);
     const done = await Promise.all(left.map(async (i): Promise<[number, Outcome]> => {
@@ -160,7 +180,9 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
         idle.delete(i);
         return [i, { run }];
       } catch (e) {
-        return [i, refused(e) ? { error: e.message } : { unsure: sent }];
+        if (!refused(e)) return [i, { unsure: sent }];
+        letGo(i);
+        return [i, { error: e.message }];
       }
     }));
     const next: Record<number, Outcome> = { ...outcomes, ...Object.fromEntries(done) };
@@ -169,6 +191,7 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
     setOutcomes(next);
     if (mounted.current && opened(next, lanes.length)) go(`#/races/${encodeURIComponent(label)}`);
   };
+  startNow.current = () => { void start(); };
 
   return (
     <div className={pageClass}>
@@ -220,6 +243,12 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
           {lanes.length > MIN_LANES && !sending && removable && <Button type="button" variant="ghost" onClick={remove}>Remove lane {lanes.length}</Button>}
           {startedAny && <a className="font-mono text-small text-primary-text hover:underline" href={`#/races/${encodeURIComponent(label)}`}>Watch the race</a>}
         </div>
+        {computers && "failed" in computers ? (
+          <div role="alert" data-computers-read="" className="flex flex-wrap items-center gap-3 font-mono text-small text-destructive-text">
+            <span>This server's computers couldn't be read ({computers.failed}), so which shell tools each lane gets is unknown: the race waits for them.</span>
+            <Button type="button" onClick={() => setReads((n) => n + 1)}>Read them again</Button>
+          </div>
+        ) : waiting && <p role="status" data-computers-read="" className="text-small text-muted-foreground">Reading this server's computers, which say what each lane's shell runs: the race starts once they answer.</p>}
       </form>
       </div>
     </div>

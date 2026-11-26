@@ -1322,12 +1322,24 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
 - **Sizes are limits**, as in Docker: `cpus` (at least 0.25) becomes `cpuLimit` in physical cores (2 CPUs each) and
   `memoryMb` becomes `memoryLimitMiB`, each with Modal's default request (0.125 cores, 128 MiB) or less. `pids` and
   `workdir` are refused: Modal has no pids limit, and a computer works in `/work`, its home.
-- **Tags.** A sandbox's tags are the adapter's labels (`agentrun.computer`, its name, deadline and image, and a GPU
-  computer's GPUs; no max-deadline, which only `extend` reads) and the caller's. Modal takes 10 tags, 512 bytes of them, names and
-  values together (the host's `labels`): the adapter's `check()` counts them as create gives them, its own at their
-  longest, and refuses past either in words with no call; create refuses the same words first. An Archil computer's mount label records the
-  folder's agent alone, as on every host: the folder's run is the `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal still
-  lists after its terminate is polled and left out once `poll()` reads it finished.
+- **Tags.** A sandbox's labels are the adapter's (`agentrun.computer`, its name, deadline and image, and a GPU
+  computer's GPUs; no max-deadline, which only `extend` reads) and the caller's. Modal takes 10 tags, 512 bytes of them,
+  names and values together, and a computer with a mount, a network list and a run's labels passes 512 bytes as they
+  are, so the adapter keeps them packed (the host's `labels.packed`): two tags, `agentrun` with the computer's name and
+  `agentrun-0` with the labels deflated, and get and list answer them unpacked. `check()` packs them as create gives
+  them, its own at their longest, and refuses in words with no call where the packed tags pass either bound; create
+  refuses the same words first. A sandbox made before the tags were packed carries its labels as tags, and reads as
+  them (`labels.packed.unpacked`): a listing by name asks for the labels as given beside the packed name, within the
+  one bound, so a request that made one sandbox of each form across an upgrade has both seen. The upgrade is one-way: a
+  server from before the change asks for the labels as given alone, so its retry of a create can make a second sandbox
+  beside a packed one. A newer server's create of that request keeps the older of the two only while the two creates
+  race, its own reads of the name after its sandbox is made seeing both; a later create of that request that finds both
+  already there refuses as `exists`, naming both ids, and keeps both. The extra sandbox then lasts until it is deleted
+  or Modal ends it at its lifetime. Upgrade every server that shares a Modal app together to avoid it. A caller's label
+  named `agentrun` or `agentrun-<n>` is refused in words, on every hosted computer: those names hold the packed labels.
+  An Archil computer's mount label records the folder's agent alone, as on every host: the folder's run is the
+  `agentrun.run` label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only,
+  and one Modal still lists after its terminate is polled and left out once `poll()` reads it finished.
 - **release** `delete` is `terminate()`, and the adapter waits until get answers none (`poll()` reads it finished).
   `stop` is refused as `unsupported`: terminate is a sandbox's only end.
 - **GPU.** `capabilities().gpu` declares Modal's GPU types by its own names (guide/gpu): `T4`, `L4`, `A10`, `L40S`,
@@ -2641,11 +2653,18 @@ has ended on its own (its timeout), leaves its request refused `exists`: the pro
 aborted it) never sends a second create: each POST also writes `agentrun.attempt` (`ATTEMPT_LABEL`), a random value of
 its own, and a lost create finds the browsers carrying its attempt label as list does, in every state not ended, under
 a signal of its own, releases each under it, and its failure says so; that request is then refused `exists`. Every
-release a create runs for itself (this one, the newer browser's, and the one after an abort) is bounded by the
+release a create runs for itself (this one, the newer browser's, the one after an abort, and that of a browser the
+vendor made with no usable CDP URL) is bounded by the
 provider's `cleanupMs` option (default `RECOVER_MS`, 30 s), never by the caller's signal: one that does not finish in
 time fails the create in words that say the browser may still be running, and a retry is answered as above, never
 stuck behind it. Another create's browser of the same request, even one another process answered, carries another attempt
-label and is left running. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own:
+label and is left running. A lost create's own browser is left running too, for another create's converge and to its
+lifetime, when it is the oldest of the request's that runs and the request's browsers, ended ones included, hold a
+newer one: only another create made that one, and its converge answers the older. Browserbase is asked status by
+status in a session's own order (pending, then running, then the ended ones), so a session that moves on while a
+list runs is found in a later answer, never missed; Kernel answers every state in one list. Where the lost create's browser is
+the request's only one it is released, even when another process's create answered it by its lookup: nothing on the
+vendor says so. A 4xx refusal made nothing, so nothing is looked for. Both labels are the provider's own:
 `check()` refuses them in a spec, and no list or attach shows them.
 
 The conformance CLI runs the browser case set for a provider of kind browser: the health cases, then `browser.*`

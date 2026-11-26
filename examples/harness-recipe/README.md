@@ -1,8 +1,11 @@
 # A harness recipe: Google Antigravity
 
-`antigravity.json` is a recipe ([HARNESS.md](../../HARNESS.md#a-recipe)) for Google's agy CLI 1.5.14 as an ACP agent
-(`agy acp`), the way [T3 Code](https://github.com/pingdotgg/t3code) runs it. No AgentRun code is Antigravity's own:
-the recipe is all of it.
+[`antigravity.json`](../../packages/run-adapters-acp/recipes/bundled/antigravity.json) is a recipe
+([HARNESS.md](../../HARNESS.md#a-recipe)) for Google's agy CLI 1.5.14 as an ACP agent (`agy acp`), the way
+[T3 Code](https://github.com/pingdotgg/t3code) runs it. No AgentRun code is Antigravity's own: the recipe is all of it.
+AgentRun ships it with the ACP adapter (`@parcha/agentrun-harness-acp`), so every command takes its name, `antigravity`,
+where it takes a recipe file. Each one says which recipe it resolved. A file named `antigravity` in the directory you
+run it from is never passed over: the command is refused, saying both, and `./antigravity` names your file.
 
 What each part does:
 
@@ -35,27 +38,28 @@ What each part does:
 ## Use it
 
 ```sh
-agentrun harness install --recipe examples/harness-recipe/antigravity.json
-ANTIGRAVITY_GEMINI_API_KEY=... agentrun harness-check --recipe examples/harness-recipe/antigravity.json
+agentrun harness install antigravity
+ANTIGRAVITY_GEMINI_API_KEY=... agentrun harness-check --recipe antigravity
+agentrun-serve --harness-recipe antigravity
 ```
 
-The install downloads about 100 MB. `harness-check` runs on `ANTIGRAVITY_GEMINI_API_KEY` and never on a sign-in. It
-takes no `--model` for a plan-billed agent: it runs on the agent's default model, or on `model.id` when the recipe names
-one.
+The install downloads about 100 MB, which unpacks to one binary of about 270 MB (linux-x86_64). `harness-check` runs on
+`ANTIGRAVITY_GEMINI_API_KEY` and never on a sign-in. It takes no `--model` for a plan-billed agent: it runs on the
+agent's default model, or on `model.id` when the recipe names one. The server's runs of it go on the key saved for it
+alone in Settings → Harness keys (`agentrun harness keys` prints the link,
+[Its keys](../../HARNESS.md#its-keys)).
 
-A server saves no harness's keys yet, so a server runs this recipe only on your own machine, on your own Google
-sign-in, for the runs you start yourself:
+On your own machine alone, your own runs can go on your own Google sign-in instead:
 
 ```sh
-agentrun harness sign-in --recipe examples/harness-recipe/antigravity.json
-agentrun-serve --harness-recipe examples/harness-recipe/antigravity.json --harness-sign-in
+agentrun harness sign-in --recipe antigravity
+agentrun-serve --harness-recipe antigravity --harness-sign-in
 ```
 
 The sign-in warns once that Google's terms may not cover use through AgentRun, then prints a Google address: open it in
 any browser, sign in, and paste the code back into the terminal. `--harness-sign-in` refuses to start a server that is
 not yours alone on your machine ([Run it](../../HARNESS.md#run-it)). An agent with `"harness": "antigravity"` then runs
-on it. Never share the sign-in or the server's runs on it. A scheduled or triggered run is refused until a harness's
-own keys can be saved on a server.
+on it. Never share the sign-in or the server's runs on it.
 
 ## Checked
 

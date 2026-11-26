@@ -34,14 +34,12 @@ import { isWebHostTool } from "../tool-list.js";
 import { type ArgumentsOf, deniedText, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom, type ToolEffect } from "../tool-gate.js";
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
-import { ASK_TOOL, askPerson, type EmailFake, type ToolEntry, type ToolHost, toolOf } from "../tools.js";
+import { ASK_TOOL, askPerson, type EmailFake, type ToolEntry, type ToolHost, toolOf, webAnswerCut } from "../tools.js";
 import type { SaveSlots } from "../web-save.js";
 import type { WebFake } from "../web-fake.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
-import { webCut } from "../timeline/web-calls.js";
-import { withheldWhole } from "../key-refusal.js";
 import { environmentLine, runZone } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
@@ -78,7 +76,7 @@ import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { replayCallsOver } from "./promotion.js";
 import { type LearnedFirst, learnedFirstWhereHeld } from "./learned-first.js";
 import type { ReplayCalls } from "../learn/replay-calls.js";
-import { servedOf } from "./workflow-first.js";
+import { servedOf, workflowDigest } from "./workflow-first.js";
 import { AUDIT_PARKED, withAudit } from "./audit.js";
 import { runPathMetricsOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
@@ -92,7 +90,7 @@ import { computerTurnedOff, hadComputer, recordComputerOff, type RunComputerHold
 import type { KeptKind, MadeKind, Replaced } from "../workspace/computer-for-claim.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
-import { type HeldRedact, heldRedactor, holdClaimed, type Redact, runnerSecrets, secretRedactor } from "./redact.js";
+import { type HeldRedact, holdClaimed, mustHold, type Redact, runnerSecrets } from "./redact.js";
 import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
@@ -442,7 +440,7 @@ export type RunPermissions = {
   readonly refresh: () => Promise<void>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined; readonly turnedOff?: boolean; readonly onComputerOff?: (kind: string) => Promise<void> }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void; readonly computerOff: () => boolean; /** Whether the run can write a file now, as its gate decides a save_as (RunGate.writeBar): what its files note and computer_screenshot's save_as are offered by. */ readonly writes: () => boolean }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined; readonly turnedOff?: boolean; readonly onComputerOff?: (kind: string) => Promise<void> }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void; readonly computerOff: () => boolean; /** Whether the run can write a file now, as its gate decides a save_as (RunGate.writeBar): what its files note and computer_screenshot's save_as are offered by. */ readonly writes: () => boolean; /** The computer ops the gate refuses for a tool the agent is not given (RunGate.opsNotGiven): what computer_op and a script's `computer` leave out. */ readonly opsNotGiven: () => readonly string[] }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -541,10 +539,17 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     if (asks.length && !approvers) return refused(noApproverText(asks[0]!.tool, "no"));
     return asks.length ? { ask: learnedAskShown(asks) } : decision;
   };
+  /** The learned workflow of the run's a learned_workflow call's arguments name, if any. */
+  const flowOf = (args: unknown) => learned.find((one) => one.name === (args as { name?: unknown } | undefined)?.name);
   /** The MCP actions the learned workflow a learned_workflow call names can call; none for another call or workflow. */
   const mcpOf = async (args: unknown): Promise<LearnedAction[]> => {
-    const flow = learned.find((one) => one.name === (args as { name?: unknown } | undefined)?.name);
+    const flow = flowOf(args);
     return flow ? learnedMcpCalls(flow.workflow) : [];
+  };
+  /** That workflow's name and digest (SpecGate.learnedOf): what the record of a call of it the gate refuses names. */
+  const learnedOf = (args: unknown) => {
+    const flow = flowOf(args);
+    return flow ? { workflow: flow.name, digest: workflowDigest(flow) } : undefined;
   };
   // An ask is named as main's pending approval is (RunGate.askedAs: its settings key), beside the decision, which is
   // unchanged. The permissions are the learned workflow's (main's toolGate.policy and denyFrom), over the same settings.
@@ -556,7 +561,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     current = await storeSettings(store);
     return current.unreadable ? "deny" : gate.policy(tool);
   };
-  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), askedOn: (made: ToolHost) => void (host = made), computerOff: () => gate.computerOff !== undefined, writes: () => gate.writeBar() === undefined });
+  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learnedOf, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), askedOn: (made: ToolHost) => void (host = made), computerOff: () => gate.computerOff !== undefined, writes: () => gate.writeBar() === undefined, opsNotGiven: () => gate.opsNotGiven() });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
@@ -578,13 +583,14 @@ export function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, dep
 }
 
 async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim, holds: SpecHolds, runner: RunnerHarness): Promise<AdapterRunSpec> {
+  mustHold(run.redact, "A pi run's spec");
   const context = BACKGROUND_CONTEXT;
   // What this claim may reach on loopback, read once for its MCP servers and its calendar_events alike (mcpReachOf).
   const reach = await mcpReachOf(deps);
   // The runner's one redactor (the loop's, LoopDeps.redact), for every text a secret could reach: the spec's log lines
-  // (a release, a workspace's end), the model route's translation and the session's model proxy. A spec built with no
-  // runner around it cuts every secret the runner's env holds. It holds the keys the claim opens (below), too.
-  const cut = heldRedactor(run.redact ?? secretRedactor(runnerSecrets(deps.env)));
+  // (a release, a workspace's end), the model route's translation and the session's model proxy. It holds the keys the
+  // claim opens (below), too.
+  const cut = run.redact;
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   holds.logTo(log);
   const runRow = await deps.store.runs.get(claim.runId);
@@ -666,7 +672,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
   // anything the spec would have to let go: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
-  // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
+  // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor. A
+  // per_run server the run was handed no credential for is left out of its tools, and its timeline says so.
   // A held run its model kept from running at its create (hold.refused) opens none: nothing can call one.
   const heldRefusal = launch.hold?.refused?.message;
   // What its gateway files (a long answer, a server's results) goes in the run's own files. In Mode 1 that is the run's
@@ -677,7 +684,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // and a call reaches it only through the session this spec returns, after `tools` is made.
   let filedIn: Workspace | undefined;
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, fakes?.web, launch) });
+  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...claimMetering(deps, fakes?.web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -939,7 +946,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
   const results: ToolResults = new Map();
-  const handTools = tools.hostTools(withKindTools(granted, tools), { results, writes: gate.writes() });
+  const handTools = tools.hostTools(withKindTools(granted, tools), { results, writes: gate.writes(), opsNotGiven: gate.opsNotGiven() });
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
   const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier) && tier !== GRADER).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
@@ -1019,7 +1026,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
   // A held run (no audits) takes none, and its runner refuses one too (run-child-host.ts heldFor).
-  const endOfRun = audits === undefined ? undefined : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  const endOfRun = audits === undefined ? undefined : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, log, redact: run.redact }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -1032,7 +1039,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     log,
     // A workflow draft's decision nodes are checked against the host's decision providers, on its keys (LS-07).
     decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, DECISION_PROVIDER_KEYS)) }),
-  }), { ...audits, launch, ...(run.redact ? { redact: run.redact } : {}) });
+  }), { ...audits, launch, redact: run.redact });
 
   return {
     adapter,
@@ -1077,8 +1084,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The run's computer as the claim made it, with the person's hold on a desktop or phone: the loop shows the hold up,
     // applies a take-over and a hand-back to it, and answers the computer call channel's rows on it.
     ...(loopComputer ? { computer: loopComputer } : {}),
-    // A desktop or a phone as a codemode script gets it: the script's `computer`, over the run's computer tools.
-    ...(tools.computer ? { scriptComputer: tools.computer } : {}),
+    // A desktop or a phone as a codemode script gets it: the script's `computer`, over the run's computer tools, its
+    // declarations without the ops the gate refuses for a tool the agent is not given.
+    ...(tools.computer ? { scriptComputer: { ...tools.computer, opsNotGiven: gate.opsNotGiven() } } : {}),
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
     // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, where
@@ -1101,7 +1109,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       // The path it took, the learned revision it ran on, its learned workflow calls and why its first choice served or
       // did not, for a run that learns (workflow-first.ts pathMetrics), by the one writer every harness's end calls
       // (runPathMetricsOverStore).
-      const path = await runPathMetricsOverStore(deps.store, claim.runId, launch, { ...(run.redact ? { redact: run.redact } : {}), choice: firstChoice.reason });
+      const path = await runPathMetricsOverStore(deps.store, claim.runId, launch, { redact: run.redact, choice: firstChoice.reason });
       // A run its learned workflow served first: that call is on the loop's record (no pi answer carries its tokens), so its
       // metrics are its booking's, as a CLI harness's run reads them: the workflow's nodes and the agent's own after a handback.
       // An MCP tool called by a hashed wire name is counted under its catalog name, as its timeline names it.
@@ -1298,28 +1306,16 @@ export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer | undefine
 }
 
 /** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). A web call's answer is cut
- *  string by string inside its JSON (timeline/web-calls.ts webCut), so what the harness stores still parses and keeps
- *  its links whole for a grader's link check; one whose strings, read joined, hold a held value no cut in place takes (a
- *  value split across two of them) is "[redacted]" (webHeld). The join is read against the values `cut` holds
- *  (key-refusal.ts withheldWhole), or through `cut` itself when it does not know them (joinCut). Each string is cut once
- *  in a call, for the join's read and the answer both. */
+ *  string by string inside its JSON (tools.ts webAnswerCut), so what the harness stores still parses and keeps its links
+ *  whole for a grader's link check; one whose strings, read joined, hold a held value split across two of them is
+ *  "[redacted]". */
 export function answersCut(tool: HostTool, cut: Redact): HostTool {
   return {
     ...tool,
     call: async (args, context) => {
       try {
         const answer = await tool.call(args, context);
-        const seen = new Map<string, string>();
-        const once = (text: string): string => {
-          let out = seen.get(text);
-          if (out === undefined) seen.set(text, (out = cut(text)));
-          return out;
-        };
-        const holds = (joined: string, parts: readonly string[]): boolean => {
-          const values = cut.heldValues?.();
-          return values ? withheldWhole(joined, values) : joinCut(joined, parts, once);
-        };
-        return { ...answer, text: webCut(tool.name, answer.text, once, holds) ?? cut(answer.text) };
+        return { ...answer, text: webAnswerCut(cut)(tool.name, answer.text) ?? cut(answer.text) };
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
@@ -1330,18 +1326,6 @@ export function answersCut(tool: HostTool, cut: Redact): HostTool {
       }
     },
   };
-}
-
-/** Whether `cut`, a redactor that does not know its values, takes from `joined` (`parts` joined by line breaks) what it
- *  does not take from the parts each read alone: a held value split across two parts. Its cut of the join whole being
- *  "[redacted]" is not enough: it reads a text longer than a piece in pieces of 8,192 characters (key-refusal.ts
- *  redactedAnswer), and a value split inside one piece withholds only that piece, the rest of the join served. It misses
- *  nothing: no value split across parts is in a part to cut, so the join's cut and the parts' differ wherever the join
- *  holds one; where nothing spans two parts they are the same, as every piece ends at whitespace or inside a run longer
- *  than a piece, and a line break ends each part. */
-function joinCut(joined: string, parts: readonly string[], cut: (text: string) => string): boolean {
-  const whole = cut(joined);
-  return whole === "[redacted]" || whole !== parts.map(cut).join("\n");
 }
 
 /** The ToolHost a run's non-hand tools bind through, the one both the pi spec and the CLI spec build: the run's folder and

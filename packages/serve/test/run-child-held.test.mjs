@@ -563,6 +563,28 @@ test("where runs have users of their own, a claude-agent run on this machine's o
   assert.equal(await stays(staysDeps(data, "agentic", "machine"), "claude-agent", launch, "run-keyed", PER_RUN_USERS), false, "its caller's own model key: never refused");
 });
 
+test("where runs have users of their own and the login is this machine's own, a run that sends no model key (a --faux runner's, a faux-pinned one, a held one) claims with no login and is never refused for it; off faux, unpinned and not held, the same claim is refused", async (t) => {
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-login-keyless-claim-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const launch = { input: {}, place: { mode: "runner" } };
+  const claimOf = (env, own) => host.staysInRunner({ ...staysDeps(data, "agentic", "machine"), env }, "claude-agent", { ...launch, ...own }, "run-own", PER_RUN_USERS);
+  await assert.rejects(claimOf({}, {}), (error) => {
+    assert.equal(error.name, "ClaimRefused", `refused for good: ${error.stack}`);
+    assert.equal(error.message, host.LOGIN_MACHINE_NEEDS_SERVER_USER);
+    return true;
+  }, "off faux, unpinned and not held: refused at the claim in LOGIN_MACHINE_NEEDS_SERVER_USER's words");
+  const claimed = {};
+  for (const [where, env, own] of SENDS_NO_MODEL_KEY) claimed[where] = await claimOf(env, own).then((place) => place, (error) => ({ refused: error.message }));
+  assert.deepEqual(claimed, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { stays: false, login: undefined }])), "a run that sends no model key reads no login at its claim: a process of its own, no login, never refused for one");
+  // Where every run is the runner's own user (AGENTRUN_RUN_USER=same): the same claim off faux stays in the runner, on the
+  // machine's login; one that sends no model key reads no login either, so it is a process of its own, not the runner's.
+  const sameUser = (env, own) => host.staysInRunner({ ...staysDeps(data, "agentic", "machine"), env }, "claude-agent", { ...launch, ...own }, "run-own", SAME_USER);
+  assert.deepEqual(await sameUser({}, {}), { stays: true }, "AGENTRUN_RUN_USER=same, off faux: it stays in the runner, on the machine's login");
+  const placed = {};
+  for (const [where, env, own] of SENDS_NO_MODEL_KEY) placed[where] = await sameUser(env, own);
+  assert.deepEqual(placed, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { stays: false, login: undefined }])), "AGENTRUN_RUN_USER=same: a run that sends no model key is a process of its own, with no login, never in the runner on it");
+});
+
 // The runners on a data folder say at their start whether their runs on the login stay in their own process
 // (claude-login-token.ts sayLoginRunner); a name the module does not export reads as undefined below.
 const loginToken = await import("../dist/claude-login-token.js").catch(() => ({}));

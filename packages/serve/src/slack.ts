@@ -301,7 +301,8 @@ export function slackMessage(type: string, data: Record<string, unknown>, { agen
     const lines = [
       `Trigger ${link(triggerUrl, name)} could not start its run${agent ? ` of ${who}` : ""}.`,
       `\`${esc(code || "error")}\`${message ? `: ${esc(message)}` : ""}`,
-      ...(data.auto_paused === true ? ["It failed too many times in a row, so it is off now: turn it on again in the console."] : []),
+      // The console's way, the CLI's and the API's: a server with no console (the API-only profile) takes the last two.
+      ...(data.auto_paused === true ? [`It failed too many times in a row, so it is off now: turn it on again in the console, with \`agentrun triggers update ${esc(str(data.trigger_id))} --enabled\`, or with \`PATCH /v2/triggers/${esc(str(data.trigger_id))}\` and \`{"enabled": true}\`.`] : []),
     ];
     return {
       text: esc(`Trigger ${name} could not start its run${code ? `: ${code}` : ""}`),

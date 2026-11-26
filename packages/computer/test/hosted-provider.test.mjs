@@ -128,6 +128,17 @@ test("check() refuses, with no host call, what no hosted computer is: open, an a
 	assert.deepEqual(fake.calls, []);
 });
 
+test("check() refuses a caller's label under a packed map's own keys (agentrun, agentrun-<n>) in words naming them, with no host call; agentrun-tool, agentrun.run and my-agentrun-0 are taken", () => {
+	const { provider, fake } = setup();
+	for (const key of ["agentrun", "agentrun-0", "agentrun-1", "agentrun-12"]) {
+		const refusals = provider.check({ ...SPEC, labels: { run: "r1", [key]: "pforged" } });
+		assert.deepEqual(refusals.map((r) => r.field), ["labels"], key);
+		assert.equal(refusals[0].message, `the label ${key} is reserved: agentrun and agentrun-<n> (agentrun-0, agentrun-1 and on) hold a computer's packed labels`);
+	}
+	for (const key of ["agentrun-tool", "agentrun.run", "my-agentrun-0", "agentrun-0x", "agentrun-"]) assert.deepEqual(provider.check({ ...SPEC, labels: { [key]: "v" } }), [], key);
+	assert.deepEqual(fake.calls, []);
+});
+
 test("a host's own rules (check) are held at check()", () => {
 	const fake = fakeHost();
 	const strict = new HostedProvider({ ...fake.host, check: (spec) => (spec.image === "bad" ? [{ field: "image", message: "not a vendor image" }] : []) }, { daemonPath: DAEMON_PATH });
@@ -2380,4 +2391,84 @@ test("the adapter reads AbortError and TimeoutError by name; a host with no erro
 		const result = await provider.connect(ref);
 		assert.equal(result.error?.code, code, name);
 	}
+});
+
+test("facts.labels.packed.unpacked: a listing by name asks for the labels as given beside the packed name, and answers only the machines that carry every one of them, though the host answers more", async () => {
+	const { listedBy } = await import("../dist/hosted/provider.js");
+	const name = "computer-0123456789ab";
+	const before = { id: "m-before", state: "running", labels: { "agentrun.computer": "1", "agentrun.computer.name": name } };
+	const other = { id: "m-other", state: "running", labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-ba9876543210" } };
+	const asked = [];
+	const host = {
+		descriptor: { id: "tight" },
+		errorCode: () => "failed",
+		facts: { labels: { count: 10, bytes: 512, packed: { unpacked: true } } },
+		// A vendor's listing may answer more than it was asked for (MachineHost.list): this one answers every machine to a
+		// listing by labels, and none to one by the packed name.
+		// A listing by name asks both ways every time.
+		async list(labels) {
+			asked.push(labels);
+			return "agentrun" in labels ? [] : [before, other];
+		},
+	};
+	const listed = await listedBy(host, "the listing by name", { "agentrun.computer": "1", "agentrun.computer.name": name }, 5_000);
+	assert.equal(listed.ok, true, JSON.stringify(listed));
+	assert.deepEqual(listed.value.map(({ id }) => id), ["m-before"], "the machine of another name is left out");
+	assert.deepEqual(listed.value[0].labels, before.labels, "its labels as they are stored");
+	assert.deepEqual(asked, [{ agentrun: name }, { "agentrun.computer": "1", "agentrun.computer.name": name }]);
+	asked.length = 0;
+	const packedOnly = { ...host, facts: { labels: { count: 10, bytes: 512, packed: {} } } };
+	const none = await listedBy(packedOnly, "the listing by name", { "agentrun.computer": "1", "agentrun.computer.name": name }, 5_000);
+	assert.deepEqual(none, { ok: true, value: [] }, "a host whose machines are all packed is asked by the packed name alone");
+	assert.deepEqual(asked, [{ agentrun: name }]);
+});
+
+test("facts.labels.packed.unpacked: a listing by name answers a name's packed machine and its machine made before packing together, as an upgrade can make one of each for one request, so convergence sees both", async () => {
+	const { listedBy } = await import("../dist/hosted/provider.js");
+	const name = "computer-0123456789ab";
+	const labels = { "agentrun.computer": "1", "agentrun.computer.name": name };
+	const packed = { id: "m-packed", state: "running", labels: VALUES.packLabels(labels, name).labels };
+	const given = { id: "m-given", state: "running", labels: { ...labels } };
+	const asked = [];
+	const host = {
+		descriptor: { id: "tight" },
+		errorCode: () => "failed",
+		facts: { labels: { count: 10, bytes: 512, packed: { unpacked: true } } },
+		async list(filter) {
+			asked.push(filter);
+			return "agentrun" in filter ? [packed] : [given];
+		},
+	};
+	const listed = await listedBy(host, "the listing by name", labels, 5_000);
+	assert.equal(listed.ok, true, JSON.stringify(listed));
+	assert.deepEqual(listed.value.map(({ id }) => id).sort(), ["m-given", "m-packed"], "both machines of the name");
+	assert.deepEqual(listed.value.find(({ id }) => id === "m-packed").labels, labels, "the packed one's labels unpacked");
+	assert.deepEqual(asked, [{ agentrun: name }, labels], "asked both ways, though the packed ask found one");
+});
+
+test("facts.labels.packed.unpacked: a listing by name asked both ways keeps to one bound for the two asks together", async () => {
+	const { listedBy } = await import("../dist/hosted/provider.js");
+	const name = "computer-0123456789ab";
+	const ms = 600;
+	const host = {
+		descriptor: { id: "tight" },
+		errorCode: (error) => error.code ?? "failed",
+		facts: { labels: { count: 10, bytes: 512, packed: { unpacked: true } } },
+		// A vendor's listing keeps to ctx.timeoutMs, the bound the adapter gives it. The packed ask answers after most of the
+		// listing's bound; the ask for the labels as given never answers, so it ends at its own bound.
+		budgets: [],
+		async list(filter, ctx) {
+			this.budgets.push(ctx.timeoutMs);
+			if ("agentrun" in filter) return new Promise((resolve) => setTimeout(() => resolve([]), ms * 0.75));
+			return new Promise((_, reject) => setTimeout(() => reject(Object.assign(new Error("the listing timed out"), { code: "timeout" })), ctx.timeoutMs));
+		},
+	};
+	const began = Date.now();
+	const listed = await listedBy(host, "the listing by name", { "agentrun.computer": "1", "agentrun.computer.name": name }, ms);
+	const took = Date.now() - began;
+	assert.equal(listed.ok, false);
+	assert.equal(listed.error.code, "timeout", JSON.stringify(listed.error));
+	assert.ok(took < ms + 150, `the listing took ${took} ms, past its bound of ${ms}`);
+	assert.equal(host.budgets[0], ms);
+	assert.ok(host.budgets[1] <= ms * 0.25 + 20, `the second ask was given ${host.budgets[1]} ms, more than what the first left of ${ms}`);
 });

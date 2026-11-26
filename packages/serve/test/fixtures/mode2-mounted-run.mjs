@@ -12,6 +12,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 
 const { openSqliteStore } = await import("../../dist/store/sqlite/store.js");
+const { heldRedactor } = await import("../../dist/runner/redact.js");
 const { runKey } = await import("../../dist/workspace/paths.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW } = await import("../../dist/workspace/index.js");
@@ -137,7 +138,7 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp, computer
       const harnessRun = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
       const entry = { harnessRun };
       opened.push(entry);
-      entry.spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
+      entry.spec = await build(launch, { redact: heldRedactor((text) => text), harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
       return { claim, spec: entry.spec };
     },
   };

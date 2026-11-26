@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { recordedMount } from "../../computer/dist/index.js";
+import { unpackLabels } from "../../computer/dist/hosted/values.js";
 import { ModalProvider } from "../../computer/dist/modal.js";
 import { putSealedKey } from "../dist/server-keys.js";
 import { archilWorkspace, computerForClaim } from "../dist/workspace/index.js";
@@ -72,7 +73,9 @@ test("a Modal sandbox with the run's Archil folder, for the longest agent id, is
   const [{ tags }] = sdk.created;
   const bytes = Object.entries(tags).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);
   assert.ok(bytes <= 512, `${bytes} bytes of tags`);
-  assert.equal(tags["agentrun.run"], RUN);
-  assert.equal(recordedMount(tags).folder, `agents/${AGENT}/runs/${RUN}/work`, "the run's folder, as the tags record it");
+  // Modal keeps its tags packed: the labels are the map the tags hold.
+  const labels = unpackLabels(tags);
+  assert.equal(labels["agentrun.run"], RUN);
+  assert.equal(recordedMount(labels).folder, `agents/${AGENT}/runs/${RUN}/work`, "the run's folder, as the tags record it");
   assert.ok(!JSON.stringify(tags).includes(TOKEN), "no tag holds the token");
 });

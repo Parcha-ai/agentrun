@@ -73,7 +73,7 @@ import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
 import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, untilAborted, uploadThroughExec, words } from "./process.js";
 import { downloadingConnection } from "./download.js";
-import { isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
+import { isPackedKey, isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
 import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, initFlags, installerOf } from "./scripts.js";
 
@@ -1813,19 +1813,35 @@ function packedRoom(host: MachineHost): NonNullable<HostFacts["labels"]> | undef
 	return room?.packed ? room : undefined;
 }
 
-/** A machine as the host read it, with a packed host's labels unpacked: none where it holds no packed map (not the adapter's). */
-const unpacked = (host: MachineHost, machine: Machine): Machine => (packedRoom(host) === undefined ? machine : { ...machine, labels: unpackLabels(machine.labels) ?? {} });
+/**
+ * A machine as the host read it, with a packed host's labels unpacked. One that holds no packed map has none (not the
+ * adapter's), or its stored labels on a host whose machines may carry them as given (facts.labels.packed.unpacked).
+ */
+function unpacked(host: MachineHost, machine: Machine): Machine {
+	const room = packedRoom(host);
+	if (room === undefined) return machine;
+	return { ...machine, labels: unpackLabels(machine.labels) ?? (room.packed?.unpacked ? machine.labels : {}) };
+}
 
 /**
  * The host's listing by labels, bounded by ms: only the machines that carry every one of them, since a vendor's listing
  * may answer more (MachineHost.list). A packed host is asked for PACKED_NAME alone, the name's where one is asked, and
- * its machines' labels unpacked.
+ * its machines' labels unpacked. A listing by name on a host whose machines may also carry their labels as given
+ * (facts.labels.packed.unpacked) asks both ways, one after the other within ms together, and answers every machine
+ * either finds: across an upgrade one request can make one machine of each form, and convergence must see both.
  */
 export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal): Promise<Result<Machine[]>> {
 	const name = labels[NAME_LABEL];
-	const asked = packedRoom(host) === undefined ? labels : name === undefined ? {} : { [PACKED_NAME]: name };
-	const listed = await hostCall(host, what, (ctx) => host.list(asked, ctx), ms, signal);
-	return listed.ok ? ok(listed.value.map((machine) => unpacked(host, machine)).filter((machine) => carries(machine, labels))) : listed;
+	const room = packedRoom(host);
+	const asks = room === undefined ? [labels] : name === undefined ? [{}] : room.packed?.unpacked ? [{ [PACKED_NAME]: name }, labels] : [{ [PACKED_NAME]: name }];
+	const until = Date.now() + ms;
+	const found = new Map<string, Machine>();
+	for (const asked of asks) {
+		const listed = await hostCall(host, what, (ctx) => host.list(asked, ctx), Math.max(1, until - Date.now()), signal);
+		if (!listed.ok) return listed;
+		for (const machine of listed.value) if (!found.has(machine.id)) found.set(machine.id, unpacked(host, machine));
+	}
+	return ok([...found.values()].filter((machine) => carries(machine, labels)));
 }
 
 /** Whether a machine carries every one of these labels. */
@@ -1987,6 +2003,8 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	if (key === "") return "a label name must be non-empty";
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
 	if (key === MOUNT_LABEL) return `the label ${key} is the provider's own: it records a computer's mount`;
+	// Labels stored as given (an older server's, a host that doesn't pack) under one of these would read back as a packed map.
+	if (isPackedKey(key)) return `the label ${key} is reserved: ${PACKED_NAME} and ${PACKED_NAME}-<n> (${PACKED_NAME}-0, ${PACKED_NAME}-1 and on) hold a computer's packed labels`;
 	return undefined;
 }
 

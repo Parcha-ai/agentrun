@@ -14,6 +14,7 @@ import { closeOpenSessions } from "./conformance-pi-adapter.mjs";
 
 const { o200kTokens } = await import("@parcha/agentrun-kernel/host");
 const { piAdapter, PI_BASE_INPUT_TOKENS } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 after(closeOpenSessions);
 
 const NAMES = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_API_KEY", "AGENT_MODEL_PRICE", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_GATEWAY_IDS", "AGENT_THINKING", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_CODEX_STANDIN", "AGENTRUN_SERVE_CODEX_STANDIN", "AGENTRUN_OPENCODE_STANDIN", "AGENTRUN_SERVE_OPENCODE_STANDIN"];
@@ -96,7 +97,7 @@ test("pi's base input (PI_BASE_INPUT_TOKENS) is at or under what its first reque
   const { spec } = await specFor(t, { body: { instructions: INSTRUCTIONS, tools: [] } });
   const SOL_CAP = Object.freeze({ id: "gpt-6.1-sol", api: "openai-responses", price: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 }, outputCeiling: 128_000, reasoning: true });
   const { row, sent } = await capRun(t, {
-    specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ run, model: SOL_CAP.id, provider: { api: "openai-responses", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: async (_url, init = {}) => (sent.push(JSON.parse(String(init.body ?? "{}"))), answered()), price: () => 0 }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, input: "Do the thing.", hooks: quiet, gate: () => "allow" }),
+    specOf: (sent) => (_claim, run) => ({ adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: SOL_CAP.id, provider: { api: "openai-responses", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: async (_url, init = {}) => (sent.push(JSON.parse(String(init.body ?? "{}"))), answered()), price: () => 0 }), session: { ...spec.session, key: "root", label: "root", context: "fresh" }, input: "Do the thing.", hooks: quiet, gate: () => "allow" }),
     runCap: { capUsd: () => 5, modelOf: () => SOL_CAP },
     cap: specCap(5),
   });

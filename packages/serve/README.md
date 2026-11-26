@@ -333,7 +333,12 @@ and a line with the endpoint's origin and the time (`[otel] a trace export to ..
 dropped: Request timed out`), then at most one line a minute, said by the next failure once a minute has passed, that
 counts the failures since the last line (`[otel] 25 more trace exports to ... failed since ..., the last at ...`); never
 a line per span or per batch. Unset, or with `OTEL_SDK_DISABLED=true`, no OpenTelemetry code loads, nothing is sent and
-nothing is said.
+nothing is said. The headers go to the endpoint, so it takes the rule of a URL a key goes to, over http or https: one
+with a user, a password, a query or a fragment, or one that is not a URL, is refused, and tracing is off for it. The
+server and its runs carry on, no OpenTelemetry code loads, nothing is sent, and the runner's start says why once, with
+the variable and the origin alone: `[otel] tracing is off: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT takes no user or
+password, since the key goes to it: https://collector.example:4318` (or `takes no query or fragment: ...`, or `is not a
+URL`). Put a credential in `OTEL_EXPORTER_OTLP_HEADERS` instead.
 
 [otel-agent-spans]: https://github.com/open-telemetry/semantic-conventions-genai/blob/d0e74ba6c48bcc4ded473b1828a8212f06b23753/docs/gen-ai/gen-ai-agent-spans.md#L213-L272
 
@@ -1020,8 +1025,14 @@ the screenshot are the tools of those names, and the rest (apps, the shell, file
 `computer_op` (`{op, args}`), a tool bound for scripts alone. Each call is held to the run's gate and recorded on the
 timeline like a tool's, and a crash rerun of the script answers a call that already ran from its record: a shell
 command (`shell.run`) is held to the agent's `bash` setting, a started process to `bash_background`, a file written to
-`write`, and a file read, listed or looked up to `read`, after the kind's own setting for `computer_op`. A script's call
-of a computer tool answers the tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
+`write`, and a file read, listed or looked up to `read`, after the kind's own setting for `computer_op`. A file op needs
+its tool among the agent's tools first, as the run's own file tools do: `files.write` needs `write`, and `files.read`,
+`files.list` and `files.stat` need `read`. An agent not given one is refused the op whatever its setting says, on every
+desktop, mounted or not, and is not offered it: `computer_op`'s op list and the script's `computer` declarations leave it
+out. Naming a desktop does not grant its file ops. The shell's ops (`shell.run`, `processes.start`) follow `bash`'s
+setting alone, not a grant. Input ops on a desktop with a terminal app can do what a shell does: to deny that, don't
+grant input ops on that desktop, or use an image without a terminal. A script's call of a computer tool answers the
+tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
 `computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as
 JSON. A run whose `codemode` is set to deny lists them the same way, so its computer stays in reach. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
 client, each answer with its value as `structuredContent`.
@@ -1033,7 +1044,7 @@ is refused in words before the computer is asked. A screenshot with `save_as` is
 it too, after the kind's deny: the stricter decides (`write` set to deny refuses it before the computer is asked, set to
 ask puts it to a person); one with no `save_as` is held to the kind's setting alone. `save_as` needs `write` among the
 agent's tools: an agent not given `write` is not offered it, and the gate refuses one anyway whatever `write`'s setting
-says. A script's `computer.files.write` needs `write` among the agent's tools the same way. `save_as` is offered only
+says, as a script's `computer.files.write` does. `save_as` is offered only
 where the gate would let a save through: not with `write` set to deny, nor set to ask on a server where no one can
 approve. On a desktop or a phone the run's folder is not mounted in (one with `exec: false`, or a provider that mounts
 none), the model is told this once in the run, as the server's note, after a due cap wrap-up; a run whose saves the
@@ -1650,7 +1661,9 @@ unless the [launch hook](#launch-hook) is set, which hands each firing to your b
 would start runs of the agent with no hook, or message one of its runs, hook or not. A `message_run` trigger made
 before the setting was on, or while the server held the key, fails each firing with that 409 and sends nothing. An
 update apply that skips a trigger leaves the agent's trigger of that name as it was; when that one is on, it still
-fires, and the skip's warning names it and says how to turn it off.
+fires until you turn it off. A firing that would start a run of the new revision is refused 409 for the keys it owes and
+starts no run, but a `message_run` firing aimed at a run of an earlier revision that owes no keys still reaches that run,
+which may spend. The skip's warning names the trigger and says how to turn it off.
 
 `MONID_API_KEY` stays the server's even with the setting on: an agent's monid tools are checked with it when the agent
 is saved, before any run, so a template that grants them is still refused at its apply (409 at
@@ -2164,7 +2177,8 @@ Each child books on the run's cap, so size the cap for K passes, not one.
 
 `web_search` and `web_fetch` work on every harness with only a model key. Each resolves, for a run, in one order: (1) the
 provider the user picked, optional: the agent's own (`definition.tool_settings`) over the server's
-(`PUT /settings/tools`); (2) for
+(`PUT /settings/tools`), except that the server's `kernel` for `web_fetch`, and its `native` or `off` for `web_search`,
+are a ceiling no agent's pick raises ([below](#search-and-fetch)); (2) for
 `web_search`, Parallel, where the server holds a Parallel key (`PARALLEL_API_KEY` in its environment, or one saved on Tool
 keys): `auto` then uses that key and bills it, each search booked as the run's cost ($0.001 a search); (3) the keyless
 fallback, Firecrawl's public MCP endpoint (for `web_search` with Exa's behind it). A revision's `tools` (and a pack's grant) names the capability, never a provider.
@@ -2214,7 +2228,9 @@ objective sends the page's text and the objective to TypeSafe …`, and for eith
 
 `GET /settings/tools` answers the server's settings, `{web_search: {provider}, web_fetch: {provider}, browser: {provider}}`, the default
 where none is set; `PUT /settings/tools` takes the same map and replaces it (a capability it leaves out takes its
-default). An agent's `definition.tool_settings` has the same shape and is over the server's. A provider is one offered
+default). An agent's `definition.tool_settings` has the same shape and is over the server's, except under the server's
+`kernel` for `web_fetch`, or its `native` or `off` for `web_search`, a ceiling no agent's pick raises, and a `deny`,
+which no agent's setting reaches past. A provider is one offered
 for its capability (`auto`, `native`, `firecrawl-keyless`, `exa-keyless`, `parallel` or `off` for `web_search`; `auto`,
 `firecrawl-keyless`, `kernel` or `parallel` for `web_fetch`;
 `auto`, `browserbase`, `kernel` or `chrome` for `browser`, [below](#tools)); an
@@ -2289,9 +2305,18 @@ sees the URL, its query string included, so a token in a URL's query goes to Fir
 guard's own check, and one it refuses (a private, loopback, link-local or intranet address, a name that resolves to one,
 or a URL holding a user name or password) is refused as the guarded direct fetch refuses it, and never sent to Firecrawl,
 to Exa or to Parallel. To keep every URL on the server, pick `kernel` for `web_fetch`, or hold a Parallel key, where
-`auto` is the guarded direct fetch. A server's pick is the default only: an agent's own `tool_settings` outrank it, so an
-agent (an imported template's among them) that picks `firecrawl-keyless` or `auto` still sends its URLs to Firecrawl.
-Only a server's `deny` is absolute: set `web_fetch` to `deny` to stop every agent's fetches.
+`auto` is the guarded direct fetch. A server's pick is the default only, an agent's own `tool_settings` (an imported
+template's among them) over it, except for these. The server's `kernel` for `web_fetch`, and its `native` or `off` for
+`web_search`, are a ceiling: an agent's pick of `firecrawl-keyless`, `exa-keyless`, `auto` or `parallel` resolves as the
+server's setting does, so nothing goes to Firecrawl, to Exa or to Parallel, and capabilities' `why` says so ("the
+server's setting, kernel, is a ceiling over this agent's pick of auto"). Under `off`, an agent's `native` is off too;
+under `native`, it is the ceiling's own. To let agents use Parallel, set `parallel` server-wide; any server pick but
+these three (`auto`, `firecrawl-keyless`, `exa-keyless`, `parallel`) is only a default an agent's pick replaces. A
+server's `deny` is absolute: set `web_fetch` or `web_search` to `deny` to refuse every agent's calls, whatever it picks.
+A server setting applies at a run's next claim (its start, a follow-up, a resume or a reclaim): a claim keeps the plane
+it began with to its end, through any approval it waits on while it holds the run. Tool settings a claim cannot read
+fail closed: a capability kept on a keyless service or on Parallel runs nothing, its tool saying the settings could not
+be read.
 
 A `web_fetch` through keyless Firecrawl takes at most about 95 s: up to 30 s for the guard's check of the URL, 30 s for
 Firecrawl, then, where Firecrawl gives no page, the guarded fetch's 30 s and 5 s to read the page.
@@ -2762,8 +2787,9 @@ curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 
 user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
 sealed into the run's launch, erased from the store by the write that ends the run, never on the server's row, the
 run's view, its timeline, its trace or a log line, and its values are cut from whatever the run shows. A message's
-binding replaces the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
-handed none, so a per-run server never calls as a default account. A malformed user or account is `422 input_invalid` at
+binding replaces the run's for the turn it starts. A run that names no account is not offered the server's tools (on
+Codex, its calls of them are answered, unsent, that it was handed none), so a per-run server never calls as a default
+account. A malformed user or account is `422 input_invalid` at
 `mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's default user
 `agentrun` (`not_allowed`: the user single-user preset servers call as); headers for such a server, or a binding for any
 other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio trigger: a trigger
@@ -2866,7 +2892,11 @@ credential answers the first request's run), and its values are cut from whateve
 `POST /v2/runs/{run_id}/messages` takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
 steer into a working run from its next model request, or a follow-up that opens an ended run again) calls with them. A
 name that is not a saved per_run server is `422` at `mcp_auth.<server>`, and no run starts. A run handed no credential
-for a per_run server it calls has those calls answered, unsent, that it was handed none. `POST .../{name}/refresh` lists
+for a per_run server it calls is not offered that server's tools, and its timeline says which server was left out and
+why; the next time the run picks up work after a message hands the credential, it has them. A message that hands it
+while a turn is still going is not put into that turn, whose tools can't change: it runs as the run's next turn, and
+the timeline says so. Codex keeps the tools its thread started with, so a Codex run keeps listing them, and their
+calls are answered, unsent, that it was handed none until the credential comes. `POST .../{name}/refresh` lists
 a per_run server's tools with no credential: save it again with `headers` for a server that lists only to a caller it
 knows. The tools are those it listed at its save, so a server whose tool list varies by caller shows each run the saved
 list.
@@ -3876,11 +3906,20 @@ serves these routes alone:
   is what its delete (`DELETE /agents/{id}`) needs first. With the [launch hook](#launch-hook) set, the apply makes the
   package's schedule and feed triggers, and every firing that starts a run goes to the backend, which starts it through
   the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
-  them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
-  or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
-  here, on this server's keys, until the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
+  them on again. Without the hook it makes neither (`not_set_up_here`: set the hook, or start those runs through the
+  API), and a trigger the agent already had stays as it was: an enabled one still fires here, on this server's keys,
+  until it is turned off (below) or the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
+- the triggers, for a backend to see one that is off and turn it on again: their list (`GET /triggers`), one
+  (`GET /triggers/{id}`), its firings (`GET /triggers/{id}/firings`), and its turn on or off
+  (`PATCH /triggers/{id}` with `{"enabled": true}` or `{"enabled": false}`; from the CLI,
+  `agentrun triggers update <id> --enabled` or `--no-enabled`). A trigger whose firings failed 5 times in
+  a row turns itself off (`disabled.reason` `auto_paused`), and there is no console here to turn it on in. The PATCH
+  takes `enabled` alone (any other field is `422 not_allowed`), and turns on only what the apply would make: a schedule
+  or a feed, with the launch hook set (`422` under `enabled` otherwise, since its firings would start runs on this
+  server's keys or wait on a hook this profile refuses). Turning one off always works. Making, deleting or firing a
+  trigger, and its secret, stay refused;
 - a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
   backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
   - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
@@ -3969,7 +4008,7 @@ Here a run's computer routes take the server's token. `POST /runs/{id}/computer/
 `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, sign-in and setup, every other `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every other `/settings` route, `POST /mcp`, every other trigger route and the triggers'
 `POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
 template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
 to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the
@@ -5108,7 +5147,7 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   over a 730-hour month); a computer still open is counted up to `measured_to` (`open_computers` says how many). `usd` is
   what the run's ledger booked for it while a claim held the computer, at the operator's price ([Computer
   time](#computer-time)), so `total` stays the run's `cost.usd`. The part no claim held (`unheld_quantity`: a computer
-  kept past its claim for a follow-up, one deleted after its run, one whose delete failed) is in no cost. A resource with
+  kept past its claim for a follow-up, one deleted after its run, one whose delete failed) is in no cost; on a provider that bills nothing (`docker`) it reads 0, since none of its time costs anything. A resource with
   no price set, or whose figure no one said, is `unpriced`, its `usd` null; a provider that bills nothing (`docker`) is
   $0. A `compute_time` line that is `unpriced` and any `unheld_quantity` are outside `total`.
   ```json

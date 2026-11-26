@@ -15,6 +15,7 @@ import { streamingSandbox } from "./fixtures/streaming-sandbox.mjs";
 import { pastHeldTail } from "./fixtures/live-tail.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { secretRedactor } = await import("../dist/runner/redact.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -164,7 +165,7 @@ test("a loop given no redactor has no live view: its held state is never written
     stop: async () => {},
   }), { tickMs: 10 });
   t.after(() => ticker.close());
-  const loop = ticker.createLoop({ journal: () => undefined, flush: async () => {}, signal: new AbortController().signal });
+  const loop = ticker.createLoop({ redact: heldRedactor((text) => text), journal: () => undefined, flush: async () => {}, signal: new AbortController().signal });
   await loop.start({ runId: "run-1", runner: "runner-a", epoch: 1, until: Date.now() + 60_000, from: "queued" });
   await ticker.close();
   assert.deepEqual(puts, [], `nothing put for a loop with no redactor: ${JSON.stringify(puts)}`);

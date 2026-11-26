@@ -136,7 +136,7 @@ export const AUDIT_PARKED = "the audit ended where it would wait on a person";
  *  it, read from its journal whatever claim it served on (servedOf), and, for a capped run, what its cap leaves once this
  *  end is counted (auditRoomOf: its job, its follow-ups, its compile turns). A run that
  *  could never be audited (no learning start, or not auditableLaunch) keeps `step` as it is. */
-export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }): EndOfRunTurn | undefined {
+export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch; readonly redact: (text: string) => string }): EndOfRunTurn | undefined {
   if (!deps.launch.learning) return step;
   const audited = auditableLaunch(deps.launch);
   // A run never audited gets no step it had none of: the end of a run with no step queues nothing (its checks wait).
@@ -157,7 +157,7 @@ export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { re
 
 /** Only a run the workflow answered is drawn: its path `workflow` by the one classifier its record keeps
  *  (store-reads/learning.ts runPathOverStore, with the run's `redact`), never one it handed back. */
-async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }, runId: string): Promise<void> {
+async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch; readonly redact: (text: string) => string }, runId: string): Promise<void> {
   try {
     const entries = await runEntries(deps.store, runId, BACKGROUND_CONTEXT);
     const served = servedOf(entries);
