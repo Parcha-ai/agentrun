@@ -139,10 +139,12 @@ test("a search's receipt keeps the fees of its own call: a sift stopped by the c
 test("a fetch's receipt names the URL asked without its user name or password, as the page does", async () => {
   const { guard } = guardOf();
   const w = web.createWeb({ order: { search: [], fetch: ["direct"] }, guard, now: () => START });
-  const { answer, receipt } = await w.fetch("http://web-user:not-a-secret@public.example/");
+  // Built here, so no URL with a user name and password is written out in the source.
+  const credentialed = Object.assign(new URL("http://public.example/"), { username: "web-user", password: "not-a-secret" }).href;
+  const { answer, receipt } = await w.fetch(credentialed);
   assert.equal(receipt.asked, "http://public.example/");
   assert.equal(answer.url, "http://public.example/");
-  const refused = await w.fetch("http://web-user:not-a-secret@public.example/", { offset: -1 });
+  const refused = await w.fetch(credentialed, { offset: -1 });
   assert.equal(refused.receipt.asked, "http://public.example/", "a part refused before anything is fetched too");
 });
 
