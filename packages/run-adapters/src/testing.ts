@@ -69,8 +69,10 @@ export type FauxAction =
   /** One call. `again`: a crash that cuts it off mid-call (its intent recorded, no outcome) leaves it for the recovered
    *  turn to issue again, under its id, asking the gate first as the tool bridge does (process/tools.ts: `replayed`,
    *  unless the tool `nests`), as a CLI that sends its transcript's unanswered call again through its bridge; without
-   *  it, the cut call is answered interrupted. */
-  | ({ call: string; args?: unknown; usd?: number | null; again?: true } & FauxRequest)
+   *  it, the cut call is answered interrupted. `dies`: the process stops once the call's gate has answered, before its
+   *  intent or outcome is written (a refusal's too), so a recovered turn issues it again as a call left unstarted; only
+   *  the first time, never when a recovered turn issues it again. */
+  | ({ call: string; args?: unknown; usd?: number | null; again?: true; dies?: true } & FauxRequest)
   /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls.
    *  `bookAfter`: the calls run before the answer's cost is booked, as with Claude Code, whose cost comes in after its
    *  response, so a call can end before the request that asked for it is paid. A call's `say` streams that text first,
@@ -227,10 +229,12 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       });
       /** One call of the model's: the host's gate first, before anything of it is written (a deny is its answer, in the
        *  gate's words, recorded so it is never asked again; a park holds the turn until it is stopped), then its intent,
-       *  the tool, and its outcome. `replayed`: a cut call issued again, its gate told an earlier attempt may have run. */
-      const runCall = async (name: string, args: unknown, callId: string, signal: AbortSignal, replayed?: true) => {
+       *  the tool, and its outcome. `replayed`: a cut call issued again, its gate told an earlier attempt may have run.
+       *  `dies`: the process stops once the gate has answered, before anything of the call is written. */
+      const runCall = async (name: string, args: unknown, callId: string, signal: AbortSignal, replayed?: true, dies?: true) => {
         const tool = tools.get(name);
         const refused = tool && io.gate ? await askGate((call) => io.gate!(call), { callId, tool: name, args: (args ?? {}) as Record<string, unknown>, ...(replayed ? { replayed } : {}) }, signal) : undefined;
+        if (dies) await hang(signal);
         if (refused) return void (await append(FAUX_RECORDS.result, { callId, isError: true, refused: true }));
         await append(FAUX_RECORDS.call, { callId, name });
         io.onEvent({ type: "tool_start", callId, name, args });
@@ -338,7 +342,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                   const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
                   await io.models.afterRequest({ input: 10, output: 5, usd: action.sideDuring.usd }, side || undefined);
                 }
-                await runCall(name, args, callId, signal);
+                await runCall(name, args, callId, signal, undefined, "call" in action && action.dies ? true : undefined);
               }
               if (bookAfter) await book();
             }

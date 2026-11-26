@@ -573,6 +573,36 @@ test("a CLI's learned_workflow call a crash cut after its model node booked, den
   assert.deepEqual([view.path, view.workflow?.name], ["handed_back", "title-then-hold"], "charged to the workflow, never the agent's path");
 });
 
+// A CLI's learned_workflow call the gate refused, its refusal kept, and a crash before the CLI wrote anything of it
+// (faux-harness.mjs `dies`): the recovered turn issues it again and the gate denies it again. Its only earlier attempt
+// was refused and ran nothing, so it is still the workflow's refused call at $0, and a run whose every call is so is
+// the agent's path.
+test("a CLI's learned_workflow call the gate refused, a crash cutting it before the CLI kept its answer, denied again when it is issued again on the next runner, stays refused at $0, and the run is the agent's path", { timeout: 240_000 }, async (t) => {
+  const gw = await startFauxGateway({});
+  t.after(() => gw.close());
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64"), AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL: "gpt-test", AGENT_MODEL_API_KEY: ["not-a-secret", "gateway"].join("-"), AGENT_MODEL_PRICE: "1,2,0.5" }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY"]);
+  const server = await serveOf(t, { faux: undefined, harnessTable: fauxTable(FAUX_HARNESS), accounts: true, openSetup: true, runnerTiming: CRASHABLE });
+  const { api, data } = server;
+  assert.equal((await api("PUT", "/settings/tools", { [LEARNED_WORKFLOW_TOOL]: { permission: "deny" } })).status, 200);
+  const flow = titled("title-only", [{ node: "extract", label: "title", instructions: "Title it.", out: "Title", as: "title" }]);
+  // The faux harness takes its script from the agent's instructions.
+  const ask = `${runOf("title-only", { a: 2, b: 3 })}, the process dying once its gate answers.`;
+  const runId = await learnedRun(server, "cli-refused-crash", [], [flow], ask, {}, { harness: "codex", instructions: ask });
+  // The refusal is kept once its call's result row carries the record's nodes (none): the run's workflow_calls are its
+  // metrics, written only at its end.
+  const refusedRow = (row) => row.kind === "tool_result" && row.tool_name === LEARNED_WORKFLOW_TOOL && Array.isArray(row.learned_nodes);
+  await follow(api, runId, ["working"], { deadlineMs: 120_000, done: (rows) => rows.some(refusedRow) });
+  const held = runRecordOf(data, runId);
+  await server.crashRunner();
+  await follow(api, runId, ["completed", "failed"], { deadlineMs: 150_000 });
+  assert.ok(runRecordOf(data, runId).epoch > held.epoch, "another runner took the run up");
+  const view = (await api("GET", `/runs/${runId}`)).body;
+  assert.equal(view.workflow_calls?.length, 1, JSON.stringify(view.workflow_calls));
+  const [called] = view.workflow_calls;
+  assert.deepEqual({ workflow: called.workflow, caller: called.caller, outcome: called.outcome, usd: called.usd }, { workflow: "title-only", caller: "agent", outcome: "refused", usd: 0 }, "refused at $0: no attempt of it ran");
+  assert.equal(view.path, "agent", "every call refused: the agent's path");
+});
+
 test("an approved card covers its own call only: an action an earlier call's card named, asked in a later call of the same workflow whose card did not name it, parks on a card of its own", { timeout: 240_000 }, async (t) => {
   // One run, three calls in turn (faux-calls.mjs): the workflow, the harness's own call of `paid`, the workflow again.
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });

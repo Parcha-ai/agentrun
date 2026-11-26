@@ -135,3 +135,28 @@ test('a call a crash cut off mid-call, its action marked `again`, is issued agai
     assert.deepEqual(ran, [], 'never run again');
   }
 });
+
+test('a call marked `dies`, its gate refusing it, leaves nothing of it written; the recovered turn issues it again as a call left unstarted, asked with nothing more, and the deny is its answer', async () => {
+  const key = 'step:dies';
+  const script = [{ call: 'lookup', args: { q: 'x' }, dies: true }, { end: true }];
+  const store = memorySessionStore();
+  const ran = [];
+  const asked = [];
+  const deny = async (call) => (asked.push(call), { deny: 'denied' });
+  const first = await opened(store, key, script, ran, deny);
+  await first.session.send('go');
+  await until(() => asked.length === 1, 'the call reached its gate');
+  first.controller.abort(new Error('the process went'));
+  await first.session.close();
+  const callRows = async () => (await store.read(key)).filter((r) => r.kind === FAUX_RECORDS.call || r.kind === FAUX_RECORDS.result).map((r) => r.data);
+  assert.deepEqual(await callRows(), [], 'nothing of the call written');
+  const second = await opened(store, key, script, ran, deny);
+  assert.equal(second.session.state, 'open_turn');
+  await second.session.recover();
+  assert.equal((await second.session.turnEnd()).status, 'completed');
+  await second.session.close();
+  const call = { callId: `${key}:0`, tool: 'lookup', args: { q: 'x' } };
+  assert.deepEqual(asked, [call, call], 'asked twice under its id, the second time as a fresh call');
+  assert.deepEqual(await callRows(), [{ callId: `${key}:0`, isError: true, refused: true }], 'the deny is its answer');
+  assert.deepEqual(ran, [], 'never run');
+});
