@@ -52,7 +52,7 @@ async function piRun(t, { tool, hooks, restartLimit }) {
   await queue(server, "run-1");
   const requests = [];
   const loop = createAdapterLoop(async (_claim, run) => ({
-    adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin([{ call: tool.name }, { say: "done" }], requests), price: () => 0 }),
+    adapter: piAdapter({ run, redact: run.redact, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin([{ call: tool.name }, { say: "done" }], requests), price: () => 0 }),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: [tool], context: "fresh", contextWindow: WINDOW },
     input: "Follow the script.",
     hooks,

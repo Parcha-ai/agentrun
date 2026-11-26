@@ -44,7 +44,7 @@ async function resultRead(t, { call, contextWindow }) {
   const requests = [];
   const tools = hostTools({ host_huge: { name: "host_huge", replaySafe: true, run: async () => HUGE } });
   const loop = createAdapterLoop(async (_claim, run) => ({
-    adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin([{ call }, { say: "done" }], requests), price: () => 0, tools: [nativeHuge] }),
+    adapter: piAdapter({ run, redact: run.redact, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin([{ call }, { say: "done" }], requests), price: () => 0, tools: [nativeHuge] }),
     session: { key: "root", label: "root", system: ["Follow the script."], tools, context: "fresh", ...(contextWindow !== undefined ? { contextWindow } : {}) },
     input: "Follow the script.",
     hooks: quiet,

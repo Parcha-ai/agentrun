@@ -35,7 +35,7 @@ test("pi, a 16k window, 4,000 tokens held: four parallel 10k results reach the n
   const script = [{ calls: [0, 1, 2, 3].map((n) => ({ call: tool.name, args: { n } })) }, { say: "done" }];
   const inputOf = (body) => ((body.messages ?? []).some((m) => m.role === "assistant") ? 100 : HELD);
   const loop = createAdapterLoop(async (_claim, run) => ({
-    adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script, requests, { inputOf }), price: () => 0 }),
+    adapter: piAdapter({ run, redact: run.redact, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script, requests, { inputOf }), price: () => 0 }),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: [tool], context: "fresh", contextWindow: WINDOW },
     input: "Follow the script.",
     hooks: { beforeIntent: async () => {}, beforeResult: async () => {} },
