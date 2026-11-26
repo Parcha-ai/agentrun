@@ -95,16 +95,16 @@ to `"restart"`; `"load"` needs the recipe's `declares.load`, else its first laun
 Any other agent runs on an adapter you write (the kernel's `AgentAdapter`). Give `kit.adapterEntry(facts, adapter)`,
 where `adapter(launch)` builds it for one run. `launch` holds the model, where to forward its requests
 (`launch.provider`: the origin, the credential and how it is sent), the price of a request's usage, a log, the
-confinement its process starts under, the skills it loads itself (`launch.skills`), the server's environment, and the
-run's redactor (`launch.redact`, always given), which holds every key the run's claim opens: cut anything your adapter
-logs, records or hands back of a provider's answer with it. Your
+confinement its process starts under, the skills it loads itself (`launch.skills`), and the server's environment. Your
 harness gets `launch.skills` only when it loads skills itself: give `kit.adapterEntry` a `skillCheck` in its third
 argument, and the run's skills that check accepts are taken out of the prompt and handed to your adapter.
 `kit.acpEntry` has no `skillCheck`, because the ACP adapter loads no skills, so an ACP agent's skills stay in its prompt.
 
 A module may instead give a whole entry with its own runner (the members [serve's README](packages/serve/README.md#harness-modules)
 lists): it then states by hand what the kit derives from the facts (models, key rows, offer, refusal and price), and
-without facts its agent gets pi's tools, not the host tools.
+without facts its agent gets pi's tools, not the host tools. Its runner's `adapter(launch, extra)` gets the run's redactor
+as `launch.redact` (always given), which holds every key the run's claim opens: cut anything the adapter logs, records or
+hands back of a provider's answer with it.
 
 For either one, serve picks the model and the key the way it does for its own harnesses. A person's Claude Code login is
 never a module's credential. An entry's `ownKeys` names no key a built-in harness owns (Cursor's `CURSOR_API_KEY`): if
