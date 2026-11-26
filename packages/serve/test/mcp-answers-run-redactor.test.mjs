@@ -108,10 +108,13 @@ test("a run's own process (its runner's MCP, heldFor), Mode 1: the runner's reda
   await store.runs.create({ id: "run-own", agentId: "agent-own", revisionId: "rev-own" });
   mkdirSync(runFolder(data, "agent-own", "run-own"), { recursive: true, mode: 0o700 });
   const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision, claimed: {} };
-  const side = host.heldFor({ store, sealKey: SEAL_KEY, env: {}, data, mcpLoopback: true }, reads, runRedactor(), () => {});
+  const redact = runRedactor();
+  const side = host.heldFor({ store, sealKey: SEAL_KEY, env: {}, data, mcpLoopback: true }, reads, redact, () => {});
   t.after(() => side.release());
+  assert.ok(redact(`the credential ${TOKEN}`).includes(TOKEN), "the server's credential is not the runner's before the claim opens it");
   const mcp = await side.held.mcp({ appendRoot: async () => {} });
   assert.ok(mcp, "the run's MCP");
+  assert.ok(!redact(`the credential ${TOKEN}`).includes(TOKEN), "the credential the claim opened joins the runner's redactor (hold)");
   await assertCut(callOf(mcp.tools, (one) => one.catalog), runFolder(data, "agent-own", "run-own"));
 });
 
@@ -140,4 +143,35 @@ test("the gateway itself: with the run's redactor, an error answer and an answer
   const asBefore = await said(undefined);
   for (const text of asBefore) assert.ok(text.includes(HELD), `no run redactor: the server's answer as it came, its own credentials aside: ${text.slice(0, 200)}`);
   for (const text of [...cut, ...asBefore]) assert.ok(!text.includes(TOKEN));
+});
+
+test("the gateway itself: a binary payload filed whole (a screenshot's image, a resource's blob) past a piece of the run's redactor is kept whole; one whose bytes hold a value the run holds is \"[redacted]\" alone", { timeout: 60_000 }, async (t) => {
+  const { mcpGateway } = await import("../dist/mcp-gateway.js");
+  const { localWorkspace } = await import("../dist/workspace/index.js");
+  // 12 KB of bytes, so its base64 is one run of 16 KB with no whitespace: past the redactor's 8,192-character piece.
+  const bytes = Buffer.from(Array.from({ length: 12_288 }, (_, i) => (i * 7) % 251));
+  const picture = bytes.toString("base64");
+  const leaking = Buffer.concat([bytes, Buffer.from(` ${HELD} `), bytes]).toString("base64");
+  const fake = await startFakeMcp({ token: TOKEN });
+  t.after(() => fake.close());
+  fake.tools.shot = { description: "A screenshot.", input: SCHEMA, run: () => ({ content: [{ type: "text", text: `shot of ${HELD}` }, { type: "image", data: picture, mimeType: "image/png" }] }) };
+  fake.tools.blob = { description: "A file.", input: SCHEMA, run: () => ({ content: [{ type: "resource", resource: { uri: "file:///shot.png", mimeType: "image/png", blob: picture } }] }) };
+  fake.tools.leaks = { description: "A picture whose bytes hold the note.", input: SCHEMA, run: () => ({ content: [{ type: "image", data: leaking, mimeType: "image/png" }] }) };
+  const pin = { acme: { url: fake.url, tools: ["shot", "blob", "leaks"].map((name) => ({ name, inputSchema: SCHEMA })) } };
+  const credentials = { acme: { url: fake.url, headers: { authorization: `Bearer ${TOKEN}` } } };
+  const work = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "mcp-gateway-binary-"));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const gateway = mcpGateway({ pin, credentials, work: () => localWorkspace(work), redact: runRedactor() });
+  const filed = {};
+  for (const tool of ["shot", "blob", "leaks"]) {
+    const result = await gateway.call("acme", tool, {}, { signal: new AbortController().signal });
+    const path = result.content.map((block) => block.text).join("").match(/evidence\/mcp\/acme\/[^ \]]+\.json/)?.[0];
+    assert.ok(path, `${tool} filed whole: ${result.content.map((block) => block.text).join("")}`);
+    filed[tool] = JSON.parse(readFileSync(join(work, path), "utf8"));
+  }
+  assert.equal(filed.shot.content[1].data, picture, "the screenshot's image is filed whole, as the server sent it");
+  assert.ok(!filed.shot.content[0].text.includes(HELD), "and its text block is cut of the run's value");
+  assert.equal(filed.blob.content[0].resource.blob, picture, "a resource's blob is filed whole");
+  assert.equal(filed.leaks.content[0].data, "[redacted]", "a payload whose bytes hold the run's value is withheld");
+  assert.equal(filed.leaks.content[0].mimeType, "image/png", "and the block around it kept");
 });

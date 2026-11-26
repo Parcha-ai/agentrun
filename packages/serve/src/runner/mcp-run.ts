@@ -13,6 +13,7 @@
 // The gateway holds no gate here (the loop's is the run's one gate) and keeps the rest as it is: the meta refusal, the
 // unopened refusal, the URL check per call, the scrub of each call's credentials held only while that call is out, prices
 // on the run's one ledger and the not-metered booking on the run's root.
+import type { Redact } from "./redact.js";
 import type { HostTool } from "@parcha/agentrun-kernel";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
@@ -91,8 +92,8 @@ export interface McpForClaimOptions {
   /** Each credential value the claim opens, refreshes or mints, for the run's redactors (mcp-claim.ts `hold`). */
   readonly hold?: (values: string[]) => void;
   /** The run's redactor, after each call's own scrub on every text its gateway answers or files (mcp-gateway.ts
-   *  McpGatewayOptions.redact). None: the call's scrub alone. */
-  readonly redact?: (text: string) => string;
+   *  McpGatewayOptions.redact). Required: a claim's MCP never answers past the run's redactor. */
+  readonly redact: Redact;
   /** The run's revision's own tool settings (body.toolSettings), where a tool's file setting is read (filed-tool.ts
    *  filedBy): each answer of such a tool is filed whole in the run's files and the tool's result is its summary. A run's
    *  own process passes none: its runner reads them from the revision it reads itself (run-child-host.ts). */
@@ -207,7 +208,7 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     ...(options.callBounds ? { bounds: options.callBounds } : {}),
     capped: options.capped !== false,
     ...(options.toolSettings !== undefined ? { filed: filedBy(options.toolSettings) } : {}),
-    ...(options.redact ? { redact: options.redact } : {}),
+    redact: options.redact,
     ...(media ? { media: publicMedia(async () => (media.web ? fakeSaveOptions(media.web) : fetchOptions(media.env, FAUX_ENV)), media.slots) } : {}),
   });
   const catalog = new Map<string, string>();

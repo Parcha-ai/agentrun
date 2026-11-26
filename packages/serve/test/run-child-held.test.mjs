@@ -129,6 +129,20 @@ test("a run's process mints a GitHub token for its own pull request's repository
   assert.equal(await heldOf(store, { githubApi: github.api, launch }).githubAppAccess(), undefined);
 });
 
+test("a GitHub token minted for a run's process joins its runner's redactor, so nothing the runner writes of the run shows it", async (t) => {
+  const { keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  const cut = heldRedactor(keepText);
+  const launch = { input: { content: PULL }, inputOrigin: { kind: "trigger", source: "github" } };
+  const access = await heldOf(store, { githubApi: github.api, revision: { kind: "agentic", body: { checkout: "pull_request" } }, launch, cut }).githubAppAccess();
+  assert.equal(cut("the token is not-a-secret-ghs-token"), "the token is not-a-secret-ghs-token", "nothing minted yet, nothing held");
+  const minted = await access.mint({ repo: "acme/widgets", installation: 777 });
+  assert.equal(minted.ok, true, JSON.stringify(minted));
+  assert.ok(!cut(`the token is ${minted.token}`).includes(minted.token), "the minted token is cut from what the runner writes");
+});
+
 const judgeFlow = (name, provider) => ({
   v: 2, name,
   schemas: {

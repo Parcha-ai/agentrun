@@ -31,6 +31,7 @@ import { saveOnce } from "./save-once.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
+import { valueLeft } from "./learn/secrets.js";
 import { capped, mcpClient, scrub } from "./mcp-wire.js";
 import { resourceResult, resourceToolOperation, resourceToolProblem } from "./mcp-resources.js";
 import { mcpNameOf, mcpToolName } from "./tool-names.js";
@@ -244,8 +245,10 @@ export interface McpGatewayOptions {
   filed?: (server: string, tool: string) => FileSetting | typeof UNREADABLE | undefined;
   /** The run's redactor (the runner's one, holding every key the run opened: its own model and tool keys, the other
    *  servers' credentials), after each call's own scrub on every text the gateway answers or files: the model's answer,
-   *  a filed answer, a long answer's filed rest, a server's results and an error's words. None: the call's scrub alone. */
-  redact?: (text: string) => string;
+   *  a filed answer, a long answer's filed rest, a server's results and an error's words; its values (heldValues) read
+   *  in a binary payload filed whole (filedJson). Every claim's MCP gives it (mcp-run.ts); a caller the types don't reach
+   *  that gives none gets the call's scrub alone. */
+  redact: ((text: string) => string) & { readonly heldValues?: () => readonly string[] };
 }
 
 /** A run's journal commit. */
@@ -365,20 +368,66 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     return { text, other: blocks.length - texts.length };
   };
 
+  /** `result` as the JSON filed for an answer with blocks that are not text, every text in it cut by `clean`. An image's
+   *  or an audio's data and a resource's blob are base64, one run with no whitespace, which the run's redactor would show
+   *  as "[redacted]" past a piece (key-refusal.ts redactedAnswer), and a screenshot is far longer than one: each is
+   *  scrubbed of the call's own credentials (`own`) and kept whole unless it holds one of `values` (what the run's
+   *  redactor holds), as written, in any form the matcher finds, or in the bytes it decodes to; then it is "[redacted]"
+   *  alone. `values` undefined (a redactor that names none): the payload is cut as the rest is. */
+  const filedJson = (result: Record<string, unknown>, clean: (text: string) => string, own: (text: string) => string, values: readonly string[] | undefined): string => {
+    const blocks = Array.isArray(result.content) ? (result.content as unknown[]) : [];
+    const payloads: { at: number; key: "data" | "blob"; text: string }[] = [];
+    const bare = blocks.map((block, at) => {
+      if (!block || typeof block !== "object") return block;
+      const one = block as Record<string, unknown>;
+      if ((one.type === "image" || one.type === "audio") && typeof one.data === "string") {
+        payloads.push({ at, key: "data", text: one.data });
+        return { ...one, data: "" };
+      }
+      const resource = one.type === "resource" && one.resource && typeof one.resource === "object" ? (one.resource as Record<string, unknown>) : undefined;
+      if (resource && typeof resource.blob === "string") {
+        payloads.push({ at, key: "blob", text: resource.blob });
+        return { ...one, resource: { ...resource, blob: "" } };
+      }
+      return block;
+    });
+    const filed = clean(JSON.stringify(payloads.length ? { ...result, content: bare } : result));
+    if (!payloads.length) return filed;
+    let doc: { content?: unknown };
+    try {
+      doc = JSON.parse(filed) as { content?: unknown };
+    } catch {
+      return filed;
+    }
+    const kept = (payload: string) => {
+      const scrubbed = own(payload);
+      if (!values) return clean(payload);
+      if (!values.length) return scrubbed;
+      return valueLeft(scrubbed, values, []) || valueLeft(Buffer.from(scrubbed, "base64").toString("latin1"), values, []) ? "[redacted]" : scrubbed;
+    };
+    const content = Array.isArray(doc.content) ? (doc.content as unknown[]) : [];
+    for (const { at, key, text } of payloads) {
+      const block = content[at] as Record<string, unknown> | undefined;
+      const into = key === "data" ? block : (block?.resource as Record<string, unknown> | undefined);
+      if (into && typeof into === "object" && into[key] === "") into[key] = kept(text);
+    }
+    return JSON.stringify(doc);
+  };
+
   /** The model's text of `result`: its text blocks and its embedded text resources (GitHub's get_file_contents answers a
    *  file as one) joined, its structured content when it has neither. Past MCP_CLIP, its start and the rest filed in the
    *  run's evidence/mcp/<server>/ as readable lines, through its Workspace (never through a link), the text saying where
    *  and the read offset that goes on (filed-answer.ts), so read pages through it with no shell. With blocks that are
    *  neither (an image, a blob), the whole result is filed there as JSON, and the text says where. `clean` scrubs every
    *  credential the call's server took or sent. */
-  const textOf = async (server: string, tool: string, result: Record<string, unknown>, clean: (text: string) => string): Promise<string> => {
+  const textOf = async (server: string, tool: string, result: Record<string, unknown>, clean: (text: string) => string, filedAs: (result: Record<string, unknown>) => string): Promise<string> => {
     const { text, other } = answerOf(result, clean);
     if (text.length <= MCP_CLIP && other === 0) return text;
     const name = `${tool}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
     if (other === 0) return filedAnswer(async () => workspaceAt(await options.work()), `evidence/mcp/${server}`, name, text, MCP_CLIP);
     const head = text.length > MCP_CLIP ? `${text.slice(0, MCP_CLIP)}\n[cut at ${MCP_CLIP} of ${text.length} characters; ` : `${text}\n[${other} block${other > 1 ? "s" : ""} that ${other > 1 ? "are" : "is"} not text; `;
     try {
-      await workspaceAt(await options.work()).write(`evidence/mcp/${server}/${name}.json`, clean(JSON.stringify(result)));
+      await workspaceAt(await options.work()).write(`evidence/mcp/${server}/${name}.json`, filedAs(result));
     } catch (error) {
       // The Workspace's code and the port's line for it, never the error's message, which names paths.
       return `${head}the whole answer could not be saved (${workspaceErrorWords(error) ?? (error as { code?: string })?.code ?? "write failed"})]`;
@@ -392,9 +441,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
    *  error, so the model can still react through a shown field. An answer with blocks that are not text is filed as the
    *  whole result's JSON. A write that fails (or a Workspace that cannot open) answers an error in the Workspace's words,
    *  none of the answer shown. */
-  const filedOf = async (setting: FileSetting, tool: string, result: Record<string, unknown>, clean: (text: string) => string): Promise<McpCallResult> => {
+  const filedOf = async (setting: FileSetting, tool: string, result: Record<string, unknown>, clean: (text: string) => string, filedAs: (result: Record<string, unknown>) => string): Promise<McpCallResult> => {
     const { text: answer, other } = answerOf(result, clean);
-    const text = other === 0 ? answer : clean(JSON.stringify(result));
+    const text = other === 0 ? answer : filedAs(result);
     const path = `${setting.folder}/${tool.replace(/[^A-Za-z0-9_.-]/g, "_")}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.json`;
     try {
       await workspaceAt(await options.work()).write(path, text);
@@ -450,8 +499,10 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // read as the agent's own, then cut by the run's redactor: a value the run holds that the server echoed reaches
     // neither. The one place each of those texts passes.
     const own = back ? (text: string) => back(scrubbed(text)) : scrubbed;
-    const runCut = options.redact;
+    const runCut = options.redact as typeof options.redact | undefined;
     const clean = runCut ? (text: string) => runCut(own(text)) : own;
+    const heldOf = !runCut ? () => [] : (runCut.heldValues ?? (() => undefined));
+    const filedAs = (whole: Record<string, unknown>) => filedJson(whole, clean, own, heldOf());
     hold(server, queryOf(server));
     try {
       const upstream = await until(connect(server, url, headers), boundedSignal);
@@ -473,8 +524,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       const filing = options.filed?.(server, tool.name);
       // UNREADABLE never gets here (unsendable refuses it unsent); never answered unfiled either way.
       if (filing === UNREADABLE) return said(unreadableFile(server, tool.name), true);
-      if (filing) return await filedOf(filing, tool.name, result, clean);
-      return said(await textOf(server, tool.name, result, clean), result.isError === true);
+      if (filing) return await filedOf(filing, tool.name, result, clean, filedAs);
+      return said(await textOf(server, tool.name, result, clean, filedAs), result.isError === true);
     } catch (error) {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
       if (boundedSignal.aborted) return said(`The resource operation on the MCP server ${server} exceeded its deadline.`, true);
