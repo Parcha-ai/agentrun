@@ -139,9 +139,10 @@ text editor, the terminal, Firefox). App ids come from `apps.list`: call it befo
 `app: "org.xfce.mousepad"` opens it, or brings it in front, first. A screenshot with no app in front lists the ids. `computer.shell.run` ends everything its command started when it returns, so an
 app it starts closes at once; `computer.processes.start` keeps a program that is not one of the listed apps. A Linux
 desktop lists and opens no app whose desktop file its own user could change, such as one written with
-`computer.files.write`: `apps.open` of one is refused, naming the file. `computer.apps.open(id, { url })` opens a URL
-with a scheme or an absolute path in the app (on Linux nothing else, and never a url starting with `-`); the path may
-be a file you wrote, where write is granted, and the app can then do what a shell or the file ops do.
+`computer.files.write`: `apps.open` of one by its id is refused, naming the file. `computer.apps.open(id, { url })`
+opens a URL with a scheme or an absolute path in the app (on Linux nothing else, and never a url starting with `-`).
+Where write is granted, an app you open, with a url or without one, can do what a shell does: it reads its config from
+the user's home, which you can write, and the path may be a file you wrote.
 
 ## Habits that work
 

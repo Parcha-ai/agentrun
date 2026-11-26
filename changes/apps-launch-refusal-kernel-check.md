@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-computer
+kind: fix
+---
+On a Linux desktop, the check of whether computerd's own user could change an app's desktop file asks the kernel too (`faccessat2` as the effective user, no link followed) for each folder on the way and for the file, beside the mode bits, so an ACL entry or a FUSE file system's own rule that lets the user write is seen. `apps.launch` names a refused desktop file from that one check, by the id asked for, and no longer opens every desktop file again to find it: that open followed links and waited forever on a named pipe called `*.desktop`. A refused file is never read, so the name or program it gives finds no app: asked by that name, `apps.launch` answers `not_found`, and by its id, `denied`. `apps.terminate` ends an app this computerd launched though its desktop file is refused now, as when a file of its id was written ahead of it since; before, it answered `denied` and the app ran on to the computer's end. The computer wire spec says that `apps.launch` answers `denied` for such an app and that `apps.list` leaves it out.
