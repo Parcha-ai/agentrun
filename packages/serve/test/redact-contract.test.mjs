@@ -1007,6 +1007,9 @@ const CASES = [
       ]),
       ["in halves at its middle", `const body = ${lit(at(value, value.length >> 1)).join(" + ")};`],
       ["in single-quoted halves at its middle", `body = ${lit(at(value, value.length >> 1), "'").join(" + ")}`],
+      // As a write call's arguments carry the code: in a JSON string, its quotes escaped.
+      ["in halves at its middle, written in a JSON string", JSON.stringify({ path: "body.js", content: `const body = ${lit(at(value, value.length >> 1)).join(" + ")};\n` })],
+      [`in ${n}-character chunks, one a line, written in a JSON string`, JSON.stringify({ path: "body.js", content: ["const body =", ...lit(chunks(value, n)).map((part) => `  ${part} +`), '  "";'].join("\n") })],
     ];
     const noPlus = (value) => value.replaceAll("+", "A");
     const before = (what) => (what.includes("single-quoted") ? "" : ", as before");
@@ -1019,6 +1022,11 @@ const CASES = [
         name: `a held value with no "+" printed as string literals joined by "+" ${what} withholds the text${before(what)} (${value.length} characters)`,
         text, values: [noPlus(value)], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
       }))),
+      // Python's implicit join, no operator between the literals: read back to back before too.
+      ...[BODY, SHORT].map((value) => ({
+        name: `a held value with a "+" printed as Python literals joined by nothing but a line break withholds the text, as before (control, ${value.length} characters)`,
+        text: `body = (\n    ${lit(at(value, value.indexOf("+") + 1)).join("\n    ")}\n)`, values: [value], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
+      })),
       {
         name: 'the operator "+" standing where a held value\'s own "+" is, between two string literals, withholds the text, as before (control)',
         text: `const body = ${lit(SHORT.split("+")).join(" + ")};`, values: [SHORT], hides: [SHORT.slice(0, 6)], exact: all("[redacted]"),
