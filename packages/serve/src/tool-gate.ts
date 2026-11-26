@@ -43,6 +43,7 @@ import { formatToolName, isCatalogName, mcpNameOf, mcpToolName, monidNameOf } fr
 import { filedFolders } from "./filed-tool.js";
 import { foldName } from "./home-path.js";
 import { savePath, WEB_SAVE_TOOL } from "./web-save-path.js";
+import { PDF_PAGES_TOOL } from "./pdf-pages.js";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -157,6 +158,8 @@ function runFilePaths(key: string, name: string, args: unknown): { tool: string;
   if (FILE_KEYS.has(key)) return name === READ_SKILL_FILE ? undefined : { tool: key, paths: PATH_ARGS.flatMap((arg) => (typeof given[arg] === "string" ? [given[arg]] : [])) };
   if (key === WEB_SAVE_TOOL) return typeof given.path === "string" && given.path !== "" ? { tool: key, paths: [savePath(given.path)] } : undefined;
   if (name === BROWSER_UPLOAD) return typeof given.path === "string" ? { tool: name, paths: [given.path] } : undefined;
+  // A workflow call node's pdf_pages (callOnly: never the agent's own call), which opens a run file at its path.
+  if (key === PDF_PAGES_TOOL) return typeof given.path === "string" ? { tool: key, paths: [given.path] } : undefined;
   return undefined;
 }
 /** `given` as a path in the run's folder (`names`: its names, this machine's path, the computer's and each alias its file
@@ -546,6 +549,9 @@ export class RunGate {
 
   /** The computer ops this run's gate refuses whatever their arguments (opBar): what computer_op's op list and a
    *  script's `computer` declarations leave out. */
+  /** Why a learned workflow's call node of `tool` with `args` is refused for a filed folder (filedRefusal, as the agent's
+   *  own call of a tool is in decide), or undefined: its tool's setting is read apart (policy), as a call node can't ask. */
+  readonly filedRefused = (tool: string, args: unknown): string | undefined => this.filedRefusal(this.keyOf(tool) ?? tool, tool, args, "no");
   readonly opsRefused = (): readonly string[] => Object.keys(OP_HELD_AS).filter((op) => this.opBar(op) !== undefined);
 
   /** The refusal of a call (`what`, in words) that needs `tool` among the agent's tools, for an agent not given it (none
