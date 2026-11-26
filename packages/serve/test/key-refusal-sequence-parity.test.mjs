@@ -19,6 +19,7 @@ const OPENERS = [
   ["ESC [", "\u001b[", (inner) => `0${inner}m`],
   ["U+009B", "\u009b", (inner) => `1${inner}m`],
   ["ESC ]", "\u001b]", (inner) => `0;t${inner}\u0007`],
+  ["ESC ] ended by ST", "\u001b]", (inner) => `0;t${inner}\u001b\\`],
   ["U+009D", "\u009d", (inner) => `0;t${inner}\u009c`],
   ["ESC (", "\u001b(", (inner) => `${inner}B`],
 ];
@@ -49,18 +50,22 @@ const INNERS = unique([
   ...[0xe9, 0xfffd, 0xfffe, 0xe000, 0x2800, 0x3164, 0x1f600].map((code) => [`${named(code)}, taking a cell`, String.fromCodePoint(code)]),
   ["a colon", ":"],
   ["a quote", '"'],
+  ["two quotes then a colon", '"":'],
+  ["two quotes then a space", '"" '],
+  ["two quotes then a no-break space", '""\u00a0'],
   ["an apostrophe", "'"],
+  ["a backslash", "\\"],
   ["a private marker out of place", "?"],
   ["an intermediate then a parameter", " 0"],
 ]);
 // JSON's escapes: each character past printable ASCII, a backslash and a quote as a "\u" escape; as a JSON writer
 // writes them (a quote as "\""); and written once more as a JSON string's text (JSON in JSON).
 const toUnicode = (text) => [...text].map((char) => (/^[\x20-\x7e]$/.test(char) && char !== '"' && char !== "\\" ? char : char.split("").map((unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`).join(""))).join("");
-const toJson = (text) => toUnicode(text).replaceAll("\\u0022", '\\"');
+const toJson = (text) => toUnicode(text).replaceAll("\\u0022", '\\"').replaceAll("\\u005c", "\\\\");
 const toJsonTwice = (text) => toJson(text).replace(/[\\"]/g, (char) => `\\${char}`);
-// Python's: "\x" and two hex digits to U+00FF, an apostrophe as "\'", past U+00FF as JSON's "\u" (the views read
-// those as JSON's).
-const toPython = (text) => [...text].map((char) => (char === "'" ? "\\'" : /^[\x20-\x7e]$/.test(char) && char !== "\\" ? char : char.length === 1 && char.charCodeAt(0) < 0x100 ? `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}` : toUnicode(char))).join("");
+// Python's: "\x" and two hex digits to U+00FF, an apostrophe as "\'", a backslash as "\\", past U+00FF as JSON's
+// "\u" (the views read those as JSON's).
+const toPython = (text) => [...text].map((char) => (char === "'" ? "\\'" : char === "\\" ? "\\\\" : /^[\x20-\x7e]$/.test(char) ? char : char.length === 1 && char.charCodeAt(0) < 0x100 ? `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}` : toUnicode(char))).join("");
 const toEntities = (text) => [...text].map((char) => (/^[\x20-\x7e]$/.test(char) && char !== "&" && char !== '"' && char !== "\\" ? char : `&#x${char.codePointAt(0).toString(16)};`)).join("");
 const percent = (text) => Buffer.from(text, "utf8").toString("hex").replace(/../g, (byte) => `%${byte.toUpperCase()}`);
 
@@ -68,17 +73,17 @@ const SHAPES = [];
 for (const [opener, intro, body] of OPENERS) {
   for (const [what, inner] of INNERS) {
     const sequence = `${intro}${body(inner)}`;
-    SHAPES.push([`${opener}, ${what} inside, as it stands`, sequence, "json"]);
-    SHAPES.push([`${opener}, ${what} inside, as JSON's escapes`, toJson(sequence), "json"]);
-    SHAPES.push([`${opener}, ${what} inside, as JSON's \\u escapes`, toUnicode(sequence), "json"]);
-    SHAPES.push([`${opener}, ${what} inside, as JSON's escapes twice`, toJsonTwice(sequence), "json"]);
-    SHAPES.push([`${opener}, ${what} inside, as Python's escapes`, toPython(sequence), "python"]);
-    SHAPES.push([`${opener}, ${what} inside, as HTML references`, toEntities(sequence), "json"]);
-    SHAPES.push([`${opener}, ${what} inside, percent-encoded`, percent(sequence), "json"]);
+    SHAPES.push([`${opener}, ${what} inside, as it stands`, sequence, "json", inner]);
+    SHAPES.push([`${opener}, ${what} inside, as JSON's escapes`, toJson(sequence), "json", inner]);
+    SHAPES.push([`${opener}, ${what} inside, as JSON's \\u escapes`, toUnicode(sequence), "json", inner]);
+    SHAPES.push([`${opener}, ${what} inside, as JSON's escapes twice`, toJsonTwice(sequence), "json", inner]);
+    SHAPES.push([`${opener}, ${what} inside, as Python's escapes`, toPython(sequence), "python", inner]);
+    SHAPES.push([`${opener}, ${what} inside, as HTML references`, toEntities(sequence), "json", inner]);
+    SHAPES.push([`${opener}, ${what} inside, percent-encoded`, percent(sequence), "json", inner]);
   }
   // Percent-encoded bytes that are no UTF-8: the percent views decode each to U+FFFD.
   for (const [what, bytes] of [["a lone byte FF", "%FF"], ["a truncated sequence", "%E2%82"], ["a stray continuation byte", "%80"]])
-    SHAPES.push([`${opener}, ${what} inside, percent-encoded`, `${percent(intro)}${percent(body("\u0000")).replace("%00", bytes)}`, "json"]);
+    SHAPES.push([`${opener}, ${what} inside, percent-encoded`, `${percent(intro)}${percent(body("\u0000")).replace("%00", bytes)}`, "json", bytes]);
 }
 
 // Each padding once (an encoding that writes a shape as another does adds nothing).
@@ -86,26 +91,41 @@ const seen = new Set();
 const UNIQUE_SHAPES = SHAPES.filter(([, pad, kind]) => !seen.has(`${kind} ${pad}`) && seen.add(`${kind} ${pad}`));
 
 const wrapped = (body, kind = "json") => (kind === "python" ? `{'a': '${body}'}` : `{"a": "${body}"}`);
+// The padding inside one string, every shape; or each padding the end of a string (a list of strings, as a writer
+// writes one: a sequence that ends a string ends right before its closing quote, and an escape at its end reads with
+// that quote), each shape with nothing inside it or a unit a string's quoting reads (a quote, an apostrophe, a
+// backslash): what follows a sequence there is the string's end, whatever else is inside it.
+const QUOTING = new Set(["", '"', "'", "\\"]);
+const LAYOUTS = [
+  ["inside one string", UNIQUE_SHAPES, (pad) => pad, (body, kind) => wrapped(body, kind)],
+  [
+    "each ending a string",
+    UNIQUE_SHAPES.filter(([, , , inner]) => [...inner].some((char) => QUOTING.has(char)) || inner === ""),
+    (pad, kind) => (kind === "python" ? `${pad}', '` : `${pad}", "`),
+    (body, kind) => (kind === "python" ? `['${body}']` : `["${body}"]`),
+  ],
+];
 
-test("every padding shape the matcher reads past whole is read past by the read after a call's stop and by a run's tail read", () => {
-  const under = [];
-  let checked = 0;
-  for (const [name, pad, kind] of UNIQUE_SHAPES) {
-    // The matcher's reading: a short text, the padding three times between the value's halves.
-    const short = wrapped(`see ${HEAD}${pad.repeat(3)} ${REST} more`, kind);
-    if (redactedAnswer(short, [VALUE]).includes(REST)) continue;
-    checked++;
-    const long = pad.repeat(300);
-    let body = "";
-    while (body.length < 8192 - 100) body += "word ";
-    if (redactedCall(wrapped(`${body}see ${HEAD} ${long}${REST} more`, kind), [VALUE], 200) !== "[redacted]") under.push(`kr-9 ${name}`);
-    const tail = wrapped(`${"a".repeat(9000)}${HEAD}${long} ${REST} more`, kind);
-    if (redactedCall(tail, [VALUE], 100_000).includes(REST)) under.push(`kr-10 call ${name}`);
-    if (redactedAnswer(tail, [VALUE]).includes(REST)) under.push(`kr-10 answer ${name}`);
-  }
-  assert.ok(checked > UNIQUE_SHAPES.length / 2, `the matcher read past ${checked} of ${UNIQUE_SHAPES.length} shapes`);
-  assert.deepEqual(under, []);
-});
+for (const [layout, shapes, piece, text] of LAYOUTS)
+  test(`every padding shape the matcher reads past whole, ${layout}, is read past by the read after a call's stop and by a run's tail read`, () => {
+    const under = [];
+    let checked = 0;
+    for (const [name, pad, kind] of shapes) {
+      // The matcher's reading: a short text, the padding three times between the value's halves.
+      const short = text(`see ${HEAD}${piece(pad, kind).repeat(3)} ${REST} more`, kind);
+      if (redactedAnswer(short, [VALUE]).includes(REST)) continue;
+      checked++;
+      const long = piece(pad, kind).repeat(300);
+      let body = "";
+      while (body.length < 8192 - 100) body += "word ";
+      if (redactedCall(text(`${body}see ${HEAD} ${long}${REST} more`, kind), [VALUE], 200) !== "[redacted]") under.push(`kr-9 ${name}`);
+      const tail = text(`${"a".repeat(9000)}${HEAD}${long} ${REST} more`, kind);
+      if (redactedCall(tail, [VALUE], 100_000).includes(REST)) under.push(`kr-10 call ${name}`);
+      if (redactedAnswer(tail, [VALUE]).includes(REST)) under.push(`kr-10 answer ${name}`);
+    }
+    assert.ok(checked > shapes.length / 2, `the matcher read past ${checked} of ${shapes.length} shapes`);
+    assert.deepEqual(under, []);
+  });
 
 test("kr-10 (percent-encoded CSI colours with U+FFFD inside): a held value whose head ends a run too long to read, the padding after it, and whose rest follows is withheld", () => {
   const text = wrapped(`${"a".repeat(9000)}${HEAD}${"%1B%5B0%EF%BF%BDm".repeat(300)} ${REST} more`);

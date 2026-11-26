@@ -193,6 +193,28 @@ for (const [what, pad, kind] of CONTROL_PADS) {
   });
 }
 
+// A JSON writer writes ST (ESC and a backslash) as "\u001b" and two backslashes. Where a quote follows it (the string's
+// end, or an escaped quote), JSON's second level reads the two backslashes and the quote as one escaped quote, which
+// decodes to nothing; the views that read one level read the ST, and an OSC title before it is a whole sequence there,
+// however long.
+const TITLE = `${String.raw`\u001b]0;`}${"x".repeat(250)}${String.raw`\u001b\\`}`;
+const ST_ENDS = [
+  ["an OSC title ended by ST that ends a string", (before, after) => `["${before}${TITLE}", "${after}"]`],
+  ["an OSC title ended by ST and an escaped quote", (before, after) => `{"a": "${before}${TITLE}\\" ${after}"}`],
+];
+for (const [what, text] of ST_ENDS) {
+  test(`kr-9 (${what}): a held value split at a call's stop around it is withheld`, () => {
+    let body = "";
+    while (body.length < 8192 - 100) body += "word ";
+    assert.equal(redactedCall(text(`${body}see ${PY_HEAD} `, `${PY_REST} more`), [`${PY_HEAD}${PY_REST}`], 200), "[redacted]");
+  });
+
+  test(`kr-10 (${what}): a held value whose head ends a run too long to read, the title after it, and whose rest follows is withheld`, () => {
+    const long = text(`${"a".repeat(9000)}${PY_HEAD}`, `${PY_REST} more`);
+    for (const out of [redactedCall(long, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(long, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
+  });
+}
+
 test("kr-11: control padding after a word, with no held value split around it, is shown (control)", () => {
   let body = "";
   while (body.length < 8192 - 100) body += "word ";
