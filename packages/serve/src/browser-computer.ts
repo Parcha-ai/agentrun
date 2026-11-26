@@ -277,18 +277,21 @@ export function planeBrowser(provider: ComputerProvider, run: { readonly runId: 
 
 /** What the run's browser holds as its claim lets the run go, from pi-browser's open-session inventory once its releases
  *  have drained: every row still there is a session its custody holds (a release that failed, a lost one reconcile takes
- *  again); its id, or where its create's answer was lost (no id), its tag, any session of which it may hold. */
-export function browserHolds(rows: ReadonlyArray<{ readonly tag: string; readonly resourceId: string | null }>): BrowserHolds {
+ *  again); its id, or where its create's answer was lost (no id), its tag, any session of which it may hold. `custody`:
+ *  the ids of every session its custody held in this process, released since or not: a session it released itself is
+ *  billed by its own record, never again here, though the vendor may list it as running a moment after its release. */
+export function browserHolds(rows: ReadonlyArray<{ readonly tag: string; readonly resourceId: string | null }>, custody: Iterable<string> = []): BrowserHolds {
   return {
-    ids: new Set(rows.flatMap((row) => (row.resourceId === null ? [] : [row.resourceId]))),
+    ids: new Set([...custody, ...rows.flatMap((row) => (row.resourceId === null ? [] : [row.resourceId]))]),
     tags: new Set(rows.filter((row) => row.resourceId === null).map((row) => row.tag)),
   };
 }
 
-/** At the claim's let-go: every session of the run's labels (its run, this claim's epoch) that `rows` (browserHolds) does
- *  not hold, released (ClaimBrowser.releaseUnheld); undefined for a browser that names no run and epoch. */
-export async function releaseUnheldBrowsers(computer: ClaimBrowser, rows: ReadonlyArray<{ readonly tag: string; readonly resourceId: string | null }>, signal?: AbortSignal): Promise<UnheldSessions | undefined> {
-  return computer.releaseUnheld?.(browserHolds(rows), signal);
+/** At the claim's let-go: every session of the run's labels (its run, this claim's epoch) that what `rows` reads
+ *  (browserHolds, read once the vendor's list answered) does not hold, released (ClaimBrowser.releaseUnheld); undefined
+ *  for a browser that names no run and epoch. */
+export async function releaseUnheldBrowsers(computer: ClaimBrowser, rows: () => Promise<ReadonlyArray<{ readonly tag: string; readonly resourceId: string | null }>>, custody: Iterable<string> = [], signal?: AbortSignal): Promise<UnheldSessions | undefined> {
+  return computer.releaseUnheld?.(async () => browserHolds(await rows(), custody), signal);
 }
 
 /** When the run's process lets the run go: closes the download sockets its browser's sessions hold, released or not (a

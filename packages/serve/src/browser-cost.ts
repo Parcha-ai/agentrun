@@ -105,12 +105,20 @@ const BROWSER_TOOL = "browser";
 /** A row of pi-browser's open-session inventory. */
 type Row = { tag: string; conversationId: number; state: string; resourceId: string | null };
 
-/** What a let-go's release of the browsers nothing held says on the run's timeline (BROWSERS_UNHELD). */
+/** The tag a browser a create race left running is charged under (BROWSER_CHARGED), whichever release ended it (a let-go's
+ *  releaseUnheld, or a release by a session's tag that ended it beside that session): one key, so it is charged once in a
+ *  process and booked once on the ledger (chargeRef). */
+export const unheldTag = (id: string): string => `unheld:${id}`;
+
+/** What a release of the browsers a create race left running says on the run's timeline and its root (BROWSERS_UNHELD):
+ *  that nothing the run held was among them, so a reader does not take their time for the run's own use. */
 export function unheldWords(swept: UnheldSessions): string {
   const n = swept.released.length;
-  const released = n > 0 ? `Released ${n} browser${n === 1 ? "" : "s"} this run no longer held (${swept.released.map((one) => one.id).join(", ")}); ${n === 1 ? "its" : "their"} time is in the run's cost.` : "";
-  const failed = swept.failed.length > 0 ? `Could not release ${swept.failed.length} browser${swept.failed.length === 1 ? "" : "s"} this run no longer held (${swept.failed.join("; ")}): each runs to its vendor's lifetime.` : "";
-  return [released, failed].filter(Boolean).join(" ");
+  const one = n === 1;
+  const released = n > 0 ? `Released ${n} browser${one ? "" : "s"} a create race left running (${swept.released.map((r) => r.id).join(", ")}); this run did not hold ${one ? "it" : "them"}, and ${one ? "its" : "their"} time is in the run's cost.` : "";
+  const failed = swept.failed.length > 0 ? `Could not release ${swept.failed.length} browser${swept.failed.length === 1 ? "" : "s"} a create race left running (${swept.failed.join("; ")}): each runs to its vendor's lifetime.` : "";
+  const creating = swept.creating.length > 0 ? `Left ${swept.creating.length} browser${swept.creating.length === 1 ? "" : "s"} to ${swept.creating.length === 1 ? "its create" : "their creates"}, still running (${swept.creating.join(", ")}).` : "";
+  return [released, failed, creating].filter(Boolean).join(" ");
 }
 
 /** One run's browser bookings, for its one provider at `price` with pi-browser's idle window `idleS`. `release` lets go of
@@ -321,8 +329,9 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
     }
   }
 
-  /** The one booking a charge names on the ledger: its session, its time, and whether it was the session's last. */
-  const chargeRef = (data: Pick<Booked, "tag" | "at" | "final">) => `browser:${data.tag}@${data.at}${data.final ? "/final" : ""}`;
+  /** The one booking a charge names on the ledger: its session, its time, and whether it was the session's last. A
+   *  browser a create race left (unheldTag) is charged once whatever ended it, so its booking is its id alone. */
+  const chargeRef = (data: Pick<Booked, "tag" | "at" | "final">) => (data.tag.startsWith(unheldTag("")) ? `browser:${data.tag}/final` : `browser:${data.tag}@${data.at}${data.final ? "/final" : ""}`);
 
   /** At a reopen, on the runner's one ledger: every charge the root holds (BROWSER_CHARGED) is booked there, once by its
    *  ref, so one whose commit landed and whose booking did not (its process lost between the two) is counted now; one
@@ -528,28 +537,44 @@ export function browserSpend(provider: string, price: { usdPerHour: number | nul
   /** Once every ledger step of a charge under no call is written. */
   const ledgerIdle = async (): Promise<void> => void (await Promise.all([...pending]));
 
-  /** At the claim's let-go, the sessions of the run's labels that nothing held, released (ClaimBrowser.releaseUnheld), in
-   *  one commit on the run's root: each one's time charged as a session's release is (a BROWSER_CHARGED, final, under no
-   *  call, its tag `unheld:<id>`), from when its vendor made it to `at`, topped up to the provider's minimum (pi-browser's
-   *  sessionCharge), and what was released, and what could not be, said on the run's timeline (BROWSERS_UNHELD). Each
-   *  charge is booked on the run's one ledger as every charge is, once its commit is in (watch, booked: by its ref, so a
-   *  reopen books one whose booking was lost, and never twice). One whose vendor does not say when it made it is charged
-   *  at no known amount (usd null): unknown, never 0. A free provider's time charges nothing. */
+  /** The browsers a create race left running that this process has charged (unheldTag): each once, whichever release saw
+   *  it end. */
+  const raced = new Set<string>();
+  /** Sessions a create race left running and nothing held, released (a let-go's ClaimBrowser.releaseUnheld, or a release
+   *  by a session's tag that ended them beside it: pi-browser's onRaceReleased), in one commit on the run's root: each
+   *  one's time charged as a session's release is (a BROWSER_CHARGED, final, under no call, its tag unheldTag), from when
+   *  its vendor made it to `at`, topped up to the provider's minimum (pi-browser's sessionCharge), and what was released,
+   *  what could not be, and what was left to a create still in flight, said on the run's timeline (BROWSERS_UNHELD). A
+   *  session this process charged already is neither charged nor said again. Each charge is booked on the run's one ledger
+   *  as every charge is, once its commit is in (watch, booked: by its ref, its id alone, so a reopen, or the other release,
+   *  never books it twice). One whose vendor does not say when it made it is charged at no known amount (usd null):
+   *  unknown, never 0. A free provider's time charges nothing. */
   async function unheld(harness: Pick<Harness, "commit">, swept: UnheldSessions, context: Context, at = new Date().toISOString()): Promise<void> {
-    if (swept.released.length === 0 && swept.failed.length === 0) return;
-    const { sessionCharge, startSpent } = await import("@parcha/pi-browser");
-    const prices = { sessionUsdPerHour: rate, sessionMinimumS: price.minimumS, fetchUsd: 0, fetchProxiedUsd: 0, searchUsd: 0 };
-    const charges: Booked[] = swept.released.map(({ id, createdAt }) => {
-      const base = { tool: "browser" as const, charged_by: provider, call: null, tag: `unheld:${id}`, conversation: ROOT_CONVERSATION_ID as number, at, final: true };
-      if (createdAt === null) return { ...base, usd: null, seconds: 0 };
-      const charged = sessionCharge(startSpent(createdAt), at, prices, rate === null ? "unpriced" : "priced", true);
-      return { ...base, usd: charged.usage.state === "priced" ? charged.usage.usage.cost.total : null, seconds: charged.spent.seconds };
-    });
-    const words = unheldWords(swept);
-    await harness.commit(async (tx) => {
-      if (rate !== 0) for (const data of charges) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_CHARGED, data });
-      await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSERS_UNHELD, data: { words, released: swept.released.map((one) => one.id), failed: [...swept.failed] } });
-    }, context);
+    const fresh = { ...swept, released: swept.released.filter((one) => !raced.has(unheldTag(one.id))) };
+    if (fresh.released.length === 0 && fresh.failed.length === 0 && fresh.creating.length === 0) return;
+    // Taken before any wait, so a release that sees the same session meanwhile finds it charged; given back if the commit
+    // fails, so the next release that sees it charges it.
+    const tags = fresh.released.map((one) => unheldTag(one.id));
+    for (const tag of tags) raced.add(tag);
+    let words: string;
+    try {
+      const { sessionCharge, startSpent } = await import("@parcha/pi-browser");
+      const prices = { sessionUsdPerHour: rate, sessionMinimumS: price.minimumS, fetchUsd: 0, fetchProxiedUsd: 0, searchUsd: 0 };
+      const charges: Booked[] = fresh.released.map(({ id, createdAt }) => {
+        const base = { tool: "browser" as const, charged_by: provider, call: null, tag: unheldTag(id), conversation: ROOT_CONVERSATION_ID as number, at, final: true };
+        if (createdAt === null) return { ...base, usd: null, seconds: 0 };
+        const charged = sessionCharge(startSpent(createdAt), at, prices, rate === null ? "unpriced" : "priced", true);
+        return { ...base, usd: charged.usage.state === "priced" ? charged.usage.usage.cost.total : null, seconds: charged.spent.seconds };
+      });
+      words = unheldWords(fresh);
+      await harness.commit(async (tx) => {
+        if (rate !== 0) for (const data of charges) await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSER_CHARGED, data });
+        await tx.appendEntry(ROOT_CONVERSATION_ID, { kind: BROWSERS_UNHELD, data: { words, released: fresh.released.map((one) => one.id), failed: [...fresh.failed], creating: [...fresh.creating] } });
+      }, context);
+    } catch (error) {
+      for (const tag of tags) raced.delete(tag);
+      throw error;
+    }
     log(logLine("browser_unheld_released", { said: words }));
   }
 

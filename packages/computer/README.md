@@ -2701,8 +2701,9 @@ lost create's last read again and ends its own just after: the lost create relea
 most often finds it ended and fails the request. Nor does a newer browser that still runs prove that nothing answered
 the lost create's: another create's lookup answers the request's oldest without a converge and ends nothing, so a
 lookup that lists the lost create's browser while a newer one runs answers it, and the lost create's last read again
-still finds every newer one running and releases it; nothing on the vendor tells that lookup apart. A pi-browser host
-recovers there: its next call finds the browser ended and opens a fresh one. On Orgo, a create whose POST got no answer deletes the computer by its exact name; that
+still finds every newer one running and releases it; nothing on the vendor tells that lookup apart. The lookup's caller
+then holds a browser that has ended: a pi-browser host's next call finds it ended and opens a fresh session, losing one
+call and the page state, and a call with effects that was under way may report `possibly_effected`. On Orgo, a create whose POST got no answer deletes the computer by its exact name; that
 name can be the computer another process's create answered through Orgo's 409 (name in use), which then holds a
 deleted computer.
 

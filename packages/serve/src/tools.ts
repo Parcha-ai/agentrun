@@ -642,7 +642,12 @@ const browserTool: ToolEntry = {
       commit: (change) => (opened ? opened.commit(change, context) : Promise.reject(new Error("the run's journal is not open"))),
     });
     // Both hosts of a session's changes: the live view's hand-over, and the sign-in's save (its verified_at, in the store).
+    // Every session id the run's custody held in this process: the let-go's release of the browsers nothing held never
+    // takes one (browserHolds), released by its own record, though its vendor may list it a moment past its release.
+    const custodyIds = new Set<string>();
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
+      const heldId = (row as unknown as { session: { resourceId?: string | null } }).session.resourceId;
+      if (typeof heldId === "string") custodyIds.add(heldId);
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
       if (change === "released") await sessionEnded((row as unknown as { session: Parameters<typeof sessionEnded>[0] }).session, (row as unknown as { conversationId: number }).conversationId);
@@ -652,11 +657,19 @@ const browserTool: ToolEntry = {
       await saved?.(row, change);
       await onSession(row, change);
     };
+    // A release by a session's tag that ended sessions beside it (a create race left them running, with no record): each
+    // one's time charged as the let-go's release of the browsers nothing held charges it (spend.unheld, one key per
+    // session, so whichever of the two sees it end charges it once), from when the vendor's listing said it was made.
+    const raceReleased = async ({ tag, ids }: { tag: string; ids: string[] }): Promise<void> => {
+      if (!opened || !("browser" in made)) return;
+      const claimed = made.browser;
+      await spend.unheld(opened as never, { released: ids.map((id) => ({ id, tag, createdAt: claimed.madeAt?.(id) ?? null })), failed: [], creating: [] }, context);
+    };
     // The pointer is cut from everything the browser hands the model (its results, their details, its failures): a
     // vendor's refusal can quote it, as pi-browser's one-saver rule names Kernel's profile.
     // A run handed its agent's sign-in tells the model its browser keeps it (`run`'s description): one with none claims
     // cookies across pages only.
-    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
+    const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge, onRaceReleased: raceReleased });
     // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
     // (its result record) and what the model reads hold no value the runner or the claim holds.
     const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => answersCutInside(tool, host.redact));
@@ -731,22 +744,25 @@ const browserTool: ToolEntry = {
     host.beforeRelease(async (harness) => {
       try {
         if (refused) return;
-        const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string }> } | undefined;
+        const held = await harness.snapshot(browser.docs.Inventory as never, context) as { rows?: Record<string, { conversationId: number; state: string; resourceId: string | null }> } | undefined;
+        for (const row of Object.values(held?.rows ?? {})) if (row.resourceId !== null) custodyIds.add(row.resourceId);
         for (const id of new Set(Object.values(held?.rows ?? {}).filter((row) => row.state !== "released").map((row) => row.conversationId))) {
           const conversation = await harness.conversation(id as never, context);
           if (conversation) await browser.release(conversation as never, "close", context);
         }
         await browser.drain(harness as never, context);
         // A session of the run's labels that nothing holds now (a create whose reply was lost, which its recovery kept)
-        // goes with the claim, and its time is charged (releaseUnheld, spend.unheld), before the ledger is waited on.
-        // One that cannot be released, or a list that fails, is said in the log and never fails the let-go.
+        // goes with the claim, and its time is charged (releaseUnheld, spend.unheld), before the ledger is waited on. What
+        // the run holds is read once the vendor's list answered (the inventory, and every id its custody held here); a
+        // session whose create is still in flight is left to it. One that cannot be released, or a list that fails, is
+        // said in the log and never fails the let-go.
         if ("browser" in made) {
           try {
-            const rows = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null }> } | undefined)?.rows ?? {});
-            const swept = await releaseUnheldBrowsers(made.browser, rows);
+            const rows = async () => Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null }> } | undefined)?.rows ?? {});
+            const swept = await releaseUnheldBrowsers(made.browser, rows, custodyIds);
             if (swept) await spend.unheld(harness as never, swept, context);
           } catch (error) {
-            runLog(`the browsers this run no longer held could not be released: ${error instanceof Error ? error.message : String(error)}`);
+            runLog(`the browsers a create race left running could not be released: ${error instanceof Error ? error.message : String(error)}`);
           }
         }
         // The releases' charges are booked on the claim's one ledger before the run's release returns, so the run's end

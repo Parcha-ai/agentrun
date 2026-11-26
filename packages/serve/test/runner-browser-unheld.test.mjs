@@ -4,9 +4,12 @@
 // another), which a vendor that ends its sessions itself runs to its lifetime otherwise. At the run's end, its stop,
 // and its park (the claim's release), that session is released once, its time is in the run's cost
 // once (a final BROWSER_CHARGED under its own tag), and the run's timeline says so; the session the run held goes by
-// its own release, never a second one. Beside it, what the let-go holds (browserHolds): a session the run's custody
-// still holds, by its id, and every session of a tag whose create's answer was lost; another run's session and a later
-// epoch's are never touched.
+// its own release, never a second one. Where the vendor lists that session as the run's own is released by its tag,
+// that release ends it, and it is charged there under the same tag: once, also when the let-go's release lists it
+// again, and the run's own session, which a vendor's list shows a moment past its release, is never charged as one
+// nobody held. A reopen books the charge it made once. Beside it, what the let-go holds (browserHolds): a session the
+// run's custody still holds, by its id, and every session of a tag whose create's answer was lost, and a session whose
+// create is still in flight is left to it; another run's session and a later epoch's are never touched.
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +32,7 @@ const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { FAUX_BROWSER_ENV } = await import("../dist/tools.js");
 const { FAUX_ENV } = await import("../dist/model.js");
 const browserComputer = await import("../dist/browser-computer.js");
+const { unheldWords } = await import("../dist/browser-cost.js");
 after(closeOpenSessions);
 
 /** A test seal key, no real one. */
@@ -64,11 +68,11 @@ const withEnv = (t, values) => {
 /** run-1 on a new store, run by a runner on the adapter spec with a scripted free model, the faux browser making one
  *  unheld session beside the run's first (FAUX_BROWSER_UNHELD). `gate`: the model's second request waits for it (its
  *  promise) or for its abort. */
-async function unheldRun(t, { script, gate, launch = LAUNCH }) {
+async function unheldRun(t, { script, gate, launch = LAUNCH, listed = "" }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-browser-unheld-"));
   const log = join(dir, "faux-browser.log");
   writeFileSync(log, "");
-  withEnv(t, { FAUX_BROWSER_LOG: log, FAUX_BROWSER_UNHELD: String(AGE_S) });
+  withEnv(t, { FAUX_BROWSER_LOG: log, FAUX_BROWSER_UNHELD: String(AGE_S), FAUX_BROWSER_UNHELD_LISTED: listed });
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const runner = { current: undefined };
@@ -117,8 +121,11 @@ async function unheldRun(t, { script, gate, launch = LAUNCH }) {
 function letGo(run, made, recs) {
   const releases = (id) => run.ops().filter((op) => op.op === "release" && op.id === id).length;
   const charged = recs.entries.filter((e) => e.kind === "agentrun.browser_charged" && e.data?.tag === `unheld:${made.id}`);
+  // Every charge under a tag that names the session's id, whichever release made it (the run's own is charged under its
+  // custody tag, which names no id).
+  const chargesOf = (id) => recs.entries.filter((e) => e.kind === "agentrun.browser_charged" && String(e.data?.tag ?? "").includes(id));
   const said = recs.entries.filter((e) => e.kind === "agentrun.browsers_unheld");
-  return { unheldReleases: releases(made.id), ownReleases: releases(made.with), charged, said };
+  return { unheldReleases: releases(made.id), ownReleases: releases(made.with), charged, said, unheldCharges: chargesOf(made.id), ownUnheldCharges: chargesOf(made.with) };
 }
 
 /** The unheld session released once, its time charged once (final, under no call, from when it was made), said once;
@@ -133,10 +140,12 @@ function assertLetGo(what, got, made) {
   assert.ok(charge.data.seconds >= AGE_S, `${what}: charged from when it was made, ${AGE_S} s or more before: ${charge.data.seconds} s`);
   assert.equal(eight(charge.data.usd), eight(charge.data.seconds * USD_PER_S), `${what}: at Browserbase's price: ${JSON.stringify(charge.data)}`);
   assert.equal(got.said.length, 1, `${what}: the run's root says it once`);
-  assert.match(got.said[0].data.words, new RegExp(`Released 1 browser this run no longer held \\(${made.id}\\)`));
+  assert.match(got.said[0].data.words, new RegExp(`^Released 1 browser a create race left running \\(${made.id}\\); this run did not hold it, and its time is in the run's cost\\.$`));
+  assert.equal(got.unheldCharges.length, 1, `${what}: no other charge names ${made.id}: ${JSON.stringify(got.unheldCharges)}`);
+  assert.equal(got.ownUnheldCharges.length, 0, `${what}: the run's own session ${made.with} is never charged as one nobody held`);
 }
 
-test("at the run's end, the session of the run's labels that nobody held is released once and its time is in the run's cost once; the run's own goes by its own release, and the timeline says it", { timeout: 120_000 }, async (t) => {
+test("at the run's end, the session of the run's labels that nobody held, which the vendor did not list at its companion's release, is released by the let-go once and its time is in the run's cost once; the run's own goes by its own release, and the timeline says it", { timeout: 120_000 }, async (t) => {
   const run = await unheldRun(t, { script: [{ call: "snapshot" }, { say: "done" }] });
   const made = await run.unheld();
   const row = await run.rest(["ended", "failed", "stopped"]);
@@ -147,7 +156,56 @@ test("at the run's end, the session of the run's labels that nobody held is rele
   const browser = recs.entries.filter((e) => e.kind === "agentrun.browser_charged").reduce((sum, e) => sum + e.data.usd, 0);
   assert.equal(eight(row.costUsd ?? Number.NaN), eight(browser), `the run's cost holds every browser charge once, the unheld one's too: ${row.costUsd}`);
   const rows = await runTimeline(run.server, RUN, ctx, { settled: true });
-  assert.ok(rows.some((one) => one.origin === "server" && /^AgentRun: Released 1 browser this run no longer held/.test(one.summary ?? "")), `the timeline says it: ${JSON.stringify(rows.map((one) => one.summary))}`);
+  assert.ok(rows.some((one) => one.origin === "server" && /^AgentRun: Released 1 browser a create race left running/.test(one.summary ?? "")), `the timeline says it: ${JSON.stringify(rows.map((one) => one.summary))}`);
+});
+
+test("where the vendor lists the session a create race left as the run's own is released by its tag, that release ends it and its time is charged there once, under its own tag, and the let-go charges nothing more", { timeout: 120_000 }, async (t) => {
+  const run = await unheldRun(t, { script: [{ call: "snapshot" }, { say: "done" }], listed: "tag" });
+  const made = await run.unheld();
+  const row = await run.rest(["ended", "failed", "stopped"]);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const recs = await run.records(row.epoch, row.state);
+  const got = letGo(run, made, recs);
+  assertLetGo("the tag release", got, made);
+  assert.ok(!run.ops().some((op) => op.op === "release-noop" && op.id === made.id), "the let-go's list no longer showed it: the tag release alone ended it");
+  const browser = recs.entries.filter((e) => e.kind === "agentrun.browser_charged").reduce((sum, e) => sum + e.data.usd, 0);
+  assert.equal(eight(row.costUsd ?? Number.NaN), eight(browser), `the run's cost holds every browser charge once: ${row.costUsd}`);
+});
+
+test("where the tag release ends that session and the let-go's list still shows it and the run's own as running, the let-go releases it again and charges nothing more, and never charges the run's own as one nobody held", { timeout: 120_000 }, async (t) => {
+  const run = await unheldRun(t, { script: [{ call: "snapshot" }, { say: "done" }], listed: "stale" });
+  const made = await run.unheld();
+  const row = await run.rest(["ended", "failed", "stopped"]);
+  assert.equal(row.state, "ended", JSON.stringify(row));
+  const recs = await run.records(row.epoch, row.state);
+  const got = letGo(run, made, recs);
+  assertLetGo("the tag release and the let-go", got, made);
+  assert.ok(run.ops().some((op) => op.op === "release-noop" && op.id === made.id), `the let-go's list showed it and released it again: ${JSON.stringify(run.ops().filter((op) => op.op?.startsWith("release")))}`);
+  const browser = recs.entries.filter((e) => e.kind === "agentrun.browser_charged").reduce((sum, e) => sum + e.data.usd, 0);
+  assert.equal(eight(row.costUsd ?? Number.NaN), eight(browser), `the run's cost holds every browser charge once: ${row.costUsd}`);
+});
+
+test("a reopen after the let-go charged the session nobody held books that charge once: the park's let-go charges it, the raise reopens the run, and its cost holds it once at the end", { timeout: 180_000 }, async (t) => {
+  const run = await unheldRun(t, { script: [{ call: "snapshot" }, { call: "snapshot" }, { say: "done" }], launch: { ...LAUNCH, max_cost_usd: 0.019 } });
+  const made = await run.unheld();
+  const parked = await run.rest(["ended", "failed", "stopped", "parked"]);
+  assert.equal(parked.state, "parked", JSON.stringify({ state: parked.state, summary: parked.summary }));
+  const before = letGo(run, made, await run.records(parked.epoch, parked.state));
+  assertLetGo("the park", before, made);
+  const [charge] = before.charged;
+  assert.ok(charge.data.usd > 0, JSON.stringify(charge.data));
+  await sendCommand(run.server, RUN, { kind: "raise", body: { capUsd: 5 } });
+  const row = await until(async () => {
+    const now = await run.server.runs.get(RUN);
+    return now.epoch > parked.epoch && ["ended", "failed", "stopped"].includes(now.state) && now.runner === null && now;
+  }, "the run reopens and ends");
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  const recs = await run.records(row.epoch, row.state);
+  const after = letGo(run, made, recs);
+  assert.equal(after.unheldCharges.length, 1, `charged once across both claims: ${JSON.stringify(after.unheldCharges)}`);
+  assert.equal(after.unheldReleases, 1, "released once");
+  const browser = recs.entries.filter((e) => e.kind === "agentrun.browser_charged").reduce((sum, e) => sum + e.data.usd, 0);
+  assert.equal(eight(row.costUsd ?? Number.NaN), eight(browser), `the run's cost holds the charge once after the reopen: ${row.costUsd} against ${browser}, the unheld one ${charge.data.usd}`);
 });
 
 test("at the run's stop, the session nobody held is released once and charged once, the run's own by its own release", { timeout: 120_000 }, async (t) => {
@@ -185,14 +243,40 @@ test("the let-go holds a session its custody still holds by its id, and every se
   // Another run's, at this epoch, and this run's at a later epoch.
   const another = await browserComputer.planeBrowser(provider, { runId: "run-other", epoch: 3 }).open("held-tag", 60);
   const later = await browserComputer.planeBrowser(provider, { runId: "run-held", epoch: 4 }).open("later-tag", 60);
-  const swept = await browserComputer.releaseUnheldBrowsers(browser, [{ tag: "held-tag", resourceId: held }, { tag: "lost-tag", resourceId: null }]);
+  const swept = await browserComputer.releaseUnheldBrowsers(browser, async () => [{ tag: "held-tag", resourceId: held }, { tag: "lost-tag", resourceId: null }]);
   assert.deepEqual(swept.released.map((one) => one.id), [unheld], "only the session nothing held is released");
   assert.equal(swept.released[0].tag, "other-tag");
   assert.match(String(swept.released[0].createdAt), /^\d{4}-\d\d-\d\dT/, "with when the vendor made it");
   assert.deepEqual(swept.failed, []);
+  assert.deepEqual(swept.creating, []);
   for (const [id, what] of [[held, "the held session"], [lost.value.id, "the lost create's session"], [another, "another run's"], [later, "a later epoch's"]]) {
     assert.equal((await provider.attach({ id })).ok, true, `${what} still runs`);
   }
   assert.equal((await provider.attach({ id: unheld })).ok, false, "the unheld one has ended");
   assert.deepEqual(browserComputer.browserHolds([{ tag: "a", resourceId: "id-a" }, { tag: "b", resourceId: null }]), { ids: new Set(["id-a"]), tags: new Set(["b"]) });
+  assert.deepEqual(browserComputer.browserHolds([{ tag: "a", resourceId: "id-a" }], ["id-released"]), { ids: new Set(["id-released", "id-a"]), tags: new Set() }, "every id the custody held, released since or not");
+});
+
+test("the let-go leaves a session whose create this process still has in flight, says it, and releases it never; once the create answers, the session is the run's", async (t) => {
+  withEnv(t, { FAUX_BROWSER_LOG: "", FAUX_BROWSER_UNHELD: "" });
+  const { computer: faux } = fauxBrowser({}, "browserbase");
+  let open;
+  const gate = new Promise((resolve) => (open = resolve));
+  t.after(() => open());
+  // The vendor has made the session; its answer has not reached the run yet.
+  let madeId;
+  const provider = { ...faux, async create(spec, context) { const made = await faux.create(spec, context); madeId = made.ok ? made.value.id : undefined; await gate; return made; } };
+  const browser = browserComputer.planeBrowser(provider, { runId: "run-inflight", epoch: 1 });
+  const opening = browser.open("inflight-tag", 60);
+  await until(() => madeId, "the vendor made the session");
+  // The run's custody holds nothing yet: its row has no id and the let-go's rows are read empty.
+  const swept = await browserComputer.releaseUnheldBrowsers(browser, async () => []);
+  assert.deepEqual(swept.released, [], "nothing released");
+  assert.deepEqual(swept.creating, [madeId], "the in-flight create's session is left to it, and named");
+  assert.equal((await faux.attach({ id: madeId })).ok, true, "it still runs");
+  assert.equal(unheldWords(swept), `Left 1 browser to its create, still running (${madeId}).`);
+  open();
+  assert.equal(await opening, madeId, "the create answers with it");
+  const after = await browserComputer.releaseUnheldBrowsers(browser, async () => [{ tag: "inflight-tag", resourceId: madeId }]);
+  assert.deepEqual({ released: after.released, creating: after.creating }, { released: [], creating: [] }, "held by its row once it answered");
 });

@@ -361,6 +361,10 @@ await browser.reconcile(harness, () => true, context);   // settles what a dead 
   release, or when custody gives up releasing it (`lost`) (`final`), the rest, topped up to `prices.sessionMinimumS`. A session already billed in full is never charged
   again. `state` is `priced`, or `unpriced`/`invalid` with `usd` 0 (no price, not $0). It must not throw: a throw fails the
   commit, and a call's charge is then carried by the session's next one.
+- `onRaceReleased({ conversationId, tag, ids })`: a release by a session's tag ended sessions besides that session's own
+  (a create retried behind the provider's API, or a create race of that tag, left them running), and no record bills
+  their time. Called with their ids once each release answered, again for an id a later attempt finds again, so a host
+  books what they ran under one key per id. A throw here never fails the release.
 
 Per conversation, the host writes a `BrowserConfig` (`label`, `run`, and the policy: proxies, verified, captcha, geolocation,
 region, a raw context id, the session timeout, the idle release and the batch timeout; `DEFAULT_BROWSER_POLICY` holds the

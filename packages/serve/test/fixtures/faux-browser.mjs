@@ -24,7 +24,10 @@
 // makes a second session under the same labels whose reply was lost (a create race's browser that nobody holds, which
 // its recovery kept), made $FAUX_BROWSER_UNHELD seconds before: the vendor lists it late, only once the session it came
 // with has been released, so that session's own release (by its tag) does not find it. Its id is logged
-// ({ op: "unheld-made" }); only a release of the run's unheld browsers (serve's releaseUnheld) ends it.
+// ({ op: "unheld-made" }); only a release of the run's unheld browsers (serve's releaseUnheld) ends it. With
+// $FAUX_BROWSER_UNHELD_LISTED=tag the vendor lists it at once, so the release of the session it came with (by its tag)
+// ends it beside that one; with =stale too, and a list that is not by tag also shows every session this provider made
+// as running after its release (a vendor's list that lags its releases).
 // With $FAUX_BROWSER_STATE (a file), the backend's sessions outlive the run's process, as a vendor's do: each one created
 // or released is written there, and a process that starts finds the ones still running.
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
@@ -149,7 +152,10 @@ export default function browser(env = process.env, vendor = "browserbase", signI
   const unheldAgeS = Number(process.env.FAUX_BROWSER_UNHELD || 0);
   let unheldMade = false;
   const labelsOf = (session) => madeUnder.get(session.id)?.labels ?? { [TAG]: session.tag };
-  const listed = (session) => session.state === "running" && !(late.has(session.id) && backend.sessions.get(late.get(session.id))?.state === "running");
+  const listedMode = process.env.FAUX_BROWSER_UNHELD_LISTED ?? "";
+  const listed = (session) => session.state === "running" && (listedMode !== "" || !(late.has(session.id) && backend.sessions.get(late.get(session.id))?.state === "running"));
+  /** A session a list not by tag shows as running: one that runs, or with =stale any this provider made. */
+  const lagging = (session) => listed(session) || (listedMode === "stale" && madeUnder.has(session.id));
   const hello = { version: "0.0.0-faux", os: "linux", kind: "browser", arch: "unknown", groups: ["cdp", "stream", ...(keeps ? ["downloads"] : [])] };
   const computer = {
     id,
@@ -196,7 +202,7 @@ export default function browser(env = process.env, vendor = "browserbase", signI
         // A list by tag is the backend's own lookup by that tag alone (a failure it was told to give, its log line); a list
         // with no tag holds each session to all of the labels asked.
         const tagged = TAG in labels ? new Set((await fake.findByTag(labels[TAG])).map((ref) => ref.id)) : undefined;
-        const found = [...backend.sessions.values()].filter((session) => listed(session) && (tagged ? tagged.has(session.id) : Object.entries(labels).every(([name, value]) => labelsOf(session)[name] === value)));
+        const found = [...backend.sessions.values()].filter((session) => (tagged ? listed(session) && tagged.has(session.id) : lagging(session) && Object.entries(labels).every(([name, value]) => labelsOf(session)[name] === value)));
         return ok(found.map((session) => ({ ref: { id: session.id, name: session.id }, labels: labelsOf(session), state: "running", network: "open", ...(madeUnder.has(session.id) ? { createdAt: madeUnder.get(session.id).createdAt } : {}) })));
       } catch (error) {
         return failed(error);

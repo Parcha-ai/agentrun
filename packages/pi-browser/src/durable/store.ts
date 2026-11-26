@@ -37,9 +37,12 @@ export type StoreDeps = {
   handedBack?(tag: string, fence: number): void;
   /** A release task (an attempt, or its abort handler) had the provider release `tag`'s session, and the provider answered. */
   stopped?(tag: string): void;
+  /** A release by `row`'s tag ended sessions besides the row's own (`ids`, each release answered): a create retried
+   *  behind the provider, or a create race, left them. Their time is on no record (durable.ts, onRaceReleased). */
+  raced?(row: InventoryRow, ids: string[]): Promise<void>;
 };
 
-export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, bill, scrubbed, createDeadlineMs, handoff, handedBack, stopped: stoppedHook }: StoreDeps) {
+export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, bill, scrubbed, createDeadlineMs, handoff, handedBack, stopped: stoppedHook, raced }: StoreDeps) {
   const Inventory = defineDoc<{ rows: Record<string, InventoryRow> }>({ kind: `${name}.inventory`, version: 1, scope: "session", initial: () => ({ rows: {} }), checkpointWhen: () => false });
 
   /** One state change: the record and the open-session inventory move in the same commit. */
@@ -78,7 +81,18 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
   async function releaseAll(row: InventoryRow, provider: BrowserProvider, signal?: AbortSignal, found: (ids: string[]) => void | Promise<void> = () => {}): Promise<string[]> {
     const ids = [...new Set([row.resourceId, ...(await provider.findByTag(row.tag, signal)).map((ref) => ref.id)].filter((id): id is string => id !== null))];
     await found(ids);
-    for (const id of ids) await provider.release({ id, tag: row.tag }, signal);
+    // The row's own session is its id, or for a create whose answer was lost the first its tag finds (foundId): its record
+    // bills it. Every other one released here is told (raced), each once its release answered, also when a later one fails.
+    const own = row.resourceId ?? ids[0];
+    const extras: string[] = [];
+    try {
+      for (const id of ids) {
+        await provider.release({ id, tag: row.tag }, signal);
+        if (id !== own) extras.push(id);
+      }
+    } finally {
+      if (extras.length) await raced?.(row, extras);
+    }
     return ids;
   }
   const anyRunning = async (provider: BrowserProvider, row: InventoryRow, ids: string[], signal?: AbortSignal) => {
@@ -105,7 +119,9 @@ export function custodyStore({ name, Config, Sessions, providerOf, emit, meter, 
    *  (a create retried behind the provider's API) are released. */
   async function bindByTag(provider: BrowserProvider, row: InventoryRow, commit: (change: (tx: Tx) => Promise<void>) => Promise<unknown>, signal?: AbortSignal, found?: LeaseRef[]): Promise<LeaseRef | null> {
     const refs = found ?? await provider.findByTag(row.tag, signal);
-    for (const extra of refs.slice(1)) await provider.release(extra, signal).catch(() => undefined);
+    const extras: string[] = [];
+    for (const extra of refs.slice(1)) if (await provider.release(extra, signal).then(() => true, () => false)) extras.push(extra.id);
+    if (extras.length) await raced?.(row, extras);
     const kept = refs[0] ?? null;
     await commit((tx) => kept ? move(tx, row, { state: "live", resourceId: kept.id, at: now() }) : unknownCreate(tx, row, now()));
     return kept;

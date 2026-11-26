@@ -463,18 +463,44 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
     if (!answered.ok) throw failed(answered.error);
     return answered.value;
   };
+  // When the vendor's listing said each session a find listed was made (madeAt): a session a release by its tag ended beside
+  // the one it was for is charged from then.
+  const made = new Map<string, string>();
+  // The tag labels of the sessions this claim is opening now, how many opens each: a let-go never releases one whose
+  // create is still in flight (releaseUnheld), which its create answers.
+  const creating = new Map<string, number>();
   // The run and claim epoch its sessions are made under: what a let-go releases the unheld ones of (releaseUnheld).
   const run = spec.labels?.[RUN_LABEL];
   const epoch = spec.labels ? epochOf(spec.labels) : undefined;
   const unheld = run !== undefined && epoch?.ok
     ? {
-        async releaseUnheld(holds: BrowserHolds, signal?: AbortSignal) {
-          const tags = new Set([...holds.tags].map(labelValue));
-          const swept = await valueOf(releaseUnheld(provider, run, epoch.value, (info) => holds.ids.has(info.ref.id) || tags.has(info.labels[SESSION_TAG] ?? ""), signal ? { signal } : {}));
+        async releaseUnheld(holds: () => BrowserHolds | Promise<BrowserHolds>, signal?: AbortSignal) {
+          // Read once, at the first computer of the run and epoch the list gave (after the list).
+          let read: Promise<{ ids: ReadonlySet<string>; tags: Set<string> }> | undefined;
+          const held = () => (read ??= Promise.resolve(holds()).then((got) => ({ ids: got.ids, tags: new Set([...got.tags].map(labelValue)) })));
+          const left: string[] = [];
+          const swept = await valueOf(
+            releaseUnheld(
+              provider,
+              run,
+              epoch.value,
+              async (info) => {
+                const tag = info.labels[SESSION_TAG] ?? "";
+                if (creating.has(tag)) {
+                  left.push(info.ref.id);
+                  return true;
+                }
+                const { ids, tags } = await held();
+                return ids.has(info.ref.id) || tags.has(tag);
+              },
+              signal ? { signal } : {},
+            ),
+          );
           for (const one of swept.released) open.delete(one.ref.id);
           return {
             released: swept.released.map((one) => ({ id: one.ref.id, tag: one.labels[SESSION_TAG] ?? null, createdAt: one.createdAt?.toISOString() ?? null })),
             failed: swept.failed.map((one) => `${one.ref.id}: ${one.problem}`),
+            creating: left,
           };
         },
       }
@@ -487,8 +513,16 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
       features: structuredClone(features),
       async open(tag, lifetimeS, browser?: BrowserSpec, signal?: AbortSignal) {
         const lifetimeMs = Math.min(lifetime, Math.max(1, Math.round(lifetimeS)) * 1000);
+        const label = labelValue(tag);
+        creating.set(label, (creating.get(label) ?? 0) + 1);
         // Each open is its own request: a session closed and opened again under one tag is a new one.
-        const created = await provider.create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: labelValue(tag) }, ...(browser ? { browser } : {}) }, { requestId: randomUUID(), ...(signal ? { signal } : {}) });
+        const created = await provider
+          .create({ ...spec, lifetimeMs, labels: { ...spec.labels, [SESSION_TAG]: label }, ...(browser ? { browser } : {}) }, { requestId: randomUUID(), ...(signal ? { signal } : {}) })
+          .finally(() => {
+            const left = (creating.get(label) ?? 1) - 1;
+            if (left > 0) creating.set(label, left);
+            else creating.delete(label);
+          });
         if (!created.ok) throw failed(created.error);
         open.add(created.value.id);
         return created.value.id;
@@ -496,8 +530,10 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
       async find(tag) {
         const listed = await provider.list({ ...spec.labels, [SESSION_TAG]: labelValue(tag) });
         if (!listed.ok) throw failed(listed.error);
+        for (const one of listed.value) if (one.createdAt instanceof Date) made.set(one.ref.id, one.createdAt.toISOString());
         return listed.value.map((one) => one.ref.id);
       },
+      madeAt: (id) => made.get(id) ?? null,
       async running(id, signal) {
         const found = await provider.attach({ id }, signal ? { signal } : {});
         if (found.ok) return true;

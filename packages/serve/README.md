@@ -5496,9 +5496,15 @@ last charges booked before its process exits. Then, when the run ends, is stoppe
 that carries the run's labels and the claim's epoch and that nothing the run holds names (not a session's browser by id,
 nor one whose tag a session still being created owns) is released: one a create made and then lost, kept by its
 recovery because another create's browser was answered, is such a browser, and it would otherwise run to the vendor's
-lifetime. Its time, from when its vendor listing says it was made, is charged on the run with the rest (one whose listing
-gives no time is charged unpriced, never $0), and the run's timeline says it: `AgentRun: Released 1 browser this
-run no longer held (…); its time is in the run's cost.` A browser of another run, or of a later claim, is never touched.
+lifetime. What the run holds is read once the vendor's list has answered: every browser its custody held in this process
+counts, released since or not, so one the vendor still lists a moment past its own release is billed by its own record
+alone, and a browser whose create this process still has in flight is left to that create and named. A release by a
+session's tag that ends such a browser beside the session's own (the vendor already lists it) charges it there. Either
+way its time, from when its vendor listing says it was made, is charged on the run with the rest (one whose listing
+gives no time is charged unpriced, never $0), under one key per browser (`unheld:<id>`), so whichever release sees it
+end charges it once and a reopen books it once; and the run's timeline and its root record say it: `AgentRun: Released 1
+browser a create race left running (…); this run did not hold it, and its time is in the run's cost.` A browser of
+another run, or of a later claim, is never touched.
 
 A computer's minutes (a sandbox's, a desktop's or a phone's) are billed by its provider to your own account there, and
 AgentRun does not count them yet: they are in no run's cost and are not held against its cap.

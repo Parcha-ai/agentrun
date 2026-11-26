@@ -229,13 +229,15 @@ export interface ReleasedUnheld {
  * It lists by the run's label and holds each listed computer to it, as releaseOlder does: a computer of another run is
  * never touched, whatever list gives. A computer of another epoch is left (a lower one is the next claim's releaseOlder,
  * a higher one a later claim's own), and so is one whose epoch cannot be read, and an agent's computer (an owner label,
- * or an info marked owned, of a provider that declares persistence), which is never a run's to end.
+ * or an info marked owned, of a provider that declares persistence), which is never a run's to end. `held` is asked of
+ * each computer of the run and epoch once the list has answered, so a host reads what it holds after the list: what it
+ * made before then is in its own record.
  *
  * Every release is attempted, and each that fails is named in the result, never an error: the ones released are
  * released whatever the others did, so a host books each. A list that fails is the error. An aborted call starts no
  * further release; the result names what it released.
  */
-export async function releaseUnheld(provider: ComputerProvider, run: string, epoch: number, held: (info: ComputerInfo) => boolean, { signal }: CallContext = {}): Promise<Result<ReleasedUnheld>> {
+export async function releaseUnheld(provider: ComputerProvider, run: string, epoch: number, held: (info: ComputerInfo) => boolean | Promise<boolean>, { signal }: CallContext = {}): Promise<Result<ReleasedUnheld>> {
 	const problem = runProblem(run) ?? epochProblem(epoch);
 	if (problem !== undefined) return fail("invalid", problem);
 	if (signal?.aborted) return fail("aborted", `the release of run ${JSON.stringify(run)}'s unheld computers was aborted before it began`);
@@ -248,7 +250,7 @@ export async function releaseUnheld(provider: ComputerProvider, run: string, epo
 		if (labels?.[RUN_LABEL] !== run) continue;
 		const read = epochOf(labels);
 		if (!read.ok || read.value !== epoch || tenureOf(info, persistence).agent) continue;
-		if (held(info)) {
+		if (await held(info)) {
 			result.held.push(ref);
 			continue;
 		}

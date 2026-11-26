@@ -67,6 +67,11 @@ export type BrowserExtensionOptions<D extends PageDriver = PageDriver> = VaultOp
    *  to the provider's minimum. Never for a session already billed in full. It must not throw: a throw fails that commit,
    *  and a call's charge is then carried by the session's next one. */
   onCharge?: (charge: SessionCharge, tx: Tx, call?: { callId: string }) => void | Promise<void>;
+  /** A release by a session's tag ended sessions besides that session's own: a create retried behind the provider's API,
+   *  or a create race of the session's tag, left them running, and no record bills their time. Their ids, once each
+   *  release answered, so a host books what they ran; called again for the same id when a later attempt finds it again.
+   *  A throw here never fails the release. */
+  onRaceReleased?: (released: { conversationId: number; tag: string; ids: string[] }) => void | Promise<void>;
   /** Exact strings to scrub from every output besides the built-in shapes, read at each use. */
   redact?: { values: () => readonly string[] };
   section?: { addendum?: string };
@@ -892,6 +897,9 @@ export function createBrowserExtension<D extends PageDriver>(options: BrowserExt
     handoff: options.handoff,
     handedBack: (tag, fence) => c.fences.set(tag, { fence, failure: HANDED_BACK }),
     stopped: (tag) => { c.stops.get(tag)?.stop(); c.stops.delete(tag); },
+    raced: async (row, ids) => {
+      try { await options.onRaceReleased?.({ conversationId: row.conversationId, tag: row.tag, ids }); } catch { /* the host's booking never fails the release */ }
+    },
   });
 
   const c: Custody<D> = {
