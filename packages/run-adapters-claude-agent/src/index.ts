@@ -9,7 +9,7 @@ export { anthropicPolicy, CLAUDE_WEB_SEARCH_TOOL, OWN_TOOL_PREFIX, thinks, withW
 export type { AnthropicPolicyOptions, AnthropicUsage } from "./host/policy.js";
 export type { ChildCommand, ConfineChild } from "./host/machine.js";
 export { ClaudeLoginNoStatus, ClaudeLoginTimedOut, claudeLoginStatus, claudeLogout, LOGIN_TOKEN_REFUSED as CLAUDE_LOGIN_TOKEN_REFUSED, loginByToken as claudeLoginByToken, sweepClaudeStatusFolders, loginCommand as claudeLoginCommand, loginEnv as claudeLoginEnv, parseLoginStatus as parseClaudeLoginStatus, startClaudeLogin } from "./login.js";
-export type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken } from "./login.js";
+export type { ClaudeAgentLogin, ClaudeLoginStatus, ClaudeLoginToken, ClaudeLogout } from "./login.js";
 export { LOGIN_REFRESH as CLAUDE_LOGIN_REFRESH } from "./login-refresh.js";
 export { listedTools, MCP_OUTPUT_TOKENS, RESULT_SIZE_KEY, toolServer, type ToolServerModules } from "./host/tool-server.js";
 export type { ServedTool } from "./host/tool-server.js";
