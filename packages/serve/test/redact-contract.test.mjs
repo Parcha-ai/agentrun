@@ -1022,6 +1022,21 @@ const CASES = [
         name: `a held value with no "+" printed as string literals joined by "+" ${what} withholds the text${before(what)} (${value.length} characters)`,
         text, values: [noPlus(value)], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
       }))),
+      // "+" and Python's line continuation with no space between them are one run, "+\\", an operator all the same: as
+      // the code stands and written in a JSON string (Python accepts "+\\" before a line break, never "\\+").
+      ...[BODY, SHORT, noPlus(BODY)].flatMap((value) => {
+        const code = `body = ${lit(at(value, value.includes("+") ? value.indexOf("+") + 1 : 32)).join(`+${String.fromCharCode(92)}\n    `)}`;
+        return [[code, "as the code stands"], [JSON.stringify({ path: "body.py", content: `${code}\n` }), "written in a JSON string"]].map(([text, how]) => ({
+          name: `a held value ${value.includes("+") ? 'with a "+"' : 'with no "+"'} printed as Python literals joined by "+\\" and a line break, ${how}, withholds the text (${value.length} characters)`,
+          text, values: [value], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
+        }));
+      }),
+      // The operator kept: a held value's own "+" written as the operator between two literals in one JSON string, and its
+      // rest in the next string, a property name between them. Withheld before the operator was read as one, and still.
+      {
+        name: 'a held value whose own "+" is the operator between two literals in one JSON string, its rest in the next string past a property name, withholds the text',
+        text: JSON.stringify({ a: '"Zq8VbN3x" + "LmT6pR2w"', b: "Yk9HsD4f" }), values: ["Zq8VbN3x+LmT6pR2wYk9HsD4f"], hides: ["Zq8VbN3x", "Yk9HsD4f"], exact: all("[redacted]"),
+      },
       // Python's implicit join, no operator between the literals: read back to back before too.
       ...[BODY, SHORT].map((value) => ({
         name: `a held value with a "+" printed as Python literals joined by nothing but a line break withholds the text, as before (control, ${value.length} characters)`,
@@ -1186,7 +1201,7 @@ const adversarial = (size) => {
     f(`"%41+${B}"${B}${B}n&#65;",`), f(`"a+${B}${B}",`),
     // The quoted joins (a single-quoted dict's, read once as JSON's escapes and once as Python's): a lone apostrophe, a
     // name and its value opened and never closed, an apostrophe escaped, and Python's escapes back to back.
-    f("'"), f("'a': '"), f(`'${B}`), f(`'a${B}'b${B}x41${B}${B}',`), f(`${B}x4`),
+    f('"a" + '), f("'a'+\\\n"), f("'"), f("'a': '"), f(`'${B}`), f(`'a${B}'b${B}x41${B}${B}',`), f(`${B}x4`),
     // Named and numeric references: whole, a name never closed, a zero, one with no ";", zeros as long as the text, and
     // "+" in a quoted JSON text with a reference.
     f("&amp;"), f("&ampx"), f("&#0"), f("&#65"), `&#${fill("0", size - 2)}`, f('"a&#65;+",'),
@@ -1212,6 +1227,10 @@ const adversarial = (size) => {
     // sixteen, and the held value's strings after it decode to themselves in each. It heads each block of about 4 KiB, so
     // each answer piece holds it too.
     { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}",`.repeat(370)}`), values: [DENSE] },
+    // The same with the held value's strings joined by "+" (and "+\\" and a line break), operators all: the join reads
+    // its values twice, with the operators and without them.
+    { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}" + `.repeat(370)}`), values: [DENSE] },
+    { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}"+${B}\n`.repeat(370)}`), values: [DENSE] },
     // The same in a string never closed, and in one escaped quote after another (JSON written in a string).
     { text: `{"k":"${fill(`${DENSE} `, size - 6)}`, values: [DENSE] },
     { text: f(`${BACKSLASH}"${DENSE}${BACKSLASH}",`), values: [DENSE] },
