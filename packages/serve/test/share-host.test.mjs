@@ -416,6 +416,16 @@ test("a workflow call's output is read knowing its call: a credential file's pla
   await screenShare(body, []);
 });
 
+test("LVI (11-26): the host reads a bundle's /run/title as the export cuts it, lines flattened onto one: a transcript's env dump there is refused", async () => {
+  // An export from before the title was cut flattened, or one built by hand, carries the transcript's output uncut.
+  const doc = JSON.parse(await bundleOf());
+  const title = `Say: $ printenv HOME=/root SYNTH_UNHELD=quarry${nonce()}tallow $ ls`;
+  await assert.rejects(screenShare(resigned({ ...doc, run: { ...doc.run, title } }), []), (error) => error.code === "input_invalid" && (error.extra.details.counts["env-dump"] ?? 0) >= 1);
+  // The same words in another string are a message, not a title: no prompt mid-line is read there.
+  const note = "Run $ env SYNTH_MODE=dev node app.js";
+  await screenShare(resigned({ ...doc, run: { ...doc.run, title: note } }), []);
+});
+
 test("a call's long command is read once per call, never once per string of its output: ≥1 MiB of command over 5,000 strings screens in bounded time", { timeout: 900_000 }, async () => {
   // Each string of a call's output is read with the call's context (its command): a read key, or any per-string work,
   // that copies or re-reads the command costs strings × command, minutes and gigabytes here, while every other upload

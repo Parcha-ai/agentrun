@@ -1931,6 +1931,9 @@ test("LVI (11-26): a glob or brace `.env` read, a member access across a line br
     // A builtin alone on its line before a path that opens with a dot: the member-access join is not what its pieces
     // are read from. And heroku's config with a redirect attached to it.
     "readonly\n.venv/bin/python --version", "export\n./manage.py check", "heroku config>/tmp/app-config; cat /tmp/app-config", "heroku config:get A 2>/dev/null",
+    // A .env name in another case: env-file's names are lower-case, so it is no file env-file cuts, and the env token
+    // stays (a case-insensitive volume reads `.ENV` as `.env`).
+    "cat .ENV", "cat .Env.local", "head ./.ENV.production",
   ]) {
     const out = await gone(text, [seed, region], { command });
     assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
