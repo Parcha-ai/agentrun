@@ -58,6 +58,14 @@ export const RUNNER_STOP_MARGIN_MS = 5_000;
  *  loop that does not stop until its claim would run out (the lease less its margin, 25 s). A stop deadline that cuts the
  *  process sooner cuts a run's end short, and the run waits out its lease before another runner resumes it. */
 export const runnerCloseBoundMs = (drainMs: number): number => drainMs + RUNNER_LEASE_MS - RUNNER_STOP_MARGIN_MS;
+/** How long into its close a runner goes on serving what its caller stops when told (Runner.close's loopsStopping: a
+ *  ChatGPT renewal), unless its drain ends first: the least stop grace a shipped target gives (Render's fixed 30 s), less
+ *  the 25 s a renewal sent then may take to save its pair (chatgpt-plan.ts RENEWAL_DRAIN_MS), less 1 s. */
+export const RUNNER_RENEWALS_SERVED_MS = 4_000;
+/** From a runner's close until what it tells at loopsStopping is over, with the default lease, whatever its drain: the
+ *  tell comes RUNNER_RENEWALS_SERVED_MS in at the latest, with a whole window from then (the lease less its margin, 25 s).
+ *  Every shipped stop grace holds it (runner-beside-flags.test.mjs scans them). */
+export const RUNNER_RENEWAL_BOUND_MS = RUNNER_RENEWALS_SERVED_MS + RUNNER_LEASE_MS - RUNNER_STOP_MARGIN_MS;
 /** How often a runner renews the claims it holds, unless told (RunnerOptions.renewEveryMs). */
 export const RUNNER_RENEW_EVERY_MS = 10_000;
 /** A runner's name when none is given: its host, its process and a part of a random id. */
@@ -243,8 +251,12 @@ export interface Runner {
   /** The claims this runner holds and has not lost. */
   held(): Claim[];
   /** Stops claiming, lets each held run go on to its own end for up to drainMs, then stops every loop left where it can
-   *  resume, flushes and releases their runs. */
-  close(): Promise<void>;
+   *  resume, flushes and releases their runs. `loopsStopping`: told once, RUNNER_RENEWALS_SERVED_MS into the close or
+   *  once the drain is over and every loop left has been told to stop, whichever comes first, with the end of a whole
+   *  window from then (epoch ms; none told on a close already made): a run that drain lets finish may still need what
+   *  its caller stops there (a ChatGPT renewal: stopRenewals), and what the caller waits for from then ends by that end,
+   *  inside RUNNER_RENEWAL_BOUND_MS. */
+  close(loopsStopping?: (by: number) => void): Promise<void>;
   /** As if the process froze or died: every timer stops, nothing is stopped, flushed or released (a test's crash). */
   kill(): void;
 }
@@ -1036,6 +1048,14 @@ export function startRunner(options: RunnerOptions): Runner {
         await deliver(heldNow);
       },
       redact,
+      // Only in a close, and once: the loop is stopped for a shutdown and its signal aborted, as at the drain's end, so
+      // the run is handed back (cut "drain") and its turn resumes on the next claim.
+      handBack: () => {
+        const now = heldNow;
+        if (!closed || !now || now.ending || now.stopping || now.fence.lost) return;
+        stopLoop(now, { kind: "shutdown" });
+        now.abort.abort(new Error("the runner is closing"));
+      },
     });
     const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib, ...(learningDeadline !== undefined && pastDeadline ? { learningDeadline, pastDeadline } : {}) };
     heldNow = held;
@@ -1450,9 +1470,19 @@ export function startRunner(options: RunnerOptions): Runner {
     name,
     ...(incarnation ? { incarnation } : {}),
     held: () => [...runs.values()].filter((held) => !held.fence.lost && !held.ending).map((held) => held.claim),
-    async close() {
+    async close(loopsStopping?: (by: number) => void) {
       if (closed || killed) return;
       closed = true;
+      // What its caller stops when told (a ChatGPT renewal) is served RUNNER_RENEWALS_SERVED_MS at most, or to the drain's
+      // end: a renewal sent then is over inside every shipped grace, whatever the drain (the CLI's is 30 s).
+      let told = false;
+      const tell = (by: number) => {
+        if (told) return;
+        told = true;
+        clearTimeout(servedTimer);
+        loopsStopping?.(by);
+      };
+      const servedTimer = setTimeout(() => tell(Date.now() + leaseMs - stopMarginMs), RUNNER_RENEWALS_SERVED_MS);
       clearTimeout(pollTimer);
       // A claim the poll already has in flight lands first: one it makes now is given back at once (claimMore, closed),
       // all before close resolves, so nothing is claimed by this runner after it (a raise sent then wakes no claim here).
@@ -1498,6 +1528,11 @@ export function startRunner(options: RunnerOptions): Runner {
         stopLoop(held, { kind: "shutdown" });
         held.abort.abort(new Error("the runner is closing"));
       }
+      // The drain is over and every loop left is stopping, for a shutdown that resumes: what a drained run might need
+      // until now can stop (unless RUNNER_RENEWALS_SERVED_MS stopped it already). What its caller waits for from here gets
+      // a whole window, so a renewal sent while the read above stalled still has its full wait; the tell is never later
+      // than RUNNER_RENEWALS_SERVED_MS, so that wait ends inside RUNNER_RENEWAL_BOUND_MS.
+      tell(Date.now() + leaseMs - stopMarginMs);
       // Claims are renewed while the loops stop; a loop that never stops is given up when its claim would run out (the end
       // of the window the read above began).
       let timeout: NodeJS.Timeout | undefined;

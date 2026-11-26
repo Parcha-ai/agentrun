@@ -21,9 +21,17 @@ export function cacheView(cache: StoreAnalytics["cache"] | undefined) {
   };
 }
 
-/** `wrapped` (the import package's) as GET /v2/wrapped serves it, the runs imported from each source (`imported`), and
- *  their cache (`cache`, cacheView). */
-export function wrappedView(wrapped: Wrapped, imported: readonly { source: string; runs: number }[], unreadFiles = 0, cache?: StoreAnalytics["cache"]) {
+/** The keys and tokens the import cut from the year's imported runs (StoreAnalytics.secrets) as GET /v2/wrapped serves
+ *  them: the runs counted, those that held a key, and the keys cut. Null when no run of the year was counted. Numbers
+ *  alone: no key, shape or place. */
+export function secretsView(secrets: StoreAnalytics["secrets"] | undefined) {
+  if (!secrets?.runs) return null;
+  return { runs: secrets.runs, runs_holding: secrets.holding, removed: secrets.removed };
+}
+
+/** `wrapped` (the import package's) as GET /v2/wrapped serves it, the runs imported from each source (`imported`), their
+ *  cache (`cache`, cacheView) and the keys their import cut (`secrets`, secretsView). */
+export function wrappedView(wrapped: Wrapped, imported: readonly { source: string; runs: number }[], unreadFiles = 0, cache?: StoreAnalytics["cache"], secrets?: StoreAnalytics["secrets"]) {
   const { input, output, cacheRead, cacheWrite } = wrapped.tokens;
   return {
     year: wrapped.year,
@@ -45,6 +53,7 @@ export function wrappedView(wrapped: Wrapped, imported: readonly { source: strin
     imported: imported.map(({ source, runs }) => ({ source, runs })),
     unread_files: unreadFiles,
     cache: cacheView(cache),
+    secrets: secretsView(secrets),
   };
 }
 

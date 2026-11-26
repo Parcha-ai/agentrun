@@ -292,13 +292,29 @@ its first word is held too when that word is a known auth scheme (`Bearer`, `Bas
 `x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
 and any query parameter named like a credential, and, inside any header's value, the value of each `name=value` pair
 named like a credential, read over the whole value as written, a URL's query and fragment included (a cookie's
-`session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`; pairs split at `;`, `&`, a
-comma or its `%2C`, and spaces, again at `?`, `#` and `/` too, and three times keeping a `;`: at all but `;`, so
-`api_key=<key;rest>%2Cregion=us` holds the key; at `&` and spaces alone, so `api_key=<key;rest%2Cmore>` holds the
-whole key; and at those or their `%26` and `%20`, so that key is held as written before an encoded `&` or space too,
-and at those or `%26` alone, so a key with a `%20` in it is held before a `%26` (all are held, since a redactor matches each held value exactly and the longer reading never covers the
-key alone); a value whose part before its first `;` is empty, `token=;<key>` or `token=%3B<key>`, is
-held after that `;` too; a value in quotes, raw or written `%22` or `%27`, is held without them; `theme=dark` is not held), and the user, password and
+`session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`). Such a pair's value is held
+at every boundary: a key may hold a `&`, `;`, comma or space, raw or written `%26`, `%3B`, `%2C` or `%20`, and the
+pairs around it may be joined by any other of them, so no one split finds it. So its value runs from the `=` to the
+end of the header value, and each prefix of it that ends just before one of those separators is held, the whole rest
+too, so `region=us%3Bapi_key=<key%20rest>%26theme=dark` holds `<key%20rest>` (all are held, since a redactor matches
+each held value exactly and a longer reading never covers the key alone). Each prefix is held as written and decoded,
+out of a matching pair of quotes (raw, `%22` or `%27`), and without a lone opening or closing quote when what is left
+is 8 characters or more. A value whose part before its first `;` is empty, `token=;<key>` or `token=%3B<key>`, is held
+after that `;` too, whole and as its first piece of 8 characters or more, but not when that is a pair named like no
+credential (`token=;theme=dark`). The prefixes past a pair's first separator take 4,096 characters of one header value
+at most, but the last such pair's whole rest. Past that budget a pair still holds its value as any reader that splits
+pairs at some kinds of separator reads it (a raw `&` and a `%26` are two kinds, every whitespace one): up to the next
+separator of each kind, until it has passed one of each kind of separator since the last `=` before its name, since a
+reader that splits at any of those finds the pair (`; session=` by one that splits at `;` and one that splits at
+spaces, `&flag;api_key=` by one that splits at `&`), and its whole rest when one of those kinds never comes again, as
+a reader of that kind reads it to the end (`&token=<a>;<b>;secret=<c>`). So a key of any length is held alone, and
+these take a fixed multiple of the header value's length at most, never its square. A prefix past the first that opens
+or ends with a raw `&` or space is held only at 8 characters or more. Not covered: a `+` read as a space, spaces
+around a pair's `=`, a URL inside a pair's value whose query holds `%3B` or `%26` (the key decoded is held, not as
+written), and a raw comma inside a quoted value, which splits the variable itself (write it `%2C`).
+`theme=dark` is not held, nor is a value of only `=`, `;`, `&`, quotes, commas or spaces, as written or decoded, so
+`api_key=%2C` cuts no comma from the `[otel]` lines. Inside a URL that is a pair's value, a pair after a `?`, `#` or
+`/` is read up to the next of those, a `;`, `&`, comma, space or `%2C`. Also held are the user, password and
 credential-named query parameters of every URL in it, one inside another's query or path too, scheme-relative
 (`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL's query, an endpoint's too, is read split at `&`
 alone and again at `&` and `;`, so `?api_key=<key;rest>` holds the whole key and `?region=us;session=<token>` the
@@ -435,8 +451,10 @@ come. `GET /v2/computers` lists the runner the hold is on (`held_on`), and the s
 (`hold_note`), each shown on the computer's row in Settings → Computers.
 
 The token is in the log of the start that made it. A `docker stop` reaches both processes. The runner gives a busy run
-6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
-grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
+6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s; a turn cut off resumes at
+the next start. Signed in with ChatGPT, a stop also waits up to 25 s for a renewal OpenAI is answering to save its new
+pair, so Compose's `stop_grace_period` is 35 s, and a plain `docker stop` needs `-t 35`: Docker's default 10 s can cut
+that wait short and lose the sign-in. Compose publishes the port
 on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, so
 setup takes the code the start prints (`Set up this server: <url>/setup#code=<code>`), and every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
@@ -2831,8 +2849,9 @@ written: no run, no new binding, and a firing stays as it was. The owner's users
 owner connects after a token's run started is refused from then on. The seal marks each binding with who handed it
 (the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner
 has connected since has its calls answered, unsent, that the user is the owner's, until a message hands `mcp_auth`
-again or a new run starts. The owner's session binds any user, the owner's own included. On an [API-only](#api-only)
-server every caller is the token: the same users are refused, at the request and at each claim whoever handed the
+again or a new run starts. The owner's session binds any user, the owner's own included, but `agentrun`: no caller
+binds a run to the preset's shared default user (`422 not_allowed`), so a run that forgot its own never lands there. On
+an [API-only](#api-only) server every caller is the token: the same users are refused, at the request and at each claim whoever handed the
 binding, and a named account must be one Composio lists under the run's user.
 
 What this leaves open: a per-run server lends the install's Composio key to whoever starts a run, and a token can still

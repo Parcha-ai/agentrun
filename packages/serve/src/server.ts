@@ -53,7 +53,7 @@ import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
 import { agentPackage } from "./agent-package.js";
 import { uuidv7 } from "./ids.js";
-import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, editOn, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_EXA_ENV, FAUX_FIRECRAWL_ENV, FAUX_WEB_ENV, withHeld } from "./web-run.js";
@@ -157,7 +157,7 @@ import { type Blocker, blockersOf, CODE_NODES_ENV, deniedComputer, issueOf, NOT_
 import { computerDeniedWords } from "./refusal-words.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
-import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
+import { ChatGPTPlan, planOf, PlanSignInRefused, RENEWAL_DRAIN_MS, SIGN_OUT_UNCONFIRMED, stopRenewals, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
 import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
@@ -299,6 +299,11 @@ const planClosed = (plan: ChatGPTPlan, ms: number): Promise<void> => {
   let timer: NodeJS.Timeout | undefined;
   return Promise.race([plan.close(), new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
 };
+/** How far past its runs' bound a signed-in server's stop may run before the CLI stops it at once (Serve.stopping): the
+ *  sign-in's close and a renewal's drain (stopRenewals), so the 15 s margin (stop-signals.ts) never cuts a drain short.
+ *  Every shipped deploy's stop grace is at least this (test/runner-beside-flags.test.mjs, which finds each one by a scan):
+ *  a platform that kills sooner loses it. */
+export const PLAN_STOP_BOUND_MS = PLAN_CLOSE_MS + RENEWAL_DRAIN_MS;
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
@@ -1666,7 +1671,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // no restart and no request opening the file. The offers are probed once saved keys are read (below), at the start.
   // The ChatGPT sign-in, sealed in the store: on every reading of env (chatgpt-plan.ts withPlan), so a plan model runs
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
-  const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
+  const planLog = (fields: Record<string, string>) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`));
+  const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: planLog, changed: () => keysChanged() });
   await plan.load();
   stops.push(() => planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS));
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
@@ -3939,13 +3945,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  skipped for a connection this server lacks), and the computer it picks. Any other refusal is the apply's own. */
   async function planTemplate(template: Package, body: Json) {
     const p = await prepareApply(template, body, { plan: true });
-    // A fresh apply refused for want of a place (createAgentOf's save) is refused here, in the same words: no plan of a
-    // create the apply would refuse.
-    if (!p.onto) {
-      const { definition, skills } = checkDefinitionBody(p.made.agent, { harnesses });
-      const refused = await noPlaceOf(makeRevision(definition, skills ?? {}, undefined), p.toolsUnnamed);
-      if (refused) throw invalid([refused]);
-    }
     // A monid grant is pinned to monid's listing when the agent is saved (saveable: monidPinOf), read with the monid key:
     // with none here the apply is refused, so the plan lists the key. A grant the agent's current pin carries reads
     // nothing (pinMonid with no key answers before any request).
@@ -3954,6 +3953,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const was = p.onto?.revision?.kind === "agentic" ? p.onto.revision : undefined;
     const unread = !env[MONID_KEY_ENV]?.trim() && (await pinMonid(tools, { key: undefined, ...(was ? { previous: { grants: (was.body as AgenticBody).tools ?? [], pin: was.monidPin ?? null } } : {}) }));
     const missing = unread && "refused" in unread && !p.missing.includes(MONID_KEY_ENV) ? [...p.missing, MONID_KEY_ENV] : p.missing;
+    // An apply refused for want of a place (its save: createAgentOf's, or an update's reviseAgentOf) is refused here, in
+    // the same words: no plan of a create or a revise the apply would refuse. An update's revision is built as its commit
+    // builds it (updateDefinition, then editOn over the agent's current revision, whose place and computer it carries), and
+    // checked with its tools as named, as its save checks it. Only once the plan lists nothing the apply refuses first:
+    // the keys and required MCP servers this server lacks (409, before anything is built) and monid's key (its save's pin,
+    // before the place), which the plan lists, as the apply names them first.
+    if (!missing.length && !p.unsaved.some((need) => need.required)) {
+      let revision: NewRevision;
+      if (p.onto) {
+        const edit = checkDefinitionBody({ ...p.made.agent, definition: updateDefinition(p.onto, p.made.agent.definition as Json) }, { creating: false, harnesses });
+        revision = editOn(p.onto, edit.definition, edit.skills, edit.note, true);
+      } else {
+        const { definition: made, skills } = checkDefinitionBody(p.made.agent, { harnesses });
+        revision = makeRevision(made, skills ?? {}, undefined);
+      }
+      const refused = await noPlaceOf(revision, p.onto ? false : p.toolsUnnamed);
+      if (refused) throw invalid([refused]);
+    }
     // A skip's `code` is the apply's warning's for it: not_set_up_here for one this server makes once it is set up (a
     // connection, a feed's URLs, a launch hook), not_an_option for one it never makes.
     const planned: { name: string; kind: string; action: "create" | "update" | "remove" | "skip"; code?: string; reason?: string }[] = [];
@@ -6265,7 +6282,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         });
         if (!read) throw new ApiError("unavailable", `This machine's session history for ${year} is still being read: ask again in a few seconds.`, { retry_after_ms: 5_000 });
         const analytics = await analyticsOverStore(store, { from: new Date(year, 0, 1).toISOString(), to: new Date(year + 1, 0, 1).toISOString() });
-        return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread, analytics.cache));
+        return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread, analytics.cache, analytics.secrets));
       }
       case "getStats": {
         const filter = analyticsFilter(url);
@@ -7468,6 +7485,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Cancel a pending ChatGPT callback without signing out or changing the saved credential. One past its code's
     // exchange is waited for a short while (planClosed), so its row lands before the store closes.
     const planStopped = planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS);
+    // From here no ChatGPT renewal starts on this store; one OpenAI is answering saves its new pair before the store
+    // closes (awaited last, bounded by RENEWAL_DRAIN_MS from now, beside the rest of the stop).
+    const renewalsStopped = stopRenewals(store, RENEWAL_DRAIN_MS, planLog);
     // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
     // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
     const signInStopped = claudeSignIns.close();
@@ -7522,6 +7542,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(refusedTimer);
     await refusedSweep;
     await refusedBeside?.close();
+    // A ChatGPT renewal OpenAI is answering saves its new pair first (renewalsStopped, above): none started since.
+    await renewalsStopped;
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
     dataLock.release();
@@ -7551,8 +7573,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),
-    // No per-run process drains here: the runner owns a run's turn, so a stop waits on none.
-    stopping: () => ({ runs: 0, boundMs: 0 }),
+    // No per-run process drains here: the runner owns a run's turn, so a stop waits on none. A signed-in plan's renewal
+    // may be out, which the stop drains before its store closes: its bound holds it (PLAN_STOP_BOUND_MS).
+    stopping: () => ({ runs: 0, boundMs: plan.state === "signed_in" ? PLAN_STOP_BOUND_MS : 0 }),
     listingSettled: () => lister.settled(),
     refuseRuns: (words) => {
       if (refusedBeside || refusedStopped) return;

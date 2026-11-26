@@ -68,6 +68,7 @@ services:
       AGENT_MODEL_BASE_URL: ${AGENT_MODEL_BASE_URL:-}
       AGENT_MODEL_API_KEY: ${AGENT_MODEL_API_KEY:-}
     restart: unless-stopped
-    stop_grace_period: 15s
+    # At least a signed-in server's stop bound (27 s: a ChatGPT plan renewal OpenAI is answering saves its new pair).
+    stop_grace_period: 35s
 volumes:
   agentrun-data:

@@ -14,7 +14,7 @@ import { keysFor, needsOf, RUN_SECRETS, type RunNeeds } from "../run-secrets.js"
 import { BUILTIN_OWN_KEYS } from "../harness-table.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
-import { PLAN_PROVIDER, planOf, planReaderOf, withPlan } from "../chatgpt-plan.js";
+import { handingBack, PLAN_PROVIDER, planOf, type PlanReader, planReaderOf, withPlan } from "../chatgpt-plan.js";
 import type { SealedKeys } from "../store/store.js";
 import { handsJevWeb, handsParallel } from "../tool-plane.js";
 import type { Revision } from "../agent-rows.js";
@@ -43,6 +43,19 @@ export interface ClaimSecretsDeps {
   readonly env?: NodeJS.ProcessEnv;
 }
 
+/** A claimed run's hand-back for its plan readers (chatgpt-plan.ts handingBack): its loop's handBack and abort signal, so a
+ *  renewal refused because the runner is closing (PlanStopping) hands the run back to resume rather than fail it. Every
+ *  reader of the sign-in a run's models reach names both: the claim's (claimSecrets) and its tiers' (tierModelKeys,
+ *  subagentTierKeys). Undefined outside a runner's loop (a server-side check), or where the reader is wrapped already (a
+ *  run's own process: run-child-host.ts handed). */
+export interface PlanHandBack {
+  readonly handBack: (() => void) | undefined;
+  readonly signal: AbortSignal | undefined;
+}
+
+/** `read`, wrapped by the run's hand-back when it has one. */
+const backed = (read: PlanReader | undefined, back: PlanHandBack): PlanReader | undefined => (read && back.handBack && back.signal ? handingBack(read, back.handBack, back.signal) : read);
+
 /** What reads a run's launch sealed column. */
 type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8Array | null }> };
 
@@ -61,7 +74,7 @@ type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8
  *  a model key's name, TypeSafe's (key-words.ts; model.ts PROVIDER_KEYS typesafe), is a decision key (secrets.ts
  *  DECISION_KEYS): keysFor never names one, so the model key filter below never sees it, and decisionKeysFor lays it
  *  apart, as it lays OpenRouter's for a decision node that runs on it. */
-export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: HeldRedact }, revision: Revision, launch: Pick<RunLaunch, "plane" | "model" | "hold">, runId?: string): Promise<NodeJS.ProcessEnv> {
+export async function claimSecrets(deps: ClaimSecretsDeps & PlanHandBack & { readonly redact: HeldRedact }, revision: Revision, launch: Pick<RunLaunch, "plane" | "model" | "hold">, runId?: string): Promise<NodeJS.ProcessEnv> {
   const base = withoutSecrets(deps.env ?? {});
   const needs = await needsOf(revision);
   const keyless = sendsNoModelKey(launch, deps.env ?? {});
@@ -106,7 +119,8 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   // proxy sends (chatgpt-plan.ts), never put on the environment its tools run under (a symbol no spawn copies). Only for
   // a run that can reach a plan model: one pinned to a key's model (and its tiers on keys) never holds the sign-in, which
   // renews and spends the person's plan for any process that holds it.
-  const plan = keyless ? undefined : await planReaderOf(deps.store, deps.sealKey);
+  // With the loop's handBack, a renewal refused because the runner is closing hands the run back (handingBack).
+  const plan = keyless ? undefined : backed(await planReaderOf(deps.store, deps.sealKey), deps);
   return plan && reachesPlan(withPlan({ ...working }, plan), scoped, revision) ? withPlan(env, plan) : env;
 }
 
@@ -198,7 +212,7 @@ export async function hostDecisionKeys(deps: ClaimSecretsDeps, providers: readon
  *  subagentTierKeys), read on the runner alone; a run's process names none. It scopes the key names alone: the ChatGPT
  *  sign-in is given for the host's models of `tiers`, as before (a revision's own model on the plan reaches the sign-in
  *  through its claim: claimSecrets reachesPlan). */
-export async function tierModelKeys(deps: ClaimSecretsDeps, tiers: readonly Tier[], refs: Readonly<Partial<Record<Tier, string>>> = {}): Promise<NodeJS.ProcessEnv> {
+export async function tierModelKeys(deps: ClaimSecretsDeps & PlanHandBack, tiers: readonly Tier[], refs: Readonly<Partial<Record<Tier, string>>> = {}): Promise<NodeJS.ProcessEnv> {
   if (!tiers.length) return {};
   // A run's own process holds no seal key: its runner reads them, the plan's reader with them (held.ts).
   const at = deps.sealKey ? undefined : held();
@@ -211,7 +225,8 @@ export async function tierModelKeys(deps: ClaimSecretsDeps, tiers: readonly Tier
   for (const name of modelKeys(working, undefined, tiers, refs)) if (working[name] !== undefined) out[name] = working[name];
   // The ChatGPT sign-in, when a host model of those tiers is on the plan (claimSecrets gives it only to a run whose own
   // models reach it), as a symbol withModelKeys reads, never a key.
-  const plan = await planReaderOf(deps.store, deps.sealKey);
+  // A learned node's or a subagent's tier on the plan: a stop refusal hands the run back, as the claim's reader does.
+  const plan = backed(await planReaderOf(deps.store, deps.sealKey), deps);
   const probe = withPlan({ ...working }, plan);
   return plan && tiers.some((tier) => onPlan(hostModel(probe, tier))) ? withPlan(out, plan) : out;
 }
@@ -255,7 +270,7 @@ export function withModelKeys(env: NodeJS.ProcessEnv, ...opened: readonly NodeJS
 /** The saved model keys of the models of a run's subagent tiers (`tiers`, `refs` as subagent.ts routedSubagentTiers
  *  gives them; the revision's model of a tier over the host's): each model's provider's key, or the gateway's. None for
  *  no tier. */
-export async function subagentTierKeys(deps: ClaimSecretsDeps, tiers: readonly Tier[], refs: Readonly<Partial<Record<Tier, string>>>): Promise<NodeJS.ProcessEnv> {
+export async function subagentTierKeys(deps: ClaimSecretsDeps & PlanHandBack, tiers: readonly Tier[], refs: Readonly<Partial<Record<Tier, string>>>): Promise<NodeJS.ProcessEnv> {
   if (!tiers.length) return {};
   // A run's own process holds no seal key: its runner reads them for the claim's tiers (held.ts).
   const at = deps.sealKey ? undefined : held();
