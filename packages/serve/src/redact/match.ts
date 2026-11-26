@@ -662,11 +662,9 @@ export function shapeKinds(text: string, shapes: readonly Shape[]): string[] {
  *    two, and cut in place;
  *  - `plain`: what the whole-text check looks for in each squeezed view (with `hexes` in it lowered, `folds` in it
  *    folded);
- *  - `joined`: a held value that holds a ",", a ":" or a "+", squeezed, with them gone, and each `plain` needle that
- *    holds a "+" with only its "+" gone: what the whole-text check also looks for in the join view alone, which drops
- *    JSON's punctuation between strings and code's "+" between two (partsOf `joins`), and whose values read every "+"
- *    as nothing (joinOf), so a value split there ({"alice":"<rest>"}, two strings of an array, `"<head>" + "<rest>"`
- *    for a value whose own "+" stood there, its base64 across two fields) reads as itself. */
+ *  - `joined`: a held value that holds a "," or a ":", squeezed, with them gone: what the whole-text check also looks
+ *    for in the join view alone, which drops JSON's punctuation between strings, so a value JSON split there
+ *    ({"alice":"<rest>"}, two strings of an array) reads as itself. */
 export type Needles = {
   readonly forms: readonly string[];
   readonly hexes: readonly string[];
@@ -1046,9 +1044,8 @@ const VIEWS: readonly ViewSpec[] = [
 
 /** A stretch of a text the join view reads: a string's contents (a property name's, `name`), or a run of characters
  *  outside any string (a number, a word, a line after the JSON). `joins`: a run that is an operator (OPERATORS) between
- *  two value strings with nothing but whitespace and such runs around it, joining them in code (`"ab" + "cd+ef"`).
- *  `plus`: it holds a "+". */
-type Part = { from: number; to: number; name: boolean; joins?: boolean; plus?: boolean };
+ *  two value strings with nothing but whitespace and such runs around it, joining them in code (`"ab" + "cd+ef"`). */
+type Part = { from: number; to: number; name: boolean; joins?: boolean };
 
 /** The runs that join two strings in code: "+", Python's line continuation "\" (before the "+" on the next line, or
  *  with none), and the two together as Python takes them, "+" then "\" before a line break ("\+" is no code). */
@@ -1099,10 +1096,14 @@ function unitAt(text: string, at: number, to: number, level: 0 | 1): { char: str
  *  letter or a digit on each side, prose's ("Here's"), which opens none: so an odd number of them before code does not
  *  turn its literals the wrong way round. One after a word that is exactly a string prefix (STRING_PREFIXES: r'...', N'...',
  *  u8'x', #13'...') opens a string all the same. At level 0, with `written`, the span of each value written in quotes is added
- *  to it (the again join reads it one level down). Each character is read at most three times (at level 0, at level 1,
- *  and in the whitespace after a string looking for a ":"). */
-function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], kind: JoinKind = "nested", written?: Span[]): void {
+ *  to it (the again join reads it one level down). With `main`, the text is read as main read it (at 712b392): every
+ *  apostrophe opens a string, closed by the next one only, and no operator `joins`. Returns how main's reading reads it
+ *  otherwise (OPERATES, PAIRS; 0 with `main`). Each character is read at most three times (at level 0, at level 1, and
+ *  in the whitespace after a string looking for a ":"). */
+function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], kind: JoinKind = "nested", written?: Span[], main = false): number {
   let bare = -1;
+  // How main's reading would read this text otherwise (OPERATES, PAIRS).
+  let differs = 0;
   // The run's characters while it could be an operator (OPERATORS; "" once it cannot), whether the last part added here
   // is a string or a name (or an operator after one), and the operators after it that a string will make `joins` (any other run,
   // or JSON's punctuation, ends them).
@@ -1115,10 +1116,9 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
   let word = "";
   let digits = false;
   let beforeWord = "";
-  let plus = false;
   const endBare = (end: number) => {
     if (bare >= 0) {
-      const part: Part = { from: bare, to: end, name: false, plus };
+      const part: Part = { from: bare, to: end, name: false };
       out.push(part);
       if (string && OPERATORS.has(lone)) operators.push(part);
       else [string, operators] = [false, []];
@@ -1129,11 +1129,13 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
     const { char, end } = unitAt(text, at, to, level);
     const code = char.charCodeAt(0);
     let quote = char === '"';
-    if (kind === "quoted" && char === "'") {
+    if (kind === "quoted" && char === "'" && main) quote = true;
+    else if (kind === "quoted" && char === "'") {
       // The character after it as it stands (an escape there is no letter).
       if (end < to) scanned.chars++;
       const prefix = (word.length > 0 && word.length < 3 && (STRING_PREFIXES.has(word.toLowerCase()) || CASED_PREFIXES.has(word))) || (word.length > 0 && digits && beforeWord === "#");
       quote = prefix || !(WORDY.test(last) && end < to && WORDY.test(text[end]!));
+      if (!quote) differs |= PAIRS;
     }
     if (WORD_CHAR.test(char)) {
       if (word === "") [beforeWord, digits] = [last, true];
@@ -1146,8 +1148,8 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
       else if (STRUCTURE(code)) {
         endBare(at);
         [string, operators] = [false, []];
-      } else if (bare < 0) [bare, lone, plus] = [at, char, char === "+"];
-      else [lone, plus] = [lone.length === 1 ? lone + char : "", plus || char === "+"];
+      } else if (bare < 0) [bare, lone] = [at, char];
+      else lone = lone.length === 1 ? lone + char : "";
       at = end;
       continue;
     }
@@ -1156,11 +1158,13 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
     [string, operators] = [true, []];
     // The string: to its closing quote, each escape (a "\" and the character after it) passed over whole.
     let close = end;
-    plus = false;
     while (close < to) {
       const inner = unitAt(text, close, to, level);
-      plus ||= inner.char === "+";
-      if (inner.char === char || (char === "'" && (inner.char === "\n" || inner.char === "\r"))) break;
+      if (inner.char === char) break;
+      if (char === "'" && !main && (inner.char === "\n" || inner.char === "\r")) {
+        differs |= PAIRS;
+        break;
+      }
       close = inner.char === "\\" && inner.end < to ? unitAt(text, inner.end, to, level).end : inner.end;
     }
     const after = close < to ? unitAt(text, close, to, level).end : to;
@@ -1176,16 +1180,20 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
       ahead = unit.end;
     }
     // The operators before it join two values; before a name, none.
-    if (next !== ":") for (const operator of before) operator.joins = true;
+    if (next !== ":" && !main && before.length > 0) {
+      for (const operator of before) operator.joins = true;
+      differs |= OPERATES;
+    }
     if (next === ":") out.push({ from: end, to: close, name: true });
-    else if (level === 0 && kind === "nested") partsOf(text, end, close, 1, out);
+    else if (level === 0 && kind === "nested") differs |= partsOf(text, end, close, 1, out, kind, undefined, main);
     else {
-      out.push({ from: end, to: close, name: false, plus });
+      out.push({ from: end, to: close, name: false });
       if (level === 0 && char === '"') written?.push([end, close]);
     }
     at = after;
   }
   endBare(to);
+  return differs;
 }
 
 /** `text`'s join of `kind` (JoinKind): its parts (partsOf) read three times over, each time joined, each part followed by a space (gone
@@ -1197,25 +1205,27 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
  *  part's characters keeping their source: with `cuts` (merged spans of `text`), the spans of each part a cut covers
  *  are moved to where the part stands in the join (`cuts` of the join), so a value the finds cut in place in each
  *  string is covered there too. The cuts' cursor only goes forward within a pass: each cut is passed once a pass. A
- *  join is the same for every view that reads it: holds builds each kind once per text. */
-function joinOf(text: string, kind: Exclude<JoinKind, "both">, cuts?: readonly Span[]): { text: string; cuts?: Span[] } {
+ *  join is the same for every view that reads it: holds builds each kind once per text. With `main`, its parts are read
+ *  as main's reading reads them (partsOf); its `differs`, how main's reading reads the text otherwise. */
+function joinOf(text: string, kind: Exclude<JoinKind, "both">, cuts?: readonly Span[], main = false): Join {
   const parts: Part[] = [];
+  let differs: number;
   if (kind === "again") {
     // The quoted join's values written in quotes, each read one level down, in the text's order.
     const written: Span[] = [];
-    partsOf(text, 0, text.length, 0, [], "quoted", written);
-    for (const [start, end] of written) partsOf(text, start, end, 1, parts, "quoted");
-  } else partsOf(text, 0, text.length, 0, parts, kind);
+    differs = partsOf(text, 0, text.length, 0, [], "quoted", written, main);
+    for (const [start, end] of written) differs |= partsOf(text, start, end, 1, parts, "quoted", undefined, main);
+  } else differs = partsOf(text, 0, text.length, 0, parts, kind, undefined, main);
   const pieces: string[] = [];
   const moved: Span[] = [];
   let length = 0;
-  // The values' pass leaves out the operators that join two strings and reads each "+" in a value as a space (gone from
-  // the view), so a held value split across them reads whole as its `joined` needle (Needles), its "+" gone as a "," or
-  // ":" is, wherever its own "+" stands: in a string, or as the operator. The pass over all of them reads them as they
-  // stand.
-  const passes: readonly ((part: Part) => boolean)[] = [(part) => !part.name && !part.joins, (part) => part.name, () => true];
+  // The values' pass leaves out the operators that join two strings (partsOf `joins`), so a held value split across
+  // them reads whole; the pass over all of them reads them as they stand. Where it left one out and main's reading
+  // pairs the quotes as this one does, a fourth pass reads the values as main's does, with the operators: all main's
+  // reading reads, without a second join (holds).
+  const passes: ((part: Part) => boolean)[] = [(part) => !part.name && !part.joins, (part) => part.name, () => true];
+  if (differs === OPERATES) passes.push((part) => !part.name);
   for (const pass of passes) {
-    const values = pass === passes[0];
     let cut = 0;
     for (const part of parts) {
       if (!pass(part)) continue;
@@ -1232,10 +1242,7 @@ function joinOf(text: string, kind: Exclude<JoinKind, "both">, cuts?: readonly S
           if (start < end) moved.push([length + start - part.from, length + end - part.from]);
         }
       }
-      const piece = text.slice(part.from, part.to);
-      // Only a part that holds a "+" (partsOf `plus`) is read again for it.
-      if (values && part.plus) scanned.chars += piece.length;
-      pieces.push(values && part.plus ? piece.replaceAll("+", " ") : piece, " ");
+      pieces.push(text.slice(part.from, part.to), " ");
       length += part.to - part.from + 1;
     }
     pieces.push(SEPARATOR);
@@ -1243,16 +1250,27 @@ function joinOf(text: string, kind: Exclude<JoinKind, "both">, cuts?: readonly S
   }
   // The join written once.
   scanned.chars += length;
-  return { text: pieces.join(""), ...(cuts ? { cuts: moved } : {}) };
+  return { text: pieces.join(""), ...(cuts ? { cuts: moved } : {}), differs };
 }
 
+/** How main's reading of a text's quotes (as at 712b392: every apostrophe opens a string, closed by the next, and no
+ *  operator is left out) differs from this one (partsOf): `OPERATES`, an operator joins two strings, which only the
+ *  values' pass reads otherwise; `PAIRS`, an apostrophe opens no string here (prose's, before no string prefix), or its
+ *  string ends at a line break, so the two pair the quotes otherwise from there. */
+const OPERATES = 1;
+const PAIRS = 2;
+
+/** A join's text, its cuts (with `cuts`), and how main's reading reads the text otherwise (OPERATES, PAIRS). */
+type Join = { text: string; cuts?: Span[]; differs: number };
+
 /** Two joins one after the other (JoinKind `both`), the second's cuts moved past the first; written once. */
-function bothOf(first: { text: string; cuts?: Span[] }, second: { text: string; cuts?: Span[] }): { text: string; cuts?: Span[] } {
+function bothOf(first: Join, second: Join): Join {
   const text = first.text + second.text;
   scanned.chars += text.length;
-  if (!first.cuts || !second.cuts) return { text };
+  const differs = first.differs | second.differs;
+  if (!first.cuts || !second.cuts) return { text, differs };
   const at = first.text.length;
-  return { text, cuts: [...first.cuts, ...second.cuts.map(([start, end]): Span => [at + start, at + end])] };
+  return { text, cuts: [...first.cuts, ...second.cuts.map(([start, end]): Span => [at + start, at + end])], differs };
 }
 
 /** `text` as the whole-text check reads it: decoded by `spec`'s decoders, then squeezed (squeeze: NFKC, its whitespace
@@ -1496,28 +1514,35 @@ export function holds(text: string, needles: Needles, { fold = true, cuts, separ
     }
     return source;
   };
-  const joins = new Map<JoinKind, { text: string; cuts?: Span[] }>();
-  const joinFor = (kind: JoinKind): { text: string; cuts?: Span[] } => {
-    let join = joins.get(kind);
-    if (!join) joins.set(kind, (join = kind === "both" ? bothOf(joinFor("quoted"), joinFor("again")) : joinOf(joinText(), kind, cuts)));
+  const joins = new Map<string, Join>();
+  const joinFor = (kind: JoinKind, main = false): Join => {
+    const key = main ? `${kind} main` : kind;
+    let join = joins.get(key);
+    if (!join) joins.set(key, (join = kind === "both" ? bothOf(joinFor("quoted", main), joinFor("again", main)) : joinOf(joinText(), kind, cuts, main)));
     return join;
   };
   for (const spec of VIEWS) {
     if (!spec.when(has)) continue;
+    // A join is read as this reading reads it and, where main's reading pairs its quotes otherwise (PAIRS), as main's
+    // reads it too, each of the two joins of `both` alone: what either reading finds is held. Where they differ only
+    // in an operator, the join's fourth pass is main's (joinOf).
     const join = spec.join ? joinFor(spec.join) : undefined;
-    const view = join ? viewOf(join.text, spec, join.cuts, true) : viewOf(text, spec, cuts, separated);
+    const reads = !join ? [undefined] : [join, ...(spec.join === "both" ? (["quoted", "again"] as const) : [spec.join!]).filter((kind) => joinFor(kind).differs & PAIRS).map((kind) => joinFor(kind, true))];
+    for (const read of reads) if (holdsView(read ? viewOf(read.text, spec, read.cuts, true) : viewOf(text, spec, cuts, separated), spec)) return true;
+  }
+  return false;
+  function holdsView(view: View, spec: ViewSpec): boolean {
     const covered = cuts ? view.covered : undefined;
     if (holdsIn(view.text, covered, needles.plain)) return true;
     if (spec.join && needles.joined?.length && holdsIn(view.text, covered, needles.joined)) return true;
-    if (!needles.hexes.length && !folds.length) continue;
+    if (!needles.hexes.length && !folds.length) return false;
     scanned.chars += view.text.length;
     const lower = { text: asciiLower(view.text), covered: view.covered };
     if (holdsIn(lower.text, covered, needles.hexes)) return true;
-    if (!folds.length) continue;
+    if (!folds.length) return false;
     const flat = flatOf(lower);
-    if (holdsIn(flat.text, cuts ? flat.covered : undefined, folds)) return true;
+    return holdsIn(flat.text, cuts ? flat.covered : undefined, folds);
   }
-  return false;
 }
 
 /** planCut's first step: every form, hex, folded identifier and shape of `text` as it came, and `held`, merged. */

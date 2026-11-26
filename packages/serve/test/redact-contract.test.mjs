@@ -1359,10 +1359,13 @@ const adversarial = (size) => {
     // each answer piece holds it too.
     { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}",`.repeat(370)}`), values: [DENSE] },
     // The same with the held value's strings joined by "+" (and "+\\" and a line break), operators all, and single-quoted
-    // after prose with an apostrophe: the join's values read without the operators and with each "+" as nothing.
+    // after prose with an apostrophe: the join's values read without the operators, and as main's reading reads them.
     { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}" + `.repeat(370)}`), values: [DENSE] },
     { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}"+${B}\n`.repeat(370)}`), values: [DENSE] },
     { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`it's '${DENSE}' + '+${DENSE}'\n`.repeat(180)}`), values: [DENSE] },
+    // And both readings at once: prose's apostrophe on each line, so main's reading pairs the quotes otherwise, and the
+    // strings joined by operators after it.
+    { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`x's${`"${DENSE}"+`.repeat(10)}${B}\n`.repeat(40)}`), values: [DENSE] },
     // The same in a string never closed, and in one escaped quote after another (JSON written in a string).
     { text: `{"k":"${fill(`${DENSE} `, size - 6)}`, values: [DENSE] },
     { text: f(`${BACKSLASH}"${DENSE}${BACKSLASH}",`), values: [DENSE] },
@@ -1489,16 +1492,23 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // That sum takes each stage at its most at once, and its views are all reachable together: familiesOf reads each family
 // as present or absent, so one closed JSON string holding each of them turns on all sixteen views, and the rest of the
 // text decodes to itself at nearly its whole length in each (the text of DENSE's strings, each block of about 4 KiB
-// headed by one such string). It is the most measured here: 963.0 per character at 128 KiB and 967.8 at 512 KiB,
-// through redactedAnswer; every other text measures under 450 (a held RSA key's, made anew each run, moves by a few).
+// headed by one such string). It is the most measured here where the two readings of the quotes agree (below): 967.4
+// per character at 128 KiB and 972.2 at 512 KiB, through redactedAnswer; every other such text measures under 450 (a
+// held RSA key's, made anew each run, moves by a few).
 // A held value of two lines adds its three parts as forms and plain needles (about 30 more). A held value of k long
 // lines adds k + 1 of each: its work grows with k, linear in the text all the same.
-// WORK stays 1,024, the bound from before the stacked and join views. The most measured, and each text's most, are in
-// the test's diagnostics; a text that passes 1,024 is a finding, not a reason to raise the bound. A stage that read again from the start at each find passes the text once per find:
+// The quoted joins are also read as main's reading reads them (every apostrophe opening a string, closed by the next,
+// no operator left out) wherever the two readings differ, so what main withheld is withheld still: where they differ
+// in an operator only, a fourth pass of the join's values; where an apostrophe pairs otherwise, main's joins over again.
+// That union is why WORK is 1,536 and no longer 1,024, the bound from before the stacked and join views: the text that
+// reads the most is DENSE's strings joined by "+" and "\" ten to a line, each line after prose's apostrophe, which
+// both readings read whole, at about 1,390 per character, flat from 32 KiB to 512 KiB (1,384.1, 1,391.1, 1,397.9). The
+// most measured, and each text's most, are in the test's diagnostics; a text that passes 1,536 is a finding, not a
+// reason to raise the bound. A stage that read again from the start at each find passes the text once per find:
 // a held value found every 9 characters is found 14,563 times in 128 KiB, and one in every string of a JSON text (every
 // 11 characters) 47,662 times in 512 KiB, which a join that passed the cuts from the first at each string reads about
 // 2.3 billion times over.
-const WORK = 1024;
+const WORK = 1536;
 
 test("adversarial texts: the characters the whole pipeline visits are at most WORK per character, at 128 KiB and 512 KiB", async (t) => {
   const { scanned } = await import("../dist/redact/match.js");

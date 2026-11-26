@@ -108,7 +108,6 @@ function derivedOf(values: readonly string[]): Needles {
   // A held JSON value's own lines are no parts of it (a pretty-printed one has its public strings on lines of their
   // own); the strings heldFields holds of it have theirs.
   const parts = [...new Set([...held.filter((_, at) => fields[at] === undefined), ...strings].flatMap(partsOf))];
-  const plain = [...new Set([...[...needles.values()].flatMap((of) => of.plain), ...parts.map(squeeze)])];
   const derived: Needles = {
     forms: [...new Set([...given.flatMap((v) => {
       const of = needles.get(v);
@@ -116,11 +115,8 @@ function derivedOf(values: readonly string[]): Needles {
     }), ...parts].filter((form) => form.length > 0))],
     hexes: [...needles.values()].map((of) => of.hex),
     folds: [...needles.values()].flatMap((of) => of.folded),
-    plain,
-    joined: [...new Set([
-      ...[...needles.keys()].filter((v) => JOIN_DROPS.test(v)).map((v) => squeeze(v).replace(JOIN_DROPPED, "")).filter(longEnough),
-      ...plain.filter((form) => form.includes("+") && longEnough(form)).map((form) => form.replaceAll("+", "")).filter(plusless),
-    ])],
+    plain: [...new Set([...[...needles.values()].flatMap((of) => of.plain), ...parts.map(squeeze)])],
+    joined: [...new Set([...needles.keys()].filter((v) => JOIN_DROPS.test(v)).map((v) => squeeze(v).replace(JOIN_DROPPED, "")).filter(longEnough))],
   };
   DERIVED.set(values, { values: [...values], derived });
   return derived;
@@ -240,17 +236,11 @@ function needlesOf(value: string): { plain: string[]; hex: string; folded: strin
 
 const longEnough = (value: string) => [...value].length >= MIN_SECRET;
 
-/** The punctuation between strings that a held value can hold: a value holding one, JSON can split there (a login's
- *  ":" as a name and its value, a "," between an array's strings), and so can code at its "+" (`"ab" + "cd"`, the
- *  operator the value's own "+"), and the join view reads it without them (redact/match.ts Needles `joined`; its values'
- *  pass leaves out such an operator). Gone from that needle only, so it never reads past a value's own length. */
-const JOIN_DROPS = /[,:+]/;
-const JOIN_DROPPED = /[,:+]/g;
-
-/** A plain needle holding a "+" read with only its "+" gone, as the join view's values read every "+" (redact/match.ts
- *  joinOf): its base64 forms, a key's lines, its JSON form and the value itself, each kept for a source of MIN_SECRET
- *  characters or more while at most one character under it, so a value of 8 with one "+" is still found there. */
-const plusless = (form: string) => [...form].length >= MIN_SECRET - 1;
+/** The punctuation between JSON's strings that a held value can hold: a value holding one, JSON can split there (a
+ *  login's ":" as a name and its value, a "," between an array's strings), and the join view reads it without them
+ *  (redact/match.ts Needles `joined`). Gone from that needle only, so it never reads past a value's own length. */
+const JOIN_DROPS = /[,:]/;
+const JOIN_DROPPED = /[,:]/g;
 
 /** The fewest characters a line of a held value must have to be held as a part of it: a key's base64 line (64) is, a
  *  short line any text may hold ("-----END …-----", "}", a JSON field's name and a word) is not. */
