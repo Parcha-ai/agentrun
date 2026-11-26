@@ -367,10 +367,19 @@ const dropping = new Map<string, Promise<void>>();
  *  clock of the call that started that delete. */
 const dropAfter = new Map<string, number>();
 
+/** The service of `login`'s Keychain items on macOS, as the CLI names it from the login's credentials dir there
+ *  (loginEnv): `Claude Code-credentials-<first 8 hex of the folder's sha256>`, or undefined where that dir is empty (the
+ *  item with no suffix, the person's own CLI's on its default folder). A hash of the folder, so it holds no path and no
+ *  secret, and words for a person may name it. */
+export function keychainService(login: ClaudeAgentLogin): string | undefined {
+  const folder = loginEnv(login, "darwin").CLAUDE_SECURESTORAGE_CONFIG_DIR;
+  return folder ? `Claude Code-credentials-${createHash("sha256").update(folder).digest("hex").slice(0, 8)}` : undefined;
+}
+
 /** On macOS, at AgentRun's own folder (`own`) alone, delete the login's Keychain item under the account "unknown", which
  *  a sign-in left there when the CLI was started with no USER (loginUser), and which nothing reads now: `security
- *  delete-generic-password -a unknown -s <the item's service>`, the service the CLI names from the folder (`Claude
- *  Code-credentials-<first 8 hex of the folder's sha256>`), in the person's home (personHome), whose login keychain holds
+ *  delete-generic-password -a unknown -s <the item's service>`, the service the CLI names from the folder
+ *  (keychainService), in the person's home (personHome), whose login keychain holds
  *  it. Called once the item under the person's account is there (the sign-in exited 0, a status check read signed in),
  *  and at the CLI's own sign-out (claudeLogout), after which no status check reads signed in to call it.
  *  Never at the person's own CLI's places, whose "unknown" item may be theirs, never the item with no suffix, never an
@@ -386,10 +395,9 @@ const dropAfter = new Map<string, number>();
  *  where it may remain (its delete was killed, failed or never started, or a status check left it to the back-off). */
 export async function dropUnknownItem(login: ClaudeAgentLogin, options: { path: string; platform?: NodeJS.Platform; asked?: boolean; now?: () => number }): Promise<boolean> {
   if ((options.platform ?? process.platform) !== "darwin" || login.own !== true) return true;
-  const folder = loginEnv(login, "darwin").CLAUDE_SECURESTORAGE_CONFIG_DIR;
+  const service = keychainService(login);
   const user = loginUser();
-  if (!folder || user.USER === undefined || user.USER === "unknown") return true;
-  const service = `Claude Code-credentials-${createHash("sha256").update(folder).digest("hex").slice(0, 8)}`;
+  if (service === undefined || user.USER === undefined || user.USER === "unknown") return true;
   const HOME = personHome(login);
   const key = JSON.stringify([HOME, service]);
   if (dropped.has(key)) return true;

@@ -824,12 +824,17 @@ export const LOGIN_SIGN_OUT_UNCONFIRMED = `Signed out here: AgentRun's copy of t
 export const signOutCliFailed = (failed: string): string => `Signed out here: AgentRun's copy of the login is removed. ${keychainWords(failed)}`;
 
 /** What may remain where the harness's sign-out could not delete the Keychain item a sign-in left under the account
- *  "unknown" at AgentRun's own folder (its claudeLogout's `leftoverGone` false), and how to delete it by hand. */
-const KEYCHAIN_LEFTOVER = `On macOS an older Keychain item of this login, which holds a refresh token, could not be removed: in Keychain Access, search "Claude Code-credentials" and delete the item whose account is "unknown".`;
+ *  "unknown" at AgentRun's own folder (its claudeLogout's `leftoverGone` false), and how to delete that item alone by
+ *  hand: by its exact service (`service`, the harness's claudeKeychainService for the folder, a hash of it with no path
+ *  in it), never the bare "Claude Code-credentials", which the person's own CLI's item has, under "unknown" too where it
+ *  ran with no USER. With no service (none for the folder, where the harness has nothing to drop) the words give no way
+ *  to delete it, rather than one that may point at another login's item. */
+const keychainLeftover = (service: string | undefined): string =>
+  `On macOS an older Keychain item of this login, which holds a refresh token, could not be removed${service === undefined ? "." : `: in Keychain Access, search "${service}" and delete the item whose account is "unknown", or run \`security delete-generic-password -a unknown -s "${service}"\` in a terminal.`}`;
 
 /** What a sign-out answers beside `confirmed: false` where the CLI confirmed its own sign-out and every removal landed,
- *  but that older Keychain item may remain (KEYCHAIN_LEFTOVER). */
-export const LOGIN_SIGN_OUT_KEYCHAIN_LEFTOVER = `Signed out here: AgentRun's copy of the login is removed. ${KEYCHAIN_LEFTOVER}`;
+ *  but that older Keychain item, of the service `service`, may remain (keychainLeftover). */
+export const signOutKeychainLeftover = (service: string | undefined): string => `Signed out here: AgentRun's copy of the login is removed. ${keychainLeftover(service)}`;
 
 /** What a sign-out answers beside `confirmed: false` where some of the login is still there (`left`: each thing, its path
  *  and why), and the Keychain's words too where the CLI didn't confirm its own sign-out (`keychain`), naming the CLI
@@ -843,8 +848,8 @@ export const machineSignOutRefused = (folder: string): string =>
 
 /** POST /settings/claude-login/sign-out's answer: whether all of the login is gone (the CLI confirmed its own sign-out,
  *  every removal landed, whether or not a folder was there, and the harness found no older Keychain item left under
- *  "unknown"), else words saying what may remain (LOGIN_SIGN_OUT_UNCONFIRMED, signOutLeft,
- *  LOGIN_SIGN_OUT_KEYCHAIN_LEFTOVER), and the view after it (`off`). */
+ *  "unknown"), else words saying what may remain (LOGIN_SIGN_OUT_UNCONFIRMED, signOutLeft, signOutKeychainLeftover),
+ *  and the view after it (`off`). */
 export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: ClaudeLoginView };
 
 /** POST /settings/claude-login/sign-out: AgentRun's own login (`<data>/claude-login`) signed out and removed, so the next
@@ -861,7 +866,8 @@ export type ClaudeLoginSignOut = { confirmed: boolean; message?: string; login: 
  *  So with the CLI's step: a throw finding the CLI or loading the harness is named in the answer (signOutCliFailed), and
  *  every removal still runs. On macOS the harness's sign-out also deletes the older Keychain item a sign-in left under
  *  "unknown", which holds a refresh token, and says whether it went: where it may remain, the answer is not confirmed
- *  and its words say how to delete it in Keychain Access (LOGIN_SIGN_OUT_KEYCHAIN_LEFTOVER, or after the other words).
+ *  and its words say how to delete that item alone, named by its exact service (the harness's claudeKeychainService),
+ *  in Keychain Access or with one `security` command (signOutKeychainLeftover, or after the other words).
  *  Where the folder is a link (put there after the turn-on, which refuses one), the link alone is removed, with the
  *  login's signed-in note: no CLI runs through it, nothing it leads to is touched, and the answer names it. Runs already going are left as a turn-off
  *  leaves them: each keeps the token its CLI holds, and fails in
@@ -875,6 +881,7 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
   let off = false;
   let signedOut = true;
   let leftoverGone = true;
+  let leftoverService: string | undefined;
   let cliFailed: string | undefined;
   const left: string[] = [];
   const remove = (what: string, path: string, options: RmOptions) => {
@@ -909,8 +916,12 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
         try {
           const { login } = loginAt("agentrun", deps.data, deps.env, deps.uid);
           const cli = loginCli(await deps.pinned(), deps.env);
-          if (login && cli) ({ signedOut, leftoverGone } = await (await deps.claude()).claudeLogout(cli, login, pathOf(deps.env)));
-          else signedOut = false;
+          if (login && cli) {
+            const claude = await deps.claude();
+            ({ signedOut, leftoverGone } = await claude.claudeLogout(cli, login, pathOf(deps.env)));
+            // The service the harness's drop deleted by, so the words name the item alone.
+            if (!leftoverGone) leftoverService = claude.claudeKeychainService(login);
+          } else signedOut = false;
         } catch (error) {
           signedOut = false;
           cliFailed = error instanceof Error ? error.message : String(error);
@@ -935,7 +946,7 @@ export async function signOutClaudeLogin(deps: ClaudeLoginDeps): Promise<ClaudeL
   }
   const words = left.length > 0 ? signOutLeft(left, !signedOut, cliFailed) : signedOut ? undefined : cliFailed !== undefined ? signOutCliFailed(cliFailed) : LOGIN_SIGN_OUT_UNCONFIRMED;
   // The older Keychain item the harness could not delete is said after the rest, or alone where nothing else remains.
-  const message = leftoverGone ? words : words === undefined ? LOGIN_SIGN_OUT_KEYCHAIN_LEFTOVER : `${words} ${KEYCHAIN_LEFTOVER}`;
+  const message = leftoverGone ? words : words === undefined ? signOutKeychainLeftover(leftoverService) : `${words} ${keychainLeftover(leftoverService)}`;
   return { confirmed: message === undefined, ...(message ? { message } : {}), login: await claudeLoginView(deps) };
 }
 
@@ -986,7 +997,7 @@ export async function dropRefusedLogin(signIns: Pick<ClaudeSignIns, "serial">, s
 }
 
 /** What the routes and a run's check use of the harness (its login.ts), loaded only when asked. */
-export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand" | "claudeLogout">;
+export type ClaudeLoginCli = Pick<typeof import("@parcha/agentrun-harness-claude"), "claudeLoginStatus" | "startClaudeLogin" | "claudeLoginCommand" | "claudeLogout" | "claudeKeychainService">;
 const pathOf = (env: Readonly<Record<string, string | undefined>>): { path?: string } => (env.PATH ? { path: env.PATH } : {});
 
 /** How long a signed-in answer stands in for a check that gives none (loginBeforeRun). */
