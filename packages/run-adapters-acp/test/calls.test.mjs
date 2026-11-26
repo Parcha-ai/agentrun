@@ -51,26 +51,27 @@ test("ourTool ties agy 1.5.14's name for our tool, `mcp_agentrun_<tool>`, and it
   assert.equal(ourTool({ name: 'mcp_agentrun_look_up', title: 'Run mcp_agentrun_look_up', kind: 'execute' }, TOOLS), undefined, 'a kind with effects of its own');
 });
 
-test("a recipe whose prefix joins our server to the tool with one _ or - (agy's) gives the server a name of each start's own, agentrun and 8 hex digits; any other recipe, agentrun", () => {
+test("a recipe whose prefix joins our server to the tool with one _ or - (agy's) gives the server a name of each start's own, ar and 6 hex digits, as long as agentrun; any other recipe, agentrun", () => {
   const { mcpServerName, joinsByOne } = calls;
   const a = mcpServerName(AGY);
   const b = mcpServerName(AGY);
-  assert.match(a, /^agentrun[0-9a-f]{8}$/, 'no _ or -, so mcp_<server>_<tool> splits at its first _ after mcp_');
+  assert.match(a, /^ar[0-9a-f]{6}$/, 'no _ or -, so mcp_<server>_<tool> splits at its first _ after mcp_');
+  assert.equal(a.length, 'agentrun'.length, "so a tool's name fits agy's cap as it did under agentrun");
   assert.notEqual(a, b, 'a fresh name at each start');
-  assert.match(mcpServerName({ tool: 'name', prefix: 'agentrun-' }), /^agentrun[0-9a-f]{8}$/, 'a - joins by one too');
+  assert.match(mcpServerName({ tool: 'name', prefix: 'agentrun-' }), /^ar[0-9a-f]{6}$/, 'a - joins by one too');
   for (const announces of [undefined, GOOSE, CURSOR, { tool: 'name', prefix: 'agentrun__' }, { tool: 'name', prefix: 'mcp_agentrun__' }]) {
     assert.equal(joinsByOne(announces), false, JSON.stringify(announces));
     assert.equal(mcpServerName(announces), 'agentrun', JSON.stringify(announces));
   }
 });
 
-test("agy caps a tool's name at 64 characters: under a start's own server name (mcp_agentrun<8 hex>_, 21 characters) a tool of ours fits up to 43; namesTooLong names those that do not, and only for a recipe whose prefix names our tool", () => {
+test("agy caps a tool's name at 64 characters: under a start's own server name (mcp_ar<6 hex>_, 13 characters, as mcp_agentrun_) a tool of ours fits up to 51; namesTooLong names those that do not, and only for a recipe whose prefix names our tool", () => {
   const { announcesAt, namesTooLong, TOOL_NAME_CAP } = calls;
   assert.equal(TOOL_NAME_CAP, 64);
-  const at = announcesAt(AGY, 'agentrun0123abcd');
-  assert.equal(at.prefix.length, 21);
-  const fits = 'a'.repeat(43);
-  const over = 'b'.repeat(44);
+  const at = announcesAt(AGY, 'ar0123ab');
+  assert.equal(at.prefix, 'mcp_ar0123ab_');
+  const fits = 'a'.repeat(51);
+  const over = 'b'.repeat(52);
   assert.deepEqual(namesTooLong(at, ['look_up', fits, over]), [over]);
   assert.deepEqual(namesTooLong(at, ['look_up', fits]), []);
   for (const announces of [undefined, GOOSE, CURSOR]) assert.deepEqual(namesTooLong(announces, [over, 'c'.repeat(80)]), [], JSON.stringify(announces));
@@ -116,12 +117,13 @@ test("an extra our tool's input schema declares is its argument, never agy's own
   announceCall(plain, agy('call_b', { q: 'x', toolSummary: 'b' }), AGY, TOOLS);
   assert.equal(await plain.take('look_up', { q: 'x', toolSummary: 'b' }, signal, 50), 'call_a', 'the control: the ids swap');
   // The field optional and left out, agy adds a summary of its own: the call is kept without it too, so its MCP call,
-  // which carries none, takes its id at once, never after the wait's fallback; and once taken it is gone from both forms.
+  // which carries none, takes its id after a short hold (ANNOUNCE_GRACE_MS), never the wait's fallback; and once taken
+  // it is gone from both forms.
   const hurry = (taking) => Promise.race([taking, new Promise((resolve) => setTimeout(() => resolve('waited'), 2_000).unref())]);
   const omitted = new calls.CallIds();
   announceCall(omitted, agy('call_d', { q: 'd', toolSummary: 'Look d up' }), AGY, TOOLS, declared);
   announceCall(omitted, agy('call_e', { q: 'e', toolSummary: 'Look e up' }), AGY, TOOLS, declared);
-  assert.equal(await hurry(omitted.take('look_up', { q: 'e' }, signal, 60_000)), 'call_e', 'its own id, at once');
+  assert.equal(await hurry(omitted.take('look_up', { q: 'e' }, signal, 60_000)), 'call_e', 'its own id, after the hold');
   assert.equal(await hurry(omitted.take('look_up', { q: 'd', toolSummary: 'Look d up' }, signal, 60_000)), 'call_d', 'the other, by the form with it');
   for (const args of [{ q: 'd' }, { q: 'e', toolSummary: 'Look e up' }]) assert.equal(await omitted.take('look_up', args, signal, 50), undefined, `taken once, under either form: ${JSON.stringify(args)}`);
   // An MCP call already waiting when the announcement comes is woken by either form.
@@ -138,19 +140,53 @@ test("an extra our tool's input schema declares is its argument, never agy's own
   announceCall(pair, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
   const bFirst = pair.take('look_up', { q: 'x' }, signal, 60_000);
   const aNext = pair.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000);
-  assert.deepEqual(await hurry(Promise.all([bFirst, aNext])), ['call_b', 'call_a'], 'each its own id, at once');
+  assert.deepEqual(await hurry(Promise.all([bFirst, aNext])), ['call_b', 'call_a'], 'each its own id, well before the wait');
   // Both left it out: each MCP call carries { q: 'x' }. Two calls waiting for two such announcements leave none for a
-  // whole-argument call, so they take them in order, oldest first, never after the wait.
+  // whole-argument call, so past the hold they take them oldest first, never after the wait.
   const both = new calls.CallIds();
   announceCall(both, agy('call_a', { q: 'x', toolSummary: 'Look x up' }), AGY, TOOLS, declared);
   announceCall(both, agy('call_b', { q: 'x', toolSummary: 'Look x up again' }), AGY, TOOLS, declared);
   const first = both.take('look_up', { q: 'x' }, signal, 60_000);
   const second = both.take('look_up', { q: 'x' }, signal, 60_000);
-  assert.deepEqual(await hurry(Promise.all([first, second])), ['call_a', 'call_b'], 'in order, at once');
-  // Only one there: nothing to wait for, so it is taken at once, as before.
+  assert.deepEqual(await hurry(Promise.all([first, second])), ['call_a', 'call_b'], 'oldest first, after the hold');
+  // Only one there and no other call: taken after the hold, while its own announcement could still have come.
   const lone = new calls.CallIds();
   announceCall(lone, agy('call_a', { q: 'x', toolSummary: 'Look x up' }), AGY, TOOLS, declared);
   assert.equal(await hurry(lone.take('look_up', { q: 'x' }, signal, 60_000)), 'call_a');
+  // B's MCP call reaching MCP before B's own announcement: A, announced with the extra it sent, is the only one there, and
+  // B's call matches it only without the extra. It holds a short while for its own; B's comes, then A's MCP call takes A by
+  // its whole arguments, and B's the one left. Before, B's took A at once, and A's took B after the wait.
+  const ahead = new calls.CallIds();
+  announceCall(ahead, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
+  const bAhead = ahead.take('look_up', { q: 'x' }, signal, 60_000);
+  announceCall(ahead, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
+  const aAfter = ahead.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000);
+  assert.deepEqual(await hurry(Promise.all([bAhead, aAfter])), ['call_b', 'call_a'], 'its own, though it came first');
+  // The same with B's MCP call already waiting when A's announcement comes: it is not handed A for matching it without
+  // the extra. Before, add handed it A at once.
+  const handed = new calls.CallIds();
+  const bWaiting = handed.take('look_up', { q: 'x' }, signal, 60_000);
+  announceCall(handed, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
+  announceCall(handed, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
+  const aLater = handed.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000);
+  assert.deepEqual(await hurry(Promise.all([bWaiting, aLater])), ['call_b', 'call_a'], 'not handed the other');
+  // An announcement whose call ended with no MCP call (denied before it ran) is dropped, so it never holds a later one:
+  // the next MCP call matching it and another only without the extra takes the other, never waiting out the wait.
+  const stale = new calls.CallIds();
+  announceCall(stale, agy('call_s', { q: 'x', toolSummary: 'Look x up' }), AGY, TOOLS, declared);
+  stale.settle('call_s');
+  announceCall(stale, agy('call_a', { q: 'x', toolSummary: 'Look x up again' }), AGY, TOOLS, declared);
+  assert.equal(await hurry(stale.take('look_up', { q: 'x' }, signal, 60_000)), 'call_a', 'the live one, not the ended one');
+  // A call that waited for its own while others took the last of them takes one named for nothing that was already
+  // there when it came, as a call that never waited does, rather than wait out the wait.
+  const drained = new calls.CallIds();
+  announceCall(drained, agy('call_a', { q: 'x', toolSummary: 'a' }), AGY, TOOLS, declared);
+  announceCall(drained, agy('call_b', { q: 'x', toolSummary: 'generated b' }), AGY, TOOLS, declared);
+  const firstBare = drained.take('look_up', { q: 'x' }, signal, 60_000);
+  const whole = drained.take('look_up', { q: 'x', toolSummary: 'a' }, signal, 60_000);
+  drained.add('call_n', undefined, undefined);
+  const lastBare = drained.take('look_up', { q: 'x' }, signal, 60_000);
+  assert.deepEqual(await hurry(Promise.all([firstBare, whole, lastBare])), ['call_b', 'call_a', 'call_n'], 'the last, by the one already there');
   // Another tool's declaration keeps nothing for this one.
   const other = new calls.CallIds();
   announceCall(other, agy('call_c', { q: 'c', toolSummary: 'Look c up' }), AGY, TOOLS, new Map([['check_echo', new Set(['toolSummary'])]]));
