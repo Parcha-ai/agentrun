@@ -2269,7 +2269,7 @@ const DOCKER_AUTHS_BEFORE = 65_536;
 /** Each `"auths"` in the text and whether the call read a config.json are found once a text (ruling LXXIII), never
  *  once a match: a text of many `"auth"` keys is read in linear time. */
 const dockerAuth = (text: string, ctx: ScrubContext): ((m: RegExpExecArray) => Hit | undefined) => {
-  const read = [ctx.path, ...commandPaths(ctx.command)].some((path) => path !== undefined && DOCKER_CONFIG.test(path));
+  const read = (ctx.path !== undefined && dockerConfigPath(ctx.path)) || commandNames(ctx.command, dockerConfigPath);
   const auths: number[] = [];
   if (!read) for (let at = text.indexOf(DOCKER_AUTHS); at >= 0; at = text.indexOf(DOCKER_AUTHS, at + 1)) auths.push(at);
   return (m) => {
@@ -2545,7 +2545,21 @@ const READ_TOOL = /^\s{0,8}(?:⏺\s{0,2})?Read\(([^()\s]{1,512})\)\s{0,8}$/;
 const readPath = (body: string): string | undefined => READ_COMMAND.exec(body)?.[2] ?? READ_TOOL.exec(body)?.[1];
 /** The file a command prints whole, when it is one read alone (`cat ~/.pgpass`): its output is that file's content
  *  (ruling LVI). */
-export const commandReadPath = (command: string | undefined): string | undefined => (command === undefined ? undefined : readPath(command));
+export const commandReadPath = (command: string | undefined): string | undefined => (command === undefined ? undefined : factsOf(command).readPath);
+
+/** What the rules read of a call's command, read once for a run of reads with it: every string of a call's output is
+ *  scrubbed with its command (run-export.ts, share-host.ts screenShare), so reading the command again for each would cost
+ *  strings × command. The last command's alone is kept: a caller reads a call's strings together and hands each the same
+ *  string, so a hit compares one reference, and a miss is a new run's first read. (No map: V8 hashes a long string by its
+ *  length, so long commands of one length would be compared whole on each lookup.) */
+type CommandFacts = { readonly readPath: string | undefined; readonly paths: readonly string[]; readonly dumps: boolean; readonly names: Map<(path: string) => boolean, boolean> };
+let lastCommand: { readonly command: string; readonly facts: CommandFacts } | undefined;
+function factsOf(command: string): CommandFacts {
+  if (lastCommand?.command === command) return lastCommand.facts;
+  const facts: CommandFacts = { readPath: readPath(command), paths: pathWords(command), dumps: command.trim() !== "" && printsEnvironment(command), names: new Map() };
+  lastCommand = { command, facts };
+  return facts;
+}
 
 /** Quote and escape characters, dropped before a command line is read: a quoted script's words are the line's own
  *  words however deep its shells nest (`bash -c "bash -c 'env'"`), and a word spelled across quotes or behind a
@@ -2648,7 +2662,7 @@ function wholeDump(text: string): Hit[] {
 /** A command's output, given apart from its command (ruling LVI): all of it is a dump when the command prints the
  *  environment or a variable's value, alone on its line or among others. An approval outcome's head line is cut with
  *  it (ruled so: never split on run-view's words). */
-const commandDumps = (text: string, given: string | undefined): Hit[] => (given !== undefined && given.trim() !== "" && printsEnvironment(given) ? wholeDump(text) : []);
+const commandDumps = (text: string, given: string | undefined): Hit[] => (given !== undefined && factsOf(given).dumps ? wholeDump(text) : []);
 
 const PATH_SEPARATOR = /[\\/]/;
 const ENV_FILE_NAME = /^(?:\.env(?:rc)?|\.env\.[A-Za-z0-9_.-]{1,64}|[A-Za-z0-9_.-]{1,64}\.env)$/;
@@ -2699,13 +2713,22 @@ const COMMAND_WORD_SPLIT = /[\s|;&<>()]{1,64}/;
 const OPTION_NAME = /^-{1,2}[A-Za-z0-9-]{1,64}=/;
 const WORD_QUOTES = /["']/g;
 const COMMAND_MAX = 65_536;
-export const commandPaths = (command: string | undefined): string[] =>
-  command === undefined ? [] : command.slice(0, COMMAND_MAX).split(COMMAND_WORD_SPLIT).map((word) => word.replace(OPTION_NAME, "").replace(WORD_QUOTES, "")).filter(Boolean);
+/** Whether a command names, anywhere in its words, a path `fits` takes: asked once a command and predicate (factsOf),
+ *  so a call's output read string by string never walks its command's words again. `fits` is a module-level function. */
+function commandNames(command: string | undefined, fits: (path: string) => boolean): boolean {
+  if (command === undefined) return false;
+  const { paths, names } = factsOf(command);
+  let named = names.get(fits);
+  if (named === undefined) names.set(fits, (named = paths.some(fits)));
+  return named;
+}
+const dockerConfigPath = (path: string): boolean => DOCKER_CONFIG.test(path);
+const pathWords = (command: string): string[] => command.slice(0, COMMAND_MAX).split(COMMAND_WORD_SPLIT).map((word) => word.replace(OPTION_NAME, "").replace(WORD_QUOTES, "")).filter(Boolean);
 /** The text whole, its trailing blanks left out, when the caller says it is the content of a file `fits` names: the call
  *  read that file (`ctx.path`), or its command names one anywhere (ruling LXII d: `grep app ~/.pgpass`, `jq . ~/.docker/
  *  config.json`, `grep -v ^# .env`; an over-cut, `ls ~/.ssh/known_hosts`'s, fails closed). */
 const wholeText = (text: string, ctx: ScrubContext, fits: (path: string) => boolean): Hit[] => {
-  if (!((ctx.path !== undefined && fits(ctx.path)) || commandPaths(ctx.command).some(fits)) || DUMP_MARKER_LINE.test(text)) return [];
+  if (!((ctx.path !== undefined && fits(ctx.path)) || commandNames(ctx.command, fits)) || DUMP_MARKER_LINE.test(text)) return [];
   const end = text.trimEnd().length;
   return end > 0 ? [{ start: 0, end }] : [];
 };

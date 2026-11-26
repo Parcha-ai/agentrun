@@ -185,6 +185,8 @@ const closed = (properties: Json, description?: string) => ({ type: "object", ad
 const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
 /** wrapped/1: GET /wrapped's answer (wrapped.ts). */
 const WRAPPED_TOKENS = closed({ input: COUNT, output: COUNT, cache_read: COUNT, cache_write: COUNT });
+/** One figure per cache cause (the import package's CACHE_CAUSES), each always there. */
+const CACHE_BY_CAUSE = (value: Record<string, unknown>) => closed(Object.fromEntries(["model", "idle", "compaction", "edited", "sidechain", "unknown"].map((cause) => [cause, value])));
 const WRAPPED: Json = closed({
   year: { type: "integer", minimum: 1000, maximum: 9999 },
   sessions: { ...COUNT, description: "Sessions whose first request falls in the year." },
@@ -202,6 +204,19 @@ const WRAPPED: Json = closed({
   sources: { type: "array", items: closed({ source: { type: "string" }, sessions: COUNT, requests: COUNT }), description: "By the tool the sessions were read from." },
   imported: { type: "array", items: closed({ source: { type: "string" }, runs: COUNT }), description: "The runs imported here in the year, by source (never `live`)." },
   unread_files: { ...COUNT, description: "Session files that could not be read (gone since listed, or not openable by this user), so the numbers are short by them. A count only: no path." },
+  cache: {
+    oneOf: [
+      closed({
+        runs: { ...COUNT, description: "The year's imported Claude Code, Codex and pi runs whose cache the import analyzed. A session left out of the import, or imported before it analyzed caches, is not among them." },
+        hit_rate: { type: ["number", "null"], minimum: 0, maximum: 1, description: "Cache read over the whole prompt (input, cache read and cache write) of those runs' requests and their subagents'; null when they sent none." },
+        breaks: { ...CACHE_BY_CAUSE(COUNT), description: "Cache breaks by cause: a turn whose cache read dropped more than 80% against the turn before it." },
+        extra_cost_usd: { ...CACHE_BY_CAUSE({ type: "number", minimum: 0 }), description: "By cause, what the breaks' re-sent tokens cost above a cache read, at list prices (USD); unpriced breaks are not in it." },
+        unpriced_breaks: { ...COUNT, description: "Breaks on a model with no list price: in `breaks`, not in `extra_cost_usd`." },
+      }),
+      { type: "null" },
+    ],
+    description: "The cache of the runs imported here in the year, from what the import kept of each (numbers only); null when none was analyzed.",
+  },
 }, "A year of the work under this machine's home, bucketed by each request's time in the server's local zone.");
 /** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
 const GROUP = {
@@ -2616,7 +2631,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/export": {
     get: {
       operationId: "getRunExport", tags: ["runs"], summary: "An ended run as a share bundle, every string cut",
-      description: "The run as one `agentrun.share/1` document, the one a share page renders: its view's allowlisted fields, its Timeline rows, a workflow's graph, its UTF-8 text files within the caps, what is left out (`omitted`), and its sha256. Every string in it from the run is cut by the scrubber, with the values this server holds and the sign-ins the run was handed as its held values: a known key format, a held value and a dump (env output, a .env file, ~/.ssh) are cut for good; a value beside a label (`PGPASSWORD=`, `Authorization:`, `--password`) and a personal detail (a home path's user, an email, a private address) are cut and may be restored. Each cut is a record in `cuts`: where it is, its rule and kind, whether it may be restored, and its shape, never its value. The document is the same bytes on every export of the run, and is read back before it is answered: a value the cut left, or a scrub that failed, answers `500` with an empty body. `restore` re-exports with those cuts' values in place, each record moved to `restored`; an id of a cut that may not be restored, or of no cut, is `400`, and nothing is restored. `409 run_not_final` until the run has ended; `403 forbidden` while this server can't read the browser sign-in the run was handed; `413 export_too_large` over 8 MiB, never cut short.",
+      description: "The run as one `agentrun.share/1` document, the one a share page renders: its view's allowlisted fields, its Timeline rows, a workflow's graph, its UTF-8 text files within the caps, what is left out (`omitted`), and its sha256. Every string in it from the run is cut by the scrubber, with the values this server holds and the sign-ins the run was handed as its held values: a known key format, a held value and a dump (env output, a .env file, ~/.ssh) are cut for good; a value beside a label (`PGPASSWORD=`, `Authorization:`, `--password`) and a personal detail (a home path's user, an email, a private address) are cut and may be restored. Each cut is a record in `cuts`: where it is, its rule and kind, whether it may be restored, and its shape, never its value. The document is the same bytes on every export of the run, and is read back before it is answered: a value the cut left, or a scrub that failed, answers `500` with an empty body. `restore` re-exports with those cuts' values in place, each record moved to `restored`; an id of a cut that may not be restored, or of no cut, is `400`, and nothing is restored. `409 run_not_final` until the run has ended; `403 forbidden` while this server can't read the browser sign-in the run was handed; `413 export_too_large` over 8 MiB, never cut short. Served in the API-only profile (`AGENTRUN_API_ONLY=1`) too, with the token: the share page that renders it is the console's, which that profile refuses.",
       parameters: [ref("parameters/RunId"), { name: "restore", in: "query", required: false, description: "Cut ids to restore, comma-separated (the parameter may repeat): each a label, personal or jev cut of this run's bundle.", schema: { type: "string" } }],
       responses: { "200": json(SHARE_BUNDLE, "The run's share bundle."), "500": { description: "The export failed closed: a scrub failed, or the bundle read back held a value. No body." }, ...errors(400, 401, 403, 404, 409, 413, 429) },
       "x-agentrun-serve": "share/1",

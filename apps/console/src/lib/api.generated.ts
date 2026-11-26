@@ -4438,6 +4438,27 @@ export interface operations {
         runs: number;
       }[];
       unread_files: number;
+      cache: {
+        runs: number;
+        hit_rate: number | null;
+        breaks: {
+          model: number;
+          idle: number;
+          compaction: number;
+          edited: number;
+          sidechain: number;
+          unknown: number;
+        };
+        extra_cost_usd: {
+          model: number;
+          idle: number;
+          compaction: number;
+          edited: number;
+          sidechain: number;
+          unknown: number;
+        };
+        unpriced_breaks: number;
+      } | null;
     };
   };
   gitHubCallback: {
