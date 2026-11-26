@@ -554,7 +554,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "export_too_large" | "purged" | "model_key_required" | "runner_refused" | "api_keys_full";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "export_too_large" | "purged" | "model_key_required" | "runner_refused" | "api_keys_full" | "local_model_pulling";
   ExternalRef: {
     source: string;
     kind: string;
@@ -3146,6 +3146,46 @@ export interface operations {
         draft_errors: string[];
         withheld: boolean;
       }[];
+    };
+  };
+  getLocalModel: {
+    body: never;
+    answer: {
+      machine: {
+        platform: string;
+        arch: string;
+        ram_bytes: number;
+        gpu: {
+          kind: "apple";
+          unified: true;
+        } | {
+          kind: "nvidia";
+          name: string;
+          memory_bytes: number;
+        } | {
+          kind: "unknown";
+        };
+      };
+      ollama: {
+        asked: boolean;
+        reachable: boolean;
+        version: string | null;
+      };
+      recommended: {
+        tag: string | null;
+        why: string;
+        pulled: boolean;
+      };
+      pull: null | {
+        tag: string;
+        state: "pulling" | "done" | "failed";
+        status: string;
+        completed_bytes: number;
+        total_bytes: number;
+        error?: string;
+      };
+      can_pull: boolean;
+      refused: string | null;
     };
   };
   getMcpPrivateHosts: {
@@ -6016,6 +6056,48 @@ export interface operations {
       snapshot: Record<string, unknown>;
     };
     answer: Record<string, unknown>;
+  };
+  pullLocalModel: {
+    body: {
+      tag: "inkling-2-mini" | "qwen3:8b" | "qwen3:4b";
+    };
+    answer: {
+      machine: {
+        platform: string;
+        arch: string;
+        ram_bytes: number;
+        gpu: {
+          kind: "apple";
+          unified: true;
+        } | {
+          kind: "nvidia";
+          name: string;
+          memory_bytes: number;
+        } | {
+          kind: "unknown";
+        };
+      };
+      ollama: {
+        asked: boolean;
+        reachable: boolean;
+        version: string | null;
+      };
+      recommended: {
+        tag: string | null;
+        why: string;
+        pulled: boolean;
+      };
+      pull: null | {
+        tag: string;
+        state: "pulling" | "done" | "failed";
+        status: string;
+        completed_bytes: number;
+        total_bytes: number;
+        error?: string;
+      };
+      can_pull: boolean;
+      refused: string | null;
+    };
   };
   putLearningCorrections: {
     body: {

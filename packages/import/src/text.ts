@@ -1,5 +1,9 @@
 // What every reader reads a record's fields with.
+import { createHash } from "node:crypto";
 import type { Turn } from "./types.js";
+
+/** A record's content as a ChainRecord holds it: the first 16 hex of the sha256 of its JSON, never the content. */
+export const hashOf = (content: unknown): string => createHash("sha256").update(JSON.stringify(content) ?? "").digest("hex").slice(0, 16);
 
 /** What a request read without turns keeps of its error: that it failed, never the message (a path, a provider's text). */
 export const FAILED = "failed";

@@ -56,7 +56,9 @@ export function readTemplateDraft(raw: string | undefined, t: TemplateView): { b
       || !object(b.parameters)
       || (b.grants !== undefined && (!Array.isArray(b.grants) || b.grants.some((g) => typeof g !== "string" || !t.mcp.some((m) => m.tools.some((tool) => tool.tool === g)))))
       || (b.servers !== undefined && (!object(b.servers) || Object.entries(b.servers).some(([toolkit, name]) => !t.mcp.some((m) => m.toolkit === toolkit) || typeof name !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(name))))
-      || !object(b.overrides) || Object.keys(b.overrides).some((k) => k !== "approvals" && k !== "choice") || (b.overrides.approvals !== "ask" && b.overrides.approvals !== "never")
+      || !object(b.overrides) || Object.keys(b.overrides).some((k) => k !== "approvals" && k !== "choice" && k !== "model") || (b.overrides.approvals !== "ask" && b.overrides.approvals !== "never")
+      // The agent's model (the Free shelf's Use free) takes the package's place, so it never comes with a choice.
+      || (b.overrides.model !== undefined && (typeof b.overrides.model !== "string" || !/^[^\s\p{Cc}]{1,200}$/u.test(b.overrides.model) || b.overrides.choice !== undefined))
       || (b.overrides.choice !== undefined && (typeof b.overrides.choice !== "string" || !t.model?.choices?.map((choice) => choice.id).includes(b.overrides.choice)))) return invalid;
     const fields = schemaFields(t.parameters);
     if (!fields) return invalid;
