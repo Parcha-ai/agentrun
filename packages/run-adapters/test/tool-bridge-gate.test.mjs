@@ -133,6 +133,32 @@ test('a nesting call a crash cut after it fixed a value, asked about again by th
   ]);
 });
 
+test('a nesting call a crash cut after a call nested in it was let go, fixing no value, is asked as replayed; one that nested nothing is not', async () => {
+  const store = memorySessionStore();
+  // The first drive runs `outer`, which never fixes a value: it calls `pay` nested in it (its effect `tool:cut/pay-1` is
+  // logged), then is lost in flight. `quiet` is let go too, and lost before it nested anything.
+  const first = await openDrive({ writer: await store.open('nesting-replayed-tool'), signal: new AbortController().signal });
+  const log = [];
+  let nested;
+  const once = new Promise((resolve) => (nested = resolve));
+  const nesting = (name, work) => ({ name, description: 'Nests.', inputSchema: { type: 'object' }, replay: 'safe', nests: true, execute: work });
+  const pay = { ...payTool(log), replay: 'safe' };
+  void toolBridge(first, [pay, nesting('outer', async (_args, io) => { await io.nested.call('pay', { amount: 1 }, 'pay-1'); nested(); return new Promise(() => {}); })]).call('outer', {}, 'cut');
+  void toolBridge(first, [nesting('quiet', () => new Promise(() => {}))]).call('quiet', {}, 'quiet');
+  await once;
+  assert.deepEqual(log, [['ran', { amount: 1 }]], 'the nested call ran once');
+  const second = await openDrive({ writer: await store.open('nesting-replayed-tool'), signal: new AbortController().signal });
+  const asked = [];
+  const gate = async (call) => (asked.push(call), { deny: 'Permission denied: set to deny.' });
+  const bridge = toolBridge(second, [pay, nesting('outer', async () => 'ran'), nesting('quiet', async () => 'ran')], { gate });
+  await bridge.call('outer', {}, 'cut');
+  await bridge.call('quiet', {}, 'quiet');
+  assert.deepEqual(asked, [
+    { callId: 'cut', tool: 'outer', args: {}, replayed: true },
+    { callId: 'quiet', tool: 'quiet', args: {} },
+  ]);
+});
+
 test('a deferred tool is not listed to the model, yet a nested call and call() run it by name', async () => {
   const { drive } = await driveOf('deferred');
   const log = [];
