@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-kernel, @parcha/agentrun-serve
+kind: breaking
+---
+A script's file ops on a desktop or a phone need their tool among the agent's tools: `computer.files.read`, `files.list` and `files.stat` need `read`, and `files.write` needs `write`, as before. Naming a desktop no longer grants them: an agent that read files through `computer` without `read` in its `tools` is now refused in words (`computer_op files.read needs read among this agent's tools…`), whatever `read`'s setting says, on every desktop, mounted or not. Add `read` to the agent's `tools` to keep them. `computer_op`'s op list and a script's `computer` declarations offer only the file ops the agent is given, and both say that input ops on a computer with a terminal app can do what a shell does, whatever `bash`'s setting. `shell.run` and `processes.start` still follow `bash`'s setting, not a grant. `computerDeclarations` takes the ops to leave out, and the kernel exports `withoutOps` for computer_op's definition.

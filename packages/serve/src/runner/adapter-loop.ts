@@ -1459,11 +1459,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // the run's next turn, on a claim that lists them: the run's end opens it again with the message (as for a message
     // that comes while the run ends), and a park's resume takes it. Every message after it waits the same way, whatever
     // the credentials say at its own check (a later message may hand them no longer), so none runs before it. Said once
-    // on the timeline, since the API answered the message as steered.
+    // on the timeline, since the API answered the message as steered. A reopen's own message (the claim's turn, not yet
+    // sent; never a wait's answer) came before the claim opened, so whatever it handed, the claim opened with: a
+    // credential handed since is a later message's, and this one is still the claim's turn. Held, a reopen of a session
+    // still new would wait for a first input that never comes.
     if (leftForNextTurn) return { later: "a message before this one runs as the run's next turn: this one runs after it" };
     const claimMcp = mcp;
     const leftOut = claimMcp?.leftOut;
-    if (claimMcp && leftOut?.length) {
+    const reopenTurn = reopen !== undefined && !reopen.sent && reopen !== waitTurn;
+    if (claimMcp && leftOut?.length && !reopenTurn) {
       const still = new Set(await claimMcp.fresh());
       const handed = leftOut.filter((server) => !still.has(server));
       if (handed.length) {
@@ -2616,7 +2620,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const traced = specNow?.trace;
               const routed = request.route === undefined ? traced?.model : traced?.routes?.get(request.route)?.model;
               const known = (asked: string) => asked === traced?.model || [...(traced?.routes?.values() ?? [])].some((via) => via.model === asked) || specNow?.runCap.modelOf(asked)?.id === asked;
-              const model = tracedModel(request.model, { known, ...(routed ? { routed } : {}), ...(deps.redact ? { redact: deps.redact } : {}) });
+              const model = tracedModel(request.model, { known, ...(routed ? { routed } : {}), redact: deps.redact });
               chats.set(ticket.turn, trace.request(model, request.route));
             }
             // The conversation that asked, as its client named it (pi's, one of several asking at once): whose answer reads
@@ -2799,7 +2803,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // Every harness's events reach its trace first (its tool calls, a plan harness's turns), with a record or without.
         const recorded = record ? onEvent(record) : undefined;
         const traceAnd = (event: Parameters<PiSessionIO["onEvent"]>[0]) => {
-          trace?.event(tracedEvent(event, { mcp: (name) => mcp?.catalogOf(specNow?.facts?.hostName?.(name) ?? name) !== undefined, ...(deps.redact ? { redact: deps.redact } : {}) }));
+          trace?.event(tracedEvent(event, { mcp: (name) => mcp?.catalogOf(specNow?.facts?.hostName?.(name) ?? name) !== undefined, redact: deps.redact }));
           recorded?.(event);
         };
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: traceAnd, gate: sessionGate, ...(permission ? { permission } : {}), hostTool: hosted, ...(ownCalls ? { ownCalls } : {}), bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
@@ -3917,8 +3921,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const next = new Promise<TurnEnd | "lapsed">((resolve, reject) => {
       let done = false;
       let lapsed = false;
-      /** Ended by a message left for the run's next turn (endWaitNow), no hold having lapsed. */
-      let cut = false;
       const finish = (value: Promise<TurnEnd> | "lapsed") => {
         if (done) return;
         done = true;
@@ -3937,13 +3939,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }, () => undefined);
       // So does a message left for the run's next turn (steer), the same way; one left while the wait was starting ends it
       // as soon as it holds.
-      if (waitTurn === mine) {
-        endWaitNow = () => {
-          cut = true;
-          if (!mine.sent) finish("lapsed");
-        };
-        if (leftForNextTurn) endWaitNow();
-      }
+      endWaitNow = () => {
+        if (!mine.sent) finish("lapsed");
+      };
+      if (leftForNextTurn) endWaitNow();
       void (async () => {
         for (;;) {
           await placing;
@@ -3954,7 +3953,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // Not placed (the steer was refused): the next message may be.
             mine.sent = undefined;
             placing = new Promise<void>((resolve) => (mine.placed = resolve));
-            if (lapsed || cut) return finish("lapsed");
+            if (lapsed) return finish("lapsed");
           }
         }
       })().catch(reject);

@@ -6,6 +6,7 @@
 import type { Claim, HeldState, Loop, LoopFactory } from "./loop-contract.js";
 import type { Live } from "../store/store.js";
 import { redactedAnswer, redactedLive, redactedOutputWhole } from "../key-refusal.js";
+import { mustHold } from "./redact.js";
 
 export interface LiveTickerOptions {
   /** How often the changed held states are written. Default 250 ms. */
@@ -75,6 +76,7 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
 
   return {
     createLoop: (deps) => {
+      const redact = mustHold(deps.redact, "A loop the live ticker wraps");
       let claim: Claim | undefined;
       // The claim's signal aborts when its claim is lost (or the runner shuts down past its drain): from then the loop's
       // held state is neither taken nor written, though the loop still reports while it stops. The store fences a write
@@ -87,7 +89,7 @@ export function withLiveTicker(store: { readonly live: Live }, createLoop: LoopF
       // The run's one redactor: a running tool's args and output and a partial answer can quote a secret the runner holds
       // (a key its claim opened), and the live view is read by people and consoles. A loop whose redactor does not know its
       // values has no live view: a value still streaming, a number or an object's names cannot be cut by text alone.
-      const values = deps.redact.heldValues;
+      const values = redact.heldValues;
       const loop: Loop = createLoop({
         ...deps,
         live: (read) => {

@@ -551,13 +551,14 @@ test('a tag that carries no fragment needs a clean tree, as before', () => tagge
   await assert.rejects(checkReleaseTree(root, `v${version}`, version), /These changelogs are not the fold/);
 }));
 
-test('the release workflow folds what its tag carries before it installs, builds or packs anything, and the preflight checks it after', () => {
+test('the release workflow folds what its tag carries after the daemon is built from the tagged tree, before it packs anything, and the preflight checks it after', () => {
   const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
   const at = text => { const index = workflow.indexOf(text); assert.ok(index > 0, `release.yml runs ${text}`); return index; };
   const foldStep = at('run: node scripts/changes.mjs --fold "${RELEASE_TAG#v}"');
   assert.ok(at('run: node scripts/release-ci-gate.mjs') < foldStep, 'after the tagged commit is known to have passed CI');
-  assert.ok(foldStep < at('- run: npm ci --ignore-scripts'), 'before the install');
-  assert.ok(foldStep < at('- run: npm run build\n'), 'before the build');
+  // Go writes a modified tree into a binary's build info (vcs.modified, a "+dirty" version): the daemon is built before the fold.
+  assert.ok(at('- run: npm run build:daemon -w @parcha/agentrun-computer') < foldStep, 'after the daemon is built');
+  assert.ok(foldStep < at('- run: npm run export:source'), 'before the source is exported');
   assert.ok(foldStep < at('- run: npm run verify:packages -- --console'), 'before the archives are packed and verified');
   assert.ok(at('- run: npm run verify:packages -- --console') < at('- run: node scripts/release-preflight.mjs --tag "$RELEASE_TAG"'), 'the preflight reads the folded tree');
 });
