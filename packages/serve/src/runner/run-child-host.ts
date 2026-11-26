@@ -1333,9 +1333,10 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
         const capped = await underServerCeilings(claimDeps, launch, revisionRow as never);
         const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, capped, claim.runId);
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
-        // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
+        // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys). Read
+        // over the claim's environment, so a run on a --faux runner, or held, never has that key read for it.
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
-        const keyed = (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, claim.runId)) !== undefined;
+        const keyed = (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, claim.runId)) !== undefined;
         const toProcess = keyed ? withoutModelKeys({ ...claimed }) : claimed;
         // The saved gateway's key, kept off the claim's tool keys (claimSecrets), is handed for the run's model routes alone,
         // read as the server's model keys are (savedModelKeys, over the claim's environment the gateway was laid over), as a
