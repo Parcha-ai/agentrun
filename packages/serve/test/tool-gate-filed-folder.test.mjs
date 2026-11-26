@@ -19,7 +19,9 @@ const NOT_RUN = "It was not run: nothing was sent and nothing was charged.";
 /** The refusal of `tool` at `given`. */
 const refusal = (tool, given) => `${tool} can't be called: ${given} is in stripe/pages/, the folder this agent's setting for ${KEY} files that tool's answers in (its file setting), so the agent's own file tools are refused there. ${NOT_RUN}`;
 
-const gateOn = (harness, overrides = FILED) => runnerGate({ settings: ALLOW, overrides, harness, root: RUN, tools: ["read", "write", "edit", "bash"] });
+const gateOn = (harness, overrides = FILED, names) => runnerGate({ settings: ALLOW, overrides, harness, root: RUN, tools: ["read", "write", "edit", "bash"], ...(names ? { names } : {}) });
+/** A CLI's working folder on this machine: another name of the run's folder its file tools take (run-tools.ts aliases). */
+const SCRATCH = "/nonexistent/scratch/agent/run";
 
 test("read, write and edit (path) are refused at or under a filed folder, in words that name the setting; `..`, ./ and absolute spellings that land inside are refused", async () => {
   const gate = gateOn("pi");
@@ -44,6 +46,19 @@ test("a computer script's files ops held as read or write, and a screenshot's sa
   assert.equal(await verdictOf(gate, "computer_op", { op: "files.list", args: { path: "stripe" } }), "allow", "an ancestor's listing names files, never their text");
   const shot = await verdictOf(gate, "computer_screenshot", { save_as: "stripe/pages/shot.png" });
   assert.ok(shot.startsWith(refusal("write", "stripe/pages/shot.png")), shot);
+});
+
+test("every name the run's file tools take for its folder is held: the folder by a CLI's scratch path is refused, a sibling by that path is not", async () => {
+  const gate = gateOn("claude-agent", FILED, ["/workspace", SCRATCH]);
+  for (const given of [`${SCRATCH}/stripe/pages/a.json`, `${SCRATCH}/stripe/pages`, `${SCRATCH}/notes/../stripe/pages/b.json`]) {
+    assert.equal(await verdictOf(gate, "read", { path: given }), refusal("read", given), `read ${given}`);
+    assert.equal(await verdictOf(gate, "Read", { file_path: given }), refusal("read", given), `Read ${given}`);
+  }
+  assert.equal(await verdictOf(gate, "Write", { file_path: `${SCRATCH}/stripe/pages/c.json`, content: "x" }), refusal("write", `${SCRATCH}/stripe/pages/c.json`));
+  for (const given of [`${SCRATCH}/stripe/other.json`, `${SCRATCH}/stripe/pages-old/a.json`, `${SCRATCH}/notes.md`]) {
+    assert.equal(await verdictOf(gate, "read", { path: given }), "allow", `read ${given}`);
+  }
+  assert.equal(await verdictOf(gate, "read", { path: "stripe/pages/a.json" }), refusal("read", "stripe/pages/a.json"), "the run's own names still hold");
 });
 
 test("a sibling, a folder whose name only starts the same, an ancestor, the rest of the run's files, a path outside the run's folder and a skill file are not refused", async () => {
