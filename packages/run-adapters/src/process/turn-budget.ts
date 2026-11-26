@@ -60,12 +60,17 @@ export class TurnBudget {
   #facts: { inputTokens: number; outputTokens: number; calls?: number } | undefined;
   /** What this turn's claims hold of what is left, in characters: each claim's bound until its result settles it. */
   #held = 0;
-  readonly #claims = new Map<string, { max: number; settled: boolean }>();
+  /** Each call's claim: its bound, and once its result went back, the length it was handed at. */
+  readonly #claims = new Map<string, { max: number; settled: boolean; chars?: number }>();
   #reading = 0;
   readonly #waiting = new Set<() => void>();
   /** An answer was read into this budget (open, or restore): a journal's records never replace it. */
   #read = false;
-  #sink: ((record: TurnRecord) => void) | undefined;
+  #sink: ((record: TurnRecord) => void | Promise<void>) | undefined;
+  /** Every result length handed to the sink, once each is kept (the sinks' promises, together): rejects once one was not. */
+  #kept: Promise<void> = Promise.resolve();
+  /** A record the sink could not keep: the next sink is given the turn again (journal). */
+  #lost = false;
 
   /** `fixed`: the session's own text every request carries (its system prompt), counted when no answer was read. */
   constructor(fixed: readonly string[] = []) {
@@ -107,12 +112,40 @@ export class TurnBudget {
     this.#held = 0;
     this.#claims.clear();
     this.#read = true;
-    this.#sink?.({ open: this.#facts ? { ...this.#facts } : null });
+    // No result waits on an answer's record: one the sink could not keep halts its drive (NativeJournal), and the
+    // lengths settled after it, which the bridge waits for, fail with it.
+    void Promise.resolve(this.#sink?.(this.#opened())).catch(() => {
+      this.#lost = true;
+    });
   }
 
-  /** Each answer's facts and each result's length, as they happen, to `sink` (the session's journal: journalTurn), in place of any before. */
-  journal(sink: (record: TurnRecord) => void): void {
+  /** The record of the answer this turn opened with. */
+  #opened(): TurnRecord {
+    return { open: this.#facts ? { ...this.#facts } : null };
+  }
+
+  /** `result` (a sink's) joined to what kept() waits for. */
+  #keep(result: void | Promise<void>): void {
+    const kept = Promise.all([this.#kept, result]).then(() => {});
+    // Seen here, so a length no one waits for never stops the process; kept() still rejects with it.
+    kept.catch(() => {
+      this.#lost = true;
+    });
+    this.#kept = kept;
+  }
+
+  /** Each answer's facts and each result's length, as they happen, to `sink` (the session's journal: journalTurn), in place of any before.
+   *  A new sink (a new drive's journal) starts with nothing waited for: a length the last one failed to keep failed its
+   *  own drive, never the next. When the last one lost a record, the new one is first given the turn again (the answer's
+   *  facts, then each length handed since, as restore reads them), and a result waits for that too: a call the drive that
+   *  failed settled, replayed in this one (Codex's), settles nothing new, and its length must still reach the journal. */
+  journal(sink: (record: TurnRecord) => void | Promise<void>): void {
     this.#sink = sink;
+    this.#kept = Promise.resolve();
+    if (!this.#lost || !this.#read) return;
+    this.#lost = false;
+    this.#keep(sink(this.#opened()));
+    for (const [callId, claimed] of this.#claims) if (claimed.settled) this.#keep(sink({ settled: { callId, chars: claimed.chars ?? claimed.max } }));
   }
 
   /** The turn `records` (journal's, in order) leave: the last answer's facts, and each result handed since, held. Only a
@@ -133,7 +166,7 @@ export class TurnBudget {
       const chars = count(record.settled?.chars);
       const callId = record.settled?.callId;
       if (typeof callId !== 'string' || chars === undefined || this.#claims.has(callId)) continue;
-      this.#claims.set(callId, { max: chars, settled: true });
+      this.#claims.set(callId, { max: chars, settled: true, chars });
       this.#held += chars;
     }
     this.#read = true;
@@ -184,13 +217,24 @@ export class TurnBudget {
     return max;
   }
 
-  /** Call `callId`'s result reached the model at `chars` characters: what it claimed and did not use is left for the rest. */
+  /** Call `callId`'s result reached the model at `chars` characters: what it claimed and did not use is left for the rest,
+   *  and what it took past its claim (a short result is whole under any bound, a refusal's words are what they are) is
+   *  held, so the calls after it split only what is left. */
   settle(callId: string, chars: number): void {
     const claimed = this.#claims.get(callId);
-    if (!claimed || claimed.settled) return;
+    const handed = count(chars);
+    if (!claimed || claimed.settled || handed === undefined) return;
     claimed.settled = true;
-    this.#held += Math.min(chars, claimed.max) - claimed.max;
-    this.#sink?.({ settled: { callId, chars: Math.min(chars, claimed.max) } });
+    claimed.chars = handed;
+    this.#held += handed - claimed.max;
+    this.#keep(this.#sink?.({ settled: { callId, chars: handed } }));
+  }
+
+  /** Resolves once every result length settled is kept by the sink (journalTurn: committed to the journal), so a result
+   *  goes back only once a process that stops right after cannot lose its part of the turn. Rejects when one was not:
+   *  the result must not go back, since a resume would claim its part again. */
+  async kept(): Promise<void> {
+    await this.#kept;
   }
 }
 
@@ -207,15 +251,17 @@ export interface TurnJournal {
 /**
  * `turn` kept on `journal` (a drive's; the next drive's replaces it): a budget that has read no answer yet (a new process
  * resuming the session) first takes back the turn the journal holds, so the calls its resume answers split what their
- * answer left; then each answer's facts and each result's length go to the journal as they happen. An answer's facts are
- * flushed at once: they must outlast a process that stops while its calls run.
+ * answer left; then each answer's facts and each result's length go to the journal as they happen, flushed at once: an
+ * answer's facts must outlast a process that stops while its calls run, and a result's length one that stops right after
+ * it was handed (the bridge waits for it: TurnBudget.kept). A journal that cannot write halts its drive on its own,
+ * and a result whose length it could not keep is never handed (kept rejects; the bridge halts and throws).
  */
 export function journalTurn(turn: TurnBudget | undefined, journal: TurnJournal): void {
   if (!turn) return;
   turn.restore(journal.records<TurnRecord>(TURN_STREAM).flatMap((r) => (r.data ? [r.data] : [])));
   turn.journal((record) => {
     journal.append(TURN_STREAM, record);
-    if ('open' in record) void journal.flush().catch(() => {});
+    return journal.flush();
   });
 }
 

@@ -86,7 +86,8 @@ export function secretCut(envs: NodeJS.ProcessEnv | readonly NodeJS.ProcessEnv[]
     if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([name, inner]) => [text(name), json(inner)]));
     return value;
   };
-  /** Counts the distinct values cut from now until the returned stop is called, which answers how many. */
+  /** Counts the distinct values cut from now until the returned stop is called, which answers how many. The stop may
+   *  be called again (a `finally` after the count was read): the same number, and nothing cut after the first call. */
   const tally = (): (() => number) => {
     const tallied = new Set<string>();
     tallies.add(tallied);

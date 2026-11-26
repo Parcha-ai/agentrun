@@ -638,8 +638,8 @@ end to end. The [published image](#in-the-published-image) hosts Docker boxes th
 A definition may name where its runs execute: `{"mode": "runner"}` or `{"mode": "sandbox", "box": ...}`, the box one of
 the providers under [Computers](#computers). `place` is the v2 view of the agent's computer setting: `runner` is kind
 `none`, and `sandbox` a sandbox on that provider. On the runner a run has no shell where its folder is on this
-server's disk (Mode 1), and `bash` on Archil's serverless exec where it is on Archil (Mode 2)
-([where `bash` runs](#computers)). In a sandbox the agent's `bash` runs in the named box and its
+server's disk (Mode 1), and `bash` on Archil's serverless exec where it is on Archil (Mode 2), except on an Archil
+region with no serverless exec (`gcp-us-central1`), where bash needs a box ([where `bash` runs](#computers)). In a sandbox the agent's `bash` runs in the named box and its
 file tools (`read`, `write`, `edit`) work on the `work/` the box has ([a run in a Docker box](#a-run-in-a-docker-box)),
 while the agent's loop, its log and every key stay on the server, whatever its harness. Any other shape is `422 input_invalid` on `definition.place`, whose `fix` is the change to make: the field to
 remove, or the place it most likely meant, to copy (`"place": {"mode": "sandbox", "box": "docker"}`). One that names a
@@ -674,6 +674,10 @@ Where a new agent with no place goes, by mode:
 - **No Docker, in Mode 2:** not refused. The runner's shell is Archil's serverless exec, so a new agent with no place
   saves for the runner as before, and `default_place` is `{"mode": "runner"}`, no `default_reason`. A background tool
   still runs in a box alone, so naming one with no place is refused at the tool.
+- **Mode 2 on an Archil region with no serverless exec (`gcp-us-central1`), Docker or not: bash needs a box.** The
+  runner has no shell there and Docker's box can't mount Archil, so a new agent with a shell tool and no computer is
+  refused at `definition.computer`, "bash needs a box (a sandbox computer): …", and `default_place` is `null` with
+  those words in `default_reason` ([where `bash` runs](#computers)).
 
 A definition that names its place, the runner included, a workflow, and one whose tools need no shell save as before in
 every mode, and so does a package that names its tools (`tools: []` included) or its computer list. An agent saved
@@ -699,7 +703,8 @@ and `GET /v2/runs/{id}` shows it as `place`. A harness's own tools in the box, w
 
 `bash` may be named only by an agentic definition whose place is a sandbox (`422` on a runner, named or by default, with
 the sandbox place as its `fix`), or, in Mode 2, by one on the runner, where `bash` runs on Archil's serverless exec
-([where `bash` runs](#computers)); the background tools run in a box alone, in either mode. A workflow's place is `runner`
+([where `bash` runs](#computers)), except on an Archil region with no serverless exec (`gcp-us-central1`), where bash
+needs a box; the background tools run in a box alone, in either mode. A workflow's place is `runner`
 or none (`422` on a sandbox, with the runner place as its `fix`). In `capabilities.tools`, `bash` is `available: false`
 with a `reason` (`no box is set up on this server: …`, each box's own reason) when no box this server has can run it and
 the server is in Mode 1.
@@ -1418,6 +1423,15 @@ A desktop, a phone and a browser run in either mode. The run's folder is at
   write does not keep a file's mode (a `0755` file is `0644` after a write), and a symbolic link a command made is never
   followed: reading one is refused, a write through a linked folder is refused, and `bash` refuses a working directory
   with a link on the way.
+- **On an Archil region with no serverless exec (`gcp-us-central1`), bash needs a box.** Archil's AWS regions have the
+  exec above; `gcp-us-central1` has none, so in Mode 2 there a run with no computer that mounts its folder has no shell,
+  as in Mode 1, and Docker's box can't mount Archil. Give the agent a sandbox computer, or leave `bash` out of its
+  tools. A new agent with `bash` (or another shell tool) and no computer is refused at its save or its `agentrun
+  deploy`, `422 input_invalid` at `definition.computer`: "bash needs a box (a sandbox computer): this server's Archil
+  region gcp-us-central1 has no serverless exec, …". One that names the runner (or computer kind `none`) is refused at
+  the tool: "bash runs only in a box, …". An agent saved with `bash` and no computer before is refused at each run,
+  `409 agent_not_runnable`, in the first words, and no run starts. `capabilities.places.default_place` is `null` there, with
+  those words in `default_reason`, and `bash` shows unavailable.
 
 **The run's scratch.** `bash`'s `TMPDIR` is `.agentrun/tmp` in the run's folder, and a cut answer's full output is in
 `.agentrun/output/`. The run's end removes both before its end commit: through the computer when it mounts the folder,
