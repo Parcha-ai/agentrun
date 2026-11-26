@@ -296,9 +296,16 @@ named like a credential, read over the whole value as written, a URL's query and
 comma or its `%2C`, and spaces, again at `?`, `#` and `/` too, and three times keeping a `;`: at all but `;`, so
 `api_key=<key;rest>%2Cregion=us` holds the key; at `&` and spaces alone, so `api_key=<key;rest%2Cmore>` holds the
 whole key; and at those or their `%26` and `%20`, so that key is held as written before an encoded `&` or space too,
-and at those or `%26` alone, so a key with a `%20` in it is held before a `%26` (all are held, since a redactor matches each held value exactly and the longer reading never covers the
-key alone); a value whose part before its first `;` is empty, `token=;<key>` or `token=%3B<key>`, is
-held after that `;` too; a value in quotes, raw or written `%22` or `%27`, is held without them; `theme=dark` is not held), and the user, password and
+and at those or `%26` alone, so a key with a `%20` in it is held before a `%26`; and at `&`, spaces and `%3B`, so a
+key in a list joined by an encoded `;` (`session=<token>%3Btheme=dark`) is held, a `%20`, quotes or a `%26` in it
+too (all are held, since a redactor matches each held value exactly and the longer reading never covers the key
+alone); a value is also held up to each `%20` in it, 8 characters or more, so `api_key=<key%20rest>%20region=us`
+holds the key and never `region=us` alone; a value whose part before its first `;` is empty, `token=;<key>` or
+`token=%3B<key>`, is held after that `;` too, whole and as its first piece of 8 characters or more, but not when that
+is a pair named like no credential (`token=;theme=dark`); a value in quotes, raw or written `%22` or `%27`, is held
+without them, and one with an opening quote and no closing one (a quoted key cut at its `%2C`) without that quote
+too; `theme=dark` is not held, nor is a value of only `=`, `;`, quotes, commas or spaces, as written or decoded, so
+`api_key=%2C` cuts no comma from the `[otel]` lines), and the user, password and
 credential-named query parameters of every URL in it, one inside another's query or path too, scheme-relative
 (`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL's query, an endpoint's too, is read split at `&`
 alone and again at `&` and `;`, so `?api_key=<key;rest>` holds the whole key and `?region=us;session=<token>` the
