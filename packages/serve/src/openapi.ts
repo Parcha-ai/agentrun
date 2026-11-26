@@ -2429,6 +2429,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         { name: "agent", in: "query", required: false, description: "Only this agent's runs.", schema: ref("schemas/Id") },
         { name: "revision", in: "query", required: false, description: "Only runs of this revision.", schema: { type: "string" } },
         { name: "status", in: "query", required: false, description: "Only runs with this status.", schema: ref("schemas/RunStatus") },
+        { name: "scope", in: "query", required: false, description: "Factory scope: active includes every nonterminal execution and continuable stopped turn, including archived runs; review selects unarchived terminal escalations and failures separately. Both exclude imported history and use keyset cursors bound to scope, agent and revision. Cannot combine with status or archived. Page limit defaults to 50 (maximum 100). No scope preserves the ordinary history listing.", schema: { enum: ["active", "review"] } },
         { name: "archived", in: "query", required: false, description: "true lists only archived runs; false, the default, the others.", schema: { type: "boolean" } },
         LABEL_PARAMETER,
         SOURCE_PARAMETER,
@@ -3899,7 +3900,27 @@ export const DEFINITION_INPUT_OPTIONAL = ["instructions", "version", "skills", "
 /** Definition's own: only instructions ever misses from an answer (a workflow revision keeps none); version, skills
  *  and tools are always sent (agents-store.ts definitionOf), so they stay required there. */
 export const DEFINITION_OPTIONAL = ["instructions"];
+const FACTORY_ACTIVITY: Json = {
+  ...closed({
+    lifecycle_version: { type: "string", pattern: "^[0-9]+$", description: "Committed lifecycle watermark captured in the same store snapshot as this run's projection. The projection is built once per change of the run and kept until the next, so a run that has not changed keeps its watermark from one read to the next. Compare as an integer when reconciling scoped pages; a later watermark supersedes an earlier projection of the same run." },
+    source: { enum: ["managed", "native", "sdk", "cli"], description: "What runs the session: `managed` and `native`, AgentRun's own runner (a native run through the harness on its machine); `sdk`, a backend's SDK wrapper; `cli`, an existing CLI session connected for learning. An `sdk` or `cli` session is run by its own application, which reports it here." }, runtime: { type: "string", description: "The runtime the session recorded (`codex-sdk`, `codex-cli`, `claude-code-cli`, a native harness), else the run's harness." }, control: { enum: ["managed", "observed"], description: "`observed` for an `sdk` or `cli` session: AgentRun refuses to stop or cancel it, so every one of its `controls` is false." },
+    controls: closed({ stop: { type: "boolean" }, cancel: { type: "boolean" }, approve: { type: "boolean" } }),
+    observation: closed({
+      basis: { enum: ["runner", "connector", "unreported"] }, status: { enum: ["current", "offline", "revoked", "unreported"] },
+      last_seen_at: { type: ["string", "null"], format: "date-time" },
+    }),
+    last_activity_at: { type: ["string", "null"], format: "date-time" },
+    github: { oneOf: [{ type: "null" }, closed({
+      repository: { type: "string" }, issue: { type: ["integer", "null"], minimum: 1 }, pull_request: { type: ["integer", "null"], minimum: 1 },
+      head_sha: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$" }, provenance: { enum: ["launch", "github_trigger"] },
+    })] },
+    children: { type: "array", items: closed({ id: { type: "string" }, conversation_id: { type: "integer", minimum: 0 }, parent_call_id: { type: "string" }, status: { enum: ["active", "completed"] }, label: { type: ["string", "null"], maxLength: 160 } }) },
+  }),
+  description: "Present on scoped factory lists. Source reporting and supported controls, not an execution authorization. Connector health does not prove session liveness; an SDK's or a connected CLI session's heartbeat is unreported. GitHub links come only from explicit launch binding or a trusted GitHub trigger, never prose. Children are active durable subagent conversations with recorded ownership, not standalone runs; an empty list makes no claim about unreported native/SDK children.",
+  "x-agentrun-serve": "factory/1",
+};
 const RUN_FIELDS: Record<string, Json> = {
+  factory: FACTORY_ACTIVITY,
   console_url: CONSOLE_URL("run"),
   revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
   kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
@@ -4064,6 +4085,10 @@ const RUN_TOOL_KEYS: Json = {
 };
 
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  RunList: {
+    scope: { enum: ["active", "review"], description: "Present only for a scoped factory list.", "x-agentrun-serve": "factory/1" },
+    observed_at: { type: "string", format: "date-time", description: "When this scoped read began. Each run is a consistent snapshot; pages are not one frozen snapshot. Re-read from the first page to discover newer admissions.", "x-agentrun-serve": "factory/1" },
+  },
   Limits: {
     free_model_requests: { type: "integer", minimum: 1, description: "The most requests on free models a run makes: a free model's catalog price is all zeros, so a dollar cap cannot stop it. AGENTRUN_FREE_MODEL_REQUESTS, else 60. The request after that many is not sent, and the run ends `failed`, its error `spend_cap_reached`: \"Not sent: this run reached its 60-request limit for free models.\" (the number is this one). Every free model's request counts, the run's own, its subagents', its side calls and any cut by a crash, capped or not; a paid request, a paid tool call and a workflow decision never do. ChatGPT-plan requests don't count.", "x-agentrun-serve": "freerequests/1" },
   },
@@ -4230,6 +4255,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     example: { description: "A value the field accepts, said in `message` too: the operation's documented request body's value there, else the schema's example, const or option, else one made from its type; each is suggested only once the route's own check of the body takes it in place (else the schema, for a value the document gives), so this server never suggests a value it refuses. Absent when there is none. For a field the body does not keep that an object inside it does, the body with the field where it belongs, as `fix` shows it: `{\"definition\": {\"name\": \"Due diligence\"}}`.", "x-agentrun-serve": "explain/1" },
   },
   RunSummary: {
+    computer: RUN_COMPUTER,
     sdk: SDK_RUN,
     cli_learning: CLI_LEARNING_RUN,
     native: NATIVE_RUN,
@@ -4997,10 +5023,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   listAgents.parameters = [...listAgents.parameters, { name: "archived", in: "query", required: false, description: "true lists only archived agents; false, the default, the others.", schema: { type: "boolean" } }];
   listAgents["x-agentrun-serve-changed"] = { archived: "archivedparam/1" };
   changed.push("GET /agents");
-  // GET /agents/{agent_id}/runs takes GET /runs' `label` filter too (server.ts runsPage, shared by both routes).
+  // GET /agents/{agent_id}/runs takes GET /runs' `scope` and `label` filters too (server.ts runsPage, shared by both routes).
   const listAgentRuns = (doc.paths["/agents/{agent_id}/runs"] as Json).get as Json & { parameters: Json[] };
-  listAgentRuns.parameters = [...listAgentRuns.parameters, LABEL_PARAMETER];
-  listAgentRuns["x-agentrun-serve-changed"] = { ...(listAgentRuns["x-agentrun-serve-changed"] as Json | undefined), label: "runlabels/1" };
+  listAgentRuns.parameters = [...listAgentRuns.parameters, { name: "scope", in: "query", required: false, description: "Factory active executions (including archived) or unarchived terminal escalations and failures for this agent, excluding imports. Uses keyset cursors bound to filters; incompatible with status and archived. Default scoped page size 50, maximum 100.", schema: { enum: ["active", "review"] } }, LABEL_PARAMETER];
+  listAgentRuns["x-agentrun-serve-changed"] = { ...(listAgentRuns["x-agentrun-serve-changed"] as Json | undefined), scope: "factory/1", label: "runlabels/1" };
   changed.push("GET /agents/{agent_id}/runs");
   // GET /agents/{agent_id} always sends the agent's `tools` (server.ts getAgent; [] before it has a revision), which the
   // agent in a list, a create or a save does not: its 200 is the contract's Agent with `tools` required.

@@ -4450,6 +4450,14 @@ server's own origin, under a CSP that allows that origin only, but for the provi
 - **Mission Control**: the store's counts, imported history, analytics and the latest runs, available before the first
   server-run agent and without a model-provider key. Its introduction is dismissible. Connect agent and Query use
   the coding-agent selector; the page refreshes when you return from your coding agent.
+- **Agent Factory** (`#/factory`): a kanban of sessions reported to this server, including parallel runs of one agent,
+  reported active child conversations, an audit's shadow run while it runs, and sessions without a repository. Waiting, Working, Needs you and Unknown
+  describe execution; a completed run does not prove that its GitHub change passed checks or merged. Cards open the
+  existing run viewer for activity and supported controls. GitHub links come from launch or trusted trigger provenance.
+  Native connector health and missing SDK freshness are explicit; observed sessions do not acquire controls here.
+  Archived active runs remain visible, imported history is excluded, and ended attention is separate from active counts.
+  The board refreshes every ten seconds after a read settles. It reads bounded pages and offers **Load more** with
+  partial-coverage counts; failures preserve the last-known cards with a stale notice.
 - **Agents**: **Build** opens a description composer and local starter templates; **Connected agents** lists definitions,
   with archived ones behind **Archived**. Build, edit and run actions share the remembered coding-agent dropdown,
   including **API playground**. Choosing a template prepares its full definition without creating or running it.
@@ -4477,6 +4485,18 @@ A run that reports learning also has a **Learning result** panel: the outcome, t
 the checks' problems, and the seed and merge revisions. Its changed
 files remain available beside the result. The agent's Learning tab refreshes after returning to the console and
 while visible, without replacing an open edit or review.
+
+The visibility API uses `GET /v2/runs?scope=active` and `scope=review` (also on an agent's runs route), with `limit`
+and opaque `next_cursor`. Scope is filtered before pagination; cursors are tied to the scope and agent filters.
+Do not combine scope with `status` or `archived`. Scoped summaries add `factory` source/control, observation,
+activity, GitHub provenance and reported-child metadata. A lifecycle version captured inside each run snapshot
+orders overlapping observations across the two scopes. A run's summary is built once per change of the run and
+kept on its row, as the runs list keeps its items, so a refresh builds no view of a run that has not changed;
+only who observes the run and its computer are read at each request (a computer's read opens the run's journal
+only for a desktop or phone that is up, or a computer held for its owner). GitHub provenance is what the server
+saved of the delivery that fired the run, never a payload tag found in its input; a run started before servers
+saved it (0.1.0-beta.39) shows no GitHub link. An online connector is transport health, not a heartbeat for each
+session. These reads add no scheduling, branch-writing or merge authority.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. With accounts on (the default) the console asks for the owner's password
