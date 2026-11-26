@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, mcpServerName, nameCall, namesTooLong, ourTool, permissionCallId, TOOL_NAME_CAP, type AcpAnnounces } from "./calls.js";
+import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, mcpServerName, nameCall, namesTooLong, ourTool, permissionCallId, toolsLeftOut, type AcpAnnounces } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { allowFileText, homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -269,7 +269,11 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   const log = options.log ?? (() => {});
   const recipe = options.recipe;
   const plan = recipe.billing.kind === "plan" ? recipe.billing : undefined;
-  const listed = options.tools.filter((tool) => !tool.deferred);
+  const offered = options.tools.filter((tool) => !tool.deferred);
+  /** Those the agent names past its cap under our server's name (namesTooLong), which it could never call: never listed,
+   *  and each start says so (toolsLeftOut). The name's length is the same at every start (mcpServerName). */
+  const capped = joinsByOne(recipe.announces) ? namesTooLong(announcesAt(recipe.announces, mcpServerName(recipe.announces)), offered.map((tool) => tool.name)) : [];
+  const listed = offered.filter((tool) => !capped.includes(tool.name));
   const names = new Set(listed.map((tool) => tool.name));
   /** For each tool, the recipe's announces.extras its own input schema declares: kept in its arguments (announceCall). */
   const declared = new Map(listed.map((tool) => [tool.name, new Set((recipe.announces?.extras ?? []).filter((name) => declaresProperty(tool.inputSchema, name)))]));
@@ -589,12 +593,13 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       else absent.push(name);
     }
     if (absent.length) throw new Error(`${ACP_CODES.keyMissing}: ${recipe.label ?? recipe.id} runs on ${absent.join(" and ")}, which this host does not hold; the agent was not started`);
-    // Under a start's own server name each of our tools is named longer: one past the agent's cap could never be called,
-    // so the start is refused before anything is made.
+    // A tool of ours the agent would name past its cap is not listed (capped); the run is told which, and goes on.
     const serverName = mcpServerName(recipe.announces);
-    const prefix = announcesAt(recipe.announces, serverName)?.prefix ?? "";
-    const tooLong = joinsByOne(recipe.announces) ? namesTooLong(announcesAt(recipe.announces, serverName), names) : [];
-    if (tooLong.length) throw new Error(`acp: ${recipe.label ?? recipe.id} names each of our tools ${prefix}<tool>, at most ${TOOL_NAME_CAP} characters in all, so a tool's own name may be at most ${TOOL_NAME_CAP - prefix.length}; ${tooLong.map((tool) => JSON.stringify(tool)).join(", ")} ${tooLong.length === 1 ? "is" : "are"} longer; the agent was not started`);
+    if (capped.length) {
+      const words = toolsLeftOut(recipe.label ?? recipe.id, announcesAt(recipe.announces, serverName)?.prefix ?? "", capped);
+      log("acp: tools left out of the agent's listing, named past its cap", { tools: capped });
+      ctx.live({ type: "notice", text: words });
+    }
     mkdirSync(base, { recursive: true, mode: 0o700 });
     // Everything the agent kept goes: what it starts with is the session's records, never an earlier process's files.
     for (const dir of [home, tmp]) {

@@ -52,7 +52,7 @@ import type { ComputerDeps } from "./computer-deps.js";
 import { endingKeptMachine, finishedKept, type Kept, type KeptHolder, type KeptMountRevoke, type KeptSweep, readKept, sweepKept } from "./computer-kept.js";
 import { MOUNT_TTL_MS } from "./archil-claim.js";
 import { storeLedger } from "./computer-ledger.js";
-import { sweepMountRevokes } from "./mount-revoke-left.js";
+import { type MountRevokeStart, sweepMountRevokes } from "./mount-revoke-left.js";
 import { providerKeys } from "./resolve-computer.js";
 import { intervalWrites } from "./computer-intervals.js";
 
@@ -94,8 +94,8 @@ export interface JanitorDeps {
   readonly closeMs?: number;
   /** The longest one provider's sweep may take. Default JANITOR_PROVIDER_MS. */
   readonly providerMs?: number;
-  /** The longest the kept pass waits on one kept computer's delete, or one left credential remove, before it goes on and
-   *  cuts its calls. Default KEPT_DELETE_MS. */
+  /** The longest the kept pass waits on one kept computer's delete, or on its pass over the left credential removes as a
+   *  whole, before it goes on and cuts their calls. Default KEPT_DELETE_MS. */
   readonly deleteMs?: number;
   /** The clock a computer's deadline label is read by. Default Date.now. A kept row's `until` is the store's clock's
    *  (store.sealedKeys), never this one's. */
@@ -342,9 +342,10 @@ export function keptMountRevoke(deps: {
  *  run's folder on Archil has the run's mount credentials up to its epoch removed (keptMountRevoke). Past its keep's time
  *  plus MOUNT_TTL_MS no remove is asked, so a remove that can never succeed (Archil turned off, its key gone, a refusal
  *  for good) no longer keeps the row ending and said at every pass. The removes a claim that kept nothing left at its
- *  end (mount-revoke-left.ts) are asked the same way, each bounded by `deleteMs` and its row removed once its remove
- *  answers. Undefined without the store's settings, where none is kept. Never throws. */
-export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "env" | "sealKey" | "mountControl" | "now" | "self" | "deleteMs"> & { readonly log?: (line: string) => void }): Promise<KeptSweep | undefined> {
+ *  end (mount-revoke-left.ts) are asked the same way, each row removed once its remove answers, the pass over them
+ *  bounded as a whole by `deleteMs` and started where `leftStart` (the janitor's, kept across its passes) says.
+ *  Undefined without the store's settings, where none is kept. Never throws. */
+export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "computers" | "env" | "sealKey" | "mountControl" | "now" | "self" | "deleteMs"> & { readonly log?: (line: string) => void; readonly leftStart: MountRevokeStart }): Promise<KeptSweep | undefined> {
   const { store, computers } = deps;
   const writes = intervalWrites(store, deps.log, deps.now);
   const { settings } = store;
@@ -369,7 +370,7 @@ export async function sweepKeptComputers(deps: Pick<JanitorDeps, "store" | "comp
   const kept = await sweepKept({ settings, runs: store.runs, now, providerOf, deleted: (provider, id) => writes.ended(provider, id), revokeMount, ...bound, ...(store.runners ? { runners: store.runners } : {}), ...(deps.self ? { self: deps.self } : {}) });
   // The removes a claim that kept nothing left at its end (mount-revoke-left.ts), by the same remove, its give-up and its
   // bound, so one Archil does not answer never holds the pass from its provider sweep and its next wake.
-  const left = await sweepMountRevokes({ settings, revoke: revokeMount, ...bound });
+  const left = await sweepMountRevokes({ settings, revoke: revokeMount, start: deps.leftStart, ...bound });
   return left.failed.length === 0 ? kept : { ...kept, failed: [...kept.failed, ...left.failed] };
 }
 
@@ -387,8 +388,10 @@ export function startJanitor(deps: JanitorDeps): { readonly first: Promise<void>
   let wake: NodeJS.Timeout | undefined;
   /** A wake that came while a sweep ran: the kept pass runs again once that sweep is done. */
   let missed = false;
+  /** Where the kept pass's next pass over the left removes starts (mount-revoke-left.ts MountRevokeStart). */
+  const leftStart: MountRevokeStart = {};
   const keptPass = async (): Promise<void> => {
-    const kept = await sweepKeptComputers(deps);
+    const kept = await sweepKeptComputers({ ...deps, leftStart });
     if (!kept || cut.signal.aborted) return;
     if (kept.ended.length > 0) deps.log(`the computer janitor ended the computers kept at a park past their time: ${kept.ended.join(", ")}`);
     for (const words of kept.failed) deps.log(`the computer janitor could not end a computer kept at a park: ${words}`);
