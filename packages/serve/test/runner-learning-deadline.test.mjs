@@ -75,7 +75,8 @@ test("a learning child whose deadline cannot be read as it is claimed is not sta
   await until(async () => reads >= 3, "the child's deadline read tried on more than one claim", 10_000);
   assert.deepEqual(faux.loops.map((loop) => loop.claim?.runId), [], "no loop started on a child whose deadline was not read");
   const row = await opened.server.runs.get("replay-1");
-  assert.ok(row.state === "queued" || (row.state === "running" && row.runner !== null), `given back for a later claim, never ended: ${JSON.stringify([row.state, row.runner])}`);
+  // Given back as the claim gate gives a claim back (store release, no state): never final.
+  assert.ok(row.state === "queued" || row.state === "running", `given back for a later claim, never ended: ${JSON.stringify([row.state, row.runner])}`);
   assert.ok(events.some((event) => event.type === "error" && event.runId === "replay-1" && event.step === "learning deadline"), JSON.stringify(events.filter((event) => event.type === "error")));
   unreadable = false;
   const done = await ended(opened.server, "replay-1");
