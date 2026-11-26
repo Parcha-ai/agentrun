@@ -59,14 +59,25 @@ describe("PlaceSetting", () => {
     expect(radio("box", "modal")!.checked).toBe(true);
   });
 
-  it("going back to the server takes away bash, which the runner refuses, and keeps the other tools", () => {
-    const { host, changes, radio } = mount({ saved: { mode: "sandbox", box: "docker" }, picked: ["read", "bash"] });
+  it("Mode 1: going back to the server takes away bash, which the runner refuses, and keeps the other tools", () => {
+    // Mode 1 with Docker: Docker's box is the default place, and the runner has no shell.
+    const mode1: Places = { ...PLACES, defaultPlace: { mode: "sandbox", box: "docker" } };
+    const { host, changes, radio } = mount({ saved: { mode: "sandbox", box: "docker" }, picked: ["read", "bash"], places: mode1 });
     act(() => radio("place", "runner")!.click());
     expect(changes.at(-1)).toEqual({ place: { mode: "runner" }, tools: ["read"] });
     // Said, never done silently; and gone again once Sandbox is picked back.
     expect(host.querySelector('[role="status"]')?.textContent).toBe("Bash runs only in a sandbox, so it's turned off for this agent.");
     act(() => radio("place", "sandbox")!.click());
     expect(host.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("Mode 2: going back to the server keeps bash, which the runner's own shell runs, and says nothing", () => {
+    // Mode 2: the server serves the runner as the default place, since its runner has a shell.
+    const { host, changes, radio } = mount({ saved: { mode: "sandbox", box: "docker" }, picked: ["read", "bash"] });
+    act(() => radio("place", "runner")!.click());
+    expect(changes.at(-1)).toEqual({ place: { mode: "runner" } });
+    expect(host.querySelector('[role="status"]')).toBeNull();
+    expect(host.textContent).toContain("bash runs in the server's own shell");
   });
 
   it("going to the server with no bash ticked changes no tool and says nothing", () => {
