@@ -246,3 +246,17 @@ test("a call that arrives while the proxy is still reading the answer waits for 
   assert.ok(total <= WINDOW - Math.floor(WINDOW * processExports.ANSWER_RESERVE_SHARE), `${total} tokens after the results, past what the turn has (${results.map((r) => r.text.length)} characters)`);
   for (const r of results) assertCut(r, 10_000);
 });
+
+test("a result handed longer than its claim (whole under the always-whole floor) holds what it took: the calls after it split what is left", () => {
+  // MUTATION: a settle that records the claim, not the length handed, leaves the next calls 80 characters the turn no longer has.
+  // 300 tokens of room, three calls: 300 characters each. The first result, 380 characters, is handed whole (at most
+  // RESULT_ALWAYS_WHOLE_CHARS is whole under any bound).
+  const turn = new TurnBudget();
+  const records = [];
+  turn.journal((record) => void records.push(record));
+  turn.open({ inputTokens: WINDOW - 300 - processExports.answerReserve(WINDOW), outputTokens: 0, calls: 3 });
+  assert.equal(turn.claim('c1', WINDOW), 300);
+  turn.settle('c1', 380);
+  assert.equal(turn.claim('c2', WINDOW), Math.floor((900 - 380) / 2), 'the rest split over the two calls left');
+  assert.deepEqual(records.at(-1), { settled: { callId: 'c1', chars: 380 } }, 'journaled at the length handed');
+});
