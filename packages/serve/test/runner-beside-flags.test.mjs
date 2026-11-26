@@ -195,7 +195,7 @@ test("every stop grace the repo ships, found by a scan of its files and not a li
     ["maxShutdownDelaySeconds", /maxShutdownDelaySeconds:\s*(\S+)/g, seconds, "image"],
     ["RAILWAY_DEPLOYMENT_DRAINING_SECONDS", /"RAILWAY_DEPLOYMENT_DRAINING_SECONDS"\s*:\s*\{\s*"defaultValue"\s*:\s*("(?:[^"\\]|\\.)*")/g, (v) => seconds(renderValue(JSON.parse(v), { domain: "x" })), "image"],
     ["STOP_WAIT_MS", /STOP_WAIT_MS = ([\d_]+);/g, (v) => Number(v.replace(/_/g, "")) / 1_000, "cli"],
-    ["the background stop's wait", /"\$waited" -lt (\d+) \]/g, Number, "cli"],
+    ["the background stop's wait", /ours "\$server"; \} && \[ "\$waited" -lt (\d+) \]/g, Number, "cli"],
   ];
   const files = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\0").filter((path) => path && !/(^|\/)test\//.test(path) && !path.endsWith(".md") && !path.startsWith("changes/"));
   const found = new Map();
