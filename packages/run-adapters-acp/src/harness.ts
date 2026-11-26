@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, journalTurn, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ResultBudget, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, mcpServerName, nameCall, namesTooLong, ourTool, permissionCallId, toolsLeftOut, type AcpAnnounces } from "./calls.js";
+import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, mcpServerName, MCP_SERVER, namedPerStart, nameCall, namesTooLong, otherServer, ourTool, permissionCallId, toolNotGranted, toolsLeftOut, ungrantedTool, type AcpAnnounces } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { allowFileText, homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -99,7 +99,7 @@ export interface AcpHarnessOptions {
   resultBudget?: ResultBudget;
   /** Proxy billing: what each agent process gets to reach the host's model proxy (its variables), closed with it.
    *  `halt` ends the drive the process serves. */
-  proxy?: (drive: { halt(reason: unknown): void }) => Promise<{ env: Record<string, string>; close(): Promise<void> }>;
+  proxy?: (drive: { halt(reason: unknown): void; server: string }) => Promise<{ env: Record<string, string>; close(): Promise<void> }>;
   /** Run before every start of the agent's process, a restart included: the host's check of the binary it runs. A throw
    *  refuses that start, so a binary replaced after the adapter was made is checked before it ever runs. */
   beforeStart?: (command: string) => Promise<void>;
@@ -167,6 +167,9 @@ interface Runtime {
   /** The permission call ids this agent process's requests took: each request of the open turn takes one of its own. */
   claimed: Set<string>;
   ownIds: Set<string>;
+  /** The calls an update named under another server than ours, by the recipe's server field (otherServer): the server
+   *  it named, which the host gate's question about the call says. */
+  others: Map<string, string>;
   mirror: StateMirror;
   /** Its private HOME was removed with its process (recipe.credentials): nothing is mirrored from it any more. */
   wiped: boolean;
@@ -177,11 +180,12 @@ interface Runtime {
 
 type CallRecord = { type: "seen" | "answered"; callId: string; tool?: string; args?: unknown; text?: string; isError?: boolean; refused?: boolean };
 /** One record of an agent's own permission request:
- *  - `asked`: the request, as the agent sent it.
+ *  - `asked`: the request, as the agent sent it; our MCP server's name at the start it was asked in (`ours`); and the
+ *    server another than ours an update named the call under (`server`, otherServer), if any.
  *  - `answered`: what the gate said; `settled` when a resume took it before the agent started again, in `turn`.
  *  - `given`: the answer was handed to the agent, which uses it up.
  *  - `reasked`: this call was asked while an allow (`instead`) was still not asked for again. */
-type PermissionRecord = { type: "asked" | "answered" | "given" | "reasked"; callId: string; toolCallId?: string; title?: string; kind?: string; input?: unknown; answer?: "allow" | "deny"; words?: string; settled?: true; turn?: string; instead?: string };
+type PermissionRecord = { type: "asked" | "answered" | "given" | "reasked"; callId: string; toolCallId?: string; title?: string; kind?: string; input?: unknown; server?: string; ours?: string; answer?: "allow" | "deny"; words?: string; settled?: true; turn?: string; instead?: string; ungranted?: true };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 /** An agent that ended, or whose connection closed: its stderr read to the end (its process's close), for at most
@@ -285,7 +289,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   const offered = options.tools.filter((tool) => !tool.deferred);
   /** Those the agent names past its cap under our server's name (namesTooLong), which it could never call: never listed,
    *  and each start says so (toolsLeftOut). The name's length is the same at every start (mcpServerName). */
-  const capped = joinsByOne(recipe.announces) ? namesTooLong(announcesAt(recipe.announces, mcpServerName(recipe.announces)), offered.map((tool) => tool.name)) : [];
+  const capped = joinsByOne(recipe.announces) ? namesTooLong(announcesAt(recipe.announces, mcpServerName(recipe.announces, recipe.quirks?.permissionTie)), offered.map((tool) => tool.name)) : [];
   const listed = offered.filter((tool) => !capped.includes(tool.name));
   const names = new Set(listed.map((tool) => tool.name));
   /** For each tool, the recipe's announces.extras its own input schema declares: kept in its arguments (announceCall). */
@@ -360,6 +364,13 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     return turn?.limitHit ?? `${ACP_CODES.toolCallLimit}: the plan's limit of ${plan.maxToolCalls} tool calls is reached`;
   };
 
+  /** A call an update names under another server than ours, by the recipe's server field (otherServer): kept for the
+   *  host gate's question about it (permissionGateCall's `server`). A later update may name it again. */
+  const noteServer = (rt: Runtime, update: { readonly toolCallId: string }) => {
+    const other = otherServer(update, rt.announces);
+    if (other) rt.others.set(update.toolCallId, other);
+  };
+
   /** Debug only (serve's AGENTRUN_LOG=debug), on a recipe that declares announces: a call the agent announced, by its
    *  ids and names, never its input or the agent's text. The word at the recipe's field is quoted only when it names a
    *  tool of ours: on Cursor's recipe it sits inside the call's input, so another call's is "native" (null: none).
@@ -389,6 +400,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         countCall(rt, cur, update.toolCallId);
         // Kept for the MCP call it may be, named by the recipe's announces field, never by its title (announceCall).
         announceCall(rt.calls, update, rt.announces, names, declared);
+        noteServer(rt, update);
         logAnnounced(rt, update);
         return;
       }
@@ -397,6 +409,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         // A call the agent named only after announcing it with no input (Cursor's): by the recipe's field (nameCall).
         const held = rt.calls.held(update.toolCallId);
         nameCall(rt.calls, update, rt.announces, names, declared);
+        noteServer(rt, update);
         if (held && !rt.calls.held(update.toolCallId)) logAnnounced(rt, update);
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
         if (update.status !== "completed" && update.status !== "failed") return;
@@ -415,8 +428,10 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
 
   /** The gate's call for a permission request of the agent's own tool: the same when the agent asks and when a resume
    *  asks about it again (settlePermissions), so both reach the one approval. Under its journal id (`callId`); its args
-   *  carry the toolCallId the agent first asked under, so a host (harness-check) ties the question to the request. */
-  const permissionGateCall = (callId: string, toolCallId: string | undefined, kind: string, title: string, input: unknown): GateCall => ({ callId, tool: `acp_${kind.replace(/[^A-Za-z0-9_]/g, "_")}`, args: { title, kind, input, ...(toolCallId ? { toolCallId } : {}) } });
+   *  carry the toolCallId the agent first asked under, so a host (harness-check) ties the question to the request, and
+   *  the server another than ours an update named the call under (`server`, otherServer), so the person can tell a call
+   *  titled as one of our tools (`agentrun-look_up: look_up`) is that server's. */
+  const permissionGateCall = (callId: string, toolCallId: string | undefined, kind: string, title: string, input: unknown, server?: string): GateCall => ({ callId, tool: `acp_${kind.replace(/[^A-Za-z0-9_]/g, "_")}`, args: { title, kind, input, ...(toolCallId ? { toolCallId } : {}), ...(server ? { server } : {}) } });
 
   /** The recovery note's line for a settled answer: the request as the agent asked it (its kind, title and input, so an
    *  agent started without session/load can ask for the same call) and what the person said. */
@@ -425,6 +440,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const input = asked?.input === undefined || asked.input === null ? "" : JSON.stringify(asked.input);
     const shown = input ? ` Its input: ${clip(input, 1500)}${input.length > 1500 ? " (cut here: ask with the whole input you first sent)" : ""}.` : "";
     const named = `${kind} ${JSON.stringify(clip(asked?.title ?? kind, 300))}.${shown}`;
+    if (answer.ungranted) return `- ${named} Refused, with no person asked: ${clip(answer.words ?? "", 500)}.`;
     return answer.answer === "deny"
       ? `- ${named} The person refused it.${answer.words ? ` Their words: ${clip(answer.words, 500).replace(/\n/g, " ")}` : ""}`
       : `- ${named} The person allowed it once. Ask for it again exactly as before (the same kind, title and input) and it runs; any other request waits for the person again.`;
@@ -451,7 +467,24 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     for (const request of waiting) {
       const kind = request.kind ?? "other";
       const title = request.title ?? kind;
-      const refused = await askGate(gate, permissionGateCall(request.callId, request.toolCallId, kind, title, request.input ?? null), ctx.signal);
+      // A request for a tool of ours this start does not give the agent (ungrantedTool), left waiting by a run that
+      // parked on it: refused here as onPermission refuses a new one, never asked of a person. Settled, so the agent's
+      // ask again takes the deny. Its title names our server as the start that asked was given it (`ours`, recorded
+      // with it): under a recipe that names the server per start (Cursor's, agy's) a request recorded without that name
+      // is the gate's, as its title cannot be tied to a server of ours.
+      const ours = request.ours ?? (namedPerStart(recipe.announces, recipe.quirks?.permissionTie) ? undefined : MCP_SERVER);
+      const ungranted = ours === undefined ? undefined : ungrantedTool({ title, kind }, names, ours);
+      if (ungranted !== undefined) {
+        const words = toolNotGranted(recipe.label ?? recipe.id, ungranted);
+        const answer = { type: "answered", callId: request.callId, answer: "deny", words, settled: true, turn: turnId, ungranted: true } satisfies PermissionRecord;
+        journal.append(PERMISSION_STREAM, answer);
+        await journal.flush();
+        ctx.live({ type: "notice", text: words });
+        said.push(answerLine(request, answer));
+        records.push(answer);
+        continue;
+      }
+      const refused = await askGate(gate, permissionGateCall(request.callId, request.toolCallId, kind, title, request.input ?? null, request.server), ctx.signal);
       const answer = { type: "answered", callId: request.callId, answer: refused ? "deny" : "allow", ...(refused?.deny ? { words: refused.deny } : {}), settled: true, turn: turnId } satisfies PermissionRecord;
       journal.append(PERMISSION_STREAM, answer);
       await journal.flush();
@@ -491,10 +524,19 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       const mine = ourTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names, rt.server);
       if (mine && rt.calls.announced(request.toolCall.toolCallId) === mine) return choose("allow_once");
     }
+    // A tool of our server the agent is not given (ungrantedTool): no grant to ask a person for, so it is refused at
+    // once, before anything is journaled (a resume has nothing to ask again), and the run is told which tool.
+    const ungranted = ungrantedTool(request.toolCall as { title?: string | null; name?: string | null; kind?: string | null }, names, rt.server);
+    if (ungranted !== undefined) {
+      log("acp: refused a permission request for a tool the agent is not given", { toolCallId: request.toolCall.toolCallId, tool: ungranted.slice(0, 80) });
+      cur.ctx.live({ type: "notice", text: toolNotGranted(recipe.label ?? recipe.id, ungranted) });
+      return choose("reject_once");
+    }
     const call = request.toolCall;
     const kind = typeof call.kind === "string" && call.kind ? call.kind : "other";
     const title = typeof call.title === "string" ? call.title : kind;
     const input = call.rawInput ?? null;
+    const server = rt.others.get(call.toolCallId);
     // The request's id is the open turn's: the turn, what it asks, and which of the turn's requests that ask the same it
     // is. Of the ids this process has not taken and no agent was handed an answer for (`given`: an allow-once is used
     // once), it takes the first one answered (a resume took the answer; the agent asks again for it), else the first
@@ -528,7 +570,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       // reads (settlePermissions). One the gate answers at once (a tool set to allow) is the turn going on.
       const unasked = all.find((r) => r?.type === "answered" && r.settled && r.turn === turnId && r.answer === "allow" && !givenIds.has(r.callId));
       if (unasked) cur.journal.append(PERMISSION_STREAM, { type: "reasked", callId, turn: turnId, instead: unasked.callId } satisfies PermissionRecord);
-      cur.journal.append(PERMISSION_STREAM, { type: "asked", callId, toolCallId: call.toolCallId, title, kind, input } satisfies PermissionRecord);
+      cur.journal.append(PERMISSION_STREAM, { type: "asked", callId, toolCallId: call.toolCallId, title, kind, input, ours: rt.server, ...(server ? { server } : {}) } satisfies PermissionRecord);
       await cur.journal.flush();
     } else if (options.gate) {
       // Asked before and still unanswered, with a gate: settlePermissions answers every request a turn left waiting before
@@ -539,9 +581,10 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     let refused: { deny: string } | undefined;
     if (options.gate) {
       // The toolCallId the request was first asked under, as the journal has it: the same question a resume asks.
-      const askedAs = records.find((r) => r.type === "asked")?.toolCallId ?? call.toolCallId;
+      const askedRecord = records.find((r) => r.type === "asked");
+      const askedAs = askedRecord?.toolCallId ?? call.toolCallId;
       try {
-        refused = await askGate(options.gate, permissionGateCall(callId, askedAs, kind, title, input), AbortSignal.any([cur.signal, connection, turn.stop.signal]));
+        refused = await askGate(options.gate, permissionGateCall(callId, askedAs, kind, title, input, askedRecord?.server ?? server), AbortSignal.any([cur.signal, connection, turn.stop.signal]));
       } catch {
         // Parked, and the session let go (or the turn was cancelled): nothing is answered, nothing recorded.
         return cancelled;
@@ -609,7 +652,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     }
     if (absent.length) throw new Error(`${ACP_CODES.keyMissing}: ${recipe.label ?? recipe.id} runs on ${absent.join(" and ")}, which this host does not hold; the agent was not started`);
     // A tool of ours the agent would name past its cap is not listed (capped); the run is told which, and goes on.
-    const serverName = mcpServerName(recipe.announces);
+    const serverName = mcpServerName(recipe.announces, recipe.quirks?.permissionTie);
     if (capped.length) {
       const words = toolsLeftOut(recipe.label ?? recipe.id, announcesAt(recipe.announces, serverName)?.prefix ?? "", capped);
       log("acp: tools left out of the agent's listing, named past its cap", { tools: capped });
@@ -627,7 +670,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const own = new Set<string>();
     // The recipe's allowFile (Goose's permission file): the tools this start lists, in the agent's own form, and nothing
     // else, so the agent runs them unasked and our gate asks at the MCP call.
-    const allowed = recipe.allowFile ? { [recipe.allowFile.path]: allowFileText(recipe.allowFile.form, listed.map((tool) => tool.name)) } : {};
+    const allowed = recipe.allowFile ? { [recipe.allowFile.path]: allowFileText(recipe.allowFile.form, listed.map((tool) => tool.name), serverName) } : {};
     for (const [path, text] of [...Object.entries(recipe.files ?? {}), ...Object.entries(allowed)]) {
       const clean = homePath(path);
       if (!clean) throw new Error(`acp: the file ${JSON.stringify(path)} must be inside the private HOME`);
@@ -650,7 +693,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const stopped = new AbortController();
     const signal = AbortSignal.any([ctx.signal, stopped.signal]);
     const key = randomBytes(32).toString("base64url");
-    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), server: serverName, announces: announcesAt(recipe.announces, serverName), counted: new Set(), claimed: new Set(), ownIds: new Set(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log, (words) => (rt.current?.ctx ?? ctx).live({ type: "notice", text: words })) } as unknown as Runtime;
+    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), others: new Map(), server: serverName, announces: announcesAt(recipe.announces, serverName), counted: new Set(), claimed: new Set(), ownIds: new Set(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log, (words) => (rt.current?.ctx ?? ctx).live({ type: "notice", text: words })) } as unknown as Runtime;
     const mcp = await startMcpServer({ tools: listed.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as Record<string, unknown> })), key, log, call: (name, args, callSignal) => onMcpCall(rt, name, args, callSignal) });
     let proxy: { env: Record<string, string>; close(): Promise<void> } | undefined;
     let agent: AgentProcess | undefined;
@@ -686,7 +729,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       if (options.beforeStart) await unlessAborted(options.beforeStart(recipe.command), signal);
       if (recipe.billing.kind === "proxy") {
         if (!options.proxy) throw new Error("acp: proxy billing needs the adapter's proxy option");
-        proxy = await options.proxy({ halt: (reason) => ctx.halt?.(reason) });
+        proxy = await options.proxy({ halt: (reason) => ctx.halt?.(reason), server: serverName });
         // A stop while the proxy started: the drive's end ran before there was a proxy to close. It is closed here, and
         // the agent is never started.
         if (signal.aborted) {

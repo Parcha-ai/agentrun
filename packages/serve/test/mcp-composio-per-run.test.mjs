@@ -340,3 +340,19 @@ test("saving that server again with user_id per_run while a Composio trigger use
   assert.equal(turned.status, 200, JSON.stringify(turned.body));
   assert.equal(new URL((await free.server.store.mcp.server("gh")).url).searchParams.has("user_id"), false, "saved per-run: its address names no user");
 });
+
+test("a run's connected-account check (composioListsAccount) asks Composio nothing for a user that is no Composio user id (blank, which Composio may read as every user's) and finds it unlisted; a user id is asked for its own accounts", async () => {
+  const { composioListsAccount } = await import("../dist/composio-preset.js");
+  const asked = [];
+  const account = "ca_runacct01";
+  const ask = async (_why, method, path) => {
+    asked.push(`${method} ${path}`);
+    return { items: [{ id: account, status: "ACTIVE", user_id: "run-user-1" }, { id: account, status: "ACTIVE", user_id: "" }] };
+  };
+  assert.equal(await composioListsAccount(ask, "run-user-1", "gmail", account), "listed", "control: a user id's own ACTIVE account is listed");
+  assert.equal(asked.length, 1, "control: Composio was asked once for that user's accounts");
+  asked.length = 0;
+  const blank = {};
+  for (const user of ["", " ", "a b"]) blank[JSON.stringify(user)] = await composioListsAccount(ask, user, "gmail", account);
+  assert.deepEqual({ blank, asked }, { blank: { '""': "unlisted", '" "': "unlisted", '"a b"': "unlisted" }, asked: [] }, "no Composio user id: unlisted, and Composio is never asked");
+});

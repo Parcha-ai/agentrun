@@ -1,5 +1,6 @@
 // A stand-in ACP agent whose model is real to it: each prompt goes to ANTHROPIC_HOST's /v1/messages (the model proxy the
-// adapter starts for a proxy-billed recipe), with the host's tools as agentrun__<name>, and each tool_use of one is asked
+// adapter starts for a proxy-billed recipe), with the host's tools as <server>__<name> (<server> the name the client gave
+// its MCP server: agentrun, or a start's own `ar` and 6 hex digits under a recipe with the title tie), and each tool_use of one is asked
 // about (session/request_permission), unless its permission file allows it, and called over the session's MCP server.
 // The permission file is an allowFile in Goose's form (`goose-permission`) where Goose reads it,
 // $HOME/.config/goose/permission.yaml (JSON, as the adapter writes it), read once at start: a tool its user.always_allow
@@ -179,17 +180,17 @@ async function mcpClient(server) {
 }
 
 async function openSession(id, params, messages) {
-  const server = (params.mcpServers ?? []).find((s) => s.name === "agentrun");
+  const server = (params.mcpServers ?? []).find((s) => s.name === "agentrun" || /^ar[0-9a-f]{6}$/.test(s.name));
   const mcp = server ? await mcpClient(server) : undefined;
   const tools = mcp ? (await mcp.call("tools/list", {})).tools : [];
-  const session = { id, messages, mcp, tools };
+  const session = { id, messages, mcp, tools, ours: `${server?.name ?? "agentrun"}__` };
   sessions.set(id, session);
   return session;
 }
 
 /** One Messages request, streamed, read back into its content blocks and stop reason. */
 async function ask(session) {
-  const offered = session.tools.map((t) => ({ name: `agentrun__${t.name}`, description: t.description ?? "", input_schema: t.inputSchema ?? { type: "object" } }));
+  const offered = session.tools.map((t) => ({ name: `${session.ours}${t.name}`, description: t.description ?? "", input_schema: t.inputSchema ?? { type: "object" } }));
   if (mode === "own-tools") offered.push({ name: "shell", description: "Run a shell command.", input_schema: { type: "object", properties: { command: { type: "string" } } } });
   const system = alwaysAllowed ? { system: [{ type: "text", text: `permission file: ${[...alwaysAllowed].sort().join(",")}` }] } : {};
   const body = JSON.stringify({ model: session.model ?? process.env.MODEL_AGENT_MODEL, max_tokens: 1024, stream: true, ...system, messages: session.messages, tools: offered });
@@ -235,7 +236,7 @@ async function takeTurn(client, session, prompt) {
     const options = [{ optionId: "allow_once", name: "Allow Once", kind: "allow_once" }, { optionId: "reject_once", name: "Deny Once", kind: "reject_once" }];
     const allowedBy = (answer) => answer?.outcome.outcome === "selected" && answer.outcome.optionId === "allow_once";
     for (const use of uses) {
-      if ((mode === "own-ask" || mode === "own-write") && use.name.startsWith("agentrun__")) {
+      if ((mode === "own-ask" || mode === "own-write") && use.name.startsWith(session.ours)) {
         // own-ask, own-write: a call of its own first, asked about under its own id, whatever the answer.
         const path = typeof use.input?.path === "string" ? use.input.path : "proof.txt";
         const own = mode === "own-ask"
@@ -247,7 +248,7 @@ async function takeTurn(client, session, prompt) {
         await notify({ sessionUpdate: "tool_call_update", toolCallId: own.toolCallId, status: allowedBy(ownAnswer) ? "completed" : "failed" });
       }
       // untied: the call titled under another server's name, `github: check echo`.
-      const title = mode === "untied" && use.name.startsWith("agentrun__") ? `github: ${use.name.slice("agentrun__".length).replace(/_/g, " ")}` : use.name;
+      const title = mode === "untied" && use.name.startsWith(session.ours) ? `github: ${use.name.slice(session.ours.length).replace(/_/g, " ")}` : use.name;
       const update = { toolCallId: use.id, title, kind: "other", status: "pending", rawInput: use.input };
       // Each tool_call names its tool as Goose 1.59.2's first tool_call does (goose-acp conversion.rs:65-91,
       // goose_tool_call_meta): toolName the name the model called, extensionName the part before `__`. The permission
@@ -258,9 +259,9 @@ async function takeTurn(client, session, prompt) {
       const allowed = answer === undefined || allowedBy(answer) || mode === "ask-anyway";
       let result = "the client refused the call";
       let failed = !allowed;
-      if (allowed && use.name.startsWith("agentrun__") && session.mcp) {
+      if (allowed && use.name.startsWith(session.ours) && session.mcp) {
         try {
-          const called = await session.mcp.call("tools/call", { name: use.name.slice("agentrun__".length), arguments: use.input, _meta: { progressToken: use.id } });
+          const called = await session.mcp.call("tools/call", { name: use.name.slice(session.ours.length), arguments: use.input, _meta: { progressToken: use.id } });
           result = (called?.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("");
           failed = called?.isError === true;
         } catch (error) {

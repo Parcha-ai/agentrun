@@ -1092,11 +1092,11 @@ function modelView(model: Package["model"]) {
 }
 
 /** A package whole, as an import and a read of one answer it: its listing with the computer it would get here
- *  (`computerHere`), and every text its agent would be given, the instructions and each skill file by path (a rule and
+ *  (`computerHere`) and its subagents' tiers (`tiersHere`), and every text its agent would be given, the instructions and each skill file by path (a rule and
  *  the answer's schema beside each SKILL.md among them), so a person reads what a package would tell their agent before
  *  it is applied. */
-export function packageDetail<Pick>(p: Package, computerHere: (p: Package) => Pick) {
-  return { template: { ...packageView(p), computer_here: computerHere(p) }, instructions: p.instructions, skill_files: { ...p.skills } };
+export function packageDetail<Pick, Tiers>(p: Package, computerHere: (p: Package) => Pick, tiersHere: (p: Package) => Tiers) {
+  return { template: { ...packageView(p), computer_here: computerHere(p), model_tiers_here: tiersHere(p) }, instructions: p.instructions, skill_files: { ...p.skills } };
 }
 
 /** The packages this server serves: the ones it ships, read at its start, and the ones imported here (the store keeps

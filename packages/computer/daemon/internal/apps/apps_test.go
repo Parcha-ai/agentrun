@@ -569,9 +569,10 @@ func TestAppsLaunchRefusesAFlagOrARelativePathAndStartsNothing(t *testing.T) {
 
 // An app runs its desktop file's Exec, so one whose desktop file computerd's own user could change runs whatever that
 // user writes there: an agent given the files group's write, with exec off, would have a shell. Such an app is left out
-// of apps.list, and apps.launch refuses it denied, naming the file, by its id or its name, and starts nothing. That
-// holds for a desktop file the user wrote, and for one the user made read-only in a read-only folder (a tar pushed with
-// those modes): the user still owns both, so it may make them writable again.
+// of apps.list, and apps.launch refuses it denied by its id, naming the file, and starts nothing. That holds for a
+// desktop file the user wrote, and for one the user made read-only in a read-only folder (a tar pushed with those
+// modes): the user still owns both, so it may make them writable again. Such a file is not read, so the name it gives
+// is no app's: asked by that name, apps.launch finds none.
 func TestAppsLeavesOutAnAppItsUserCouldChange(t *testing.T) {
 	display := xvfbtest.Start(t, 640, 480)
 	self, err := os.Executable()
@@ -617,13 +618,15 @@ func TestAppsLeavesOutAnAppItsUserCouldChange(t *testing.T) {
 	}
 	for _, c := range []struct{ id, file string }{
 		{"written", written},
-		{"Written", written},
 		{"locked-app", locked},
 	} {
 		_, err := call("apps.launch", map[string]any{"id": c.id})
 		if kindOf(err) != rpc.KindDenied || !strings.Contains(fmt.Sprint(err), c.file) {
 			t.Errorf("apps.launch %s: %v (%q), want denied naming %s", c.id, err, kindOf(err), c.file)
 		}
+	}
+	if _, err := call("apps.launch", map[string]any{"id": "Written"}); kindOf(err) != rpc.KindNotFound {
+		t.Errorf("apps.launch Written, the name a file the user could change gives: %v (%q), want not_found", err, kindOf(err))
 	}
 	processes, err := table.List(process.ListParams{})
 	if err != nil {
@@ -695,6 +698,87 @@ func TestAppsJudgesEveryLinkOnADesktopFilesWay(t *testing.T) {
 	}
 	if n := len(processes(t, table)); n != 1 {
 		t.Errorf("apps.launch through started %d processes, want 1", n)
+	}
+}
+
+// A named pipe called *.desktop, in a folder out of the user's reach (one root made), is no desktop file: apps.launch
+// of its id answers denied, naming it and why, from the walk that judged it. Nothing opens it to name it, which would
+// wait for a writer that never comes.
+func TestAppsRefusesANamedPipeWithoutOpeningIt(t *testing.T) {
+	display := xvfbtest.Start(t, 640, 480)
+	dir := t.TempDir()
+	pipe := filepath.Join(dir, "pipe.desktop")
+	if err := syscall.Mkfifo(pipe, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := desktop.New(display)
+	t.Cleanup(d.Close)
+	handlers := Handlers(d, process.NewTable(process.Options{}), Options{Dirs: []string{dir}, Writer: &stranger})
+	answered := make(chan error, 1)
+	go func() {
+		_, err := handlers["apps.launch"](context.Background(), json.RawMessage(`{"id":"pipe"}`))
+		answered <- err
+	}()
+	select {
+	case err := <-answered:
+		if kindOf(err) != rpc.KindDenied || !strings.Contains(fmt.Sprint(err), pipe) || !strings.Contains(fmt.Sprint(err), "not a regular file") {
+			t.Errorf("apps.launch pipe: %v (%q), want denied naming %s, not a regular file", err, kindOf(err), pipe)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("apps.launch of a named pipe's id did not answer within 10 s: it opened the pipe, which waits for a writer")
+	}
+}
+
+// An app launched from a desktop file out of reach is ended by apps.terminate though a desktop file of its id was
+// written since, ahead of it, in a folder the user may write: the launch runs what was checked when it started, and
+// refusing to end it would leave a process no call ends. The written file is still no app: launching the id again is
+// refused.
+func TestAppsTerminateEndsALaunchShadowedSince(t *testing.T) {
+	display := xvfbtest.Start(t, 640, 480)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	home, system := filepath.Join(root, "home", "applications"), filepath.Join(root, "system", "applications")
+	write(t, filepath.Join(system, "shadowed.desktop"), fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Shadowed\nExec=%q %s shadowed Shadowed\n", self, helperWindow))
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	chmod(t, home, 0o757)
+	d := desktop.New(display)
+	t.Cleanup(d.Close)
+	table := process.NewTable(process.Options{})
+	handlers := Handlers(d, table, Options{Dirs: []string{home, system}, Writer: &stranger})
+	call := func(method string, params any) (any, error) {
+		raw, err := json.Marshal(params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return handlers[method](ctx, raw)
+	}
+	t.Cleanup(func() {
+		for _, p := range processes(t, table) {
+			_, _ = table.Signal(process.SignalParams{ID: p.ID, Signal: "KILL"})
+		}
+	})
+	if _, err := call("apps.launch", map[string]any{"id": "shadowed"}); err != nil {
+		t.Fatalf("apps.launch shadowed: %v, want its window", err)
+	}
+	shadow := filepath.Join(home, "shadowed.desktop")
+	write(t, shadow, "[Desktop Entry]\nType=Application\nName=Shadowed\nExec=true\n")
+	if _, err := call("apps.launch", map[string]any{"id": "shadowed"}); kindOf(err) != rpc.KindDenied || !strings.Contains(fmt.Sprint(err), shadow) {
+		t.Errorf("apps.launch shadowed after its shadow was written: %v (%q), want denied naming %s", err, kindOf(err), shadow)
+	}
+	if _, err := call("apps.terminate", map[string]any{"id": "shadowed"}); err != nil {
+		t.Fatalf("apps.terminate shadowed after its shadow was written: %v, want its launch ended", err)
+	}
+	for _, p := range processes(t, table) {
+		if p.Running {
+			t.Errorf("after apps.terminate answered, a launch still runs: %+v", p)
+		}
 	}
 }
 

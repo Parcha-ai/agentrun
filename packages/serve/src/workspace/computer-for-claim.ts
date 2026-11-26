@@ -205,9 +205,6 @@ export interface ComputerForClaimDeps {
   /** The paired computers (attached-computers.ts): each one more provider of `kinds` for this claim, claimed through the
    *  hub of this process. Absent: none is. */
   readonly attached?: AttachedComputers;
-  /** Why this run's harness takes no computer of `kind`, in words (a CLI harness's of a browser), or undefined: a kind
-   *  it refuses is refused with code computer_unavailable before anything is made. Absent: every kind. */
-  readonly refuseKind?: (kind: Exclude<ComputerSettingKind, "none">) => string | undefined;
   /** Told what became of the agent's own computer at the claim (a persistent setting): made, attached from an earlier
    *  run, or made again because the one this server kept is gone; and when a sandbox the claim made was lost mid-run and
    *  a new one started in its place (computer-lost.ts lostRecreatedWords). The run's caller says it on the run's
@@ -266,6 +263,11 @@ export interface ClaimComputer {
    *  computer or --faux's launch, nor a browser (its sessions are the browser tool's). The adapter loop records it in the
    *  run's journal, which is how a later claim knows the run had one (hadComputer). */
   readonly made?: MadeKind;
+  /** This claim started the computer (a vendor's launch, or --faux's), so nothing has run in it but what the claim runs:
+   *  never one an earlier claim kept at its park and this claim took back, the agent's own (a persistent setting, even
+   *  made new: every run of the agent shares it) or a paired computer. Only such a computer gets a checkout with the
+   *  server's GitHub token (pr-checkout.ts checkoutWhereNoExec). */
+  readonly fresh?: true;
   /** The computer outlives the run: a person's paired computer or the agent's own (a persistent setting), never deleted
    *  when the run ends, so the model is never told it is (computerFilesNote). */
   readonly outlives?: true;
@@ -957,6 +959,8 @@ export async function computerForClaim(
   let ownKind: MadeKind | undefined;
   /** The computer outlives the run: a paired one or the agent's own (ClaimComputer.outlives). */
   let outlives = false;
+  /** This claim started the computer (ClaimComputer.fresh). */
+  let startedHere = false;
   const now = deps.now ?? Date.now;
   /** The store's clock (the deadlines': the database's on Postgres), the one a kept computer's `until` is stamped and
    *  judged by everywhere (computer-kept.ts Kept.until), never this runner's own. */
@@ -1226,6 +1230,7 @@ export async function computerForClaim(
         const ownWatch = (own as unknown as { watch?: WatchOf }).watch;
         made = { id: own.id, ...(ownWatch ? { watch: ownWatch } : {}) };
         madeBy = entry;
+        startedHere = true;
         return own;
       }
       // Under a runner of its own process, through its relay: the box is routed under the run's claim (launch.claim, a
@@ -1276,6 +1281,7 @@ export async function computerForClaim(
         const { releasedOlder } = fresh;
         const held = kind === "sandbox" && !pairedRow ? lostAware(fresh, renewalOf(provider, entry, async () => spec, mount?.kind)) : fresh;
         launched = held;
+        startedHere = !pairedRow;
         if (!pairedRow) ownKind = kind as MadeKind;
         if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, pinned: pinnedHere(entry, configuration), epoch: launch.epoch, disk: undefined };
         if (!pairedRow && (releasedOlder || journalSays || lost || heldThere || refused)) replaced = { kind: kind as MadeKind, folderKept: deps.mode === 2 && mount !== undefined, ...(lost ? { lost: true as const } : heldThere ? { elsewhere: true as const } : lapsed ? { lapsed: true as const } : {}), ...(refused ? { refused: true as const } : {}) };
@@ -1342,8 +1348,6 @@ export async function computerForClaim(
   const resolved = await resolveComputer(setting, deps.mode, kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
-  const refusedKind = deps.refuseKind?.(resolved.kind);
-  if (refusedKind) throw unavailable(refusedKind);
   // The program its provider runs on this machine (the phone's adb) is checked before anything is rented.
   const hostRefusal = resolved.provider ? deps.hostWhy?.(resolved.provider) : undefined;
   if (hostRefusal) throw unavailable(`This agent's computer is a ${resolved.kind} on ${resolved.provider}, and this runner cannot run it: ${hostRefusal.replace(/[.!?]+$/, "")}.`);
@@ -1471,6 +1475,7 @@ export async function computerForClaim(
     ...(held ? { held } : {}),
     ...(replaced ? { replaced } : {}),
     ...(ownKind ? { made: ownKind } : {}),
+    ...(startedHere ? { fresh: true as const } : {}),
     ...(outlives ? { outlives: true as const } : {}),
     ...(keeps ? { keeps: keeps.kind } : {}),
     ...(meter ? { settle: () => meter.stopAll() } : {}),

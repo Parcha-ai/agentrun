@@ -795,7 +795,7 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   const used = !!started?.workflows?.length;
   const [reflect, rows, entries] = used ? await Promise.all([runReflect(store, runId, BACKGROUND_CONTEXT), runTimeline(store, runId, BACKGROUND_CONTEXT, { settled }), runEntries(store, runId, BACKGROUND_CONTEXT)]) : [undefined, [], []];
   const current = holdsForOk(end) && row && statuses ? currentLearning(end, await statuses(row.agentId)) : end;
-  const body = runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, settled, used: learnedUseOf(reflect, rows, callArgsOf(entries)) }, shown, secrets);
+  const body = runLearningBody({ id: runId, learning: current, seed: started?.seed ?? null, seedFailed: started?.seedFailed ?? null, seedWaited: started?.waited ?? null, learnedChars: started?.section.length ?? 0, settled, used: learnedUseOf(reflect, rows, callArgsOf(entries)) }, shown, secrets);
   // The run's own grade (PUT /runs/{id}/grade), as its agent keeps it and the PUT answered it, with the round it opened.
   // Never its `expected` (a person's words, uncut), nor its label (not kept). Its workflow's name is cut as every other
   // learning name is (`shown.name`): a secret registered after the grade never shows here.

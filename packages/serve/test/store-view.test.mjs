@@ -388,8 +388,9 @@ test("a run whose cap was raised is no longer parked: the budget card clears and
   const journal = store.journal(claim);
   const userId = await journal.mintId();
   const budget = budgetEntry(await journal.mintId());
-  // The cap was raised: an agentrun.raise entry after the budget park clears it, and the resumed run works again.
-  const raise = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.raise", data: { capUsd: 11, takes: [1] } };
+  // The cap was raised: an agentrun.raise entry naming the budget park it answered (as the runner writes it) clears it,
+  // and the resumed run works again.
+  const raise = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.raise", data: { capUsd: 11, takes: [1], pause: String(budget.id) } };
   await commitWrites(journal, [
     { type: "conversation", value: { id: ROOT } },
     { type: "entry", value: { id: userId, conversationId: ROOT, kind: "pi.user", model: [{ role: "user", content: "Do the big thing.", timestamp: T0 + 1_000 }] } },

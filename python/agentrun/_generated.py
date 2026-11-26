@@ -582,6 +582,7 @@ __all__ = [
     "GetTemplateResponseTemplateMcpItemToolsItemPinValue",
     "GetTemplateResponseTemplateModel",
     "GetTemplateResponseTemplateModelChoicesItem",
+    "GetTemplateResponseTemplateModelTiersHere",
     "GetTemplateResponseTemplateOutput",
     "GetTemplateResponseTemplateToolPolicy",
     "GetTimelineResponse",
@@ -686,6 +687,7 @@ __all__ = [
     "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
     "ImportTemplateResponseTemplateModelChoicesItem",
+    "ImportTemplateResponseTemplateModelTiersHere",
     "ImportTemplateResponseTemplateOutput",
     "ImportTemplateResponseTemplateToolPolicy",
     "InputIssue",
@@ -838,6 +840,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
     "ListTemplatesResponseTemplatesItemModelChoicesItem",
+    "ListTemplatesResponseTemplatesItemModelTiersHere",
     "ListTemplatesResponseTemplatesItemOutput",
     "ListTemplatesResponseTemplatesItemToolPolicy",
     "ListToolKeysResponse",
@@ -8121,6 +8124,9 @@ class _GetRunLearningResponseObjectRequired(TypedDict):
     detail: str | None
     at: str
     seed: str | None
+    seed_failed: Literal["unreadable", "not_copied", "other_disk"] | None
+    seed_waited: Literal["ended", "timed_out"] | None
+    learned_chars: int
     merged: str | None
     workflows: list[GetRunLearningResponseObjectWorkflowsItem]
     corrections: int
@@ -9675,6 +9681,7 @@ class GetTemplateResponseTemplate(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: GetTemplateResponseTemplateComputerHere | None
+    model_tiers_here: GetTemplateResponseTemplateModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[GetTemplateResponseTemplateMcpItem]
@@ -9743,6 +9750,13 @@ class _GetTemplateResponseTemplateComputerHereComputerRequired(TypedDict):
 class GetTemplateResponseTemplateComputerHereComputer(_GetTemplateResponseTemplateComputerHereComputerRequired, total=False):
     provider: str
     needs: list[str]
+
+
+class GetTemplateResponseTemplateModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
 
 
 class GetTemplateResponseTemplateMcpItem(TypedDict):
@@ -9827,6 +9841,7 @@ class ImportTemplateResponseTemplate(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: ImportTemplateResponseTemplateComputerHere | None
+    model_tiers_here: ImportTemplateResponseTemplateModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[ImportTemplateResponseTemplateMcpItem]
@@ -9897,6 +9912,13 @@ class ImportTemplateResponseTemplateComputerHereComputer(_ImportTemplateResponse
     needs: list[str]
 
 
+class ImportTemplateResponseTemplateModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
+
+
 class ImportTemplateResponseTemplateMcpItem(TypedDict):
     source: Literal["composio", "github", "url"]
     toolkit: str
@@ -9960,6 +9982,7 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: ListTemplatesResponseTemplatesItemComputerHere | None
+    model_tiers_here: ListTemplatesResponseTemplatesItemModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[ListTemplatesResponseTemplatesItemMcpItem]
@@ -10028,6 +10051,13 @@ class _ListTemplatesResponseTemplatesItemComputerHereComputerRequired(TypedDict)
 class ListTemplatesResponseTemplatesItemComputerHereComputer(_ListTemplatesResponseTemplatesItemComputerHereComputerRequired, total=False):
     provider: str
     needs: list[str]
+
+
+class ListTemplatesResponseTemplatesItemModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
 
 
 class ListTemplatesResponseTemplatesItemMcpItem(TypedDict):

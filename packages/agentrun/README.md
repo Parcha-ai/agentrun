@@ -150,6 +150,9 @@ Where a new agent that names no place goes, by mode:
   is `null`. So is `agentrun deploy` of a package that names no `tools` and no `computer` list, at its preview: name its tools
   (`tools: []` keeps the runner) or its computer list.
 - In Mode 2, where the runner's shell is Archil's serverless exec, it is not refused: it runs on the runner, as before.
+- In Mode 2 on an Archil region with no serverless exec (`gcp-us-central1`), bash needs a box. A new agent with a shell
+  tool and no computer is refused at its create and at `agentrun deploy`: "bash needs a box (a sandbox computer): …".
+  Give it a sandbox computer, or leave `bash` out of its tools.
 
 A Docker box's image is built on its first run, which shows that on its timeline. `AGENTRUN_BOXES=none` turns boxes off.
 

@@ -498,6 +498,9 @@ export interface StartDeps {
   /** The agent's learning seed, read now (learning-run.ts seedFor): the learning commit a run starts from, or a reason it
    *  could not be read. Only read for a run that learns. */
   seedFor?(agentId: string): Promise<{ seed: Seed } | { failed: string }>;
+  /** The agent's runs whose learning round is open now (learning-rounds.ts openRoundsOf), read just before its seed (learningStartFor `rounds`): a run started while one is
+   *  open names them in its learning start (`after`), and its claim reads its seed again once they end. Absent: none. */
+  openRounds?(agentId: string): Promise<readonly string[]>;
   /** What the agent's GitHub triggers bind it to (run-repo.ts bindingOf), read when a person's start names or defaults a
    *  repository. Absent: the agent is bound to none. */
   boundRepos?(agentId: string): Promise<RepoBinding>;
@@ -535,8 +538,9 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  a run never answered by a learned workflow nor asked to draft one (a native run's, an SDK run's with no workflow
  *  binding). `model`: an SDK run's compile model. `disk`: the disk the run's launch names as its own (learn/learning-of.ts
  *  learningDiskOf), null for the default disk: a run on a named disk learns nothing, so it is never started from the
- *  folder seedFor reads (seedFailed `other_disk`: it starts with nothing learned). */
-export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, { use = false, noWorkflows = false, model, disk }: { use?: boolean; noWorkflows?: boolean; model?: string; disk: string | null }): Promise<NonNullable<RunLaunch["learning"]> | undefined> {
+ *  folder seedFor reads (seedFailed `other_disk`: it starts with nothing learned). `rounds`: a run's start reads its agent's
+ *  open rounds (StartDeps.openRounds) first and names them (`after`). */
+export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, { use = false, noWorkflows = false, model, disk, rounds = false }: { use?: boolean; noWorkflows?: boolean; model?: string; disk: string | null; rounds?: boolean }): Promise<NonNullable<RunLaunch["learning"]> | undefined> {
   // A run started with `learning: "use"` starts from what its agent learned whatever its revision says, and keeps
   // nothing; the server's learning off still gives it nothing.
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && (learnsOf(rbody.learning) || use);
@@ -545,17 +549,31 @@ export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revis
   const own = { ...flows, ...(use ? { use: true as const } : {}), ...(model ? { model } : {}) };
   // Another disk's learning is never read for it: not its corrections, not its workflows.
   if (disk !== null) return { seed: null, section: "", seedFailed: "other_disk", ...own };
+  // `rounds` (a run's start, prepareLaunch): its agent's open rounds (`after`), read BEFORE the seed. A round open at this
+  // read and merged before the seed read is in the seed and named (its claim's wait ends at once); a round not open here
+  // merged already (in the seed) or opens after this start. Read the other way round, a round that merged and ended
+  // between the two reads would be in neither. A read that fails names none: the run starts from the seed read here.
+  const after = rounds && deps.openRounds ? await deps.openRounds(entry.agent.id).catch(() => []) : [];
   const seeded = await deps.seedFor(entry.agent.id);
   // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
   // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
   if (!("seed" in seeded)) return { seed: null, section: "", seedFailed: "unreadable", ...own };
   try {
-    const shown = deps.shown ? deps.shown() : noShown;
-    const workflows = flows.noWorkflows ? [] : chooseWorkflows(seeded.seed, shown).flows.map(({ name }) => name);
-    return { seed: seeded.seed.sha, section: learnedSection(seeded.seed, shown), ...(workflows.length ? { workflows } : {}), ...(seeded.seed.at !== undefined ? { seededAt: seeded.seed.at } : {}), ...own };
+    const start = startOfSeed(seeded.seed, deps.shown ? deps.shown() : noShown, own);
+    return after.length ? { ...start, after: [...after] } : start;
   } catch {
     return { seed: null, section: "", seedFailed: "not_copied", ...own };
   }
+}
+
+/** A run's learning start from seed `seed`, as read: its sha, its # Learned text (learnedSection, cut of `shown`), the
+ *  learned workflows it may be answered by (none for `noWorkflows`) and when it was read, with `own` (what the run's start
+ *  said of its learning: use, noWorkflows, its compile model) kept. The one build of it, at a run's start
+ *  (learningStartFor) and at a claim that reads its seed again (runner/learning-reseed.ts). Throws when the seed cannot be
+ *  made into a start (main's copy that threw). */
+export function startOfSeed(seed: Seed, shown: Shown, own: Pick<NonNullable<RunLaunch["learning"]>, "use" | "noWorkflows" | "model">): NonNullable<RunLaunch["learning"]> {
+  const workflows = own.noWorkflows ? [] : chooseWorkflows(seed, shown).flows.map(({ name }) => name);
+  return { seed: seed.sha, section: learnedSection(seed, shown), ...(workflows.length ? { workflows } : {}), ...(seed.at !== undefined ? { seededAt: seed.at } : {}), ...own };
 }
 
 /** Starts a run of `entry`'s agent from a create body, as POST /agents/{id}/runs starts it: every check the old start made
@@ -858,7 +876,9 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // its seed is read now and its # Learned text pinned in the launch for the runner to put in the prompt. A seed that
   // cannot be read starts it with nothing (seed null); the end state is the runner's. Its learning is its disk's: a run on
   // a disk its launch names is never started from the default disk's.
-  const learning = await learningStartFor(deps, entry, revision, rbody, { use: body.learning === RUN_LEARNING_USE, disk: archilDisk ? learningDiskOf({ archilDisk }) : null });
+  // A round of its agent's still open (a follow-up being answered or kept): the run names it (`rounds`), and its claim
+  // reads the seed again once it ends, so a correction that merges a moment after this start is the run's too.
+  const learning = await learningStartFor(deps, entry, revision, rbody, { use: body.learning === RUN_LEARNING_USE, disk: archilDisk ? learningDiskOf({ archilDisk }) : null, rounds: true });
   // The run's effort: its own, else its revision's saved thinking, else the host's AGENT_THINKING (each a thinking level,
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.
