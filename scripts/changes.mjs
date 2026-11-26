@@ -299,8 +299,9 @@ function sectionHolds(lines, version, file) {
  * changelog and section, the marker's when both match.
  *
  * One window is the fold's own and passes: a fragment the newest release's tag carried (its pull request merged after that release
- * pull request's fold, before the tag) while that release's section carries its marker, curated by hand before the next fold. That
- * fold reads the same tag as its previous release, finds the marker (`sectionHolds`), writes nothing more for it and deletes it.
+ * pull request's fold, before the tag) while that release's section carries its marker, on any line, curated by hand before the next
+ * fold. That fold reads the same tag as its previous release, finds the marker with this same `sectionHolds`, writes nothing more for
+ * it and deletes it. Where the section holds only the bullet's words, that fold writes the bullet again, so the match stands.
  */
 export async function releasedFragments(root, fragments) {
   if (fragments.length === 0) return [];
@@ -310,14 +311,16 @@ export async function releasedFragments(root, fragments) {
   for (const changelog of await changelogPaths(root)) {
     const text = await readOptional(join(root, changelog));
     if (text === null) continue;
+    const lines = text.split('\n');
+    const inWindow = (version, file) => previous?.version === version && previous.carried.has(file) && sectionHolds(lines, version, file);
     let version = null;
-    for (const line of text.split('\n')) {
+    for (const line of lines) {
       if (line.startsWith('## ')) { version = unreleasedHeading(line) ? null : line.slice(3).replace(/^\[/, '').split(/[\],\s]/)[0]; continue; }
       if (!version) continue;
       const markers = markersIn(line);
       const plain = line.replace(marker, '').trimEnd();
       for (const { file } of fragments) {
-        if (previous?.version === version && previous.carried.has(file)) continue;
+        if (inWindow(version, file)) continue;
         const by = markers.includes(file) ? 'marker' : plain === bullets.get(file) ? 'bullet' : null;
         const key = `${file}\n${changelog}\n${version}`;
         if (by && found.get(key)?.by !== 'marker') found.set(key, { file, changelog, version, by });
