@@ -851,6 +851,17 @@ const CASES = [
       ["a CSI aborted by a SUB", `x ${H}${E}[1;3\u001a${R} y`],
       ["a backspace inside a CSI, striking out the character before it", `x ${H}Z${E}[0\bm${R} y`],
       ["a backspace after a NUL, striking out the character before the NUL", `x ${H}Z\u0000\b${R} y`],
+      ["a backspace after a zero-width space, striking out the character before it", `x ${H}Z\u200b\b${R} y`],
+      // A character that shows as a blank or a box takes a cell, though the views drop it: two backspaces strike out it
+      // and the character before it.
+      ["two backspaces after a braille blank", `x ${H}Z\u2800\b\b${R} y`],
+      ["two backspaces after a space", `x ${H}Z \b\b${R} y`],
+      ["two backspaces after a no-break space", `x ${H}Z\u00a0\b\b${R} y`],
+      ["two backspaces after a private use character", `x ${H}Z\ue000\b\b${R} y`],
+      ["two backspaces after U+FFFE", `x ${H}Z\ufffe\b\b${R} y`],
+      // A printable character past ASCII inside a CSI does not end it: the terminal ignores the rest to its final byte.
+      ["a CSI colour with a character past ASCII inside", `x ${H}${E}[0\u00e9m${R} y`],
+      ["a CSI colour with a braille blank inside", `x ${H}${E}[0\u2800m${R} y`],
     ].map(([what, text]) => ({ name: `a held value split by a terminal sequence, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
   })(),
   // Normalization reads past a terminal control as a reader does: a held value with a precomposed Hangul syllable, its

@@ -153,6 +153,11 @@ const CONTROL_PADS = [
   ["JSON's \\u001b CSI colours with a \\u0000 inside", String.raw`\u001b[0\u0000m`.repeat(300), "json"],
   ["percent-encoded CSI colours with a NUL inside", "%1B%5B%30%00%6D".repeat(300), "json"],
   ["raw OSC titles with a NUL inside", "\u001b]0;\u0000t\u0007".repeat(300), "json"],
+  // A blank that takes a cell, struck out with the character before it; a character past ASCII inside a CSI.
+  ["braille blank overstrikes", "Z\u2800\b\b".repeat(300), "json"],
+  ["space overstrikes", "Z \b\b".repeat(300), "json"],
+  ["raw CSI colours with a character past ASCII inside", "\u001b[0\u00e9m".repeat(300), "json"],
+  ["percent-encoded CSI colours with a character past ASCII inside", "%1B%5B%30%C3%A9%6D".repeat(300), "json"],
   // Characters that show as a box or a blank: U+FFFE, the braille blank, a lone surrogate as JSON's escape.
   ["raw U+FFFE", "\ufffe".repeat(300), "json"],
   ["raw braille blanks", "\u2800".repeat(300), "json"],
