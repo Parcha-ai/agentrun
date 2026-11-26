@@ -50,11 +50,17 @@ function liveStore(file) {
   return false;
 }
 
-export class DatabaseSync extends sqlite.DatabaseSync {
-  /** Marks the guarded class: sqlite-guard.test.mjs reads it to say the hook is not installed. */
-  static guarded = true;
-  constructor(file, ...rest) {
-    if (rest[0]?.readOnly !== true && liveStore(file)) throw new Error(`${GUARD_MESSAGE}: ${pathOf(file)}`);
-    super(file, ...rest);
-  }
-}
+/**
+ * The real class behind a construct trap, not a subclass: its prototype is the real one, so a test that patches
+ * DatabaseSync.prototype (to refuse a write, say) still reaches the instances dist code opens. `guarded` marks it:
+ * sqlite-guard.test.mjs reads it to say the hook is not installed.
+ */
+export const DatabaseSync = new Proxy(sqlite.DatabaseSync, {
+  get: (target, key, receiver) => (key === "guarded" ? true : Reflect.get(target, key, receiver)),
+  construct(target, args, newTarget) {
+    const [file, options] = args;
+    if (options?.readOnly !== true && liveStore(file)) throw new Error(`${GUARD_MESSAGE}: ${pathOf(file)}`);
+    return Reflect.construct(target, args, newTarget === proxy ? target : newTarget);
+  },
+});
+const proxy = DatabaseSync;

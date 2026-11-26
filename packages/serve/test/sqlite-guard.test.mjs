@@ -60,3 +60,17 @@ test("raw() writes a live server's store", async (t) => {
     await db.close();
   }
 });
+
+test("the guarded class is the real one behind a trap: a test's patch of DatabaseSync.prototype reaches instances of the real class too", async () => {
+  const { DatabaseSync: real } = await import("./fixtures/real-sqlite.mjs");
+  assert.equal(DatabaseSync.prototype, real.prototype);
+  const prepare = DatabaseSync.prototype.prepare;
+  let seen = 0;
+  DatabaseSync.prototype.prepare = function (sql) { seen += 1; return prepare.call(this, sql); };
+  try {
+    new real(":memory:").prepare("SELECT 1");
+    assert.equal(seen, 1);
+  } finally {
+    DatabaseSync.prototype.prepare = prepare;
+  }
+});
