@@ -220,3 +220,45 @@ test("a buffered command its inner loop refuses is refused in the runner's store
   inner.finish();
   await run;
 });
+
+test("a buffered command whose refusal fails to be written is handed to its inner loop once, and the write once: the failure is said, delivered still resolves, and nothing escapes", async () => {
+  const inner = fakeLoop();
+  let commands = 0;
+  const refusing = (d) => {
+    const made = inner.factory(d);
+    return { ...made, command: async (command) => (commands++, made.command(command), { refused: "A cap is only raised: name more than the run's $0.12." }) };
+  };
+  let writes = 0;
+  const gate = defer();
+  const said = [];
+  const warn = console.warn;
+  console.warn = (line) => void said.push(String(line));
+  const rejections = [];
+  const onRejection = (error) => void rejections.push(error);
+  process.on("unhandledRejection", onRejection);
+  try {
+    const dispatch = createDispatchLoop({ launchOf: async () => (await gate.promise, { body: piBody }), resolve: () => refusing })({
+      ...deps,
+      refuse: async () => {
+        writes++;
+        throw new Error("the store is away");
+      },
+    });
+    const run = dispatch.start(CLAIM);
+    assert.deepEqual(await dispatch.command({ id: 7, kind: "raise", body: { capUsd: 0.12 } }), { taken: true });
+    gate.resolve();
+    await inner.whenStarted;
+    await inner.depsOf().delivered;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(commands, 1, "the loop is handed the command once: a failed write is no failed delivery");
+    assert.equal(writes, 1, "the refusal is written once");
+    assert.ok(said.some((line) => line.includes("was not written refused") && line.includes("the store is away")), `the failure is said: ${JSON.stringify(said)}`);
+    inner.finish();
+    await run;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(rejections.map(String), [], "no rejection escapes");
+  } finally {
+    console.warn = warn;
+    process.off("unhandledRejection", onRejection);
+  }
+});
