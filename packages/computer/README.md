@@ -1329,7 +1329,8 @@ runs on the VM runtime, or on gVisor for a GPU computer (below). Its unit tests 
   `agentrun-0` with the labels deflated, and get and list answer them unpacked. `check()` packs them as create gives
   them, its own at their longest, and refuses in words with no call where the packed tags pass either bound; create
   refuses the same words first. A sandbox made before the tags were packed carries its labels as tags, and reads as
-  them (`labels.packed.unpacked`): a listing by name that finds none packed asks for the labels as given. An Archil
+  them (`labels.packed.unpacked`): a listing by name asks for the labels as given beside the packed name, within the
+  one bound, so a request that made one sandbox of each form across an upgrade has both seen and one kept. An Archil
   computer's mount label records the folder's agent alone, as on every host: the folder's run is the `agentrun.run`
   label's. `list` is `sandboxes.list({ appId, tags })` over the provider's app: running sandboxes only, and one Modal
   still lists after its terminate is polled and left out once `poll()` reads it finished.

@@ -285,7 +285,7 @@ export interface HostFacts {
 	 * list by, the map in parts of at most valueBytes each), unpacks those get and list answer, and asks list for that
 	 * name alone; the host stores and answers them as they are. count and bytes are then the packed labels'. unpacked:
 	 * the host's machines may also carry their labels as given (made before it packed): one with no packed map reads as
-	 * its stored labels, and a listing by name that finds none packed asks for the labels as given.
+	 * its stored labels, and a listing by name asks for the labels as given beside the packed name.
 	 */
 	labels?: { count?: number; bytes?: number; packed?: { valueBytes?: number; unpacked?: true } };
 	/**

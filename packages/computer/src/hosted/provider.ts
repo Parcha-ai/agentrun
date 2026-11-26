@@ -1826,19 +1826,22 @@ function unpacked(host: MachineHost, machine: Machine): Machine {
 /**
  * The host's listing by labels, bounded by ms: only the machines that carry every one of them, since a vendor's listing
  * may answer more (MachineHost.list). A packed host is asked for PACKED_NAME alone, the name's where one is asked, and
- * its machines' labels unpacked; where none is found by the name and its machines may carry their labels as given
- * (facts.labels.packed.unpacked), it is asked for the labels as they are.
+ * its machines' labels unpacked. A listing by name on a host whose machines may also carry their labels as given
+ * (facts.labels.packed.unpacked) asks both ways, one after the other within ms together, and answers every machine
+ * either finds: across an upgrade one request can make one machine of each form, and convergence must see both.
  */
 export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal): Promise<Result<Machine[]>> {
 	const name = labels[NAME_LABEL];
 	const room = packedRoom(host);
-	const listed = await hostCall(host, what, (ctx) => host.list(room === undefined ? labels : name === undefined ? {} : { [PACKED_NAME]: name }, ctx), ms, signal);
-	if (!listed.ok) return listed;
-	const found = listed.value.map((machine) => unpacked(host, machine)).filter((machine) => carries(machine, labels));
-	// A name's machines are all packed or all made before the host packed (create finds a name's machine before it makes one).
-	if (found.length > 0 || name === undefined || !room?.packed?.unpacked) return ok(found);
-	const given = await hostCall(host, what, (ctx) => host.list(labels, ctx), ms, signal);
-	return given.ok ? ok(given.value.map((machine) => unpacked(host, machine)).filter((machine) => carries(machine, labels))) : given;
+	const asks = room === undefined ? [labels] : name === undefined ? [{}] : room.packed?.unpacked ? [{ [PACKED_NAME]: name }, labels] : [{ [PACKED_NAME]: name }];
+	const until = Date.now() + ms;
+	const found = new Map<string, Machine>();
+	for (const asked of asks) {
+		const listed = await hostCall(host, what, (ctx) => host.list(asked, ctx), Math.max(1, until - Date.now()), signal);
+		if (!listed.ok) return listed;
+		for (const machine of listed.value) if (!found.has(machine.id)) found.set(machine.id, unpacked(host, machine));
+	}
+	return ok([...found.values()].filter((machine) => carries(machine, labels)));
 }
 
 /** Whether a machine carries every one of these labels. */

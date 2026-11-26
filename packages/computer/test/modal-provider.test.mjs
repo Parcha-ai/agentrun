@@ -279,7 +279,7 @@ test("a listing before any computer makes no app: it looks the app up with creat
 	assert.ok(rec.calls.every(([, , options]) => options?.createIfMissing === false), "neither made the app");
 	assert.equal((await create(provider)).error?.code, "invalid", "a create Modal refused made nothing");
 	const lookups = rec.calls.filter(([name]) => name === "apps.fromName").map(([, , options]) => options.createIfMissing);
-	// The create's listing by name asks twice, packed and then as given (a sandbox made before Modal's tags were packed).
+	// The create's listing by name asks twice, packed and as given (a sandbox made before Modal's tags were packed).
 	assert.deepEqual(lookups, [false, false, false, false, true], "the create's listing by name finds no app either; the create makes it");
 });
 
@@ -290,7 +290,7 @@ test("create asks Modal for one VM sandbox in the app: the entrypoint as its com
 	assert.deepEqual(rec.names().slice(0, 2), ["apps.fromName", "sandboxes.list"], "the listing by the request's name comes first");
 	const [[, packed], [, given]] = rec.calls.filter(([name]) => name === "sandboxes.list");
 	assert.deepEqual(Object.keys(packed.tags), ["agentrun"], "the packed name first");
-	assert.deepEqual(Object.keys(given.tags).sort(), [COMPUTER, NAME], "then, finding none, the labels as given");
+	assert.deepEqual(Object.keys(given.tags).sort(), [COMPUTER, NAME], "then the labels as given");
 	assert.deepEqual(rec.calls.find(([name]) => name === "apps.fromName").slice(1), [APP, { createIfMissing: false }], "the listing looks the app up without making it, and keeps the one it found");
 	assert.equal(rec.names().filter((name) => name === "apps.fromName").length, 1);
 	const tags = labelsIn(rec.params().tags);
@@ -505,7 +505,7 @@ test("a sandbox made before Modal's tags were packed, its labels as tags, is sti
 
 	const byName = await provider.list({ [NAME]: name });
 	assert.deepEqual(byName.value?.map(({ ref }) => ref.id), ["sb-before"], "found by its name");
-	assert.deepEqual(lists(), [{ agentrun: name }, { [NAME]: name, [COMPUTER]: "1" }], "the packed name finds none, so the labels as given are asked for");
+	assert.deepEqual(lists(), [{ agentrun: name }, { [NAME]: name, [COMPUTER]: "1" }], "asked by the packed name and by the labels as given");
 
 	// attach by id: the read gives its labels, so it is the adapter's, and the attach goes on to connect (here refused).
 	const attached = await provider.attach({ id: "sb-before" });
