@@ -366,20 +366,24 @@ test("a replay that booked spend and lost its runner, claimed again past its dea
     const row = await w.ended(id);
     assert.deepEqual([row.state, row.outcome], ["stopped", "cancelled"], `replay ${id} cancelled at its claim past its deadline: ${JSON.stringify([row.state, row.outcome, row.summary])}`);
   }
-  const spent = (await Promise.all(ids.map((id) => w.server.runs.get(id)))).map((row) => row.costUsd);
-  assert.ok(spent.every((usd) => typeof usd === "number" && usd > 0), `each replay ends with what it booked before its runner died: ${spent}`);
-  const micro = (usd) => Math.round(usd * 1e6);
-  const near = (a, b) => Math.abs(a - b) <= ids.length;
-  const total = spent.reduce((sum, usd) => sum + micro(usd), 0);
+  // What each booked stays its own: its answered request's figure and the request its runner died in, booked cut at its
+  // hold, so its cost is the most it can have cost (a bound), never the unknown an end that stores no cost reads.
+  const rows = await Promise.all(ids.map((id) => w.server.runs.get(id)));
+  assert.ok(rows.every((row) => row.costUsd === null && typeof row.costAtMostUsd === "number" && row.costAtMostUsd > 0), `each replay ends with what it booked before its runner died: ${JSON.stringify(rows.map((row) => [row.costUsd, row.costAtMostUsd]))}`);
   const work = await until(async () => {
     const one = (await w.view("run-1")).learning_work;
     return one.state !== "running" && one;
   }, "the run's learning work settles");
   assert.equal(work.state, "ended", JSON.stringify(work));
+  // Each replay's check is booked to the run whose key paid it, from its launch (its end named none): a bound is no
+  // spend, so the run's check reads unknown, never the $0 of a check no row booked.
+  const { spend } = await w.server.learning.ledger("agent-1", ids);
+  const checks = spend.filter((one) => one.kind === "check");
+  assert.deepEqual(checks.map((one) => [one.runId, one.ofRun, typeof one.workflow, typeof one.digest]).sort(), ids.map((id) => [id, "run-1", "string", "string"]).sort(), JSON.stringify(spend));
   const cost = await runAllInOverStore(w.server, "run-1");
-  assert.ok(near(micro(cost.check_usd ?? 0), total), `the run's check_usd is what its replays booked (${spent}): ${JSON.stringify(cost)}`);
+  assert.equal(cost.check_usd, null, `the run's check_usd is unknown, never $0: ${JSON.stringify(cost)}`);
   const agent = (await agentCostOverStore(w.server, "agent-1")).runs.find((run) => run.run_id === "run-1");
-  assert.ok(near(micro(agent?.check_usd ?? 0), total), `and the agent's ledger reads it so: ${JSON.stringify(agent)}`);
+  assert.equal(agent?.check_usd, null, `and the agent's ledger reads it so: ${JSON.stringify(agent)}`);
   await assertNowhere(w);
 });
 

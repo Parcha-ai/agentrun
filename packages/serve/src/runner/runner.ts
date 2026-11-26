@@ -20,6 +20,9 @@ import { HELD_COMMANDS } from "../computer-held.js";
 import { HAND_BACK } from "./hand-back.js";
 import { KINDS, withdrawnAnswers } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
+import { cliModelWorked, type EndCost, endCostOf, runCostOf } from "./metrics.js";
+import { inLogOrder, isCliRecord } from "../store-reads/journal.js";
+import { bookCutRequests } from "./book-cut.js";
 import { type BoundTimer, REAL_TIMER } from "./loop.js";
 import { type Claim, ClaimRefused, type Command, type Journal, type Loop, type LoopEnd, type LoopFactory, stopEnd, type StopReason } from "./loop-contract.js";
 import { FrameTooLarge } from "./run-channel.js";
@@ -693,7 +696,7 @@ export function startRunner(options: RunnerOptions): Runner {
    * in its journal, a reopen would find no turn to follow (its next claim would read the run as never started), so it
    * reads as a stop that is over (cancelled), as it read before a stop and a cancel were told apart.
    */
-  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string; outcome?: "stopped" | "cancelled" }, take: readonly number[], withdrawnAs: "withdrawn" | "canceled" = "withdrawn", landed: () => void = () => {}) => {
+  const endRun = async (claim: Claim, given: { state: "stopped" | "failed"; summary: string; outcome?: "stopped" | "cancelled" }, take: readonly number[], withdrawnAs: "withdrawn" | "canceled" = "withdrawn", landed: () => void = () => {}, cost?: EndCost) => {
     // Why the run ended, as its end and its row say it: cut of every secret the runner holds (an error's text may echo one).
     const data = { ...given, summary: redact(given.summary) };
     // Unknown means it may withdraw: false only once the journal was read and no call of it waits.
@@ -725,14 +728,14 @@ export function startRunner(options: RunnerOptions): Runner {
       }
       const id = (await journal.mintId()) as unknown as EntryId;
       writes.push({ type: "entry", value: { id, conversationId, kind: KINDS.end, data: data as unknown as JsonValue } } as StorageWrite);
-      journal.stage({ run: { state: data.state, summary: data.summary, ...(data.outcome ? { outcome: data.outcome } : {}), ...(neverSent ? { costUsd: 0 } : {}), ...counted }, effect: id as unknown as number, ...(take.length ? { take: take.map((command) => ({ command, effect: id as unknown as number })) } : {}) });
+      journal.stage({ run: { state: data.state, summary: data.summary, ...(data.outcome ? { outcome: data.outcome } : {}), ...(cost ?? (neverSent ? { costUsd: 0 } : {})), ...counted }, effect: id as unknown as number, ...(take.length ? { take: take.map((command) => ({ command, effect: id as unknown as number })) } : {}) });
       const result = await journal.commit([writes], () => {}, BACKGROUND_CONTEXT);
       if (result.stored !== 1) throw result.refused ?? new Error("the run's end was not stored");
       landed();
     } catch (error) {
       if (isFenced(error)) throw error;
       if (mayWithdraw) throw new EndNotWithdrawn(claim.runId, error);
-      await store.runs.update(claim, { state: data.state, summary: data.summary, ...(data.outcome === "cancelled" ? { outcome: data.outcome } : {}), ...counted }, take.length ? { take } : undefined);
+      await store.runs.update(claim, { state: data.state, summary: data.summary, ...(data.outcome === "cancelled" ? { outcome: data.outcome } : {}), ...cost, ...counted }, take.length ? { take } : undefined);
       landed();
     }
     // An ended run's Screen has no ended-while-waiting state to keep (browser-wait-ended.ts): its row goes with the end.
@@ -743,14 +746,14 @@ export function startRunner(options: RunnerOptions): Runner {
 
   /** Ends the run under `claim` stopped on its untaken `stop` (or cancel) row (endRun). False when that end may withdraw a
    *  call and the journal would not take it or could not be read: the refusal is then the run's (endRefused). */
-  const endStopped = async (claim: Claim, stop: Command, landed: () => void): Promise<boolean> => {
+  const endStopped = async (claim: Claim, stop: Command, landed: () => void, cost?: EndCost): Promise<boolean> => {
     try {
       const end = stopEnd(stop.kind === "cancel");
-      await endRun(claim, end, [stop.id], stop.kind === "cancel" ? "canceled" : "withdrawn", landed);
+      await endRun(claim, end, [stop.id], stop.kind === "cancel" ? "canceled" : "withdrawn", landed, cost);
       return true;
     } catch (error) {
       if (!(error instanceof EndNotWithdrawn)) throw error;
-      await endRefused(claim, stop, error, landed);
+      await endRefused(claim, stop, error, landed, cost);
       return false;
     }
   };
@@ -778,14 +781,14 @@ export function startRunner(options: RunnerOptions): Runner {
    * 11 tries at the cap): 6 growing waits (5 s to 160 s, 315 s in all), then 11 of 5 min, so about an hour (3,615 s) of
    * retries, and the 18th refusal gives up.
    */
-  const endRefused = async (claim: Claim, stop: Command, refused: EndNotWithdrawn, landed: () => void) => {
+  const endRefused = async (claim: Claim, stop: Command, refused: EndNotWithdrawn, landed: () => void, cost?: EndCost) => {
     const tries = await store.retry(claim, stop.id);
     const why = message(refused.cause);
     if (tries >= endRetryCapFrom + endRetryAtCap) {
       emit({ type: "error", runId: claim.runId, step: "end", message: `run ${claim.runId} ended without withdrawing: journal unreadable or refusing (after ${tries} tries; the last: ${why})` });
       // On its row alone, so no outcome 'stopped' (endRun): a run whose journal never took its end is never reopened.
       const end = stopEnd(stop.kind === "cancel");
-      await store.runs.update(claim, { state: end.state, summary: redact(end.summary), ...(end.outcome === "cancelled" ? { outcome: end.outcome } : {}), ...(await censusFor(claim.runId)) }, { take: [stop.id] });
+      await store.runs.update(claim, { state: end.state, summary: redact(end.summary), ...(end.outcome === "cancelled" ? { outcome: end.outcome } : {}), ...cost, ...(await censusFor(claim.runId)) }, { take: [stop.id] });
       landed();
       await releaseStopped(claim, stop);
       return;
@@ -828,16 +831,33 @@ export function startRunner(options: RunnerOptions): Runner {
     }
   };
 
+  /** What the run under `claim` booked in its journal, as an end stores its cost (metrics.ts endCostOf, the rule every end
+   *  stores by, over its booking as learning-end.ts reads it): a figure, or a bound when a cut request's hold is counted
+   *  in it. A request an earlier claim left out is booked first, cut at its hold, as a loop's booking books it before it
+   *  sends anything (book-cut.ts). Undefined when the journal cannot be read: the end then stores no cost, as it did. */
+  const bookedOf = async (claim: Claim): Promise<EndCost | undefined> => {
+    try {
+      await bookCutRequests(store.journal(claim), BACKGROUND_CONTEXT, () => store.flush());
+      const entries = inLogOrder(await journalEntries(store.journal(claim), BACKGROUND_CONTEXT));
+      return endCostOf(runCostOf(entries, { unbooked: isCliRecord(entries) && cliModelWorked(entries) }));
+    } catch {
+      return undefined;
+    }
+  };
+
   /** A claim of a run whose stopped end was refused (its untaken stop row has tries): it only ends the run, with no loop,
-   *  so no turn, model request or tool runs on a run that is stopping. */
-  const endRetried = async (claim: Claim, stop: Command) => {
+   *  so no turn, model request or tool runs on a run that is stopping. `booked`: a learning child past its deadline, which
+   *  an earlier claim's loop may have spent on before its runner went (its spend booked in its journal): its end stores
+   *  that booking as its cost (bookedOf), so what it spent stays its run's, never an unknown no read heals. */
+  const endRetried = async (claim: Claim, stop: Command, booked = false) => {
     // Renewed with the held claims (renewAll) until its end lands: its end waits for the run's census too.
     const only: EndOnly = { claim, landed: false, renewing: false };
     endOnly.add(only);
     try {
       // A run stopped before any loop started still has its one start line, ahead of its end.
       await announceStart(claim);
-      if (await endStopped(claim, stop, () => (only.landed = true))) await releaseStopped(claim, stop);
+      const cost = booked ? await bookedOf(claim) : undefined;
+      if (await endStopped(claim, stop, () => (only.landed = true), cost)) await releaseStopped(claim, stop);
     } catch (error) {
       emit({ type: "error", runId: claim.runId, step: isFenced(error) ? "end (fenced)" : "end", message: message(error) });
     } finally {
@@ -1162,7 +1182,7 @@ export function startRunner(options: RunnerOptions): Runner {
         if (stop && endsOnly && !closed && !killed && !runs.has(claim.runId)) {
           const key = `${claim.runId}:${claim.epoch}`;
           endingClaims.add(key);
-          const ending = endRetried(claim, stop);
+          const ending = endRetried(claim, stop, overdue);
           endings.add(ending);
           void ending.finally(() => {
             endings.delete(ending);

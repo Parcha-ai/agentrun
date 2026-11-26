@@ -54,7 +54,9 @@ export type SpendRow = {
 /** What record() reads of an ended run: its row (its cost, the bound beside it, its metrics: the run-end classifier's
  *  path, workflow and digest, runner/workflow-first.ts pathMetrics), every round its learning kept (learning_proposals)
  *  and, for an audit's shadow run, the run its launch audits (`auditOf`: its end may name no audit, when it failed first).
- *  `learns`: whether its launch learns (learnsOfLaunch); false, an end that named no path is the agent's. */
+ *  `learns`: whether its launch learns (learnsOfLaunch); false, an end that named no path is the agent's. `replay`: a
+ *  check's replay run's launch (replayOfLaunch), so one whose end named no replay (ended with no loop after a lost
+ *  claim's loop spent, or failed first) is still its revision's check, on the key its launch names. */
 export type RunEnd = {
   readonly id: string;
   readonly agentId: string;
@@ -65,7 +67,12 @@ export type RunEnd = {
   readonly rounds: readonly { readonly round: number; readonly proposal: unknown }[];
   readonly auditOf?: string | null;
   readonly learns?: boolean;
+  readonly replay?: LaunchReplay;
 };
+
+/** What a replay run's launch says of its check (run-launch.ts replayBody): the revision it checks and, on a run's own
+ *  model key, that run (`paid_by`). */
+export type LaunchReplay = { readonly workflow: string | null; readonly digest: string | null; readonly paidBy: string | null };
 
 const usdOrNull = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
 const textOrNull = (value: unknown): string | null => (typeof value === "string" ? value : null);
@@ -75,6 +82,14 @@ const objectOf = (value: unknown): Record<string, unknown> => (value && typeof v
  *  (null when it names none) for an audit's shadow run (learn/audit.ts SHADOW_PREFIX "audit."), undefined for any other. */
 export const auditOfLaunch = (runId: string, body: unknown): string | null | undefined =>
   runId.startsWith("audit.") ? textOrNull(objectOf(objectOf(body).audit).of) : undefined;
+/** RunEnd.replay from a run's stored launch body (`body`, undefined with none): its replay, undefined for a run that is
+ *  no check's replay. */
+export const replayOfLaunch = (body: unknown): LaunchReplay | undefined => {
+  const replay = objectOf(body).replay;
+  if (!replay || typeof replay !== "object" || Array.isArray(replay)) return undefined;
+  const { workflow, digest, paid_by } = replay as Record<string, unknown>;
+  return { workflow: textOrNull(workflow), digest: textOrNull(digest), paidBy: textOrNull(paid_by) };
+};
 /** RunEnd.learns from a run's stored launch body (`body`, undefined with none): whether it holds a learning start, as
  *  run-launch.ts learningStartOfStored reads one. No launch reads as a run that does not learn. */
 export const learnsOfLaunch = (body: unknown): boolean => objectOf(body).learning !== undefined;
@@ -160,10 +175,12 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   // revision's runs out): a run whose end named no path is the agent's when its launch does not learn; one that learns
   // and named none is unknown (null).
   const named = RUN_PATHS.includes(metrics.path as RunPath) ? (metrics.path as RunPath) : null;
-  const path = audited ? "audit" : named ?? (end.learns === false ? "agent" : null);
+  const path = audited ? "audit" : named ?? (end.replay ? "replay" : end.learns === false ? "agent" : null);
   const audit = objectOf(metrics.audit);
-  const workflow = textOrNull(audited ? audit.workflow : metrics.workflow);
-  const digest = textOrNull(audited ? audit.digest : metrics.workflow_digest);
+  // A replay whose end named none of its check is read from its launch (RunEnd.replay).
+  const launched = path === "replay" ? end.replay : undefined;
+  const workflow = textOrNull(audited ? audit.workflow : metrics.workflow) ?? launched?.workflow ?? null;
+  const digest = textOrNull(audited ? audit.digest : metrics.workflow_digest) ?? launched?.digest ?? null;
   // A hand-back a restart cut (pathMetrics workflow_cut) is `cut`, never the workflow's own `back`.
   const cut = path === "handed_back" && metrics.workflow_cut === true;
   const notServed = cut ? "cut" : NOT_SERVED.includes(metrics.not_served as NotServed) ? (metrics.not_served as NotServed) : null;
@@ -173,7 +190,7 @@ export function record(end: RunEnd): { row: LedgerRow; spend: SpendRow[] } {
   };
   const base = { runId: end.id, agentId: end.agentId };
   const spend: SpendRow[] = compilesIn(rounds).map((one) => ({ ...base, round: one.round, kind: "compile", ofRun: null, workflow: one.workflow, digest: one.digest, usd: one.usd }));
-  if (path === "replay") spend.push({ ...base, round: 0, kind: "check", ofRun: textOrNull(objectOf(metrics.replay).paid_by), workflow, digest, usd: rowUsd });
+  if (path === "replay") spend.push({ ...base, round: 0, kind: "check", ofRun: textOrNull(objectOf(metrics.replay).paid_by) ?? launched?.paidBy ?? null, workflow, digest, usd: rowUsd });
   if (audited) spend.push({ ...base, round: 0, kind: "audit", ofRun: textOrNull(audit.of) ?? end.auditOf ?? null, workflow, digest, usd: rowUsd });
   return { row, spend };
 }

@@ -8,7 +8,7 @@ import { type Dialect, settledBody, SQLITE } from "../dialect.js";
 import type { SqliteExecutor, SqliteValue, StoreConnection } from "./connection.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { readableJson, readLaunch, writeLaunch } from "./run-launch.js";
-import { auditOfLaunch, learnsOfLaunch, record } from "../../learn/ledger.js";
+import { auditOfLaunch, learnsOfLaunch, record, replayOfLaunch } from "../../learn/ledger.js";
 
 /** A WHERE condition on `runs`: the run is no built-in learning run (one a kept learning names, queued with it), which no
  *  list of runs names. */
@@ -138,10 +138,12 @@ export async function recordLedger(tx: Pick<SqliteExecutor, "run" | "all" | "get
   const rounds = (await tx.all<{ round: number; proposal: string }>("SELECT round, proposal FROM learning_proposals WHERE run_id = ? ORDER BY round", run.id))
     .map((one) => ({ round: Number(one.round), proposal: JSON.parse(one.proposal) as unknown }));
   // An audit's shadow is booked on the run its launch audits, whatever its end named (one that failed first names none);
-  // a run whose end named no path is the agent's when its launch does not learn (learnsOfLaunch).
+  // a check's replay is its revision's check (on the key its launch names) whatever its end named (replayOfLaunch); a
+  // run whose end named no path is the agent's when its launch does not learn (learnsOfLaunch).
   const body = (await readLaunch(tx, run.id).catch(() => undefined))?.body;
   const auditOf = auditOfLaunch(run.id, body);
-  const { row, spend } = record({ id: run.id, agentId: run.agentId, startedAt: run.startedAt, costUsd: run.costUsd, costAtMostUsd: run.costAtMostUsd, metrics: run.metrics, rounds, learns: learnsOfLaunch(body), ...(auditOf === undefined ? {} : { auditOf }) });
+  const replay = replayOfLaunch(body);
+  const { row, spend } = record({ id: run.id, agentId: run.agentId, startedAt: run.startedAt, costUsd: run.costUsd, costAtMostUsd: run.costAtMostUsd, metrics: run.metrics, rounds, learns: learnsOfLaunch(body), ...(auditOf === undefined ? {} : { auditOf }), ...(replay ? { replay } : {}) });
   await tx.run(
     `INSERT INTO learning_ledger (run_id, agent_id, started_at, path, workflow, digest, not_served, job_usd, look_back_usd, cost, workflow_calls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (run_id) DO UPDATE SET agent_id = excluded.agent_id, started_at = excluded.started_at, path = excluded.path, workflow = excluded.workflow, digest = excluded.digest,
