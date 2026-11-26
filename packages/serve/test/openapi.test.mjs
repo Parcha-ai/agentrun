@@ -229,7 +229,9 @@ test("the contract's operations are as vendored; this server's own are added and
         assert.equal(changes.parameters, "filecut/1");
         assert.equal(op.responses["413"].$ref, "#/components/responses/PayloadTooLarge");
         assert.equal(op.responses["415"].$ref, "#/components/responses/UnsupportedMediaType");
-        assert.deepEqual(Object.keys(op.responses).filter((code) => !Object.hasOwn(original.responses, code)).sort(), [...(original.responses["403"] ? [] : ["403"]), "413", "415"]);
+        // A cut not made by its deadline (cut-pool.ts) is 503, never the text uncut.
+        assert.equal(op.responses["503"].$ref, "#/components/responses/Unavailable");
+        assert.deepEqual(Object.keys(op.responses).filter((code) => !Object.hasOwn(original.responses, code)).sort(), [...(original.responses["403"] ? [] : ["403"]), "413", "415", "503"]);
       }
       const { description: _a, responses: _b, parameters: _e, ...same } = rest;
       const { description: _c, responses: _d, parameters: _f, ...vendoredSame } = original;

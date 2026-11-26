@@ -74,6 +74,9 @@ export interface ComputerRoutesOptions {
   /** This server's folder mode, or how to read it at each call (folderModeOf: the Archil settings, the environment's or the saved row), so turning
    *  Archil on or off takes effect without building the routes again. */
   readonly mode: FolderMode | (() => FolderMode | Promise<FolderMode>);
+  /** In Mode 2, this server's Archil region where it has no serverless exec (archil-settings.ts noExecRegionOf), read
+   *  at each call as `mode` is: a choice with no computer that mounts the folder has no shell then. Absent: none. */
+  readonly noExec?: () => Promise<string | undefined>;
   /** Why this machine cannot run a provider's computers, by its id (hostCommandRefusals at the server's start): the
    *  provider is not ready, and a claim of it is refused, in these words. Absent: every provider can run here. */
   readonly hostWhy?: Readonly<Record<string, string>>;
@@ -255,7 +258,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     // Each provider as this server has it: the mounts its saved keys turn on, whether this server names its image, and no
     // Archil mount where its settings make its machines dial this server.
     const kinds = { ...listed, PROVIDERS: listed.PROVIDERS.map((provider) => entryHere(provider, (name) => saved.has(name) || envValue(env, name) !== undefined, settingOptions(provider.id, settings, keyTable))) };
-    const choice = (setting: ComputerSetting): ShellChoice => shellChoiceOf(setting, mode === "disk" ? 2 : 1, kinds);
+    const noExec = mode === "disk" ? await options.noExec?.() : undefined;
+    const choice = (setting: ComputerSetting): ShellChoice => shellChoiceOf(setting, mode === "disk" ? 2 : 1, kinds, noExec);
     // The run's folder a computer of this choice holds, by the rule the claim picks it by, over the same providers.
     const folderOf = (setting: ComputerSetting): MountKind | null => runFolderOf(setting, mode === "disk" ? 2 : 1, kinds) ?? null;
     // Under this server's AGENTRUN_BOX_ALLOW none, a computer that needs a network is refused at a

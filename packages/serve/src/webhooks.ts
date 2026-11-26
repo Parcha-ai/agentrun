@@ -235,6 +235,12 @@ export class Webhooks {
     this.lookup = options.lookup ?? (async (host) => (await dns.lookup(host, { all: true })).map((a) => a.address));
   }
 
+  /** Reads the saved secrets alone (signingSecrets), writing nothing and sending nothing: a share host's start, which
+   *  sends no message but still holds every value this server saved, so an upload carrying one is refused. */
+  async readSecrets(): Promise<void> {
+    await this.secrets.load();
+  }
+
   /** Reads the webhook, its secret and its ledger once, and goes on with the messages an earlier server left queued, each
    *  at its next try's time; a test send is tried once, so one left queued failed. Awaited once at start. */
   async load(): Promise<void> {

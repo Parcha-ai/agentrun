@@ -66,6 +66,7 @@ export interface components {
       provider_from?: "agent" | "server" | "default";
       default_provider?: string;
       resolved?: string;
+      ceiling?: string;
       permission: "allow" | "ask" | "deny";
       permission_from: "agent" | "server" | "default" | "unattended";
       default_permission: "allow" | "ask" | "deny";
@@ -2726,6 +2727,7 @@ export interface operations {
         provider_from?: "agent" | "server" | "default";
         default_provider?: string;
         resolved?: string;
+        ceiling?: string;
         permission: "allow" | "ask" | "deny";
         permission_from: "agent" | "server" | "default" | "unattended";
         default_permission: "allow" | "ask" | "deny";
@@ -4446,6 +4448,27 @@ export interface operations {
         runs: number;
       }[];
       unread_files: number;
+      cache: {
+        runs: number;
+        hit_rate: number | null;
+        breaks: {
+          model: number;
+          idle: number;
+          compaction: number;
+          edited: number;
+          sidechain: number;
+          unknown: number;
+        };
+        extra_cost_usd: {
+          model: number;
+          idle: number;
+          compaction: number;
+          edited: number;
+          sidechain: number;
+          unknown: number;
+        };
+        unpriced_breaks: number;
+      } | null;
     };
   };
   gitHubCallback: {

@@ -65,6 +65,7 @@ export type Agent = {
     provider_from?: "agent" | "server" | "default";
     default_provider?: string;
     resolved?: string;
+    ceiling?: string;
     permission: "allow" | "ask" | "deny";
     permission_from: "agent" | "server" | "default" | "unattended";
     default_permission: "allow" | "ask" | "deny";
@@ -1700,6 +1701,7 @@ export type GetAgentResponse = Agent & ({
     provider_from?: "agent" | "server" | "default";
     default_provider?: string;
     resolved?: string;
+    ceiling?: string;
     permission: "allow" | "ask" | "deny";
     permission_from: "agent" | "server" | "default" | "unattended";
     default_permission: "allow" | "ask" | "deny";
@@ -7679,6 +7681,27 @@ export type GetWrappedResponse = {
     runs: number;
   }>;
   unread_files: number;
+  cache: {
+    runs: number;
+    hit_rate: number | null;
+    breaks: {
+      model: number;
+      idle: number;
+      compaction: number;
+      edited: number;
+      sidechain: number;
+      unknown: number;
+    };
+    extra_cost_usd: {
+      model: number;
+      idle: number;
+      compaction: number;
+      edited: number;
+      sidechain: number;
+      unknown: number;
+    };
+    unpriced_breaks: number;
+  } | null;
 };
 
 /** Each operation as the runtime sends it, by operationId. */

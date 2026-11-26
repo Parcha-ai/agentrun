@@ -274,7 +274,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   const model = readModel(stored.model);
   const boxAllow = readBoxAllow(stored.box_allow);
   const archilDisk = readDisk(stored.archil_disk);
-  const refused = isObject(stored.hold) ? readRefusal(stored.hold.refused) : undefined;
+  const hold = readHold(stored.hold);
   return {
     input: stored.input,
     ...(isObject(stored.sdk) && sdkBindingOf(stored.sdk) && typeof stored.sdk.instructions === "string" ? {sdk: stored.sdk as unknown as NonNullable<RunLaunch["sdk"]>} : {}),
@@ -303,16 +303,29 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
     ...(archilDisk ? { archilDisk } : {}),
-    ...(isObject(stored.hold) ? { hold: { minutes: typeof stored.hold.minutes === "number" ? stored.hold.minutes : HOLD_MINUTES, ...(refused ? { refused } : {}) } } : {}),
+    ...(hold ? { hold } : {}),
   };
 }
+
+/** A launch's hold as it keeps it, else undefined (none kept). A minutes that isn't a number waits HOLD_MINUTES. A hold
+ *  kept that is not an object (a corrupt row, another version's) is a hold whose model was refused, in words that name
+ *  the field and never what it holds: read as none, the run would start and its claim open its model's keys. */
+function readHold(value: unknown): RunLaunch["hold"] {
+  if (value === undefined) return undefined;
+  if (!isObject(value)) return { minutes: HOLD_MINUTES, refused: unreadable("hold") };
+  const refused = readRefusal(value.refused);
+  return { minutes: typeof value.minutes === "number" ? value.minutes : HOLD_MINUTES, ...(refused ? { refused } : {}) };
+}
+
+/** The refusal of a held run whose launch's `field` can't be read. */
+const unreadable = (field: string): HeldRefusal => ({ message: `This run's model was kept from running at its create, and its launch's ${field} can't be read: it holds its computer only. Start a new run to run its agent.`, fields: [], details: {} });
 
 /** A held run's model refusal as its launch keeps it, else undefined (none kept). One kept that can't be read (a corrupt
  *  row, another version's) is a refusal still, in words that name the field and never what it holds: read as none, the
  *  run would start and its claim open the keys its model was refused for. */
 function readRefusal(value: unknown): HeldRefusal | undefined {
   if (value === undefined) return undefined;
-  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return { message: "This run's model was kept from running at its create, and its launch's hold.refused can't be read: it holds its computer only. Start a new run to run its agent.", fields: [], details: {} };
+  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return unreadable("hold.refused");
   return { message: value.message, fields: value.fields as InputIssue[], details: value.details };
 }
 

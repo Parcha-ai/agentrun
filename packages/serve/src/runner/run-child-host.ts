@@ -29,7 +29,7 @@ import { openAccount } from "../email/account.js";
 import { harnessOf, planRecipeOf, recipeHarness } from "../harness-table.js";
 import { openHarnessKeys } from "../harness-keys.js";
 import { installDirOf, installForClaim, shareInstall } from "../harness-install.js";
-import { loadArchilSettings } from "../archil-settings.js";
+import { loadArchilSettings, noExecRegionOf } from "../archil-settings.js";
 import { planOf } from "../chatgpt-plan.js";
 import { forgottenSignIns, handedSignInReadsBack, peekSignIn, runSignIn, signInReads, verifyRunSignIn } from "../sign-ins-store.js";
 import { vendorsOver } from "../sign-ins.js";
@@ -71,7 +71,7 @@ import { workflowsAt } from "./learning-seed.js";
 import { claimMetering, heldMcpOf, mcpForClaim } from "./mcp-run.js";
 import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
-import { refuseRecipeTriggerRun, resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
+import { refuseRecipeTriggerRun, resolveRunnerLoop, underServerCeilings, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { loginForRun } from "../claude-login.js";
@@ -679,7 +679,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
   const projectStop = new AbortController();
   const projectSignal = reads.signal ? AbortSignal.any([reads.signal, projectStop.signal]) : projectStop.signal;
   let projectIO: Promise<SourceIOReceipt> | undefined, projectCapture: Promise<ProjectCheckpoint> | undefined;
-  let projectComputer: ClaimComputer | undefined, projectWorkspace: Workspace | undefined, projectMode: 1 | 2 = 1;
+  let projectComputer: ClaimComputer | undefined, projectWorkspace: Workspace | undefined, projectMode: 1 | 2 = 1, projectNoExec: string | undefined;
   let projectFailed = false, projectReleased = false, projectClosing = false, projectCaptureDone = false;
   let projectRelease: Promise<void> | undefined;
   let projectCleanup: Promise<unknown> | undefined;
@@ -772,7 +772,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
           if (!projectComputer || !projectWorkspace) throw new ClaimRefused("The project's held execution resources are unavailable.");
           checkpoint = runProjectCheckpoint({ store, agentId: run.agentId, claim, launch, computer: projectComputer, ioHeld: true,
             tools: { get workspace() { if (!tools) throw new ClaimRefused("Project settlement has not opened its workspace."); return tools.workspace; },
-              settleProject: async () => { tools = await runTools(projectWorkspace!, projectComputer!.computer, { mode: projectMode, context: BACKGROUND_CONTEXT }); return tools.settleProject(); } },
+              settleProject: async () => { tools = await runTools(projectWorkspace!, projectComputer!.computer, { mode: projectMode, noExec: projectNoExec, context: BACKGROUND_CONTEXT }); return tools.settleProject(); } },
             workspace: { data: deps.data, sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },
             secrets: async () => runnerSecrets(deps.env, [...runnerSecrets(claimed), ...await storeSecrets(store, sealKey, deps.data)]),
           });
@@ -801,9 +801,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // (redact.ts carry) before it is handed, a renewed one too: model text that repeats it is cut from the run's journal as
     // the runner writes it (runner.ts fenced), from what it stages and from its rows, as the run's own tool keys are.
     // This answer is the one decision whether the run goes on the login: none, it does not. A run that sends no model key
-    // (keyless: a held run, any run on a --faux runner, a faux-pinned one) gets none, whatever its claim read: the login is
-    // a model credential like any key. Any other claim read the setting (staysInRunner): one that read it off is never put
-    // on it, whatever the setting says now; one that read it on has it read again here, at the start, with the claim's
+    // (keyless: a held run, any run on a --faux runner, a faux-pinned one) gets none, whatever its claim read, and no read
+    // of the claim's login or the setting for it: the login is a model credential like any key. Any other claim read the
+    // setting (staysInRunner): one that read it off is never put on it, whatever the setting says now; one that read it on
+    // has it read again here, at the start, with the claim's
     // settings, data folder, harness and place. That read's environment is the claim's (the process's, when the runner was
     // given none) with a saved gateway laid over it (withSavedGatewayDeps), not always the very one the claim read with;
     // the difference can only refuse the start, never hand another folder, since the login is handed only when both reads
@@ -965,6 +966,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     computer: (ask: HeldComputerAsk) => projectCall(async () => {
       const made = await archilOf();
       const mode: 1 | 2 = made === undefined ? 1 : 2;
+      const noExec = noExecRegionOf(made);
       const ws = made === undefined
         ? await openRunWorkspace({ mode: 1, agentId: run.agentId, runId: claim.runId, data: deps.data, log })
         : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
@@ -973,7 +975,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         { runId: claim.runId, epoch: claim.epoch, claim, agentId: run.agentId, revisionId: run.revisionId, place: launch.place, ...(reads.incarnation ? { holder: { runner: claim.runner, incarnation: reads.incarnation } } : {}) } as never,
         store,
         {
-          ...deps.computerDeps, mode, workspace: ws.workspace, sealKey,
+          ...deps.computerDeps, mode, noExec, workspace: ws.workspace, sealKey,
           recordings: { folder: recordingsFolder(deps.data, run.agentId, claim.runId), say: (words: string) => say?.(cut(words)) },
           hadComputer: async () => (await ask.hadComputer()) === true,
           ...(typeof ask.turnedOff === "string" ? { turnedOff: ask.turnedOff } : {}),
@@ -998,7 +1000,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       const claimed = got as { release?: (why?: "ended") => Promise<void> } | undefined;
       if (typeof claimed?.release === "function") releases.push(() => claimed.release!("ended"));
       if (projectGate) {
-        projectComputer = got as ClaimComputer; projectWorkspace = ws.workspace; projectMode = mode;
+        projectComputer = got as ClaimComputer; projectWorkspace = ws.workspace; projectMode = mode; projectNoExec = noExec;
         const { syncProject: _sync, ...exposed } = got as ClaimComputer;
         return { ...exposed, ...(exposed.computer ? { computer: projectGate.capability(exposed.computer) } : {}),
           release: (...args: Parameters<ClaimComputer["release"]>) => cleanProject(() => exposed.release(...args)),
@@ -1193,7 +1195,8 @@ export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data"
     if (revision && isWorkflowRevision(revision)) return STAYS;
   }
   // A run that sends no model key (claim-secrets.ts sendsNoModelKey) is handed no login (heldFor claudeLogin), so its claim
-  // reads none: it is never refused for a login it would never be handed.
+  // reads none: it is never refused for a login it would never be handed. A held run its model kept from running holds its
+  // computer so, whatever login this machine has on.
   if (sendsNoModelKey(launch, deps.env ?? {})) return OFF_LOGIN;
   const login = await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place);
   if (login === undefined) return OFF_LOGIN;
@@ -1332,7 +1335,10 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
         // host's default's now, where its revision names no model and a key saved since moved that default. On a --faux
         // runner, or pinned to the faux model, a run sends no model key (claim-secrets.ts sendsNoModelKey): its process is
         // handed none, not even its revision's model's.
-        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, launch, claim.runId);
+        // Its keys are its capped plane's (harness-loops.ts underServerCeilings), as the run's own loop reads that plane: a
+        // run kept on Parallel and claimed after the server set kernel or native is handed no Parallel key.
+        const capped = await underServerCeilings(claimDeps, launch, revisionRow as never);
+        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv, redact: loopDeps.redact }, revisionRow as never, capped, claim.runId);
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
@@ -1452,6 +1458,9 @@ export function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, 
             claim, data: deps.data, signal: loopDeps.signal, where: deps.store.where, ...(traced ? { traced: true } : {}),
             // A learning child's deadline, its abort posted across (run-channel.ts) to the process's request gate.
             ...(loopDeps.pastDeadline ? { pastDeadline: loopDeps.pastDeadline } : {}),
+            // The plane its keys were chosen by (`capped`): the process runs its tools on it, never on a later read of the
+            // server's settings, which may have moved since.
+            ...(capped.plane ? { plane: capped.plane } : {}),
             ...(reach.loopback ? { mcpLoopback: true, mcpOwn: reach.own ?? [] } : {}),
             ...(deps.githubApi ? { githubApi: deps.githubApi } : {}),
             ...(deps.githubWeb ? { githubWeb: deps.githubWeb } : {}),
