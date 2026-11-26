@@ -1008,6 +1008,20 @@ const SEMI_ROWS = [
     ["theme=dark-mode", "dark-mode"],
     ["theme=dark-mode is on", "theme=dark-mode is on"],
   ],
+  [
+    "a header value's credential pair with a %20 in its value, after a ; written %3B and before an & written %26",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=region=us%3Bapi_key=${SEMI_PREFIX}%20tail-${"dummy"}%26theme=dark` },
+    [`${SEMI_PREFIX}%20tail-${"dummy"}`, `${SEMI_PREFIX} tail-${"dummy"}`],
+    ["dark"],
+    [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair in quotes written %22 with a %20 and a ; in its value, before a space written %20",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${QUOTE_22}${SEMI_PREFIX}%20tail-${"dummy"};suffix-${"dummy"}${QUOTE_22}%20region=us-east-1` },
+    [`${SEMI_PREFIX}%20tail-${"dummy"};suffix-${"dummy"}`, `${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"}`],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
+  ],
 ];
 
 test("an OTLP endpoint's or header value's credential with a raw ; in it is held whole and as each pair after a ;, and a line quoting it is cut to [redacted] with no piece after the ; left", () => {
