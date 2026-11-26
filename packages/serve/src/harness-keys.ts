@@ -278,8 +278,7 @@ export class HarnessKeysOverStore {
     return { id: recipe.id, label: recipe.label, named: true, keys, kept: this.kept(recipe.id, recipe.keys), ready: this.saved(recipe), reenter };
   }
 
-  /** Each id with keys saved whose recipe this server does not name, sorted: capabilities' harness_keys.kept, so the
-   *  console offers the page that removes them. */
+  /** Each id with keys saved whose recipe this server does not name, sorted: the page lists them (list), to remove. */
   unnamed(): string[] {
     const named = new Set(this.recipes.map((recipe) => recipe.id));
     return [...new Set([...this.current.keys()].flatMap((row) => rowParts(row)?.harness ?? []))].filter((id) => !named.has(id)).sort();

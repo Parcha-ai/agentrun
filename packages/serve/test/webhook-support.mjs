@@ -13,6 +13,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { openSqliteStore } from "../dist/store/index.js";
 import { schemaProblems } from "./schema-support.mjs";
+import { raw } from "./store-target.mjs";
 import { client, FAUX, printed, startInProcessRunner, startServe } from "./support.mjs";
 
 // The spec's own library, in the lockfile through the Anthropic SDK: what a receiver would install.
@@ -173,19 +174,10 @@ export const noticeId = (runId, type, marker) => `msg_${createHash("sha256").upd
  *  rest of the store is written as ever. Answers its release; the test's end releases it at the latest. */
 export async function refusing(t, dir, when) {
   const name = `test_refuses_${when}`;
-  // A writer can hold its transaction across an await on this same event loop. SQLite's synchronous busy timeout
-  // would prevent that writer from committing, and stall unrelated webhook deadlines too. Yield while it is busy.
-  const db = new DatabaseSync(join(dir, "store.sqlite"), { timeout: 0 });
-  const exec = async (sql) => {
-    const end = Date.now() + 60_000;
-    for (;;) {
-      try { db.exec(sql); return; }
-      catch (error) {
-        if ((error.errcode & 255) !== 5 || Date.now() >= end) throw error;
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-    }
-  };
+  // Through raw(): a writer of the server in this process can hold its transaction across an await on this event loop, so
+  // the busy wait for it is on a worker, where it blocks neither that writer's commit nor unrelated webhook deadlines.
+  const db = await raw(join(dir, "store.sqlite"), { timeout: 60_000 });
+  const exec = (sql) => db.exec(sql);
   const on = when === "outbox"
     ? [`BEFORE INSERT ON channel_posts WHEN NEW.channel = '${CHANNEL}'`]
     : [`BEFORE INSERT ON settings WHEN NEW.key = '${CHANNEL}'`, `BEFORE UPDATE ON settings WHEN NEW.key = '${CHANNEL}'`];
@@ -194,7 +186,7 @@ export async function refusing(t, dir, when) {
     if (released) return;
     for (let i = 0; i < on.length; i++) await exec(`DROP TRIGGER IF EXISTS ${name}_${i}`);
     released = true;
-    db.close();
+    await db.close();
   };
   t.after(release);
   for (const [i, what] of on.entries()) await exec(`CREATE TRIGGER ${name}_${i} ${what} BEGIN SELECT RAISE(ABORT, 'the test refuses this write'); END`);

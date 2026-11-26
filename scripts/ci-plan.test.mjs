@@ -69,6 +69,15 @@ test('a suite takes its script\'s --test-concurrency, or node\'s default on the 
   assert.deepEqual(unitsOf(readSuites(root), readConfig(root).timings).map((u) => [u.id, u.slots]), [['file:packages/a/test/one.test.mjs', 8], ['file:packages/b/test/b.test.mjs', 3]]);
 });
 
+test('a suite script\'s --import is carried into every shard command that runs its files', () => {
+  const root = repo('imports', {
+    workspaces: { a: ['@x/a', "node --test --test-concurrency=8 --import=./test/hook.mjs 'test/*.test.mjs'", ['test/one.test.mjs', 'test/two.test.mjs']] },
+  });
+  const suites = readSuites(root);
+  const units = unitsOf(suites, readConfig(root).timings);
+  assert.deepEqual(commandsOf(suites, units.filter((u) => u.id === 'file:packages/a/test/one.test.mjs')).map((c) => c.command), [['npm', 'exec', '-w', '@x/a', '-c', 'node --test --test-concurrency=8 --import=./test/hook.mjs test/one.test.mjs']]);
+});
+
 test("a suite node --test does not schedule takes its longest file or its files' total over its parallelism, whichever is more", () => {
   // One suite of parallelism 4: a 100 s file and four 20 s files fit under the long one; a second suite adds its own time.
   const serve = [unit('long', 100, 'serve', 4), ...[1, 2, 3, 4].map((n) => unit(`short-${n}`, 20, 'serve', 4))];

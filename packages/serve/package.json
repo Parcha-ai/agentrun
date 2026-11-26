@@ -55,7 +55,7 @@
     "build": "rm -rf dist && tsc -p tsconfig.json && node scripts/copy-page.mjs",
     "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.test.json",
-    "test": "node --test --test-concurrency=8 'test/*.test.mjs'",
+    "test": "node --test --test-concurrency=8 --import=./test/fixtures/sqlite-guard-register.mjs 'test/*.test.mjs'",
     "test:pg:up": "docker compose -f test/pg/compose.yaml up -d --wait",
     "test:pg:down": "docker compose -f test/pg/compose.yaml down",
     "test:pg": "node scripts/test-pg.mjs"

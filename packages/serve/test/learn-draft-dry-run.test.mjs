@@ -10,7 +10,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
 import * as drafts from "../dist/learn/workflow-draft.js";
-import { learningFolderOf, seedOf } from "../dist/learning.js";
+import { seedOf } from "../dist/learning.js";
+import { openSqliteStore } from "../dist/store/index.js";
 import { checkDraftOf } from "../dist/runner/learning-end.js";
 
 const { draftProblems, DRY_RUN_FAILED } = drafts;
@@ -31,13 +32,17 @@ const MISTYPED = (name) => draft(name, { out: "Lines", as: "answer" });
 /** A compile block's text, as readCompile gives it: its front matter, then its workflow.json. */
 const block = (flow, example) => `---\ndescription: Answers a question as a number; use when asked for the answer\n${example === undefined ? "" : `example: ${example}\n`}---\n${JSON.stringify(flow)}\n`;
 
-/** checkDraftOf over `flow` (its block with `example`) against an empty folder, refusing `refuse`: its errors and what it kept. */
+/** checkDraftOf over `flow` (its block with `example`) against an agent that learned nothing, refusing `refuse`: its errors and what it kept. */
 async function checked(t, flow, example, refuse = []) {
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-draft-dry-run-"));
-  t.after(() => rmSync(data, { recursive: true, force: true }));
-  const { sha } = await seedOf(data, AGENT);
-  // A run the store does not hold: no tools, no gate, no output schema.
-  const deps = { store: { runs: { get: async () => undefined }, mcp: {} }, data, learningFolder: (agentId) => learningFolderOf(data, agentId) };
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  t.after(async () => {
+    await store.close();
+    rmSync(data, { recursive: true, force: true });
+  });
+  const { sha } = await seedOf(data, store, AGENT);
+  // A run the store does not hold: no tools, no gate, no output schema; the agent's learning the store's.
+  const deps = { store: { runs: { get: async () => undefined }, mcp: {}, learning: store.learning }, data };
   return checkDraftOf(deps, { runId: "run-1", agentId: AGENT, seed: sha, draft: { name: flow.name, text: block(flow, example) }, refuse });
 }
 /** Whether `errors` is one error at `name`'s workflow.json saying its dry run failed. */

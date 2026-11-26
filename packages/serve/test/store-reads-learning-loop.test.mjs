@@ -16,16 +16,19 @@ const T0 = Date.parse("2026-11-10T09:00:00Z");
 /** A run as the store lists it, ended at T0 + `n` minutes with `metrics`. */
 const runOf = (id, n, metrics, extra = {}) => ({ id, agentId: "sorter", state: "ended", startedAt: T0 + n * 60_000, metrics, importedFrom: null, archivedAt: null, ...extra });
 
-/** A store with just what the read reads: the agent's runs, its settings (promotions) and each run's kept learning
- *  (a row, or a list of rounds' rows `{ at, row }` oldest first). proposal(id) is the newest round, as the store's. */
+/** A store with just what the read reads: the agent's runs, its learning records (promotions) and each run's kept
+ *  learning (a row, or a list of rounds' rows `{ at, row }` oldest first). proposal(id) is the newest round, as the
+ *  store's. No reset watermark is set. */
 function storeOf({ runs, promotions = [], kept = {}, learning = true }) {
-  const settings = new Map([["learning.promotions.sorter", { v: 1, items: promotions }]]);
   const roundsOf = (id) => (kept[id] === undefined ? [] : Array.isArray(kept[id]) ? kept[id].map(({ at, row }, i) => ({ round: i + 1, createdAt: at, proposal: row })) : [{ round: 1, createdAt: T0 + 3_600_000, proposal: kept[id] }]);
   return {
     runs: { list: async () => runs },
     agents: { get: async () => ({ currentRevision: "rev" }), revision: async () => ({ body: { learning } }) },
-    settings: { get: async (key) => settings.get(key) },
-    learning: { proposal: async (id, round) => (round === undefined ? roundsOf(id).at(-1) : roundsOf(id)[round - 1]) },
+    settings: { get: async () => undefined },
+    learning: {
+      proposal: async (id, round) => (round === undefined ? roundsOf(id).at(-1) : roundsOf(id)[round - 1]),
+      records: async (_agentId, kind) => (kind === "promotion" ? promotions.map((data, i) => ({ seq: i + 1, runId: null, workflow: data.workflow, digest: data.digest, data, at: T0 })) : []),
+    },
   };
 }
 

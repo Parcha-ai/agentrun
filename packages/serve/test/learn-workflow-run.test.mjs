@@ -4,20 +4,18 @@
 // on this server's models, and its model requests are the run's, as side requests labelled learned_workflow.
 import assert from "node:assert/strict";
 import { promoteChecked } from "./learned-workflow-seed-support.mjs";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { agentFolderOf } from "../dist/files.js";
 import { seedOf } from "../dist/learning.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { replayOf } from "../dist/tool-list.js";
-import { learningWorkspace } from "../dist/workspace/index.js";
-import { readSnapshot } from "../dist/learn/folder.js";
-import { entriesOf, git, resnap } from "./learn-support.mjs";
+import { openSqliteStore } from "../dist/store/index.js";
+import { entriesOf, learningAt, putLearning } from "./learn-support.mjs";
 import { agent, answerFlow, follow, paidCallsOf, scratch, serve, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
@@ -37,28 +35,14 @@ const withTools = (tools) => {
   return flow;
 };
 
-/** Agent `id`'s learning folder made as a first run makes it, then `files` committed on main. */
-async function folderWith(data, id, files) {
-  await seedOf(data, id);
-  const repo = join(agentFolderOf(data, id), "learning");
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
-}
-
-
 /** Agent `id` on `harness`, learning, with `files` learned (`extra`: more of its definition); one run of ASK (`fields`:
  *  more of its start, a cap), ended: its id, rows and view. */
 async function ran(api, data, store, id, harness, files, tools = [], { extra = {}, fields = {}, deadlineMs = 60_000, ask = ASK, ends = ["completed", "failed"] } = {}) {
   assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: ask, tools, ...extra }))).status, 201);
-  await folderWith(data, id, files);
+  await putLearning(store, id, files);
   // Serving and runtime revalidation start from an already checked revision, including legacy definitions that
   // today's runtime rejects. The seed excludes pending/retired drafts; those tests receive no promotion.
-  await promoteChecked(store.settings, id, (await seedOf(data, id)).workflows.map(({ name, workflow }) => ({ name, workflow: JSON.parse(workflow) })));
+  await promoteChecked(store, id, (await seedOf(data, store, id)).workflows.map(({ name, workflow }) => ({ name, workflow: JSON.parse(workflow) })));
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: ask }, ...fields });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
@@ -291,14 +275,16 @@ test("a learned workflow whose later node is a judge is refused before any node 
   assert.deepEqual((await entriesOf({ data }, runId, ["agentrun.request_started"])).filter((entry) => entry.request === LEARNED_WORKFLOW_TOOL), [], "its first node never ran");
 });
 
-/** Agent `id`'s learning folder with `files` on main, its seed, and the learned workflows a run's start chooses from it
+/** Agent `id`'s learning with `files` saved, its store, its seed, and the learned workflows a run's start chooses from it
  *  (`secrets`, the host's secrets it is cut of). */
 async function pinned(t, id, files, secrets = []) {
   const data = join(await scratch(t), "agents");
   mkdirSync(data, { recursive: true });
-  await folderWith(data, id, files);
-  const seed = await seedOf(data, id);
-  return { data, seed, chosen: learning.chooseWorkflows(seed, learning.secretsShown(secrets)) };
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  t.after(() => store.close());
+  await putLearning(store, id, files);
+  const seed = await seedOf(data, store, id);
+  return { store, seed, chosen: learning.chooseWorkflows(seed, learning.secretsShown(secrets)) };
 }
 
 test("a learned workflow whose README's front matter does not read one way (not closed, or a key indented) is not the run's: never read as active", { timeout: 60_000 }, async (t) => {
@@ -309,18 +295,13 @@ test("a learned workflow whose README's front matter does not read one way (not 
     ["indented first", `---\n  status: retired\nname: answer\ndescription: ${DESCRIPTION}\n---\n`],
   ]) {
     const id = `front-${why.replace(/\W+/g, "-")}`;
-    const { data, seed, chosen } = await pinned(t, id, readme(front));
+    const { store, seed, chosen } = await pinned(t, id, readme(front));
     assert.deepEqual(chosen.flows, [], `${why}: ${JSON.stringify(chosen)}`);
     assert.equal(seed.workflows.some((flow) => flow.name === "answer"), false, `${why}: ${JSON.stringify(seed.workflows)}`);
-    // The one reader (learn/skills.ts learnedStatus) reads it retired in the folder's snapshot, as the console shows it: the
-    // seed's read never gives its files, so the run never meets it.
-    const folder = learningWorkspace({ mode: "local", data, agentId: id });
-    try {
-      const snapshot = await readSnapshot(folder.workspace);
-      assert.deepEqual(snapshot.workflows.map(({ name, status }) => [name, status]), [["answer", "retired"]], why);
-    } finally {
-      await folder.end();
-    }
+    // The one reader (learn/skills.ts learnedStatus) reads it retired in the agent's learning, as the console shows it:
+    // the seed's read never gives its files, so the run never meets it.
+    const { view } = await learningAt(store, id);
+    assert.deepEqual(view.workflows.map(({ name, status }) => [name, status]), [["answer", "retired"]], why);
   }
   // Closed at the end of the file, with no line after: its status is read, as the description is.
   const closed = await pinned(t, "front-eof", readme(`---\nname: answer\ndescription: ${DESCRIPTION}\nstatus: pending\n---`));

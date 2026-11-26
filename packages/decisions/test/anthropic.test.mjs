@@ -155,3 +155,10 @@ test('the key and root come from ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL when n
   await provider.decide(request, ctx());
   assert.deepEqual(seen, [{ url: 'http://127.0.0.1:9/v1/messages', key: KEY }]);
 });
+
+test('a 402 (the account is out of credit) is payment_required, sent once and with no cost', async () => {
+  let calls = 0;
+  const fetch = async () => (calls++, json({ type: 'error', error: { type: 'billing_error', message: 'out of credit' } }, 402));
+  await assert.rejects(anthropicProvider({ ...settings, fetch }).decide(request, ctx()), (error) => code('payment_required')(error) && error.costUsd === undefined);
+  assert.equal(calls, 1, 'a 402 is not sent again');
+});

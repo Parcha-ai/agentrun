@@ -14,6 +14,10 @@ import { ownerFilter, sweep } from "../dist/index.js";
 import { API, fakeOrgoApi, fakeOrgoChannel, KEY, WORKSPACE } from "./fake-orgo.mjs";
 import { fakeOrgoDesktop, WINDOWS_LABELS } from "./fake-orgo-desktop.mjs";
 
+/** A create's context with a request id of its own: each create here is a new request. */
+let requests = 0;
+const newRequest = (context = {}) => ({ requestId: `orgo-persist-${++requests}`, ...context });
+
 const { create } = await import("../dist/orgo.js");
 
 const HOUR = 3_600_000;
@@ -84,7 +88,7 @@ test("Orgo's check(): an agent's spec takes no lifetime; owner is { agent }; the
 
 test("Orgo Windows: an agent's computer has no deadline or Orgo end; its labels are the ledger's; detach stops it and says when; attach under a claim starts it and takes the claim's run and epoch; a lower epoch is fenced", async () => {
 	const { fake, provider, ledger } = desktop("windows");
-	const created = await provider.create(windowsSpec());
+	const created = await provider.create(windowsSpec(), newRequest());
 	assert.equal(created.ok, true, JSON.stringify(created));
 	const ref = created.value;
 	assert.match(ref.name, /^computer-[0-9a-f]{12}-o[a-z2-7]{16}$/, "the owner's hash, no run, no epoch, no deadline");
@@ -140,7 +144,7 @@ test("Orgo Windows: an agent's computer has no deadline or Orgo end; its labels 
 test("Orgo: an agent's computer with no ledger entry has unknown labels: listed owned with no owner to an unfiltered list alone, kept by the janitor, never attached or detached, and deleted on request", async () => {
 	const fake = fakeOrgoDesktop({ os: "windows" });
 	const first = desktop("windows", { fake });
-	const ref = (await first.provider.create(windowsSpec())).value;
+	const ref = (await first.provider.create(windowsSpec(), newRequest())).value;
 	const { provider, ledger } = desktop("windows", { fake });
 	assert.deepEqual((await provider.list({})).value.map((info) => [info.ref.id, info.labels, info.owned, info.owner]), [[ref.id, {}, true, undefined]]);
 	assert.deepEqual((await provider.list({ "agentrun.owner": OWNER_VALUE })).value, [], "no label is proved without the entry, its owner's neither");
@@ -162,7 +166,7 @@ test("Orgo: an agent's computer with no ledger entry has unknown labels: listed 
 
 test("Orgo: the janitor deletes an agent's computer only when its owner is gone or it has idled past its TTL, never by a deadline", async () => {
 	const { provider } = desktop("windows");
-	const ref = (await provider.create(windowsSpec({ owner: { agent: "agent-7", idleTtlMs: HOUR } }))).value;
+	const ref = (await provider.create(windowsSpec({ owner: { agent: "agent-7", idleTtlMs: HOUR } }), newRequest())).value;
 	const far = new Date(Date.now() + 1_000 * HOUR);
 	assert.deepEqual(await sweep(provider, { now: far, ownerGone: () => false }), { ok: true, value: { deleted: [], kept: 1 } }, "running, held: kept whatever the time");
 	await provider.release(ref, "detach");
@@ -170,7 +174,7 @@ test("Orgo: the janitor deletes an agent's computer only when its owner is gone 
 	assert.deepEqual(await sweep(provider, { now: new Date(Date.now() + 2 * HOUR), ownerGone: () => false }), { ok: true, value: { deleted: [ref.name], kept: 0 } }, "detached past its TTL");
 
 	const other = desktop("windows");
-	const held = (await other.provider.create(windowsSpec())).value;
+	const held = (await other.provider.create(windowsSpec(), newRequest())).value;
 	assert.deepEqual(await sweep(other.provider, { now: far, ownerGone: ({ agent }) => agent === "agent-7" }), { ok: true, value: { deleted: [held.name], kept: 0 } }, "its owner gone");
 });
 
@@ -178,7 +182,7 @@ test("Orgo: in one workspace, the Linux provider lists no Windows desktop (Orgo'
 	const fake = fakeOrgoDesktop({ os: "windows" });
 	const ledger = storeLedger();
 	const windows = desktop("windows", { fake, ledger }).provider;
-	const ref = (await windows.create(windowsSpec())).value;
+	const ref = (await windows.create(windowsSpec(), newRequest())).value;
 	const lin = create({ apiKey: KEY, workspaceId: WORKSPACE, apiUrl: API, fetch: fake.fetch, channel: fakeOrgoChannel(), daemonPath: DAEMON_PATH, timeouts: LINUX_TIMEOUTS, ledger });
 	assert.deepEqual((await lin.list({})).value, []);
 	assert.deepEqual(await sweep(lin, { ownerGone: () => true }), { ok: true, value: { deleted: [], kept: 0 } });
@@ -187,7 +191,7 @@ test("Orgo: in one workspace, the Linux provider lists no Windows desktop (Orgo'
 
 test("Orgo: a run's computer is never detached, never taken under a claim, and one that is not running is never woken by attach", async () => {
 	const { fake, provider } = desktop("windows");
-	const created = (await provider.create({ image: "windows", lifetimeMs: 30 * 60_000, network: "open", labels: LABELS })).value;
+	const created = (await provider.create({ image: "windows", lifetimeMs: 30 * 60_000, network: "open", labels: LABELS }, newRequest())).value;
 	const detached = await provider.release(created, "detach");
 	assert.equal(detached.ok, false);
 	assert.match(detached.error.message, /a run's computer, not an agent's own/);
@@ -202,18 +206,18 @@ test("Orgo: a run's computer is never detached, never taken under a claim, and o
 
 test("Orgo macOS: no agent's computer, since Orgo stops no Mac: create with an owner is refused before Orgo is called", async () => {
 	const { fake, provider } = desktop("macos");
-	const created = await provider.create({ image: "macos", network: "open", owner: OWNER });
+	const created = await provider.create({ image: "macos", network: "open", owner: OWNER }, newRequest());
 	assert.equal(created.ok, false);
 	assert.equal(created.error.code, "refused");
 	assert.match(created.error.message, /owner/);
 	assert.equal(fake.api.requests.filter(({ method }) => method === "POST").length, 0);
-	const run = (await provider.create({ image: "macos", lifetimeMs: 30 * 60_000, network: "open", labels: LABELS })).value;
+	const run = (await provider.create({ image: "macos", lifetimeMs: 30 * 60_000, network: "open", labels: LABELS }, newRequest())).value;
 	assert.match((await provider.release(run, "detach")).error.message, /a run's computer/);
 });
 
 test("Orgo Linux: an agent's computer's init takes the most this provider gives; detach suspends it with its memory; list reads the ledger, waking nothing; attach under a claim resumes it, init still there", async () => {
 	const { api, channel, provider, ledger } = linux();
-	const created = await provider.create({ image: "linux", network: "none", labels: LABELS, owner: OWNER });
+	const created = await provider.create({ image: "linux", network: "none", labels: LABELS, owner: OWNER }, newRequest());
 	assert.equal(created.ok, true, JSON.stringify(created));
 	const ref = created.value;
 	assert.match(ref.name, /^computer-[0-9a-f]{12}-o[a-z2-7]{16}$/);
@@ -270,8 +274,8 @@ test("Orgo Linux: an owner that names its server: one agent id on two servers is
 	const { provider } = linux({ api, channel, ledger });
 	const mine = { agent: "agent-7", server: "0123456789ab" };
 	const theirs = { agent: "agent-7", server: "ba9876543210" };
-	const a = (await provider.create(linuxSpec({ owner: mine }))).value;
-	const b = (await provider.create(linuxSpec({ owner: theirs }))).value;
+	const a = (await provider.create(linuxSpec({ owner: mine }), newRequest())).value;
+	const b = (await provider.create(linuxSpec({ owner: theirs }), newRequest())).value;
 	assert.notEqual(a.name.split("-o")[1], b.name.split("-o")[1], "two owner hashes");
 	assert.match(a.name, /^computer-[0-9a-f]{12}-o[a-z2-7]{16}$/);
 	assert.deepEqual(ledger.rows.get(a.id).labels["agentrun.owner-server"], "0123456789ab");
@@ -290,7 +294,7 @@ test("Orgo Linux: a second detach of a suspended computer is done and keeps when
 	const channel = fakeOrgoChannel();
 	const ledger = storeLedger();
 	const first = linux({ api, channel, ledger }).provider;
-	const ref = (await first.create(linuxSpec())).value;
+	const ref = (await first.create(linuxSpec(), newRequest())).value;
 	assert.deepEqual(await first.release(ref, "detach"), { ok: true, value: undefined });
 	const at = ledger.rows.get(ref.id).detachedAt;
 	assert.ok(typeof at === "string" && !Number.isNaN(Date.parse(at)), String(at));
@@ -314,7 +318,7 @@ test("Orgo Linux: a second detach of a suspended computer is done and keeps when
 test("Orgo Linux: an agent's computer with no ledger entry has unknown labels: listed owned with no owner to an unfiltered list alone, kept by the janitor, never attached or detached, and deleted on request", async () => {
 	const api = fakeOrgoApi();
 	const channel = fakeOrgoChannel();
-	const ref = (await linux({ api, channel }).provider.create(linuxSpec())).value;
+	const ref = (await linux({ api, channel }).provider.create(linuxSpec(), newRequest())).value;
 	const { provider, ledger } = linux({ api, channel });
 	assert.deepEqual((await provider.list({})).value.map((info) => [info.ref.id, info.labels, info.owned, info.owner]), [[ref.id, {}, true, undefined]]);
 	assert.deepEqual((await provider.list({ "agentrun.owner": OWNER_VALUE })).value, [], "no label is proved without the entry, its owner's neither");
@@ -336,7 +340,7 @@ test("Orgo Linux: an agent's computer with no ledger entry has unknown labels: l
 
 test("Orgo Linux: the janitor deletes an agent's computer only when its owner is gone or it has idled past its TTL, never by a deadline", async () => {
 	const { provider } = linux();
-	const ref = (await provider.create(linuxSpec({ owner: { agent: "agent-7", idleTtlMs: HOUR } }))).value;
+	const ref = (await provider.create(linuxSpec({ owner: { agent: "agent-7", idleTtlMs: HOUR } }), newRequest())).value;
 	const far = new Date(Date.now() + 1_000 * HOUR);
 	assert.deepEqual(await sweep(provider, { now: far, ownerGone: () => false }), { ok: true, value: { deleted: [], kept: 1 } }, "running, held: kept whatever the time");
 	await provider.release(ref, "detach");
@@ -344,13 +348,13 @@ test("Orgo Linux: the janitor deletes an agent's computer only when its owner is
 	assert.deepEqual(await sweep(provider, { now: new Date(Date.now() + 2 * HOUR), ownerGone: () => false }), { ok: true, value: { deleted: [ref.name], kept: 0 } }, "detached past its TTL");
 
 	const other = linux();
-	const held = (await other.provider.create(linuxSpec())).value;
+	const held = (await other.provider.create(linuxSpec(), newRequest())).value;
 	assert.deepEqual(await sweep(other.provider, { now: far, ownerGone: ({ agent }) => agent === "agent-7" }), { ok: true, value: { deleted: [held.name], kept: 0 } }, "its owner gone");
 });
 
 test("Orgo Linux: a run's computer is never detached, never taken under a claim, and one that is not running is never woken by attach", async () => {
 	const { api, provider } = linux();
-	const created = (await provider.create({ image: "linux", lifetimeMs: 30 * 60_000, network: "none", labels: LABELS })).value;
+	const created = (await provider.create({ image: "linux", lifetimeMs: 30 * 60_000, network: "none", labels: LABELS }, newRequest())).value;
 	const detached = await provider.release(created, "detach");
 	assert.equal(detached.ok, false);
 	assert.match(detached.error.message, /a run's computer, not an agent's own/);
@@ -408,7 +412,7 @@ test("Orgo: two processes' attaches of one agent's computer under one run's clai
 			const held = holdOnce(when);
 			const ledger = storeLedger({ gate: held.gate });
 			const { provider, other, api, spec, wake } = make(ledger);
-			const ref = (await provider.create(spec)).value;
+			const ref = (await provider.create(spec, newRequest())).value;
 			assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
 			const lower = provider.attach({ id: ref.id }, { claim: { run: "run-2", epoch: 1 } });
 			await held.reached;
@@ -454,7 +458,7 @@ test("Orgo: an attach or detach whose busy marker went stale and was taken over 
 		const held = holdOnce((was, entry) => was.busy?.doing === "being detached" && entry.busy === undefined);
 		const ledger = storeLedger({ gate: held.gate });
 		const { provider, other, spec } = make(ledger);
-		const ref = (await provider.create(spec)).value;
+		const ref = (await provider.create(spec, newRequest())).value;
 		const detach = provider.release(ref, "detach");
 		await held.reached;
 		ledger.rows.get(ref.id).busy.since = new Date(0).toISOString();
@@ -472,7 +476,7 @@ test("Orgo: an attach or detach whose busy marker went stale and was taken over 
 
 test("Orgo Linux: an agent's computer's init starts with a most that is none in practice, and each attach moves its deadline maxLifetimeMs out", async () => {
 	const { channel, provider } = linux();
-	const ref = (await provider.create(linuxSpec())).value;
+	const ref = (await provider.create(linuxSpec(), newRequest())).value;
 	const box = channel.boxOf(ref.id);
 	assert.equal(box.init.max, OWNED_MAX);
 	const first = Date.parse(box.init.deadline);
@@ -490,7 +494,7 @@ test("Orgo Linux: an agent's computer's init starts with a most that is none in 
 
 test("Orgo Linux: an attach that finds an agent's computer's daemon of another version, or none answering, stops the old init, installs this provider's daemon again and attaches, the computer kept; a run's computer is refused instead", async () => {
 	const { api, channel, provider } = linux();
-	const ref = (await provider.create(linuxSpec())).value;
+	const ref = (await provider.create(linuxSpec(), newRequest())).value;
 	const box = channel.boxOf(ref.id);
 	const uploads = () => channel.calls.filter(({ op, computer }) => op === "upload" && computer === ref.id).length;
 	assert.equal(uploads(), 1);
@@ -512,7 +516,7 @@ test("Orgo Linux: an attach that finds an agent's computer's daemon of another v
 	assert.match(revived.value.notes[0], /did not answer/);
 	assert.equal(api.requests.filter(({ method, path }) => method === "POST" && path === "/computers").length, 1, "never a new computer");
 
-	const run = (await provider.create({ image: "linux", lifetimeMs: 30 * 60_000, network: "none", labels: LABELS })).value;
+	const run = (await provider.create({ image: "linux", lifetimeMs: 30 * 60_000, network: "none", labels: LABELS }, newRequest())).value;
 	channel.boxOf(run.id).init.version = "0.0.1";
 	const refused = await provider.attach({ id: run.id });
 	assert.equal(refused.error?.code, "refused");
@@ -525,7 +529,7 @@ test("Orgo Linux: two attaches at once of an agent's computer whose daemon needs
 	// it at this version and keeps it.
 	{
 		const { channel, provider, ledger } = linux();
-		const ref = (await provider.create(linuxSpec())).value;
+		const ref = (await provider.create(linuxSpec(), newRequest())).value;
 		const box = channel.boxOf(ref.id);
 		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
 		box.init.version = "0.0.1";
@@ -546,7 +550,7 @@ test("Orgo Linux: two attaches at once of an agent's computer whose daemon needs
 		const ledger = storeLedger({ gate: lowerMarks.gate });
 		const { api, channel, provider } = linux({ ledger });
 		const other = linux({ api, channel, ledger }).provider;
-		const ref = (await provider.create(linuxSpec())).value;
+		const ref = (await provider.create(linuxSpec(), newRequest())).value;
 		const box = channel.boxOf(ref.id);
 		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
 		box.init.version = "0.0.1";
@@ -571,7 +575,7 @@ test("Orgo Linux: two attaches at once of an agent's computer whose daemon needs
 		const ledger = storeLedger();
 		const { api, channel, provider } = linux({ ledger });
 		const other = linux({ api, channel, ledger }).provider;
-		const ref = (await provider.create(linuxSpec())).value;
+		const ref = (await provider.create(linuxSpec(), newRequest())).value;
 		const box = channel.boxOf(ref.id);
 		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
 		box.init.version = "0.0.1";
@@ -606,7 +610,7 @@ test("Orgo: a detach marks the ledger entry busy while it suspends (Linux) or st
 	];
 	for (const [os, make] of kinds) {
 		const { provider, second, ledger, spec } = make();
-		const ref = (await provider.create(spec)).value;
+		const ref = (await provider.create(spec, newRequest())).value;
 		const swap = ledger.swap.bind(ledger);
 		let during;
 		ledger.swap = async (was, entry) => {
@@ -637,7 +641,7 @@ test("Orgo: an attach that wakes an agent's computer and then fails a check susp
 	];
 	for (const [os, make] of kinds) {
 		const { api, provider, ledger, spec, wake, sleep, asleep, tamper } = make();
-		const ref = (await provider.create(spec)).value;
+		const ref = (await provider.create(spec, newRequest())).value;
 		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
 		const detachedAt = ledger.rows.get(ref.id).detachedAt;
 		const restore = tamper(ref.id);
@@ -672,7 +676,7 @@ test("Orgo: while a failed attach puts an agent's computer back to sleep, anothe
 	];
 	for (const [os, make] of kinds) {
 		const { api, provider, second, ledger, spec, sleep, tamper } = make();
-		const ref = (await provider.create(spec)).value;
+		const ref = (await provider.create(spec, newRequest())).value;
 		assert.deepEqual(await provider.release(ref, "detach"), { ok: true, value: undefined });
 		const restore = tamper(ref.id);
 		// The newer claim (another process: a second provider over the same ledger) lands the moment the put-back has
@@ -715,7 +719,7 @@ test("Orgo: a delete under a claim deletes an agent's computer only while it car
 	for (const [os, make] of kinds) {
 		const { api, provider, other, ledger, spec, run } = make();
 		// Made under run-1's claim at epoch 1 (LABELS); a later claim (epoch 2) took it: the epoch-1 claim's delete is fenced.
-		const adopted = (await provider.create(spec)).value;
+		const adopted = (await provider.create(spec, newRequest())).value;
 		assert.equal((await other.attach({ id: adopted.id }, { claim: { run: "run-1", epoch: 2 } })).ok, true, os);
 		const fenced = await provider.release(adopted, "delete", { claim: { run: "run-1", epoch: 1 } });
 		assert.match(fenced.error?.message ?? "", /fenced: .* carries run "run-1" at epoch 2, not this claim's \(run "run-1" at epoch 1\)/, os);
@@ -730,7 +734,7 @@ test("Orgo: a delete under a claim deletes an agent's computer only while it car
 		assert.deepEqual(await provider.release(adopted, "delete", { claim: { run: "run-1", epoch: 2 } }), { ok: true, value: undefined }, os);
 		assert.deepEqual([exists(api, adopted.id), ledger.rows.has(adopted.id)], [false, false], os);
 		// A run's computer is no claim's to delete this way.
-		const runs = (await provider.create(run)).value;
+		const runs = (await provider.create(run, newRequest())).value;
 		assert.match((await provider.release(runs, "delete", { claim: { run: "run-1", epoch: 1 } })).error?.message ?? "", /a run's computer: a delete under a claim is an agent's own computer's alone/, os);
 		assert.equal(exists(api, runs.id), true, os);
 	}

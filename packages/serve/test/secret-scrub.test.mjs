@@ -2652,10 +2652,12 @@ test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 68
   // 500 KB from dividing by noise. XCV's units (curl-user) and a path's options (`npm -x config -x`, pathEnd) are read
   // here too. Each size is timed 3 times, the sizes alternating (500 KB, 2 MB, 500 KB, …) so both see the same machine,
   // and each keeps its lowest time: noise only adds time, so the lowest is the estimate. One verdict a unit, never a
-  // second timing after a fail: a retime that passes after a fail hides a real ratio. The time is wall time
-  // (rulesWall), after a full gc(): process CPU time counts the JIT's and the collector's threads too, measured at
-  // 1.5 to 2.3 times the wall time of the same call, and a call timed on a heap other calls left full pays their
-  // garbage. With gc() first, a call pays only for what it allocates itself.
+  // second timing after a fail: a retime that passes after a fail hides a real ratio. The time is this thread's CPU
+  // time (rulesCpu, process.threadCpuUsage), after a full gc(). Wall time also counts the time the thread waits for a
+  // CPU: on a two-CPU runner with other test files beside this one, a 500 KB call measured 36 to 112 ms in one test and
+  // a linear rule read 8.2 x. Process CPU time counts the JIT's and the collector's threads too, measured at 1.5 to 2.3
+  // times the call's own. A call timed on a heap other calls left full pays their garbage; with gc() first, a call
+  // pays only for what it allocates itself.
   const [GROWTH, FLOOR_MS] = [8, 20];
   /** The growth comparator: `big` (ms at 2 MB) at most GROWTH times the larger of `small` (ms at 500 KB) and FLOOR_MS. */
   const growthHolds = (label, small, big) => {
@@ -2670,7 +2672,7 @@ test("XCII: a command's quoted part holds its shell operators (Greptile P1 on 68
     const runs = Object.fromEntries(ids.map((id) => [id, { small: [], big: [] }]));
     for (let i = 0; i < 3; i++) {
       for (const [size, text] of [["small", smallText], ["big", bigText]]) {
-        const ms = await rulesWall(ids, text);
+        const ms = await rulesCpu(ids, text);
         for (const id of ids) runs[id][size].push(ms[id]);
       }
     }
@@ -3155,8 +3157,10 @@ const collect = (() => {
     gc();
   };
 })();
-/** Several rules on one text, its views read once: each rule's wall time in ms, by id, each after a full gc() (XCII). */
-const rulesWall = async (ids, text) => {
+/** Several rules on one text, its views read once: each rule's CPU time on this thread in ms, by id, each after a full
+ *  gc() (XCII). Not wall time, which counts the time the thread waits for a CPU, and not process time, which counts
+ *  the JIT's and the collector's threads. */
+const rulesCpu = async (ids, text) => {
   const { lineBounds } = await import("../dist/secret-rules.js");
   const [view] = secretCut.viewsOf(text);
   const ctx = { held: [], source: view.source, homes: [], lint: async () => [], lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
@@ -3164,9 +3168,10 @@ const rulesWall = async (ids, text) => {
   for (const id of ids) {
     const rule = SCRUB_RULES.find((each) => each.id === id);
     collect();
-    const start = performance.now();
+    const before = process.threadCpuUsage();
     await rule.find(view.text, ctx);
-    out[id] = performance.now() - start;
+    const used = process.threadCpuUsage(before);
+    out[id] = (used.user + used.system) / 1000;
   }
   return out;
 };

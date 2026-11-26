@@ -19,7 +19,7 @@ import { test } from "node:test";
 import { purgeRun } from "../dist/agent-delete.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { forgetServed, viewOverStore } from "../dist/store-view.js";
-import { sqliteOnly } from "./store-target.mjs";
+import { raw, sqliteOnly } from "./store-target.mjs";
 import { agent, follow, serve, startRun } from "./support.mjs";
 
 const FILES = ["store.sqlite", "store.sqlite-wal", "store.sqlite-journal", "store.sqlite-shm"];
@@ -38,19 +38,19 @@ function holding(data, word) {
 
 /** A WAL checkpoint (TRUNCATE) from a connection of the test's own, as any later one of the server's would run: what it
  *  copies into the file must hold no purged byte either. */
-function checkpoint(data) {
-  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 5_000 });
+async function checkpoint(data) {
+  const db = await raw(join(data, "store.sqlite"), { timeout: 5_000 });
   try {
-    return db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+    return await db.get("PRAGMA wal_checkpoint(TRUNCATE)");
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
 /** The sentinel is in no file of the store now, after a checkpoint, and after the server `stop`s. */
 async function goneFromBytes(data, word, stop) {
   assert.deepEqual(holding(data, word), [], "after the purge, no store file holds the sentinel");
-  const done = checkpoint(data);
+  const done = await checkpoint(data);
   assert.deepEqual(holding(data, word), [], `after a checkpoint (${JSON.stringify(done)}), no store file holds the sentinel`);
   await stop();
   assert.deepEqual(holding(data, word), [], "after the server closes, no store file holds the sentinel");
