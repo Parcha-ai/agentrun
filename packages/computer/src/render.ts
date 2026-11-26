@@ -24,7 +24,7 @@ import { RENDER } from "./descriptors/render.js";
 import { COMPUTER_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineRequest } from "./host.js";
 import { codeOfError, orThrow, pause, seconds, until } from "./hosted/process.js";
-import { HostedProvider, type HostedOptions, type HostedTimeouts, NAME_LABEL, timeoutsOf } from "./hosted/provider.js";
+import { HostedProvider, type HostedOptions, type HostedTimeouts, mayHaveMade, NAME_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { allPages, jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
 import { dialLaunch } from "./hosted/scripts.js";
 import { dateOf, isWhole } from "./hosted/values.js";
@@ -99,6 +99,8 @@ const PAGE = 100;
 const MAX_PAGES = 100;
 /** How long the box image's import may take (C's own wait for an image is 10 minutes; the box image is about 400 MB). */
 const BUILD_MS = 30 * 60_000;
+/** How long a failed create's terminate of the sandbox it made may take: create's own bound may be spent by then. */
+const TERMINATE_MS = 30_000;
 /** S, 429RateLimit: a 429 is sent again after 1, 2 and 4 s. */
 const RETRY = { attempts: 4, baseMs: 1_000 };
 /** A file read's exit when the file is not there. */
@@ -314,7 +316,9 @@ class RenderHost implements MachineHost {
 	 * sandbox, which the adapter finds by its name. Then, once the sandbox reads running within ctx.timeoutMs, one
 	 * runs/sync call writes the labels file and starts agentrun-dial, the URL in its launch script. A sandbox that errors
 	 * or ends first, a launch that fails, or a bound passed, throws: a create that made a machine to the adapter, which
-	 * deletes it by its name. req.backstopAt is left: Render's timeout ends the sandbox.
+	 * deletes it by its name. A refusal after the sandbox exists (a run token's 429s past every retry, limit; a 401,
+	 * denied) the adapter reads as a create that made nothing (mayHaveMade), so this terminates the sandbox by its id
+	 * first and throws the refusal in its own code. req.backstopAt is left: Render's timeout ends the sandbox.
 	 */
 	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
 		const end = Date.now() + ctx.timeoutMs;
@@ -342,10 +346,30 @@ class RenderHost implements MachineHost {
 		const id = made?.id;
 		if (typeof id !== "string" || !SANDBOX_ID.test(id)) throw new HostError("vendor", `POST /v1/sandboxes answered no sandbox id: ${show(id)}`);
 		this.#labels.set(id, { ...req.labels });
-		await this.#untilRunning(made as RenderSandbox, end, ctx);
-		const ran = await this.#run(id, launchLine(req.labels, attach), { ...ctx, timeoutMs: Math.max(1, end - Date.now()) }, true);
-		if (ran.exit !== 0) throw new HostError("vendor", `starting agentrun-dial in ${id} exited ${ran.exit}: ${lastWords(ran)}`);
+		try {
+			await this.#untilRunning(made as RenderSandbox, end, ctx);
+			const ran = await this.#run(id, launchLine(req.labels, attach), { ...ctx, timeoutMs: Math.max(1, end - Date.now()) }, true);
+			if (ran.exit !== 0) throw new HostError("vendor", `starting agentrun-dial in ${id} exited ${ran.exit}: ${lastWords(ran)}`);
+		} catch (error) {
+			if (!(error instanceof HostError) || mayHaveMade(error.code)) throw error;
+			throw await this.#unmade(id, error);
+		}
 		return { id };
+	}
+
+	/** The sandbox a failed create made, terminated by its id: the step's error in its own code, the terminate's outcome added. */
+	async #unmade(id: string, error: HostError): Promise<HostError> {
+		let outcome: string;
+		try {
+			await this.delete(id, { timeoutMs: TERMINATE_MS });
+			outcome = `the sandbox ${id} it made was terminated`;
+		} catch (failed) {
+			outcome =
+				failed instanceof HostError && failed.code === "not_found"
+					? `the sandbox ${id} it made is gone`
+					: `the sandbox ${id} it made could not be terminated (${failed instanceof Error ? failed.message : String(failed)}); Render ends it at its timeout`;
+		}
+		return new HostError(error.code, `${error.message}; ${outcome}`);
 	}
 
 	/** Reads the sandbox until it runs, pollMs apart, by `end`: errored or terminated first throws vendor, the end timeout. */
