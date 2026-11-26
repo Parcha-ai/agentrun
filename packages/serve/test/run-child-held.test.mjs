@@ -433,7 +433,7 @@ test("the settings a run's process reads are the server's shared configuration a
   assert.ok(lines.some((line) => /asked the store for settings\.get, which a run's process may not/.test(line)), lines.join("\n"));
 });
 
-test("a capped run's process reads what its learning work took beside it (learning-end.ts childrenBesideOf), as its cap gates do: its own run's learning_work row and the keyed replays that row names, each named on the server's side; another run's row, or a run its row does not name, is refused unread", async () => {
+test("a capped run's process reads what its learning work took beside it (learning-end.ts childrenBesideOf) from its runner (held keyedBeside), which reads the claim's own learning_work row and the keyed replays that row names on the server's side; the process's store port reads none of them, its own row and replays refused unread as another run's are", async (t) => {
   const work = { children: [{ run: "replay-own", kind: "replay", at: 1, keyed: true }, { run: null, kind: "shadow", at: 2, keyed: true, dropped: "no_budget" }] };
   const settings = new Map([["learning_work:run-own", work], ["learning_work:run-other", { children: [{ run: "replay-other", kind: "replay", at: 1, keyed: true }] }]]);
   const runs = new Map([
@@ -449,20 +449,29 @@ test("a capped run's process reads what its learning work took beside it (learni
       launch: async (id) => (asked.push(`runs.launch ${id}`), { body: { maxCostUsd: 1 } }),
     },
   };
+  // The runner's answer, bound to claim run-own: whatever the process asks, the claim's own run's learning work.
+  const held = heldOf(store);
+  assert.equal(await held.keyedBeside(), 0.25, "its keyed replay's cost, read by its runner");
+  assert.deepEqual(asked, ["settings.get learning_work:run-own", "runs.get replay-own"], "the claim's own row and the replay it names alone");
+  asked.length = 0;
   const bound = { claim: { runId: "run-own", epoch: 1 }, agentId: "agent-own", revisionId: "rev-own" };
   const lines = [];
   const call = (method, args) => host.storeCall(store, method, args, bound, (line) => void lines.push(line));
-  // The run's process reads through its store port, as its cap gate's `beside` does (learning-end.ts spentBesideOf).
-  const port = { settings: { get: (key) => call("settings.get", [key]) }, runs: { get: (id) => call("runs.get", [id]), launch: (id) => call("runs.launch", [id]) } };
+  // In the run's own process its cap gate's `beside` (learning-end.ts spentBesideOf) reads through its store port and
+  // its runner's held answers.
+  const ported = [];
+  const port = { settings: { get: (key) => (ported.push(`settings.get ${key}`), call("settings.get", [key])) }, runs: { get: (id) => (ported.push(`runs.get ${id}`), call("runs.get", [id])), launch: (id) => (ported.push(`runs.launch ${id}`), call("runs.launch", [id])) } };
+  const { setHeld } = await import("../dist/runner/held.js");
+  setHeld(held);
+  t.after(() => setHeld(undefined));
   const { childrenBesideOf } = await import("../dist/runner/learning-end.js");
-  assert.equal(await childrenBesideOf(port, "run-own"), 0.25, "its keyed replay's cost, read through the store port");
-  assert.deepEqual(await call("settings.get", ["learning_work:run-own"]), work);
-  assert.deepEqual(await call("runs.get", ["replay-own"]), runs.get("replay-own"));
+  assert.equal(await childrenBesideOf(port, "run-own"), 0.25, "its keyed replay's cost, its runner's answer");
+  assert.deepEqual(ported.filter((one) => /learning_work|replay-/.test(one)), [], `the port read no learning_work row and no replay: ${JSON.stringify(ported)}`);
   asked.length = 0;
-  await assert.rejects(call("settings.get", ["learning_work:run-other"]), /of another run or agent/);
-  await assert.rejects(call("runs.get", ["replay-other"]), /of another run or agent/);
-  await assert.rejects(call("runs.launch", ["replay-other"]), /of another run or agent/);
-  for (const refused of ["settings.get learning_work:run-other", "runs.get replay-other", "runs.launch replay-other"]) assert.equal(asked.includes(refused), false, `a refused read reached the store: ${JSON.stringify(asked)}`);
+  for (const [method, arg] of [["settings.get", "learning_work:run-own"], ["settings.get", "learning_work:run-other"], ["runs.get", "replay-own"], ["runs.launch", "replay-own"], ["runs.get", "replay-other"], ["runs.launch", "replay-other"]]) {
+    await assert.rejects(call(method, [arg]), /of another run or agent/, `${method} ${arg}`);
+  }
+  assert.deepEqual(asked, [], "a refused read reached the store");
   assert.ok(lines.some((line) => /asked the store for runs\.get, which a run's process may not/.test(line)), lines.join("\n"));
 });
 
