@@ -203,3 +203,143 @@ test("a run that sends no model key (held, on a --faux runner, faux-pinned) gran
   }
   assert.deepEqual(got, want, "no web route of a run that sends no model key spends OpenRouter's key or the gateway's: auto is keyless Firecrawl, or Parallel on Parallel's key alone; native is unavailable");
 });
+
+const { claimModelKey, serverKeyless } = await import("../dist/runner/claim-secrets.js");
+
+/** `store` as a claim reads it, each saved key's row it asks for (store.sealedKeys.get, the one read a saved key is
+ *  opened from) put on `reads` by name. */
+function counted(store, reads) {
+  const sealedKeys = Object.create(store.sealedKeys);
+  sealedKeys.get = (name) => (reads.push(name), store.sealedKeys.get(name));
+  return { sealedKeys, runs: store.runs };
+}
+
+test("serverKeyless reads the gateway's key alone: a store holding several saved model keys has only AGENT_MODEL_API_KEY's row read, whether it holds that one or not; a gateway key in the runner's environment, or no gateway, reads none", async (t) => {
+  const others = { OPENAI_API_KEY: OPENAI_DUMMY, ANTHROPIC_API_KEY: `not-a-secret-${"anthropic-saved"}`, OPENROUTER_API_KEY: OPENROUTER_DUMMY };
+  const gateway = { AGENT_MODEL_BASE_URL: "https://gateway.example/v1" };
+  const ask = async (saved, env) => {
+    const reads = [];
+    const keyless = await serverKeyless({ store: counted(await storeWith(t, saved), reads), sealKey: KEY, env });
+    return { keyless, reads };
+  };
+  assert.deepEqual({
+    saved: await ask({ ...others, AGENT_MODEL_API_KEY: GATEWAY_DUMMY }, gateway),
+    unsaved: await ask(others, gateway),
+    "in the runner's environment": await ask({ ...others, AGENT_MODEL_API_KEY: GATEWAY_DUMMY }, { ...gateway, AGENT_MODEL_API_KEY: ENV_DUMMY }),
+    "no gateway": await ask({ ...others, AGENT_MODEL_API_KEY: GATEWAY_DUMMY }, {}),
+  }, {
+    saved: { keyless: false, reads: ["AGENT_MODEL_API_KEY"] },
+    unsaved: { keyless: true, reads: ["AGENT_MODEL_API_KEY"] },
+    "in the runner's environment": { keyless: false, reads: [] },
+    "no gateway": { keyless: false, reads: [] },
+  }, "serverKeyless opens the gateway's saved key and no other saved model key");
+});
+
+test("a run that sends no model key (held, on a --faux runner, faux-pinned) with a Jev judge reads the saved gateway key only where its decisions run on it: on an OpenRouter gateway alone it is read and laid as the judge's OpenRouter key; a gateway off OpenRouter, or Jev on a saved TypeSafe key, reads none", async (t) => {
+  const workflow = { kind: "workflow", body: { workflow: JUDGE_THEN_MODEL } };
+  const servers = {
+    "a gateway off OpenRouter": { saved: { AGENT_MODEL_API_KEY: GATEWAY_DUMMY }, env: { AGENT_MODEL_BASE_URL: "https://gateway.example/v1" } },
+    "an OpenRouter gateway": { saved: { AGENT_MODEL_API_KEY: GATEWAY_DUMMY }, env: { AGENT_MODEL_BASE_URL: "https://openrouter.ai/api/v1" } },
+    "an OpenRouter gateway and TypeSafe's key": { saved: { AGENT_MODEL_API_KEY: GATEWAY_DUMMY, TYPESAFE_API_KEY: TYPESAFE_DUMMY }, env: { AGENT_MODEL_BASE_URL: "https://openrouter.ai/api/v1" } },
+  };
+  const claim = async (server, env, own) => {
+    const reads = [];
+    const claimed = await claimSecrets({ store: counted(await storeWith(t, server.saved), reads), sealKey: KEY, env: { ...server.env, ...env } }, workflow, own);
+    return { read: reads.filter((name) => MODEL_KEY_NAMES.includes(name)).sort(), laid: heldIn(claimed), judge: claimed.TYPESAFE_API_KEY ?? claimed.OPENROUTER_API_KEY };
+  };
+  // Off faux, unpinned and not held, the same run on a gateway off OpenRouter reads the gateway's saved key and is laid it
+  // as its model's: the reads below see that key when a run sends it.
+  const off = await claim(servers["a gateway off OpenRouter"], {}, {});
+  assert.deepEqual([off.read.includes("AGENT_MODEL_API_KEY"), off.laid], [true, ["AGENT_MODEL_API_KEY"]], `off faux: the gateway's key is read and laid as the model's: ${JSON.stringify(off)}`);
+  const got = {};
+  const want = {};
+  for (const [where, env, own] of SENDS_NO_MODEL_KEY) {
+    for (const [name, server] of Object.entries(servers)) {
+      got[`${where}, ${name}`] = await claim(server, env, own);
+      want[`${where}, ${name}`] = {
+        "a gateway off OpenRouter": { read: ["OPENROUTER_API_KEY", "TYPESAFE_API_KEY"], laid: [], judge: undefined },
+        "an OpenRouter gateway": { read: ["AGENT_MODEL_API_KEY", "OPENROUTER_API_KEY", "TYPESAFE_API_KEY"], laid: ["OPENROUTER_API_KEY"], judge: GATEWAY_DUMMY },
+        "an OpenRouter gateway and TypeSafe's key": { read: ["OPENROUTER_API_KEY", "TYPESAFE_API_KEY"], laid: ["TYPESAFE_API_KEY"], judge: TYPESAFE_DUMMY },
+      }[name];
+    }
+  }
+  assert.deepEqual(got, want, "a run that sends no model key opens the gateway's saved key only where its judge runs on it (decisions.ts openRouterKeyEnv)");
+});
+
+const { anthropicPolicy } = await import("@parcha/agentrun-harness-claude");
+const { workflowSpecOf } = await import("../dist/runner/workflow-spec.js");
+const { launchBody } = await import("../dist/run-launch.js");
+const { sealRunLaunch } = await import("../dist/store/index.js");
+const { heldRedactor, keepText } = await import("../dist/runner/redact.js");
+
+/** A run's own model key (model_key), a test's: never a real one. */
+const RUN_KEY = `not-a-secret-${"run-model-key"}`;
+const GATEWAY_BASE = "https://gateway.example/v1";
+/** A one-model-node workflow. */
+const ANSWER = {
+  v: 2, name: "answer",
+  schemas: { In: { type: "object", additionalProperties: true }, Out: { type: "object" } },
+  input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" },
+  root: { node: "extract", label: "answer", instructions: "Answer the question.", out: "Out", as: "answer" },
+};
+
+/** A workflow run of ANSWER whose launch is `own` (launch.ts fields) and holds its own model key for GATEWAY_BASE, on a
+ *  store holding the gateway's key and OpenAI's saved, claimed through workflowSpecOf by a runner of `env` on that
+ *  gateway. What the claim read: the saved model keys' rows it opened (store.sealedKeys.get), and whether the run's own
+ *  key reached the runner's redactor, which holds each key the claim opens (holdRunKey). The server's other sealed
+ *  secrets are held apart (holdStored); none is kept here, so the redactor sees only what the claim opened. */
+async function workflowClaim(t, own, env) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "claim-secrets-wf-"));
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => { await store.close().catch(() => {}); rmSync(dir, { recursive: true, force: true }); });
+  await putSealedKey(store, KEY, "AGENT_MODEL_API_KEY", GATEWAY_DUMMY);
+  await putSealedKey(store, KEY, "OPENAI_API_KEY", OPENAI_DUMMY);
+  await store.agents.create({ id: "agent-1", name: "Flow" }, { id: "rev-1", kind: "workflow", body: { workflow: ANSWER } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, {
+    body: launchBody({ input: { question: "Six times seven?" }, title: "t", place: { mode: "runner" }, ...own }),
+    sealed: sealRunLaunch(KEY, "run-1", { model: { key: RUN_KEY, origin: new URL(GATEWAY_BASE).origin } }),
+  });
+  const reads = [];
+  const held = [];
+  const redact = heldRedactor(keepText);
+  const hold = redact.hold;
+  redact.hold = (values) => { held.push(...values); hold(values); };
+  const runner = { ...counted(store, reads), agents: store.agents, settings: store.settings, sealedSecrets: { all: async () => [] }, flush: async () => store.flush?.() };
+  const providerOf = () => ({
+    modelId: "faux-priced", api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"o"}`,
+    policy: anthropicPolicy({ model: "faux-priced", tools: [] }), price: () => 0, capModel: { id: "faux-priced", api: "anthropic-messages", price: null, outputCeiling: null },
+  });
+  const spec = await workflowSpecOf({ store: runner, sealKey: KEY, env: { AGENT_MODEL_BASE_URL: GATEWAY_BASE, ...env }, providerOf })({ runId: "run-1" }, { redact });
+  await spec.release();
+  return { read: reads.filter((name) => MODEL_KEY_NAMES.includes(name)).sort(), runKeyHeld: held.includes(RUN_KEY) };
+}
+
+test("a workflow run that sends no model key (held, on a --faux runner, faux-pinned), with saved model keys and its own model_key, opens neither at its claim; the same run off faux, unpinned and not held opens both", async (t) => {
+  const off = await workflowClaim(t, {}, {});
+  assert.deepEqual([off.read.includes("AGENT_MODEL_API_KEY"), off.runKeyHeld], [true, true], `off faux: the gateway's saved key and the run's own key are opened: ${JSON.stringify(off)}`);
+  const got = {};
+  for (const [where, env, own] of SENDS_NO_MODEL_KEY) got[where] = await workflowClaim(t, own, env);
+  assert.deepEqual(got, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { read: [], runKeyHeld: false }])), "a workflow run that sends no model key opens no saved model key and not its own");
+});
+
+test("claimModelKey for a run that sends no model key (held, on a --faux runner, faux-pinned) holds no key of its own, even one handed for another gateway; the same run off faux, unpinned and not held holds its key", async (t) => {
+  const store = await storeWith(t, {});
+  await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: [] } });
+  const runOf = async (id, own, origin) => store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, {
+    body: launchBody({ input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, ...own }),
+    sealed: sealRunLaunch(KEY, id, { model: { key: RUN_KEY, origin } }),
+  });
+  const gateway = new URL(GATEWAY_BASE).origin;
+  await runOf("run-off", {}, gateway);
+  const off = await claimModelKey({ store, sealKey: KEY, env: { AGENT_MODEL_BASE_URL: GATEWAY_BASE } }, "run-off");
+  assert.equal(off?.key(), RUN_KEY, "off faux, unpinned and not held: the run's own key is held");
+  const got = {};
+  for (const [i, [where, env, own]] of SENDS_NO_MODEL_KEY.entries()) {
+    await runOf(`run-${i}`, own, gateway);
+    await runOf(`run-${i}-moved`, own, "https://moved.example");
+    const held = await claimModelKey({ store, sealKey: KEY, env: { AGENT_MODEL_BASE_URL: GATEWAY_BASE, ...env } }, `run-${i}`);
+    const moved = await claimModelKey({ store, sealKey: KEY, env: { AGENT_MODEL_BASE_URL: GATEWAY_BASE, ...env } }, `run-${i}-moved`).then((key) => key?.key() ?? "none", (error) => `threw: ${error.message}`);
+    got[where] = { key: held?.key() ?? "none", everHeld: held?.everHeld() ?? false, moved };
+  }
+  assert.deepEqual(got, Object.fromEntries(SENDS_NO_MODEL_KEY.map(([where]) => [where, { key: "none", everHeld: false, moved: "none" }])), "a run that sends no model key never opens its own: none is held, and one handed for another gateway is never read to be refused");
+});
