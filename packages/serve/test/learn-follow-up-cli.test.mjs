@@ -23,8 +23,8 @@ const SKIP = { timeout: 240_000, skip: !existsSync("/usr/bin/setpriv") && "no se
 /** One run of an agent that learns (compile_after 3, so neither run here compiles and the follow-up's round is a
  *  correction alone), the correction sent to it as a follow-up, then the agent's next run.
  *  `split`: each run a process of its own (the runner's held end-of-run step). `keyed`: the model behind a gateway, each
- *  start and message with a model key of its own and a spend cap. `unscanned`: every end's census left out (the launch
- *  reads "unscanned"). `revoked`: the follow-up's key refused from its answer until the next run starts with a new one,
+ *  start and message with a model key of its own and a spend cap. `unscanned`: every end's census fails (UNAVAILABLE), so
+ *  the end writes "unscanned". `revoked`: the follow-up's key refused from its answer until the next run starts with a new one,
  *  as a host that revokes a run's key when its turn ends. */
 async function followUp(t, { split = false, keyed = false, unscanned = false, revoked = false } = {}) {
   const systems = [];
@@ -44,7 +44,10 @@ async function followUp(t, { split = false, keyed = false, unscanned = false, re
   });
   t.after(() => fake.close());
   withEnv(t, { ANTHROPIC_API_KEY: "fake-test-key", ANTHROPIC_BASE_URL: fake.url, AGENT_MODEL: `anthropic/${MODEL}`, ...(keyed ? { AGENT_MODEL_BASE_URL: fake.url } : {}) }, keyed ? ["AGENT_MODEL_STRONG"] : ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_STRONG"]);
-  const { api, store } = await serve(t, { learning: "on", faux: undefined, ...(split ? { childRuns: {} } : {}), ...(unscanned ? { runnerTiming: { censusMs: 1 } } : {}) });
+  const unavailable = async () => {
+    throw Object.assign(new Error("the census could not be made"), { code: "UNAVAILABLE" });
+  };
+  const { api, store } = await serve(t, { learning: "on", faux: undefined, ...(split ? { childRuns: {} } : {}), ...(unscanned ? { census: unavailable } : {}) });
   const extra = keyed ? { max_cost_usd: 5, model_key: "fake-test-key-run" } : {};
   await made(api, learner("walk", { harness: "claude-agent", model: `anthropic/${MODEL}`, learning: { compile_after: 3 } }));
 
@@ -57,7 +60,10 @@ async function followUp(t, { split = false, keyed = false, unscanned = false, re
   assert.equal(second.view.status, "completed");
   assert.equal(second.view.learning?.state, "merged", `the follow-up's round merged${onPostgres ? " (Postgres)" : ""}: ${JSON.stringify(second.view.learning)}`);
   assert.equal((await learningAt(store, "walk")).text("corrections.md"), `- ${CORRECTION}\n`, "the correction is a line of corrections.md");
-  if (revoked) assert.equal(refused, 0, "the correction's round asked no model after its answer: a key revoked then never touches its save");
+  if (revoked) {
+    assert.equal(refusing, true, "the follow-up answered and turned on refusal");
+    assert.equal(refused, 0, "the correction's round asked no model after its answer: a key revoked then never touches its save");
+  }
 
   refusing = false;
   const asked = systems.length;
@@ -72,6 +78,6 @@ test("on claude-agent, a follow-up's correction is saved to corrections.md and t
 
 test("the same with each run in a process of its own, a spend cap and a model key on the start and the message", SKIP, (t) => followUp(t, { split: true, keyed: true }));
 
-test("the same when each end's census is not made: every end writes \"unscanned\"", SKIP, (t) => followUp(t, { split: true, keyed: true, unscanned: true }));
+test("the same when each end's census fails: every end writes \"unscanned\"", SKIP, (t) => followUp(t, { split: true, keyed: true, unscanned: true }));
 
 test("the same when the follow-up's key is revoked once it answered, and the next run brings a new one", SKIP, (t) => followUp(t, { split: true, keyed: true, revoked: true }));
