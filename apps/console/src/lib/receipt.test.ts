@@ -67,10 +67,12 @@ describe("receiptFacts", () => {
     expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, { ...compute, basis: "estimate" }] }, trace)).toBeNull();
     expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, { ...compute, basis: "unpriced", usd: 0 }] }, trace)).toBeNull();
   });
-  it("none where compute time is left unheld by any price (unheld_quantity), even at a $0 line", () => {
-    const compute = line({ meter: "compute_time", model: null, provider: "e2b", unit: "vcpu_second", quantity: 90, usd: 0, requests: undefined, tokens: undefined, unheld_quantity: 90 });
-    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, compute] }, trace)).toBeNull();
-    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, { ...compute, unheld_quantity: 0 }] }, trace)).not.toBeNull();
+  it("a computer that bills nothing (Docker): its time no claim booked (unheld_quantity) is still $0, and the receipt shows", () => {
+    // run-usage.ts computeLinesOf: Docker books nothing, so all its life is unheld, at usd 0, basis estimate.
+    const docker = line({ meter: "compute_time", model: null, provider: "docker", unit: "vcpu_second", quantity: 90, usd: 0, basis: "estimate", requests: undefined, tokens: undefined, resource: "vcpu", unheld_quantity: 90 });
+    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, docker] }, trace)).not.toBeNull();
+    // A paid computer's unbooked time has no figure (usd null, unpriced): no receipt.
+    expect(receiptFacts(run(), "A", { ...usage, lines: [...usage.lines!, { ...docker, provider: "e2b", usd: null, basis: "unpriced" }] }, trace)).toBeNull();
   });
   it("none where MCP calls no price meters ran (not_metered_calls), or model requests none metered", () => {
     const tools = line({ meter: "tools", model: null, provider: null, unit: "call", quantity: 3, requests: undefined, tokens: undefined, not_metered_calls: 3 });
