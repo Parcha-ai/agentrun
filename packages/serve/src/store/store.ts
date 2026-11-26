@@ -1438,6 +1438,9 @@ export interface SealedKeys {
   get(name: string): Promise<Uint8Array | undefined>;
   /** Saves `sealed` under `name`, inserted or replaced in place. */
   put(name: string, sealed: Uint8Array): Promise<void>;
+  /** Saves `sealed` under `name` only where no row is, in one statement: of two writers racing on one name, one's bytes
+   *  are kept. True when it was written; false, writing nothing, when a row was there. */
+  putIfAbsent(name: string, sealed: Uint8Array): Promise<boolean>;
   /** Saves `sealed` under `name` only while its row still holds `was` (the bytes as get read them), in one statement: a
    *  compare-and-set, so of two writers that read one row only one replaces it. Each seal is fresh bytes, so a row any
    *  writer saved since reads as changed. True when it was replaced; false, writing nothing, when it changed or is gone. */

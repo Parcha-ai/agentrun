@@ -2290,6 +2290,10 @@ class SqliteStore implements Store {
       put: async (name, sealed) => {
         await db.write([{ sql: "INSERT INTO sealed_keys (name, sealed, updated_at) VALUES (?, ?, ?) ON CONFLICT (name) DO UPDATE SET sealed = excluded.sealed, updated_at = excluded.updated_at", params: [name, sealed, now()] }]);
       },
+      putIfAbsent: async (name, sealed) => {
+        const [result] = await db.write([{ sql: "INSERT INTO sealed_keys (name, sealed, updated_at) VALUES (?, ?, ?) ON CONFLICT (name) DO NOTHING", params: [name, sealed, now()] }]);
+        return result!.changes === 1;
+      },
       replaceIf: async (name, was, sealed) => {
         const [result] = await db.write([{ sql: "UPDATE sealed_keys SET sealed = ?, updated_at = ? WHERE name = ? AND sealed = ?", params: [sealed, now(), name, was] }]);
         return result!.changes === 1;
