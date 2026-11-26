@@ -143,6 +143,17 @@ test("a GitHub token minted for a run's process joins its runner's redactor, so 
   assert.ok(!cut(`the token is ${minted.token}`).includes(minted.token), "the minted token is cut from what the runner writes");
 });
 
+test("a run's process whose runner's cut cannot hold a key gets no GitHub token: the mint fails rather than hand out one nothing the runner writes would cut", async (t) => {
+  const { keepText } = await import("../dist/runner/redact.js");
+  const { store } = await storeOn(t);
+  await connected(store);
+  const github = await fakeGitHub(t);
+  const launch = { input: { content: PULL }, inputOrigin: { kind: "trigger", source: "github" } };
+  const access = await heldOf(store, { githubApi: github.api, revision: { kind: "agentic", body: { checkout: "pull_request" } }, launch, cut: keepText }).githubAppAccess();
+  const minted = await access.mint({ repo: "acme/widgets", installation: 777 }).catch((error) => ({ ok: false, error }));
+  assert.notEqual(minted.ok, true, `no token handed: ${JSON.stringify(minted)}`);
+});
+
 const judgeFlow = (name, provider) => ({
   v: 2, name,
   schemas: {
