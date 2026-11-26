@@ -132,7 +132,7 @@ const stepAt = (job, pattern) => jobs[job].steps.findIndex(step => pattern.test(
 test('the publish job keeps the changelog its fold wrote, right after the fold, for the release notes', () => {
   const fold = stepAt('publish', /^node scripts\/changes\.mjs --fold "\$\{RELEASE_TAG#v\}"$/);
   const kept = jobs.publish.steps[fold + 1];
-  assert.match(kept.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/, 'the next step, before anything is installed or built; pinned by commit');
+  assert.match(kept.uses, /^actions\/upload-artifact@[0-9a-f]{40}$/, 'the next step; pinned by commit');
   assert.equal(kept.with.name, 'release-changelog');
   assert.equal(kept.with.path, 'CHANGELOG.md');
   assert.equal(kept.with['if-no-files-found'], 'error');
