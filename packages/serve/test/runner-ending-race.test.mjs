@@ -7,7 +7,8 @@
 // (b) a renew in flight when the run ends and answered after the release: no claim-lost is emitted;
 // (c) a command() that answers only after finish's wait ran out and the release: no store call and no event follow it;
 // (d) a person's message that reopens the run after its end commit (the store's release) and before the runner's own
-//     release: the runner claims it once and holds that claim, and its first claim's end still says released.
+//     release: the runner claims it once and holds that claim, starts its loop only once the first claim settled, and
+//     its first claim's end still says released.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -122,7 +123,7 @@ test("(c) a command() that answers only after finish's wait ran out and the rele
   assert.deepEqual(events.slice(said), [], "no event after the late answer");
 });
 
-test("(d) a run reopened between its end commit and the runner's release is claimed once and held, and the first claim's end still says released", async (t) => {
+test("(d) a run reopened between its end commit and the runner's release is claimed once and held, its loop started only once the first claim settled, and the first claim's end still says released", async (t) => {
   const { server, record, events, control } = await running(t);
   let letRelease;
   record.holdRelease = new Promise((resolve) => (letRelease = resolve));
@@ -137,11 +138,15 @@ test("(d) a run reopened between its end commit and the runner's release is clai
   const second = record.claims[1].epoch;
   await until(() => events.some((event) => (event.type === "claimed" && event.claim.epoch === second) || event.type === "error"), "the reopen's claim held or given back");
   assert.deepEqual(events.filter((event) => event.type === "error" || event.type === "handed-back"), [], "the reopen's claim is not given back");
-  await until(() => control.started, "the reopened run's loop runs");
+  // Held and renewed, its loop not started while the first claim is still letting go: a run's process cleaning up its
+  // folders (a slot's reap, its scratch swept) never runs under the next one's.
+  await sleep(300);
+  assert.equal(control.started, false, "the reopened run's loop waits for the first claim to settle");
 
   letRelease();
   const first = record.claims[0].epoch;
   await until(() => events.some((event) => (event.type === "released" && event.epoch === first) || event.type === "error"), "the first claim's end settles");
   assert.deepEqual(events.filter((event) => event.type === "error"), [], "the first claim's release is no fenced write");
+  await until(() => control.started, "the reopened run's loop runs once the first claim settled");
   assert.equal(record.claims.length, 2, `one claim for the reopen: ${JSON.stringify(record.claims)}`);
 });

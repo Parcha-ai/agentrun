@@ -257,5 +257,8 @@ export default async function reply(context, faux) {
   assert.equal(said, "tmp kept, write yes", `the second process's TMPDIR was swept under it: ${lines.join("\n")}`);
   // The first process's slot was reaped before the second process started.
   const events = readFileSync(join(dir, "events"), "utf8").trim().split("\n");
-  assert.deepEqual([events[0].split(" ")[0], events[1].split(" ")[0], events[2]?.split(" ")[0]], ["run", "reaped", "run"], `the first slot's reap ended before the second process ran: ${events.join(" | ")}`);
+  const runs = events.flatMap((event, at) => (event.startsWith("run ") ? [at] : []));
+  assert.equal(runs.length, 2, events.join(" | "));
+  const reaped = events.findIndex((event) => event.startsWith("reaped "));
+  assert.ok(reaped > runs[0] && reaped < runs[1], `the first slot's reap ended before the second process ran: ${events.join(" | ")}`);
 });

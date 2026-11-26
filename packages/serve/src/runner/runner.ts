@@ -1025,7 +1025,11 @@ export function startRunner(options: RunnerOptions): Runner {
   /** Holds `claim` and starts its loop. `learningDeadline`: a learning child's deadline, read at its claim
    *  (learningDeadlinesOf), at which its loop sends no model request more and the runner cancels it if still at work
    *  (cancelOverdue). */
-  const hold = (claim: Claim, sentAt: number, mib = 0, learningDeadline?: number) => {
+  /** Holds `claim` and starts its loop. `after`: an earlier hold of the same run still settling (its end landed and a
+   *  message reopened the run, or its claim was lost), whose process may still be cleaning up the run's folders and its
+   *  slot: this claim is held and renewed meanwhile, and its loop starts, and its rows are delivered, only once that
+   *  hold has settled. */
+  const hold = (claim: Claim, sentAt: number, mib = 0, learningDeadline?: number, after?: Promise<void>) => {
     const fence = { lost: false };
     const abort = new AbortController();
     const pastDeadline = learningDeadline === undefined ? undefined : new AbortController();
@@ -1081,7 +1085,9 @@ export function startRunner(options: RunnerOptions): Runner {
     armLearningDeadline(held);
     emit({ type: "claimed", claim });
     void announceStart(claim);
+    const settled = after?.then(() => undefined, () => undefined);
     held.done = (async () => {
+      if (settled) await settled;
       let end: LoopEnd;
       let threw = false;
       try {
@@ -1096,8 +1102,9 @@ export function startRunner(options: RunnerOptions): Runner {
       }
       await finish(held, end, threw);
     })();
-    // The claim's first delivery: deps.delivered resolves once it has handed on every untaken row it read.
-    void deliver(held).finally(firstDelivered);
+    // The claim's first delivery, after its loop started: deps.delivered resolves once it has handed on every untaken row
+    // it read.
+    void (settled ? settled.then(() => deliver(held)) : deliver(held)).finally(firstDelivered);
   };
 
   /** The claims this runner holds in the store, read back after a commit was answered Unanswered (it may have landed):
@@ -1257,12 +1264,14 @@ export function startRunner(options: RunnerOptions): Runner {
           continue;
         }
         try {
-          // A lost claim's loop still running keeps its place until it settles.
+          // An earlier hold of the run still settling (a lost claim's loop, or an end that landed before a reopen) keeps its
+          // place until it settles, and this claim's loop starts only then: its process's cleanup of the run's folders
+          // (a slot's reap, its scratch swept) never runs under the next one's.
           if (before?.done) {
             replaced.add(before);
             void before.done.finally(() => replaced.delete(before));
           }
-          hold(claim, sentAt, weights.get(claim.runId) ?? 0, deadline);
+          hold(claim, sentAt, weights.get(claim.runId) ?? 0, deadline, before?.done);
         } catch (error) {
           // The loop could not be made: the run fails here, so it is not claimed again and again.
           emit({ type: "error", runId: claim.runId, step: "create loop", message: message(error) });
