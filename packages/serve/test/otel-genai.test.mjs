@@ -1189,6 +1189,37 @@ test("an OTLP header value's credential key longer than the prefix budget is hel
   assert.deepEqual(missed, [], "every key past the budget is held whole, written and decoded, and cut with nothing after its separator left");
 });
 
+// Past the budget, a credential pair whose name comes after separators of more than one kind since the last `=`: a
+// reader that splits at any one of those kinds finds the pair, and reads its key up to its own next separator. The
+// first pair, 101 pieces joined by %20, spends the 4,096 characters; each key's two halves are longer than what is
+// left. Each row: [what, the X-Relay header value, the key as written].
+const OPENING_SPENT = `api_key=${"x%20".repeat(100)}x`;
+const OPENING_ONE = `ka-${"dummy"}-${"0123456789".repeat(5)}`;
+const OPENING_TWO = `kb-${"dummy"}-${"9876543210".repeat(5)}`;
+const OPENING_ROWS = [
+  ["after a token with no = joined by & and then ;", `${OPENING_SPENT}&x=1&foo;api_key=${OPENING_ONE};${OPENING_TWO}&y=2&secret=z-${"dummy"}`, `${OPENING_ONE};${OPENING_TWO}`],
+  ["in a cookie joined by ;-space", `${OPENING_SPENT}; a=1; session=${OPENING_ONE} ${OPENING_TWO}; b=2; token=z-${"dummy"}`, `${OPENING_ONE} ${OPENING_TWO}`],
+  ["in a cookie joined by %3B%20", `${OPENING_SPENT}%3B%20a=1%3B%20session=${OPENING_ONE}%20${OPENING_TWO}%3B%20b=2%3B%20token=z-${"dummy"}`, `${OPENING_ONE}%20${OPENING_TWO}`],
+  ["after a token with no = joined by %26 and then %20", `${OPENING_SPENT}%26x=1%26flag%20api_key=${OPENING_ONE}%20${OPENING_TWO}%26y=2%26secret=z-${"dummy"}`, `${OPENING_ONE}%20${OPENING_TWO}`],
+];
+
+test("past the prefix budget, an OTLP credential key after separators of more than one kind is held whole as a reader of any of those kinds reads it, and a line quoting it is cut with no piece left", () => {
+  const missed = [];
+  for (const [what, header, key] of OPENING_ROWS) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=${header}` };
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      for (const value of [key, decodeURIComponent(key)]) if (!values.includes(value)) missed.push(`${what}: ${value} not held (${list})`);
+    }
+    for (const [redactor, redact] of [["the [otel] cut", otlpHeaderCut(env)], ["the runner's redactor", secretRedactor(runnerSecrets(env))]]) {
+      for (const form of [key, decodeURIComponent(key)]) {
+        const shown = redact(`401 from relay: key ${form} refused`);
+        if (shown !== "401 from relay: key [redacted] refused") missed.push(`${what}: ${redactor} shows ${shown}`);
+      }
+    }
+  }
+  assert.deepEqual(missed, [], "every key after a mixed opening past the budget is held whole, written and decoded, and cut with no tail");
+});
+
 test("after a header value's first URL query, a later URL's query is read while 4,096 characters of them in all fit: one that fits has its + read as a space, and a longer one's key is still held as written by the pair read", () => {
   // A key of `length` characters with a + in it; the second URL's query is `api_key=` and the key.
   const key = (length) => `dummy+key-${"x".repeat(length - 10)}`;
