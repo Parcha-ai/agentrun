@@ -22,8 +22,9 @@
 //
 // A per_run server keeps no credential: the run's caller hands one with the run or a message (mcp_auth), sealed in the
 // run's launch row for the run's life (store/seal.ts sealRunMcpAuth) and erased by the write that ends it. Each fresh()
-// opens it again, so a message's new credential reaches the run's next model request; a run handed none gets its calls
-// refused unsent (UNUSABLE.perRunMissing).
+// opens it again, so a message's new credential reaches the run's next model request; a run handed none has the server's
+// tools left out of its own (mcp-run.ts mcpForClaim), and a call that still names it is refused unsent
+// (UNUSABLE.perRunMissing).
 //
 // A per-run Composio server (composio-made.ts composioPerRun) is bound by each run's caller ({composio_user_id,
 // connected_account_id?} in mcp_auth, sealed in its launch): its entry carries them as `query` (mcp-gateway.ts). Each

@@ -34,14 +34,12 @@ import { isWebHostTool } from "../tool-list.js";
 import { type ArgumentsOf, deniedText, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom, type ToolEffect } from "../tool-gate.js";
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
-import { ASK_TOOL, askPerson, type EmailFake, type ToolEntry, type ToolHost, toolOf } from "../tools.js";
+import { ASK_TOOL, askPerson, type EmailFake, type ToolEntry, type ToolHost, toolOf, webAnswerCut } from "../tools.js";
 import type { SaveSlots } from "../web-save.js";
 import type { WebFake } from "../web-fake.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
-import { webCut } from "../timeline/web-calls.js";
-import { withheldWhole } from "../key-refusal.js";
 import { environmentLine, runZone } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
@@ -672,7 +670,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
   // anything the spec would have to let go: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
-  // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
+  // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor. A
+  // per_run server the run was handed no credential for is left out of its tools, and its timeline says so.
   // A held run its model kept from running at its create (hold.refused) opens none: nothing can call one.
   const heldRefusal = launch.hold?.refused?.message;
   // What its gateway files (a long answer, a server's results) goes in the run's own files. In Mode 1 that is the run's
@@ -683,7 +682,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // and a call reaches it only through the session this spec returns, after `tools` is made.
   let filedIn: Workspace | undefined;
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, fakes?.web, launch) });
+  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...claimMetering(deps, fakes?.web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -1303,28 +1302,16 @@ export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer | undefine
 }
 
 /** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). A web call's answer is cut
- *  string by string inside its JSON (timeline/web-calls.ts webCut), so what the harness stores still parses and keeps
- *  its links whole for a grader's link check; one whose strings, read joined, hold a held value no cut in place takes (a
- *  value split across two of them) is "[redacted]" (webHeld). The join is read against the values `cut` holds
- *  (key-refusal.ts withheldWhole), or through `cut` itself when it does not know them (joinCut). Each string is cut once
- *  in a call, for the join's read and the answer both. */
+ *  string by string inside its JSON (tools.ts webAnswerCut), so what the harness stores still parses and keeps its links
+ *  whole for a grader's link check; one whose strings, read joined, hold a held value split across two of them is
+ *  "[redacted]". */
 export function answersCut(tool: HostTool, cut: Redact): HostTool {
   return {
     ...tool,
     call: async (args, context) => {
       try {
         const answer = await tool.call(args, context);
-        const seen = new Map<string, string>();
-        const once = (text: string): string => {
-          let out = seen.get(text);
-          if (out === undefined) seen.set(text, (out = cut(text)));
-          return out;
-        };
-        const holds = (joined: string, parts: readonly string[]): boolean => {
-          const values = cut.heldValues?.();
-          return values ? withheldWhole(joined, values) : joinCut(joined, parts, once);
-        };
-        return { ...answer, text: webCut(tool.name, answer.text, once, holds) ?? cut(answer.text) };
+        return { ...answer, text: webAnswerCut(cut)(tool.name, answer.text) ?? cut(answer.text) };
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
@@ -1335,18 +1322,6 @@ export function answersCut(tool: HostTool, cut: Redact): HostTool {
       }
     },
   };
-}
-
-/** Whether `cut`, a redactor that does not know its values, takes from `joined` (`parts` joined by line breaks) what it
- *  does not take from the parts each read alone: a held value split across two parts. Its cut of the join whole being
- *  "[redacted]" is not enough: it reads a text longer than a piece in pieces of 8,192 characters (key-refusal.ts
- *  redactedAnswer), and a value split inside one piece withholds only that piece, the rest of the join served. It misses
- *  nothing: no value split across parts is in a part to cut, so the join's cut and the parts' differ wherever the join
- *  holds one; where nothing spans two parts they are the same, as every piece ends at whitespace or inside a run longer
- *  than a piece, and a line break ends each part. */
-function joinCut(joined: string, parts: readonly string[], cut: (text: string) => string): boolean {
-  const whole = cut(joined);
-  return whole === "[redacted]" || whole !== parts.map(cut).join("\n");
 }
 
 /** The ToolHost a run's non-hand tools bind through, the one both the pi spec and the CLI spec build: the run's folder and

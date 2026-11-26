@@ -25,6 +25,7 @@ import { type AnswerData, type ApprovalPrice, ASK_PERSON_WAITING, type AskData, 
 import { turnEndedOnAsk } from "../store-reads/journal.js";
 import { CAP_REFUSED, CAP_WRAPUP, COMPUTER_NOTE, endsTurn, HOST_PHASE, MESSAGE_ORIGIN, type MessageOrigin, originOf, REQUEST_ENDED, REQUEST_STARTED, RUN_RESUMED } from "../timeline/index.js";
 import { raiseFollowUpId } from "../run-view.js";
+import { connectedLaterWords } from "../mcp-probe.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { genAiTracing, type GenAiTracing, type RunTrace } from "../otel/tracer.js";
 import { tracedAgent, tracedEvent, tracedModel, type AgentOfRun, type RouteTrace } from "../otel/genai.js";
@@ -1112,6 +1113,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   let waitHolds: PersonWait[] = [];
   /** The wait's own `reopen`, while it is set. */
   let waitTurn: { sent?: Promise<void>; placed?: () => void } | undefined;
+  /** Ends the wait in the claim at once, the run parking on its question as a lapse does, though no host's hold lapsed:
+   *  set while the wait holds (waitInClaim). */
+  let endWaitNow: (() => void) | undefined;
   /** The `reopen` of a CLI run parked on its question (its turn cut there: no steer reaches its idle session), while it is
    *  set: the person's answer is the claim's turn, and a trigger's message is no answer. */
   let askReopen: { sent?: Promise<void>; placed?: () => void } | undefined;
@@ -1172,6 +1176,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (of !== undefined && of !== waitTurn) return;
     if (reopen === waitTurn) reopen = undefined;
     waitTurn = undefined;
+    endWaitNow = undefined;
     for (const hold of waitHolds.splice(0)) {
       try {
         hold.drop();
@@ -1219,6 +1224,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The pass's MCP (spec.mcp), until the pass ends; and whether a command row came since its credentials were last made
    *  fresh (a parked token may have expired meanwhile). */
   let mcp: ClaimMcp | undefined;
+  /** The pass's phase row (AdapterRun.phase), until the pass ends; and whether a message of the pass was left for the
+   *  run's next turn, as one handing the credential of a server its claim left out (steer): every message after it waits
+   *  too, and the timeline says so once a pass (connectedLaterWords). */
+  let phaseNow: ((summary: string) => void) | undefined;
+  let leftForNextTurn = false;
   /** The calls of this run a person was asked about (their ask in the journal, on this claim or read on a resume), set as
    *  the ask is read: one of them the gate lets through was let through by a person's answer. */
   const askedCalls = new Set<string>();
@@ -1443,6 +1453,27 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The session never opened, or the run is parking or stopping (its journal sealed, its session closed): left
     // untaken for the next claim, which hands it on again; never refused for good.
     if (!gate || !session || gate.sealed) return { later: "the run is parking: the steer waits for its resume" };
+    // A message that hands the credential of a server whose tools this claim left out (mcpWhereHeld, ClaimMcp.leftOut):
+    // the session's tools are fixed for the claim, so a turn it reached could not call them. Left untaken, it runs as
+    // the run's next turn, on a claim that lists them: the run's end opens it again with the message (as for a message
+    // that comes while the run ends), and a park's resume takes it. Every message after it waits the same way, whatever
+    // the credentials say at its own check (a later message may hand them no longer), so none runs before it. Said once
+    // on the timeline, since the API answered the message as steered.
+    if (leftForNextTurn) return { later: "a message before this one runs as the run's next turn: this one runs after it" };
+    const claimMcp = mcp;
+    const leftOut = claimMcp?.leftOut;
+    if (claimMcp && leftOut?.length) {
+      const still = new Set(await claimMcp.fresh());
+      const handed = leftOut.filter((server) => !still.has(server));
+      if (handed.length) {
+        phaseNow?.(connectedLaterWords(handed));
+        leftForNextTurn = true;
+        // A wait in the claim on the person's answer (waitInClaim) ends here: no message reaches it from now on, the
+        // answer included, so the run parks on its question and its next claim takes them in the order they came.
+        endWaitNow?.();
+        return { later: "the message hands the credential of a server this claim left out: it runs as the run's next turn, which lists its tools" };
+      }
+    }
     // A trigger's message into a session on its owner's sign-in (personOnly): refused for good, before it is queued or
     // placed, so no turn of it reaches the vendor on that sign-in. Known by its origin's kind as written (an origin whose
     // source originOf does not know is still a trigger's), or by answering nothing (answers: false, a trigger's message).
@@ -1868,6 +1899,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             await phasing.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: HOST_PHASE, data }), context);
           })().catch((error: unknown) => console.warn(`[runner] a phase row was not written: ${said(error)}`));
         };
+        phaseNow = phase;
+        leftForNextTurn = false;
         const passGate = gate;
         const rowSummaryOn = (kind: string, test: (data: Record<string, unknown>) => boolean, summary: string | null): void => {
           if (passGate.sealed) return;
@@ -3828,9 +3861,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const holders = specNow?.lifecycle?.personWait ?? [];
     await options.beforePersonWait?.();
     if (!session || !gate || gate.sealed || !root) return parkingOnAsk();
-    if (!holders.length) {
-      // Nothing to hold open: the run parks, unless the answer already came, between the question's turn end and here,
-      // placed as a steer of the idle session (steer): then its turn is the next, at once, never cut by the park's seal.
+    if (!holders.length || leftForNextTurn) {
+      // Nothing to hold open, or a message of this claim is left for the run's next turn (steer), so none, the answer
+      // included, would reach the wait: the run parks, unless the answer already came, between the question's turn end
+      // and here, placed as a steer of the idle session (steer): then its turn is the next, at once, never cut by the
+      // park's seal.
       const early = idleSteer;
       idleSteer = undefined;
       if (early && (await early.placed)) return { next: turnOfRequest(on, root, early.requestId) };
@@ -3879,11 +3914,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const next = new Promise<TurnEnd | "lapsed">((resolve, reject) => {
       let done = false;
       let lapsed = false;
+      /** Ended by a message left for the run's next turn (endWaitNow), no hold having lapsed. */
+      let cut = false;
       const finish = (value: Promise<TurnEnd> | "lapsed") => {
         if (done) return;
         done = true;
         if (value === "lapsed") {
-          for (const hold of waitHolds) hold.confirmed?.();
+          if (lapsed) for (const hold of waitHolds) hold.confirmed?.();
           // The run parks on its question (the turn loop's "lapsed"): the person's next message is the resume's.
           parkingOnAsk();
         }
@@ -3895,6 +3932,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         lapsed = true;
         if (!mine.sent) finish("lapsed");
       }, () => undefined);
+      // So does a message left for the run's next turn (steer), the same way; one left while the wait was starting ends it
+      // as soon as it holds.
+      if (waitTurn === mine) {
+        endWaitNow = () => {
+          cut = true;
+          if (!mine.sent) finish("lapsed");
+        };
+        if (leftForNextTurn) endWaitNow();
+      }
       void (async () => {
         for (;;) {
           await placing;
@@ -3905,7 +3951,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // Not placed (the steer was refused): the next message may be.
             mine.sent = undefined;
             placing = new Promise<void>((resolve) => (mine.placed = resolve));
-            if (lapsed) return finish("lapsed");
+            if (lapsed || cut) return finish("lapsed");
           }
         }
       })().catch(reject);
@@ -3927,6 +3973,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // The pass's MCP credentials go with it.
     mcp?.release();
     mcp = undefined;
+    phaseNow = undefined;
     // The pass's resources go once nothing more is written through them (AdapterRunSpec.release), once each.
     // A park's keeps the run's computer (keepAtPark).
     const release = releaseNow;

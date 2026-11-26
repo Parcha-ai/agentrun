@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 import { workflowShape } from "@/lib/workflowDoc";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { newAgentEditorHref } from "@/lib/agentEditorRoute";
+import { runsHere } from "@/lib/runHere";
 import { editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
 import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 
@@ -81,6 +82,7 @@ function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: Age
   const native = nativeReadinessOf(a);
   const sdk = backendSdkOf(a.definition);
   const cli = cliLearningOf(a.definition);
+  const here = runsHere(a);
   // Its learned items that wait for its owner's OK (the list's own read: each agent's `learning.pending`); nothing at 0.
   const waiting = waitingOf(a);
   const supportsLearning = a.kind === "agentic" && learning !== null;
@@ -106,8 +108,14 @@ function AgentCard({ agent: a, actions, learning }: { agent: Agent; actions: Age
           )}
       </>}
       actions={<>
-          {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id, sdk, cli?.runtime)} playgroundHref={sdk || cli ? undefined : `#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
-          <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native, sdk, cli?.runtime)} playgroundHref={native || sdk || cli ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
+          {/* An agent this server runs: Run opens its page, where the Run box is, and Edit its settings in the console. */}
+          {here ? <>
+            <a href={agentHash(a.agent_id)} aria-label={`Run ${a.definition.name}`} title="Run" className={buttonVariants({ size: "icon", variant: "outline" })}><Play className="size-3.5" aria-hidden /></a>
+            <a href={agentHash(a.agent_id, "settings")} aria-label={`Edit ${a.definition.name}`} title="Edit" className={buttonVariants({ size: "icon", variant: "outline" })}><Pencil className="size-3.5" aria-hidden /></a>
+          </> : <>
+            {!archived && <CodingAgentAction compact compactIcon={<Play className="size-3.5" aria-hidden />} label={`Run ${a.definition.name}`} disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, a.agent_id, sdk, cli?.runtime)} playgroundHref={sdk || cli ? undefined : `#/playground?agent=${encodeURIComponent(a.agent_id)}`} />}
+            <CodingAgentAction compact compactIcon={<Pencil className="size-3.5" aria-hidden />} label={`Edit ${a.definition.name}`} prompt={editAgentPrompt(location.origin, a.agent_id, !!native, sdk, cli?.runtime)} playgroundHref={native || sdk || cli ? undefined : `#/playground?operation=edit-agent&agent=${encodeURIComponent(a.agent_id)}`} />
+          </>}
           <Button size="sm" className="gap-1 px-2" variant="outline" aria-label={`Runs of ${a.definition.name}`} onClick={() => actions.onRuns?.(a.agent_id)}><History aria-hidden />{a.runs?.count ?? 0}</Button>
           <Button size="icon" variant="outline" aria-label={`Settings for ${a.definition.name}`} title="Settings" onClick={() => actions.onEdit?.(a.agent_id)}><Settings aria-hidden /></Button>
       </>}
