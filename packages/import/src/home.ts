@@ -499,8 +499,9 @@ export async function readSource(home: string, source: string, readers: Readers,
         }
       }
       // With no state the cursor is dropped: the read makes no copy for it. A pass that reads chains (`each`) reads each
-      // file with its turns and its chain.
-      const options: InternalReadOptions = each ? { seen, chain: true, lookups } : { turns: false, totals: true, seen, lookups, [DROPS_CURSOR]: !kept };
+      // file with its turns and its chain; with no state it keeps no cursor, so a last line with no newline yet is in
+      // `seen` like any other, and its copy in a later file counts once.
+      const options: InternalReadOptions = each ? { seen, chain: true, lookups, keepsCursor: kept !== undefined } : { turns: false, totals: true, seen, lookups, [DROPS_CURSOR]: !kept };
       const result = await reader.read(locator, cursor, options).catch((error: unknown) => void unread.push({ locator, error }));
       if (!result) {
         // A locator read before that cannot be read now gives up its cursor and the records it held, as a fresh pass

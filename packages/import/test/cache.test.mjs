@@ -2,7 +2,7 @@
 // before it, with the cause the transcript shows. Every session here is synthetic: ids, prompts and counts are made up.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { appendFile, utimes } from "node:fs/promises";
+import { appendFile, stat, truncate, utimes } from "node:fs/promises";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { analyzeCache, CACHE_CAUSES, CACHE_SOURCES, cacheHome, cacheTotals, catalogOf, READERS, readSession } from "../dist/index.js";
@@ -433,6 +433,27 @@ test("a file with no turn compared passes the carry on with its own compaction",
   assert.equal(result.status, 0, result.stderr);
   const [line] = result.stdout.trim().split("\n").map((text) => JSON.parse(text));
   assert.deepEqual(line.breaks.map(({ turn, cause }) => [turn, cause]), [[3, "compaction"]]);
+});
+
+test("a file's last record with no newline yet is in the copies the next file is checked against: its copy counts once", async (t) => {
+  // The session moved: its first folder's file ends with its last answer, the newline not yet written; the file in the
+  // second folder copies both turns (the same uuids) and goes on with a turn that reads little. Its drop is turn 3
+  // either way, and the hit rate the same: the copied answer counts once.
+  const first = linear([{ read: 1000, i: 10 }, { read: 1100, i: 20 }]);
+  const lines = [];
+  for (const newline of [true, false]) {
+    const home = await tempHome(t);
+    const earlier = await writeJsonl(claudeFile(home, SESSION, "-work-a"), first);
+    if (!newline) await truncate(earlier, (await stat(earlier)).size - 1);
+    await utimes(earlier, new Date(at(0)), new Date(at(0)));
+    await writeJsonl(claudeFile(home, SESSION, "-work-b"), [...first, ...linear([{ read: 50, write: 1000, i: 50 }], 2, "a1")]);
+    const result = run(home, "--cache", "--sources", "claude-code");
+    assert.equal(result.status, 0, result.stderr);
+    const [line] = result.stdout.trim().split("\n").map((text) => JSON.parse(text));
+    assert.deepEqual(line.breaks.map(({ turn, cause }) => [turn, cause]), [[3, "unknown"]], newline ? "newline" : "no newline");
+    lines.push(line);
+  }
+  assert.deepEqual(lines[1], lines[0]);
 });
 
 test("a copied compaction between two turns of a file's own is no evidence either", async (t) => {
