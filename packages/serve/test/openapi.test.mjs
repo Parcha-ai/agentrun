@@ -403,7 +403,7 @@ test("the contract's operations are as vendored; this server's own are added and
     unrequired.push(`Capabilities.${field}`);
   }
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
-  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), "Run.place", ...AGENT_FIELDS_SENT.map((field) => `Agent.${field}`), ...CAPABILITIES_SENT.map((field) => `Capabilities.${field}`), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
+  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), "Run.place", "Run.learning_work", ...AGENT_FIELDS_SENT.map((field) => `Agent.${field}`), ...CAPABILITIES_SENT.map((field) => `Capabilities.${field}`), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
   assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details, ...doc.info["x-agentrun-serve"].notes].sort(), "info lists the contract properties it notes");
 });

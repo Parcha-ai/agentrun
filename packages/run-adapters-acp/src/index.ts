@@ -3,7 +3,7 @@ export { acpAdapter, type AcpAdapterOptions, type AcpProxy, type AcpProxySession
 export { ACP_CODES, acpFacts, type AcpFacts } from "./facts.js";
 export { ALLOW_FILE_FORMS, allowFileText, announcesProblems, AUTH_METHOD, homePath, MODEL_ID, recipeProblems, RESERVED_ENV, type AcpAllowFile, type AcpAllowForm, type AcpBilling, type AcpRecipe, type AcpRefusal } from "./recipe.js";
 export { ANNOUNCES_PATH, type AcpAnnounces } from "./calls.js";
-export { CALL_STREAM, contextNote, MODEL_STREAM, PERMISSION_STREAM, PROMPT_STREAM, REASK_LIMIT, SESSION_STREAM, sentSubmissions, TOOLS_STREAM } from "./harness.js";
+export { CALL_STREAM, contextNote, INSTRUCTIONS_STREAM, MODEL_STREAM, PERMISSION_STREAM, PROMPT_STREAM, REASK_LIMIT, SESSION_STREAM, sentSubmissions, TOOLS_STREAM } from "./harness.js";
 export { STATE_BUDGET, STATE_STREAM, stateBudgetPassed, stateFiles, type StateRecord } from "./state.js";
 export type { ConfineChild } from "./host/child.js";
 export { GOOSE_INSTALL, GOOSE_NOT_INSTALLED, gooseFacts } from "./goose-facts.js";

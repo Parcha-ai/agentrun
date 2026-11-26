@@ -166,7 +166,8 @@ test('the shim passes on a TERM that reaches it the moment its child has started
   });
   const closed = new Promise((resolve) => shim.on('close', (code, signal) => resolve({ code, signal })));
   // Its pid is written once its TERM handler is on; the shim is still held in its spawn.
-  for (const end = Date.now() + 20_000; !(existsSync(pidFile) && readFileSync(pidFile, 'utf8') !== '') && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+  for (const end = Date.now() + 20_000; !(existsSync(pidFile) && readFileSync(pidFile, 'utf8') !== '' && existsSync(`${gate}.held`)) && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+  assert.ok(existsSync(`${gate}.held`), 'the shim is held in its spawn (the preload engaged)');
   child = Number(readFileSync(pidFile, 'utf8'));
   assert.ok(alive(child), 'the child runs');
   shim.kill('SIGTERM');

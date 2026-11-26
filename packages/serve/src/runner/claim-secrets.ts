@@ -405,16 +405,22 @@ export async function serverKeyless(deps: ClaimSecretsDeps): Promise<boolean> {
 }
 
 /** Why the claim's model spend after the run's turn, or beside it on runs the runner starts (a shadow audit, a replay
- *  check), is skipped: `what` the work, asked when that spend would start. A run that brought
- *  its own key, at its start or with a message since (everHeld): that key is erased with its turn's end and the server's
- *  never pays for it (runKeyEndedFor). Else, a server that holds no gateway key (the runner's environment or
- *  Settings → Model keys) has none to spend (noServerKeyWords). Undefined where it runs. */
+ *  check), is skipped: `what` the work, asked when that spend would start. A claim that holds the run's own key now runs
+ *  it on that key (the runs it starts take a sealed copy of it, store/seal.ts sealHandedLaunch), whatever the server
+ *  holds. A run that brought its own key, at its start or with a message since (everHeld), and holds none now: that key
+ *  was erased with its turn's end and the server's never pays for it (runKeyEndedFor). Else, a server that holds no
+ *  gateway key (the runner's environment or Settings → Model keys) has none to spend (noServerKeyWords). Undefined where
+ *  it runs. */
 export async function claimSpendOff(deps: ClaimSecretsDeps, runKey: ClaimModelKey | undefined): Promise<(what: string) => string | undefined> {
   // A run's own process holds no seal key, nor every saved key: its runner says whether the server holds a gateway key.
   const at = deps.sealKey ? undefined : held();
   const keyless = at ? await at.serverKeyless() : await serverKeyless(deps);
-  return (what) => (runKey?.everHeld() ? runKeyEndedFor(what) : keyless ? noServerKeyWords(what) : undefined);
+  return (what) => (runKey?.key() !== undefined ? undefined : runKey?.everHeld() ? runKeyEndedFor(what) : keyless ? noServerKeyWords(what) : undefined);
 }
+
+/** Whether the claim holds the run's own model key now: the learning work it starts then spends on that key, out of what
+ *  the run's cap leaves (learning-work.ts). Read when that work starts, never cached. */
+export const keyedNow = (runKey: ClaimModelKey | undefined): (() => boolean) => () => runKey?.key() !== undefined;
 
 /** The env a claimed run's model routes read: the run's own key alone where the claim opened one (withRunModelKey); else
  *  the runner's environment with the keys `opened` for it, each name from the first source that holds it (withModelKeys),

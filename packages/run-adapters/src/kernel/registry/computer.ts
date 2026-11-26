@@ -83,8 +83,8 @@ const OP_ARGS: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /** What every offer of a computer's ops says of its screen: leaving bash, read or write out does not keep a script from
- *  a terminal app, a file manager, or an app opened on a file:// URL. */
-export const GUI_REACH = "Input ops on a computer with a terminal app or a GUI file manager, and apps.open with a file:// URL, can do what a shell or the file ops do, whatever bash's, read's or write's setting.";
+ *  a terminal app, a file manager, or an app opened on a URL or a path, a file the agent wrote included. */
+export const GUI_REACH = "Input ops on a computer with a terminal app or a GUI file manager, and apps.open with a URL or a path, including a file the agent wrote where write is granted, can do what a shell or the file ops do, whatever bash's, read's or write's setting.";
 
 /** computer_op's words for the ops it offers. */
 const opWords = (ops: readonly string[]): string =>

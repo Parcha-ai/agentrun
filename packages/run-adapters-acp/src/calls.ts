@@ -61,12 +61,20 @@ export function joinsByOne(announces: AcpAnnounces | undefined): boolean {
   return announces !== undefined && announces.server === undefined && announces.prefix !== undefined && new RegExp(`${MCP_SERVER}[_-]$`).test(announces.prefix);
 }
 
+/** Whether a recipe's announces read our server's name from a field of the agent's own (Cursor's
+ *  `rawInput.providerIdentifier`): a second server named exactly `agentrun` (a workspace's or the owner's own MCP
+ *  configuration) would say the same there. */
+export function namesServer(announces: AcpAnnounces | undefined): boolean {
+  return announces?.server !== undefined;
+}
+
 /** The name our MCP server is given to the agent under at one start: under a recipe whose prefix joins by one character
- *  (joinsByOne), `ar` and 6 random hex digits, no `_` or `-`, which no server set up before the start can spell; under
- *  any other, `agentrun`. As long as `agentrun`, no longer: each of our tools is named with it, under the agent's cap
- *  (TOOL_NAME_CAP), so a tool fits as it would under `agentrun`. */
+ *  (joinsByOne) or that reads the server's name from a field (namesServer), `ar` and 6 random hex digits, no `_` or
+ *  `-`, which no server set up before the start can spell; under any other (Goose's `agentrun__`, whose configuration
+ *  is all ours and whose proxy offers its model our tools alone), `agentrun`. As long as `agentrun`, no longer: each of
+ *  our tools is named with it, under the agent's cap (TOOL_NAME_CAP), so a tool fits as it would under `agentrun`. */
 export function mcpServerName(announces: AcpAnnounces | undefined): string {
-  return joinsByOne(announces) ? `ar${randomBytes(3).toString("hex")}` : MCP_SERVER;
+  return joinsByOne(announces) || namesServer(announces) ? `ar${randomBytes(3).toString("hex")}` : MCP_SERVER;
 }
 
 /** The most characters a tool's name may hold where the agent names it (agy's, as the model APIs' tool names: 64). */
@@ -89,10 +97,12 @@ export function toolsLeftOut(label: string, prefix: string, tools: readonly stri
 }
 
 /** The recipe's `announces` as one start reads them, our MCP server given to the agent as `server` (mcpServerName): its
- *  prefix names that server (`mcp_agentrun_` reads `mcp_<server>_`). ANNOUNCES_PREFIX ends a prefix at our server's
- *  name, so the last `agentrun` in it is that name. */
-export function announcesAt(announces: AcpAnnounces | undefined, server: string): AcpAnnounces | undefined {
-  if (!announces || announces.prefix === undefined || server === MCP_SERVER) return announces;
+ *  prefix names that server (`mcp_agentrun_` reads `mcp_<server>_`), and its `server` field must say that name
+ *  (`named`). ANNOUNCES_PREFIX ends a prefix at our server's name, so the last `agentrun` in it is that name. */
+export function announcesAt(announces: AcpAnnounces | undefined, server: string): StartAnnounces | undefined {
+  if (!announces || server === MCP_SERVER) return announces;
+  if (announces.server !== undefined) return { ...announces, named: server };
+  if (announces.prefix === undefined) return announces;
   const at = announces.prefix.lastIndexOf(MCP_SERVER);
   return at < 0 ? announces : { ...announces, prefix: `${announces.prefix.slice(0, at)}${server}${announces.prefix.slice(at + MCP_SERVER.length)}` };
 }
@@ -124,7 +134,8 @@ export function declaresProperty(schema: unknown, name: string): boolean {
  *  path of field names into the update (`_meta.goose.toolCall.toolName`, `rawInput.toolName`, `name`).
  *  - `tool`: the tool's name. With `server`, our tool's own name; without, the name as the model calls it, our server's
  *    prefix and the tool's (`prefix`, stripped).
- *  - `server`: the MCP server's name, which must be ours (`agentrun`).
+ *  - `server`: the MCP server's name, which must be ours: the name of each start's own (mcpServerName), never
+ *    `agentrun`, which a second server could be named too.
  *  - `prefix`: without `server`, what comes before our tool's name in `tool` (default `agentrun__`; agy's
  *    `mcp_agentrun_`). It names our server (ANNOUNCES_PREFIX), so a name without it is never ours. One that joins our
  *    server's name to the tool's with one `_` or `-` gives the server a name of each start's own (mcpServerName), which
@@ -140,6 +151,11 @@ export interface AcpAnnounces {
   readonly args?: string;
   readonly extras?: readonly string[];
 }
+
+/** A recipe's announces as one start reads them (announcesAt): with `named`, the name its `server` field must say, our
+ *  server's at that start (mcpServerName); without, `agentrun`. Never a recipe's own field (announcesProblems refuses
+ *  any key but those of AcpAnnounces). */
+export type StartAnnounces = AcpAnnounces & { readonly named?: string };
 
 /** The prefix a recipe's announces.prefix may be: our server's name, with at most one word and a `_` or `-` before it,
  *  and one or two `_` or `-` after it (`agentrun__`, `mcp_agentrun_`). */
@@ -177,13 +193,13 @@ export function announcedField(update: unknown, announces: AcpAnnounces | undefi
 /** The tool of ours an agent's update names in the field its recipe declares (`announces`): its name; null when the
  *  field names a tool that is not ours (another server's, one without our prefix, or one of our server's that `tools`
  *  does not list); undefined when the recipe declares no field or the update does not carry it. A title is never read. */
-export function announcedTool(update: unknown, announces: AcpAnnounces | undefined, tools: ReadonlySet<string>): string | null | undefined {
+export function announcedTool(update: unknown, announces: StartAnnounces | undefined, tools: ReadonlySet<string>): string | null | undefined {
   if (!announces) return undefined;
   const said = at(update, announces.tool);
   if (typeof said !== "string" || said === "") return undefined;
   let tool = said;
   if (announces.server !== undefined) {
-    if (at(update, announces.server) !== MCP_SERVER) return null;
+    if (at(update, announces.server) !== (announces.named ?? MCP_SERVER)) return null;
   } else {
     const prefix = announces.prefix ?? `${MCP_SERVER}__`;
     if (!said.startsWith(prefix)) return null;
@@ -226,7 +242,7 @@ const hasEffects = (kind: unknown): boolean => typeof kind === "string" && NATIV
  *  one with no arguments on a recipe whose field names calls, which waits for the update that names it. On a recipe
  *  without the field, one reporting no input at all is kept as a call that names nothing (CallIds.add). `declared`: for
  *  each tool, the recipe's extras its input schema declares (declaresProperty), matched with and without (addAnnounced). */
-export function announceCall(calls: CallIds, update: AcpCallUpdate, announces: AcpAnnounces | undefined, tools: ReadonlySet<string>, declared?: ReadonlyMap<string, ReadonlySet<string>>): void {
+export function announceCall(calls: CallIds, update: AcpCallUpdate, announces: StartAnnounces | undefined, tools: ReadonlySet<string>, declared?: ReadonlyMap<string, ReadonlySet<string>>): void {
   if (hasEffects(update.kind)) return;
   const tool = announcedTool(update, announces, tools);
   if (tool === null) return;
@@ -249,7 +265,7 @@ export function announceCall(calls: CallIds, update: AcpCallUpdate, announces: A
  *  (CallIds.held): one whose tool_call reported input, or named a tool, is never named later, so a native read whose
  *  update echoes the model's arguments stays the agent's own. The tool_call's kind was checked before it was held;
  *  the update's is checked here: a shell renamed by a later update is never ours. */
-export function nameCall(calls: CallIds, update: AcpCallUpdate, announces: AcpAnnounces | undefined, tools: ReadonlySet<string>, declared?: ReadonlyMap<string, ReadonlySet<string>>): void {
+export function nameCall(calls: CallIds, update: AcpCallUpdate, announces: StartAnnounces | undefined, tools: ReadonlySet<string>, declared?: ReadonlyMap<string, ReadonlySet<string>>): void {
   if (!calls.held(update.toolCallId) || hasEffects(update.kind)) return;
   const tool = announcedTool(update, announces, tools);
   if (typeof tool !== "string") return;

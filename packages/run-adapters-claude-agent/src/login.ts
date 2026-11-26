@@ -18,6 +18,7 @@ import { type FileHandle, lstat, mkdir, open, readdir, readFile, rm, writeFile }
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ModelPort, ModelUsage } from "@parcha/agentrun-kernel";
+import type { TurnBudget, TurnSpan } from "@parcha/agentrun-kernel/process";
 import { parentWatched, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { loginUser } from "./login-user.js";
 
@@ -760,10 +761,14 @@ const count = (value: unknown): number | undefined => (typeof value === "number"
  *  whose results the CLI sends straight back. A refusal there (a turn limit, say) halts the drive while the CLI has yet to
  *  send. A response with no admission ahead of it (one the CLI sent on its own) is admitted at its `message_start`. Each
  *  is booked at its `message_stop`; one the turn's end leaves open is booked as it stands, and an admission no request
- *  took is closed as never sent when the drive ends (`settle(true)`). */
-export function loginBooking(models: Pick<ModelPort, "beforeRequest" | "afterRequest">, model: string, halt: (error: Error) => void) {
+ *  took is closed as never sent when the drive ends (`settle(true)`).
+ *
+ *  With `turn`, each response is the kernel's turn too, as a model proxy reports it: begun at its `message_start` (a
+ *  tool call waits for it), and opened at its end with the input its request held (cached input included), its output
+ *  and the client tool calls it made (its `tool_use` blocks). */
+export function loginBooking(models: Pick<ModelPort, "beforeRequest" | "afterRequest">, model: string, halt: (error: Error) => void, turn?: TurnBudget) {
   type Ticket = Parameters<ModelPort["afterRequest"]>[1];
-  let open: { ticket: Promise<unknown>; usage: Omit<ModelUsage, "usd">; tools: boolean } | undefined;
+  let open: { ticket: Promise<unknown>; usage: Omit<ModelUsage, "usd">; tools: boolean; span?: TurnSpan; calls: number } | undefined;
   let ahead: Promise<unknown> | undefined;
   let booked: Promise<void> = Promise.resolve();
   const refused = Symbol("refused");
@@ -788,6 +793,8 @@ export function loginBooking(models: Pick<ModelPort, "beforeRequest" | "afterReq
     const entry = open;
     open = undefined;
     if (!entry) return;
+    const { usage } = entry;
+    entry.span?.open({ inputTokens: usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0), outputTokens: usage.output, calls: entry.calls });
     after(entry.ticket, { ...entry.usage, usd: null, billing: "plan" }, { end: "answered", usd: null });
     if (entry.tools) admitAhead();
   };
@@ -807,14 +814,17 @@ export function loginBooking(models: Pick<ModelPort, "beforeRequest" | "afterReq
     },
     /** One message of the SDK's stream. */
     observe(message: unknown): void {
-      const m = message as { type?: string; event?: { type?: string; message?: { usage?: StreamUsage }; usage?: StreamUsage; delta?: { stop_reason?: unknown } } };
+      const m = message as { type?: string; event?: { type?: string; message?: { usage?: StreamUsage }; usage?: StreamUsage; delta?: { stop_reason?: unknown }; content_block?: { type?: unknown } } };
       if (m?.type !== "stream_event" || !m.event) return;
       const event = m.event;
       if (event.type === "message_start") {
         book();
         const ticket = ahead ?? admit();
         ahead = undefined;
-        open = { ticket, usage: take({ input: 0, output: 0, billing: "plan" }, event.message?.usage), tools: false };
+        const span = turn?.begin();
+        open = { ticket, usage: take({ input: 0, output: 0, billing: "plan" }, event.message?.usage), tools: false, calls: 0, ...(span ? { span } : {}) };
+      } else if (event.type === "content_block_start" && open) {
+        if (event.content_block?.type === "tool_use") open.calls += 1;
       } else if (event.type === "message_delta" && open) {
         open.usage = take(open.usage, event.usage);
         if (event.delta?.stop_reason === "tool_use") open.tools = true;

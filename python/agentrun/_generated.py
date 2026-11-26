@@ -644,6 +644,7 @@ __all__ = [
     "GetWrappedResponseHarnessesItem",
     "GetWrappedResponseImportedItem",
     "GetWrappedResponseModelsItem",
+    "GetWrappedResponseSecrets",
     "GetWrappedResponseSourcesItem",
     "GetWrappedResponseTokens",
     "GradeRunBody",
@@ -1068,6 +1069,7 @@ __all__ = [
     "RunFileList",
     "RunImportedFrom",
     "RunLearning",
+    "RunLearningWork",
     "RunLearningWorkflowsItem",
     "RunList",
     "RunNative",
@@ -3534,6 +3536,7 @@ class Cost(_CostRequired, total=False):
     compile_usd: float | None
     followup_usd: float | None
     shadow_usd: float | None
+    check_usd: float | None
     share_usd: float | None
     plan: CostPlan
 
@@ -4706,6 +4709,7 @@ class GetLearningCostResponseRunsItem(_GetLearningCostResponseRunsItemRequired, 
     compile_usd: float | None
     followup_usd: float | None
     shadow_usd: float | None
+    check_usd: float | None
     share_usd: float | None
     not_served: Literal["cost_stop", "cut"] | None
 
@@ -5904,6 +5908,7 @@ class _RunRequired(TypedDict):
     kind: Literal["agentic", "workflow"]
     archived_at: str | None
     place: RunPlace1 | RunPlace2
+    learning_work: RunLearningWork
 
 
 class Run(_RunRequired, total=False):
@@ -6217,6 +6222,13 @@ class RunImportedFrom(TypedDict):
 class RunTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunLearningWork(TypedDict):
+    state: Literal["none", "running", "ended"]
+    runs: list[str]
+    ended_at: str | None
+    deadline_at: str | None
 
 
 class RunWorkflow(TypedDict):
@@ -12171,6 +12183,7 @@ class GetWrappedResponse(TypedDict):
     imported: list[GetWrappedResponseImportedItem]
     unread_files: int
     cache: GetWrappedResponseCache | None
+    secrets: GetWrappedResponseSecrets | None
 
 
 class GetWrappedResponseTokens(TypedDict):
@@ -12237,6 +12250,12 @@ class GetWrappedResponseCacheExtraCostUsd(TypedDict):
     edited: float
     sidechain: float
     unknown: float
+
+
+class GetWrappedResponseSecrets(TypedDict):
+    runs: int
+    runs_holding: int
+    removed: int
 
 
 # Each operation as the runtime sends it, by operationId.

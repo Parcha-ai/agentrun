@@ -605,6 +605,7 @@ export type Cost = {
   compile_usd?: number | null;
   followup_usd?: number | null;
   shadow_usd?: number | null;
+  check_usd?: number | null;
   share_usd?: number | null;
   plan?: {
     requests: number;
@@ -902,6 +903,12 @@ export type Run = {
     firing_key: string;
   } | null;
   audit_of?: string | null;
+  learning_work: {
+    state: "none" | "running" | "ended";
+    runs: Array<string>;
+    ended_at: string | null;
+    deadline_at: string | null;
+  };
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
   workflow?: {
     name: string | null;
@@ -2942,6 +2949,7 @@ export type GetLearningCostResponse = {
     compile_usd?: number | null;
     followup_usd?: number | null;
     shadow_usd?: number | null;
+    check_usd?: number | null;
     share_usd?: number | null;
     not_served?: "cost_stop" | "cut" | null;
   }>;
@@ -7693,6 +7701,11 @@ export type GetWrappedResponse = {
       unknown: number;
     };
     unpriced_breaks: number;
+  } | null;
+  secrets: {
+    runs: number;
+    runs_holding: number;
+    removed: number;
   } | null;
 };
 

@@ -2,11 +2,11 @@
 // do: files.read, files.list and files.stat need read, files.write needs write. None given, none. The run's gate refuses
 // such an op for an agent not given its tool before that tool's setting is read, on every computer, a desktop that mounts
 // the run's folder or one that mounts none; an agent given it has the op decided by the tool's setting, as before. What
-// the model is offered agrees: computer_op's op list and a script's `computer` declarations leave out every op the gate
-// would refuse whatever its arguments (its tool not given, the tool it is held to set to deny, or set to ask where no one
-// can approve), and both say that input ops can drive a terminal app or a file manager and apps.open a file:// URL, so
-// leaving bash, read or write out is no boundary on a computer that has them. shell.run and processes.start need no
-// grant: bash's setting alone holds them.
+// the model is offered agrees: computer_op's op list and a script's `computer` declarations leave out every op held to a
+// tool that the gate would refuse whatever its arguments (its tool not given, the tool it is held to set to deny, or set
+// to ask where no one can approve), and both say that input ops can drive a terminal app or a file manager and apps.open
+// a URL or a path, a file the agent wrote included, so leaving bash, read or write out is no boundary on a computer that
+// has them. shell.run and processes.start need no grant: bash's setting alone holds them.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,9 +24,9 @@ const root = () => mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "computer-op
 const op = (name, args) => ({ callId: `c-${name}`, tool: COMPUTER_OP_TOOL, args: { op: name, args } });
 const READS = ["files.read", "files.list", "files.stat"];
 const PATH = { path: "/workspace/notes.txt" };
-/** The words every offer of a computer's ops carries: a terminal app, a file manager and a file:// URL reach what the
- *  shell and the file ops do, whatever their settings. */
-const GUI_REACH = "Input ops on a computer with a terminal app or a GUI file manager, and apps.open with a file:// URL, can do what a shell or the file ops do, whatever bash's, read's or write's setting.";
+/** The words every offer of a computer's ops carries: a terminal app, a file manager and an app opened on a URL or a
+ *  path, a file the agent wrote included, reach what the shell and the file ops do, whatever their settings. */
+const GUI_REACH = "Input ops on a computer with a terminal app or a GUI file manager, and apps.open with a URL or a path, including a file the agent wrote where write is granted, can do what a shell or the file ops do, whatever bash's, read's or write's setting.";
 
 /** The run's gate for an agent on a desktop; `tools` null: the agent names no tools list at all; `approvers` false: no
  *  one can approve an ask on this server. */

@@ -615,10 +615,18 @@ by its rectangle), so a longer one ends the connection before anything is alloca
   desktop files of `$XDG_DATA_HOME/applications` and each of `$XDG_DATA_DIRS` (default `~/.local/share`, then
   `/usr/local/share` and `/usr/share`), as the Desktop Entry spec says: the apps there are, by their desktop file ids
   (`org.xfce.mousepad`), with their names; hidden and `NoDisplay` entries, and a `TryExec` that is not there, are left
-  out. Its `foreground` is the app of the window manager's active window, else of the top window. `apps.launch({ id,
-  url? })` takes an id, a name (`Mousepad`) or a program (`mousepad`), starts the entry's `Exec` (`url` in its `%u`/`%f`
-  field; an entry with none refuses a `url` as `invalid`) as `process.start` does with orphans `keep`, with `DISPLAY`,
-  and answers `{}` once a new window of the app shows, raised and focused (through the window manager's
+  out. So is an app whose desktop file computerd's own user could change: on the way to it from `/`, every symbolic
+  link followed, the user owns a folder, a link or the file, or the mode bits let it write the file or a folder holding
+  one of them (a sticky folder only where it owns what is in it), or computerd runs as root. The entry is read from the
+  file that walk checked, opened without following a link and refused if another took its place, and read again for
+  each launch. An app runs what its desktop file says, so such a file, written through `files`, would run any command
+  with exec off: `apps.launch` and `apps.terminate` refuse such an app as `denied`, naming the file and why. Its `foreground` is the
+  app of the window manager's active window, else of the top window. `apps.launch({ id, url? })` takes an id, a name
+  (`Mousepad`) or a program (`mousepad`), starts the entry's `Exec` (`url` in its `%u`/`%f` field; an entry with none
+  refuses a `url` as `invalid`; a `url` is an absolute URL with a scheme, `https://…` or `file:///…`, or an absolute
+  path, `/…`, and anything else, such as a leading `-` or a relative path, is refused `invalid` and nothing starts; the
+  surface refuses a leading `-` itself, before the call leaves it) as `process.start` does with orphans `keep`, with
+  `DISPLAY`, and answers `{}` once a new window of the app shows, raised and focused (through the window manager's
   `_NET_ACTIVE_WINDOW` when one runs, waiting up to 2 s for it to be the active window), so keys typed right after
   reach it; none within 10 s is `timeout`, "no window within 10 s", and the app runs on. An
   app already running with a window is brought to the front and answers at once, unless a `url` is given. A
@@ -2667,9 +2675,12 @@ newer browser has ended, the lost create's is left running for that create, at o
 Otherwise the request's browsers are read again, every 2 s for up to half of `cleanupMs` (once at least, and sooner
 when that half is under 2 s). While every newer one still runs, no converge has answered it (each such create kept its
 own), and at the end it is released. On the first read as on every later one, a newer one that has ended counts before
-an older one that runs, since a converge whose list missed the older may have answered it. A read that fails, or a read again that misses the lost create's
-browser or every newer one, says nothing of who holds it and leaves it running; a first read that fails is tried again
-within the same half before that. The search's own retries, for a vendor that lists a browser late, wait within that
+an older one that runs, since a converge whose list missed the older may have answered it. That keeps one held by none
+too: where three creates of a request ran, the newest's converge may have answered the oldest and ended its own, and
+the lost create's, the middle one, then runs to the vendor's lifetime; its failure says that an older one still runs.
+A read that fails, or that misses the lost create's browser, or a read again that misses every newer one, says nothing
+of who holds it and leaves it running; a first read that fails or misses it is tried again within the same half before
+that. The search's own retries, for a vendor that lists a browser late, wait within that
 half too, so the release keeps the other half.
 Browserbase is asked status by status in a session's own order (pending, then running, then the ended ones), so a
 session that moves on while a list runs is found in a later answer, never missed, and one found in two answers reads as

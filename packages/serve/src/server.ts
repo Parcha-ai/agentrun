@@ -157,7 +157,7 @@ import { type Blocker, blockersOf, CODE_NODES_ENV, deniedComputer, issueOf, NOT_
 import { computerDeniedWords } from "./refusal-words.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
-import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
+import { ChatGPTPlan, planOf, PlanSignInRefused, RENEWAL_DRAIN_MS, SIGN_OUT_UNCONFIRMED, stopRenewals, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
 import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
@@ -250,6 +250,7 @@ import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, noExecRegionOf, noExecWords, runDiskKept, runDiskKey } from "./archil-settings.js";
+import { learningWorkKey } from "./learning-work.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { runningComputers } from "./computers-running.js";
@@ -298,6 +299,11 @@ const planClosed = (plan: ChatGPTPlan, ms: number): Promise<void> => {
   let timer: NodeJS.Timeout | undefined;
   return Promise.race([plan.close(), new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
 };
+/** How far past its runs' bound a signed-in server's stop may run before the CLI stops it at once (Serve.stopping): the
+ *  sign-in's close and a renewal's drain (stopRenewals), so the 15 s margin (stop-signals.ts) never cuts a drain short.
+ *  Every shipped deploy's stop grace is at least this (test/runner-beside-flags.test.mjs, which finds each one by a scan):
+ *  a platform that kills sooner loses it. */
+export const PLAN_STOP_BOUND_MS = PLAN_CLOSE_MS + RENEWAL_DRAIN_MS;
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
@@ -1665,7 +1671,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // no restart and no request opening the file. The offers are probed once saved keys are read (below), at the start.
   // The ChatGPT sign-in, sealed in the store: on every reading of env (chatgpt-plan.ts withPlan), so a plan model runs
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
-  const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
+  const planLog = (fields: Record<string, string>) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`));
+  const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: planLog, changed: () => keysChanged() });
   await plan.load();
   stops.push(() => planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS));
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
@@ -2165,12 +2172,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  is no shell), whose shell runs the shell tools; else none, and why. A package that needs programs (`sandbox`) asks
    *  for a sandbox alone, whose box a run checks for them: Archil's exec is none, so in Mode 2 it is told why no sandbox
    *  answers (the Docker box can't mount Archil's workspaces), never given the exec. In Mode 2 on a region with no
-   *  serverless exec there is neither: none, saying why and the fix. */
+   *  serverless exec there is no exec: the first sandbox of the registry that answers here now and mounts the run's
+   *  folder (a vendor's, on Archil), so a template's agent has its shell and its checkout; else none, saying why and the fix. */
   const shellHere = async (wants: { sandbox?: boolean } = {}): Promise<ShellHere> => {
     const exec = (await shellOf({ kind: "none" })) === "local";
     if (exec && !wants.sandbox) return { computer: { kind: "none" }, tools: [...shellTools("local")], words: "Archil's serverless exec" };
     const noExec = exec ? undefined : await noExecNow();
-    if (noExec !== undefined) return { none: `this server has no shell to give an agent now: ${noExecWords(noExec)}, and the docker box can't mount Archil`, fix: "Give the agent a sandbox computer (a box) to run bash, or leave bash out of its tools." };
+    if (noExec !== undefined) {
+      for (const entry of claimRegistry().PROVIDERS) {
+        const computer = { kind: "sandbox", provider: entry.id };
+        if ((await shellOf(computer)) === "computer" && "ok" in (await computerReady(computer))) return { computer, tools: [...shellTools("computer")], words: `the ${entry.id} sandbox` };
+      }
+      return { none: `this server has no shell to give an agent now: ${noExecWords(noExec)}, the docker box can't mount Archil, and no sandbox that mounts it is set up`, fix: "Give the agent a sandbox computer (a box) to run bash, or leave bash out of its tools." };
+    }
     const fresh = newAgentPlace(boxOffers);
     let why = "why" in fresh ? fresh.why : "it is not set up";
     if ("place" in fresh && fresh.place.mode === "sandbox") {
@@ -2207,7 +2221,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The run read's costs (A8, store-reads/learning.ts runAllInOverStore): `cost.usd` its own spend, the
    *  job's (its compile turn is learning's), null while unknown; what learning spent for it
    *  (`learning_usd`) and the two (`all_in_usd`), with what makes up `learning_usd` (`compile_usd`, `followup_usd`,
-   *  `shadow_usd`, `share_usd`): the figures the agent's cost page gives the run (learn/ledger.ts figuresOf, one formula).
+   *  `shadow_usd`, `check_usd`, `share_usd`): the figures the agent's cost page gives the run (learn/ledger.ts figuresOf, one formula).
    *  A cost known only as a bound keeps its bound, and all-in is unknown.
    *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore). */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -2217,8 +2231,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (its ledger row's, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
-    const { learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, share_usd } = all;
-    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd: await toolsUsdOverStore(store, runId), learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, share_usd } };
+    const { learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } = all;
+    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd: await toolsUsdOverStore(store, runId), learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } };
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
@@ -3365,13 +3379,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
       for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
-      // Its settings: an SDK run's row, its browser wait's end and take, the Archil disk it resolved to. Its kept computer's row
-      // (workspace/computer-kept.ts) is left to the janitor, which deletes the computer of a run no longer there and then
-      // the row: removed here, the computer would have nothing left to reach it.
+      // Its settings: an SDK run's row, its browser wait's end and take, the Archil disk it resolved to, the learning work it
+      // started (learning-work.ts: child run ids; each child keeps its own row, one still going cancelled with its sealed
+      // key copy erased before this, agent-delete.ts endLearningWork).
+      // Its kept computer's row (workspace/computer-kept.ts) is left to the janitor, which deletes the computer of a run no
+      // longer there and then the row: removed here, the computer would have nothing left to reach it.
       await store.settings.remove(sdkRunKey(runId));
       await store.settings.remove(waitEndedKey(runId));
       await store.settings.remove(browserHoldKey(runId));
       await store.settings.remove(runDiskKey(runId));
+      await store.settings.remove(learningWorkKey(runId));
       await forgetKept("run", runId);
     },
     forgetAgent: async (agentId) => {
@@ -6254,7 +6271,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         });
         if (!read) throw new ApiError("unavailable", `This machine's session history for ${year} is still being read: ask again in a few seconds.`, { retry_after_ms: 5_000 });
         const analytics = await analyticsOverStore(store, { from: new Date(year, 0, 1).toISOString(), to: new Date(year + 1, 0, 1).toISOString() });
-        return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread, analytics.cache));
+        return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread, analytics.cache, analytics.secrets));
       }
       case "getStats": {
         const filter = analyticsFilter(url);
@@ -7457,6 +7474,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Cancel a pending ChatGPT callback without signing out or changing the saved credential. One past its code's
     // exchange is waited for a short while (planClosed), so its row lands before the store closes.
     const planStopped = planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS);
+    // From here no ChatGPT renewal starts on this store; one OpenAI is answering saves its new pair before the store
+    // closes (awaited last, bounded by RENEWAL_DRAIN_MS from now, beside the rest of the stop).
+    const renewalsStopped = stopRenewals(store, RENEWAL_DRAIN_MS, planLog);
     // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
     // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
     const signInStopped = claudeSignIns.close();
@@ -7511,6 +7531,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(refusedTimer);
     await refusedSweep;
     await refusedBeside?.close();
+    // A ChatGPT renewal OpenAI is answering saves its new pair first (renewalsStopped, above): none started since.
+    await renewalsStopped;
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
     dataLock.release();
@@ -7540,8 +7562,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),
-    // No per-run process drains here: the runner owns a run's turn, so a stop waits on none.
-    stopping: () => ({ runs: 0, boundMs: 0 }),
+    // No per-run process drains here: the runner owns a run's turn, so a stop waits on none. A signed-in plan's renewal
+    // may be out, which the stop drains before its store closes: its bound holds it (PLAN_STOP_BOUND_MS).
+    stopping: () => ({ runs: 0, boundMs: plan.state === "signed_in" ? PLAN_STOP_BOUND_MS : 0 }),
     listingSettled: () => lister.settled(),
     refuseRuns: (words) => {
       if (refusedBeside || refusedStopped) return;
