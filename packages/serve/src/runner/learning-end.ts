@@ -202,10 +202,12 @@ export function spentBesideOf(launch: RunLaunch, store: Pick<Store, "runs" | "se
 }
 
 /** What run `runId`'s learning work took beside it under its cap: its audit's shadow run (shadowBesideOf) and the replay
- *  runs of a check on its own key (learning-work.ts keyedBesideOf). Null when either is unknown. */
+ *  runs of a check on its own key (learning-work.ts keyedBesideOf; in a run's own process, its runner's read of them,
+ *  Held.keyedBeside, as the process's store reads no other run's row). Null when either is unknown. */
 export async function childrenBesideOf(store: Pick<Store, "runs" | "settings">, runId: string): Promise<number | null> {
   const shadow = await shadowBesideOf(store, runId);
-  const keyed = shadow === null ? null : await keyedBesideOf(store, runId);
+  const runner = held();
+  const keyed = shadow === null ? null : runner ? await runner.keyedBeside() : await keyedBesideOf(store, runId);
   return shadow === null || keyed === null ? null : shadow + keyed;
 }
 

@@ -126,6 +126,9 @@ export interface Held {
   /** The MCP credentials run `from` was handed, and its own model key when `keyed` (store/seal.ts sealHandedLaunch),
    *  sealed again for run `id`, a run this one starts (promotion.ts, audit.ts): none unless `from` is the claim's own run. */
   handOn(from: string, id: string, keyed: boolean): Promise<Uint8Array | undefined>;
+  /** What the replays the claim's own run started on its own key took beside it (learning-work.ts keyedBesideOf), read by
+   *  the runner: its learning_work row and those replays' rows and launches, none of which the run's process reads. */
+  keyedBeside(): Promise<number | null>;
   /** The run's agent's live sign-in pointer for `resolution`, and its forgotten ones (sign-ins-store.ts signInReads): what
    *  its learning end holds to refuse a pointer in what the run learned. */
   signInPeek(resolution: string): Promise<unknown>;
