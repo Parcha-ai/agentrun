@@ -77,8 +77,10 @@ export type LoopEnd =
   | { readonly state: "interrupted" }
   | { readonly state: "failed"; readonly error: { readonly code: string; readonly message: string } }
   /** Parked on a person (an approval, a raise): the runner flushes and releases; a command row (or `wakeAt`, ms since
-   *  the epoch) makes the run claimable again, and the next claim's start() resumes it from the journal. */
-  | { readonly state: "parked"; readonly wakeAt?: number };
+   *  the epoch) makes the run claimable again, and the next claim's start() resumes it from the journal. `again`: parked
+   *  where it stood with nothing written (a run woken at its cap by raises that were all refused), so the release itself
+   *  parks the row again; else the loop's last commit parked it. */
+  | { readonly state: "parked"; readonly wakeAt?: number; readonly again?: true };
 
 export type StopReason =
   /** A stop or cancel row: the loop stages that row's take in the commit that ends the run as stopped (`cancel`: a cancel

@@ -941,6 +941,8 @@ export function startRunner(options: RunnerOptions): Runner {
       const cut = end.state !== "interrupted" ? undefined : closedItself ? "retry" as const : held.stoppedFor === "shutdown" ? "drain" as const : undefined;
       const wakeAt = end.state === "parked" ? parkedWake(held, end.wakeAt) : undefined;
       await release(claim, {
+        // Parked again with nothing written (LoopEnd `again`): the release parks the row, its words left as they stood.
+        ...(end.state === "parked" && end.again ? { state: "parked" as const } : {}),
         ...(wakeAt !== undefined ? { wakeAt }
         : inARow > 0 ? { backoffUntil: now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
         : {}),

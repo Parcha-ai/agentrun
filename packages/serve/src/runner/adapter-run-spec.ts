@@ -684,7 +684,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // and a call reaches it only through the session this spec returns, after `tools` is made.
   let filedIn: Workspace | undefined;
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...claimMetering(deps, fakes?.web, launch) });
+  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, redact: cut, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...claimMetering(deps, fakes?.web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -792,8 +792,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The run's adapter is its runner's (runner/adapters/index.ts RunnerHarness: pi's, or the one a harness module's entry
   // brings), made from the run's launch on its route. Its private files, where it keeps any, go in this claim's folder of
   // the run's scratch (the CLI spec's layout), swept at the claim's end with the earlier claims' and any parent left empty.
-  // pi's own options (its extensions, tools, redactor, the model's catalog entry, hosted search, tiers, and the route's
-  // whole provider) are the harness's own options (`extra`), passed on as given.
+  // The run's one redactor is the launch's (HarnessLaunch.redact). pi's own options (its extensions, tools, the model's
+  // catalog entry, hosted search, tiers, and the route's whole provider) are the harness's own (`extra`), passed on as given.
   const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
   const harnesses = join(scratch, "harness");
   holds.hold({ scratch: { sweep: async () => (await import("./cli-run-spec.js")).sweepScratch(harnesses, claim.epoch, [harnesses, scratch, dirname(scratch)]) } });
@@ -804,12 +804,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     ...(route.price ? { price: route.price as never } : {}),
     sessionsDir: join(harnesses, String(claim.epoch)),
     ...(route.fetch ? { fetch: route.fetch } : {}),
+    redact: cut,
   }, {
     // Read when the session opens (pi.ts), so the browser's extension pushed by bindNonHandTools below is in it.
     extensions: native,
     tools: piTools,
     provider: route.provider,
-    redact: cut,
     ...(route.like ? { like: route.like } : {}),
     // The run's web_search is its provider's hosted search (the launch's plane, as its start resolved it): the session's
     // proxy admits that search's one request (it goes through the session's port: buildToolHost's `search`) and books it
