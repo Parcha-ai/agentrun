@@ -557,6 +557,31 @@ test("an Ollama started after the server, with a model pulled, shows in capabili
   assert.ok(caps.harnesses.find((harness) => harness.id === "pi").models.includes(`ollama/${TOOLS}`));
 });
 
+test("a listing that lands before a request that refreshes only the login reaches both the default and whether a run is ready: never the listing's default with ready false", { timeout: 120_000 }, async (t) => {
+  withEnv(t, {}, KEYS);
+  const clock = 1_000_000;
+  ollamaClock(() => clock);
+  t.after(() => ollamaClock());
+  const port = await freePort();
+  const env = { OLLAMA_HOST: `127.0.0.1:${port}` };
+  withEnv(t, env);
+  const { api } = await serve(t, { faux: undefined });
+  assert.equal((await api("GET", "/capabilities")).body.models.default, null, "Ollama down: nothing listed");
+  await ollamaAsking(env);
+  await fakeOllama(t, { port, models: [SYNTH_MODELS.find((model) => model.name === TOOLS)] });
+  // The listing lands between requests, as one asked behind an answer does on a loaded machine (the flake this was): the
+  // down answer kept is answered at once, and the listing asked behind it.
+  await ollamaModels(env);
+  await ollamaAsking(env);
+  // A save refreshes the login, not the listing, and makes the offers again from the new listing. Before, it left what a
+  // run needs as it was, so every later answer listed the Ollama model as the default with ready false.
+  const made = await api("POST", "/agents", { definition: { id: "desk", version: 1, name: "desk", instructions: "Answer.", skills: [], tools: [] } });
+  assert.ok(made.status < 300, JSON.stringify(made.body));
+  const caps = (await api("GET", "/capabilities")).body;
+  assert.equal(caps.models.default, `ollama/${TOOLS}`, JSON.stringify(caps.models));
+  assert.equal(caps.models.ready, true, JSON.stringify(caps.models));
+});
+
 // OLLAMA_HOST as the ollama CLI reads it: a scheme or none (http), a port or the default (11434 with no scheme; the
 // scheme's own with one), 0.0.0.0 and :: (where `ollama serve` listens on every address) connecting to this machine.
 test("OLLAMA_HOST unset: 127.0.0.1:11434", () => assert.equal(ollamaBase({}), "http://127.0.0.1:11434"));

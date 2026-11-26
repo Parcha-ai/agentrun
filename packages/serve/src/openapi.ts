@@ -185,6 +185,8 @@ const closed = (properties: Json, description?: string) => ({ type: "object", ad
 const USD = { type: ["number", "null"], minimum: 0, description: "The sum of the known costs, rounded to 1e-6; null when no run's cost is known, never 0 for unknown." };
 /** wrapped/1: GET /wrapped's answer (wrapped.ts). */
 const WRAPPED_TOKENS = closed({ input: COUNT, output: COUNT, cache_read: COUNT, cache_write: COUNT });
+/** One figure per cache cause (the import package's CACHE_CAUSES), each always there. */
+const CACHE_BY_CAUSE = (value: Record<string, unknown>) => closed(Object.fromEntries(["model", "idle", "compaction", "edited", "sidechain", "unknown"].map((cause) => [cause, value])));
 const WRAPPED: Json = closed({
   year: { type: "integer", minimum: 1000, maximum: 9999 },
   sessions: { ...COUNT, description: "Sessions whose first request falls in the year." },
@@ -202,6 +204,19 @@ const WRAPPED: Json = closed({
   sources: { type: "array", items: closed({ source: { type: "string" }, sessions: COUNT, requests: COUNT }), description: "By the tool the sessions were read from." },
   imported: { type: "array", items: closed({ source: { type: "string" }, runs: COUNT }), description: "The runs imported here in the year, by source (never `live`)." },
   unread_files: { ...COUNT, description: "Session files that could not be read (gone since listed, or not openable by this user), so the numbers are short by them. A count only: no path." },
+  cache: {
+    oneOf: [
+      closed({
+        runs: { ...COUNT, description: "The year's imported Claude Code, Codex and pi runs whose cache the import analyzed. A session left out of the import, or imported before it analyzed caches, is not among them." },
+        hit_rate: { type: ["number", "null"], minimum: 0, maximum: 1, description: "Cache read over the whole prompt (input, cache read and cache write) of those runs' requests and their subagents'; null when they sent none." },
+        breaks: { ...CACHE_BY_CAUSE(COUNT), description: "Cache breaks by cause: a turn whose cache read dropped more than 80% against the turn before it." },
+        extra_cost_usd: { ...CACHE_BY_CAUSE({ type: "number", minimum: 0 }), description: "By cause, what the breaks' re-sent tokens cost above a cache read, at list prices (USD); unpriced breaks are not in it." },
+        unpriced_breaks: { ...COUNT, description: "Breaks on a model with no list price: in `breaks`, not in `extra_cost_usd`." },
+      }),
+      { type: "null" },
+    ],
+    description: "The cache of the runs imported here in the year, from what the import kept of each (numbers only); null when none was analyzed.",
+  },
 }, "A year of the work under this machine's home, bucketed by each request's time in the server's local zone.");
 /** Runs counted together (AgentStoreReader.analytics's AnalyticsGroup). */
 const GROUP = {
@@ -1181,11 +1196,11 @@ const MODEL_GATEWAY_TEST = {
 /** computer/1: an agent's computer kind, as Settings → Computers and the run read name it (computer-setting.ts). */
 const COMPUTER_KIND = { enum: ["none", "sandbox", "desktop", "phone", "browser"] };
 /** A computer choice's shell (computers.ts ShellChoice): where its runs have their shell, in this server's folder mode. */
-const CHOICE_SHELL = { enum: ["computer", "local", "none"], description: "Where a run of this choice has its shell, in this server's folder mode: `computer`, in the computer, which mounts the run's folder (bash and the background tools); `local`, no computer mounts it and the folder is on the owner's disk, so bash runs in a fresh container there (bash only); `none`, no computer mounts it and the folder is on this server's own disk, so the run has no shell (the file tools only)." };
+const CHOICE_SHELL = { enum: ["computer", "local", "none"], description: "Where a run of this choice has its shell, in this server's folder mode: `computer`, in the computer, which mounts the run's folder (bash and the background tools); `local`, no computer mounts it and the folder is on the owner's disk, so bash runs in a fresh container there (bash only); `none`, no computer mounts it and the run has no shell (the file tools only): the folder is on this server's own disk, or on Archil in a region with no serverless exec." };
 /** The host tools a choice gives, by name: the kernel registry's list for its shell. */
 const CHOICE_HOST_TOOLS = { type: "array", items: { type: "string" }, description: "Exactly the host tools a run of this choice gets, by name: the file tools always, bash with a shell (`computer` or `local`), the five background tools on a computer." };
 /** What a choice leaves out of the shell, in words. */
-const CHOICE_SHELL_NOTE = { type: "string", description: "What this choice leaves out of the shell, in plain words; absent when its shell is `computer`. A save that names a tool it leaves out is refused in the same words." };
+const CHOICE_SHELL_NOTE = { type: "string", description: "What this choice leaves out of the shell, in plain words; absent when its shell is `computer`. A save that names a tool it leaves out is refused, in words that give the same reason and how to get the tool." };
 /** A sandbox's GPUs on an agent's computer setting (computer-setting.ts GpuSetting). */
 const COMPUTER_GPU = {
   type: "object", additionalProperties: false, required: ["type", "count"],
@@ -2616,7 +2631,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/export": {
     get: {
       operationId: "getRunExport", tags: ["runs"], summary: "An ended run as a share bundle, every string cut",
-      description: "The run as one `agentrun.share/1` document, the one a share page renders: its view's allowlisted fields, its Timeline rows, a workflow's graph, its UTF-8 text files within the caps, what is left out (`omitted`), and its sha256. Every string in it from the run is cut by the scrubber, with the values this server holds and the sign-ins the run was handed as its held values: a known key format, a held value and a dump (env output, a .env file, ~/.ssh) are cut for good; a value beside a label (`PGPASSWORD=`, `Authorization:`, `--password`) and a personal detail (a home path's user, an email, a private address) are cut and may be restored. Each cut is a record in `cuts`: where it is, its rule and kind, whether it may be restored, and its shape, never its value. The document is the same bytes on every export of the run, and is read back before it is answered: a value the cut left, or a scrub that failed, answers `500` with an empty body. `restore` re-exports with those cuts' values in place, each record moved to `restored`; an id of a cut that may not be restored, or of no cut, is `400`, and nothing is restored. `409 run_not_final` until the run has ended; `403 forbidden` while this server can't read the browser sign-in the run was handed; `413 export_too_large` over 8 MiB, never cut short.",
+      description: "The run as one `agentrun.share/1` document, the one a share page renders: its view's allowlisted fields, its Timeline rows, a workflow's graph, its UTF-8 text files within the caps, what is left out (`omitted`), and its sha256. Every string in it from the run is cut by the scrubber, with the values this server holds and the sign-ins the run was handed as its held values: a known key format, a held value and a dump (env output, a .env file, ~/.ssh) are cut for good; a value beside a label (`PGPASSWORD=`, `Authorization:`, `--password`) and a personal detail (a home path's user, an email, a private address) are cut and may be restored. Each cut is a record in `cuts`: where it is, its rule and kind, whether it may be restored, and its shape, never its value. The document is the same bytes on every export of the run, and is read back before it is answered: a value the cut left, or a scrub that failed, answers `500` with an empty body. `restore` re-exports with those cuts' values in place, each record moved to `restored`; an id of a cut that may not be restored, or of no cut, is `400`, and nothing is restored. `409 run_not_final` until the run has ended; `403 forbidden` while this server can't read the browser sign-in the run was handed; `413 export_too_large` over 8 MiB, never cut short. Served in the API-only profile (`AGENTRUN_API_ONLY=1`) too, with the token: the share page that renders it is the console's, which that profile refuses.",
       parameters: [ref("parameters/RunId"), { name: "restore", in: "query", required: false, description: "Cut ids to restore, comma-separated (the parameter may repeat): each a label, personal or jev cut of this run's bundle.", schema: { type: "string" } }],
       responses: { "200": json(SHARE_BUNDLE, "The run's share bundle."), "500": { description: "The export failed closed: a scrub failed, or the bundle read back held a value. No body." }, ...errors(400, 401, 403, 404, 409, 413, 429) },
       "x-agentrun-serve": "share/1",
@@ -4693,10 +4708,10 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         { type: "object", additionalProperties: false, required: ["mode", "box"], properties: { mode: { const: "sandbox" }, box: { enum: [...BOX_IDS] } } },
         { type: "null" },
       ],
-      description: "The place a NEW agentic agent that names none and has a shell is saved with, written on its revision at its create, and where an agentic revision saved with no place and a shell tool runs, resolved at each run. In Mode 2, where the runner's shell is Archil's serverless exec, the runner (`{\"mode\": \"runner\"}`), docker or not (Docker's box can't mount Archil's workspaces), and such a create saves with no place. In Mode 1, where the runner has no shell: the Docker box (`{\"mode\": \"sandbox\", \"box\": \"docker\"}`) where this server has docker, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools; where it has no docker, null, meaning no default: a new agent names a box or the runner, `default_reason` gives the words, and a create that names no place and no tools, or a tool that runs only in a box, is refused `422 input_invalid` at field `definition.place`, reason `missing`, in those words, no other box picked for it. A client tells the cases apart by `default_place` being null, never by reading `default_reason`. One whose named tools need no shell is saved with no place and runs on the runner, as do a workflow and a revision that names a tool a box refuses. (It replaces `places.default`, which said `runner`.)",
+      description: "The place a NEW agentic agent that names none and has a shell is saved with, written on its revision at its create, and where an agentic revision saved with no place and a shell tool runs, resolved at each run. In Mode 2, where the runner's shell is Archil's serverless exec, the runner (`{\"mode\": \"runner\"}`), docker or not (Docker's box can't mount Archil's workspaces), and such a create saves with no place. In Mode 2 on an Archil region with no serverless exec (gcp-us-central1), the runner has no shell, so null, docker or not: a create that names no place, no computer and a tool that runs only in a box is refused `422 input_invalid` at field `definition.computer`, reason `missing`, in `default_reason`'s words, naming a sandbox computer; one that names no tools is saved on the runner with none. In Mode 1, where the runner has no shell: the Docker box (`{\"mode\": \"sandbox\", \"box\": \"docker\"}`) where this server has docker, with tools [\"bash\", \"bash_background\", \"bash_output\", \"bash_input\", \"bash_signal\", \"bash_list\"] when the definition names no tools; where it has no docker, null, meaning no default: a new agent names a box or the runner, `default_reason` gives the words, and a create that names no place and no tools, or a tool that runs only in a box, is refused `422 input_invalid` at field `definition.place`, reason `missing`, in those words, no other box picked for it. A client tells the cases apart by `default_place` being null, never by reading `default_reason`. One whose named tools need no shell is saved with no place and runs on the runner, as do a workflow and a revision that names a tool a box refuses. (It replaces `places.default`, which said `runner`.)",
       "x-agentrun-serve": "place/5",
     },
-    default_reason: { type: "string", description: "There exactly when `default_place` is null (Mode 1 with no Docker box): the words a create that names no place and would get the box is refused in, `name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <one of: …>}, or to {mode: runner} to run without a shell.`, listing the boxes this server has, or `<none is set up>`. Docker's own reason is on its entry in `boxes`.", "x-agentrun-serve": "place/5" },
+    default_reason: { type: "string", description: "There exactly when `default_place` is null. In Mode 1 with no Docker box, the words a create that names no place and would get the box is refused in, `name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <one of: …>}, or to {mode: runner} to run without a shell.`, listing the boxes this server has, or `<none is set up>`. In Mode 2 on an Archil region with no serverless exec, the words a create that names no place, no computer and a shell tool is refused in, `name a sandbox computer: this server's Archil region <region> has no serverless exec, …`. Docker's own reason is on its entry in `boxes`.", "x-agentrun-serve": "place/5" },
     allow: { type: "array", items: { type: "string" }, description: "The hosts a box whose `network` is `allowlist` may reach: AGENTRUN_BOX_ALLOW's, else the package registries and GitHub; empty when it is `none`.", "x-agentrun-serve": "place/2" },
   },
   "Capabilities/workflows": {
@@ -5131,6 +5146,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   ];
   readFileOp.responses["413"] = ref("responses/PayloadTooLarge");
   readFileOp.responses["415"] = ref("responses/UnsupportedMediaType");
+  // Its cut is made in a worker under a deadline (cut-pool.ts): past it, or when the worker fails, 503, never uncut.
+  readFileOp.responses["503"] = ref("responses/Unavailable");
   readFile["x-agentrun-serve-changed"] = { ...(readFile["x-agentrun-serve-changed"] as Json), parameters: "filecut/1" };
   // filecut/2: `?cut=run` on the listing names each file under the run's cut (RunFile.name), so a grader is told of every
   // file a run left, media included, without a path that holds a held value.
