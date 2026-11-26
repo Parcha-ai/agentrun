@@ -887,7 +887,7 @@ const CASES = [
     const words = `see \u{1F600} and \uE000\uF8FF in \u2801\u2803\u2800\u2809 done`;
     return [
       { name: "a held value holding a character past U+FFFF is cut in place whole (control)", text: plain, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: { redacted: "x [redacted] y", redactedAnswer: "x [redacted] y", redactSecrets: "x [redacted] y", runFile: "x [redacted] y" } },
-      { name: "a held value holding a character past U+FFFF, written as two \u escapes in prose, withholds the text (control)", text: `x ${H}${B}ud83d${B}ude00${R} y`, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])) },
+      { name: "a held value holding a character past U+FFFF, written as two \\u escapes in prose, withholds the text (control)", text: `x ${H}${B}ud83d${B}ude00${R} y`, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])) },
       { name: "a text of characters past U+FFFF, private use characters and braille, with no held value, shows as it came (control)", text: words, values: [P24.join("")], hides: [], exact: same(words) },
     ];
   })(),
