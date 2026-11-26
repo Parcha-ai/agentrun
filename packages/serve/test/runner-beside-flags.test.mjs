@@ -18,7 +18,7 @@ import { besideRunnerOptions, besideStopping, DRAIN_TIMEOUT } from "../dist/runn
 import { durationMs } from "../dist/print.js";
 import { DEADLINE_MARGIN_MS } from "../dist/stop-signals.js";
 import { RUNNER_DRAIN_TIMEOUT, runnerArgs, runnerHolds } from "../dist/runner/main.js";
-import { RUNNER_LEASE_MS, RUNNER_STOP_MARGIN_MS, runnerCloseBoundMs, startRunner } from "../dist/runner/runner.js";
+import { RUNNER_LEASE_MS, RUNNER_RENEWALS_SERVED_MS, RUNNER_STOP_MARGIN_MS, runnerCloseBoundMs, startRunner } from "../dist/runner/runner.js";
 import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 20 };
@@ -117,7 +117,7 @@ test("the CLI's stop deadline covers the runner's whole close: its drain, then t
   assert.equal(runnerCloseBoundMs(6_000), 6_000 + stopWindow);
   assert.deepEqual(besideStopping({ runs: 0, boundMs: 0 }, 1, 6_000), { runs: 1, boundMs: 31_000 }, "the image's 6 s drain: 31 s, then the stop's margin");
   assert.deepEqual(besideStopping({ runs: 2, boundMs: 90_000 }, 3, 30_000), { runs: 5, boundMs: 90_000 }, "a longer server bound stands");
-  assert.equal(besideStopping({ runs: 0, boundMs: 0 }, 0, 0).boundMs, stopWindow, "with no drain, still the loops' stop");
+  assert.equal(besideStopping({ runs: 0, boundMs: 0 }, 0, 0).boundMs, RUNNER_RENEWALS_SERVED_MS + stopWindow, "with no drain, a ChatGPT renewal told RUNNER_RENEWALS_SERVED_MS in and its whole window, past the loops' stop");
   assert.ok(DEADLINE_MARGIN_MS > 0);
 });
 
