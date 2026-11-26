@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { computerFields, pickKind } from "./computers";
-import type { Places } from "./place";
 import type { Computer, ComputerKindView } from "./v2";
 
 // A switch of a computer's kind or provider carries what the old one set where the new one takes it, and says what it
@@ -36,40 +35,40 @@ describe("a sandbox's needs across a switch", () => {
 describe("computerFields with no tools listed", () => {
   const OFFERED = [{ name: "bash", sandbox_only: true as const }, { name: "read" }];
   it("the runner, tools listed: drops the box-only ones", () => {
-    expect(computerFields({ kind: "none" }, ["bash", "read"], OFFERED, null, null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["read"] });
+    expect(computerFields({ kind: "none" }, ["bash", "read"], OFFERED, null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["read"] });
   });
   it("the runner, no tools listed, an agent with tools: null", () => {
-    expect(computerFields({ kind: "none" }, ["bash", "read"], [], null, null)).toBeNull();
+    expect(computerFields({ kind: "none" }, ["bash", "read"], [], null)).toBeNull();
   });
   it("no tools listed, but nothing to drop: an agent with no tools on the runner, or a pick of a box", () => {
-    expect(computerFields({ kind: "none" }, [], [], null, null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: [] });
-    expect(computerFields({ kind: "sandbox", provider: "docker" }, ["bash", "read"], [], null, null)).toEqual({ computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" } });
+    expect(computerFields({ kind: "none" }, [], [], null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: [] });
+    expect(computerFields({ kind: "sandbox", provider: "docker" }, ["bash", "read"], [], null)).toEqual({ computer: { kind: "sandbox", provider: "docker" }, place: { mode: "sandbox", box: "docker" } });
   });
 });
 
-// Mode 2: the runner has a shell (Archil's serverless exec), which capabilities say by serving the runner as a new
-// agent's default place. It runs bash, so a move to the runner keeps bash; the background tools still need a box. Mode 1:
-// the runner has no shell, so a move there drops every box-only tool.
-describe("computerFields to the runner, by mode", () => {
+// The server lets a box-only tool on a runner place only where the run's shell is the runner's own (runnable.ts:
+// runShellOf "local"), which GET /v2/computers serves as each choice's `shell`: the no-computer choice's own, else the
+// provider's. Mode 2: no computer's shell is Archil's exec ("local"), which runs bash; the background tools still need a
+// box. Mode 1: no computer has no shell ("none"), so a move there drops every box-only tool, as does a list not read.
+describe("computerFields to the runner, by the choice's served shell", () => {
   const OFFERED = [{ name: "bash", sandbox_only: true as const }, { name: "bash_background", sandbox_only: true as const }, { name: "read" }];
-  const MODE2: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "modal", available: true }], defaultPlace: { mode: "runner" } };
-  const MODE1: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }], defaultPlace: { mode: "sandbox", box: "docker" } };
-  const MODE1_NO_BOX: Places = { modes: ["runner", "sandbox"], boxes: [], defaultPlace: null };
-  it("Mode 2: keeps bash, drops the background tools", () => {
-    expect(computerFields({ kind: "none" }, ["bash", "bash_background", "read"], OFFERED, MODE2, null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["bash", "read"] });
+  const none = (shell: string) => ({ kind: "none", providers: [], shell });
+  const served = (...kinds: unknown[]) => kinds as ComputerKindView[];
+  const TOOLS = ["bash", "bash_background", "read"];
+  it("Mode 2 (no computer's shell \"local\"): keeps bash, drops the background tools", () => {
+    expect(computerFields({ kind: "none" }, TOOLS, OFFERED, served(none("local")))).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["bash", "read"] });
   });
-  it("Mode 1: drops bash too, with a Docker box or with none", () => {
-    for (const places of [MODE1, MODE1_NO_BOX, null]) {
-      expect(computerFields({ kind: "none" }, ["bash", "bash_background", "read"], OFFERED, places, null)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["read"] });
+  it("Mode 1 (no computer's shell \"none\"), a list not read, or one with no such choice: drops bash too", () => {
+    for (const kinds of [served(none("none")), null, served()]) {
+      expect(computerFields({ kind: "none" }, TOOLS, OFFERED, kinds)).toEqual({ computer: { kind: "none" }, place: { mode: "runner" }, tools: ["read"] });
     }
   });
-  // Another kind on a runner place keeps bash only where its provider's served run shell is the runner's own ("local"),
-  // as the server saves it (runShellOf): a desktop that mounts the run's folder ("computer"), one with no shell, and one
-  // whose provider isn't listed drop it.
+  // Another kind on a runner place keeps bash only where its provider's served run shell is the runner's own: a desktop
+  // that mounts the run's folder ("computer"), one with no shell, and one whose provider isn't listed drop it.
   it("Mode 2, a desktop: keeps bash only where its run shell is the runner's own", () => {
-    const desktop = (shell: string) => [{ kind: "desktop", providers: [{ id: "e2b", shell }] }] as unknown as ComputerKindView[];
-    const fields = (kinds: ComputerKindView[] | null) => computerFields({ kind: "desktop", provider: "e2b" }, ["bash", "read"], OFFERED, MODE2, kinds);
+    const desktop = (shell: string) => served(none("local"), { kind: "desktop", providers: [{ id: "e2b", shell }] });
+    const fields = (kinds: ComputerKindView[] | null) => computerFields({ kind: "desktop", provider: "e2b" }, ["bash", "read"], OFFERED, kinds);
     expect(fields(desktop("local"))?.tools).toEqual(["bash", "read"]);
-    for (const kinds of [desktop("computer"), desktop("none"), null]) expect(fields(kinds)?.tools).toEqual(["read"]);
+    for (const kinds of [desktop("computer"), desktop("none"), served(none("local")), null]) expect(fields(kinds)?.tools).toEqual(["read"]);
   });
 });

@@ -6,10 +6,11 @@ import { type Agent, toolOffers } from "@/lib/agentForm";
 import { placesOf } from "@/lib/place";
 import { SERVED_AGENT } from "@/test/agent";
 
-// Mode 2: the runner has a shell (Archil's serverless exec), and capabilities say so by serving the runner as a new
-// agent's default place. That shell runs bash, so an agent on the runner keeps bash: ticked by default, tickable, and kept
-// when the person moves it to the runner. The background tools still need a box. Mode 1: the runner has no shell, so a
-// move to the runner drops bash.
+// The server lets bash on a runner place only where the run's shell is the runner's own ("local"), which GET
+// /v2/computers serves as each choice's `shell`: the no-computer choice's own, else the provider's. Mode 2: no
+// computer's shell is Archil's serverless exec ("local"), which runs bash, so an agent with no computer keeps bash:
+// ticked by default, tickable, and kept when the person moves it there. The background tools still need a box. Mode 1:
+// no computer has no shell ("none"), so a move there drops bash.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
@@ -21,13 +22,18 @@ const tools = toolOffers([
 ]);
 const served = (boxes: unknown[], defaultPlace: unknown) => placesOf({ places: { modes: ["runner", "sandbox"], boxes, default_place: defaultPlace } });
 const MODE2 = served([{ id: "modal", available: true }], { mode: "runner" });
-const MODE1 = served([{ id: "docker", available: true }], { mode: "sandbox", box: "docker" });
+const DOCKER = served([{ id: "docker", available: true }], { mode: "sandbox", box: "docker" });
+const provider = (id: string, shell: "computer" | "local" | "none") => ({ id, name: id, secrets: [], required: [], ready: true, metered: false, shell });
+const kinds = (noComputerShell: "local" | "none") => [
+  { kind: "none", offered: true, groups: [], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [], shell: noComputerShell },
+  { kind: "sandbox", offered: true, groups: ["exec"], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no screen" }, providers: [provider("modal", "computer"), provider("docker", "computer")] },
+];
 
-function mount(places: ReturnType<typeof placesOf>) {
+function mount(places: ReturnType<typeof placesOf>, computers: unknown[]) {
   let saved: Record<string, unknown> | undefined;
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
-  act(() => root!.render(createElement(AgentEditor, { caps: { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places }, step: "computer", onSave: async (f: Record<string, unknown>) => { saved = f; return null; } } as never)));
+  act(() => root!.render(createElement(AgentEditor, { caps: { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places, computers }, step: "computer", onSave: async (f: Record<string, unknown>) => { saved = f; return null; } } as never)));
   const click = (el: Element | null | undefined) => act(() => { (el as HTMLElement).click(); });
   const input = (sel: string) => host.querySelector(sel) as HTMLInputElement | null;
   const step = (label: RegExp) => click([...host.querySelectorAll("button")].find((b) => label.test(b.textContent ?? "")));
@@ -47,9 +53,9 @@ function mount(places: ReturnType<typeof placesOf>) {
 }
 
 describe("AgentEditor, bash on the runner", () => {
-  it("Mode 2: a new agent on the runner has bash ticked and tickable, and a move to the runner keeps it", async () => {
-    const form = mount(MODE2);
-    expect(form.input('input[name="place"][value="runner"]')!.checked).toBe(true);
+  it("Mode 2 (no computer's shell \"local\"): a new agent with no computer has bash ticked and tickable, and a move back to no computer keeps it", async () => {
+    const form = mount(MODE2, kinds("local"));
+    expect(form.input('input[name="computer-kind"][value="none"]')!.checked).toBe(true);
     form.step(/Tools/);
     const bash = () => form.input('input[type="checkbox"][value="bash"]')!;
     expect(bash().checked).toBe(true);
@@ -58,25 +64,26 @@ describe("AgentEditor, bash on the runner", () => {
     expect(bash().checked).toBe(false);
     form.click(bash());
     expect(bash().checked).toBe(true);
-    // To a box and back to the runner: bash stays.
+    // To a box and back to no computer: bash stays.
     form.step(/Computer/);
-    form.click(form.input('input[name="place"][value="sandbox"]'));
-    form.click(form.input('input[name="place"][value="runner"]'));
-    expect(form.host.textContent).not.toContain("only in a sandbox, so");
+    form.click(form.input('input[name="computer-kind"][value="sandbox"]'));
+    form.click(form.input('input[name="computer-kind"][value="none"]'));
+    expect(form.host.textContent).not.toMatch(/turned off/);
     const sent = await form.save();
-    expect(sent).toMatchObject({ place: { mode: "runner" } });
+    expect(sent).toMatchObject({ computer: { kind: "none" }, place: { mode: "runner" } });
     expect(sent?.tools).toContain("bash");
     expect(sent?.tools).not.toContain("bash_background");
   });
 
-  it("Mode 1: a move from Docker's box to the runner drops bash", async () => {
-    const form = mount(MODE1);
+  it("Mode 1 (no computer's shell \"none\"): a move from Docker's box to no computer drops bash and says so", async () => {
+    const form = mount(DOCKER, kinds("none"));
     form.step(/Tools/);
     expect(form.input('input[type="checkbox"][value="bash"]')!.checked).toBe(true);
     form.step(/Computer/);
-    form.click(form.input('input[name="place"][value="runner"]'));
+    form.click(form.input('input[name="computer-kind"][value="none"]'));
+    expect([...form.host.querySelectorAll('[role="status"]')].map((s) => s.textContent)).toContain("Bash and bash_background are turned off for this agent: with this computer, they run only on a sandbox computer.");
     const sent = await form.save();
-    expect(sent).toMatchObject({ place: { mode: "runner" } });
+    expect(sent).toMatchObject({ computer: { kind: "none" }, place: { mode: "runner" } });
     expect(sent?.tools).not.toContain("bash");
   });
 });
@@ -86,7 +93,6 @@ describe("AgentEditor, bash on the runner", () => {
 // `shell`. A desktop that mounts the run's folder ("computer") is on a runner place but gets no such shell, so a Mode 2
 // move to it drops bash, says why, and its card is not offered; one that mounts nothing ("local") keeps bash.
 describe("AgentEditor, bash on a runner-placed computer (Mode 2)", () => {
-  const provider = (id: string, shell: "computer" | "local" | "none") => ({ id, name: id, secrets: [], required: [], ready: true, metered: false, shell });
   const KINDS = [
     { kind: "none", offered: true, groups: [], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [], shell: "local" },
     { kind: "sandbox", offered: true, groups: ["exec"], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no screen" }, providers: [provider("docker", "computer")] },
@@ -126,8 +132,7 @@ describe("AgentEditor, bash on a runner-placed computer (Mode 2)", () => {
   // Mode 2 with Docker answering: the server gives new agents Docker's box (default_place), yet its no-computer choice's
   // run shell is still Archil's exec ("local"), which runs bash.
   it("Mode 2 with Docker answering: a move from Docker's box to no computer keeps bash and says nothing", async () => {
-    const docker = served([{ id: "docker", available: true }], { mode: "sandbox", box: "docker" });
-    const form = open(agent({ kind: "sandbox", provider: "docker" }), docker);
+    const form = open(agent({ kind: "sandbox", provider: "docker" }), DOCKER);
     form.click(form.input('input[name="computer-kind"][value="none"]'));
     expect(form.host.textContent).not.toMatch(/turned off/);
     form.step(/Tools/);

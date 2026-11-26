@@ -40,8 +40,9 @@ type Made = Record<string, unknown> & { id: string };
 /** A fake server: every POST /v2/agents recorded in `made` (an id it has already is 409 agent_exists, as the server
  *  answers), and every POST /v2/agents/{id}/runs in `sent`, answered by `answer` (202 with a run, or a refusal).
  *  `places`: the server's (capabilities `places`), none by default. `agent`: a POST /v2/agents answer of the test's
- *  own (a refusal or a lost answer), else the server's. `harnesses`: capabilities' harnesses, HARNESSES by default. */
-function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null, agent?: (made: Made) => Response | Promise<Response> | undefined, harnesses: typeof HARNESSES = HARNESSES) {
+ *  own (a refusal or a lost answer), else the server's. `harnesses`: capabilities' harnesses, HARNESSES by default.
+ *  `kinds`: GET /v2/computers' kinds, not served (a 404) by default. */
+function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null, agent?: (made: Made) => Response | Promise<Response> | undefined, harnesses: typeof HARNESSES = HARNESSES, kinds?: unknown[]) {
   const sent: Sent[] = [];
   const made: Made[] = [];
   const archived: string[] = [];
@@ -49,6 +50,7 @@ function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Pla
   const fetch = (async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+    if (path === "/v2/computers" && kinds) return json(200, { kinds });
     if (path === "/v2/agents" && init?.method === "POST") {
       const definition = body.definition as Made;
       const theirs = agent?.(definition);
@@ -142,6 +144,24 @@ describe("RaceStart", () => {
     // With a computer named, codex's lane would be put in the box, where a new codex agent never runs (no shell), and a
     // Claude Code login (the runner's alone) could not run a claude-agent lane.
     for (const d of definitions) expect(Object.keys(d).filter((k) => k === "computer" || k === "place"), String(d.harness)).toEqual([]);
+  });
+
+  // Mode 2: the runner is a new agent's place, and GET /v2/computers serves the no-computer choice's run shell as the
+  // runner's own ("local", Archil's exec), which runs bash: pi's lane gets bash on the runner. Where that list says
+  // "none" (Mode 1), it gets no shell tool.
+  it("on a server whose runner's shell runs bash (Mode 2), pi's lane gets bash on the runner; where it has no shell, none", async () => {
+    const runner: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "modal", available: true }], defaultPlace: { mode: "runner" } };
+    const tools = async (shell: string) => {
+      const { host, made } = mount(started, runner, undefined, HARNESSES, [{ kind: "none", offered: true, groups: [], tools: [], settings: [], record: { available: false }, providers: [], shell }]);
+      await settle();
+      await type(host, TASK);
+      await act(async () => { button(host, "Start the race")!.click(); });
+      await settle();
+      act(() => root!.unmount()); root = undefined; document.body.innerHTML = "";
+      return (made as Record<string, unknown>[]).map((d) => [d.harness, d.tools]);
+    };
+    expect(await tools("local")).toEqual([["pi", ["read", "write", "bash", "web_search"]], ["codex", ["read", "write"]]]);
+    expect(await tools("none")).toEqual([["pi", ["read", "write", "web_search"]], ["codex", ["read", "write"]]]);
   });
 
   it("a lane the server refuses says why in its own place; the others start, and Start again sends only that lane, under the key it had", async () => {

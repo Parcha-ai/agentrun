@@ -168,15 +168,18 @@ describe("Settings → Tools: a harness this server can't run", () => {
 // Review findings on the held tools and the Save flag: a place off the box takes its tools off the held ones too; a save
 // keeps a switch made while it was under way; a cap or a workflow written another way is no change.
 describe("AgentEditor: what a switch holds, and what counts as a change", () => {
-  // Mode 1 with Docker: Docker's box is the default place, and the runner has no shell.
   const boxed = { ...caps, tools: toolOffers([{ name: "read", available: true, harnesses: ALL }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]),
-    places: placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "sandbox", box: "docker" }, boxes: [{ id: "docker", available: true }] } }) };
-  it("Mode 2: bash held by a switch to Claude is ticked again on Pi after a move to the runner, whose shell runs it", async () => {
-    const mode2 = { ...boxed, places: placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "runner" }, boxes: [{ id: "modal", available: true }] } }) };
-    const t = mountWith(agent({ definition: { version: 1, name: "boxed", instructions: "Do it.", harness: "pi", skills: [], tools: ["read", "bash"], place: { mode: "sandbox", box: "modal" } } }), mode2);
+    places: placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "runner" }, boxes: [{ id: "docker", available: true }] } }) };
+  // Mode 2: GET /v2/computers serves the no-computer choice's run shell as the runner's own ("local"), which runs bash.
+  it("Mode 2: bash held by a switch to Claude is ticked again on Pi after a move to no computer, whose shell runs it", async () => {
+    const computers = [
+      { kind: "none", offered: true, groups: [], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no computer" }, providers: [], shell: "local" },
+      { kind: "sandbox", offered: true, groups: ["exec"], tools: ["read", "bash"], settings: [], record: { available: false, why: "fixture: no screen" }, providers: [{ id: "modal", name: "modal", secrets: [], required: [], ready: true, metered: false, shell: "computer" }] },
+    ] as unknown as EditorCaps["computers"];
+    const t = mountWith(agent({ definition: { version: 1, name: "boxed", instructions: "Do it.", harness: "pi", skills: [], tools: ["read", "bash"], computer: { kind: "sandbox", provider: "modal" } } }), { ...boxed, computers });
     await pickOption(picker(t.host, "Runtime")!, "claude-agent");
     t.step("Computer");
-    t.click('input[name="place"][value="runner"]');
+    t.click('input[name="computer-kind"][value="none"]');
     t.step("Model & runtime");
     await pickOption(picker(t.host, "Runtime")!, "pi");
     t.step("Tools");

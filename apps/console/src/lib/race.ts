@@ -3,11 +3,12 @@
 // (`lane:<n>`) orders the lanes, never their start times, so the order says nothing about who started first.
 import { type Definition, defaultTools, type ToolOffer } from "./agentForm";
 import type { Client } from "./client";
+import { runnerShellOf } from "./computers";
 import { tokensWords } from "./format";
 import { uuid } from "./idempotency";
 import { newAgentPlace, type Places } from "./place";
 import { steps } from "./timeline";
-import type { Run, TimelineRow } from "./v2";
+import type { ComputerKindView, Run, TimelineRow } from "./v2";
 
 /** The label key that names a race, and the one that numbers its lanes. */
 export const RACE_KEY = "race";
@@ -64,12 +65,13 @@ export type LaneChoice = { harness: string; model: string };
 export type LaneKit = { tools: string[] };
 
 /** A lane's kit, a new agent's on this server: every tool its harness runs here (agentForm.ts defaultTools), with the
- *  shell where the server's default place is a box, and bash where it is the runner, whose shell runs it (Mode 2). It
- *  names no place: the server puts the agent where it puts a new agent with these tools (its defaultPlaceOf, mirrored in
- *  agentForm.ts): the box only with a shell tool where the default is a box, so an adapter harness's lane (no shell) runs
- *  on the runner, where Claude Code's login works and no box starts. */
-export function laneKit(harness: string, offers: ToolOffer[], places: Places | null | undefined): LaneKit {
-  return { tools: defaultTools(harness, offers, newAgentPlace(places), places) };
+ *  shell where the server's default place is a box, and on the runner what the no-computer choice's shell runs there
+ *  (runnerShellOf by the served computers list `kinds`: bash on Archil's exec in Mode 2). It names no place: the server
+ *  puts the agent where it puts a new agent with these tools (its defaultPlaceOf, mirrored in agentForm.ts): the box only
+ *  with a shell tool where the default is a box, so an adapter harness's lane (no shell) runs on the runner, where Claude
+ *  Code's login works and no box starts. */
+export function laneKit(harness: string, offers: ToolOffer[], places: Places | null | undefined, kinds: readonly ComputerKindView[] | null | undefined): LaneKit {
+  return { tools: defaultTools(harness, offers, newAgentPlace(places), runnerShellOf({ kind: "none" }, kinds)) };
 }
 
 /** What a lane sends: its agent (POST /agents) and a run of it (POST /agents/{id}/runs). */

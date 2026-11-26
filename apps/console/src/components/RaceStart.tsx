@@ -10,7 +10,7 @@ import { keepersByRun } from "@/lib/idempotency";
 import type { Places } from "@/lib/place";
 import { type LaneChoice, laneKit, type LaneStart, laneStart, MAX_LANES, MIN_LANES, newRaceLabel, raceFilter } from "@/lib/race";
 import { cn } from "@/lib/utils";
-import type { Run } from "@/lib/v2";
+import type { ComputerKindView, Run } from "@/lib/v2";
 
 /** A harness as capabilities list it: whether it runs here, and the models a person may pick for it. */
 type RaceHarness = { id: string; available: boolean; default_model?: string | null; models?: string[] };
@@ -66,9 +66,17 @@ const pickKey = (n: number, agent: Pick<LaneStart["agent"], "harness" | "model" 
  *  server refuses says why in its own place and the others start all the same. Once every lane has a run it opens the
  *  race (#/races/<label>). A second Start sends only the lanes left, each as it was sent, so no lane ever starts twice.
  *  `label`: the race's (a test's), else a new one (newRaceLabel). `tools` and `places`: capabilities' tool offers and
- *  places, which give each lane a new agent's tools and box (laneKit). */
-export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { v2: Pick<Client, "createAgent" | "listRevisions" | "startRun" | "archiveAgent">; harnesses: RaceHarness[]; tools: ToolOffer[]; places: Places | null; go: (to: string) => void; label?: string }) {
+ *  places, which give each lane a new agent's tools and box (laneKit), with the computers list (GET /v2/computers, read
+ *  here), whose no-computer choice's shell says what a lane on the runner runs there. */
+export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { v2: Pick<Client, "createAgent" | "listRevisions" | "startRun" | "archiveAgent" | "computers">; harnesses: RaceHarness[]; tools: ToolOffer[]; places: Places | null; go: (to: string) => void; label?: string }) {
   const runnable = harnesses.filter((h) => h.available && choices(h).length > 0);
+  // The computers list, null until it answers (and when it can't be read): a lane on the runner gets no shell tool then.
+  const [kinds, setKinds] = useState<ComputerKindView[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    v2.computers().then((r) => { if (live) setKinds(r.kinds); }, () => {});
+    return () => { live = false; };
+  }, [v2]);
   const label = useRef(given ?? newRaceLabel()).current;
   const keys = useRef(keepersByRun()).current;
   // Each pick the form has sent (pickKey), numbered in turn: the same pick is the same agent.
@@ -126,7 +134,7 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   };
 
   const fresh = (i: number) => {
-    const kit = laneKit(lanes[i].harness, tools, places);
+    const kit = laneKit(lanes[i].harness, tools, places, kinds);
     return laneStart(label, i + 1, lanes[i], task.trim(), capUsd, kit, pickOf(pickKey(i + 1, { ...lanes[i], tools: kit.tools })));
   };
   const opened = (all: Record<number, Outcome>, count: number) => Array.from({ length: count }, (_, i) => all[i]).every((o) => o && "run" in o);
