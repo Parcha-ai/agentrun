@@ -1064,10 +1064,11 @@ const CASES = [
           ["after prose with one apostrophe on the same line", `Here's the key: ${code}`],
           ["after prose ending in a lone apostrophe", `The servers' key:\n${code}`],
           ["in a fenced answer between prose with apostrophes", `Here's how:\n\`\`\`python\n${code}\n\`\`\`\nThat's it.`],
-          ["over a Python line continuation after prose with one apostrophe", `I've split it: key = '${a}' ${String.fromCharCode(92)}\n'${b}'`],
+          ["joined by a Python line continuation after prose with one apostrophe", `I've split it: key = '${a}' ${String.fromCharCode(92)}\n'${b}'`],
+          ["joined by a Python line continuation after prose ending in a lone apostrophe", `The servers' key:\nkey = '${a}' ${String.fromCharCode(92)}\n    '${b}'`],
           ["after a comment with one apostrophe, written in a JSON string", JSON.stringify({ path: "a.py", content: `# Here's it\n${code}\n` })],
         ].map(([how, text]) => ({
-          name: `a held value ${value.includes("+") ? 'with a "+"' : 'with no "+"'} printed as single-quoted literals joined by "+" ${how} withholds the text (${value.length} characters)`,
+          name: `a held value ${value.includes("+") ? 'with a "+"' : 'with no "+"'} printed as single-quoted literals ${how.startsWith("joined") ? how : `joined by "+" ${how}`} withholds the text (${value.length} characters)`,
           text, values: [value], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
         }));
       }),
