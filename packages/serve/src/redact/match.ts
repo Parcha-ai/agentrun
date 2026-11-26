@@ -1059,6 +1059,12 @@ type Part = { from: number; to: number; name: boolean };
 
 /** JSON's punctuation between its values. */
 const STRUCTURE = only("{}[],:");
+/** What ends a run of characters outside a string in the join view (partsOf): whitespace and JSON's punctuation. */
+const BETWEEN: Class = (code) => isSpace(code) || STRUCTURE(code);
+/** What the join views drop between a text's strings: what ends a run outside one (BETWEEN), and the quote and the
+ *  apostrophe that open and close one. key-refusal.ts counts each as nothing in the read past a call's stop, so what
+ *  the join views drop is written here once. */
+export const joinDrops = (code: number): boolean => BETWEEN(code) || code === 0x22 || code === 0x27;
 
 /** The character of a JSON text at `at` (before `to`) as `level` reads it, and where it ends: at level 0 each raw
  *  character is itself; at level 1, the text of a string, an escape is the character it stands for ("\" and one
@@ -1098,7 +1104,7 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
     const { char, end } = unitAt(text, at, to, level);
     const code = char.charCodeAt(0);
     if (char !== '"' && !(kind === "quoted" && char === "'")) {
-      if (isSpace(code) || STRUCTURE(code)) endBare(at);
+      if (BETWEEN(code)) endBare(at);
       else if (bare < 0) bare = at;
       at = end;
       continue;
@@ -1394,7 +1400,9 @@ const passedIn = (code: number, char: string, osc: boolean): boolean =>
 
 /** Units a terminal sequence is read over, at places up to `end`: each unit's code and text (a character past U+FFFF
  *  may be one unit), and the place after it. readingsOf reads a view's units; key-refusal.ts reads the text, each unit
- *  as its views decode it there, so both read a sequence by the one reader (sequenceAt). */
+ *  as its views decode it there. The two share the sequence rules (sequenceAt) but not the decoding: each view decodes
+ *  one layer, key-refusal.ts decodes the units itself, so where the two decode a unit differently they can still read a
+ *  sequence differently (key-refusal-sequence-parity.test.mjs reads each shape through every decoding). */
 export type SequenceUnits = {
   readonly end: number;
   readonly code: (at: number) => number;

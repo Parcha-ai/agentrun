@@ -7,7 +7,7 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, foldsHeld, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import { entityAt, jsonEscapeAt, privateKeyEnd, pythonEscapeAt, scanned, sequenceAt, type SequenceUnits, squeeze, type Span } from "./redact/match.js";
+import { entityAt, joinDrops, jsonEscapeAt, privateKeyEnd, pythonEscapeAt, scanned, sequenceAt, type SequenceUnits, squeeze, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -366,12 +366,12 @@ function counted(found: number, chars: string, fold: boolean): number {
 }
 /** Whether `char` opens a terminal sequence (ESC, the 8-bit CSI or OSC): the views read one as a terminal shows it. */
 const opensSequence = (char: string | undefined): boolean => char === "\u001b" || char === "\u009b" || char === "\u009d";
-/** Where the terminal sequence `intro` opens, read on from text[at], ends, read by the matcher's own reader (match.ts
- *  sequenceAt), each unit as charAt or percentAt reads it; or `at` where it opens none (the views then read on from
+/** Where the terminal sequence `intro` opens, read on from text[at], ends, read by the matcher's sequence rules
+ *  (match.ts sequenceAt), each unit as charAt or percentAt decodes it; or `at` where it opens none (the views then read on from
  *  there). It counts as nothing, and a backspace inside it, which still moves back, as one would outside it: `found`
  *  comes back with it taken off (counted). It is read twice, as it stands and with what the join views drop passed over
- *  (whitespace, a no-break space among it, and JSON's punctuation: a ":" or a blank they drop can make a whole escape
- *  of the rest), and the read that ends further is taken. Read no further than a piece of text.
+ *  (match.ts joinDrops: a ":" or a blank they drop can make a whole escape of the rest), and the read that ends
+ *  further is taken. Read no further than a piece of text.
  *
  *  The invariant every count here keeps is one-sided: this read may count fewer characters than the views show
  *  (it then reads further), never more, so no padding the views read past pushes a held value's other half out of
@@ -390,8 +390,7 @@ function sequenceEnd(text: string, at: number, to: number, intro: string, found:
     next: (k) => unit(k).end,
   };
   const code = intro.charCodeAt(0);
-  const joined = (unit: number): boolean => JOIN_DROPS.has(String.fromCharCode(unit)) || /\s/.test(String.fromCharCode(unit));
-  const reads = [sequenceAt(units, code, at), sequenceAt(units, code, at, joined)];
+  const reads = [sequenceAt(units, code, at), sequenceAt(units, code, at, joinDrops)];
   const sequence = reads.reduce((far, one) => (one && (!far || one.end > far.end) ? one : far), undefined);
   if (!sequence) return [at, found];
   let count = found;
@@ -430,9 +429,6 @@ function percentAt(text: string, at: number, to: number): { char: string; end: n
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const SPACES = /\s+/y;
 const HEX_PAIR = /^[0-9A-Fa-f]{2}$/;
-/** What every view drops between a text's strings: a quote, an apostrophe (the join of single-quoted strings) and JSON's
- *  punctuation (the join view). */
-const JOIN_DROPS = new Set(['"', "'", "{", "}", "[", "]", ",", ":"]);
 /** What the fold view drops: the separators of a hex identifier. */
 const FOLD_DROPS = new Set(["-", "_", ":", "."]);
 /** How many characters the views keep of `chars` at the least (peek): squeezed (a control character that is no
@@ -441,7 +437,7 @@ const FOLD_DROPS = new Set(["-", "_", ":", "."]);
  *  fold view drops. */
 function kept(chars: string, fold: boolean): number {
   let count = 0;
-  for (const char of squeeze(chars)) if (!JOIN_DROPS.has(char) && !(fold && FOLD_DROPS.has(char))) count += char.length;
+  for (const char of squeeze(chars)) if (!joinDrops(char.charCodeAt(0)) && !(fold && FOLD_DROPS.has(char))) count += char.length;
   return count;
 }
 
