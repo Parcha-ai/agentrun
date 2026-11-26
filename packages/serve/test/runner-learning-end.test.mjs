@@ -533,6 +533,21 @@ test("messagesOf: every message a person sent, whole, in order, with its said wh
   ]), [{ text: big }, { text: "Do not send it.", said: "No." }, { text: "Short.", said: "Mine." }]);
 });
 
+test("messagesOf + ownerWords: a grade's feedback steer is no person's message: a later follow-up with the grade's own text keeps its own said, and the next message stays paired with its own", () => {
+  const command = (kind, body, refused = null) => ({ kind, body, refused });
+  const graded = "Freight goes to 6400.";
+  const commands = [
+    command("steer", { text: graded, feedback: { kept: { at: 3 }, grade: "wrong" } }),
+    command("steer", { text: graded, said: "Mine: freight goes to 6400." }),
+    command("steer", { text: graded, said: "Again, mine." }),
+  ];
+  assert.deepEqual(messagesOf(commands), [{ text: graded, said: "Mine: freight goes to 6400." }, { text: graded, said: "Again, mine." }], "the grade's steer is left out");
+  // The grade's round's rows are left out of the job's (withoutFeedbackRounds); the two follow-ups' rows remain.
+  const job = [row("0:1", "user_message", { text: "Question 1" }), row("0:2", "final_answer", { text: "42" })];
+  const rows = [...job, row("0:9", "user_message", { text: graded }), row("0:11", "user_message", { text: graded })];
+  assert.deepEqual(ownerWords([], rows, messagesOf(commands)), ["Mine: freight goes to 6400.", "Again, mine."]);
+});
+
 test("ownerWords: a subagent's task prompt (a child conversation's user_message) is not the owner's; a root message after the answer still is", () => {
   const job = [row("0:1", "user_message", { text: "Question 1" })];
   const child = row("1:1", "user_message", { text: "Research the freight rates", conversation_id: 1, parent_tool_use_id: "toolu_spawn" });

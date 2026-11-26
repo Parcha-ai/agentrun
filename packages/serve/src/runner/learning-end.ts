@@ -281,13 +281,16 @@ export type TakenMessage = { readonly text: string; readonly said?: string };
 
 /** The messages a person sent of a run's command rows `commands`, in the order they were written, each whole with its
  *  `said` when sent with one: a steer's text, or the note of a deny (a message makes one of an approval it found
- *  waiting, runs-over-store.ts message). A refused row took no turn, and a trigger's or the server's steer (`origin`) is
- *  no person's: both are left out. The one place a message's whole text and its `said` are read back for learning. */
+ *  waiting, runs-over-store.ts message). A refused row took no turn, and a trigger's or the server's steer (`origin`)
+ *  and a grade's feedback round's (`feedback`) are no person's message of the job's: all are left out. The one place a message's whole text and its `said` are read back for learning. */
 export function messagesOf(commands: readonly Command[]): TakenMessage[] {
   return commands.flatMap((command) => {
-    const body = (command.body ?? {}) as { text?: unknown; note?: unknown; said?: unknown; origin?: unknown };
+    const body = (command.body ?? {}) as { text?: unknown; note?: unknown; said?: unknown; origin?: unknown; feedback?: unknown };
     const text = command.kind === "steer" ? body.text : command.kind === "deny" ? body.note : undefined;
-    if (command.refused !== null || typeof text !== "string" || !text.trim() || body.origin !== undefined) return [];
+    // A grade's feedback round (its steer's `feedback`, written by the server alone: feedback-round.ts openFeedbackRound)
+    // is no message of the job's: its rows are left out (withoutFeedbackRounds), so its command is too, or a later message
+    // with its text would pair with it and keep the grade's words in place of its own.
+    if (command.refused !== null || typeof text !== "string" || !text.trim() || body.origin !== undefined || body.feedback !== undefined) return [];
     return [{ text: text.trim(), ...(typeof body.said === "string" ? { said: body.said } : {}) }];
   });
 }
