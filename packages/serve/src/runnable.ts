@@ -222,10 +222,11 @@ export async function blockersOf(env: NodeJS.ProcessEnv, revision: RevisionShape
       }
       if (!allows(BOUND_TOOLS, tool)) out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} is not a tool here: grant one of ${BOUND_TOOLS.join(", ")}, an MCP server's tool as mcp:<server>/<tool>, or a monid endpoint as monid:<provider>/<endpoint>.`, host: false, tool });
       // A shell runs in a box; on the runner (no place names one) only what its shell here runs (runnerShell).
-      // One that names no place is refused at its place, once, whatever shell tools it names.
+      // One that names no place is refused once, whatever shell tools it names: at its place (Mode 1), or at its computer
+      // on a Mode 2 region with no exec.
       else if (toolOf(tool)!.sandboxOnly && (place?.mode ?? "runner") === "runner" && !runnerShell.has(tool)) {
         const blocker = shellOnRunner(tool, `definition.tools[${index}]`, !!place && !revision.unnamed);
-        if (!out.some((b) => b.field === "definition.place" && b.message === blocker.message)) out.push(blocker);
+        if (!out.some((b) => b.field === blocker.field && b.message === blocker.message)) out.push(blocker);
       }
       // Its writes into work/ go by path from this machine, and a box's command could swap a link in on their way.
       else if (toolOf(tool)!.runnerOnly && place?.mode === "sandbox") out.push({ field: `definition.tools[${index}]`, reason: "not_an_option", message: `${tool} does not run in a sandbox place yet: it saves files into the run's work/ from this server, outside the box, and a command in the box could point those writes elsewhere on this server. Give it to an agent whose place is the runner.`, fix: `Remove "${tool}" from definition.tools.`, host: false, tool });
