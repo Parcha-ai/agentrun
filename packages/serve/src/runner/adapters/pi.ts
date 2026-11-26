@@ -725,11 +725,11 @@ export async function turnRecordsOf(page: (cursor: unknown) => Promise<{ readonl
  * undefined (the result stands as it is); past it, its text parts as one text cut at the bound with its note, or refused
  * in words for a window too small for any cut, its images kept after it. Never the oversized text.
  */
-export async function boundPiResult<R extends { readonly output?: readonly { readonly type: string; readonly text?: string }[] }>(result: R, contextWindow: number | undefined, claim?: { readonly turn: TurnBudget; readonly callId: string }): Promise<R | undefined> {
+export async function boundPiResult<R extends { readonly output?: readonly { readonly type: string; readonly text?: string }[]; readonly isError?: boolean }>(result: R, contextWindow: number | undefined, claim?: { readonly turn: TurnBudget; readonly callId: string }): Promise<R | undefined> {
   const parts = result.output;
   if (!parts) return undefined;
   const whole = parts.map((part) => (part.type === "text" ? (part.text ?? "") : "")).join("");
-  const { text, truncated } = boundTo(whole, await maxOf(contextWindow, claim));
+  const { text, truncated } = boundTo(whole, await maxOf(contextWindow, claim), { error: Boolean(result.isError) });
   claim?.turn.settle(claim.callId, text.length);
   if (!truncated) return undefined;
   return { ...result, output: [{ type: "text", text }, ...parts.filter((part) => part.type !== "text")] } as unknown as R;
@@ -814,7 +814,7 @@ export function piTool(tool: HostTool, io: PiSessionIO, attemptOf: (callId: stri
       });
       // The answer's text within the bound for the calling agent's model (its window, when the host knows it), as the
       // tool bridge holds a bridged harness's; the host's record of the call (its tool_end) carries the same text.
-      const { text, truncated } = boundTo(answer.text, max);
+      const { text, truncated } = boundTo(answer.text, max, { error: Boolean(answer.isError) });
       io.onEvent({ type: "tool_end", callId: api.callId, name: tool.name, isError: Boolean(answer.isError), result: text, ...(truncated ? { truncated } : {}) });
       const images = (answer.images ?? []).map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType }));
       // A nested call's (its id `<callId>/<key>`) value in the result's details (which the model never reads), recorded
