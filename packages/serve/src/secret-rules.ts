@@ -2670,7 +2670,7 @@ const FLAT_WORD = /\S{1,4096}/g;
 /** The most words a flattened command is read for before its output's first NAME=value. */
 const FLAT_COMMAND_WORDS = 16;
 /** A transcript flattened onto one line (11-26: a run's title is its first message with every run of blanks one
- *  space, so `$ printenv\nHOME=/root\n...` reads `$ printenv HOME=/root ...`): after each prompt, the fewest words that
+ *  space, so `$ printenv\nAPP_SEED=v\n...` reads `$ printenv APP_SEED=v ...`): after each prompt, the fewest words that
  *  print the environment (printsEnvironment) followed by a NAME=value word (ENV_LINE) are the command, and from that word
  *  to the next prompt or the text's end is its output, cut. Where a flattened command ends can't be told from its
  *  output's first word, so `$ env NAME=value command` is cut there too: an over-cut, fails closed, and only for a text
