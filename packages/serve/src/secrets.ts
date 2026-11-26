@@ -192,6 +192,11 @@ export const withSecrets = (env: NodeJS.ProcessEnv, which: "all" | "own" = "all"
   return out;
 };
 
+/** A copy of `env` (one withSecrets made) with every own property as it is: each secret still read by name and never
+ *  enumerated, savedIn still saying which were saved, and its symbols. A spread keeps none of the secrets, so a copy
+ *  that is read for a key is made with this (env-copy.test.mjs scans for spreads). */
+export const copyEnv = <T extends object>(env: T): T => Object.create(Object.getPrototypeOf(env), Object.getOwnPropertyDescriptors(env)) as T;
+
 /** The secrets of `env` (one withSecrets made) that were saved on the server, not its own, by name. */
 export const savedIn = (env: NodeJS.ProcessEnv): ReadonlySet<string> => (env as { [SAVED]?: Set<string> })[SAVED] ?? new Set();
 

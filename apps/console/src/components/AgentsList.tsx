@@ -21,7 +21,7 @@ import { workflowShape } from "@/lib/workflowDoc";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { newAgentEditorHref } from "@/lib/agentEditorRoute";
 import { editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 
 export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void };
 
@@ -36,12 +36,12 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
   const incomplete = loading || !!error || !!connected?.error;
   const storageFull = connected?.data?.connectors.some((connector) => connector.storage_full);
   return (
-    <section className="flex min-h-full flex-col">
+    <section className={pageClass}>
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
         <h1 className={pageTitleClass}><Brain className="size-4" aria-hidden />{archived ? "Archived agents" : "Agents"}</h1>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{handoff}{!archived && <a href={newAgentEditorHref()} className={buttonVariants({ size: "sm", variant: "primary" })}><Plus aria-hidden />New agent</a>}</div>
       </header>
-      <div className="p-5 md:p-6">
+      <div data-page-body className={cn(pageBodyClass, "p-5 md:p-6")}>
       <div className="mb-5 flex flex-wrap items-center gap-3">
         <label className={cn(fieldBoxClass, "flex h-control-lg min-w-0 flex-1 items-center gap-3 px-3")}>
           <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />

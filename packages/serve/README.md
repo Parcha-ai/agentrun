@@ -74,9 +74,10 @@ once they have loaded. A port already taken at the start is left to the start's 
 replaces, as it always has, and prints no `Starting` line.
 
 A Docker box's image is built on its first run, which shows that on its timeline. `npx @parcha/agentrun` prints the
-`Boxes:` line on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so new agents run on the
-runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker, then restart
-AgentRun.`); see [Sandbox](#sandbox).
+`Boxes:` line on stderr, after its own line on stdout. On a machine where Docker is not running, the `Boxes:` line says so instead (`Boxes: none, so a new agent must name its
+place: a box, or the runner. Docker isn't running on this machine (no docker command on PATH): install or start Docker,
+then restart AgentRun.`; in Mode 2, where the runner's shell is Archil's serverless exec, `Boxes: none, so new agents run on
+the runner.` and Docker's reason); see [Sandbox](#sandbox).
 
 `Open` is [the console](#the-console), which takes [your password](#your-password). For a client, export the two lines before
 it, then make an agent, start a run, and read its timeline until a page says `final`:
@@ -628,17 +629,43 @@ command in the background ([background processes](#background-processes)). The p
 revision, so its answers show it. A definition that names its tools keeps exactly those, an empty list included, and
 gets the box only when one of them runs only there (`bash` or a background tool). One whose tools need no shell (`[]`,
 or `read`, `write`, `web_fetch` and the like) is saved with no place and runs on the runner, so its first run starts at
-once instead of waiting on a container. Where docker is unavailable, a new agent is saved with no place. So is one whose
-tools name one the box refuses (`browser`, runner-only for now). A workflow is never given a box.
+once instead of waiting on a container. One whose tools name one the box refuses (`browser`, runner-only for now) is
+saved with no place too. A workflow is never given a box.
 
-`capabilities.places.default_place` is the place a new agent with a shell gets here, and where a revision that names no
-place and has a shell tool runs. It is worked out again at each run, the same way as at create: an agentic revision with
-no place and a shell tool runs in the Docker box wherever this server has docker now, and on the runner where it does
-not. A workflow, a revision whose tools need no shell, and one whose tools name one the box refuses run on the runner. A save checks a revision with no place against where it would run, so `bash`
-with no place saves where docker is there and is `422` where it is not. When that is the runner,
-`default_reason` says why in docker's own words, such as `new agents run on the runner, because the docker box is
-unavailable here: Docker isn't running on this machine (no docker command on PATH): install or start Docker, then
-restart AgentRun`. The console's new-agent form says docker's reason too, under its place picker. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox.
+Where a new agent with no place goes, by mode:
+
+- **Docker's box available:** it gets the box (`default_place` is `{"mode": "sandbox", "box": "docker"}`, no
+  `default_reason`), as above.
+- **No Docker, and the runner has no shell (Mode 1): refused, `name a box`.** A new agent that would get the box (no
+  tools named, or a shell tool) is `422 input_invalid` with `{field: "definition.place", reason: "missing"}`, and so is an
+  edit that would save such a revision: `name a box: this server has no Docker box for a new agent. Set place to {mode:
+  sandbox, box: <one of: daytona, e2b>}, or to {mode: runner} to run without a shell. docker: <why>.` The words list the
+  boxes this server has (`<none is set up>` when it has none), and its `fix` says the same, so no box is picked for it:
+  the default box is the one whose provider descriptor sets `defaultBox` (Docker's), never another box that answers. They
+  end with why Docker's box is not here, in its entry's own words and fix (joining the docker group, say). A template
+  apply, or an `agentrun deploy`, of a package that names no `tools` and no `computer` list is refused the same way,
+  whatever MCP tools it ticks: it is the agent that gets the box where Docker is here. Its `dry_run` is refused
+  alike, with no plan. `default_place` is `null`, and
+  `default_reason` carries those words. A definition with no place that names a shell tool and the browser is refused at
+  the shell tool instead: a box refuses the browser, so no place runs both, and the words say to remove one.
+- **No Docker, in Mode 2:** not refused. The runner's shell is Archil's serverless exec, so a new agent with no place
+  saves for the runner as before, and `default_place` is `{"mode": "runner"}`, no `default_reason`. A background tool
+  still runs in a box alone, so naming one with no place is refused at the tool.
+
+A definition that names its place, the runner included, a workflow, and one whose tools need no shell save as before in
+every mode, and so does a package that names its tools (`tools: []` included) or its computer list. An agent saved
+before this change with no place and no tools keeps running on the runner: the store holds its tools as `[]`.
+
+`capabilities.places.default_place` is always sent: the place a new agent with a shell gets here, and where a revision
+that names no place and has a shell tool runs; `null` means no default, so a new agent names its place. It is worked out
+again at each run, the same way as at create: an agentic revision with no place and a shell tool runs in the Docker box
+wherever this server has docker now, on the runner in Mode 2, and in Mode 1 with no Docker its run is `409
+agent_not_runnable` in the `name a box` words. A workflow, a revision whose tools need no shell, and one whose tools name
+one the box refuses run on the runner. `default_reason` is there exactly when `default_place` is `null`; a client tells
+the cases apart by `default_place === null`, never by reading `default_reason`. Docker's own reason is on its entry in
+`boxes`. The console's new-agent form starts on `default_place`, with bash ticked when that place is a sandbox; with
+`null`, it starts on neither the server nor a box, Create waits until one is chosen, and its picker says each box's
+reason, and, with no box set up, that the agent needs one set up or On the server chosen.
 What a person picks or unticks there is what is sent.
 
 A run runs in its revision's place, else where `default_place` says at that run (a workflow, a revision whose tools need
@@ -658,8 +685,8 @@ the server is in Mode 1.
 `unavailable`) and, when it is unavailable, the `reason`.
 A definition naming a box this server does not have saves with a warning on `definition.place`, and a run of it is
 `409 agent_not_runnable` with `details.box`. `GET /v2/openapi.json` marks `definition.place`, the run's `place` and
-`capabilities.places` `x-agentrun-serve: "place/1"`, `default_reason` `"place/3"`, and `default_place` `"place/4"`
-(it replaced `places.default`).
+`capabilities.places` `x-agentrun-serve: "place/1"`, and `default_place` and `default_reason` `"place/5"` (`default_place`
+replaced `places.default`, and took `null` at place/5).
 
 ### A run in a Docker box
 
@@ -1030,7 +1057,10 @@ run's hold), newest first. The runs list carries no computer, so this is the one
 across runs and agents; the console's Settings → Computers shows it as Running now. An agent's own computer kept
 between runs is on the agent's read (`own_computer`), and a paired computer under `paired` in `GET /v2/computers`. The keys are
 `DAYTONA_API_KEY` (with `DAYTONA_API_URL` and `DAYTONA_TARGET` optional), `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`,
-`E2B_API_KEY`, `AGENT37_API_KEY` and `AGENT37_SSH_KEY`, `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
+`E2B_API_KEY`, `AGENT37_API_KEY` (with `AGENT37_SSH_KEY` optional: unset, the server makes its own SSH key on first use,
+seals it in its store as every saved key under `AGENTRUN_SEAL_KEY`, and registers it on the workspace as
+`agentrun-<hash>`, one key per store even when claims or servers reach first use together; without a seal key, a new
+key each restart, the old one left on the workspace), `MORPH_API_KEY`, `ORGO_API_KEY`, `PHONE_HARNESS_API_KEY`,
 `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, `KERNEL_API_KEY`, `BOXD_API_KEY` (with `BOXD_ORG` and
 `BOXD_REGION` optional), `SMOLCLOUD_API_KEY`, `GROUNDBOX_API_KEY`, `CLOUDFLARE_RELAY_URL` and `CLOUDFLARE_RELAY_TOKEN` (the relay Worker's,
 `packages/computer/relays/cloudflare`), and `FLY_API_TOKEN` and `FLY_APP`; Docker takes none.
@@ -4454,6 +4484,14 @@ server's own origin, under a CSP that allows that origin only, but for the provi
 - **Mission Control**: the store's counts, imported history, analytics and the latest runs, available before the first
   server-run agent and without a model-provider key. Its introduction is dismissible. Connect agent and Query use
   the coding-agent selector; the page refreshes when you return from your coding agent.
+- **Agent Factory** (`#/factory`): a kanban of sessions reported to this server, including parallel runs of one agent,
+  reported active child conversations, an audit's shadow run while it runs, and sessions without a repository. Waiting, Working, Needs you and Unknown
+  describe execution; a completed run does not prove that its GitHub change passed checks or merged. Cards open the
+  existing run viewer for activity and supported controls. GitHub links come from launch or trusted trigger provenance.
+  Native connector health and missing SDK freshness are explicit; observed sessions do not acquire controls here.
+  Archived active runs remain visible, imported history is excluded, and ended attention is separate from active counts.
+  The board refreshes every ten seconds after a read settles. It reads bounded pages and offers **Load more** with
+  partial-coverage counts; failures preserve the last-known cards with a stale notice.
 - **Agents**: **Build** opens a description composer and local starter templates; **Connected agents** lists definitions,
   with archived ones behind **Archived**. Build, edit and run actions share the remembered coding-agent dropdown,
   including **API playground**. Choosing a template prepares its full definition without creating or running it.
@@ -4481,6 +4519,18 @@ A run that reports learning also has a **Learning result** panel: the outcome, t
 the checks' problems, and the seed and merge revisions. Its changed
 files remain available beside the result. The agent's Learning tab refreshes after returning to the console and
 while visible, without replacing an open edit or review.
+
+The visibility API uses `GET /v2/runs?scope=active` and `scope=review` (also on an agent's runs route), with `limit`
+and opaque `next_cursor`. Scope is filtered before pagination; cursors are tied to the scope and agent filters.
+Do not combine scope with `status` or `archived`. Scoped summaries add `factory` source/control, observation,
+activity, GitHub provenance and reported-child metadata. A lifecycle version captured inside each run snapshot
+orders overlapping observations across the two scopes. A run's summary is built once per change of the run and
+kept on its row, as the runs list keeps its items, so a refresh builds no view of a run that has not changed;
+only who observes the run and its computer are read at each request (a computer's read opens the run's journal
+only for a desktop or phone that is up, or a computer held for its owner). GitHub provenance is what the server
+saved of the delivery that fired the run, never a payload tag found in its input; a run started before servers
+saved it (0.1.0-beta.39) shows no GitHub link. An online connector is transport health, not a heartbeat for each
+session. These reads add no scheduling, branch-writing or merge authority.
 
 Its files (`index.html`, and Vite's hashed files under `/assets/`) are public and hold no data: everything it shows
 comes through `/v2`. With accounts on (the default) the console asks for the owner's password
