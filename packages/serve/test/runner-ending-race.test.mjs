@@ -8,7 +8,9 @@
 // (c) a command() that answers only after finish's wait ran out and the release: no store call and no event follow it;
 // (d) a person's message that reopens the run after its end commit (the store's release) and before the runner's own
 //     release: the runner claims it once and holds that claim, starts its loop only once the first claim settled, and
-//     its first claim's end still says released.
+//     its first claim's end still says released;
+// (e) that reopened run's claim lost while it waits (its renews never land): its loop is never started, so no process
+//     takes the run's folders back from under the runner that holds it now.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -149,4 +151,29 @@ test("(d) a run reopened between its end commit and the runner's release is clai
   assert.deepEqual(events.filter((event) => event.type === "error"), [], "the first claim's release is no fenced write");
   await until(() => control.started, "the reopened run's loop runs once the first claim settled");
   assert.equal(record.claims.length, 2, `one claim for the reopen: ${JSON.stringify(record.claims)}`);
+});
+
+test("(e) a reopened run whose claim is lost while it waits for the first claim to settle never starts its loop", async (t) => {
+  const { server, record, events, control } = await running(t);
+  let letRelease;
+  record.holdRelease = new Promise((resolve) => (letRelease = resolve));
+  t.after(() => letRelease());
+  control.started = false;
+  await control.end();
+  await until(() => releasedAt(record) !== undefined, "the first claim's release asked");
+
+  await server.runs.reopen("run-1", { kind: "steer", body: { text: "go on" } });
+  await until(() => record.claims.length === 2, "the reopened run claimed");
+  const second = record.claims[1].epoch;
+  // The reopen's claim is never renewed again: it runs out while the first claim is still letting go.
+  let letRenewGo;
+  record.holdRenew = new Promise((resolve) => (letRenewGo = resolve));
+  t.after(() => letRenewGo());
+  await until(() => events.some((event) => event.type === "claim-lost" && event.epoch === second), "the reopen's claim lost", 5_000);
+
+  letRelease();
+  const first = record.claims[0].epoch;
+  await until(() => events.some((event) => event.type === "released" && event.epoch === first), "the first claim's end settles");
+  await sleep(300);
+  assert.equal(control.started, false, "a claim lost while it waited starts no loop");
 });
