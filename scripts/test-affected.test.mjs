@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SMOKE, ownFolders, readTestSets, scan, select } from './test-affected.mjs';
+import { SMOKE, ownFolders, readPackages, readTestSets, scan, select } from './test-affected.mjs';
 
 const selector = fileURLToPath(new URL('./test-affected.mjs', import.meta.url));
 const repo = fileURLToPath(new URL('..', import.meta.url));
@@ -105,6 +105,51 @@ test('a package.json, tsconfig or build script change picks that package\'s ever
   }
 });
 
+// @fx/c's test script preloads register.mjs, which registers hooks.mjs (node:module's register), which names guard.mjs by
+// new URL: every test process runs all three, and no test imports any of them. The suites are given to select() as CI
+// reads them; package.json's script is what readPackages reads for the files it names.
+function preloaded(root, script) {
+  const sets = readTestSets(root);
+  const c = {
+    'packages/c/test/fixtures/register.mjs': "import { register } from 'node:module';\nregister('./hooks.mjs', import.meta.url);\n",
+    'packages/c/test/fixtures/hooks.mjs': "const GUARD = new URL('./guard.mjs', import.meta.url).href;\nexport async function resolve(specifier, context, next) { return next(specifier, context); }\n",
+    'packages/c/test/fixtures/guard.mjs': 'export const guarded = true;\n',
+    'packages/c/test/one.test.mjs': "import test from 'node:test';\n",
+    'packages/c/test/two.test.mjs': "import test from 'node:test';\n",
+    'packages/c/package.json': JSON.stringify({ name: '@fx/c', version: '1.0.0', type: 'module', scripts: { test: script } }),
+  };
+  for (const [path, text] of Object.entries(c)) { mkdirSync(join(root, dirname(path)), { recursive: true }); writeFileSync(join(root, path), text); }
+  return [...sets, { name: '@fx/c', dir: 'packages/c', files: ['test/one.test.mjs', 'test/two.test.mjs'], command: (files) => ({ argv: ['node', '--test', ...files], env: {} }) }];
+}
+
+test("a file the test script's preload reaches (register.mjs registers hooks.mjs, which names guard.mjs) picks the package's every test", (t) => {
+  const every = ['packages/c/test/one.test.mjs', 'packages/c/test/two.test.mjs'];
+  for (const script of ["node --test --test-concurrency=8 --import=./test/fixtures/register.mjs 'test/*.test.mjs'", "node --import ./test/fixtures/register.mjs --test 'test/*.test.mjs'"]) {
+    const root = fixture(t);
+    const sets = preloaded(root, script);
+    for (const path of ['packages/c/test/fixtures/guard.mjs', 'packages/c/test/fixtures/hooks.mjs', 'packages/c/test/fixtures/register.mjs']) {
+      const result = select(root, [path], { sets, smoke: {} });
+      const files = Object.fromEntries(result.suites.flatMap((suite) => suite.files.map((file) => [`${suite.dir}/${file}`, suite.why[file].map((why) => why.kind)])));
+      assert.deepEqual(files, Object.fromEntries(every.map((test) => [test, ['package']])), `${script}: ${path}`);
+      assert.deepEqual(result.paths, [{ path, kinds: { package: 2 } }], `${script}: ${path}`);
+    }
+    // The chain runs from the file the script names to the changed path.
+    const why = select(root, ['packages/c/test/fixtures/guard.mjs'], { sets, smoke: {} }).suites[0].why['test/one.test.mjs'][0];
+    assert.deepEqual(why.chain, ['packages/c/test/fixtures/register.mjs', 'packages/c/test/fixtures/hooks.mjs', 'packages/c/test/fixtures/guard.mjs'], script);
+  }
+});
+
+test('the files a script names: plain words, the value of a --flag=value word, and the word after --import, --require or --loader', (t) => {
+  const root = fixture(t);
+  for (const path of ['packages/d/one.mjs', 'packages/d/two.cjs', 'packages/d/three.mjs', 'packages/d/four.mjs', 'packages/d/five.mjs']) writeFileSync((mkdirSync(join(root, dirname(path)), { recursive: true }), join(root, path)), '\n');
+  writeFileSync(join(root, 'packages/d/package.json'), JSON.stringify({ name: '@fx/d', scripts: {
+    build: 'node five.mjs',
+    test: "node --import=./one.mjs --require ./two.cjs --loader three.mjs --experimental-loader='./four.mjs' --test-concurrency=2 --test 'test/*.test.mjs'",
+  } }));
+  const d = readPackages(root).find((pkg) => pkg.name === '@fx/d');
+  assert.deepEqual(d.named.sort(), ['packages/d/five.mjs', 'packages/d/four.mjs', 'packages/d/one.mjs', 'packages/d/three.mjs', 'packages/d/two.cjs']);
+});
+
 test('a workflow change picks the smoke set only, and says why', (t) => {
   const root = fixture(t);
   const { files, result } = picked(root, ['.github/workflows/ci.yml'], { '@fx/b': 'test/plain.test.mjs' });
@@ -178,6 +223,18 @@ test('the parse tree: type-only imports are not imports, a computed import() is 
     "// import x from './comment.js';",
   ].join('\n'), 'x.ts');
   assert.deepEqual(found, { specifiers: ['./d.js', './g.json', './i.cjs'], computed: true });
+});
+
+test("the parse tree: node:module's register(<relative>, import.meta.url) is an import, bare or as module.register", () => {
+  const found = scan([
+    "import module, { register } from 'node:module';",
+    "register('./hooks.mjs', import.meta.url);",
+    "module.register('./more-hooks.mjs', import.meta.url);",
+    "register('some-package/hooks');",
+    "register('https://example.com/hooks.mjs', import.meta.url);",
+    "emitter.register('./not-a-path.mjs');",
+  ].join('\n'), 'register.mjs');
+  assert.deepEqual(found, { specifiers: ['node:module', './hooks.mjs', './more-hooks.mjs'], computed: false });
 });
 
 test('the command line: commands per package from its test script, --json with reasons, --concurrency lowers, --list', (t) => {
