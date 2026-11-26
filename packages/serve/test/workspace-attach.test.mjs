@@ -192,6 +192,26 @@ test("attached: exec is the computer's process.start in /workspace/<cwd>, read a
   await refused(workspace.exec(["no-such-program-here"], { env: {}, timeoutMs: 1000 }), "NOT_FOUND");
 });
 
+test("attached: exec's stdin, a write computerd refuses: a program that closed its input (invalid) answers as it ended; any other failure (a write it did not read in time) fails the call at once, naming the cause, and kills the process", async () => {
+  const { root, computer, workspace } = await attached();
+  realProcesses(computer, root);
+  const env = { PATH: "/usr/bin:/bin" };
+  // computerd's answer to a write once the program closed its stdin or ended (process/table.go Write: EPIPE, EIO, a
+  // closed file): kind invalid. The program's own exit is the answer.
+  computer.overrides["process.write"] = { result: { ok: false, error: { code: "invalid", message: "process 1 no longer reads its input: it closed its stdin, or ended (0 of 12 bytes were written)" } } };
+  const closed = await workspace.exec(["sh", "-c", "exit 5"], { env, timeoutMs: 5000, stdin: Buffer.from("never read\n") });
+  assert.equal(closed.code, 5);
+  // computerd's answer to a write the program did not read within its bound (writeTimeout, 10 s): kind timeout. The
+  // program, which reads its input to the end, would wait for the stdin never closed until the call's own deadline; the
+  // call fails now instead, the write's words in it, and the process is killed.
+  computer.clear();
+  computer.overrides["process.write"] = { result: { ok: false, error: { code: "timeout", message: "process 2 did not read its input: 0 of 12 bytes were written in 10s" } } };
+  const started = Date.now();
+  await refused(workspace.exec(["sh", "-c", "cat > /dev/null"], { env, timeoutMs: 30_000, stdin: Buffer.from("never read\n") }), "TIMEOUT", /did not read its input: 0 of 12 bytes were written/);
+  assert.ok(Date.now() - started < 10_000, `failed at once, not at the call's deadline: ${Date.now() - started} ms`);
+  assert.ok(computer.calls.some(([method, params]) => method === "process.signal" && params.signal === "KILL"), "the process was killed");
+});
+
 test("attached: exec streams, gives onOutput every byte of a long output (its end included), keeps the cap's head, and says a signal", async () => {
   const { root, computer, workspace } = await attached();
   realProcesses(computer, root);
