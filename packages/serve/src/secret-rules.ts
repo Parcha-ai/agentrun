@@ -2625,7 +2625,8 @@ function pieceDumps(piece: string): boolean {
     const name = wordName(word);
     if (!XTRACE_WORDS.has(name) && !DECLARE_WORDS.has(name) && name !== "ps" && name !== "heroku") return false;
     const args = argsAfter(words, at);
-    if (name === "heroku") return args.some((arg) => HEROKU_CONFIG.test(arg));
+    // A redirect attached to the argument (`config>/tmp/x`) is no part of it, as wordName reads a command's name.
+    if (name === "heroku") return args.some((arg) => HEROKU_CONFIG.test(arg.split(WORD_REDIRECT)[0]!));
     if (XTRACE_WORDS.has(name) && args.some((arg) => XTRACE_FLAG.test(arg.toLowerCase()))) return true;
     if (name === "set") return args.length === 0;
     if (DECLARE_WORDS.has(name)) return args.every((arg) => arg.startsWith("-")) || args.some((arg) => PRINT_FLAG.test(arg));
@@ -2642,11 +2643,14 @@ function pieceDumps(piece: string): boolean {
  *  an earlier call set up (an alias, a symlink to an environ file, a script it wrote), which no line reader can. */
 function printsEnvironment(command: string): boolean {
   if (command.length > COMMAND_MAX) return true;
-  const line = command.replace(COMMAND_QUOTES, "").replace(MEMBER_BREAK, "").replace(DOT_ENV_FILE, "$1");
-  const tokens = line.toLowerCase().split(ENV_TOKEN_BREAK);
+  // Read twice: with a member access across a line break joined (`process\n  .env` is `process.env`), and as written,
+  // where that break still ends a command (`readonly\n.venv/bin/python`: readonly alone prints, joined it read as python).
+  const unquoted = command.replace(COMMAND_QUOTES, "");
+  const lines = [unquoted.replace(MEMBER_BREAK, "").replace(DOT_ENV_FILE, "$1"), unquoted.replace(DOT_ENV_FILE, "$1")];
+  const tokens = lines.flatMap((line) => line.toLowerCase().split(ENV_TOKEN_BREAK));
   if (tokens.some((token) => ENV_WORD.test(token))) return true;
   if (VARIABLE_WORD.test(command) && (HERE_INPUT.test(command) || tokens.some((token) => PRINT_WORDS.has(token)))) return true;
-  return line.split(COMMAND_SPLIT).some(pieceDumps);
+  return lines.some((line) => line.split(COMMAND_SPLIT).some(pieceDumps));
 }
 /** All of a call's output as one dump, from its first character that is not a blank to its last (11-25 read): its
  *  lines can't be told apart by command, a value can span lines, and a first line that opens like a JSON field or a
