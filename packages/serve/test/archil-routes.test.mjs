@@ -20,6 +20,13 @@ const FROM_CONSOLE = { name: "workspace:archil", set: true, source: "console", c
 const PINNED = `ghcr.io/agentrun/exec@sha256:${"a".repeat(64)}`;
 const SETTINGS = { region: "aws-us-east-1", s3Url: "https://s3.archil.example" };
 const API = "archil-account-secret-0001";
+/** Each region serve knows, with its S3 URL: every view carries them, so a form offers the regions and their URLs. */
+const REGIONS = {
+  "aws-us-east-1": "https://s3.green.us-east-1.aws.prod.archil.com",
+  "aws-us-west-2": "https://s3.green.us-west-2.aws.prod.archil.com",
+  "aws-eu-west-1": "https://s3.green.eu-west-1.aws.prod.archil.com",
+  "gcp-us-central1": "https://s3.blue.us-central1.gcp.prod.archil.com",
+};
 
 async function setup(t, { answer, ...given } = {}) {
   const sealKey = randomBytes(32);
@@ -47,7 +54,7 @@ test("settings in the server's environment: on with source env over a saved row;
   const { store, call } = await setup(t, { env: { ...ENV, ARCHIL_API_KEY: "test-key" } });
   await store.settings.put("archil", SETTINGS);
   const view = await call("getWorkspaceArchil");
-  assert.deepEqual(view, { on: true, source: "env", ...FROM_ENV, secret: { name: "workspace:archil", set: true, source: "env", changed_at: null } });
+  assert.deepEqual(view, { on: true, source: "env", ...FROM_ENV, s3UrlFrom: "given", regions: REGIONS, secret: { name: "workspace:archil", set: true, source: "env", changed_at: null } });
   assert.deepEqual(await call("testWorkspaceArchil"), { ok: true, detail: "Archil's aws-eu-west-1 control plane listed the account's disks (2 so far)" }, "the environment's region is the one tested");
   const setByServer = (promise) => assert.rejects(promise, (error) => error instanceof ApiError && error.code === "key_set_by_server" && error.status === 409
     && error.message === "This server is started with AGENTRUN_ARCHIL_REGION, AGENTRUN_ARCHIL_S3_URL: its Archil settings are changed where the server is started, not here."
@@ -61,7 +68,7 @@ test("settings in the server's environment: on with source env over a saved row;
 
 test("without the environment's settings, the same store answers as before: the saved row, source console, and PUT and DELETE change it", async (t) => {
   const { call } = await setup(t, { env: { AGENTRUN_ARCHIL_REGION: "", AGENTRUN_ARCHIL_S3_URL: "  " } });
-  assert.deepEqual(await call("getWorkspaceArchil"), { on: false, secret: UNSET }, "empty variables are unset");
+  assert.deepEqual(await call("getWorkspaceArchil"), { on: false, regions: REGIONS, secret: UNSET }, "empty variables are unset");
   assert.equal((await call("putWorkspaceArchil", SETTINGS)).source, "console");
   assert.equal((await call("deleteWorkspaceArchil")).on, false);
 });
@@ -73,9 +80,9 @@ test("the routes by their operation names", () => {
 
 test("off at first; a PUT saves the settings and seals the account key, never echoed; GET shows it saved; DELETE turns Mode 2 off", async (t) => {
   const { store, sealKey, call } = await setup(t);
-  assert.deepEqual(await call("getWorkspaceArchil"), { on: false, secret: UNSET });
+  assert.deepEqual(await call("getWorkspaceArchil"), { on: false, regions: REGIONS, secret: UNSET });
   const saved = await call("putWorkspaceArchil", { ...SETTINGS, image: PINNED, keys: { ARCHIL_API_KEY: API } });
-  assert.deepEqual(saved, { on: true, source: "console", ...SETTINGS, image: PINNED, secret: FROM_CONSOLE }, "saved here; the one SecretMeta: set, where from, when changed; never a value");
+  assert.deepEqual(saved, { on: true, source: "console", ...SETTINGS, s3UrlFrom: "given", image: PINNED, regions: REGIONS, secret: FROM_CONSOLE }, "saved here; the one SecretMeta: set, where from, when changed; never a value");
   assert.ok(!JSON.stringify(saved).includes(API), "never echoed");
   assert.deepEqual(await call("getWorkspaceArchil"), saved);
   assert.deepEqual(await loadArchilSettings(store), { ...SETTINGS, image: PINNED }, "the settings row E1's readers load");
@@ -85,7 +92,7 @@ test("off at first; a PUT saves the settings and seals the account key, never ec
   assert.ok(!Buffer.from(await store.sealedKeys.get("archil.api_key")).toString("latin1").includes(API), "ciphertext only");
   const again = await call("putWorkspaceArchil", { ...SETTINGS, region: "aws-eu-west-1" });
   assert.deepEqual([again.region, again.image, again.secret.set], ["aws-eu-west-1", undefined, true], "a PUT replaces the settings; a key not given is kept");
-  assert.deepEqual(await call("deleteWorkspaceArchil"), { on: false, secret: FROM_CONSOLE });
+  assert.deepEqual(await call("deleteWorkspaceArchil"), { on: false, regions: REGIONS, secret: FROM_CONSOLE });
   assert.equal(await inArchilMode(store), false, "Mode 1 again");
   await call("putWorkspaceArchil", { ...SETTINGS, keys: { ARCHIL_API_KEY: null } });
   assert.equal(await getSealedKey(store, sealKey, "archil.api_key"), undefined, "null removes the key");
@@ -112,10 +119,57 @@ test("a PUT that is not right is refused before anything is saved, field by fiel
   assert.deepEqual(await store.sealedKeys.all(), []);
 });
 
+test("a known region saves with no S3 URL: the region's is saved and in force, and GET says it came from the region", async (t) => {
+  const { store, call } = await setup(t);
+  const saved = await call("putWorkspaceArchil", { region: "aws-us-west-2" });
+  assert.deepEqual(saved, { on: true, source: "console", region: "aws-us-west-2", s3Url: REGIONS["aws-us-west-2"], s3UrlFrom: "region", regions: REGIONS, secret: UNSET });
+  assert.deepEqual(await call("getWorkspaceArchil"), saved);
+  assert.deepEqual(await store.settings.get("archil"), { region: "aws-us-west-2", s3Url: REGIONS["aws-us-west-2"] }, "the row keeps the URL in force");
+  assert.deepEqual(await loadArchilSettings(store), { region: "aws-us-west-2", s3Url: REGIONS["aws-us-west-2"] }, "what a claim reads");
+});
+
+test("an S3 URL given for a known region is kept over the region's, and GET says it was given", async (t) => {
+  const { store, call } = await setup(t);
+  const saved = await call("putWorkspaceArchil", { region: "aws-us-east-1", s3Url: "https://s3.override.archil.example" });
+  assert.deepEqual([saved.s3Url, saved.s3UrlFrom], ["https://s3.override.archil.example", "given"]);
+  assert.equal((await loadArchilSettings(store)).s3Url, "https://s3.override.archil.example");
+});
+
+/** The PUT's refusal at `field`: its message. */
+const refusal = async (promise, field) => {
+  const error = await promise.then(() => assert.fail("not refused"), (thrown) => thrown);
+  assert.ok(error instanceof ApiError && error.code === "input_invalid", String(error));
+  return error.extra.fields.find((one) => one.field === field)?.message;
+};
+
+test("a region serve doesn't know needs its S3 URL, and is refused in those words without one; with one, it saves", async (t) => {
+  const { store, call } = await setup(t);
+  assert.equal(await refusal(call("putWorkspaceArchil", { region: "eu-test-9" }), "s3Url"),
+    "s3Url is needed for the region eu-test-9: serve knows the S3 URL of aws-us-east-1, aws-us-west-2, aws-eu-west-1 and gcp-us-central1 only, so give this region's https S3 URL");
+  assert.equal(await inArchilMode(store), false, "nothing saved");
+  const saved = await call("putWorkspaceArchil", { region: "eu-test-9", s3Url: "https://s3.eu-test-9.archil.example" });
+  assert.deepEqual([saved.region, saved.s3Url, saved.s3UrlFrom], ["eu-test-9", "https://s3.eu-test-9.archil.example", "given"]);
+});
+
+test("an S3 URL that is not https, or empty, for a known region is refused naming the region's URL", async (t) => {
+  const { store, call } = await setup(t);
+  const words = `s3Url is the region's S3 endpoint, an https URL: for aws-us-east-1 it is ${REGIONS["aws-us-east-1"]}`;
+  assert.equal(await refusal(call("putWorkspaceArchil", { region: "aws-us-east-1", s3Url: "http://s3.archil.example" }), "s3Url"), words);
+  assert.equal(await refusal(call("putWorkspaceArchil", { region: "aws-us-east-1", s3Url: "" }), "s3Url"), words);
+  assert.equal(await refusal(call("putWorkspaceArchil", { region: "eu-test-9", s3Url: "http://s3.archil.example" }), "s3Url"), "s3Url is the region's S3 endpoint, an https URL", "no URL to name for a region serve doesn't know");
+  assert.equal(await inArchilMode(store), false, "nothing saved");
+});
+
+test("the server's environment with a known region alone: on, the region's S3 URL, from the region", async (t) => {
+  const { call } = await setup(t, { env: { AGENTRUN_ARCHIL_REGION: "gcp-us-central1" } });
+  const view = await call("getWorkspaceArchil");
+  assert.deepEqual([view.on, view.source, view.region, view.s3Url, view.s3UrlFrom], [true, "env", "gcp-us-central1", REGIONS["gcp-us-central1"], "region"]);
+});
+
 test("the test lists the account's disks once with the sealed key, and says why it can't in plain words, never the key", async (t) => {
   let refuse;
   const { control, call } = await setup(t, { answer: () => refuse });
-  assert.deepEqual(await call("testWorkspaceArchil"), { ok: false, why: "Archil is off on this server: save its region, S3 URL and account key (PUT /v2/workspace/archil), or start the server with AGENTRUN_ARCHIL_REGION, AGENTRUN_ARCHIL_S3_URL and ARCHIL_API_KEY" });
+  assert.deepEqual(await call("testWorkspaceArchil"), { ok: false, why: "Archil is off on this server: save its region and account key (PUT /v2/workspace/archil), or start the server with AGENTRUN_ARCHIL_REGION and ARCHIL_API_KEY; a region serve doesn't know needs its S3 URL too (s3Url, AGENTRUN_ARCHIL_S3_URL)" });
   await call("putWorkspaceArchil", SETTINGS);
   const missing = await call("testWorkspaceArchil");
   assert.equal(missing.ok, false);

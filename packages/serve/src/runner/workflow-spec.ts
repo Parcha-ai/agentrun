@@ -27,7 +27,7 @@ import { decisionProvidersIn } from "../decisions.js";
 import { imageLoader } from "../pdf-pages.js";
 import type { RunLaunch } from "../run-launch.js";
 import { llmTiers, nodeTiers, type Tier, workflowNodes } from "../model.js";
-import { CALL_TOOLS, type EffectRun, type ToolBinding, type ToolHost, toolOf, workflowTools } from "../tools.js";
+import { answersCutInside, CALL_TOOLS, type EffectRun, type ToolBinding, type ToolHost, toolOf, workflowTools } from "../tools.js";
 import { forModel } from "../result.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { runGate } from "../tool-gate.js";
@@ -349,11 +349,15 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
     };
     const nodeBindings = await bindNodeTools(nodeNames, nodeHost);
     // Each node tool as the node gets it and the registry holds it: booked on the run's one ledger (bookedNodeTools), in an
-    // extension of its own; the binding's raw extension (installed through `installed`) is never put in the registry.
+    // extension of its own; the binding's raw extension (installed through `installed`) is never put in the registry. Its
+    // answer, and a throw's words, pass the run's one redactor (tools.ts answersCutInside) before the node's model or the
+    // journal sees them, as an agentic run's tools do (adapter-run-spec.ts answersCut): a page or a search result can
+    // echo a key the run holds.
     const nodeTools = new Map<string, NodeToolBinding>();
     for (const [name, binding] of nodeBindings) {
       const booked = bookedNodeTools(binding, () => paidTools, parkAt);
-      nodeTools.set(name, { tools: booked.tools, extensions: [defineExtension({ name: `node-tool-${name}`, tools: booked.tools as unknown as ToolRegistration[] })] });
+      const tools = run?.redact ? (booked.tools as ToolRegistration[]).map((tool) => answersCutInside(tool, run.redact)) : booked.tools;
+      nodeTools.set(name, { tools, extensions: [defineExtension({ name: `node-tool-${name}`, tools: tools as unknown as ToolRegistration[] })] });
     }
     const nodePolicy = callPolicyOf(deps.store, claim.runId, claimed);
     const tierModel = (tier: string | undefined): CapModel | undefined => (providers.get((tier as Tier | undefined) ?? "default") ?? providers.get("default"))?.capModel;
@@ -1019,7 +1023,7 @@ const openrouterModel = (id: string, price: { input: number; output: number } | 
 const finiteUsd = (usd: unknown): number | null => (typeof usd === "number" && Number.isFinite(usd) && usd >= 0 ? usd : null);
 
 /** A provider failure that says the request was never billed (main's `unbilled`): booked at $0. */
-const UNBILLED = new Set(["configuration", "auth", "invalid_request", "rate_limited", "connection"]);
+const UNBILLED = new Set(["configuration", "auth", "payment_required", "invalid_request", "rate_limited", "connection"]);
 const unbilled = (error: unknown): boolean => error instanceof DecisionProviderError && (error.unsent === true || UNBILLED.has(error.code));
 
 /** The tiers the workflow's model nodes run on (model.ts): the llm tiers over its nodes, read as toolsOf reads them (its

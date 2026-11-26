@@ -53,7 +53,7 @@ test("every stage builds on one digest-pinned debian trixie base, its Node the v
   assert.equal(dockerfile.match(/^COPY --from=node \/opt\/node\/ \/usr\/local\/$/gm)?.length, 2, "the build and runtime stages take that Node, and only it");
   const runtimeNode = /^RUN \[ "\$\(node --version\)" = v24\.22\.3 \][^\n]*\\\n[^\n]*find \/ -xdev -type f -name node ! -path \/usr\/local\/bin\/node/m;
   assert.match(dockerfile.slice(dockerfile.lastIndexOf("\nFROM ")), runtimeNode, "the runtime fails on any other node binary");
-  // An agent's learning folder needs git 2.32 (the learning script's floor, learn/learning.sh); the image holds itself to 2.40 by its own choice, and
+  // A source project's capture needs git (source-sync/capture-git.ts); the image holds itself to 2.40 by its own choice, and
   // trixie's is 2.47.
   const runtime = dockerfile.slice(dockerfile.lastIndexOf("\nFROM "));
   const install = /apt-get install [^\n]*/.exec(runtime)?.[0] ?? "";

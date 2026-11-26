@@ -707,7 +707,7 @@ test("a trigger the server turns off itself (its agent archived, a failure strea
   assert.equal((await s.api("POST", "/agents/triage/archive")).status, 200);
   assert.ok(s.composio.instances.get(shared).disabled_at, "off once no trigger that holds it is on");
   // Five failed firings in a row: the trigger pauses itself, and its instance is turned off on Composio.
-  assert.equal((await s.api("POST", "/agents", { definition: { id: "unrunnable", version: 1, name: "Unrunnable", harness: "claude-agent", instructions: "Triage.", max_cost_usd: 0.5 } })).status, 201);
+  assert.equal((await s.api("POST", "/agents", { definition: { id: "unrunnable", version: 1, name: "Unrunnable", harness: "claude-agent", instructions: "Triage.", tools: [], max_cost_usd: 0.5 } })).status, 201);
   const flaky = (await s.api("POST", "/triggers", issueTrigger({ owner: "many-drop", repo: "flaky" }, { target: { kind: "start_run", agent_id: "unrunnable", input: { content: "Triage this issue." }, max_cost_usd: 0.5 } }))).body;
   assert.ok(flaky.source?.instance_id, JSON.stringify(flaky));
   const secret = s.composio.subscriptions[0].secret;

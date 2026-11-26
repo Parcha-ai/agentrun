@@ -1,7 +1,7 @@
 # AgentRun Server on Dokploy. Steps and variables: deploy/README.md#dokploy.
 services:
   agentrun:
-    image: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.58
+    image: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.60
     restart: unless-stopped
     expose:
       - 7340

@@ -2,7 +2,7 @@
 // reads rows alone, whatever the number of runs and however long their journals. Every write that can change a run's view
 // moves its row's mark in that write's own transaction (the journal's commits, the row, its commands, its learning), so a
 // row whose listing is behind says so. This lister, in the server's process (the one that holds what a view is cut of:
-// its secrets, its saved keys, its agents' sign-ins and learning folders), builds each behind run's listing from its view
+// its secrets, its saved keys, its agents' sign-ins and learning), builds each behind run's listing from its view
 // (store-view.ts listingOverStore) and writes it at the mark it read first: a write that lands meanwhile leaves it behind
 // again, so it is built once more.
 //
@@ -10,7 +10,7 @@
 // one pass. A run a runner holds and works on moves on every commit: it is built at most once per HELD_REBUILD_MS, or four
 // times its last build's time when that is longer, so a long run's work never turns into a view built per commit. Two
 // things outside a run's writes also move its listing: the server's keys (a failed run's error names a refused key by
-// them; relist at the start and on a key's save) and an agent's learning folder (a learning held for its owner's OK reads
+// them; relist at the start and on a key's save) and an agent's learning (a learning held for its owner's OK reads
 // as it stands there; read for the agents that have such runs, each pass). A list that finds a listing behind builds it
 // through the lister too (Lister.build), so every build of a held listing hands the lister the folder state it read.
 import type { RunListing, Store } from "./store/store.js";
@@ -38,7 +38,7 @@ export interface Lister {
   /** The server's keys or settings changed: every failed run's listing (its error words) is marked behind before this
    *  resolves, so the next list builds it again. */
   keysChanged(): Promise<void>;
-  /** A person changed agent `agentId`'s learning folder (a workflow approved, retired or restored): each of its runs
+  /** A person changed agent `agentId`'s learning (a workflow approved, retired or restored): each of its runs
    *  whose listing read a workflow held for the owner's OK is marked behind before this resolves, so the next list says what
    *  the folder says now. A change made outside the server is read by the next pass. */
   learningChanged(agentId: string): Promise<void>;
