@@ -2745,8 +2745,9 @@ curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 
 user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
 sealed into the run's launch, erased from the store by the write that ends the run, never on the server's row, the
 run's view, its timeline, its trace or a log line, and its values are cut from whatever the run shows. A message's
-binding replaces the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
-handed none, so a per-run server never calls as a default account. A malformed user or account is `422 input_invalid` at
+binding replaces the run's for the turn it starts. A run that names no account is not offered the server's tools (on
+Codex, its calls of them are answered, unsent, that it was handed none), so a per-run server never calls as a default
+account. A malformed user or account is `422 input_invalid` at
 `mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's default user
 `agentrun` (`not_allowed`: the user single-user preset servers call as); headers for such a server, or a binding for any
 other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio trigger: a trigger
@@ -2849,7 +2850,11 @@ credential answers the first request's run), and its values are cut from whateve
 `POST /v2/runs/{run_id}/messages` takes `mcp_auth` too: it replaces the run's credentials in the message's own write, so the turn the message starts (a
 steer into a working run from its next model request, or a follow-up that opens an ended run again) calls with them. A
 name that is not a saved per_run server is `422` at `mcp_auth.<server>`, and no run starts. A run handed no credential
-for a per_run server it calls has those calls answered, unsent, that it was handed none. `POST .../{name}/refresh` lists
+for a per_run server it calls is not offered that server's tools, and its timeline says which server was left out and
+why; the next time the run picks up work after a message hands the credential, it has them. A message that hands it
+while a turn is still going is not put into that turn, whose tools can't change: it runs as the run's next turn, and
+the timeline says so. Codex keeps the tools its thread started with, so a Codex run keeps listing them, and their
+calls are answered, unsent, that it was handed none until the credential comes. `POST .../{name}/refresh` lists
 a per_run server's tools with no credential: save it again with `headers` for a server that lists only to a caller it
 knows. The tools are those it listed at its save, so a server whose tool list varies by caller shows each run the saved
 list.
@@ -3859,11 +3864,20 @@ serves these routes alone:
   is what its delete (`DELETE /agents/{id}`) needs first. With the [launch hook](#launch-hook) set, the apply makes the
   package's schedule and feed triggers, and every firing that starts a run goes to the backend, which starts it through
   the API with the keys and budget it sends, a trigger the agent had before the profile included; the unarchive turns
-  them on again, as no trigger route is served to. Without the hook it makes neither (`not_set_up_here`: set the hook,
-  or start those runs through the API), and a trigger the agent already had stays as it was: an enabled one still fires
-  here, on this server's keys, until the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
+  them on again. Without the hook it makes neither (`not_set_up_here`: set the hook, or start those runs through the
+  API), and a trigger the agent already had stays as it was: an enabled one still fires here, on this server's keys,
+  until it is turned off (below) or the agent is archived, and the skip's warning says so. A webhook, GitHub, Composio or email trigger is never made here, hook
   or not, since this profile refuses the hook or setting each needs (`not_an_option`). Each skipped trigger is a warning
   under `warnings` (`triggers.<i>`), and the dry run (`dry_run: true`) plans it as `skip` in the same words;
+- the triggers, for a backend to see one that is off and turn it on again: their list (`GET /triggers`), one
+  (`GET /triggers/{id}`), its firings (`GET /triggers/{id}/firings`), and its turn on or off
+  (`PATCH /triggers/{id}` with `{"enabled": true}` or `{"enabled": false}`; from the CLI,
+  `agentrun triggers update <id> --enabled` or `--no-enabled`). A trigger whose firings failed 5 times in
+  a row turns itself off (`disabled.reason` `auto_paused`), and there is no console here to turn it on in. The PATCH
+  takes `enabled` alone (any other field is `422 not_allowed`), and turns on only what the apply would make: a schedule
+  or a feed, with the launch hook set (`422` under `enabled` otherwise, since its firings would start runs on this
+  server's keys or wait on a hook this profile refuses). Turning one off always works. Making, deleting or firing a
+  trigger, and its secret, stay refused;
 - a Composio server's save (a new name, or a server the token saved) and the delete of a server the token saved, for a
   backend that grants its runs Composio tools. The token here never writes a secret, so the save keeps none:
   - a Composio server (`PUT /settings/mcp-servers/{name}/composio`) names its key with
@@ -3952,7 +3966,7 @@ Here a run's computer routes take the server's token. `POST /runs/{id}/computer/
 `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
-assets, sign-in and setup, every other `/settings` route, `POST /mcp`, triggers and their
+assets, sign-in and setup, every other `/settings` route, `POST /mcp`, every other trigger route and the triggers'
 `POST /hooks/{id}`, the agents list, an agent made or edited through `/agents`, the templates list and every other
 template route, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no page to sign in
 to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or `false` serve the
