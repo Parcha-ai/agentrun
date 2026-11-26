@@ -213,6 +213,27 @@ for (const [style, over] of [['cursor', { quirks: undefined }], ['antigravity', 
   });
 }
 
+test("(cursor) a request of another MCP server named exactly agentrun (`agentrun-look_up: look_up`), left waiting in the records by a parked run, is the gate's on the resume: its title is read against our server's name at the start that asked, never the other server's", async (t) => {
+  const store = memorySessionStore();
+  const input = { providerIdentifier: 'agentrun', toolName: 'look_up', args: { q: 'x' } };
+  const recipe = fakeRecipe(scratch(), { script: [{ native: 'other', title: 'agentrun-look_up: look_up', input }, { sayLastResult: true }], style: 'cursor', askNative: ['other'] });
+  const first = [];
+  const one = await openSession(t, recipe, { store, tools: [tool('lookup', () => 'found')], gate: async (call) => (first.push(call), PARK) });
+  await one.session.send('go');
+  await until(() => first.length === 1, 'the gate to be asked about the other server\'s call');
+  one.stop(new Error('the run parked'));
+  await one.session.turnEnd().catch(() => undefined);
+  const [waiting] = await streamRecords(store, 'acp.permission');
+  assert.equal(waiting.server, 'agentrun', 'recorded as the other server\'s');
+  assert.match(waiting.ours ?? '', /^ar[0-9a-f]{6}$/);
+  const asked = [];
+  const second = await openSession(t, recipe, { store, tools: [tool('lookup', () => 'found')], gate: async (call) => (asked.push(call), PARK) });
+  void second.session.recover().catch(() => undefined);
+  await until(() => asked.length > 0, 'the gate to be asked on the resume');
+  assert.deepEqual(asked.map((c) => [c.tool, c.callId, c.args.server]), [['acp_other', first[0].callId, 'agentrun']], 'the gate keeps it');
+  assert.deepEqual(notices(second.events), []);
+});
+
 test("(goose) a request for a tool the agent is still given, left waiting in the records by a parked run, is the gate's on the resume, as before", async (t) => {
   const { store, recipe, parked } = await parkedOnSnapshot(t, 'goose', { allowFile: undefined });
   const asked = [];
