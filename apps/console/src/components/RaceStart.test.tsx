@@ -34,6 +34,10 @@ const TOOLS = toolOffers([
 const BOXED: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "local", available: true }], defaultPlace: { mode: "sandbox", box: "local" } };
 const LABEL = "20261123-1004-1f2e";
 const TASK = "Fix the failing test in the parser";
+// GET /v2/computers' kinds with the no-computer choice's run shell: "local" in Mode 2 (Archil's exec, which runs bash),
+// "none" in Mode 1.
+const kindsWith = (shell: string) => [{ kind: "none", offered: true, groups: [], tools: [], settings: [], record: { available: false }, providers: [], shell }];
+const RUNNER: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "modal", available: true }], defaultPlace: { mode: "runner" } };
 
 type Sent = { lane: string; agentId: string; body: Record<string, unknown>; key: string };
 type Made = Record<string, unknown> & { id: string };
@@ -41,8 +45,8 @@ type Made = Record<string, unknown> & { id: string };
  *  answers), and every POST /v2/agents/{id}/runs in `sent`, answered by `answer` (202 with a run, or a refusal).
  *  `places`: the server's (capabilities `places`), none by default. `agent`: a POST /v2/agents answer of the test's
  *  own (a refusal or a lost answer), else the server's. `harnesses`: capabilities' harnesses, HARNESSES by default.
- *  `kinds`: GET /v2/computers' kinds, not served (a 404) by default. */
-function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null, agent?: (made: Made) => Response | Promise<Response> | undefined, harnesses: typeof HARNESSES = HARNESSES, kinds?: unknown[]) {
+ *  `computers`: GET /v2/computers' answer, a Mode 1 list (no shell with no computer) by default. */
+function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null, agent?: (made: Made) => Response | Promise<Response> | undefined, harnesses: typeof HARNESSES = HARNESSES, computers: () => Response | Promise<Response> = () => json(200, { kinds: kindsWith("none") })) {
   const sent: Sent[] = [];
   const made: Made[] = [];
   const archived: string[] = [];
@@ -50,7 +54,7 @@ function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Pla
   const fetch = (async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
-    if (path === "/v2/computers" && kinds) return json(200, { kinds });
+    if (path === "/v2/computers") return computers();
     if (path === "/v2/agents" && init?.method === "POST") {
       const definition = body.definition as Made;
       const theirs = agent?.(definition);
@@ -150,9 +154,8 @@ describe("RaceStart", () => {
   // runner's own ("local", Archil's exec), which runs bash: pi's lane gets bash on the runner. Where that list says
   // "none" (Mode 1), it gets no shell tool.
   it("on a server whose runner's shell runs bash (Mode 2), pi's lane gets bash on the runner; where it has no shell, none", async () => {
-    const runner: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "modal", available: true }], defaultPlace: { mode: "runner" } };
     const tools = async (shell: string) => {
-      const { host, made } = mount(started, runner, undefined, HARNESSES, [{ kind: "none", offered: true, groups: [], tools: [], settings: [], record: { available: false }, providers: [], shell }]);
+      const { host, made } = mount(started, RUNNER, undefined, HARNESSES, () => json(200, { kinds: kindsWith(shell) }));
       await settle();
       await type(host, TASK);
       await act(async () => { button(host, "Start the race")!.click(); });
@@ -162,6 +165,49 @@ describe("RaceStart", () => {
     };
     expect(await tools("local")).toEqual([["pi", ["read", "write", "bash", "web_search"]], ["codex", ["read", "write"]]]);
     expect(await tools("none")).toEqual([["pi", ["read", "write", "web_search"]], ["codex", ["read", "write"]]]);
+  });
+
+  // A lane's tools are fixed when its agent is made, so a race started before the computers list answers would give pi's
+  // lane no bash in Mode 2, and the later answer can't add it to the run already started: Start waits for the list.
+  it("Start pressed while the computers list is still being read sends nothing until it answers, and then pi's lane gets bash (Mode 2)", async () => {
+    let answer!: (r: Response) => void;
+    const reading = new Promise<Response>((resolve) => { answer = resolve; });
+    const { host, made, sent, went } = mount(started, RUNNER, undefined, HARNESSES, () => reading);
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    expect(made).toEqual([]);
+    expect(sent).toEqual([]);
+    expect(host.querySelector("[data-computers-read]")?.textContent).toBe("Reading this server's computers, which say what each lane's shell runs: the race starts once they answer.");
+    await act(async () => { answer(json(200, { kinds: kindsWith("local") })); });
+    await settle();
+    expect((made as Record<string, unknown>[]).map((d) => [d.harness, d.tools])).toEqual([["pi", ["read", "write", "bash", "web_search"]], ["codex", ["read", "write"]]]);
+    expect(sent.map((s) => s.lane)).toEqual(["1", "2"]);
+    expect(host.querySelector("[data-computers-read]")).toBeNull();
+    expect(went).toEqual([`#/races/${LABEL}`]);
+  });
+
+  it("a computers list that can't be read holds Start: the form says why and offers a retry, and a retry that reads it starts the race", async () => {
+    let down = true;
+    const { host, made, sent, went } = mount(started, RUNNER, undefined, HARNESSES, () => down
+      ? json(503, { error: { code: "unavailable", message: "fixture: the computers list is down", retryable: true } })
+      : json(200, { kinds: kindsWith("local") }));
+    await settle();
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    expect(made).toEqual([]);
+    expect(sent).toEqual([]);
+    const said = host.querySelector("[data-computers-read]")!;
+    expect(said.getAttribute("role")).toBe("alert");
+    expect(said.textContent).toContain("This server's computers couldn't be read (fixture: the computers list is down), so which shell tools each lane gets is unknown: the race waits for them.");
+    down = false;
+    await act(async () => { button(host, "Read them again")!.click(); });
+    await settle();
+    expect((made as Record<string, unknown>[]).map((d) => [d.harness, d.tools])).toEqual([["pi", ["read", "write", "bash", "web_search"]], ["codex", ["read", "write"]]]);
+    expect(sent.map((s) => s.lane)).toEqual(["1", "2"]);
+    expect(host.querySelector("[data-computers-read]")).toBeNull();
+    expect(went).toEqual([`#/races/${LABEL}`]);
   });
 
   it("a lane the server refuses says why in its own place and its agent is archived at once; the others start, and Start again sends only that lane, as a new agent", async () => {
