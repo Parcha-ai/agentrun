@@ -15,20 +15,22 @@ import { delimiter, dirname, join, relative } from "node:path";
 import { after, test } from "node:test";
 import * as claude from "@parcha/agentrun-harness-claude";
 import { API_ONLY_ROUTES } from "../dist/api-only.js";
-import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
+import { CLAUDE_LOGIN_ENV, CLAUDE_LOGIN_ROUTES, CLAUDE_LOGIN_SETTING, claudeLoginOf, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginView, dropRefusedLogin, envAtPlace, homeOf, LOGIN_ANSWERS_DIR, LOGIN_REFUSES_API_KEYS, LOGIN_SIGNED_OUT, LOGIN_UNKNOWN, loginAt as checkedLoginAt, loginBeforeRun, loginForRun, loginOnRunnerOnly, loginServes, settingFor, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnBody, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "../dist/claude-login.js";
 import { ClaudeSignIns } from "../dist/claude-sign-in.js";
 import { MODEL_KEYS, hostModel } from "../dist/model.js";
 import { providerFor } from "../dist/provider.js";
+import { savedIn, withSecrets } from "../dist/secrets.js";
+import { LISTING_KEYED } from "../dist/store/schema.js";
 import { agent, FAUX, follow, secretWritePath, serve, withEnv } from "./support.mjs";
 
 secretWritePath(["GET", "PUT", "DELETE"], /^\/settings\/claude-login$/);
-secretWritePath(["POST"], /^\/settings\/claude-login\/login$/);
+secretWritePath(["POST"], /^\/settings\/claude-login\/(login|sign-out)$/);
 secretWritePath(["PUT", "DELETE"], /^\/settings\/harness-keys\/[^/]+\/[^/]+$/);
 secretWritePath(["POST"], /^\/settings\/api-keys$/);
 secretWritePath(["DELETE"], /^\/settings\/api-keys\/[^/]+$/);
 
 const MODEL_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "AGENT_MODEL_API_KEY", "AGENT_MODEL_GATEWAY_IDS", "AGENTRUN_SERVE_DEFAULT_MODEL", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "CLAUDE_CODE_OAUTH_TOKEN", CLAUDE_LOGIN_ENV, ...MODEL_KEYS.map((row) => row.field)];
-const OPERATIONS = [["GET", "/settings/claude-login", "getClaudeLogin"], ["PUT", "/settings/claude-login", "turnOnClaudeLogin"], ["DELETE", "/settings/claude-login", "turnOffClaudeLogin"], ["POST", "/settings/claude-login/login", "startClaudeLogin"]];
+const OPERATIONS = [["GET", "/settings/claude-login", "getClaudeLogin"], ["PUT", "/settings/claude-login", "turnOnClaudeLogin"], ["DELETE", "/settings/claude-login", "turnOffClaudeLogin"], ["POST", "/settings/claude-login/login", "startClaudeLogin"], ["POST", "/settings/claude-login/sign-out", "signOutClaudeLogin"]];
 const SIGNED_OUT = { loggedIn: false, authMethod: "none", apiProvider: "firstParty" };
 const SIGNED_IN = { loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty", email: "person@example.com", orgName: "Example", subscriptionType: "max" };
 /** A person's home for the tests that read paths alone: a folder of the test's own user, as the server's HOME must be to
@@ -248,6 +250,27 @@ test("an agent on Claude Agent in a box on an OpenRouter model, while the login 
   assert.equal(own.body.error.details.login_on_runner, true, JSON.stringify(own.body.error.details));
 });
 
+// A sandbox place's checks read the server's env without the login (envAtPlace), and with every model key it holds: a
+// pi agent in a box on an OpenRouter model, OpenRouter's key saved in Settings, is not refused for its model while the
+// login reads signed in, at its save or before its run.
+test("a pi agent in a box on an OpenRouter model, OpenRouter's key saved and the login signed in, is not refused for its model at its save or before its run", { timeout: 120_000 }, async (t) => {
+  const { api, fake } = await withDockerBox(t);
+  fake.status(SIGNED_IN);
+  assert.equal((await api("PUT", "/settings/claude-login", { only_me: true })).body.state, "signed_in");
+  // The save's check of the key (key-check.ts) asks OpenRouter: here a stand-in that accepts it, never the network.
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init) => (String(input?.url ?? input) === "https://openrouter.ai/api/v1/key" ? new Response("{}", { status: 200 }) : real(input, init));
+  t.after(() => void (globalThis.fetch = real));
+  const key = await api("PUT", "/settings/tool-keys/openrouter", { values: { OPENROUTER_API_KEY: "fake-test-key" } });
+  assert.equal(key.status, 204, JSON.stringify(key.body));
+  const saved = await api("POST", "/agents", agent("piboxed", { harness: "pi", model: "openrouter/anthropic/claude-sonnet-5.5", place: { mode: "sandbox", box: "docker" } }));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body.warnings.filter((w) => w.field === "definition.model"), [], `the save of a box agent whose OpenRouter key is saved warned of its model: ${JSON.stringify(saved.body.warnings)}`);
+  const read = await api("GET", "/agents/piboxed");
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  assert.equal(read.body.run_blockers, null, `a box agent whose OpenRouter key is saved is kept from running: ${JSON.stringify(read.body.run_blockers)}`);
+});
+
 // An agent that names no model runs on the host's default for its harness, on the runner too: AGENT_MODEL first, when
 // the harness runs it (model.ts hostModel). Where that is an OpenRouter model, the moved agent still needs OpenRouter's
 // key, so the move is not offered; where it is Anthropic's own, the login runs it and the move is.
@@ -304,12 +327,14 @@ test("claudeLoginServed: one rule for the routes and for capabilities: none whil
 test("API-only serves no login path under another route's name: no pattern on its list matches a login route's method and path", async () => {
   const { ROUTES } = await import("../dist/server.js");
   const { servedApiOnly } = await import("../dist/api-only.js");
-  const paths = { getClaudeLogin: "/settings/claude-login", turnOnClaudeLogin: "/settings/claude-login", turnOffClaudeLogin: "/settings/claude-login", startClaudeLogin: "/settings/claude-login/login" };
-  assert.deepEqual(Object.keys(paths).sort(), [...CLAUDE_LOGIN_ROUTES].sort());
-  for (const [name, path] of Object.entries(paths)) {
-    const route = ROUTES.find((r) => r.name === name);
-    assert.ok(route?.pattern.test(path), `${name} answers ${path}`);
-    assert.equal(servedApiOnly(ROUTES, route.method, `/v2${path}`), false, `${route.method} /v2${path} is refused on API-only before routing`);
+  // The router's own login routes, found by their path, so a route added under it can't be left off CLAUDE_LOGIN_ROUTES.
+  const login = ROUTES.filter((r) => r.pattern.source.includes("claude-login"));
+  assert.deepEqual(login.map((r) => r.name).sort(), [...CLAUDE_LOGIN_ROUTES].sort(), "CLAUDE_LOGIN_ROUTES names every route under /settings/claude-login");
+  for (const route of login) {
+    // Each pattern is a literal path; one with a parameter in it fails the next line and needs its path given by hand.
+    const path = route.pattern.source.replace(/^\^|\$$/g, "").replaceAll("\\/", "/");
+    assert.ok(route.pattern.test(path), `${route.name} answers ${path}`);
+    for (const mcpSave of [false, true]) assert.equal(servedApiOnly(ROUTES, route.method, `/v2${path}`, mcpSave), false, `${route.method} /v2${path} is refused on API-only before routing (MCP save ${mcpSave ? "on" : "off"})`);
   }
 });
 
@@ -354,7 +379,7 @@ test("AGENTRUN_CLAUDE_CODE_LOGIN=off: every route is 404 by name, a saved turn-o
   const saved = { get: async () => row };
   assert.equal(await loginForRun(saved, own, env, "claude-agent", { mode: "runner" }), undefined);
   // On, a runner place goes on the login (with the person's home, the env's HOME) and a sandbox place on the keys.
-  assert.deepEqual(await loginForRun(saved, own, { HOME: UP }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: UP });
+  assert.deepEqual(await loginForRun(saved, own, { HOME: UP }, "claude-agent", { mode: "runner" }), { dir: join(own, "claude-login"), profiles: join(own, "claude-login", "anthropic"), userHome: UP, own: true });
   assert.equal(await loginForRun(saved, own, {}, "claude-agent", { mode: "sandbox", box: "e2b" }), undefined);
 });
 
@@ -389,6 +414,23 @@ test("Claude Code's login on this machine on: claude-agent's Anthropic models go
   assert.equal(providerFor("anthropic-messages", envAtPlace(env, { mode: "sandbox", box: "e2b" }), { provider: "anthropic", modelId: "claude-haiku-5-5" }, "claude-agent").login, undefined);
   assert.equal(envAtPlace(env, { mode: "runner" }), env);
   assert.deepEqual(providerFor("anthropic-messages", env, { provider: "anthropic", modelId: "claude-haiku-5-5" }, "claude-agent").login, at);
+});
+
+test("envAtPlace at a sandbox place keeps every secret of a withSecrets env, still out of a spread, and drops the login alone; a runner place's env is the same object", (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  const at = { dir: "/data/claude-login", profiles: "/data/claude-login/anthropic" };
+  const env = withClaudeLogin(withSecrets({ PATH: "/usr/bin" }, "all", (name) => (name === "OPENROUTER_API_KEY" ? "fake-test-key" : undefined)), at);
+  assert.equal(env.OPENROUTER_API_KEY, "fake-test-key");
+  const boxed = envAtPlace(env, { mode: "sandbox", box: "e2b" });
+  assert.notEqual(boxed, env);
+  assert.equal(boxed.OPENROUTER_API_KEY, "fake-test-key", "a sandbox place's env lost the saved OpenRouter key");
+  assert.ok(!Object.keys(boxed).includes("OPENROUTER_API_KEY"), "a sandbox place's env enumerates the key");
+  assert.equal({ ...boxed }.OPENROUTER_API_KEY, undefined, "a spread of a sandbox place's env carries the key");
+  assert.deepEqual([...savedIn(boxed)], ["OPENROUTER_API_KEY"], "a sandbox place's env no longer says the key was saved");
+  assert.equal(boxed.PATH, "/usr/bin");
+  assert.equal(claudeLoginOf(boxed), undefined, "a sandbox place's env carries the login");
+  assert.deepEqual(claudeLoginOf(env), at, "the server's env lost its login");
+  assert.equal(envAtPlace(env, { mode: "runner" }), env);
 });
 
 test("one owner: refused in one line where more than one person can start runs, and a saved turn-on dropped there at the start", { timeout: 120_000 }, async (t) => {
@@ -717,7 +759,7 @@ test("this machine's login honours CLAUDE_SECURESTORAGE_CONFIG_DIR in the server
   assert.deepEqual(claude.claudeLoginEnv(folderEmpty, "darwin"), { CLAUDE_SECURESTORAGE_CONFIG_DIR: "", ANTHROPIC_CONFIG_DIR: profiles });
   // A relative one is not taken, as with CLAUDE_CONFIG_DIR; AgentRun's own login never reads it.
   assert.deepEqual(claude.claudeSignInEnv(at({ CLAUDE_SECURESTORAGE_CONFIG_DIR: "secure" }), "linux"), { HOME: UP, ANTHROPIC_CONFIG_DIR: profiles });
-  assert.deepEqual(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: UP });
+  assert.deepEqual(loginAt("agentrun", "/d", { HOME: UP, CLAUDE_SECURESTORAGE_CONFIG_DIR: `${UP}/secure` }), { dir: "/d/claude-login", profiles: "/d/claude-login/anthropic", userHome: UP, own: true });
 
   // A server started with it: the view names it, and the sign-in and every status check keep the tokens there.
   const secure = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-secure-dir-"));
@@ -875,13 +917,15 @@ async function loginRig(t) {
       const ended = new Promise((resolve) => { end = resolve; });
       return { ended, stop: () => { one.stopped = true; end({ end: "stopped" }); } };
     },
+    claudeLogout: async () => true,
   };
   const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
   const stale = (keeps) => started.filter((one) => !one.stopped && one.dir !== keeps);
   return { data, env, rows, settings, started, signIns, pinned, deps, stale };
 }
 
-// A sign-in reads the setting, then looks up the CLI, then starts it. A move of the login or a turn-off that lands in
+// A sign-in reads the setting, then looks up the CLI, then starts it. A move of the login, a turn-off or a sign-out (which
+// turns the mode off as a turn-off does, so a row of its own here) that lands in
 // between must not leave that sign-in waiting with what it read before: at a place the login no longer reads, or for a
 // login that is off, holding the browser's callback port. Here the sign-in is held inside that gap (its lookup of the
 // pinned CLI waits on the test), and the change is asked while it is held. Where nothing holds the change, it answers
@@ -891,6 +935,7 @@ async function loginRig(t) {
 const RACE_CHANGES = [
   ["a turn-on that moves the login to the other place", (deps) => turnOnClaudeLogin(deps, { only_me: true, place: "machine" }), "machine"],
   ["a turn-off", (deps) => turnOffClaudeLogin(deps), undefined],
+  ["a sign-out", async (deps) => (await signOutClaudeLogin(deps)).login, undefined],
 ];
 for (const [change, ask, place] of RACE_CHANGES) {
   test(`${change}, asked while a sign-in's start is between its read of the setting and the CLI's start, leaves no sign-in waiting with the setting it read`, { timeout: 10_000 }, async (t) => {
@@ -1332,7 +1377,7 @@ test("a HOME the server's user does not own is not the person's home: the login 
   const data = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-login-data-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const saved = { get: async () => settingFor("agentrun", data) };
-  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own, homeApart: true }, "a run's CLI runs in that user's own home");
+  assert.deepEqual(await loginForRun(saved, data, { HOME: "/" }, "claude-agent", { mode: "runner" }), { dir: join(data, "claude-login"), profiles: join(data, "claude-login", "anthropic"), userHome: own, homeApart: true, own: true }, "a run's CLI runs in that user's own home");
 });
 
 // Where the server's user owns neither its HOME nor its own home (a service account whose home is /nonexistent, with a
@@ -1379,11 +1424,11 @@ const literally = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
  *  words name it) neither owns nor would make in a folder it owns. */
 const notOwnFolder = (who, name, folder) => new RegExp(`^Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${literally(who)}, and ${literally(folder)}, the folder ${name} gives it, is not a folder it owns, nor one it would make in a folder it owns\\. Start the server as the person whose Claude plan it is\\.$`);
 /** The end of the words a folder open to others' writes is refused in: `at`, the folder open so, has `mode`, and the
- *  chmod that closes it. */
-const openTail = (at, mode) => `is open to writes by others than its owner: ${literally(at)} has mode ${(mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in\\. Make it writable by its owner alone \\(chmod g-w,o-w ${literally(at)}\\): a umask of 002 makes new folders so\\.$`;
+ *  chmod that closes it; then `more` (a pattern), where the words say more of its group. */
+const openTail = (at, mode, more = "") => `is open to writes by others than its owner: ${literally(at)} has mode ${(mode & 0o7777).toString(8).padStart(4, "0")}, which its group or anyone may write in\\. Make it writable by its owner alone \\(chmod g-w,o-w ${literally(at)}\\): a umask of 002 makes new folders so\\.${more}$`;
 /** The words this machine's login is refused in where `name` gives it `folder`, and `at` on its way (or the folder
- *  itself, or the one it is to be made in) is open to writes by its group or anyone, with `mode`. */
-const openFolder = (who, name, folder, at, mode) => new RegExp(`^Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${literally(who)}, and ${literally(folder)}, the folder ${name} gives it, ${openTail(at, mode)}`);
+ *  itself, or the one it is to be made in) is open to writes by its group or anyone, with `mode`; `more` as openTail. */
+const openFolder = (who, name, folder, at, mode, more = "") => new RegExp(`^Claude Code's login on this machine needs its folders to be this server's user's own: it runs as ${literally(who)}, and ${literally(folder)}, the folder ${name} gives it, ${openTail(at, mode, more)}`);
 /** The same for the home: `which` is "its HOME" or "that user's own home", `home` the folder named so. */
 const openHome = (who, which, home, at, mode) => new RegExp(`^Claude Code's login on this machine needs a home only this server's user may write in: it runs as ${literally(who)}, and ${which} \\(${literally(home)}\\) ${openTail(at, mode)}`);
 /** Each variable that gives this machine's login a folder: the folder it gives for `value`, and where the login has it. */
@@ -1801,7 +1846,8 @@ const PRIVATE_SKIP = { skip: process.platform === "win32" ? "no uid" : process.g
 /** For test `t`, a folder `open` of the test user's, with a login folder `claude` in it, and stand-in account files in
  *  which `open`'s group is the user's private one (`passwd()`, `groups()`; `more` users, `members` of that group).
  *  `kept(what)` asserts the login is kept with `open` on the way to its folder, as that folder, as the one it is made in
- *  and as the home; `refused(what, mode)` that each refuses it in the open-folder words, `open` at `mode`. */
+ *  and as the home; `refused(what, mode, more)` that each refuses it in the open-folder words, `open` at `mode`, ending
+ *  in `more` (a pattern; none by default). */
 async function privateGroupRig(t) {
   const uid = process.geteuid();
   const name = userInfo().username;
@@ -1830,12 +1876,12 @@ async function privateGroupRig(t) {
     }
     assert.equal(homeOf({ HOME: open }).home, realpathSync(open), `${PRIVATE_WHY}: ${what}, as the home`);
   };
-  const refused = async (what, mode) => {
+  const refused = async (what, mode, more = "") => {
     for (const value of values) {
       const rig = await loginRig(t);
       const asked = [];
       const deps = rig.deps({ env: { ...rig.env, CLAUDE_CONFIG_DIR: value }, claude: async () => askedClaude(asked) });
-      await refusedEverywhere(rig, deps, openFolder(who, "CLAUDE_CONFIG_DIR", value, realpathSync(open), mode), `${what}, CLAUDE_CONFIG_DIR=${value}`);
+      await refusedEverywhere(rig, deps, openFolder(who, "CLAUDE_CONFIG_DIR", value, realpathSync(open), mode, more), `${what}, CLAUDE_CONFIG_DIR=${value}`);
       assert.deepEqual(asked, [], `${what}: the CLI was not asked`);
     }
     assert.notEqual(homeOf({ HOME: open }).home, realpathSync(open), `${what}: not the home`);
@@ -1897,6 +1943,40 @@ test("a folder its group may write in, whose group the account files show as the
       accountsAs(row, { "/etc/passwd": users(passwd()), "/etc/group": groups(), "/etc/nsswitch.conf": nsswitch });
       if (verdict === "kept") await kept(what);
       else await refused(what, 0o775);
+    });
+  }
+});
+
+// What the account files themselves say of the group and the user, read as the system reads them (it skips blanks
+// before an entry and before a number). A group with a password lets anyone who knows it join (newgrp), so it is no
+// one's private group: refused in words that name it and say why. `x` (the password is in the shadow file), `!`, `*` or
+// none are no password. A group's members are named, so a second account with the user's name (blanks before it or
+// not) would be in it too; a second account with the user's uid (an alias, as toor is root's) is that user under
+// another name, whose groups the files may not show; an id with a blank before it is still read as that id. All are
+// refused in the open-folder words. Each row starts from the case that keeps the login, the folder at 0775.
+const passwordWords = (group, gid) => literally(` Its group ${group} (gid ${gid}) would be the server's user's private group, but /etc/group gives it a password, which lets anyone who knows it join the group (newgrp); removing the password (gpasswd -r ${group}) mends that too.`);
+const ACCOUNT_ROWS = [
+  ["a group whose password field is x (in the shadow file)", ({ groups }) => ({ group: groups() }), "kept"],
+  ["a group whose password field is !", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}:!:${gid}:`) }), "kept"],
+  ["a group whose password field is *", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}:*:${gid}:`) }), "kept"],
+  ["a group whose password field is empty", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}::${gid}:`) }), "kept"],
+  ["a group with a password", ({ name, gid, groups }) => ({ group: groups().replace(`${name}:x:${gid}:`, `${name}:$6$salt$hashOfAGroupPassword:${gid}:`) }), "refused", ({ name, gid }) => passwordWords(name, gid)],
+  ["a second account with the user's name, another uid and group", ({ name, other, user, passwd }) => ({ passwd: passwd(user(name, other.uid + 1, other.gid)) }), "refused"],
+  ["a second account with the user's name, after blanks", ({ name, other, user, passwd }) => ({ passwd: passwd(`  ${user(name, other.uid + 1, other.gid)}`) }), "refused"],
+  ["another name with the user's uid (an alias)", ({ uid, other, user, passwd }) => ({ passwd: passwd(user("alias", uid, other.gid)) }), "refused"],
+  ["an alias of the user's uid, a blank before the uid", ({ uid, other, user, passwd }) => ({ passwd: passwd(user("alias", ` ${uid}`, other.gid)) }), "refused"],
+  ["another user whose primary group is the user's, a blank before the gid", ({ gid, other, user, passwd }) => ({ passwd: passwd(user("another", other.uid + 1, ` ${gid}`)) }), "refused"],
+  ["a second entry for the group, a blank before its gid, listing another user", ({ gid, groups }) => ({ group: `${groups()}more:x: ${gid}:other\n` }), "refused"],
+];
+test("a folder its group may write in, whose group the account files would show as the user's private one, still refuses this machine's login where that group has a password (in words naming it), or the files hold a second account with the user's name or uid, or an id after blanks; a group password field of x, !, * or none keeps it", { ...PRIVATE_SKIP, timeout: 120_000 }, async (t) => {
+  const rig = await privateGroupRig(t);
+  chmodSync(rig.open, 0o775);
+  for (const [what, files, verdict, more = () => ""] of ACCOUNT_ROWS) {
+    await t.test(what, async (row) => {
+      const { passwd = rig.passwd(), group = rig.groups() } = files(rig);
+      accountsAs(row, { "/etc/passwd": passwd, "/etc/group": group, "/etc/nsswitch.conf": NSS_FILES });
+      if (verdict === "kept") await rig.kept(what);
+      else await rig.refused(what, 0o775, more(rig));
     });
   }
 });
@@ -2078,8 +2158,10 @@ test("a login kept at the start while its folder is refused runs once the folder
 /** A server for test `t` with the held table, on a data folder whose login was turned on and signed in at a
  *  CLAUDE_CONFIG_DIR folder, with an agent `planned` on claude-agent and no key; the folder was opened to its group before
  *  the start, so the login is kept and refused. `start()`: a run of `planned`; `waits(n)`: resolves once the server has
- *  logged claude_login_wait `n` times; `whys`: each of those lines' `why`, in order; `fake`: the stand-in CLI.
- *  `options` are laid on the second server's, and `vars` on its environment. */
+ *  logged claude_login_wait `n` times; `whys`: each of those lines' `why`, in order; `offerLines`: the server's
+ *  harness_offers and harness_offers_wait lines, in order; `offersWaited`: resolves once it has logged a
+ *  harness_offers_wait line; `fake`: the stand-in CLI. `options` are laid on the second server's, and `vars` on its
+ *  environment. */
 async function mendedLater(t, options = {}, vars = {}) {
   const folder = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "claude-config-dir-"));
   t.after(() => rmSync(folder, { recursive: true, force: true }));
@@ -2096,7 +2178,12 @@ async function mendedLater(t, options = {}, vars = {}) {
   withEnv(t, vars);
   const whys = [];
   const waiting = [];
+  const offerLines = [];
+  let offerWaited;
+  const offersWaited = new Promise((resolve) => (offerWaited = resolve));
   const log = (line) => {
+    if (/ event=harness_offers(?:_wait)? /.test(line)) offerLines.push(line);
+    if (line.includes(" event=harness_offers_wait ")) offerWaited();
     if (!line.includes(" event=claude_login_wait ")) return;
     whys.push(/ why=(\S+)/.exec(line)?.[1]);
     for (const wait of waiting.filter((one) => one.times <= whys.length)) wait.resolve();
@@ -2109,7 +2196,7 @@ async function mendedLater(t, options = {}, vars = {}) {
   const refused = await start();
   assert.equal(refused.status, 409, `refused at the start: ${JSON.stringify(refused.body)}`);
   assert.match(refused.body.error.message, /claude-agent needs ANTHROPIC_API_KEY/);
-  return { ...server, folder, start, waits, whys, fake: first.fake };
+  return { ...server, folder, start, waits, whys, offerLines, offersWaited, fake: first.fake };
 }
 
 const REFRESH_WHY = "a run asked while a refresh that found the folder mended was making the offers again checked the offers made before it";
@@ -2301,6 +2388,104 @@ test("a run whose refresh finds a later hand-over each time it has waited for on
   assert.deepEqual(whys, ["turn", "turn", "turn"], "each wait was logged as one for a turn's making of the offers");
 });
 
+// A refresh's making of the offers can be overtaken with no later hand-over too: a model key saved meanwhile starts a
+// probe of its own (the key is one of the offers' inputs), and the refresh's is dropped as it lands. The hand-over the
+// refresh waited for is then still the latest and did not fail, yet where the key's probe fails (or is still out) the
+// offers held are the ones made before both, from the login as it was. The request must not go on by them: it makes
+// the offers from the login held itself (or waits for the probe out). Here the run's own refresh finds the folder
+// mended and its probe is held; the key's save comes meanwhile, its probe held too and failing, and only then is the
+// refresh's probe let go.
+const OVERTAKEN_BY_KEY_WHY = "a run whose refresh's making of the offers was overtaken by a key save's, which failed, checked the offers made before both";
+test("a run whose refresh's making of the offers is overtaken by a key save's that then fails makes the offers from the login held: it is not refused for a key, and claude-agent is offered", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  const refreshing = held.hold((env) => claudeLoginOf(env) !== undefined && env.OPENAI_API_KEY === undefined);
+  t.after(() => refreshing.release());
+  const running = start();
+  await refreshing.reached;
+  const saveProbe = held.hold((env) => env.OPENAI_API_KEY !== undefined, new Error("the probe of the offers failed"));
+  t.after(() => saveProbe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await saveProbe.reached;
+  saveProbe.release();
+  const saved = await saving;
+  assert.equal(saved.status, 500, `the key save's probe failed, so the save fails: ${JSON.stringify(saved.body)}`);
+  refreshing.release();
+  const run = await running;
+  assert.equal(run.status, 202, `${OVERTAKEN_BY_KEY_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  const offer = await offerOf(api);
+  assert.equal(offer.available, true, `claude-agent is offered once the run made the offers from the login held: ${JSON.stringify(offer)}`);
+});
+
+// The same race with the key save's probe still out, and not failing, when the refresh's is let go. The hand-over the
+// run waited for is still the latest and did not fail, and the offers held are the ones made before both; the probe out
+// has read the inputs the run now goes by, so the run waits for that probe's turn (one harness_offers_wait why=key
+// line), starts no probe of its own, and goes on by the offers the save's probe lands: claude-agent on the login, and pi
+// on the key.
+const STILL_OUT_WHY = "a run whose refresh's making of the offers was overtaken by a key save's still out did not go on by the offers that probe landed";
+test("a run whose refresh's making of the offers is overtaken by a key save's still out waits for that probe once, starts none of its own, and goes on by the offers it lands", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, offerLines, offersWaited } = await mendedLater(t);
+  chmodSync(folder, 0o700);
+  const refreshing = held.hold((env) => claudeLoginOf(env) !== undefined && env.OPENAI_API_KEY === undefined);
+  t.after(() => refreshing.release());
+  const running = start();
+  await refreshing.reached;
+  const saveProbe = held.hold((env) => env.OPENAI_API_KEY !== undefined);
+  t.after(() => saveProbe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await saveProbe.reached;
+  const before = offerLines.length;
+  refreshing.release();
+  const first = await Promise.race([offersWaited.then(() => "the run waited"), running.then(() => "the run answered")]);
+  saveProbe.release();
+  const [run, saved] = await Promise.all([running, saving]);
+  assert.ok(saved.status < 300, `the key save's probe landed, so the save is taken: ${JSON.stringify(saved.body)}`);
+  assert.equal(run.status, 202, `${STILL_OUT_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  assert.equal(first, "the run waited", "the run answered before the key save's probe was let go");
+  const waits = offerLines.filter((line) => line.includes(" event=harness_offers_wait "));
+  assert.deepEqual(waits.map((line) => / why=(\S+)/.exec(line)?.[1]), ["key"], `the run waited for the key save's probe once: ${waits.join("\n")}`);
+  const harnesses = (await api("GET", "/capabilities")).body.harnesses;
+  const landed = offerLines.slice(before).filter((line) => line.includes(" event=harness_offers "));
+  assert.equal(landed.length, 2, `only the refresh's probe and the save's landed after both were out, none of the run's or of capabilities': ${landed.join("\n")}`);
+  for (const id of ["claude-agent", "pi"]) assert.equal(harnesses.find((offer) => offer.id === id)?.available, true, `${STILL_OUT_WHY}: ${id} is not offered: ${JSON.stringify(harnesses)}`);
+});
+
+// A refresh that finds its offers dropped makes them again (loginNow), and no key changed then: the runs whose listings
+// read the keys (LISTING_KEYED, a failed run's error words) are not relisted. The key's save relisted them already, and
+// a relist is a write over every such run. Here the failed race above, with one such run in the store and the lister's
+// own passes off, so nothing builds its listing again and each relist moves its mark.
+const RELIST_WHY = "a run whose refresh made the offers again, with no key changed since the key save relisted the runs, relisted them again";
+test("a run whose refresh makes the offers again, with no key changed, relists no runs: only the key's save moved a keyed run's mark", { skip: process.platform === "win32" ? "no modes" : process.geteuid() === 0 ? "root may write anywhere" : false, timeout: 120_000 }, async (t) => {
+  const { api, folder, start, store } = await mendedLater(t, { listerIdleMs: Infinity });
+  const planned = await store.agents.get("planned");
+  await store.runs.create({ id: "keyed", agentId: "planned", revisionId: planned.currentRevision });
+  const keyed = { item: { agent_id: "planned" }, cut: "", status: "failed", live: false, until: null, flags: LISTING_KEYED };
+  assert.equal(await store.runs.putListing("keyed", await store.runs.listMark("keyed"), keyed), true);
+  chmodSync(folder, 0o700);
+  const refreshing = held.hold((env) => claudeLoginOf(env) !== undefined && env.OPENAI_API_KEY === undefined);
+  t.after(() => refreshing.release());
+  const running = start();
+  await refreshing.reached;
+  const beforeSave = await store.runs.listMark("keyed");
+  const saveProbe = held.hold((env) => env.OPENAI_API_KEY !== undefined, new Error("the probe of the offers failed"));
+  t.after(() => saveProbe.release());
+  const saving = api("PUT", "/settings/tool-keys/openai", { values: { OPENAI_API_KEY: "fake-test-key" } });
+  await saveProbe.reached;
+  saveProbe.release();
+  const saved = await saving;
+  assert.equal(saved.status, 500, `the key save's probe failed, so the save fails: ${JSON.stringify(saved.body)}`);
+  const afterSave = await store.runs.listMark("keyed");
+  assert.ok(afterSave > beforeSave, "the key's save relisted the keyed run");
+  refreshing.release();
+  const run = await running;
+  assert.equal(run.status, 202, `${OVERTAKEN_BY_KEY_WHY}: ${JSON.stringify(run.body)}`);
+  assert.equal((await api("POST", `/runs/${run.body.run_id}/cancel`)).status < 300, true);
+  assert.equal(await store.runs.listMark("keyed"), afterSave, RELIST_WHY);
+  assert.equal((await offerOf(api)).available, true, "claude-agent is offered once the run made the offers from the login held");
+});
+
 // A template's plan and its apply pick the package's harness by the offers (the first of its list offered here, as a
 // model choice's is checked against them), as a run's check reads them. Right after a chmod mends the login's folder,
 // or refuses it again, they must look at the folders first, as a run, a save and capabilities do, not pick by the
@@ -2312,6 +2497,7 @@ const PICK_PACKAGE = `---
 name: on-plan
 version: 1.0.0
 description: Says hi.
+tools: []
 harness: [claude-agent, pi]
 model:
   tier: balanced

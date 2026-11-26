@@ -5,15 +5,13 @@
 // status or retired_from (the host writes a draft's README), and its merge never writes over a draft a person held since
 // its seed.
 import assert from "node:assert/strict";
-import { writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
 import { checkDraft } from "../dist/learn/check.js";
 import { draftFiles, readmeOf } from "../dist/learn/workflow-draft.js";
 import { seedOf } from "../dist/learning.js";
 import { added, workflow } from "./learn-format-support.mjs";
-import { ended, git, LEARN, learner, made, repoOf, resnap, started } from "./learn-support.mjs";
+import { ended, LEARN, learner, learningAt, made, putLearning, savesOf, started } from "./learn-support.mjs";
 import { call, cookieOf, serve } from "./support.mjs";
 
 const SIGN_IN_PHRASE = "the owner signs in with this phrase";
@@ -23,24 +21,18 @@ const readme = (name, extra = "") => `---\nname: ${name}\ndescription: Sends any
 const draft = (name, extra = "") => ({ [`workflows/${name}/README.md`]: readme(name, extra), [`workflows/${name}/workflow.json`]: workflow({ name }) });
 const README = (name) => `workflows/${name}/README.md`;
 
-/** A server with accounts and the owner's session, agent `keeper` with a folder; `files` committed on main. */
+/** A server with accounts and the owner's session, agent `keeper` with its learning; `files` saved on it as a run's
+ *  merge. */
 async function keeper(t, files) {
   const server = await serve(t, { learning: "on", faux: LEARN, accounts: true, openSetup: true });
-  const { api, data, port } = server;
+  const { api, data, port, store } = server;
   const origin = `http://127.0.0.1:${port}`;
   const setup = await call(port, { method: "POST", path: "/v2/setup", headers: { ...json, origin }, body: { password: SIGN_IN_PHRASE } });
   assert.equal(setup.status, 201, setup.text);
   const cookie = cookieOf(setup);
   await made(api, learner("keeper"));
   await ended(api, await started(api, "keeper"));
-  const repo = repoOf(data, "keeper");
-  for (const [file, text] of Object.entries(files)) {
-    mkdirSync(join(repo, file, ".."), { recursive: true });
-    writeFileSync(join(repo, file), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "the folder as runs left it"]);
-  await resnap(data, "keeper");
+  await putLearning(store, "keeper", files, { reason: "the learning as runs left it" });
   const etag = async (file) => (await api("GET", `/agents/keeper/learning/files/${encodeURIComponent(file)}`)).headers.get("etag");
   const owner = (action) => async (file) => call(port, { method: "POST", path: `/v2/agents/keeper/learning/files/${encodeURIComponent(file)}/${action}`, headers: { ...json, cookie, origin, "if-match": await etag(file) }, body: {} });
   const retire = async (file) => {
@@ -48,14 +40,14 @@ async function keeper(t, files) {
     assert.equal(res.status, 200, JSON.stringify(res.body));
   };
   const flowOf = async (name) => (await api("GET", "/agents/keeper/learning")).body.workflows.find((item) => item.name === name);
-  const laid = async () => (await seedOf(data, "keeper")).workflows.map(({ name }) => name);
-  return { ...server, repo, restore: owner("restore"), approve: owner("approve"), retire, etag, flowOf, laid };
+  const laid = async () => (await seedOf(data, store, "keeper")).workflows.map(({ name }) => name);
+  return { ...server, restore: owner("restore"), approve: owner("approve"), retire, etag, flowOf, laid };
 }
 
 test("a held draft retired and restored waits for its owner's OK again: never active, never given to a run, the restore no approval; only the OK makes it active", { timeout: 150_000 }, async (t) => {
-  const { repo, restore, approve, retire, flowOf, laid } = await keeper(t, { ...draft("share-files", "status: pending\n"), ...draft("answer-in-tables") });
+  const { store, restore, approve, retire, flowOf, laid } = await keeper(t, { ...draft("share-files", "status: pending\n"), ...draft("answer-in-tables") });
   await retire(README("share-files"));
-  assert.match(git(repo, ["show", `main:${README("share-files")}`]), /status: retired\nretired_from: pending\n/, "its retire records it waited");
+  assert.match((await learningAt(store, "keeper")).text(README("share-files")), /status: retired\nretired_from: pending\n/, "its retire records it waited");
   assert.deepEqual([(await flowOf("share-files")).status, (await flowOf("share-files")).retired?.from], ["retired", "pending"], "the view says it goes back to waiting");
   const restored = await restore(README("share-files"));
   assert.equal(restored.status, 200, restored.text);
@@ -63,7 +55,8 @@ test("a held draft retired and restored waits for its owner's OK again: never ac
   assert.doesNotMatch(restored.text, /retired_from/);
   assert.equal((await flowOf("share-files")).status, "pending");
   assert.deepEqual(await laid(), ["answer-in-tables"], "no run is given it");
-  assert.doesNotMatch(git(repo, ["log", "-1", "--format=%B", "main"]), /Approved-Via/, "a restore is no approval");
+  const [top] = await savesOf(store, "keeper");
+  assert.deepEqual(top.by, { person: "restored", file: README("share-files") }, "a restore is no approval");
   const approved = await approve(README("share-files"));
   assert.equal(approved.status, 200, approved.text);
   assert.equal((await flowOf("share-files")).status, "checking", "given to runs, not serving until its check promotes it");
@@ -98,36 +91,19 @@ test("a run never sets a status or retired_from in a draft's README: the host wr
 
 test("a run's merge never writes over a draft a person held since its seed: a conflict, nothing written", async (t) => {
   const { learningCommit } = await import("../dist/learn/commit.js");
-  const { readSnapshot } = await import("../dist/learn/folder.js");
-  const { learningWorkspace } = await import("../dist/workspace/index.js");
-  const { agentFolderOf } = await import("../dist/files.js");
+  const { learningOf } = await import("../dist/learn/rows.js");
+  const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
   const { scratch } = await import("./support.mjs");
-  const data = await scratch(t);
-  await seedOf(data, "agent-1");
-  const repo = join(agentFolderOf(data, "agent-1"), "learning");
-  const put = (files, message) => {
-    for (const [path, text] of Object.entries(files)) {
-      mkdirSync(join(repo, path, ".."), { recursive: true });
-      writeFileSync(join(repo, path), text);
-    }
-    git(repo, ["add", "--", ...Object.keys(files)]);
-    git(repo, ["commit", "-q", "-m", message]);
-  };
-  put(draft("share-files"), "the folder");
-  await resnap(data, "agent-1");
-  const seed = git(repo, ["rev-parse", "main"]).trim();
+  const store = await openSqliteStore({ dataDir: await scratch(t), role: "server" });
+  t.after(() => store.close());
+  await store.learning.seed("agent-1");
+  const seed = await putLearning(store, "agent-1", draft("share-files"), { runId: "run-m1", reason: "the learning" });
   // Since the run's seed, its owner held the draft (as a retire and a restore of a held one leaves it).
-  put({ [README("share-files")]: readme("share-files", "status: pending\n") }, "held by its owner");
-  await resnap(data, "agent-1");
-  const folder = learningWorkspace({ mode: "local", data, agentId: "agent-1" });
-  try {
-    const over = await learningCommit(folder.workspace, { runId: "run-m2", reason: "x", files: [{ path: README("share-files"), text: readme("share-files") }, { path: "workflows/share-files/workflow.json", text: workflow({ name: "share-files", node: "extract" }) }], seed });
-    assert.deepEqual([over.ok, over.reason], [false, "conflict"], JSON.stringify(over));
-    const snapshot = await readSnapshot(folder.workspace);
-    assert.equal(snapshot.workflows.find((one) => one.name === "share-files")?.status, "pending");
-  } finally {
-    await folder.end();
-  }
+  await putLearning(store, "agent-1", { [README("share-files")]: readme("share-files", "status: pending\n") }, { person: "edited" });
+  const over = await learningCommit(learningOf(store, "agent-1"), { runId: "run-m2", reason: "x", files: [{ path: README("share-files"), text: readme("share-files") }, { path: "workflows/share-files/workflow.json", text: workflow({ name: "share-files", node: "extract" }) }], seed });
+  assert.deepEqual([over.ok, over.reason], [false, "conflict"], JSON.stringify(over));
+  const { view } = await learningAt(store, "agent-1");
+  assert.equal(view.workflows.find((one) => one.name === "share-files")?.status, "pending");
 });
 
 // A draft's retired_from is read by the one front-matter reader (frontMatter, #2255): its quoting decoded one way, and

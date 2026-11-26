@@ -1813,19 +1813,35 @@ function packedRoom(host: MachineHost): NonNullable<HostFacts["labels"]> | undef
 	return room?.packed ? room : undefined;
 }
 
-/** A machine as the host read it, with a packed host's labels unpacked: none where it holds no packed map (not the adapter's). */
-const unpacked = (host: MachineHost, machine: Machine): Machine => (packedRoom(host) === undefined ? machine : { ...machine, labels: unpackLabels(machine.labels) ?? {} });
+/**
+ * A machine as the host read it, with a packed host's labels unpacked. One that holds no packed map has none (not the
+ * adapter's), or its stored labels on a host whose machines may carry them as given (facts.labels.packed.unpacked).
+ */
+function unpacked(host: MachineHost, machine: Machine): Machine {
+	const room = packedRoom(host);
+	if (room === undefined) return machine;
+	return { ...machine, labels: unpackLabels(machine.labels) ?? (room.packed?.unpacked ? machine.labels : {}) };
+}
 
 /**
  * The host's listing by labels, bounded by ms: only the machines that carry every one of them, since a vendor's listing
  * may answer more (MachineHost.list). A packed host is asked for PACKED_NAME alone, the name's where one is asked, and
- * its machines' labels unpacked.
+ * its machines' labels unpacked. A listing by name on a host whose machines may also carry their labels as given
+ * (facts.labels.packed.unpacked) asks both ways, one after the other within ms together, and answers every machine
+ * either finds: across an upgrade one request can make one machine of each form, and convergence must see both.
  */
 export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal): Promise<Result<Machine[]>> {
 	const name = labels[NAME_LABEL];
-	const asked = packedRoom(host) === undefined ? labels : name === undefined ? {} : { [PACKED_NAME]: name };
-	const listed = await hostCall(host, what, (ctx) => host.list(asked, ctx), ms, signal);
-	return listed.ok ? ok(listed.value.map((machine) => unpacked(host, machine)).filter((machine) => carries(machine, labels))) : listed;
+	const room = packedRoom(host);
+	const asks = room === undefined ? [labels] : name === undefined ? [{}] : room.packed?.unpacked ? [{ [PACKED_NAME]: name }, labels] : [{ [PACKED_NAME]: name }];
+	const until = Date.now() + ms;
+	const found = new Map<string, Machine>();
+	for (const asked of asks) {
+		const listed = await hostCall(host, what, (ctx) => host.list(asked, ctx), Math.max(1, until - Date.now()), signal);
+		if (!listed.ok) return listed;
+		for (const machine of listed.value) if (!found.has(machine.id)) found.set(machine.id, unpacked(host, machine));
+	}
+	return ok([...found.values()].filter((machine) => carries(machine, labels)));
 }
 
 /** Whether a machine carries every one of these labels. */

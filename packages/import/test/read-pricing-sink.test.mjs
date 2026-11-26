@@ -5,8 +5,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { parseHome } from "../dist/index.js";
-import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexContext, codexFile, codexMeta, codexTokens, openaiUsage, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
+import { anthropicUsage, at, claudeAnswer, claudeFile, claudeUser, codexContext, codexFile, codexMeta, codexTokens, openaiUsage, parseHome, subagentFile, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const costState = (usd, i) => ({ type: "cost-state", timestamp: at(i), totalCostUSD: usd });
 const MODEL = "claude-sonnet-4-5";

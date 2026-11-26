@@ -23,10 +23,9 @@
 // custody ends a create it refused at once.
 import type { AttachTarget, BrowserProvider, LeaseRef, ProviderCaps, RemoteFile, ResourceStatus, SessionSpec } from "@parcha/pi-browser";
 import { BrowserFailureError, browserFailure, cdpCall, type CdpSession } from "@parcha/pi-browser";
-import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, keyBase, PROVIDERS, providerFor, releaseOlder, runLabels } from "@parcha/agentrun-computer";
-import { KEY_TABLE, providerOptions } from "./computer-keys.js";
+import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, releaseOlder, runLabels } from "@parcha/agentrun-computer";
+import { providerFromEnv } from "./computer-keys.js";
 import { claimBrowser } from "./workspace/computer-for-claim.js";
-import { hostEnvOf } from "./workspace/computer-providers.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
 
 /** Custody's own refusal of a second saver, in its words: no session was started. */
@@ -40,8 +39,6 @@ export interface BrowserComputerOptions {
   readonly signIn?: { readonly name: string; readonly pointer: string };
   /** A headless browser where the provider offers one. */
   readonly headless?: boolean;
-  /** Where a server behind a browser gateway holds the sockets of Browserbase's connect hosts (BROWSERBASE_CONNECT_BASE_URL). */
-  readonly connectBaseUrl?: string;
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
@@ -194,7 +191,9 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
 
     async attach(ref, signal): Promise<AttachTarget> {
       signal?.throwIfAborted();
-      const url = rewriteConnectUrl(await statused(computer.url(ref.id)), options.connectBaseUrl);
+      // The provider's connect URL as a driver dials it: one behind a gateway that fronts its sockets (hostEnv) already
+      // gives the gateway's.
+      const url = await statused(computer.url(ref.id));
       // A provider that keeps a session's downloads keeps only what the browser was told to save into its folder, and
       // that lasts as long as the socket that told it: one per session, held until its release. A failure costs the
       // files, not the session.
@@ -243,19 +242,13 @@ export function claimBrowserProvider(computer: ClaimBrowser, options: BrowserCom
   return provider;
 }
 
-/** The plane's vendor as a computer provider of the registry, made with the run's tool keys by the registry's names
- *  (computer-keys.ts providerOptions): the same provider an agent's browser computer is, on the keys the tool plane
- *  resolved it by. */
+/** The plane's vendor as a computer provider of the registry, made with the run's tool keys and the server's own variables
+ *  its descriptor names (computer-keys.ts providerFromEnv): the same provider an agent's browser computer is, on the keys
+ *  the tool plane resolved it by, through the gateway the key checks and sign-ins go through. */
 export async function planeComputer(vendor: string, env: NodeJS.ProcessEnv): Promise<ComputerProvider> {
-  const keys = Object.fromEntries((KEY_TABLE.keys[vendor] ?? []).flatMap((key) => (typeof env[key.name] === "string" && env[key.name] !== "" ? [[key.name, env[key.name] as string]] : [])));
-  const options = providerOptions(vendor, keys);
-  if (!options.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${options.error.message}.`));
-  // The server's own variables the provider's descriptor says it reads (hostEnv: the gateway a server behind one reaches
-  // the vendor through), as the claim's providers get them (workspace/computer-deps.ts): the key checks and the sign-in
-  // creation already go through that gateway, so the browser's sessions do too.
-  const names = PROVIDERS.find((one) => one.id === vendor)?.hostEnv;
-  const hostEnv = names ? { env: hostEnvOf(env, names) } : {};
-  return providerFor(vendor as never, { ...(options.options as object), ...hostEnv } as never);
+  const made = await providerFromEnv(vendor, env);
+  if (!made.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${made.error.message}.`));
+  return made.value;
 }
 
 /** The run's browser sessions of a lower claim epoch released, as a computer's are when a claim starts it (the janitor's
@@ -271,21 +264,6 @@ export async function releaseOlderBrowsers(
   if (!older.ok) throw new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${older.error.message}.`));
   const settleMs = provider.capabilities().browser?.profiles?.settleMs ?? 0;
   if (settleMs > 0 && older.value.released.length + older.value.detached.length > 0) await sleep(settleMs);
-}
-
-/** A Browserbase connect URL moved onto the credential proxy that fronts its sockets: only `*.browserbase.com` hosts, with
- *  the signing query kept. The signing key goes to the proxy, so its base takes the rule of a URL a key goes to (keyBase),
- *  over https or wss: one it refuses throws in those words, never falling back to Browserbase's own host. Another browser's
- *  session never goes to the proxy, so its attach never reads the setting. */
-export function rewriteConnectUrl(connectUrl: string, connectBaseUrl: string | undefined): string {
-  if (!connectBaseUrl) return connectUrl;
-  const url = URL.canParse(connectUrl) ? new URL(connectUrl) : undefined;
-  if (!url || !/(?:^|\.)browserbase\.com$/i.test(url.hostname)) return connectUrl;
-  const target = new URL(keyBase(connectBaseUrl, "BROWSERBASE_CONNECT_BASE_URL", ["https:", "wss:"]));
-  url.protocol = target.protocol;
-  url.host = target.host;
-  url.pathname = target.pathname.replace(/\/$/, "") + url.pathname;
-  return url.toString();
 }
 
 /** A run's browser over `provider`, a browser computer provider (the plane's vendor, or a test's stand-in), as the claim

@@ -17,6 +17,8 @@ export const DOCKER = defineProvider({
 	// No default image: the server makes one from the provider's recipe (prepareImage) before the first create.
 	prepareImage: true,
 	local: true,
+	// The box a new agent with no place gets, where this machine's Docker answers.
+	defaultBox: true,
 	// What the docker CLI reads (env-names.ts DOCKER_ENV_NAMES): the server's own values of these, and no other.
 	hostEnv: DOCKER_ENV_NAMES,
 	load: () => import("../docker.js"),

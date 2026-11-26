@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { claimBrowserProvider, planeBrowser, releaseOlderBrowsers, resetBrowserComputerHoldings, rewriteConnectUrl } = await import("../dist/browser-computer.js");
+const { claimBrowserProvider, planeBrowser, releaseOlderBrowsers, resetBrowserComputerHoldings } = await import("../dist/browser-computer.js");
 
 /** The label a session's custody tag rides on (workspace/computer-for-claim.ts). */
 const TAG_LABEL = "agentrun.session";
@@ -214,33 +214,6 @@ test("after it ends a dead claim's session, the plane waits out the provider's s
   await claimBrowserProvider(planeBrowser(s.provider, { runId: "run-1", epoch: 2 })).create(SPEC, signal());
   await releaseOlderBrowsers(s.provider, RUN, { sleep: async (ms) => void slept.push(ms) });
   assert.deepEqual(slept, [5_000]);
-});
-
-test("a Browserbase connect URL moves onto the credential proxy, its signing query kept; another host's is left alone", () => {
-  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?sessionId=s&signingKey=k", "https://proxy.example/ws/"), "https://proxy.example/ws/?sessionId=s&signingKey=k");
-  assert.equal(rewriteConnectUrl("ws://127.0.0.1:9/devtools/b1", "https://proxy.example"), "ws://127.0.0.1:9/devtools/b1");
-  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?x=1", undefined), "wss://connect.browserbase.com/?x=1");
-  assert.equal(rewriteConnectUrl("wss://connect.browserbase.com/?x=1", "wss://proxy.example/ws"), "wss://proxy.example/ws/?x=1");
-});
-
-test("a connect base URL the signing key may not go to is refused, naming its setting and the origin alone, never quietly used", () => {
-  const FAKE = "not-a-secret";
-  const credentialed = "https://agent:" + FAKE + "@proxy.example/ws";
-  const connect = "wss://connect.browserbase.com/?sessionId=s&signingKey=k";
-  for (const base of [credentialed, "https://proxy.example/ws?key=not-a-secret", "https://proxy.example/ws#not-a-secret", "http://proxy.example/ws", "ws://proxy.example/ws"]) {
-    assert.throws(() => rewriteConnectUrl(connect, base), (error) => {
-      assert.match(error.message, /^BROWSERBASE_CONNECT_BASE_URL /, base);
-      assert.doesNotMatch(error.message, /not-a-secret|key=|agent:|signingKey/, base);
-      return true;
-    }, base);
-  }
-});
-
-test("a connect base URL only a Browserbase session uses never stops another browser's attach, refused or not", () => {
-  for (const base of ["http://proxy.example/ws", "https://proxy.example/ws?key=not-a-secret"]) {
-    assert.equal(rewriteConnectUrl("ws://127.0.0.1:9/devtools/b1", base), "ws://127.0.0.1:9/devtools/b1", base);
-    assert.equal(rewriteConnectUrl("wss://api.onkernel.com/browser/cdp?token=t", base), "wss://api.onkernel.com/browser/cdp?token=t", base);
-  }
 });
 
 test("a provider that is no browser, or a browser that declares no features, is refused in browser_unavailable's words", () => {

@@ -11,12 +11,14 @@
 //   Bun's userInfo reads `$USER` as well, and says "unknown" without it (Node's reads the user database): so a CLI
 //   started with no USER saves and reads its tokens under the account "unknown", where a terminal's `claude`, which has
 //   USER, never looks. A name outside [A-Za-z0-9._-] is "claude-code-user".
-// `security` notes the command and account of every call beside itself (asked.jsonl).
+// `security` notes the command and account of every read and write beside itself (asked.jsonl), and of every delete
+// apart (deleted.jsonl). A delete with no account takes the service's first item of any account, as macOS's does.
 // The stand-ins lead every PATH here and every home is a temporary one, so no real Keychain or login is touched.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
 import * as claude from '@parcha/agentrun-harness-claude';
@@ -32,8 +34,9 @@ const SECURITY = `#!${process.execPath}
 const fs = require('node:fs'), path = require('node:path');
 const file = path.join(process.env.HOME ?? '', 'Library', 'Keychains', 'login.keychain-db');
 const [command, ...args] = process.argv.slice(2);
-const flag = (name) => args[args.indexOf(name) + 1];
-fs.appendFileSync(path.join(__dirname, 'asked.jsonl'), JSON.stringify([command, flag('-a')]) + '\\n');
+const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+const deleting = command === 'delete-generic-password';
+fs.appendFileSync(path.join(__dirname, deleting ? 'deleted.jsonl' : 'asked.jsonl'), JSON.stringify([command, flag('-a')]) + '\\n');
 if (!fs.existsSync(file)) process.exit(command === 'add-generic-password' ? 50 : 44);
 const items = JSON.parse(fs.readFileSync(file, 'utf8'));
 const key = JSON.stringify([flag('-a'), flag('-s')]);
@@ -42,6 +45,12 @@ if (command === 'find-generic-password') {
   console.log(items[key]);
 } else if (command === 'add-generic-password') {
   items[key] = Buffer.from(flag('-X'), 'hex').toString('utf8');
+  fs.writeFileSync(file, JSON.stringify(items));
+} else if (deleting) {
+  // The first item of the service, of the account when -a names one, of any account when it names none.
+  const found = Object.keys(items).find((each) => { const [account, service] = JSON.parse(each); return service === flag('-s') && (flag('-a') === undefined || account === flag('-a')); });
+  if (found === undefined) process.exit(44);
+  delete items[found];
   fs.writeFileSync(file, JSON.stringify(items));
 } else process.exit(2);
 `;
@@ -75,6 +84,13 @@ if (group === 'auth' && verb === 'status') {
   console.log(JSON.stringify(signedIn ? { loggedIn: true, authMethod: 'claude.ai', ...(email ? { email } : {}) } : { loggedIn: false, authMethod: 'none' }));
   process.exit(signedIn ? 0 : 1);
 }
+if (group === 'auth' && verb === 'logout') {
+  // The item the sign-in kept goes, and the account with it; an item already gone is no failure.
+  const removed = spawnSync('security', ['delete-generic-password', '-a', user, '-s', item]).status;
+  if (removed !== 0 && removed !== 44) process.exit(1);
+  fs.rmSync(accountFile, { force: true });
+  process.exit(0);
+}
 process.exit(2);
 `;
 
@@ -91,11 +107,14 @@ function mac() {
   writeFileSync(join(home, 'Library', 'Keychains', 'login.keychain-db'), '{}');
   const path = `${bin}:/usr/bin:/bin`;
   const asked = join(bin, 'asked.jsonl');
+  const deleted = join(bin, 'deleted.jsonl');
   return {
     bin, cli: join(bin, 'claude'), home, path, terminal: { PATH: path, HOME: home, USER: ACCOUNT, LOGNAME: ACCOUNT },
     items: () => Object.keys(JSON.parse(readFileSync(join(home, 'Library', 'Keychains', 'login.keychain-db'), 'utf8'))).length,
-    /** Each `security` call so far, as [command, account]. */
+    /** Each `security` read and write so far, as [command, account]. */
     asked: () => (existsSync(asked) ? readFileSync(asked, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []),
+    /** Each `security` delete so far, as [command, account]. */
+    deleted: () => (existsSync(deleted) ? readFileSync(deleted, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)) : []),
   };
 }
 
@@ -139,7 +158,7 @@ async function asServerOf(m, fn) {
 
 /** The logins serve makes (its loginAt), on that Mac: each carries the person's home as `userHome`, as serve's do. */
 const PLACES = {
-  "AgentRun's own folder": (m) => ({ dir: join(m.home, '.agentrun', 'claude-login'), profiles: join(m.home, '.agentrun', 'claude-login', 'anthropic'), userHome: m.home }),
+  "AgentRun's own folder": (m) => ({ dir: join(m.home, '.agentrun', 'claude-login'), profiles: join(m.home, '.agentrun', 'claude-login', 'anthropic'), userHome: m.home, own: true }),
   "this machine's login on the CLI's default folder": (m) => ({ dir: join(m.home, '.claude'), profiles: join(m.home, '.config', 'anthropic'), home: m.home, userHome: m.home }),
   "this machine's login in a CLAUDE_CONFIG_DIR folder": (m) => ({ dir: join(m.home, 'work-claude'), profiles: join(m.home, '.config', 'anthropic'), userHome: m.home }),
 };
@@ -236,6 +255,42 @@ test("on macOS the badge and a plain `claude auth status` in the person's home w
   }
 });
 
+// The CLI's own sign-out (claudeLogout) runs with the sign-in's variables in the person's home, so it reaches the one
+// Keychain item the sign-in kept: after it no item is left and the status check reads signed out. Serve runs it on
+// AgentRun's own folder alone; the harness names the item the same way at every place.
+test("on macOS the CLI's own sign-out removes the Keychain item the sign-in kept, at every place: none is left, and the status check reads signed out", { skip }, async () => {
+  assert.equal(typeof claude.claudeLogout, 'function', "the harness has the CLI's own sign-out");
+  for (const [place, at] of Object.entries(PLACES)) {
+    const m = mac();
+    const login = at(m);
+    await asServerOf(m, async () => {
+      await WAYS['the sign-in this host starts'](m, login);
+      assert.equal(m.items(), 1, `${place}: signed in, one item`);
+      assert.equal(await claude.claudeLogout(m.cli, login, { path: m.path, platform: 'darwin' }), true, `${place}: the CLI confirmed its sign-out`);
+      assert.equal(m.items(), 0, `${place}: no Keychain item is left after the sign-out`);
+      assert.deepEqual(await status(m, login), { signedIn: false, method: 'none' }, `${place}: the status check after the sign-out`);
+      assert.equal(runSays(m, login), false, `${place}: a run after the sign-out`);
+    });
+  }
+});
+
+test("the CLI's own sign-out says false, never throws, when the CLI fails it, is no program, or outlasts its limit", { skip }, async () => {
+  assert.equal(typeof claude.claudeLogout, 'function', "the harness has the CLI's own sign-out");
+  const m = mac();
+  const login = PLACES["AgentRun's own folder"](m);
+  const failing = join(m.bin, 'claude-fails');
+  writeFileSync(failing, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const hangs = join(m.bin, 'claude-hangs');
+  writeFileSync(hangs, '#!/bin/sh\nexec sleep 30\n', { mode: 0o755 });
+  await asServerOf(m, async () => {
+    assert.equal(await claude.claudeLogout(failing, login, { path: m.path }), false, 'a CLI that exits 1');
+    assert.equal(await claude.claudeLogout(join(m.bin, 'no-such-claude'), login, { path: m.path }), false, 'no program at the path');
+    const started = Date.now();
+    assert.equal(await claude.claudeLogout(hangs, login, { path: m.path, timeoutMs: 200 }), false, 'a CLI past its limit');
+    assert.ok(Date.now() - started < 5_000, 'ended at its limit, not left running');
+  });
+});
+
 // The finding this holds: a sign-in from the console saved its item under the account "unknown" (the CLI was started
 // with no USER), so the badge, asked the same way, read signed in, while `claude auth status` in the person's terminal,
 // which has USER, read signed out. The server's USER as it was started: from a terminal, unset (a service launchd
@@ -257,5 +312,165 @@ test("on macOS the sign-in this host starts saves its Keychain item under the ac
       assert.equal(plainStatus(m, claude.claudeSignInEnv(login)), true, `${where}: the person's own \`claude auth status\` in their terminal (USER ${ACCOUNT}) read signed out after the sign-in`);
       assert.deepEqual([...new Set(m.asked().map(([, account]) => account))], [KEYCHAIN_ACCOUNT], `${where}: every Keychain write and read named the account ${KEYCHAIN_ACCOUNT}`);
     }
+  }
+});
+
+// The CLI's own sign-out (claudeLogout) names the user the sign-in named (loginUser), so it deletes the item under the
+// account the sign-in saved it under, whatever USER the server was started with: with the server's USER it would ask
+// for the account "unknown" (none set) or another user's, find nothing, and leave the login in the Keychain.
+test("on macOS the CLI's own sign-out deletes the Keychain item under the account the sign-in saved it under, whatever USER the server was started with: no item is left, and the status check reads signed out", { skip }, async () => {
+  for (const [place, at] of Object.entries(PLACES)) {
+    for (const [how, user] of Object.entries(SERVER_USER)) {
+      const m = mac();
+      const login = at(m);
+      const where = `${place}, the server's USER ${how}`;
+      await withServerUser(user, () => asServerOf(m, async () => {
+        await WAYS['the sign-in this host starts'](m, login);
+        assert.deepEqual(m.asked().filter(([command]) => command === 'add-generic-password'), [['add-generic-password', KEYCHAIN_ACCOUNT]], `${where}: the sign-in saved its item under the account ${KEYCHAIN_ACCOUNT}`);
+        // On a Mac the sign-in's own drop of an "unknown" item may come first; only the sign-out's deletes count here.
+        const before = m.deleted().length;
+        assert.equal(await claude.claudeLogout(m.cli, login, { path: m.path, platform: 'darwin' }), true, `${where}: the CLI confirmed its sign-out`);
+        assert.deepEqual(m.deleted().slice(before), [['delete-generic-password', KEYCHAIN_ACCOUNT]], `${where}: the sign-out deleted under the account ${KEYCHAIN_ACCOUNT}`);
+        assert.equal(m.items(), 0, `${where}: no Keychain item is left after the sign-out`);
+        assert.deepEqual(await status(m, login), { signedIn: false, method: 'none' }, `${where}: the status check after the sign-out`);
+      }));
+      assert.equal(plainStatus(m, claude.claudeSignInEnv(login)), false, `${where}: the person's own \`claude auth status\` in their terminal (USER ${ACCOUNT}) after the sign-out`);
+    }
+  }
+});
+
+// A console sign-in made before the CLI got USER saved its item under the account "unknown", which nothing reads now.
+// On AgentRun's own folder, which no CLI of the person's uses, that item goes once the folder's item under the person's
+// account is there: after the sign-in this host starts, or at the first status check that finds the item. Never at a
+// place of the person's own CLI (its default folder, a CLAUDE_CONFIG_DIR folder), whose "unknown" item may be theirs,
+// and never an item of any other account.
+const STALE_WHEN = {
+  'the sign-in this host starts': async (m, login) => {
+    await asServerOf(m, async () => assert.deepEqual(await claude.startClaudeLogin(m.cli, login, { path: m.path, display: {}, platform: 'darwin' }).ended, { end: 'exited', code: 0, signal: null }));
+  },
+  'the first status check that finds the item': async (m, login) => {
+    assert.equal((await status(m, login)).signedIn, false, 'the status check before the person signed in');
+    assert.ok(keychain(m).some(([account]) => account === 'unknown'), 'a status check that reads signed out leaves the "unknown" item');
+    WAYS['the shown line, run in their terminal'](m, login);
+    assert.equal((await status(m, login)).signedIn, true, 'the status check after the person signed in from their terminal');
+  },
+};
+/** Each item of the person's login keychain, as [account, service]. */
+const keychain = (m) => Object.keys(JSON.parse(readFileSync(join(m.home, 'Library', 'Keychains', 'login.keychain-db'), 'utf8'))).map((key) => JSON.parse(key));
+test('on macOS the Keychain item a sign-in left under the account "unknown" goes at AgentRun\'s own folder alone, once its item under the person\'s account is there, and no item of another account goes', { skip }, async () => {
+  for (const [place, at] of Object.entries(PLACES)) {
+    for (const [when, act] of Object.entries(STALE_WHEN)) {
+      const m = mac();
+      const login = at(m);
+      const where = `${place}, ${when}`;
+      // What a sign-in left there before: under another account first, then under "unknown" (a CLI started with no
+      // USER), and the person's own CLI's default item under "unknown" too.
+      const leave = (user, vars) => assert.equal(spawnSync(m.cli, ['auth', 'login'], { env: { PATH: m.path, HOME: m.home, ...vars, ...(user ? { USER: user } : {}) } }).status, 0);
+      leave('someone-else', claude.claudeSignInEnv(login));
+      const [[, service]] = keychain(m);
+      leave(undefined, claude.claudeSignInEnv(login));
+      leave(undefined, claude.claudeSignInEnv(PLACES["this machine's login on the CLI's default folder"](m)));
+      const bare = 'Claude Code-credentials';
+      await act(m, login);
+      const items = keychain(m).map((item) => JSON.stringify(item));
+      const has = (account, of) => items.includes(JSON.stringify([account, of]));
+      assert.equal(has('unknown', service), login.own !== true, `${where}: the item under "unknown" for ${service} ${login.own ? 'stayed' : 'went'}, items ${JSON.stringify(items)}`);
+      assert.equal(has('someone-else', service), true, `${where}: the item under another account stayed, items ${JSON.stringify(items)}`);
+      if (service !== bare) assert.equal(has('unknown', bare), true, `${where}: the person's own CLI's default item under "unknown" stayed, items ${JSON.stringify(items)}`);
+      assert.equal(keychain(m).filter(([account, of]) => of === service && account !== 'unknown' && account !== 'someone-else').length, 1, `${where}: the item under the person's account is there`);
+      assert.equal(plainStatus(m, claude.claudeSignInEnv(login)), true, `${where}: the person's own \`claude auth status\` reads signed in`);
+    }
+  }
+});
+
+/** How long the delete of an "unknown" item may take before it is ended (the source's DROP_MS). */
+const DROP_MS = 5_000;
+/** A `security` whose delete under "unknown" never ends of itself: it ignores SIGTERM and keeps running, as a hung
+ *  `security` or a wrapper on PATH may. Each such delete writes its pid, so the test ends any that outlive it. Every other
+ *  command is SECURITY's. */
+const HANGING = `#!${process.execPath}
+if (process.argv[2] === 'delete-generic-password' && process.argv.includes('unknown')) {
+  require('node:fs').appendFileSync(require('node:path').join(__dirname, 'hung.pids'), process.pid + '\\n');
+  process.on('SIGTERM', () => {});
+  setInterval(() => {}, 1000);
+} else {
+${SECURITY.slice(SECURITY.indexOf('\n') + 1)}
+}
+`;
+/** `p`, or a failure once `ms` have gone by with it unsettled, so a hang is a clean red rather than a hung run. */
+function within(ms, what, p) {
+  let timer;
+  const late = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} had not settled ${ms} ms on`)), ms); });
+  return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+for (const when of Object.keys(STALE_WHEN)) {
+  test(`on macOS a delete of the "unknown" item that ignores SIGTERM is killed at its limit: ${when} does not wait on it past that`, { skip }, async () => {
+    const m = mac();
+    writeFileSync(join(m.bin, 'security'), HANGING, { mode: 0o755 });
+    const login = PLACES["AgentRun's own folder"](m);
+    try {
+      if (when === 'the sign-in this host starts') {
+        await asServerOf(m, async () => assert.deepEqual(await within(DROP_MS + 3_000, `${when}: the sign-in's end`, claude.startClaudeLogin(m.cli, login, { path: m.path, display: {}, platform: 'darwin' }).ended), { end: 'exited', code: 0, signal: null }));
+      } else {
+        WAYS['the shown line, run in their terminal'](m, login);
+        assert.equal((await within(DROP_MS + 3_000, `${when}: the status check`, status(m, login))).signedIn, true, `${when}: the status check reads signed in`);
+      }
+      assert.ok(existsSync(join(m.bin, 'hung.pids')), `${when}: the delete under "unknown" was asked`);
+    } finally {
+      const pids = existsSync(join(m.bin, 'hung.pids')) ? readFileSync(join(m.bin, 'hung.pids'), 'utf8').split('\n').filter(Boolean).map(Number) : [];
+      for (const pid of pids) {
+        try { process.kill(pid, 'SIGKILL'); } catch {}
+      }
+    }
+  });
+}
+
+/** Ends each hung delete the HANGING stand-in in `m` noted. */
+function endHung(m) {
+  const pids = existsSync(join(m.bin, 'hung.pids')) ? readFileSync(join(m.bin, 'hung.pids'), 'utf8').split('\n').filter(Boolean).map(Number) : [];
+  for (const pid of pids) {
+    try { process.kill(pid, 'SIGKILL'); } catch {}
+  }
+}
+
+// A delete killed at its limit did not delete the item, so the item is not dealt with: the next call asks again. Here a
+// sign-in left an item under "unknown" at AgentRun's own folder, the person signed in from their terminal, and the first
+// status check's delete hangs and is killed. Once `security` answers again, the next status check deletes it.
+test('on macOS a delete of the "unknown" item killed at its limit leaves the item to the next status check, which deletes it', { skip }, async () => {
+  const m = mac();
+  const login = PLACES["AgentRun's own folder"](m);
+  assert.equal(spawnSync(m.cli, ['auth', 'login'], { env: { PATH: m.path, HOME: m.home, ...claude.claudeSignInEnv(login) } }).status, 0, 'a sign-in with no USER');
+  const [[, service]] = keychain(m);
+  const unknownThere = () => keychain(m).some(([account, of]) => account === 'unknown' && of === service);
+  assert.ok(unknownThere(), 'the sign-in with no USER left its item under "unknown"');
+  WAYS['the shown line, run in their terminal'](m, login);
+  writeFileSync(join(m.bin, 'security'), HANGING, { mode: 0o755 });
+  try {
+    assert.equal((await within(DROP_MS + 3_000, 'the first status check', status(m, login))).signedIn, true, 'the first status check reads signed in');
+    assert.ok(existsSync(join(m.bin, 'hung.pids')), 'the first status check asked for the delete under "unknown"');
+  } finally {
+    endHung(m);
+  }
+  assert.ok(unknownThere(), 'the killed delete left the item under "unknown"');
+  writeFileSync(join(m.bin, 'security'), SECURITY, { mode: 0o755 });
+  assert.equal((await status(m, login)).signedIn, true, 'the next status check reads signed in');
+  assert.equal(unknownThere(), false, `the next status check deleted the item under "unknown" the killed delete left: items ${JSON.stringify(keychain(m))}`);
+});
+
+// The sign-in's end waits on the drop of the "unknown" item, which throws nothing of its own. Should anything in it throw
+// all the same (here the hash that names the item's service, stubbed to throw), the end still settles, as the CLI's
+// exit says, and nothing is left unhandled.
+test('on macOS a drop of the "unknown" item that throws before its delete starts still ends the sign-in: its end settles as the CLI exited', { skip }, async () => {
+  const m = mac();
+  const login = PLACES["AgentRun's own folder"](m);
+  const crypto = createRequire(import.meta.url)('node:crypto');
+  const createHash = crypto.createHash;
+  crypto.createHash = () => { throw new Error('the hash failed'); };
+  syncBuiltinESMExports();
+  try {
+    await asServerOf(m, async () => assert.deepEqual(await within(DROP_MS + 3_000, "the sign-in's end", claude.startClaudeLogin(m.cli, login, { path: m.path, display: {}, platform: 'darwin' }).ended), { end: 'exited', code: 0, signal: null }));
+  } finally {
+    crypto.createHash = createHash;
+    syncBuiltinESMExports();
   }
 });

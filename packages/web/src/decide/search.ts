@@ -19,12 +19,12 @@ export function policyOf(policy: unknown = "drop"): DecidePolicy {
 }
 
 /** A search's results sifted by `decider` under `options.policy` (DecidePolicy), and `sift` telling the model what was
- *  done. The need judged is the task when one is given, else the query (siftRequest). */
+ *  done. The need judged is the task when one is given, else the search's objective (siftRequest's query). */
 export async function siftSearch(decider: WebDecider, answer: Search, options: StepOptions & { policy?: DecidePolicy | undefined }): Promise<Sifted<Search & { sift?: string }>> {
   const policy = policyOf(options.policy);
   if ("error" in answer || !answer.results.length) return { answer, classifier: skipped(decider, "search", "no results") };
   const start = performance.now();
-  const { got, requests } = await bounded((ctx) => decider.sift(answer.query, answer.results, options.task, ctx), options);
+  const { got, requests } = await bounded((ctx) => decider.sift(answer.objective, answer.results, options.task, ctx), options);
   const n = answer.results.length;
   if ("code" in got) return { answer: { ...answer, sift: `not run (${got.code}); these results are unsifted` }, classifier: failed(decider, "search", n, since(start), requests, got) };
   const scored: Scored[] = answer.results.map((hit, i) => ({ id: hit.url, score: got.verdicts[i] as Verdict }));
@@ -41,7 +41,7 @@ function labelled(id: string, answer: Extract<Search, { results: unknown }>, sco
   if (rerank) pairs.sort((a, b) => byScore(a.score, b.score));
   const results = pairs.map(({ hit, score }) => ({ ...hit, ...relevanceOf(score) }));
   const best = Math.max(...scored.map((item) => item.score ?? 0));
-  const miss = best < LOW_RELEVANCE ? `; nothing here looks relevant to ${JSON.stringify(clip(task ?? answer.query, QUERY_MAX))}; consider rephrasing` : "";
+  const miss = best < LOW_RELEVANCE ? `; nothing here looks relevant to ${JSON.stringify(clip(task ?? answer.objective, QUERY_MAX))}; consider rephrasing` : "";
   const done = rerank ? `ordered ${results.length} results by relevance` : `labelled ${results.length} results with their relevance`;
   return { ...answer, results, sift: `${id} ${done}, how likely each holds what the search asks for (0 to 1)${miss}` };
 }

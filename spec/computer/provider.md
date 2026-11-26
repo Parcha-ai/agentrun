@@ -64,13 +64,17 @@ A computer's spec (`ComputerSpec`):
 retry of one request (a timeout, a crash between the vendor's answer and ours) makes no second computer. There is no
 fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and conformance one per create.
 
-- The computer's vendor-side name is `computer-<the first 12 hex of sha256(requestId)>` (`computerNameFor`), with no
-  extra label, so a provider finds the request's computer by listing that name.
+- The computer's vendor-side name is `computer-<the first 12 hex of sha256(requestId)>` (`computerNameFor`), so a
+  provider finds the request's computer by listing that name. A vendor name that also carries what `list` reads puts
+  it after that name and a dash (Orgo: the run's hash, the epoch and the deadline), and the provider finds the
+  computer by that start. A vendor whose machines have no name of the caller's (Browserbase, Kernel) holds the name
+  as the create label, `agentrun.create`, and the provider finds the request's browser by that label.
 - The same id while that computer is still starting is the same create: it waits as a fresh create does, within the
   same bounds, and answers it once it is up; one that reaches its deadline first is refused `exists`.
 - The same id while it is up answers it once it is the computer the spec asks for, as far as the vendor reads it back
-  (Docker: every field its drift check reads, the network and the mount among them; a phone: its labels and image); one
-  that differs is refused `exists`. A retry never gets a wider network, another folder or another user than it asked.
+  (Docker: every field its drift check reads, the network and the mount among them; a phone: its labels and image;
+  Orgo: its labels, image and sizes from its labels file; Browserbase and Kernel: its labels; the local browser: its
+  labels and network); one that differs is refused `exists`. A retry never gets a wider network, another folder or another user than it asked.
   A size (`cpus`, `memoryMb`) is compared only where the vendor reads one back; on a vendor that reads none back
   (Modal), a retry asking another size after a restart answers the request's computer as it was made.
   The GPUs are compared likewise: the hosted adapter records them at create in the label `agentrun.computer.gpu`
@@ -81,13 +85,22 @@ fallback that makes one up: serve passes the run's claim (`<run>#<epoch>`), and 
 - A second create of a request still in flight in the same provider waits for the first and answers what it does; one
   asking another spec (any field but `lifetimeMs`, which each create counts from its own start) is refused `exists`.
   The provider remembers the requests whose computers it ended, so the same id is refused even once the vendor forgets
-  the computer; past the process, what the vendor (or the provider's ledger) still shows is what holds.
+  the computer; past the process, what the vendor (or the provider's ledger) still shows is what holds. The browser
+  providers (Browserbase, Kernel, the local browser) also keep the computer each create answered, so a request whose
+  browser ended on its own (a timeout, a deadline) is refused `exists` in the same words, never made again.
 
 Every provider that makes computers keeps it through one mechanism, `CreateRequests` (`src/create-requests.ts`): the id checked, the name,
 the creates in flight and the requests ended. What the vendor holds under the name is the provider's to read: the
 hosted adapter lists the name and reads each machine it finds by `get`, Docker's `docker run --name` finds the name
 taken and reads that container, and the phone harness reads its ledger by name and sends a key derived from the id as
-the `Idempotency-Key`.
+the `Idempotency-Key`. Orgo lists the workspace's computers before it makes one and takes the oldest whose name begins
+with the request's, and lists them again after Orgo's answer and once its computer is up, deleting its own where an
+older one of the request is there and answering that one, as the hosted adapter converges, and deleting its own when
+the caller aborts during one of those lists; Browserbase and Kernel list the running and starting browsers by the create label before they make
+one and again after the vendor's answer, releasing their own where an older one of the request is there and answering
+that one, or when the caller aborts during that list, each release under a bound of its own (`cleanupMs`), never the
+caller's signal; the local browser makes the request's directory under its root with `mkdir`, which one create alone wins, and
+reads the browser in a directory already there.
 
 `provider.create-retried` creates twice with one id and expects one computer; `provider.create-after-release` releases
 it and expects the same id refused `exists`. Both are Full.
@@ -141,7 +154,9 @@ that the server, Settings and the conformance suite all read the same declaratio
 | `prepareImage?` | Its providers have `prepareImage()`, which makes the image ready before the first create ([below](#prepareimage)). |
 | `imageEnv?` | The server's environment variable that, when set, names the image every computer of the provider starts from in place of `defaultImage` (Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`). The provider's `check()` still judges it. |
 | `local?` | Its computers run on this machine's container engine, so the server passes it its local host options. |
+| `defaultBox?` | `true`: its sandbox is the box a server gives a new agent that names no place and needs a shell (Docker's). One provider at most sets it; where its box is not available, a server gives such an agent no other box. |
 | `ledger?` | `{ option }`: `create()` takes a ledger the server keeps for it in that option (the phone harness's sessions). |
+| `profiles?` | `{ settleMs }`, a browser's only: its providers keep profiles (`profiles` on the built provider, a server's saved sign-ins), and `settleMs` is how long after a session that saved to one ends the vendor may still be writing it back (Browserbase 10 s, Kernel 0). The built provider's `capabilities().browser.profiles` is the same, and a server holds a saved sign-in's next save back for it without loading the provider. |
 | `load()` | Imports the provider module on demand: its `create()` and its conformance module. |
 
 A descriptor module (`packages/computer/src/descriptors/<id>.ts`) builds it with `defineProvider`, which checks it and

@@ -575,7 +575,7 @@ test("a learning file whose name holds a slash is one argument, and a home file 
   // on its slashes gets the server's "no route".
   const read = cli(["learning", "read", "demo", "workflows/find-policies/README.md", ...data]);
   assert.equal(read.code, 1);
-  assert.match(JSON.parse(read.err).error.message, /no such file on main/);
+  assert.match(JSON.parse(read.err).error.message, /the agent's learning has no such file/);
   const current = cli(["learning", "corrections", "demo", ...data]);
   assert.equal(current.code, 0, current.err);
   writeFileSync(join(dir, "corrections.md"), "- Look in policies/.\n");

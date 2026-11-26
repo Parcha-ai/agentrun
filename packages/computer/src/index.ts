@@ -98,6 +98,7 @@ export {
 	isBrowserProvider,
 	BrowserVendorError,
 	CREATE_LABEL,
+	ATTEMPT_LABEL,
 	causeOf,
 	memoryUrls,
 	RECOVER_MS,
@@ -127,7 +128,7 @@ export {
 	type ProviderOptions,
 	providers,
 } from "./providers.js";
-export { connectOf, type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, mountsOf, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
+export { connectOf, type DescriptorKey, type DescriptorSetting, defineProvider, descriptorProblems, type HostCommand, mountsOf, type ParkedConfiguration, type ProviderDescriptor, type ProviderSecrets } from "./descriptor.js";
 export {
 	AGENT37,
 	AGENT37_BASE_TEMPLATE,
