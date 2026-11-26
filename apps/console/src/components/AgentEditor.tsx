@@ -28,7 +28,7 @@ import { SpendCapMinimum } from "@/lib/spendCap";
 import { CAP_NOTE, isPlanModel } from "@/lib/chatgpt";
 import type { McpServer } from "@/lib/mcp";
 import { isMonidName, monidFieldsOf, splitMonidWarnings } from "@/lib/monid";
-import { computerOfPlace, newAgentPlace, placeOf } from "@/lib/place";
+import { computerOfPlace, newAgentPlace, placeOf, runnerShellTools } from "@/lib/place";
 import { computerFields } from "@/lib/computers";
 import type { ComputerKindView } from "@/lib/v2";
 import type { Places } from "@/lib/place";
@@ -142,7 +142,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   // Tools are on by default: a new agent starts with every tool its harness runs here; an agent keeps its own. A new
   // agent starts on the place the server gives new agents (a sandbox where it has a box: bash ticked too); else none.
   const startPlace = creating ? newAgentPlace(caps.places) : undefined;
-  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? (creating ? initialInstructions ?? DEFAULT_INSTRUCTIONS : ""), harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace) : d?.tools ?? [], maxCostText: typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0 ? String(d.max_cost_usd) : "", ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
+  const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? (creating ? initialInstructions ?? DEFAULT_INSTRUCTIONS : ""), harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace, caps.places) : d?.tools ?? [], maxCostText: typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0 ? String(d.max_cost_usd) : "", ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
   // The Model field's own choices (Custom picked, Free only), kept across steps.
   const modelField = useModelField();
   // The form as it is now, for a save's answer to compare with what that save sent.
@@ -181,7 +181,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
     if (!creating) return;
     const follow = (x: AgentFields): AgentFields => {
       const place = x.place ?? newAgentPlace(caps.places);
-      return { ...x, ...(place ? { place } : {}), ...(toolsTouched ? {} : { tools: defaultTools(x.harness ?? "pi", caps.tools, place) }) };
+      return { ...x, ...(place ? { place } : {}), ...(toolsTouched ? {} : { tools: defaultTools(x.harness ?? "pi", caps.tools, place, caps.places) }) };
     };
     // Defaults that arrive late are where the form opens, never an edit: the saved form takes them too.
     setF(follow); setBase(follow);
@@ -242,15 +242,16 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
   // run here come off at once, before any save, and are held: a switch back ticks them again.
   const toolOpts = { mcpHarnesses: caps.mcpHarnesses, workflow };
   // A place off the box (the runner) takes the box's tools (bash) off the held ones too: a later switch back to a harness
-  // never ticks a tool the place now refuses.
+  // never ticks a tool the place now refuses. Bash stays where the runner's own shell runs it (Mode 2).
   const leavePlace = (place: { mode?: string }) => {
     if (place.mode === "sandbox") return;
-    const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only).map((t) => t.name));
+    const shell = runnerShellTools(caps.places);
+    const sandboxOnly = new Set(caps.tools.filter((t) => t.sandbox_only && !shell.has(t.name)).map((t) => t.name));
     setHeld((h) => h.filter((t) => !sandboxOnly.has(t)));
   };
   const pickHarness = (harness: string) => {
     if (harness === f.harness) return;
-    if (creating && !toolsTouched) { set({ harness, tools: defaultTools(harness, caps.tools, f.place) }); setHeld([]); return; }
+    if (creating && !toolsTouched) { set({ harness, tools: defaultTools(harness, caps.tools, f.place, caps.places) }); setHeld([]); return; }
     const next = toolsOnSwitch(harness, f.tools ?? [], held, caps.tools, toolOpts);
     if (agent?.source_sync) {
       // Keep required imported tools selected. The normal capability/save checks explain an incompatible harness.
@@ -449,7 +450,7 @@ export function AgentEditor({ agent, revisions = [], skillFiles, skillFilesError
                 tools to drop: it changes nothing and says so. */}
               <ComputerSetting kinds={caps.computers} value={f.computer ?? (d?.computer as AgentFields["computer"]) ?? (choosePlace ? null : computerOfPlace(f.place ?? { mode: "runner" }))}
                 onChange={(computer) => {
-                  const fields = computerFields(computer, f.tools ?? [], caps.tools);
+                  const fields = computerFields(computer, f.tools ?? [], caps.tools, caps.places);
                   setToolsUnread(!fields);
                   if (!fields) return;
                   set(fields);

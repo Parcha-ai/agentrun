@@ -22,7 +22,7 @@ export function BuiltInToolCards({ shown, offers, tools, harness, place, places,
     const ownPick = settings[t.name]?.provider;
     const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
     // With no place, ticking a shell tool is what moves the agent to the box: read the place with it ticked.
-    const sandbox = sandboxReason(t, place ?? defaultPlaceOf(workflow, [...tools, t.name], places));
+    const sandbox = sandboxReason(t, place ?? defaultPlaceOf(workflow, [...tools, t.name], places), places);
     const unavailable = !t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined;
     // Every rule that keeps it off here, together (QA: the browser runs only on pi and only on the server, and the card
     // said one rule at a time): the harnesses that run it, where it runs, and what it lacks.

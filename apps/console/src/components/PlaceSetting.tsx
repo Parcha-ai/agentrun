@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { defaultPlaceOf, type ToolOffer } from "@/lib/agentForm";
-import { type Place, type Places, placeOf } from "@/lib/place";
+import { type Place, type Places, placeOf, runnerShellTools } from "@/lib/place";
 import { cn } from "@/lib/utils";
 
 /** Where the agent's runs execute, in the editor's Settings step: on the server (the runner: no box, no shell) or in a
@@ -22,7 +22,9 @@ export function PlaceSetting({ value, saved, places, tools, picked, creating = f
   const runnable = places.boxes.find((b) => b.available)?.id;
   const box = place?.mode === "sandbox" ? place.box : runnable;
   const noBox = !runnable && mode !== "sandbox";
-  const sandboxOnly = new Set(tools.filter((t) => t.sandbox_only).map((t) => t.name));
+  // Where the runner has a shell (Mode 2), it runs bash: a move there keeps bash.
+  const shell = runnerShellTools(places);
+  const sandboxOnly = new Set(tools.filter((t) => t.sandbox_only && !shell.has(t.name)).map((t) => t.name));
   // The sandbox-only tools the last move to the runner took away, said under the picker until Sandbox is picked again.
   const [dropped, setDropped] = useState<string[]>([]);
   const toRunner = () => {
@@ -42,7 +44,7 @@ export function PlaceSetting({ value, saved, places, tools, picked, creating = f
     <div>
       <div className="mb-2 caps text-small font-semibold">Where it runs</div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2" role="radiogroup" aria-label="Where it runs">
-        {option("runner", "On the server", "No box and no shell: its files stay in the run's folder on the server.", toRunner)}
+        {option("runner", "On the server", shell.size ? "No box: bash runs in the server's own shell, and its files stay in the run's folder." : "No box and no shell: its files stay in the run's folder on the server.", toRunner)}
         {option("sandbox", "In a sandbox", "Its file and shell tools run in a box; its keys stay on the server.", () => toSandbox(box), noBox)}
       </div>
       {!mode && !noBox && <p className="mt-3 text-small text-muted-foreground" role="status">Choose where it runs: this server gives a new agent no place of its own.</p>}

@@ -1,5 +1,5 @@
 import type { NativeBinding } from "./native";
-import { type Place, type Places, computerOfPlace, placeOf } from "./place";
+import { type Place, type Places, computerOfPlace, placeOf, runnerShellTools } from "./place";
 import type { ClientError } from "./client";
 import type { LearningProblem } from "./learning";
 import type { Agent, Approvals, Computer, ToolSettings } from "./v2";
@@ -191,12 +191,13 @@ export function toolsOnSwitch(harness: string, tools: readonly string[], held: r
 }
 
 /** Why `tool` cannot be ticked on an agent whose definition names `place`: a sandbox-only tool (bash) runs in a box, and
- *  the agent's place is the runner, or it has none (null: the server has no default place, so a box is to be chosen); a
- *  runner-only one (the browser) runs on the server, and the agent's place is a box. Undefined when it can be ticked. */
-export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined => {
+ *  the agent's place is the runner (unless the runner's own shell runs it: bash in Mode 2, runnerShellTools), or it has
+ *  none (null: the server has no default place, so a box is to be chosen); a runner-only one (the browser) runs on the
+ *  server, and the agent's place is a box. Undefined when it can be ticked. */
+export const sandboxReason = (tool: ToolOffer, place: unknown, places: Places | null | undefined): string | undefined => {
   const where = place as { mode?: unknown; box?: unknown } | null | undefined;
   if (tool.sandbox_only && where === null) return "Sandbox-only: it runs in a box, and this agent has no place yet: choose a box under Where it runs";
-  if (tool.sandbox_only && where?.mode !== "sandbox") return "Sandbox-only: it runs in a box, and this agent's place is the runner";
+  if (tool.sandbox_only && where?.mode !== "sandbox" && !runnerShellTools(places).has(tool.name)) return "Sandbox-only: it runs in a box, and this agent's place is the runner";
   if (tool.runner_only && where?.mode === "sandbox") return `Server-only: it runs on the server, and this agent's place is ${typeof where.box === "string" && where.box ? `the ${where.box} box` : "a box"}`;
   return undefined;
 };
@@ -234,8 +235,12 @@ export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Pla
 
 /** A new agent's tools: on by default, every tool its harness runs here that the server can run now. In a sandbox `place`
  *  (the server's default for a new agent, where it has a box) a sandbox-only one (bash) too, and never a runner-only one
- *  (browser); on the runner, no sandbox-only one, since the runner has no shell. */
-export const defaultTools = (harness: string, offers: ToolOffer[], place?: Place) => toolsFor(harness, offers).filter((t) => t.available && (place?.mode === "sandbox" ? !RUNNER_ONLY.has(t.name) : !t.sandbox_only)).map((t) => t.name);
+ *  (browser); on the runner, a sandbox-only one only where the runner's own shell runs it (bash in Mode 2,
+ *  runnerShellTools), since in Mode 1 the runner has no shell. */
+export const defaultTools = (harness: string, offers: ToolOffer[], place: Place | undefined, places: Places | null | undefined) => {
+  const shell = runnerShellTools(places);
+  return toolsFor(harness, offers).filter((t) => t.available && (place?.mode === "sandbox" ? !RUNNER_ONLY.has(t.name) : !t.sandbox_only || shell.has(t.name))).map((t) => t.name);
+};
 
 /** The tools that reach the web: a page read (web_fetch) or a search (web_search). The server's capabilities
  *  mark no tool as one, so they are named here. */

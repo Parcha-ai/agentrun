@@ -17,6 +17,15 @@ export type Places = { modes: string[]; boxes: BoxOffer[]; defaultPlace: Place |
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** What the runner's own shell runs in Mode 2, Archil's serverless exec: bash alone (serve's tools.ts shellTools). The
+ *  background tools still need a box. */
+const RUNNER_SHELL: ReadonlySet<string> = new Set(["bash"]);
+const NO_SHELL: ReadonlySet<string> = new Set();
+/** The box-only tools an agent on the runner keeps: bash where the runner has a shell (Mode 2), none where it has no shell
+ *  (Mode 1). Capabilities have no shell field of their own: the server serves the runner as a new agent's default place
+ *  only where its runner has a shell (serve's place.ts placesOf), so that is the word read. */
+export const runnerShellTools = (places: Places | null | undefined): ReadonlySet<string> => (places?.defaultPlace?.mode === "runner" ? RUNNER_SHELL : NO_SHELL);
+
 /** The computer a place is, as the server keeps place as computer's view: the runner is the computer none, a sandbox box
  *  is a sandbox on that box's provider. */
 export const computerOfPlace = (place: Place): Computer => (place.mode === "sandbox" ? { kind: "sandbox", provider: place.box } : { kind: "none" });

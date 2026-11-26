@@ -64,11 +64,12 @@ export type LaneChoice = { harness: string; model: string };
 export type LaneKit = { tools: string[] };
 
 /** A lane's kit, a new agent's on this server: every tool its harness runs here (agentForm.ts defaultTools), with the
- *  shell where the server's default place is a box. It names no place: the server puts the agent where it puts a new
- *  agent with these tools (its defaultPlaceOf, mirrored in agentForm.ts): the box only with a shell tool, so an adapter
- *  harness's lane (no shell) runs on the runner, where Claude Code's login works and no box starts. */
+ *  shell where the server's default place is a box, and bash where it is the runner, whose shell runs it (Mode 2). It
+ *  names no place: the server puts the agent where it puts a new agent with these tools (its defaultPlaceOf, mirrored in
+ *  agentForm.ts): the box only with a shell tool where the default is a box, so an adapter harness's lane (no shell) runs
+ *  on the runner, where Claude Code's login works and no box starts. */
 export function laneKit(harness: string, offers: ToolOffer[], places: Places | null | undefined): LaneKit {
-  return { tools: defaultTools(harness, offers, newAgentPlace(places)) };
+  return { tools: defaultTools(harness, offers, newAgentPlace(places), places) };
 }
 
 /** What a lane sends: its agent (POST /agents) and a run of it (POST /agents/{id}/runs). */
