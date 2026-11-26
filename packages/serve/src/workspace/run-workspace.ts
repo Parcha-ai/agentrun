@@ -95,6 +95,8 @@ export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<Ru
   const workspace = archilWorkspace(claim.disk, runKey(agentId, runId), {
     ...(claim.image === undefined ? {} : { image: claim.image }),
     onCleanupFailed: say,
+    // Archil's own words, when a call on the run's folder fails, to the runner's log under the run; the run reads serve's.
+    tell: { runId, log: say },
     // A computer's mount of the run's folder: the disk's region, and the run's minted mount credential when a mount asks.
     region: claim.region,
     // The claim's own mint (archil-claim.ts token(), revoked by its revoke()) unless the caller hands another.

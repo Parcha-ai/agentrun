@@ -1777,7 +1777,8 @@ test("a synced folder's park whose delta does not land keeps nothing: the comput
   const first = await one.claim(3);
   one.account.computer.plant.file("/workspace/late.log", "x");
   one.disk.putObject = async () => { throw new FakeDiskError(503, "ServiceUnavailable", "the disk is away"); };
-  await assert.rejects(first.park("approval"), /^Error: the run's folder was not let go cleanly: the final sync failed \(.*late\.log: .*the disk is away\), so writes since the last sync may be lost$/, "not kept; the runner logs why");
+  // Archil's failure in serve's words (its own, "the disk is away", on the runner log line).
+  await assert.rejects(first.park("approval"), /^Error: the run's folder was not let go cleanly: the final sync failed \(.*late\.log: put "late\.log": Archil couldn't be reached\. Try again, or pick another place in Settings\.\), so writes since the last sync may be lost$/, "not kept; the runner logs why");
   assert.deepEqual(deletes(one.account), ["c1"]);
   assert.equal(await readKept(one.store.settings, "run-1"), undefined);
   assert.equal(one.mounts.revoked, 1);
@@ -1955,7 +1956,7 @@ test("an earlier claim's computer deleted before another one's delete failed kee
   const release = one.account.provider.release.bind(one.account.provider);
   one.account.provider.release = async (ref, how) => (ref.id === "x9" ? { ok: false, error: { code: "unavailable", message: "the vendor did not answer" } } : release(ref, how));
   one.clock.now = T0 + 60_000;
-  await assert.rejects(one.claim(5), /the vendor did not answer/);
+  await assert.rejects(one.claim(5), (error) => /E2B answered with an error\. The server log has the details\.$/.test(error.message) && !error.message.includes("the vendor did not answer"));
   assert.deepEqual((await intervalsOf(one)).map((row) => [row.providerId, row.endedAt]), [["c1", T0 + 60_000]], "c1's delete answered ok: its end is kept");
 });
 

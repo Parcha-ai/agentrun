@@ -32,6 +32,7 @@
 // was not cut, measured live).
 import { randomBytes } from "node:crypto";
 import type { ArchilDisk, ArchilExecNetwork, ArchilImage } from "./archil-disk.js";
+import { asOwnWords, providerErrorLine, providerFailed, type ProviderTell } from "./provider-error-words.js";
 import { type ExecResult, WorkspaceError } from "./workspace.js";
 
 /** Archil cuts an exec call at 300 s. */
@@ -79,9 +80,12 @@ export type ExecJob = {
   readonly image?: ArchilImage;
   /** The container's network (DENY_EGRESS); absent, Archil's default, egress open. */
   readonly network?: ArchilExecNetwork;
+  /** Where Archil's own words go when the exec call fails (provider-error-words.ts): the caller reads serve's. */
+  readonly tell: ProviderTell;
 };
 
-/** Archil refused an exec's network policy (a plan without network policies): nothing ran. The words are Archil's. */
+/** Archil refused an exec's network policy (a plan without network policies): nothing ran. The words are serve's,
+ *  naming Archil's status and code; Archil's own go to the runner log. */
 export class ArchilEgressRefused extends WorkspaceError {
   override name = "ArchilEgressRefused";
 }
@@ -221,14 +225,17 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
     const status = (error as { status?: unknown })?.status;
     if (job.network !== undefined && refusesNetwork(error)) {
       const code = (error as { code?: unknown }).code;
-      throw new ArchilEgressRefused("REFUSED", `Archil refused the exec's network policy (${status}${typeof code === "string" ? ` ${code}` : ""}): ${describe(error)}`, { path, cause: error });
+      // Archil's status and its code (a short name, kept only as one) are what it said; its words go to the log.
+      // A plan that takes no policy is the account's plan: the quota or billing class, on the log line.
+      job.tell.log(providerErrorLine(job.tell.runId, "exec", "quota", error, job.tell.secrets));
+      const named = typeof code === "string" && /^[\w.-]{1,64}$/.test(code) ? ` ${code}` : "";
+      throw asOwnWords(new ArchilEgressRefused("REFUSED", `Archil refused the exec's network policy (${status}${named}): the Archil account's plan takes none.`, { path, cause: error }));
     }
-    // A 400 is a mount Archil refused (a folder missing, or held by another client past the queue's wait): its own
-    // words say which.
-    const why = status === 400 ? "Archil refused to mount the exec's folders"
-      : status === 401 || status === 403 ? "Archil refused the key, or the account's exec allowance is spent"
-        : "the Archil exec failed";
-    throw new WorkspaceError("UNAVAILABLE", `${why}: ${describe(error)}`, { path, cause: error });
+    // A 400 is a mount Archil refused (a folder missing, or held by another client past the queue's wait): the runner
+    // log has which, in Archil's words.
+    const why = status === 400 ? "Archil refused to mount the exec's folders" : "the Archil exec failed";
+    const said = providerFailed(error, { provider: "Archil", kind: "disk", site: "exec" }, job.tell);
+    throw asOwnWords(new WorkspaceError("UNAVAILABLE", `${why}: ${said.words}`, { path, cause: error }));
   } finally {
     clearTimeout(timer);
   }
@@ -247,7 +254,8 @@ export async function archilExec(disk: ArchilDisk, job: ExecJob): Promise<ExecRe
       try {
         [out, err] = await Promise.all([readSpill(disk, keys.out, job.maxOutput), readSpill(disk, keys.err, job.maxOutput)]);
       } catch (error) {
-        throw new WorkspaceError("UNAVAILABLE", `the Archil exec ran, but its output could not be read back: ${describe(error)}`, { path, cause: error });
+        const said = providerFailed(error, { provider: "Archil", kind: "disk", site: "exec" }, job.tell);
+        throw asOwnWords(new WorkspaceError("UNAVAILABLE", `the Archil exec ran, but its output could not be read back: ${said.words}`, { path, cause: error }));
       }
       const truncated = out.length > job.maxOutput || err.length > job.maxOutput;
       const timedOut = parsed.timedOut && lasted >= Math.min(job.timeoutMs, COMMAND_MAX_MS);

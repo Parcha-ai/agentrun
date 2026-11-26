@@ -29,8 +29,11 @@ after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true
 
 const HELLO = { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] };
 const GONE = (id) => ({ ok: false, error: { code: "gone", message: `the connection to ${id} ended` } });
-/** The answer of the call a loss cut: gone, never not_found, saying it was lost and not run again, the provider's words kept. */
-const LOST = (id) => ({ ok: false, error: { code: "gone", message: `the computer ${id} was lost while this call ran, and it was not run again: the connection to ${id} ended. A new computer starts at the next call.` } });
+/** Serve's sentence for a machine its provider refused or no longer has (provider-error-words.ts). */
+const MACHINE = (provider) => `${provider} refused the sandbox, or no longer has it. Try again, and a new one starts.`;
+/** The answer of the call a loss cut: gone, never not_found, saying it was lost and not run again, in serve's words (the
+ *  provider's own are the runner log's). */
+const LOST = (id, provider = "Modal") => ({ ok: false, error: { code: "gone", message: `the computer ${id} was lost while this call ran, and it was not run again: ${MACHINE(provider)}` } });
 
 /** The server's settings in memory, as the store keeps them: a compare-and-set on the JSON text, a prefix read. */
 function memorySettings() {
@@ -223,7 +226,7 @@ test("a lost synced sandbox: the new one is pushed the disk's folder and the cla
   for (const name of ["a.txt", "b.txt", "c.txt"]) disk.files.set(`${SYNCED}/${name}`, Buffer.from(name));
   const { record, answer, inCall } = await claim({ synced: disk });
   record.lose = (id, method) => id === "c1" && method === "files.stat";
-  assert.deepEqual(await inCall(...STAT), LOST("c1"));
+  assert.deepEqual(await inCall(...STAT), LOST("c1", "Daytona"));
   const before = disk.calls.length;
   const ran = await inCall("exec.run", { argv: ["sh", "-c", "echo made by the exec > out.txt"], cwd: "/workspace", timeoutMs: 10_000 });
   assert.equal(ran.ok, true, JSON.stringify(ran));
@@ -240,7 +243,7 @@ test("a lost synced sandbox found by an exec, which syncs after it: that sync st
   record.lose = (id, method) => id === "c1" && method === "exec.run";
   const before = disk.calls.length;
   const exec = ["exec.run", { argv: ["sh", "-c", "echo made by the exec > out.txt"], cwd: "/workspace", timeoutMs: 10_000 }];
-  assert.deepEqual(await inCall(...exec), LOST("c1"));
+  assert.deepEqual(await inCall(...exec), LOST("c1", "Daytona"));
   const ran = await inCall(...exec);
   assert.equal(ran.ok, true, JSON.stringify(ran));
   assert.equal(record.created.length, 2, "a new sandbox, c2, ran it");
@@ -275,7 +278,7 @@ test("two calls in flight when a hosted provider's vendor deletes the sandbox (i
   record.lostAnswer = (id) => ({ ok: false, error: { code: "not_found", message: deleted(id) } });
   record.lose = (id) => id === "c1";
   const both = await Promise.all([inCall(...STAT), inCall(...STAT)]);
-  const words = `the computer c1 was lost while this call ran, and it was not run again: ${deleted("c1")}. A new computer starts at the next call.`;
+  const words = `the computer c1 was lost while this call ran, and it was not run again: ${MACHINE("Modal")}`;
   assert.deepEqual(both, [{ ok: false, error: { code: "gone", message: words } }, { ok: false, error: { code: "gone", message: words } }], "a not_found would read as a file or program not there, and a shell's fallback would send its command again");
   assert.equal(record.created.length, 1, "nothing made while they ran");
   assert.equal((await inCall(...STAT)).ok, true, "the next call ran on the new sandbox");
@@ -286,8 +289,9 @@ test("two calls in flight when a hosted provider's vendor deletes the sandbox (i
 test("a call outside the run's tool calls (the run's end, the owner's channel) gets the loss's answer and starts nothing", async () => {
   const { record, client, answer } = await claim();
   record.lose = (id) => id === "c1";
-  assert.deepEqual(await client.call(...STAT), GONE("c1"), "the call that found the loss answers in the provider's own words");
-  assert.deepEqual(await client.call(...STAT), GONE("c1"), "and so does the next one");
+  const gone = { ok: false, error: { code: "gone", message: MACHINE("Modal") } };
+  assert.deepEqual(await client.call(...STAT), gone, "the call that found the loss answers in serve's words");
+  assert.deepEqual(await client.call(...STAT), gone, "and so does the next one");
   assert.equal(record.created.length, 1);
   await answer.release();
 });
@@ -297,7 +301,7 @@ test("the loss once `recreates` new sandboxes were started stops the run at once
   record.lose = () => true;
   assert.deepEqual(await inCall(...STAT), LOST("c1"), "the first loss: a new one may still be started");
   assert.deepEqual(paused, []);
-  const words = "computer_unavailable: the run's sandbox was lost 2 times, and a run starts at most 1 new one in place of a lost one: the connection to c2 ended.";
+  const words = `computer_unavailable: the run's sandbox was lost 2 times, and a run starts at most 1 new one in place of a lost one: ${MACHINE("Modal")}`;
   const stopped = await inCall(...STAT);
   assert.deepEqual(stopped, { ok: false, error: { code: "not_found", message: words } }, "the call that lost the one new sandbox ends the run");
   assert.equal(record.created.length, 2, "one new one, which is lost too");
@@ -316,7 +320,8 @@ test("a start that fails answers its words and counts for nothing: the next call
   for (let i = 0; i < 2; i++) {
     const refused = await inCall(...STAT);
     assert.equal(refused.ok, false);
-    assert.equal(refused.error.message, "the connection to c1 ended; a new sandbox could not be started: Modal answered 503");
+    // "Modal answered 503", by the one text table: down; Modal's own words are the runner log's.
+    assert.equal(refused.error.message, "the computer c1 was lost, and a new one could not be started: Modal couldn't be reached. Try again, or pick another place in Settings.");
   }
   const next = await inCall(...STAT);
   assert.equal(next.ok, true, "the third try started one, though the bound is 1");

@@ -24,6 +24,7 @@
 // - Every write of a claim's goes through fencedStore: once a later claim has taken the run (the run's epoch and runner
 //   say so, held or not), it is refused, never sent.
 import { type ComputerClient, fail, type FolderMeta, folderPathProblem, FolderSync, ok, type Result, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncSink, type TarEntry, WORKSPACE } from "@parcha/agentrun-computer";
+import { ownWords } from "./provider-error-words.js";
 
 /** A file or a directory of the folder as the store holds it, by its path relative to the folder. */
 export type StoredEntry = { readonly path: string; readonly type: "file" | "dir"; readonly size: number };
@@ -49,6 +50,9 @@ const FILE_MODE = 0o644;
 const DIR_MODE = 0o755;
 
 const tooMany = `the run's folder holds more than ${SYNC_MAX_ENTRIES} entries (files, directories and links), the most a synced folder holds`;
+/** A failure of the computer's or the disk's, `words` serve's lead and the provider's own words, its code kept: the claim
+ *  sorts it by that code and says it in serve's words (provider-error-words.ts), never these. */
+const failedWith = (words: string, code: string): Error => Object.assign(new Error(words), { code });
 const byPath = (a: { readonly path: string }, b: { readonly path: string }): number => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
@@ -65,17 +69,40 @@ export async function storedFolder(store: FolderStore): Promise<StoredFolder> {
   for await (const entry of store.entries()) {
     listed.push(entry);
     if (entry.type === "file") bytes += entry.size;
-    if (listed.length > SYNC_MAX_ENTRIES) throw new Error(tooMany);
+    if (listed.length > SYNC_MAX_ENTRIES) throw ownWords(tooMany);
   }
-  if (bytes > SYNC_MAX_BYTES) throw new Error(`the run's folder holds ${bytes} bytes, more than ${SYNC_MAX_BYTES}, the most a synced folder holds`);
+  if (bytes > SYNC_MAX_BYTES) throw ownWords(`the run's folder holds ${bytes} bytes, more than ${SYNC_MAX_BYTES}, the most a synced folder holds`);
   const recorded = (await store.readMeta()) ?? { modes: {}, links: {} };
   const dirs = new Set(listed.filter((entry) => entry.type === "dir").map((entry) => entry.path));
   const links = Object.entries(recorded.links).filter(([path]) => !dirs.has(path) && folderPathProblem(path) === undefined);
   const linked = new Set(links.map(([path]) => path));
   const entries = listed.filter((entry) => !linked.has(entry.path));
-  if (entries.length + links.length > SYNC_MAX_ENTRIES) throw new Error(tooMany);
+  if (entries.length + links.length > SYNC_MAX_ENTRIES) throw ownWords(tooMany);
   const linkObjects = listed.filter((entry) => linked.has(entry.path)).map((entry) => entry.path);
   return { entries, meta: { modes: recorded.modes, links: Object.fromEntries(links) }, linkObjects };
+}
+
+/** `store` as is, with `note` told the words of each of its failures, first to last: a store's failure is the disk's, said
+ *  in serve's words already (archil.ts syncStore), so a claim whose push or pull failed on the disk says those, never the
+ *  computer's sentence. */
+export function notingStore(store: FolderStore, note: (words: string) => void): FolderStore {
+  const seen = async (answer: Promise<Result<void>>): Promise<Result<void>> => {
+    const got = await answer;
+    if (!got.ok) note(got.error.message);
+    return got;
+  };
+  return {
+    put: (path, body) => seen(store.put(path, body)),
+    mkdir: (path) => seen(store.mkdir(path)),
+    remove: (path, type) => seen(store.remove(path, type)),
+    meta: (meta) => seen(store.meta(meta)),
+    entries: () => store.entries(),
+    read: (path, size) => store.read(path, size).catch((error: unknown) => {
+      note(message(error));
+      throw error;
+    }),
+    readMeta: () => store.readMeta(),
+  };
 }
 
 /** `promise` as is, its failure also handled, so a read ahead that a push never reaches is no unhandled rejection. */
@@ -126,10 +153,10 @@ export async function holdSynced(store: FolderStore, client: ComputerClient, sto
   const options = signal ? { signal } : {};
   // An empty folder is an empty tar, as conformance pushes it.
   const held = await folder.push(tarEntries(store, stored), options);
-  if (!held.ok) throw new Error(`the run's folder ${held.error.message}`);
+  if (!held.ok) throw failedWith(`the run's folder ${held.error.message}`, held.error.code);
   for (const path of stored.linkObjects) {
     const removed = await store.remove(path, "file");
-    if (!removed.ok) throw new Error(`the link ${JSON.stringify(path)} an exec made on the run's disk could not be removed from it: ${removed.error.message}`);
+    if (!removed.ok) throw failedWith(`the link ${JSON.stringify(path)} an exec made on the run's disk could not be removed from it: ${removed.error.message}`, removed.error.code);
   }
   return folder;
 }
@@ -142,12 +169,12 @@ export async function pullFolder(store: FolderStore, client: ComputerClient, sig
   const held: [string, "file" | "dir"][] = [];
   for await (const entry of store.entries()) {
     held.push([entry.path, entry.type]);
-    if (held.length > SYNC_MAX_ENTRIES) throw new Error(tooMany);
+    if (held.length > SYNC_MAX_ENTRIES) throw ownWords(tooMany);
   }
   const folder = new FolderSync(client, store);
   folder.adopt(held);
   const pulled = await folder.sync(signal ? { signal } : {});
-  if (!pulled.ok) throw new Error(`the run's folder in the kept computer could not be made durable: ${pulled.error.message}`);
+  if (!pulled.ok) throw failedWith(`the run's folder in the kept computer could not be made durable: ${pulled.error.message}`, pulled.error.code);
   return folder;
 }
 
@@ -160,7 +187,7 @@ export async function emptyMeta(store: FolderStore): Promise<void> {
   const meta = await store.readMeta();
   if (meta === undefined || (Object.keys(meta.modes).length === 0 && Object.keys(meta.links).length === 0)) return;
   const emptied = await store.meta({ modes: {}, links: {} });
-  if (!emptied.ok) throw new Error(`the run's folder's sync.json could not be emptied: ${emptied.error.message}`);
+  if (!emptied.ok) throw failedWith(`the run's folder's sync.json could not be emptied: ${emptied.error.message}`, emptied.error.code);
 }
 
 /**

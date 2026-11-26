@@ -182,19 +182,22 @@ test("archil: sweep() clears what a killed exec left in exec-out, and nothing in
   assert.ok(disk.calls.every((call) => [call.key, call.prefix].every((k) => k === undefined || under(k, ROOT) || under(k, OUT))), "a sweep touches only the spill folder");
 });
 
-test("archil: an exec with no stdin after a fresh mkdir(\"\") runs (both folders are made), and a mount Archil refuses is said in its own words", async () => {
-  const { disk, workspace } = fresh();
+test("archil: an exec with no stdin after a fresh mkdir(\"\") runs (both folders are made), and a mount Archil refuses is said in serve's words, Archil's reason on the runner log", async () => {
+  const disk = new FakeArchilDisk();
+  const lines = [];
+  const workspace = archilWorkspace(disk, ROOT, { tell: { runId: "run-1", log: (line) => lines.push(line) } });
   await workspace.mkdir("");
   const ran = await workspace.exec(["bash", "-c", "echo hi"], { env: ENV, timeoutMs: 10_000 });
   assert.deepEqual([text(ran.stdout), ran.code], ["hi\n", 0]);
-  // A folder gone from under a later exec: the refusal names the mount and Archil's reason, not a hold.
+  // A folder gone from under a later exec: the refusal names the mount, not a hold; Archil's reason is the log's.
   disk.dirs.delete(OUT);
   await assert.rejects(workspace.exec(["true"], { env: ENV, timeoutMs: 10_000 }), (error) => {
     assert.equal(error.code, "UNAVAILABLE");
-    assert.match(error.message, /Archil refused to mount the exec's folders.*no such directory/);
-    assert.doesNotMatch(error.message, /another client may hold/);
+    assert.equal(error.message, "Archil refused to mount the exec's folders: Archil answered with an error. The server log has the details.");
     return true;
   });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /^run run-1 exec: other: .*no such directory/);
 });
 
 test("archil: the exec's status is its LAST marker line, and a timeout the program claims faster than its deadline is not believed", async () => {
@@ -289,15 +292,18 @@ test("archil: an exec asked for no network is sent with its egress denied; one n
   assert.deepEqual(execNetworks(disk), [DENY, undefined]);
 });
 
-test("archil: a plan that takes no network policy (403 network_plan_required) runs the command with the network open and says so in one line, Archil's words included", async () => {
+test("archil: a plan that takes no network policy (403 network_plan_required) runs the command with the network open and says so in one line, Archil's status and code in serve's words, its own words on the runner log", async () => {
   const disk = new FakeArchilDisk();
   disk.refuseNetwork = PLAN_REFUSAL;
-  const workspace = archilWorkspace(disk, ROOT);
+  const lines = [];
+  const workspace = archilWorkspace(disk, ROOT, { tell: { runId: "run-1", log: (line) => lines.push(line) } });
   const seen = [];
   const ran = await workspace.exec(["sh", "-c", "echo ran; echo own >&2"], { env: ENV, timeoutMs: 10_000, network: "deny", onOutput: ({ stream, data }) => seen.push([stream, text(data)]) });
   assert.equal(text(ran.stdout), "ran\n", "the command ran, once");
   const [warning, ...rest] = ran.stderr.split("\n");
-  assert.match(warning, /^agentrun: this command ran with the network open\. Archil refused the exec's network policy \(403 network_plan_required\): .*network policies need the Developer plan$/);
+  assert.equal(warning, "agentrun: this command ran with the network open. Archil refused the exec's network policy (403 network_plan_required): the Archil account's plan takes none.");
+  assert.equal(lines.length, 1, "Archil's own words on one runner log line");
+  assert.match(lines[0], /^run run-1 exec: quota: .*network policies need the Developer plan$/);
   assert.deepEqual(rest, ["own", ""], "the program's own stderr after the one line");
   assert.deepEqual(seen.find(([stream]) => stream === "stderr")?.[1], ran.stderr, "the stream a caller reads carries the line too");
   assert.deepEqual(execNetworks(disk), [DENY, undefined], "refused with the policy (nothing ran), then run without it");
@@ -887,11 +893,12 @@ test("archil-disk: a disk removed at Archil after the seam's first call fails th
   }
 });
 
-test("ArchilWorkspace: a disk gone at Archil is UNAVAILABLE in its words on every call, never a folder that is not there, so laying a run's skills fails naming the disk", async () => {
+test("ArchilWorkspace: a disk gone at Archil is UNAVAILABLE in serve's words on every call, never a folder that is not there, so laying a run's skills fails saying so; the disk and Archil's words are on the runner log", async () => {
   const disk = new FakeArchilDisk();
   disk.gone = { region: "aws-us-east-1", words: "Disk not found" };
-  const workspace = archilWorkspace(disk, ROOT);
-  const gone = (error) => error.code === "UNAVAILABLE" && error.message.includes(`the Archil disk ${disk.id} is not there in region aws-us-east-1: Disk not found`);
+  const lines = [];
+  const workspace = archilWorkspace(disk, ROOT, { tell: { runId: "run-1", log: (line) => lines.push(line) } });
+  const gone = (error) => error.code === "UNAVAILABLE" && error.message.includes("Archil refused the disk, or no longer has it. Try again, and a new one starts.") && !error.message.includes("Disk not found");
   await assert.rejects(layOwnSkills(workspace, { "triage/SKILL.md": "# triage\n" }), gone);
   await assert.rejects(workspace.list(".agents/skills"), gone);
   await assert.rejects(workspace.mkdir("notes"), gone);
@@ -905,6 +912,7 @@ test("ArchilWorkspace: a disk gone at Archil is UNAVAILABLE in its words on ever
   // An append of more than one call refused at its first: none of it landed, and it says so.
   const big = "x".repeat(APPEND_MAX + 1);
   await assert.rejects(workspace.append("log.txt", big), (error) => gone(error) && error.message.startsWith(`0 of ${big.length} bytes were appended (the chunk that failed was refused`) && !/may also have landed/.test(error.message));
+  assert.ok(lines.length > 0 && lines.every((line) => line.startsWith("run run-1 files: machine: ") && line.includes(`the Archil disk ${disk.id} is not there in region aws-us-east-1: Disk not found`)), JSON.stringify(lines));
 });
 
 test("ArchilWorkspace: on a fresh folder of an Archil that makes no parent for a put (as staging's answered), a run's skills are laid and a nested write and append land, each missing folder made from the top down", async () => {

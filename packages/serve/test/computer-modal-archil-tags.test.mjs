@@ -60,15 +60,19 @@ test("a Modal sandbox with the run's Archil folder, for the longest agent id, is
   const disk = new FakeArchilDisk();
   const workspace = archilWorkspace(disk, `agents/${AGENT}/runs/${RUN}/work`, { region: "aws-us-east-1", mountToken: async () => TOKEN });
   // The recorder refuses the create, as Modal refuses one, so the claim gets no computer: what was asked is the point.
+  // The run reads serve's words; the recorder's are on the runner log line.
+  const lines = [];
   await assert.rejects(
     computerForClaim({ runId: RUN, epoch: 1, computer: { kind: "sandbox", provider: "modal" } }, store, {
       mode: 2, kinds: KINDS, sealKey,
       providers: { modal: async ({ app }) => new ModalProvider({ sdk: sdk.sdk, app, daemonPath: DAEMON_PATH }) },
       spec: computerSpecOf({}),
-      workspace, check: { readBackOf, epoch: 1 },
+      workspace, check: { readBackOf, epoch: 1 }, log: (line) => lines.push(line),
     }),
-    (error) => /refused by the test's recorder/.test(error.message) && !error.message.includes(TOKEN),
+    (error) => error.message === "Modal could not start a sandbox computer: Modal answered with an error. The server log has the details.",
   );
+  assert.equal(lines.filter((line) => /refused by the test's recorder/.test(line)).length, 1, "the recorder's words on one runner log line");
+  assert.ok(lines.every((line) => !line.includes(TOKEN)), "no mount token on the log");
   assert.equal(sdk.created.length, 1, "the provider asked Modal for one sandbox");
   const [{ tags }] = sdk.created;
   const bytes = Object.entries(tags).reduce((sum, [key, value]) => sum + Buffer.byteLength(key) + Buffer.byteLength(value), 0);

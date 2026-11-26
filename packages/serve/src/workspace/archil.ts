@@ -54,7 +54,9 @@ import { type ArchilDisk, ArchilDiskMissing, type ArchilImage, type ArchilListPa
 import { ArchilEgressRefused, archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, type ExecJob, MAX_EXEC_MS, spillKeys, spillName } from "./archil-exec.js";
 import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCheck, noProcesses } from "./attach.js";
 import { globRegex } from "./glob.js";
+import { stderrLog } from "./computer-intervals.js";
 import { relativeSegments } from "./paths.js";
+import { asOwnWords, CLASS_CODE, type ProviderErrorClass, providerFailed, type ProviderTell } from "./provider-error-words.js";
 import type { FolderStore, StoredEntry } from "./synced-folder.js";
 import {
   abortError, EXEC_OUTPUT_MAX, type Entry, type ExecOptions, type ExecResult, GREP_FILE_MAX, GREP_LINE_MAX, GREP_MAX, GREP_TIME_MS,
@@ -81,6 +83,9 @@ export type ArchilWorkspaceOptions = {
   readonly region?: string;
   /** The disk token a computer's mount takes, asked for when a mount is made (the claim's, archil-claim.ts). */
   readonly mountToken?: () => string | Promise<string>;
+  /** The run whose files these are and the runner's log: where Archil's own words go when a call fails, the caller
+   *  answered in serve's (provider-error-words.ts). Default: the runner's stderr, under no run. */
+  readonly tell?: ProviderTell;
 };
 
 /** Why an Archil workspace made without what a mount needs is not put in a computer. */
@@ -106,18 +111,29 @@ class FolderNotMade extends Error {
   }
 }
 
-/** A disk API failure as a WorkspaceError, Archil's words kept. A disk that is not there is UNAVAILABLE, never a file or
- *  folder that is not there: no caller takes it for an empty folder. */
-function failed(error: unknown, path: string, what: string): WorkspaceError {
+/** Where the disk's failures are said: Archil's disk, the run's files (provider-error-words.ts). */
+const DISK_AT = { provider: "Archil", kind: "disk", site: "files" } as const;
+/** Where a workspace made with no run's tell (a test's, a tool's) logs Archil's words. */
+const NO_TELL: ProviderTell = { runId: "(unknown)", log: stderrLog };
+/** The class each disk failure was sorted as, so a store's Result says it again by its code (syncStore). */
+const sortedAs = new WeakMap<WorkspaceError, ProviderErrorClass>();
+
+/** A disk API failure as a WorkspaceError. A file or folder the disk says is not there (404) is NOT_FOUND, its words
+ *  about the agent's own path, and one too big for a call (413) TOO_LARGE. Any other failure, a disk that is not there at
+ *  Archil (UNAVAILABLE, never a file or folder that is not there, so no caller takes it for an empty folder) among them,
+ *  is Archil's: said in serve's words (providerFailed), its own on one runner log line through `tell`. */
+function failed(error: unknown, path: string, what: string, tell: ProviderTell): WorkspaceError {
   if (error instanceof WorkspaceError) return error;
   if (error instanceof FolderNotMade) return error.why;
   const status = statusOf(error);
   const at = { path, cause: error };
-  if (error instanceof ArchilDiskMissing) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${error.message}`, at);
-  if (status === 404) return new WorkspaceError("NOT_FOUND", `${show(path)} is not there (${what}; Archil: ${describe(error)})`, at);
+  if (status === 404 && !(error instanceof ArchilDiskMissing)) return new WorkspaceError("NOT_FOUND", `${show(path)} is not there (${what}; Archil: ${describe(error)})`, at);
   if (status === 413 || (error as { code?: unknown })?.code === "EntityTooLarge") return new WorkspaceError("TOO_LARGE", `${what} ${show(path)}: more than the disk takes in one call`, at);
-  if (status === 401 || status === 403) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: Archil refused the key: ${describe(error)}`, at);
-  return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${describe(error)}`, at);
+  // A disk gone at Archil is the machine gone: its own words say so, and no status does.
+  const said = providerFailed(error instanceof ArchilDiskMissing ? { code: "gone", message: error.message } : error, DISK_AT, tell);
+  const why = asOwnWords(new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${said.words}`, at));
+  sortedAs.set(why, said.class);
+  return why;
 }
 
 const bytesOf = (data: Uint8Array | string): Uint8Array => {
@@ -149,6 +165,7 @@ class ArchilWorkspace implements Workspace {
   readonly #onCleanupFailed: (message: string) => void;
   readonly #region: string | undefined;
   readonly #mountToken: (() => string | Promise<string>) | undefined;
+  readonly #tell: ProviderTell;
   /** The last exec asked for, settled either way: the next exec, and every write, starts after it. */
   #execs: Promise<unknown> = Promise.resolve();
   /** Why Archil refused an exec's network policy, once it has: an exec asking for no network then runs with it open. */
@@ -172,6 +189,12 @@ class ArchilWorkspace implements Workspace {
     this.#onCleanupFailed = options.onCleanupFailed ?? ((message) => process.emitWarning(message, "ArchilWorkspaceCleanup"));
     this.#region = options.region;
     this.#mountToken = options.mountToken;
+    this.#tell = options.tell ?? NO_TELL;
+  }
+
+  /** A disk API failure as a WorkspaceError (failed), Archil's words told to this workspace's run. */
+  #failed(error: unknown, path: string, what: string): WorkspaceError {
+    return failed(error, path, what, this.#tell);
   }
 
   /** The key of relative path `rel` ("" for the root). */
@@ -239,7 +262,7 @@ class ArchilWorkspace implements Workspace {
       try {
         await call(this.#relOf(folder), () => this.#disk.putObject(`${folder}/`, new Uint8Array(0)));
       } catch (error) {
-        throw new FolderNotMade(failed(error, this.#relOf(folder), "mkdir"));
+        throw new FolderNotMade(this.#failed(error, this.#relOf(folder), "mkdir"));
       }
     }
     return call(this.#relOf(key), put);
@@ -293,7 +316,7 @@ class ArchilWorkspace implements Workspace {
       if (kind === "file" && making === "dir") return new WorkspaceError("EXISTS", `${show(rel)} is a file, in the way`, { path: rel, cause: error });
       if (kind === "dir" && making === "file") return new WorkspaceError("REFUSED", `${show(rel)} is a directory`, { path: rel, cause: error });
     }
-    return failed(error, rel, what);
+    return this.#failed(error, rel, what);
   }
 
   async read(path: string, range?: { readonly offset?: number; readonly length?: number }): Promise<Uint8Array> {
@@ -315,7 +338,7 @@ class ArchilWorkspace implements Workspace {
       // tells them apart, and a disk removed in between still fails the read as gone.
       const kind = statusOf(error) === 404
         ? await this.#kind(rel).catch((lookup: unknown) => {
-            if (lookup instanceof ArchilDiskMissing) throw failed(lookup, rel, "read");
+            if (lookup instanceof ArchilDiskMissing) throw this.#failed(lookup, rel, "read");
             return undefined;
           })
         : undefined;
@@ -323,7 +346,7 @@ class ArchilWorkspace implements Workspace {
       if (statusOf(error) === 501) {
         throw new WorkspaceError("UNAVAILABLE", `${show(rel)} is a symbolic link (an exec made it): Archil's file API does not read one`, { path: rel, cause: error });
       }
-      throw failed(error, rel, "read");
+      throw this.#failed(error, rel, "read");
     }
     if (answer.status === 416) return new Uint8Array(0);
     // The asked bytes, whether the gateway honoured the range (206) or not (200; the seam took the slice).
@@ -412,7 +435,7 @@ class ArchilWorkspace implements Workspace {
       }
       return undefined;
     } catch (error) {
-      throw failed(error, rel, "stat");
+      throw this.#failed(error, rel, "stat");
     }
   }
 
@@ -435,10 +458,10 @@ class ArchilWorkspace implements Workspace {
         }
       }
     } catch (error) {
-      throw failed(error, rel, "list");
+      throw this.#failed(error, rel, "list");
     }
     if (entries.size === 0 && rel !== "") {
-      const kind = await this.#kind(rel).catch((error: unknown) => { throw failed(error, rel, "list"); });
+      const kind = await this.#kind(rel).catch((error: unknown) => { throw this.#failed(error, rel, "list"); });
       if (kind === undefined) throw new WorkspaceError("NOT_FOUND", `${show(rel)} is not there (list; Archil: nothing under ${prefix} on disk ${this.#disk.id})`, { path: rel });
       if (kind === "file") throw new WorkspaceError("REFUSED", `${show(rel)} is not a directory`, { path: rel });
     }
@@ -466,7 +489,7 @@ class ArchilWorkspace implements Workspace {
       }
       await this.#put(marker, () => this.#disk.putObject(marker, new Uint8Array(0)));
     } catch (error) {
-      throw failed(error, "", "mkdir");
+      throw this.#failed(error, "", "mkdir");
     }
   }
 
@@ -496,7 +519,7 @@ class ArchilWorkspace implements Workspace {
   }
 
   async #grep(pattern: string, options: GrepOptions, from: string, max: number, timeMs: number, late: Promise<"late">): Promise<GrepResult> {
-    const kind = await Promise.race([quiet(this.#kind(from)), late]).catch((error: unknown) => { throw failed(error, from, "grep"); });
+    const kind = await Promise.race([quiet(this.#kind(from)), late]).catch((error: unknown) => { throw this.#failed(error, from, "grep"); });
     if (kind === "late") return { matches: [], truncated: "time" };
     if (kind === undefined) throw new WorkspaceError("NOT_FOUND", `${show(from)} is not there`, { path: from });
     const limit = Math.min(max, GREP_MAX);
@@ -534,7 +557,7 @@ class ArchilWorkspace implements Workspace {
       })), late]);
     } catch (error) {
       if (statusOf(error) === 400) throw new WorkspaceError("REFUSED", `the disk's grep refused ${JSON.stringify(pattern)}: ${describe(error)}`, { path: from, cause: error });
-      throw failed(error, from, "grep");
+      throw this.#failed(error, from, "grep");
     }
     if (answer === "late") return { matches: [], truncated: "time" };
     const truncatedBy = answer.stoppedReason === "completed" ? false : answer.stoppedReason === "max_results" ? "max" : answer.stoppedReason === "deadline" ? "time" : undefined;
@@ -553,7 +576,7 @@ class ArchilWorkspace implements Workspace {
       for await (const page of this.#pages(folder, false)) for (const { key, size } of page.objects) if (size > GREP_FILE_MAX) tooBig.add(key);
       listed.add(folder);
     }));
-    const done = await Promise.race([quiet(listings), late]).catch((error: unknown) => { throw failed(error, from, "grep"); });
+    const done = await Promise.race([quiet(listings), late]).catch((error: unknown) => { throw this.#failed(error, from, "grep"); });
     const matches: GrepMatch[] = [];
     for (const { file, line, text } of found) {
       const path = file.slice(base.length);
@@ -605,13 +628,17 @@ class ArchilWorkspace implements Workspace {
       }
       if (files.length > 0) {
         const errors = await this.#settle(rel, () => this.#disk.deleteObjects(files));
-        if (errors.length > 0) throw new WorkspaceError("UNAVAILABLE", `${errors.length} of ${files.length} files under ${show(rel)} were not removed: ${errors[0]!.key}: ${errors[0]!.code ?? ""} ${errors[0]!.message ?? ""}`.trim(), { path: rel });
+        if (errors.length > 0) {
+          // Archil's words for the first file it kept go to the runner log; the agent reads how many, and serve's words.
+          const said = providerFailed({ message: `${errors[0]!.key}: ${errors[0]!.code ?? ""} ${errors[0]!.message ?? ""}` }, DISK_AT, this.#tell);
+          throw asOwnWords(new WorkspaceError("UNAVAILABLE", `${errors.length} of ${files.length} files under ${show(rel)} were not removed: ${said.words}`, { path: rel }));
+        }
       }
       // Folders in the reverse of the order they were found (every folder after its parent), so each is empty when it goes.
       for (const folder of folders.reverse()) await this.#settle(rel, () => this.#disk.deleteObject(folder));
       if ((await this.#kind(rel)) !== undefined) throw new WorkspaceError("UNAVAILABLE", `${show(rel)} is still there after its remove`, { path: rel });
     } catch (error) {
-      throw failed(error, rel, "remove");
+      throw this.#failed(error, rel, "remove");
     }
   }
 
@@ -645,11 +672,11 @@ class ArchilWorkspace implements Workspace {
       try {
         if (options.stdin !== undefined) {
           const stdin = options.stdin;
-          await this.#settle("", () => this.#disk.putObject(files.in, stdin)).catch((error: unknown) => { throw failed(error, "", "exec's stdin"); });
+          await this.#settle("", () => this.#disk.putObject(files.in, stdin)).catch((error: unknown) => { throw this.#failed(error, "", "exec's stdin"); });
         }
         const job: ExecJob = {
           root: this.#root, spill: this.#spill, name, cwd, argv, env, timeoutMs, maxOutput: readBack, queueMs: this.#queueMs,
-          stdin: options.stdin !== undefined, ...(this.#image === undefined ? {} : { image: this.#image }),
+          stdin: options.stdin !== undefined, tell: this.#tell, ...(this.#image === undefined ? {} : { image: this.#image }),
         };
         const deny = options.network === "deny";
         let read: ExecResult | undefined;
@@ -697,7 +724,7 @@ class ArchilWorkspace implements Workspace {
    *  exec queue, so it does not wait for it. */
   async #makeRoot(): Promise<void> {
     for (const folder of [this.#root, this.#spill]) {
-      await this.#put(`${folder}/`, () => this.#disk.putObject(`${folder}/`, new Uint8Array(0)), true).catch((error: unknown) => { throw failed(error, "", "mkdir"); });
+      await this.#put(`${folder}/`, () => this.#disk.putObject(`${folder}/`, new Uint8Array(0)), true).catch((error: unknown) => { throw this.#failed(error, "", "mkdir"); });
     }
     this.#rooted = true;
   }
@@ -750,7 +777,7 @@ class ArchilWorkspace implements Workspace {
       // Folders deepest first, so each is empty when it goes.
       for (const folder of [...folders].sort((a, b) => b.split("/").length - a.split("/").length || byName(b, a))) await this.#disk.deleteObject(folder);
     } catch (error) {
-      throw failed(error, "", "sweep of the exec spill folder");
+      throw this.#failed(error, "", "sweep of the exec spill folder");
     }
   }
 
@@ -791,9 +818,13 @@ class ArchilWorkspace implements Workspace {
         await (what === "remove" ? this.#write(rel, () => call(key)) : this.#put(what === "mkdir" ? `${key}/` : key, () => call(key)));
         return { ok: true, value: undefined };
       } catch (error) {
-        const why = failed(error, path, what);
-        return { ok: false, error: { code: why.code === "TOO_LARGE" ? "limit" : "refused", message: why.message } };
+        return refusedAs(this.#failed(error, path, what));
       }
+    };
+    // A failure Archil's said in serve's words, its code the class it was sorted as, so a later site sorts it the same.
+    const refusedAs = (why: WorkspaceError): Result<void> => {
+      const sorted = sortedAs.get(why);
+      return { ok: false, error: { code: why.code === "TOO_LARGE" ? "limit" : sorted ? CLASS_CODE[sorted] : "refused", message: why.message } };
     };
     return {
       put: (path, body) => wrote(path, "put", (key) => this.#disk.putObject(key, body)),
@@ -804,7 +835,7 @@ class ArchilWorkspace implements Workspace {
           await this.#put(meta, () => this.#disk.putObject(meta, Buffer.from(JSON.stringify(folder))));
           return { ok: true, value: undefined };
         } catch (error) {
-          return { ok: false, error: { code: "refused", message: `the folder's sync.json: ${describe(error)}` } };
+          return refusedAs(this.#failed(error, "", "the folder's sync.json: write"));
         }
       },
       entries: () => this.#syncEntries(),
@@ -814,7 +845,7 @@ class ArchilWorkspace implements Workspace {
           const got = await this.#disk.getRange(this.#key(relativeSegments(path).join("/")), `bytes=0-${size - 1}`);
           return got.status === 416 ? new Uint8Array(0) : got.body;
         } catch (error) {
-          throw failed(error, path, "read");
+          throw this.#failed(error, path, "read");
         }
       },
       readMeta: async () => {
@@ -823,7 +854,7 @@ class ArchilWorkspace implements Workspace {
           got = await this.#disk.getRange(meta, `bytes=0-${SYNC_META_MAX - 1}`);
         } catch (error) {
           if (statusOf(error) === 404) return undefined;
-          throw failed(error, "", "the folder's sync.json: read");
+          throw this.#failed(error, "", "the folder's sync.json: read");
         }
         return got.status === 416 ? undefined : folderMetaOf(got.body);
       },

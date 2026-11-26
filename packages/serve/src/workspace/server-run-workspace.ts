@@ -19,6 +19,7 @@ import { archilWorkspace } from "./archil.js";
 import type { Processes } from "./attach.js";
 import { localWorkspace } from "./local.js";
 import { runFolder, runKey } from "./paths.js";
+import type { ProviderTell } from "./provider-error-words.js";
 import { type Workspace, WorkspaceError } from "./workspace.js";
 
 /** Why a write is refused on the server's view of a run's folder. */
@@ -34,7 +35,12 @@ export interface ServerRunWorkspaceOptions {
   /** The server's environment: an ARCHIL_API_KEY there is the account key, over a saved one, and the Archil settings
    *  there (ARCHIL_SETTINGS_ENV) the region and S3 URL, over the saved row. */
   readonly env?: KeyEnv;
+  /** The server's log, where Archil's own words go when a read of the run's files fails (the caller reads serve's,
+   *  provider-error-words.ts). Default: the server's stderr. */
+  readonly log?: (line: string) => void;
 }
+
+const serverLog = (line: string): void => void process.stderr.write(`agentrun-serve: ${line}\n`);
 
 const refuse = async (): Promise<never> => {
   throw new WorkspaceError("REFUSED", SERVER_READS_ONLY);
@@ -91,9 +97,12 @@ export async function serverRunWorkspace(store: Pick<Store, "runs" | "settings" 
     // The account key by the one resolver, and the disk made with it as the claim makes it; no exec image, since the
     // server's view runs nothing.
     let disk: ArchilDisk;
+    let tell: ProviderTell;
     try {
       const { value } = await archilApiKey({ env: options.env ?? {}, keys: store.sealedKeys, sealKey: options.sealKey });
       disk = (options.makeDisk ?? archilDisk)({ disk: diskId!, region: settings.region, s3BaseUrl: settings.s3Url, key: () => value });
+      // Archil's words on the log line are cut of the account key, as of every secret's shape.
+      tell = { runId, log: options.log ?? serverLog, secrets: [value] };
     } catch (error) {
       if (error instanceof ArchilClaimRefused) throw new WorkspaceError("UNAVAILABLE", `the server can't read this run's files: ${error.message}`, { cause: error });
       throw new WorkspaceError("UNAVAILABLE", `the server can't make this server's Archil disk: ${(error as Error)?.message ?? error}`, { cause: error });
@@ -101,8 +110,8 @@ export async function serverRunWorkspace(store: Pick<Store, "runs" | "settings" 
     // A folder of the file API is there when its parent lists it (the root itself always stats as a folder).
     const key = runKey(run.agentId, runId);
     const cut = key.lastIndexOf("/");
-    if ((await archilWorkspace(disk, key.slice(0, cut)).stat(key.slice(cut + 1)))?.kind !== "dir") return null;
-    workspace = archilWorkspace(disk, key);
+    if ((await archilWorkspace(disk, key.slice(0, cut), { tell }).stat(key.slice(cut + 1)))?.kind !== "dir") return null;
+    workspace = archilWorkspace(disk, key, { tell });
   }
   return readOnlyWorkspace(workspace);
 }

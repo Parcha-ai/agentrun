@@ -8,6 +8,7 @@
 import { randomBytes } from "node:crypto";
 import { type ComputerOwner, type ComputerProvider, type ComputerSettingKind, configurationOf, PROVIDERS, type Result, serves } from "@parcha/agentrun-computer";
 import type { Store } from "../store/index.js";
+import { asOwnWords, ownWords } from "./provider-error-words.js";
 
 /** The settings key of this server's id. */
 export const SERVER_ID_KEY = "server_id";
@@ -111,8 +112,13 @@ export function liveHolderOf(store: { readonly runs?: Pick<Store["runs"], "get">
 type HoldRow = { readonly v: 1; readonly run: string; readonly epoch?: number; readonly id: string; readonly at: string; readonly until?: string };
 
 /** Why a run cannot have the agent's computer: another run, still going, holds it, a holder is letting it go, or a later
- *  claim of the same run holds it. */
-class HeldComputer extends Error {}
+ *  claim of the same run holds it. Serve's own words (provider-error-words.ts), which name the run and the fix. */
+class HeldComputer extends Error {
+  constructor(message: string) {
+    super(message);
+    asOwnWords(this);
+  }
+}
 const heldBy = (holder: string): Error => new HeldComputer(`this agent's own computer is held by run ${holder}, which is still going: an agent's own computer serves one run at a time. Start this run again once that one ends`);
 const lettingGo = (holder: string): Error =>
   new HeldComputer(`this agent's own computer is being ${holder.startsWith(DELETER) ? "deleted by this server" : `detached by run ${holder}`}: start this run again in a moment`);
@@ -188,7 +194,7 @@ export async function holdAgentComputer(
     // row read.
     if (await store.settings.replaceIf(key, held ?? null, mine)) return hold;
   }
-  throw new Error("this agent's own computer changed hands three times while this run claimed it: start this run again");
+  throw ownWords("this agent's own computer changed hands three times while this run claimed it: start this run again");
 }
 
 /**

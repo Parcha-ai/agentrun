@@ -68,6 +68,7 @@ import { loadToolSettings } from "../tool-plane.js";
 import { computerDeniedWords, computerStillOffWords } from "../refusal-words.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
 import { claimHolds, fencedStore, type FolderStore, type HeldFolder, holdSynced, storedFolder } from "./synced-folder.js";
+import { asOwnWords, isOwnWords, isProviderError, ownWords, providerError, providerErrorWords, providerFailed, type ProviderTell, reworded } from "./provider-error-words.js";
 import type { Workspace } from "./workspace.js";
 
 /** What the claim knows of the run: its id, the claim's epoch, and where its computer setting is (the launch's own, else
@@ -345,7 +346,7 @@ async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly 
   // before another failed, or before the call was cut, keeps its end; one detached or not let go is left open.
   const releasing = ending ? endingDeletes(provider, ending.entry, ending.writes) : provider;
   const older = await releaseOlder(ending?.keptGone ? keptDeletes(releasing, ending.keptGone) : releasing, claim.runId, claim.epoch, signal ? { signal } : {});
-  if (!older.ok) throw new Error(older.error.message);
+  if (!older.ok) throw failed(older.error);
   return older.value.released.length > 0;
 }
 
@@ -398,9 +399,9 @@ export type ComputerSaid = {
  *  waits on a build or a pull. */
 async function readyImage(entry: ProviderEntry, provider: ComputerProvider, signal: AbortSignal | undefined, onWait: ImageWait | undefined): Promise<string | undefined> {
   if (!entry.prepareImage) return undefined;
-  if (provider.prepareImage === undefined) throw new Error(`${entry.label}'s descriptor says it prepares its image, but its provider has no prepareImage()`);
+  if (provider.prepareImage === undefined) throw ownWords(`${entry.label}'s descriptor says it prepares its image, but its provider has no prepareImage()`);
   const ready = await provider.prepareImage({ ...(signal ? { signal } : {}), ...(onWait ? { onWait } : {}) });
-  if (!ready.ok) throw new Error(ready.error.message);
+  if (!ready.ok) throw failed(ready.error);
   return ready.value;
 }
 
@@ -433,8 +434,8 @@ async function cdpUrlOf(provider: ComputerProvider, ref: { readonly id: string; 
 const SESSION_TAG = "agentrun.session";
 /** A label value of letters, digits and `_.:-` alone, as every provider takes one. */
 const labelValue = (value: string) => value.replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 63);
-/** A provider failure as an error with the provider's words and code. */
-const failed = (error: { readonly code: string; readonly message: string }) => Object.assign(new Error(error.message), { code: error.code });
+/** A provider failure as an error with the provider's words and code, marked as the provider's (providerError). */
+const failed = providerError;
 
 /** A browser computer's provider as the run's browser tool opens its sessions through it (ClaimBrowser): nothing is made
  *  at the claim. A session's computer is made at the tool's call, under the run's labels (`spec`'s) and the tool's tag,
@@ -535,7 +536,7 @@ function providerComputer(provider: ComputerProvider, ref: { readonly id: string
     async release() {
       await close();
       const released = await provider.release(ref, "delete");
-      if (!released.ok) throw new Error(released.error.message);
+      if (!released.ok) throw failed(released.error);
       await ended?.();
     },
   };
@@ -561,7 +562,7 @@ async function providerLaunch(
   const created = await provider.create(spec, { requestId: claimRequestId(claim), ...(signal ? { signal } : {}) });
   if (!created.ok) {
     void ahead?.drop();
-    throw new Error(created.error.message);
+    throw failed(created.error);
   }
   const ref = { id: created.value.id, name: created.value.name };
   // What it was made with: its provider's figures where it said them, else what was asked. Metered from here.
@@ -573,7 +574,7 @@ async function providerLaunch(
   if (!connected.ok) {
     const released = await provider.release(ref, "delete").catch(() => undefined);
     if (released?.ok) await ended();
-    throw new Error(connected.error.message);
+    throw failed(connected.error);
   }
   return { ...providerComputer(provider, ref, connected.value, ended), releasedOlder };
 }
@@ -601,6 +602,11 @@ type Renewal = {
   stop(words: string): Promise<void>;
   /** Whether a lost sandbox may be started again now: inside a tool call of the run's, and the claim still held. */
   may(): boolean;
+  /** The provider's failure `error` at `site`, said: its words on one runner log line, and serve's sentence for its class
+   *  answered (provider-error-words.ts providerFailed). */
+  said(error: unknown, site: string): string;
+  /** Serve's sentence for `error`'s class, with nothing logged: a call cut by a loss another call said already. */
+  words(error: unknown): string;
 };
 
 /**
@@ -619,7 +625,8 @@ type Renewal = {
  * one lost. A loss once `renewal.max` new ones were started ends the run at once (`renewal.stop`, computer-lost.ts
  * lostEnd's words, code computer_unavailable), the call that found it answering those words, as every later call does.
  * A call outside a tool call (the run's end sweeping its scratch, the owner's computer channel) gets the loss's own
- * answer and starts nothing.
+ * code and starts nothing. Every answer says the loss, and a new one's failed start, in serve's words
+ * (provider-error-words.ts); the provider's own words go to the runner's log, once each (`renewal.said`).
  */
 function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer {
   let current = first;
@@ -640,18 +647,23 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     const found = await renewal.provider.attach({ id: held.ref.id }).catch(() => undefined);
     return found !== undefined && !found.ok && (found.error.code === "not_found" || found.error.code === "gone");
   };
-  /** The answer of a call in flight on `held` when it was lost, `why` its own: inside one of the run's tool calls, gone in
-   *  lostInCallWords; outside one (the run's end, the owner's computer channel), `why` itself, as every later call
-   *  outside one answers the loss. */
-  const cutBy = (held: ProviderComputer, why: ComputerError): ComputerError => (renewal.may() ? { code: "gone", message: lostInCallWords(held.ref.name, why.message) } : why);
-  /** `why`, the current one's (`held`'s) loss, as the call that found it answers: past the bound, the run's end, at once. */
+  /** The answer of a call in flight on `held` when it was lost, `why` its own, in serve's words for it (renewal.words,
+   *  never the provider's): inside one of the run's tool calls, gone in lostInCallWords; outside one (the run's end, the
+   *  owner's computer channel), its own code in those words, as every later call outside one answers the loss. */
+  const cutBy = (held: ProviderComputer, why: ComputerError): ComputerError => {
+    const words = renewal.words(why);
+    return renewal.may() ? { code: "gone", message: lostInCallWords(held.ref.name, words) } : { code: why.code, message: words };
+  };
+  /** `why`, the current one's (`held`'s) loss, as the call that found it answers: past the bound, the run's end, at once.
+   *  The provider's words go to the runner's log once, here (renewal.said); every answer of the loss is serve's. */
   const lose = async (held: ProviderComputer, why: ComputerError): Promise<ComputerError> => {
+    const words = renewal.said(why, "lost");
     if (made < renewal.max) {
-      lost = why;
+      lost = { code: why.code, message: words };
       letGo = false;
       return cutBy(held, why);
     }
-    spent = { code: "not_found", message: lostEnd(renewal.max, why.message) };
+    spent = { code: "not_found", message: lostEnd(renewal.max, words) };
     await renewal.stop(spent.message);
     return spent;
   };
@@ -680,7 +692,8 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     try {
       fresh = await renewal.remake(made + 1, ownOf);
     } catch (error) {
-      return { code: "gone", message: `${why.message}; a new sandbox could not be started: ${error instanceof Error ? error.message : String(error)}` };
+      // Serve's own refusal (a folder over a cap, the run's spend cap) stands as it is; a provider's is said in serve's words.
+      return { code: "gone", message: `the computer ${current.ref.name} was lost, and a new one could not be started: ${isOwnWords(error) ? error.message : renewal.said(error, "lost-start")}` };
     }
     if (released) {
       await fresh.release().catch(() => undefined);
@@ -825,7 +838,7 @@ async function ownedStart(
   const { store, agentId, note } = context;
   await releaseOlderClaims(provider, claim, signal);
   const listed = await provider.list(ownerFilter(context.owner), call);
-  if (!listed.ok) throw new Error(listed.error.message);
+  if (!listed.ok) throw failed(listed.error);
   const record = await agentComputerOf(store, agentId);
   const found = listed.value.find((info) => info.ref.id === record?.id) ?? listed.value[0];
   let ref: { readonly id: string; readonly name: string };
@@ -837,17 +850,17 @@ async function ownedStart(
       const row = store.runs ? await store.runs.get(holder) : undefined;
       // With no run rows to read, a holder is taken as still going: never two runs on one agent's computer.
       if (!store.runs || (row !== undefined && LIVE_RUN.has(row.state))) {
-        throw new Error(`this agent's computer ${found.ref.name} is held by run ${holder}, which is still ${row?.state ?? "going"}: an agent's own computer serves one run at a time. Start this run again once that one ends`);
+        throw ownWords(`this agent's computer ${found.ref.name} is held by run ${holder}, which is still ${row?.state ?? "going"}: an agent's own computer serves one run at a time. Start this run again once that one ends`);
       }
     }
     const attached = await provider.attach({ id: found.ref.id }, { claim: { run: claim.runId, epoch: claim.epoch }, ...call });
-    if (!attached.ok) throw new Error(attached.error.message);
+    if (!attached.ok) throw failed(attached.error);
     ref = { id: found.ref.id, name: found.ref.name };
     made = false;
     note(`Attached this agent's computer ${ref.name}, kept from its last run.`);
   } else {
     const created = await provider.create(spec, { ...call, requestId: claimRequestId(claim) });
-    if (!created.ok) throw new Error(created.error.message);
+    if (!created.ok) throw failed(created.error);
     ref = { id: created.value.id, name: created.value.name };
     made = true;
     note(record
@@ -863,34 +876,34 @@ async function ownedStart(
   const detach = async () => {
     if (!(await hold.releasing())) return;
     const released = await provider.release(ref, "detach");
-    if (!released.ok) throw new Error(released.error.message);
+    if (!released.ok) throw failed(released.error);
     await keepAgentComputer(store, agentId, computer, "detached");
     await reconcileAgentComputer(store, agentId, async () => provider, hold);
   };
   // A launch that fails: a computer this claim made is deleted under its claim, so one a later claim has taken since (a
   // resume whose owner's listing found it) is left to that claim, and the record goes where it names it; one it attached
   // is detached as at the run's end, where the hold is still this claim's. Throws `error`, with what was let go.
+  // What failed is the provider's (marked, and said in serve's words at the claim) or serve's own (the record's save,
+  // the hold), kept in its words; a provider's failure to let go is named, never quoted, beside serve's own.
   const abandon = async (error: unknown): Promise<never> => {
     const words = error instanceof Error ? error.message : String(error);
+    const whyOf = (failed: unknown): string => (isProviderError(failed) ? "its provider failed" : failed instanceof Error ? failed.message : String(failed));
     if (!made) {
-      const undone = await detach().then(
-        () => undefined,
-        (failed: unknown) => (failed instanceof Error ? failed.message : String(failed)),
-      );
-      throw new Error(undone === undefined ? words : `${words}; and ${ref.name} could not be detached: ${undone}`);
+      const undone = await detach().then(() => undefined, whyOf);
+      throw reworded(error, undone === undefined ? words : `${words}; and ${ref.name} could not be detached: ${undone}`, true);
     }
     const deleted = await provider.release(ref, "delete", { claim: { run: claim.runId, epoch: claim.epoch } });
     if (deleted.ok) await forgetAgentComputer(store, agentId, ref.id).catch(() => undefined);
-    throw new Error(`${words}; ${ref.name}, which this claim made, ${deleted.ok ? "was deleted" : `was not deleted (${deleted.error.message})`}`);
+    throw reworded(error, `${words}; ${ref.name}, which this claim made, ${deleted.ok ? "was deleted" : "was not deleted: its provider failed"}`, true);
   };
   let connected: ComputerConnection;
   try {
     // A later claim of this run (or another run, this one's row ended) that took the hold over while this one attached
     // or made the computer has it now: its record is that claim's to write.
-    if (!(await hold.holds())) throw new Error(`fenced: this agent's computer ${ref.name} was taken over by a later claim while run ${claim.runId}'s claim at epoch ${claim.epoch} ${made ? "made" : "attached"} it; it is left to that claim`);
+    if (!(await hold.holds())) throw ownWords(`fenced: this agent's computer ${ref.name} was taken over by a later claim while run ${claim.runId}'s claim at epoch ${claim.epoch} ${made ? "made" : "attached"} it; it is left to that claim`);
     await keepAgentComputer(store, agentId, computer, "held", { run: claim.runId });
     const opened = await provider.connect(ref);
-    if (!opened.ok) throw new Error(opened.error.message);
+    if (!opened.ok) throw failed(opened.error);
     connected = opened.value;
   } catch (error) {
     return abandon(error);
@@ -955,6 +968,8 @@ export async function computerForClaim(
   /** The computer outlives the run: a paired one or the agent's own (ClaimComputer.outlives). */
   let outlives = false;
   const now = deps.now ?? Date.now;
+  /** Where a provider's failure this claim says in serve's words leaves the provider's own: one runner log line each. */
+  const tell: ProviderTell = { runId: launch.runId, log: deps.log ?? stderrLog };
   /** The store's clock (the deadlines': the database's on Postgres), the one a kept computer's `until` is stamped and
    *  judged by everywhere (computer-kept.ts Kept.until), never this runner's own. */
   const storeClock = (): Promise<number> => store.sealedKeys.clock();
@@ -1005,9 +1020,10 @@ export async function computerForClaim(
    *  configuration is built by its own create() options (Orgo's Windows: { os: "windows" }), beside the keys'. */
   const vendorProvider = async (entry: ProviderEntry, keys: Readonly<Record<string, string>>, configuration: { readonly options?: Readonly<Record<string, unknown>> }): Promise<ComputerProvider> => {
     const make = Object.hasOwn(deps.providers, entry.id) ? deps.providers[entry.id] : undefined;
-    if (!make) throw new Error(`this server has no ${entry.label} provider to start one with`);
+    if (!make) throw ownWords(`this server has no ${entry.label} provider to start one with`);
     const options = providerOptions(entry.id, keys, deps.settings ?? {}, table);
-    if (!options.ok) throw new Error(options.error.message);
+    // The key table's own words (computer-keys.ts): serve's, naming the setting.
+    if (!options.ok) throw ownWords(options.error.message);
     return make({ ...options.options, ...configuration.options }, { ledger: storeLedger(store.computerLedger, entry.id), ...(launch.boxAllow === undefined ? {} : { boxAllow: launch.boxAllow }) });
   };
   /** What a computer of `kind` from `entry` is made with under this claim, but its mount: the deps' spec, within what
@@ -1029,7 +1045,7 @@ export async function computerForClaim(
     const asked = deps.spec(entry, kind as Exclude<ComputerSettingKind, "none">, run, configuration.image);
     const ready = await readyImage(entry, provider, signal, deps.onImageWait);
     const image = ready ?? asked.image;
-    if (image === undefined) throw new Error(`${entry.label} names no image for its ${kind} computer and prepares none`);
+    if (image === undefined) throw ownWords(`${entry.label} names no image for its ${kind} computer and prepares none`);
     return { ...asked, image, labels: runLabels(launch.runId, launch.epoch), ...(gpu ? { gpu } : {}) };
   };
   /** How a sandbox of `provider` this claim holds is started again once its provider lost it (lostAware): made from
@@ -1047,7 +1063,7 @@ export async function computerForClaim(
       let mount: ComputerSpec["mount"];
       // The store is read whole before anything is made, so a folder over a cap rents nothing.
       const store = folder === "sync" ? diskOf() : undefined;
-      if (folder === "sync" && !store) throw new Error("this runner keeps no synced folder for the run");
+      if (folder === "sync" && !store) throw ownWords("this runner keeps no synced folder for the run");
       const stored = store ? await storedFolder(store) : undefined;
       if (folder === "sync") mount = { kind: "sync" };
       else if (folder !== undefined) {
@@ -1059,7 +1075,7 @@ export async function computerForClaim(
       const created = await provider.create({ ...spec, ...(mount ? { mount } : {}) }, { requestId: `${claimRequestId(launch)}#lost-${times}`, ...call });
       if (!created.ok) {
         void ahead?.drop();
-        throw new Error(created.error.message);
+        throw failed(created.error);
       }
       const ref = { id: created.value.id, name: created.value.name };
       const figures = figuresOf(spec, created.value.resources);
@@ -1070,7 +1086,7 @@ export async function computerForClaim(
       if (!connected.ok) {
         const released = await provider.release(ref, "delete").catch(() => undefined);
         if (released?.ok) await ended();
-        throw new Error(connected.error.message);
+        throw failed(connected.error);
       }
       const again = providerComputer(provider, ref, connected.value, ended);
       if (mount) {
@@ -1095,6 +1111,8 @@ export async function computerForClaim(
     },
     stop: (words) => (deps.stopRun ?? stopRun)(words),
     may: () => inToolCall() && deps.signal?.aborted !== true,
+    said: (error, site) => providerFailed(error, { provider: entry.label, kind: "sandbox", site }, tell).words,
+    words: (error) => providerErrorWords(error, { provider: entry.label, kind: "sandbox" }).words,
   });
   const side: ClaimSide = {
     keysOf: providerKeys(kinds, keyOf),
@@ -1214,7 +1232,7 @@ export async function computerForClaim(
     async launch(entry, { kind, keys, configuration, mount, gpu, persistent, signal }) {
       const ownLaunch = deps.launch && (deps.launches?.(entry.id) ?? true) ? deps.launch : undefined;
       // An agent's own computer needs its agent and the store's record of it; the server's launch (--faux) keeps none.
-      if (persistent && (ownLaunch || launch.agentId === undefined || store.settings === undefined)) throw new Error("this run can't keep its agent's own computer here: start it again with persistent off");
+      if (persistent && (ownLaunch || launch.agentId === undefined || store.settings === undefined)) throw ownWords("this run can't keep its agent's own computer here: start it again with persistent off");
       // A paired computer is claimed through the hub of this process (attachedProvider), never made: --faux's launch,
       // which stands in for the vendors', is not its.
       const pairedRow = paired.find((row) => row.id === entry.id);
@@ -1261,7 +1279,10 @@ export async function computerForClaim(
         // kept one whose time passed), or one the run's journal says an earlier claim made (that claim let it go at its
         // end: a server's stop). The journal is read before anything is rented, so a read that fails leaves nothing to let
         // go. A paired computer is the same one at every claim, and is no computer of the run's own.
-        const journalSays = !pairedRow && launch.epoch > 1 && (await deps.hadComputer?.()) === true;
+        // The journal is serve's own store: a read that fails is said in its words, never as the provider's.
+        const journalSays = !pairedRow && launch.epoch > 1 && (await deps.hadComputer?.().catch((error: unknown) => {
+          throw asOwnWords(error instanceof Error ? error : new Error(String(error)));
+        })) === true;
         // A paired computer is no computer of the run's own: it has no interval. A kept machine this claim gave back (it
         // could not take it) that the release of the older claims' computers deletes has its row marked ended there: no
         // janitor's pass is left to wait for, and the run's end removes the row (forgetEnded).
@@ -1352,7 +1373,7 @@ export async function computerForClaim(
   try {
     // The mount check carries the claim's epoch (a disk read-back under another epoch is refused) unless it names one.
     const disk = diskOf();
-    started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(disk ? { store: disk } : {}), held: folderHeld, ...(deps.signal ? { signal: deps.signal } : {}) });
+    started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(disk ? { store: disk } : {}), held: folderHeld, tell, ...(deps.signal ? { signal: deps.signal } : {}) });
   } catch (error) {
     // A computer made before the start failed is the claim's no more: its time booked up to now.
     await meter?.stopAll().catch(() => undefined);

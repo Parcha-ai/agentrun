@@ -85,11 +85,16 @@ test("run workspace (Mode 2): a sweep that fails is logged, never thrown, at the
   };
   const run = await openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claimOf(disk), log: (message) => logged.push(message) });
   await run.end();
-  assert.equal(logged.length, 2, "one line at the start, one at the end");
-  for (const line of logged) assert.match(line, /exec spill folder.*listing down/);
+  // Each sweep: Archil's words on the provider's line, and serve's line saying the sweep failed, in serve's words.
+  const swept = logged.filter((line) => /exec spill folder/.test(line));
+  assert.equal(swept.length, 2, "one line at the start, one at the end");
+  for (const line of swept) assert.match(line, /exec spill folder.*Archil couldn't be reached/);
+  const archil = logged.filter((line) => !swept.includes(line));
+  assert.equal(archil.length, 2, "Archil's words once per failed sweep");
+  for (const line of archil) assert.match(line, /^run [^ ]+ files: down: listing down$/);
 });
 
-test("run workspace (Mode 2): a run's folder that can't be made fails the claim with the reason, never a log line", async () => {
+test("run workspace (Mode 2): a run's folder that can't be made fails the claim in serve's words, Archil's on one log line", async () => {
   const disk = new FakeArchilDisk();
   const putObject = disk.putObject.bind(disk);
   disk.putObject = async (key, body) => {
@@ -99,9 +104,10 @@ test("run workspace (Mode 2): a run's folder that can't be made fails the claim 
   const logged = [];
   await assert.rejects(
     openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claimOf(disk), log: (message) => logged.push(message) }),
-    (error) => /^the run's folder on its Archil disk could not be made: .*try later/.test(error.message),
+    (error) => /^the run's folder on its Archil disk could not be made: .*Archil couldn't be reached\. Try again, or pick another place in Settings\.$/.test(error.message) && !error.message.includes("try later"),
   );
-  assert.deepEqual(logged, []);
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /^run [^ ]+ files: down: 503 SlowDown: try later$/);
 });
 
 test("run workspace (Mode 2): a run's folder already there is not put again, so a later claim whose kept computer holds the folder opens at once", { timeout: 30_000 }, async () => {

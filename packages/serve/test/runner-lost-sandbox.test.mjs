@@ -164,7 +164,8 @@ test("a sandbox its provider deletes mid-call: that call fails, the next starts 
   assert.deepEqual(run.docker.requests, [`${RUN}#1`, `${RUN}#1#lost-1`], "the new one's create is the claim's own request: a retry of it under this epoch finds it");
   const results = toolResults(requests);
   assert.deepEqual(results.map((one) => one.error), [false, true, false], "the write, the read the loss cut, the read on the new sandbox");
-  assert.match(results[1].text, /the connection to c1 ended/, "the cut read says why");
+  assert.match(results[1].text, /Docker refused the sandbox, or no longer has it\. Try again, and a new one starts\./, "the cut read says why, in serve's words");
+  assert.doesNotMatch(results[1].text, /the connection to c1 ended/, "the provider's own words are the runner log's");
   assert.match(results[2].text, /kept across sandboxes/, "the run's folder survived its sandbox: the new one mounts it");
   const said = await run.summaries();
   assert.deepEqual(said.filter((summary) => summary?.startsWith("Its computer was lost")), ["Its computer was lost; started a new one (c2)."], `the Timeline says it once: ${JSON.stringify(said)}`);
@@ -192,8 +193,8 @@ test("a sandbox deleted while a bash command runs: that command ends failed sayi
   const results = toolResults(requests);
   assert.deepEqual(results.map((one) => one.error), [true, false], "the cut command failed; the next ran");
   assert.match(results[0].text, /the computer c1 was lost while this call ran, and it was not run again/, results[0].text);
-  assert.match(results[0].text, /Daytona no longer has it/, "the provider's words are kept");
-  assert.match(results[0].text, /A new computer starts at the next call/);
+  assert.doesNotMatch(results[0].text, /Daytona no longer has it/, "the provider's words are the runner log's");
+  assert.match(results[0].text, /Docker refused the sandbox, or no longer has it\. Try again, and a new one starts\./);
   const next = run.docker.starts.filter(([, argv]) => argv.at(-1).endsWith("echo next"));
   assert.deepEqual(next.map(([id]) => id), ["c2"], "the next call ran on the new sandbox");
   assert.deepEqual(run.docker.made, ["c1", "c2"], "one new sandbox");
@@ -201,7 +202,7 @@ test("a sandbox deleted while a bash command runs: that command ends failed sayi
   assert.deepEqual(said.filter((summary) => summary?.startsWith("Its computer was lost")), ["Its computer was lost; started a new one (c2)."]);
 });
 
-test("the loss after two new sandboxes ends the run failed, served as computer_unavailable in the provider's words, though the model answers right after it; no fourth is made", { timeout: 120_000 }, async (t) => {
+test("the loss after two new sandboxes ends the run failed, served as computer_unavailable in serve's words, though the model answers right after it; no fourth is made", { timeout: 120_000 }, async (t) => {
   const run = await opened(t);
   // Every sandbox is deleted at its first read; the model answers at once after the third loss, with no further call.
   run.docker.lose = (_one, method) => method === "files.read";
@@ -210,7 +211,7 @@ test("the loss after two new sandboxes ends the run failed, served as computer_u
   const row = await run.settled(["failed"]);
   assert.equal(row.state, "failed");
   assert.deepEqual(run.docker.made, ["c1", "c2", "c3"], "two new ones, then none");
-  assert.match(row.summary, /^computer_unavailable: the run's sandbox was lost 3 times, and a run starts at most 2 new ones in place of a lost one: the connection to c3 ended\.$/);
+  assert.match(row.summary, /^computer_unavailable: the run's sandbox was lost 3 times, and a run starts at most 2 new ones in place of a lost one: Docker refused the sandbox, or no longer has it\. Try again, and a new one starts\.$/);
   const served = await run.served();
   assert.equal(served.status, "failed");
   assert.equal(served.error.code, "computer_unavailable", JSON.stringify(served.error));

@@ -61,7 +61,8 @@ function sayOnly(words, cls, provider, kind, where) {
 function loggedOnce(lines, lead, runId, site, cls, where) {
   const found = lines.filter((line) => line.includes(lead));
   assert.equal(found.length, 1, `${where}: one runner log line holds the provider's words, of ${JSON.stringify(lines)}`);
-  assert.ok(found[0].startsWith(`run ${runId} ${site}: ${cls}: ${lead}`), `${where}: ${JSON.stringify(found[0])} names the run, the site and the class`);
+  // The provider's words follow as it said them (a disk's begin with its status: "401 Unauthorized: ...").
+  assert.ok(found[0].startsWith(`run ${runId} ${site}: ${cls}: `),`${where}: ${JSON.stringify(found[0])} names the run, the site and the class`);
   assert.ok(found[0].includes(PATH), `${where}: the provider's own words are on the log line`);
   assert.ok(!found[0].includes(KEY), `${where}: the key-shaped string is cut from the log line`);
 }

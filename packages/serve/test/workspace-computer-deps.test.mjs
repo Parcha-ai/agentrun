@@ -684,7 +684,9 @@ test("on compose, the default allow-list's Docker computer is made with every mo
     });
     const claim = computerForClaim({ runId: "run-1", epoch: 1, computer: { kind: "sandbox", provider: "docker" }, boxAllow: [...DEFAULT_BOX_ALLOW] }, store, { ...computerDeps, mode: 1, workspace: localWorkspace(work), sealKey });
     if (!found) {
-      await assert.rejects(claim, { code: "computer_unavailable", message: /this provider runs in a container/ });
+      // The provider's refusal (code refused) reaches the run in serve's sentence; its words, which name the fix, go to
+      // the runner log, and Settings → Computers says the fix before any run (place-offers.ts).
+      await assert.rejects(claim, { code: "computer_unavailable", message: "Docker could not start a sandbox computer: Docker refused the sandbox, or no longer has it. Try again, and a new one starts." });
       assert.deepEqual(calls().filter((args) => args[0] === "run"), [], "nothing is made");
       continue;
     }
