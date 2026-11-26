@@ -148,6 +148,11 @@ const CONTROL_PADS = [
   ["raw 8-bit CSI colours", "\u009b0m".repeat(300), "json"],
   ["JSON's \\u009b CSI colours", String.raw`\u009b0m`.repeat(300), "json"],
   ["percent-encoded 8-bit CSI colours", "%C2%9B%30%6D".repeat(300), "json"],
+  // A NUL inside a sequence is ignored by a terminal: the sequence still ends at its final byte.
+  ["raw CSI colours with a NUL inside", "\u001b[0\u0000m".repeat(300), "json"],
+  ["JSON's \\u001b CSI colours with a \\u0000 inside", String.raw`\u001b[0\u0000m`.repeat(300), "json"],
+  ["percent-encoded CSI colours with a NUL inside", "%1B%5B%30%00%6D".repeat(300), "json"],
+  ["raw OSC titles with a NUL inside", "\u001b]0;\u0000t\u0007".repeat(300), "json"],
   // Characters that show as a box or a blank: U+FFFE, the braille blank, a lone surrogate as JSON's escape.
   ["raw U+FFFE", "\ufffe".repeat(300), "json"],
   ["raw braille blanks", "\u2800".repeat(300), "json"],

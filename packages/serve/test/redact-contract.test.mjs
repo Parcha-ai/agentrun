@@ -831,6 +831,28 @@ const CASES = [
       ["two backspaces striking out two characters", `x ${H}__\b\b${R} y`],
     ].map(([what, text]) => ({ name: `a held value split by a terminal sequence, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
   })(),
+  // A terminal ignores a NUL or a DEL inside a sequence and runs any other C0 control there (a backspace moves back)
+  // without ending the sequence; CAN (U+0018) or SUB (U+001A) aborts it, and it shows as nothing. A control a view
+  // drops, as it stands or as a view decodes it, takes no place on screen either: a backspace after it strikes out the
+  // character before it. A held value split by any of these withholds the text.
+  ...(() => {
+    const [H, R] = P24;
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const E = "\u001b";
+    return [
+      ["a NUL inside a CSI colour as it stands", `x ${H}${E}[0\u0000m${R} y`],
+      ["a NUL inside a CSI colour in a JSON string", JSON.stringify({ note: `see ${H}${E}[0\u0000m${R} more` })],
+      ["a NUL inside a CSI colour, percent-encoded", `x ${H}%1B%5B0%00m${R} y`],
+      ["a NUL inside a CSI colour as Python's \\x escape in a single-quoted dict", `{'a': 'see ${H}\\x1b[0\\x00m${R} more'}`],
+      ["a U+0001 inside a CSI colour", `x ${H}${E}[0\u0001m${R} y`],
+      ["a DEL inside a CSI colour", `x ${H}${E}[0\u007fm${R} y`],
+      ["a NUL inside an OSC title ended by a BEL", `x ${H}${E}]0;build\u0000 log\u0007${R} y`],
+      ["a CSI aborted by a CAN", `x ${H}${E}[0\u0018${R} y`],
+      ["a CSI aborted by a SUB", `x ${H}${E}[1;3\u001a${R} y`],
+      ["a backspace inside a CSI, striking out the character before it", `x ${H}Z${E}[0\bm${R} y`],
+      ["a backspace after a NUL, striking out the character before the NUL", `x ${H}Z\u0000\b${R} y`],
+    ].map(([what, text]) => ({ name: `a held value split by a terminal sequence, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
   // Normalization reads past a terminal control as a reader does: a held value with a precomposed Hangul syllable, its
   // conjoining jamo split by a BEL (dropped, as any control is) or by a CSI colour (gone on screen), withholds the text.
   // A backspace strikes out a whole character: one past U+FFFF (a surrogate pair) goes with both halves. Jamo split by a
