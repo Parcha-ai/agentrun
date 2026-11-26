@@ -2849,8 +2849,9 @@ written: no run, no new binding, and a firing stays as it was. The owner's users
 owner connects after a token's run started is refused from then on. The seal marks each binding with who handed it
 (the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner
 has connected since has its calls answered, unsent, that the user is the owner's, until a message hands `mcp_auth`
-again or a new run starts. The owner's session binds any user, the owner's own included. On an [API-only](#api-only)
-server every caller is the token: the same users are refused, at the request and at each claim whoever handed the
+again or a new run starts. The owner's session binds any user, the owner's own included, but `agentrun`: no caller
+binds a run to the preset's shared default user (`422 not_allowed`), so a run that forgot its own never lands there. On
+an [API-only](#api-only) server every caller is the token: the same users are refused, at the request and at each claim whoever handed the
 binding, and a named account must be one Composio lists under the run's user.
 
 What this leaves open: a per-run server lends the install's Composio key to whoever starts a run, and a token can still
