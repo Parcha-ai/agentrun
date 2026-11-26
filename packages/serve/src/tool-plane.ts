@@ -812,8 +812,10 @@ export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, ag
     const own = agent.overrides?.[pick]?.provider;
     const server = settings[pick]?.provider;
     // The server's setting a ceiling over the agent's own pick (ceilingOver): the pick named past it, or what the pick
-    // would resolve to with no server setting past it. `resolved` is then the server's, and `ceiling` says why.
-    const ceiling = own === undefined ? undefined : ceilingOver(pick, server, own, planeFor(env, agent, { ...settings, [pick]: { ...settings[pick], provider: undefined } })[pick]);
-    return { ...shown, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]!, ...(ceiling ? { ceiling } : {}) };
+    // would resolve to with no server setting past it. `resolved` is then the server's, and `ceiling` says why. A tool
+    // the server denies says no ceiling: the deny is why nothing runs, not the setting under it.
+    const resolved = plane[pick]!;
+    const ceiling = own === undefined || resolved === DENIED ? undefined : ceilingOver(pick, server, own, planeFor(env, agent, { ...settings, [pick]: { ...settings[pick], provider: undefined } })[pick]);
+    return { ...shown, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved, ...(ceiling ? { ceiling } : {}) };
   });
 }
