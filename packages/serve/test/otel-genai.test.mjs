@@ -1210,9 +1210,10 @@ test("an OTLP header value's credential key longer than the prefix budget is hel
 });
 
 // Past the budget, a credential pair whose name comes after separators of more than one kind since the last `=`: a
-// reader that splits at any one of those kinds finds the pair, and reads its key up to its own next separator. The
-// first pair, 101 pieces joined by %20, spends the 4,096 characters; each key's two halves are longer than what is
-// left. Each row: [what, the X-Relay header value, the key as written].
+// reader that splits at any one of those kinds finds the pair, and reads its key up to its own next separator, or to
+// the text's end when none of that kind comes again. The first pair, 101 pieces joined by %20, spends the 4,096
+// characters; each key's two halves are longer than what is left. Each row: [what, the X-Relay header value, the key as
+// written].
 const OPENING_SPENT = `api_key=${"x%20".repeat(100)}x`;
 const OPENING_ONE = `ka-${"dummy"}-${"0123456789".repeat(5)}`;
 const OPENING_TWO = `kb-${"dummy"}-${"9876543210".repeat(5)}`;
@@ -1221,9 +1222,13 @@ const OPENING_ROWS = [
   ["in a cookie joined by ;-space", `${OPENING_SPENT}; a=1; session=${OPENING_ONE} ${OPENING_TWO}; b=2; token=z-${"dummy"}`, `${OPENING_ONE} ${OPENING_TWO}`],
   ["in a cookie joined by %3B%20", `${OPENING_SPENT}%3B%20a=1%3B%20session=${OPENING_ONE}%20${OPENING_TWO}%3B%20b=2%3B%20token=z-${"dummy"}`, `${OPENING_ONE}%20${OPENING_TWO}`],
   ["after a token with no = joined by %26 and then %20", `${OPENING_SPENT}%26x=1%26flag%20api_key=${OPENING_ONE}%20${OPENING_TWO}%26y=2%26secret=z-${"dummy"}`, `${OPENING_ONE}%20${OPENING_TWO}`],
+  // The kind that opens the pair never comes again, so its reader reads the key over the later pairs to the end.
+  ["opened by & that never comes again, the rest joined by ;", `${OPENING_SPENT}&x=1&token=${OPENING_ONE};${OPENING_TWO};secret=z-${"dummy"}-key`, `${OPENING_ONE};${OPENING_TWO};secret=z-${"dummy"}-key`],
+  ["opened by %26 that never comes again, the rest joined by %3B", `${OPENING_SPENT}%26x=1%26token=${OPENING_ONE}%3B${OPENING_TWO}%3Bsecret=z-${"dummy"}-key`, `${OPENING_ONE}%3B${OPENING_TWO}%3Bsecret=z-${"dummy"}-key`],
+  ["opened by a space that never comes again, the rest joined by %2C", `${OPENING_SPENT} x=1 token=${OPENING_ONE}%2C${OPENING_TWO}%2Csecret=z-${"dummy"}-key`, `${OPENING_ONE}%2C${OPENING_TWO}%2Csecret=z-${"dummy"}-key`],
 ];
 
-test("past the prefix budget, an OTLP credential key after separators of more than one kind is held whole as a reader of any of those kinds reads it, and a line quoting it is cut with no piece left", () => {
+test("past the prefix budget, an OTLP credential key after separators of more than one kind, or after one that never comes again, is held whole as a reader of any of those kinds reads it, and a line quoting it is cut with no piece left", () => {
   const missed = [];
   for (const [what, header, key] of OPENING_ROWS) {
     const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=${header}` };
