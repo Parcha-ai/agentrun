@@ -80,6 +80,18 @@ function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined
   };
 }
 
+/** The environment an SDK run's compile turn is asked under, on the runner's environment (`deps.env`, else this
+ *  process's) with every model key the server holds laid on it (savedModelKeys: no revision scopes the ask), and `off`,
+ *  why the turn is skipped, when it is. Its requests on serve's gateway name the claim's run, turn and attempt, as every
+ *  other request of a claim does (request-metadata.ts): withModelKeys makes the env this ask's own. It runs after its
+ *  backend reported the run complete, on no run's key: on a server that holds no gateway key it is skipped in words
+ *  (run-model-key.ts noServerKeyFor), nothing sent. */
+export async function sdkCompileEnv(deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env">, claim: Parameters<typeof withRequestMetadata>[1]): Promise<{ readonly env: NodeJS.ProcessEnv; readonly off: string | undefined }> {
+  const base = deps.env ?? process.env;
+  const env = withRequestMetadata(withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base })), claim);
+  return { env, off: noServerKeyFor(env, "An SDK run's compile turn") };
+}
+
 /** The loop a claimed run runs on, over `deps` (the saved gateway laid over its environment). */
 async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch, runId: string): Promise<LoopFactory | undefined> {
   // A workflow revision runs on the workflow loop whatever the harness its body names (its default is pi): read the
@@ -97,13 +109,7 @@ async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch,
   // start's), its key from the runner's environment, else the one saved in Settings → Model keys, read at each ask.
   if (launch.sdk || launch.cli_learning) return createSdkLoop(launch, deps, async (claim) => {
     if (launch.cli_learning) throw new Error("Connected CLI capture has no workflow execution bridge.");
-    const base = deps.env ?? process.env;
-    // Its requests on serve's gateway name the claim's run, turn and attempt, as every other request of a claim does
-    // (request-metadata.ts): withModelKeys makes the env this ask's own.
-    const env = withRequestMetadata(withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base })), claim);
-    // It runs after its backend reported the run complete, on no run's key: on a server that holds no gateway key it is
-    // skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
-    const off = noServerKeyFor(env, "An SDK run's compile turn");
+    const { env, off } = await sdkCompileEnv(deps, claim);
     if (off) {
       deps.log?.(off);
       throw new Error(off);
