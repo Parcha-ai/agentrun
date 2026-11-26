@@ -1928,6 +1928,9 @@ test("LVI (11-26): a glob or brace `.env` read, a member access across a line br
     // systemd's Environment property, the system's environment file, a host's config vars, BSD ps's E option.
     "systemctl show -p Environment app", "systemctl show app --property=Environment", "cat /etc/environment", "heroku config", "heroku config -a app",
     "heroku config:get DATABASE_URL -a app", "ps auxE", "ps -E", "ps -wwE",
+    // A builtin alone on its line before a path that opens with a dot: the member-access join is not what its pieces
+    // are read from. And heroku's config with a redirect attached to it.
+    "readonly\n.venv/bin/python --version", "export\n./manage.py check", "heroku config>/tmp/app-config; cat /tmp/app-config", "heroku config:get A 2>/dev/null",
   ]) {
     const out = await gone(text, [seed, region], { command });
     assert.equal(out.text, "[redacted:env-dump 2 lines]", command.slice(0, 80));
