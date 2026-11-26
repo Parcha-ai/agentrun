@@ -1121,21 +1121,22 @@ test("a 16 KB OTLP header value of 900 pairs joined by %20, or a 30 KB one of 1,
   // A credential pair's value runs to the header value's end: held up to each of its 1,800 %20, it would hold 1,800
   // values of up to 16 KB; and 1,000 credential pairs, each held up to each separator after it, 1,000 times that.
   // Each of the 1,000 pairs has its own key, so a budget of 4,096 characters per pair, not per value, shows as the
-  // 501st pair held past its first separator, and as a held list of megabytes. The value whole and its first pair's
+  // 501st pair held past its first two separators (one of each kind, the second the kind before its name, are held
+  // past the budget too), and as a held list of megabytes. The value whole and its first pair's
   // value to the end, each written and decoded, are about four times the value, so each value has its own bound.
   const key = `key-${"dummy"}-1`;
   const many = (at) => `key-${"dummy"}-2-${at}`;
   const pairs = Array.from({ length: 1000 }, (_, at) => `api_key=${many(at)}%20v%3B`).join("");
   for (const [what, header, bound, first, later] of [
     ["900 pairs", `X-Relay=api_key=${`${key}%20b=1%20`.repeat(900)}`, 128, key, undefined],
-    ["1,000 credential pairs", `X-Relay=${pairs}`, 192, many(0), `${many(500)}%20v`],
+    ["1,000 credential pairs", `X-Relay=${pairs}`, 192, many(0), `${many(500)}%20v%3Bapi_key=${many(501)}`],
   ]) {
     const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: header };
     for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
       const size = values.reduce((sum, value) => sum + value.length, 0);
       assert.ok(size < bound * 1024, `${what}: ${list} holds ${size} characters, under ${bound} KB`);
       assert.ok(values.includes(first), `${what}: ${list} holds the key before the first separator`);
-      if (later) assert.ok(!values.includes(later), `${what}: ${list} does not hold the 501st pair's value up to its second separator`);
+      if (later) assert.ok(!values.includes(later), `${what}: ${list} does not hold the 501st pair's value up to its third separator`);
     }
   }
   // The first pair's value up to its second separator, 4,080 characters, leaves 16 of the 4,096; the last pair's value

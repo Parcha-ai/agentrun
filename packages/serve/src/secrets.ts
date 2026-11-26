@@ -494,6 +494,9 @@ const sameSemicolon = (prefix: string, separator: string): boolean => {
   return opening !== "" && separator.toLowerCase() === opening;
 };
 
+/** A separator's kind: its text, an encoded one in any case the same (`%3b` is `%3B`), and any whitespace one kind. */
+const separatorKind = (separator: string): string => (/^\s$/.test(separator) ? " " : separator.toLowerCase());
+
 /** The value of each `name=value` pair of `text` whose name says it is a credential (credentialNamed), held at every
  *  boundary: a pair is a run of `text` between separators (SEPARATOR) whose first `=` has a name before it, the name
  *  being what follows the last `/`, `?`, `#` or `:` before that `=` (a URL's query, `https://relay/v1?region=us`, names
@@ -502,12 +505,17 @@ const sameSemicolon = (prefix: string, separator: string): boolean => {
  *  around it may be joined by any other, so no one split finds it: one of these prefixes is the key alone, whatever
  *  ends it. A pair's first prefix (up to its first separator) is always taken, and so is the last credential pair's
  *  whole rest; the others are taken pair by pair, shortest first within a pair, while PREFIX_BUDGET has room for all of
- *  one, and one with a raw `&` or space at an end only at the floor or longer (RAW_EDGE). A prefix that ends at a `;`
- *  written as the one that opens it is not read after that `;` (sameSemicolon). */
+ *  one. Past the budget, a pair still holds its value as a reader that splits pairs at some kinds of separator
+ *  (separatorKind) reads it, up to the first separator of one of those kinds: its prefix up to the next separator of
+ *  each kind, but none past the next one of the kind before its name, since a reader that found the pair splits there
+ *  too. So the pairs after one kind's separators each stop at the next one, and these prefixes hold at most the kinds'
+ *  count squared times `text`'s length in all. One past the first with a raw `&` or space at an end is held only at the
+ *  floor or longer (RAW_EDGE). A prefix that ends at a `;` written as the one that opens it is not read after that `;`
+ *  (sameSemicolon). */
 const credentialPrefixes = (text: string): string[] => {
-  const separators = [...text.matchAll(SEPARATOR)].map((found) => ({ start: found.index, end: found.index + found[0].length, text: found[0] }));
+  const separators = [...text.matchAll(SEPARATOR)].map((found) => ({ start: found.index, end: found.index + found[0].length, kind: separatorKind(found[0]), text: found[0] }));
   const startOf = (at: number): number => (at < separators.length ? separators[at].start : text.length);
-  const pairs: { value: number; first: number }[] = [];
+  const pairs: { value: number; first: number; opening: string }[] = [];
   let equals = -1;
   for (let at = 0; at <= separators.length; at++) {
     const from = at === 0 ? 0 : separators[at - 1].end;
@@ -515,23 +523,30 @@ const credentialPrefixes = (text: string): string[] => {
     if (equals < 0) break;
     if (equals <= from || equals >= startOf(at)) continue;
     const name = text.slice(from, equals).split(/[/?#:]/).at(-1) ?? "";
-    if (credentialNamed(decoded(name) ?? name)) pairs.push({ value: equals + 1, first: at });
+    if (credentialNamed(decoded(name) ?? name)) pairs.push({ value: equals + 1, first: at, opening: at === 0 ? "" : separators[at - 1].kind });
   }
   let left = PREFIX_BUDGET;
-  return pairs.flatMap(({ value, first }, index) => {
-    const ends = [first];
+  return pairs.flatMap(({ value, first, opening }, index) => {
+    const ends = new Set([first]);
     for (let at = first + 1; at < separators.length && separators[at].start - value <= left; at++) {
       left -= separators[at].start - value;
-      ends.push(at);
+      ends.add(at);
     }
     if (first < separators.length) {
-      if (index === pairs.length - 1) ends.push(separators.length);
+      if (index === pairs.length - 1) ends.add(separators.length);
       else if (text.length - value <= left) {
         left -= text.length - value;
-        ends.push(separators.length);
+        ends.add(separators.length);
       }
     }
-    return ends.flatMap((at) => {
+    const kinds = new Set<string>();
+    let next = first;
+    for (; next < separators.length && separators[next].kind !== opening; next++) {
+      if (!kinds.has(separators[next].kind)) ends.add(next);
+      kinds.add(separators[next].kind);
+    }
+    if (next < separators.length) ends.add(next);
+    return [...ends].flatMap((at) => {
       const prefix = text.slice(value, startOf(at));
       if (at !== first && RAW_EDGE.test(prefix) && !atFloor(prefix)) return [];
       return heldForms(prefix, at === separators.length || !sameSemicolon(prefix, separators[at].text));
