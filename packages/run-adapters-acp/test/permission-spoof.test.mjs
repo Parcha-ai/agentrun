@@ -152,12 +152,14 @@ for (const [style, title, recipeOver] of [
 }
 
 // agy names a call `mcp_<server>_<tool>`, one _ between them: a server named agentrun_look with a tool up would spell
-// our look_up under a server named agentrun. So under a recipe whose prefix joins by one character (agy's
-// `mcp_agentrun_`) our server goes by a name of its start's own, which no server set up before the start can spell:
-// `ar` and 6 hex digits, as long as `agentrun`, so a tool's name fits agy's cap as it did under `agentrun`.
-test("under agy's recipe the agent is given our MCP server under a name of its start's own, ar and 6 hex digits; under Goose's and Cursor's, agentrun", async (t) => {
+// our look_up under a server named agentrun. Cursor names the server in a field of its own (providerIdentifier), which
+// a second server named exactly `agentrun` (a workspace's or the owner's own MCP configuration) would say too. So
+// under either recipe our server goes by a name of its start's own, which no server set up before the start can spell:
+// `ar` and 6 hex digits, as long as `agentrun`, so a tool's name fits agy's cap as it did under `agentrun`. Goose's
+// stays `agentrun`: its configuration is all ours, written at each start, and its proxy offers its model our tools alone.
+test("under agy's and Cursor's recipes the agent is given our MCP server under a name of its start's own, ar and 6 hex digits; under Goose's, agentrun", async (t) => {
   const given = [];
-  for (const style of ['antigravity', 'antigravity', 'goose-1.59', 'cursor']) {
+  for (const style of ['antigravity', 'antigravity', 'goose-1.59', 'cursor', 'cursor']) {
     const recipe = fakeRecipe(scratch(), { script: [{ say: 'hi' }], style });
     const { session } = await openSession(t, recipe, { tools: [tool('look_up', () => 'found')] });
     await session.send('go');
@@ -168,7 +170,9 @@ test("under agy's recipe the agent is given our MCP server under a name of its s
   assert.match(given[1][0]?.[0] ?? '', /^ar[0-9a-f]{6}$/);
   assert.notEqual(given[0][0][0], given[1][0][0], 'a fresh name at each start');
   assert.deepEqual(given[2], [['agentrun']]);
-  assert.deepEqual(given[3], [['agentrun']]);
+  assert.match(given[3][0]?.[0] ?? '', /^ar[0-9a-f]{6}$/);
+  assert.match(given[4][0]?.[0] ?? '', /^ar[0-9a-f]{6}$/);
+  assert.notEqual(given[3][0][0], given[4][0][0], 'a fresh name at each start');
 });
 
 // agy caps a tool's name at 64 characters and names ours mcp_<server>_<tool>: 13 + the tool's own, so a tool of ours
@@ -234,6 +238,30 @@ test("another MCP server's tool that agy names as one of ours under agentrun (`m
   await session.send('go');
   assert.equal((await session.turnEnd()).status, 'completed');
   assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_other', 'Run mcp_agentrun_look_up']]);
+  assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
+  assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the call never ran');
+  assert.equal(ran, 0);
+});
+
+// Cursor names an MCP call's server in rawInput.providerIdentifier. A second server named exactly `agentrun` (in a
+// workspace's .cursor/mcp.json, or the owner's own Cursor configuration) with a tool look_up says what our look_up said
+// under the name `agentrun`; under the name of the start's own, it is the agent's own call.
+test("on Cursor's tie, another MCP server named exactly agentrun, whose tool Cursor names as look_up (providerIdentifier agentrun), is the agent's own: the host's gate is asked, a deny answers reject_once", async (t) => {
+  // Before: providerIdentifier agentrun and toolName look_up named it our look_up, and its request, titled
+  // `agentrun-look_up: look_up`, was answered allow_once on the title tie without the host's gate.
+  const dir = scratch();
+  const nativeLog = join(dir, 'native.log');
+  const input = { providerIdentifier: 'agentrun', toolName: 'look_up', args: { q: 'x' } };
+  const recipe = fakeRecipe(dir, { script: [{ native: 'other', title: 'agentrun-look_up: look_up', input }, { sayLastResult: true }], style: 'cursor', askNative: ['other'], nativeLog });
+  const asked = [];
+  let ran = 0;
+  const { session } = await openSession(t, recipe, {
+    tools: [tool('look_up', () => ((ran += 1), 'found'))],
+    gate: async (call) => (asked.push(call), { deny: 'not ours' }),
+  });
+  await session.send('go');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.deepEqual(asked.map((c) => [c.tool, c.args.title]), [['acp_other', 'agentrun-look_up: look_up']]);
   assert.deepEqual(fakeEvents(recipe).filter((e) => e.type === 'permission').map((e) => e.kind), ['reject_once']);
   assert.throws(() => readFileSync(nativeLog, 'utf8'), /ENOENT/, 'the call never ran');
   assert.equal(ran, 0);
