@@ -9,6 +9,8 @@
 //   first hit. This test is that rule's red.
 // - A short name: ADF Ltd leaves ADF, no word of 4 letters, which the rule before this change gave no search. Searched
 //   whole as a word, it finds UN CDe.001, UK DRC0015 and EU 7539, and not a word that holds those letters.
+// - An EU row runs to 960 characters, and a long remark puts a person's function, birth place and citizenship past the
+//   500 the rule once cut each row to. The record is read by column instead, with the header line naming each one.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -71,4 +73,31 @@ test("a short name is searched whole as a word: ADF finds UN CDe.001, UK DRC0015
   assert.match(found("lists/eu.txt"), /;7539;EU\.3651\.51;/);
   writeFileSync(join(dir, "lists", "words.txt"), "GRADFORD HOLDINGS\nMADFIELD LTD\n");
   assert.equal(found("lists/words.txt"), "", "grep -w finds no word that only holds the letters");
+});
+
+test("an EU record is read by column, whole: EU 603's birth place, citizenship and function, past a 500-character cut", (t) => {
+  const dir = folderOf("list-file-split-name");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // The rule before this change: every row of the entity, cut to 500 characters. 603's remark runs to character 295,
+  // so the cut keeps the name (470) but not the function (517), the birth place (516), its country or the citizenship.
+  const cut = run("grep -n -F -e ';603;' lists/eu.txt | cut -c1-500 | head -n 20", dir);
+  assert.match(cut, /Mohammad Hassan Akhund/);
+  assert.doesNotMatch(cut, /Pashmul|First Deputy|;AF;/);
+  const out = run(ruled("grep -F -e 'Entity_LogicalId'").replaceAll("<id>", "603"), dir).replace(/\r/g, "").trim().split("\n");
+  const header = out[0].split(";");
+  const rows = out.slice(1).map((line) => Object.fromEntries(line.split(";").map((v, i) => [header[i], v])));
+  assert.equal(header[0], "Entity_LogicalId", "the header line comes first and names each column");
+  assert.equal(rows.length, 4, "every row of the entity, and no other");
+  assert.ok(rows.every((r) => r.Entity_LogicalId === "603"));
+  const values = (column) => rows.map((r) => r[column]).filter(Boolean);
+  assert.deepEqual(values("NameAlias_WholeName"), ["Mohammad Hassan Akhund"]);
+  assert.match(values("NameAlias_Function")[0], /^\(a\) First Deputy, Council of Ministers under the Taliban regime/);
+  assert.deepEqual(values("BirthDate_City"), ["Pashmul village, Panjwai District, Kandahar Province", "Pashmul village, Panjwai District, Kandahar Province"]);
+  assert.deepEqual(values("BirthDate_YearRangeFrom"), ["1955", "1945"]);
+  assert.deepEqual(values("Citizenship_CountryIso2Code"), ["AF"]);
+  for (const column of ["Entity_EU_ReferenceNumber", "Entity_Remark", "Entity_SubjectType", "Entity_Regulation_Programme", "Identification_Number", "Identification_TypeDescription", "Address_CountryDescription"]) {
+    assert.ok(header.includes(column), `the read names ${column}`);
+  }
+  // If the file's columns ever move, the rule numbers them from the header.
+  assert.match(run(ruled("head -n 1 lists/eu.txt"), dir), /^\s*20\s+NameAlias_WholeName$/m);
 });
