@@ -254,6 +254,17 @@ test("a protocol error with HTTP 429 and Retry-After: filed, an error, the statu
   assert.ok(!/Marisol|rate limited/.test(textOf(result)), textOf(result));
 });
 
+test("an error answer over HTTP 200 with a Retry-After header and no retry field: filed, an error, the header's wait, no word of the answer", async (t) => {
+  const gate = (_url, message) => (message?.method === "tools/call" ? { status: 200, headers: { "retry-after": "4" }, body: { jsonrpc: "2.0", id: message.id, result: { resultType: "complete", content: [{ type: "text", text: JSON.stringify({ error: { message: `slow down for ${description(11)}` } }) }], isError: true } } } : undefined);
+  const { call, work } = await setup(t, { filed: (_server, tool) => (tool === "page" ? SETTING : undefined), gate });
+  const result = await call("page");
+  assert.equal(result.isError, true, textOf(result));
+  const [name] = await filedIn(work, "stripe");
+  assert.match(await readFile(join(work, "stripe", name), "utf8"), /Marisol Quintero, order 11/, "the answer's words, filed");
+  assert.match(textOf(result), /\nError: retry after 4 s\.$/, textOf(result));
+  assert.ok(!/Marisol|slow down/.test(textOf(result)), textOf(result));
+});
+
 // Two calls of one server at once: the first's 429 reaches the gateway, and its body is held until the second call has
 // its own answer (a 200, or a 429 with another wait), which lands in between. Each summary says its own response's
 // status and wait, never the other call's.
