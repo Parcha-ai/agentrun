@@ -44,10 +44,9 @@ export type ScrubContext = {
   readonly source: string;
   readonly homes: readonly string[];
   readonly path?: string;
-  /** The shell command whose output the text is, when the caller knows it (ruling LVI): an env command's output is a
-   *  dump though the command stands in no line of the text. */
-  readonly command?: string;
-  /** What the rules read of `command`, made once (commandFacts): present when `command` is. */
+  /** What the rules read of the shell command whose output the text is, when the caller knows it (ruling LVI: an env
+   *  command's output is a dump though the command stands in no line of the text), made once (commandFacts). The rules
+   *  read the command only through these. */
   readonly facts?: CommandFacts;
   readonly lint: () => Promise<readonly LintFind[]>;
   /** Where the line holding an offset starts and ends: a line break, or a JSON string's own quote the view decoded

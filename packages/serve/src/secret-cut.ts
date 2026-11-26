@@ -406,7 +406,7 @@ export function processHomes(): string[] {
  *  finds in the view (one pass a view, on first ask). */
 function contextOf(view: View, opts: ScrubOptions): ScrubContext {
   let lint: Promise<LintFind[]> | undefined;
-  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? opts.commandFacts?.readPath, command: opts.commandFacts?.command, facts: opts.commandFacts, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
+  return { held: heldOf(opts), source: view.source, homes: opts.homes ?? processHomes(), path: opts.path ?? opts.commandFacts?.readPath, facts: opts.commandFacts, lint: () => (lint ??= lintFinds(view.text)), lines: lineBounds(view.text, ...view.decodedStrings, view.strings) };
 }
 
 /** Whether a cut text holds nothing the scrub must cut: no known format the format rules still find in any view of any
