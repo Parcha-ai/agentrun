@@ -22,7 +22,7 @@ import type { GateAnswer, GateCall } from "@parcha/agentrun-kernel";
 import type { DriveContext, HostTool, SessionState } from "@parcha/agentrun-kernel/kernel";
 import { askGate, journalRecords, journalTurn, NativeJournal, openTurn, placeSubmissions, recoveryNote, resumeUnstartedCalls, toolBridge, toolKey, transcriptOf, type DanglingCall, type ResultBudget, type ToolBridge, type TranscriptEntry } from "@parcha/agentrun-kernel/process";
 import type { ParentWatch } from "@parcha/agentrun-kernel/host";
-import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, mcpServerName, nameCall, namesTooLong, ourTool, permissionCallId, toolNotGranted, toolsLeftOut, ungrantedTool, type AcpAnnounces } from "./calls.js";
+import { announceCall, announcedField, announcesAt, CallIds, declaresProperty, joinsByOne, mcpServerName, MCP_SERVER, namedPerStart, nameCall, namesTooLong, ourTool, permissionCallId, toolNotGranted, toolsLeftOut, ungrantedTool, type AcpAnnounces } from "./calls.js";
 import { ACP_CODES } from "./facts.js";
 import { allowFileText, homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
@@ -177,11 +177,11 @@ interface Runtime {
 
 type CallRecord = { type: "seen" | "answered"; callId: string; tool?: string; args?: unknown; text?: string; isError?: boolean; refused?: boolean };
 /** One record of an agent's own permission request:
- *  - `asked`: the request, as the agent sent it.
+ *  - `asked`: the request, as the agent sent it, and our MCP server's name at the start it was asked in (`server`).
  *  - `answered`: what the gate said; `settled` when a resume took it before the agent started again, in `turn`.
  *  - `given`: the answer was handed to the agent, which uses it up.
  *  - `reasked`: this call was asked while an allow (`instead`) was still not asked for again. */
-type PermissionRecord = { type: "asked" | "answered" | "given" | "reasked"; callId: string; toolCallId?: string; title?: string; kind?: string; input?: unknown; answer?: "allow" | "deny"; words?: string; settled?: true; turn?: string; instead?: string; ungranted?: true };
+type PermissionRecord = { type: "asked" | "answered" | "given" | "reasked"; callId: string; toolCallId?: string; title?: string; kind?: string; input?: unknown; answer?: "allow" | "deny"; words?: string; settled?: true; turn?: string; instead?: string; ungranted?: true; server?: string };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 /** An agent that ended, or whose connection closed: its stderr read to the end (its process's close), for at most
@@ -454,9 +454,11 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       const title = request.title ?? kind;
       // A request for a tool of ours this start does not give the agent (ungrantedTool), left waiting by a run that
       // parked on it: refused here as onPermission refuses a new one, never asked of a person. Settled, so the agent's
-      // ask again takes the deny. Not under a recipe whose server name is its start's own (agy's): an earlier start's
-      // name is in the title, and this one's is new.
-      const ungranted = joinsByOne(recipe.announces) ? undefined : ungrantedTool({ title, kind }, names);
+      // ask again takes the deny. Its title names our server as the start that asked was given it (`server`, recorded
+      // with it): under a recipe that names the server per start (Cursor's, agy's) a request recorded without that name
+      // is the gate's, as its title cannot be tied to a server of ours.
+      const server = request.server ?? (namedPerStart(recipe.announces) ? undefined : MCP_SERVER);
+      const ungranted = server === undefined ? undefined : ungrantedTool({ title, kind }, names, server);
       if (ungranted !== undefined) {
         const words = toolNotGranted(recipe.label ?? recipe.id, ungranted);
         const answer = { type: "answered", callId: request.callId, answer: "deny", words, settled: true, turn: turnId, ungranted: true } satisfies PermissionRecord;
@@ -552,7 +554,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       // reads (settlePermissions). One the gate answers at once (a tool set to allow) is the turn going on.
       const unasked = all.find((r) => r?.type === "answered" && r.settled && r.turn === turnId && r.answer === "allow" && !givenIds.has(r.callId));
       if (unasked) cur.journal.append(PERMISSION_STREAM, { type: "reasked", callId, turn: turnId, instead: unasked.callId } satisfies PermissionRecord);
-      cur.journal.append(PERMISSION_STREAM, { type: "asked", callId, toolCallId: call.toolCallId, title, kind, input } satisfies PermissionRecord);
+      cur.journal.append(PERMISSION_STREAM, { type: "asked", callId, toolCallId: call.toolCallId, title, kind, input, server: rt.server } satisfies PermissionRecord);
       await cur.journal.flush();
     } else if (options.gate) {
       // Asked before and still unanswered, with a gate: settlePermissions answers every request a turn left waiting before

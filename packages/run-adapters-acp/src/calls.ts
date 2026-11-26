@@ -99,7 +99,13 @@ export function namesServer(announces: AcpAnnounces | undefined): boolean {
  *  is all ours and whose proxy offers its model our tools alone), `agentrun`. As long as `agentrun`, no longer: each of
  *  our tools is named with it, under the agent's cap (TOOL_NAME_CAP), so a tool fits as it would under `agentrun`. */
 export function mcpServerName(announces: AcpAnnounces | undefined): string {
-  return joinsByOne(announces) || namesServer(announces) ? `ar${randomBytes(3).toString("hex")}` : MCP_SERVER;
+  return namedPerStart(announces) ? `ar${randomBytes(3).toString("hex")}` : MCP_SERVER;
+}
+
+/** Whether a recipe gives our MCP server a name of each start's own (mcpServerName): a title an earlier start's agent
+ *  wrote names that start's server, never this one's. */
+export function namedPerStart(announces: AcpAnnounces | undefined): boolean {
+  return joinsByOne(announces) || namesServer(announces);
 }
 
 /** The most characters a tool's name may hold where the agent names it (agy's, as the model APIs' tool names: 64). */

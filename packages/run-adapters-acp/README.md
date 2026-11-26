@@ -20,8 +20,8 @@ entries.
   title or name as the agent names the host's tools) is answered `reject_once` at once: no gate, nothing journaled, so
   nothing parks, and the run gets a notice, `tool "<name>" isn't granted to this agent`. ACP's answer carries no words,
   so the agent reads its own refusal; the notice is for the person. Such a request a parked run left waiting is
-  refused the same way on the resume, settled, before the agent starts (not under agy's recipe, whose server name is
-  each start's own). A native call of a kind with effects (a shell, an
+  refused the same way on the resume, settled, before the agent starts: its title is read against the server name of
+  the start that asked, recorded with it, since Cursor's and agy's recipes name the server per start. A native call of a kind with effects (a shell, an
   edit) is the gate's whatever its title. An agent that calls such a tool without asking is answered by the MCP server
   itself, in the same words.
 - An agent's `tool_call` is matched to the MCP call it makes by the tool and the arguments. Which tool it names is read
