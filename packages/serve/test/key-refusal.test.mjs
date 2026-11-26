@@ -180,12 +180,15 @@ const CONTROL_PADS = [
   ["Python's \\x1b OSC titles with HTML's &#27; inside", `${String.raw`\x1b]0;t&#27;`}\u0007`.repeat(250), "python"],
   ["raw CSI colours with JSON's \\u001b written twice inside", `\u001b[0${String.raw`\\u001b`}m`.repeat(300), "json"],
   ["percent-encoded OSC titles with JSON's \\u001b written twice inside", `%1B]0;t${String.raw`\\u001b`}\u0007`.repeat(300), "json"],
+  // In JSON written in JSON, an HTML-escaped OSC title holding an escaped quote and ended by a raw ST that ends a
+  // string: only the view that reads the inner strings, decoding percent, JSON and HTML escapes, reads it whole.
+  ["HTML's &#27; OSC titles holding an escaped quote, each ended by an ST that ends a string", `${String.raw`&#27;]0;t\\"`}\u001b${String.raw`\\", \"`}`.repeat(300), "json in json"],
   // Characters that show as a box or a blank: U+FFFE, the braille blank, a lone surrogate as JSON's escape.
   ["raw U+FFFE", "\ufffe".repeat(300), "json"],
   ["raw braille blanks", "\u2800".repeat(300), "json"],
   ["JSON's \\ud800", String.raw`\ud800`.repeat(300), "json"],
 ];
-const wrapped = (kind, body) => (kind === "python" ? `{'a': '${body}'}` : `{"a": "${body}"}`);
+const wrapped = (kind, body) => (kind === "python" ? `{'a': '${body}'}` : kind === "json in json" ? `{"a": "[\\"${body}\\"]"}` : `{"a": "${body}"}`);
 
 for (const [what, pad, kind] of CONTROL_PADS) {
   test(`kr-9 (${what}): a held value split at a call's stop, control padding past the read after the stop, is withheld`, () => {
@@ -231,6 +234,11 @@ const FOLLOWED_TITLES = [
   ["a Python repr's OSC title ended by ST, then x and two hex digits", (before, after) => `['${before}${String.raw`\x1b]0;`}${X250}${String.raw`\x1b\\`}${after}']`, ["Wc3MhT8qLz5N", `xab${PY_REST}`]],
   ["a percent-encoded OSC title ended by a JSON writer's ST that ends a string", (before, after) => `["${before}%1B]0;${X250}%1B${String.raw`\\`}", "${after}"]`, FROM_R],
   ["an OSC title written in JSON twice, its ST's backslash once, that ends a string", (before, after) => `["${before}${String.raw`\\u001b]0;`}${X250}${String.raw`\\u001b\\`}", "${after}"]`, FROM_R],
+  // A title whose ESCs are written in two encodings: only the view that decodes its opener and its ST, and reads no
+  // ESC inside it, reads it whole.
+  ["a raw OSC title holding a percent-encoded ESC, ended by a raw ST, then a letter", (before, after) => `${before}\u001b]0;${X250}%1B\u001b\\${after}`, FROM_R],
+  ["a raw OSC title ended by a percent-encoded ESC and a backslash, then a letter", (before, after) => `${before}\u001b]0;${X250}%1B\\${after}`, FROM_R],
+  ["a JSON writer's OSC title ended by a percent-encoded ESC and a JSON-escaped backslash, then a letter", (before, after) => `["${before}${String.raw`\u001b]0;`}${X250}%1B${String.raw`\\`}${after}"]`, FROM_R],
 ];
 for (const [what, text, [head, rest]] of FOLLOWED_TITLES) {
   test(`kr-9 (${what}): a held value split at a call's stop around it is withheld`, () => {
