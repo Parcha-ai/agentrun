@@ -1216,10 +1216,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The pass's MCP (spec.mcp), until the pass ends; and whether a command row came since its credentials were last made
    *  fresh (a parked token may have expired meanwhile). */
   let mcp: ClaimMcp | undefined;
-  /** The pass's phase row (AdapterRun.phase), until the pass ends; and whether it said a message waits for the servers
-   *  its claim left out (connectedLaterWords), once a pass. */
+  /** The pass's phase row (AdapterRun.phase), until the pass ends; and whether a message of the pass was left for the
+   *  run's next turn, as one handing the credential of a server its claim left out (steer): every message after it waits
+   *  too, and the timeline says so once a pass (connectedLaterWords). */
   let phaseNow: ((summary: string) => void) | undefined;
-  let saidLater = false;
+  let leftForNextTurn = false;
   /** The calls of this run a person was asked about (their ask in the journal, on this claim or read on a resume), set as
    *  the ask is read: one of them the gate lets through was let through by a person's answer. */
   const askedCalls = new Set<string>();
@@ -1447,16 +1448,18 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // A message that hands the credential of a server whose tools this claim left out (mcpWhereHeld, ClaimMcp.leftOut):
     // the session's tools are fixed for the claim, so a turn it reached could not call them. Left untaken, it runs as
     // the run's next turn, on a claim that lists them: the run's end opens it again with the message (as for a message
-    // that comes while the run ends), and a park's resume takes it. Every message after it waits the same way, so none
-    // runs before it. Said once on the timeline, since the API answered the message as steered.
+    // that comes while the run ends), and a park's resume takes it. Every message after it waits the same way, whatever
+    // the credentials say at its own check (a later message may hand them no longer), so none runs before it. Said once
+    // on the timeline, since the API answered the message as steered.
+    if (leftForNextTurn) return { later: "a message before this one runs as the run's next turn: this one runs after it" };
     const claimMcp = mcp;
     const leftOut = claimMcp?.leftOut;
     if (claimMcp && leftOut?.length) {
       const still = new Set(await claimMcp.fresh());
       const handed = leftOut.filter((server) => !still.has(server));
       if (handed.length) {
-        if (!saidLater) phaseNow?.(connectedLaterWords(handed));
-        saidLater = true;
+        phaseNow?.(connectedLaterWords(handed));
+        leftForNextTurn = true;
         return { later: "the message hands the credential of a server this claim left out: it runs as the run's next turn, which lists its tools" };
       }
     }
@@ -1886,7 +1889,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           })().catch((error: unknown) => console.warn(`[runner] a phase row was not written: ${said(error)}`));
         };
         phaseNow = phase;
-        saidLater = false;
+        leftForNextTurn = false;
         const passGate = gate;
         const rowSummaryOn = (kind: string, test: (data: Record<string, unknown>) => boolean, summary: string | null): void => {
           if (passGate.sealed) return;

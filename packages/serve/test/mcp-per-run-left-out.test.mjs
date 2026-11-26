@@ -113,6 +113,47 @@ test("pi: a message that hands a per_run server's credential while the run's tur
   assert.deepEqual(notesOf(rows), [unconnectedWords("gw"), connectedLaterWords(["gw"])], "the claim that left gw out says why the message waits for the next turn");
 });
 
+test("pi: a message sent after one that waits for the run's next turn waits behind it, though it hands no credential of a server the claim left out: never put into the turn still going, it runs after the earlier message", { timeout: 120_000 }, async (t) => {
+  const dir = await scratch(t);
+  const release = join(dir, "release");
+  withEnv(t, { [RELEASE_ENV]: release, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const { api, store } = await serveOf(t, { faux: FAUX_OFFERED, harnesses: true });
+  await addGw(t, api);
+  const mail = await startFakeMcp({ token: (authorization) => [LIST, RUN].some((token) => authorization === `Bearer ${token}`) });
+  t.after(() => mail.close());
+  const savedMail = await api("PUT", "/settings/mcp-servers/mail", { url: mail.url, auth: { type: "per_run", headers: { authorization: `Bearer ${LIST}` } } });
+  assert.equal(savedMail.status, 200, JSON.stringify(savedMail.body));
+  const save = await retried(api)("POST", "/agents", agent("reader", { tools: ["mcp:gw/add", "mcp:mail/add"], tool_settings: { ...ALLOW, "mcp:mail/add": { permission: "allow" } } }));
+  assert.equal(save.status, 201, JSON.stringify(save.body));
+  const mailOnly = { mail: handed.gw };
+  const FIRST = "First: it hands gw's credential";
+  const SECOND = "Second: it hands mail's alone";
+
+  // The run's first turn is held open, on a claim handed mail's credential and not gw's: gw is left out.
+  const started = await retried(api)("POST", "/agents/reader/runs", { input: { content: HOLD }, mcp_auth: mailOnly });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const runId = started.body.run_id;
+  await follow(api, runId, ["working"], { deadlineMs: 60_000, done: (rows) => notesOf(rows).length === 1 });
+  // The first message hands gw's credential: it waits for the run's next turn, which the timeline says.
+  const first = await api("POST", `/runs/${runId}/messages`, { content: FIRST, mcp_auth: { ...mailOnly, ...handed } });
+  assert.equal(first.status, 202, JSON.stringify(first.body));
+  await follow(api, runId, ["working"], { deadlineMs: 60_000, done: (rows) => notesOf(rows).includes(connectedLaterWords(["gw"])) });
+  // The second hands mail's alone, so gw is unconnected again at its own check: it still waits behind the first, its row
+  // never taken into the turn still going.
+  const second = await api("POST", `/runs/${runId}/messages`, { content: SECOND, mcp_auth: mailOnly });
+  assert.equal(second.status, 202, JSON.stringify(second.body));
+  const secondTaken = async () => (await store.commands(runId, 0)).some((row) => row.kind === "steer" && row.takenAt !== null && JSON.stringify(row.body ?? {}).includes(SECOND));
+  for (const end = Date.now() + 3_000; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 100))) {
+    assert.ok(!(await secondTaken()), "the second message was put into the turn still going, ahead of the first");
+  }
+  writeFileSync(release, "");
+
+  const said = (rows) => rows.filter((row) => row.kind === "user_message").map((row) => row.text);
+  const { rows } = await follow(api, runId, ["completed"], { after: 0, deadlineMs: 60_000, done: (all) => said(all).includes(FIRST) && said(all).includes(SECOND) });
+  assert.deepEqual(said(rows), [HOLD, FIRST, SECOND], "the run's turns take the messages in the order they were sent");
+  assert.equal(notesOf(rows).filter((note) => note === connectedLaterWords(["gw"])).length, 1, "the timeline says once that a message waits for the next turn");
+});
+
 /** serve's gateway on loopback: each Responses request answered with the text it carries. */
 async function echoGateway(t) {
   const server = createServer(async (req, res) => {
