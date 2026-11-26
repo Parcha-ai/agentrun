@@ -92,6 +92,13 @@ read, list or stat, and one not given write no `computer.files.write`. Where the
 script opens apps with `computer.apps`, and on a desktop with no ui group the tools open the app they name (below);
 otherwise it uses the desktop's own launcher through the screen. Use what your tool list and codemode's types show.
 
+## The run's folder
+
+Where the run's folder is mounted on the desktop, it is `/workspace`: save there what the run should keep, from a
+script, the terminal or an app's Save dialog. The desktop's terminal opens in the desktop user's home, not in
+`/workspace`, so `cd /workspace` first or give the full path. Where the folder is not mounted, the server says so, and
+what you save on the desktop stays there.
+
 ## How to work: observe, then act by ref, then check
 
 1. **Observe** the app first. Find your target by its name and role, and note its ref.
