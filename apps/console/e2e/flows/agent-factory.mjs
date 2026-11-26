@@ -247,8 +247,19 @@ export default {
       await page.setViewportSize({ width: 390, height: 844 });
       const phone = await page.evaluate(beside, [PANE, PANEL]);
       check(phone.right === 0 && phone.left === 0 && phone.sideways <= 0, `at 390px the panel must cover the board with no sideways scroll: ${JSON.stringify(phone)}`);
+      // Covered whole, the board is out of the keyboard's way: Shift+Tab from the panel's first control lands on nothing
+      // hidden under it. Beside the panel on a wide page it stays in reach.
+      const reach = () => page.evaluate((paneSelector) => ({ pane: getComputedStyle(document.querySelector(paneSelector)).visibility, inPane: !!document.activeElement?.closest(paneSelector) }), PANE);
+      await open.getByRole("link", { name: "Open run", exact: true }).focus();
+      await page.keyboard.press("Shift+Tab");
+      const covered = await reach();
+      check(covered.pane === "hidden" && !covered.inPane, `at 390px the covered board must be out of the keyboard's reach: ${JSON.stringify(covered)}`);
       if (shots) await page.screenshot({ path: join(shots, "agent-factory-session-light-390.png") });
       await page.setViewportSize({ width: 1280, height: 900 });
+      await open.getByRole("link", { name: "Open run", exact: true }).focus();
+      await page.keyboard.press("Shift+Tab");
+      const besideIt = await reach();
+      check(besideIt.pane === "visible" && besideIt.inPane, `at 1280px the board beside the panel must stay in the keyboard's reach: ${JSON.stringify(besideIt)}`);
       await answer.fill("eu");
       // Escape from the field a person is typing in never closes the panel under their draft.
       await answer.press("Escape");

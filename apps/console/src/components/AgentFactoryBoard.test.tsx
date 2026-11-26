@@ -129,6 +129,12 @@ describe("Agent Factory board", () => {
     expect(panel.previousElementSibling).toBe(pane);
     // The board under it is whole: the panel takes nothing out of the page.
     expect(pane.querySelectorAll("article")).toHaveLength(5);
+    // Where the panel covers the whole board (below xl) the board is out of the keyboard's and a screen reader's way,
+    // still laid out, so it keeps its scroll: hidden to them only there, and only while a panel is open.
+    expect(pane.classList.contains("max-xl:invisible")).toBe(true);
+    act(() => root!.unmount());
+    document.body.innerHTML = "";
+    expect(mount().host.querySelector("[data-factory-pane]")!.classList.contains("max-xl:invisible")).toBe(false);
   });
 
   it("takes its filters from the page that keeps them in its address, and tells it of each change", async () => {

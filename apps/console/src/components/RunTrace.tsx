@@ -846,8 +846,9 @@ export function RunTrace({ run, read, readUsage, version, live, panel, now: fixe
   const stop = (cursor !== null && listed.some((s) => s.id === cursor) ? cursor : selected && listed.some((s) => s.id === selected.id) ? selected.id : listed[0]?.id) ?? null;
   const rowButton = (id: string) => rowRefs.current.get(id)?.querySelector("button") ?? null;
   /** What had the keyboard when the panel opened (a row, a finding): it gets it back when the panel closes. One
-   *  opened from inside the panel (the request that called it) keeps the first. */
-  const from = () => { const active = document.activeElement; if (active instanceof HTMLElement && active !== document.body && !active.closest("aside")) opener.current = active; };
+   *  opened from inside the panel (the request that called it) keeps the first. Only this panel is "inside": the run
+   *  may itself sit in another page's <aside> (Agent Factory's session), and a row there is an opener like any other. */
+  const from = () => { const active = document.activeElement; if (active instanceof HTMLElement && active !== document.body && !active.closest('aside[aria-label="Call details"]')) opener.current = active; };
   /** A span opened from the table, the panel or the breakdown: on a narrow screen its panel comes into view. */
   const pick = (id: string) => { from(); setReveal(true); setPicked(id); };
   /** A span picked on the overview: its table row comes into view and is the keyboard's stop, and the view stays put. */

@@ -131,9 +131,12 @@ export function AgentFactoryBoard({ cards, review, loading, refreshing, error, u
       <header className={cn(pageToolbarClass, "px-5 md:px-6")}>
         <h1 className={pageTitleClass}><Factory className="size-4" aria-hidden />Agent Factory</h1>
       </header>
-      {/* The sessions, and over their right side the one that is open: the board keeps its place under the panel. */}
+      {/* The sessions, and over their right side the one that is open: the board keeps its place under the panel.
+          Below xl the panel covers the whole board: there the board is hidden from the keyboard and a screen reader
+          (invisible, so still laid out and still at its scroll), or Shift+Tab from the panel would land on a control
+          nobody can see. Beside the panel, at xl, it stays in reach. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
-      <div data-factory-pane className="min-h-0 flex-1 overflow-auto">
+      <div data-factory-pane className={cn("min-h-0 flex-1 overflow-auto", !!panel && "max-xl:invisible")}>
       <div className="mx-auto w-full max-w-page-wide space-y-6 p-5 md:p-8">
 
       {error && <Banner tone="error" title={hasSnapshot ? "Could not refresh Agent Factory" : "Could not load Agent Factory"}

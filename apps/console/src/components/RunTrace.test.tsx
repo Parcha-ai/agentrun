@@ -222,6 +222,24 @@ describe("the Dev tools tab", () => {
     expect(document.activeElement).toBe(opened);
   });
 
+  it("gives the keyboard back the same way where the run is itself shown in another page's panel", async () => {
+    const host = await open(TRACE);
+    // Agent Factory shows a run in an <aside> beside its board. Only what is inside Call details is no opener: a row of
+    // the trace is one, whatever panel the run sits in.
+    document.body.appendChild(document.createElement("aside")).appendChild(host);
+    const opened = rowOf(host, "+1:29.6")!.querySelector("button")!;
+    opened.focus();
+    await click(opened);
+    // A press takes the keyboard to what was pressed, as a browser does (jsdom's click does not): the keyboard is on
+    // Close when the panel goes, so it comes back to the row only if the row was kept as the opener.
+    const closing = panel(host)!.querySelector<HTMLButtonElement>("button[aria-label='Close call details']")!;
+    closing.focus();
+    expect(document.activeElement).toBe(closing);
+    await click(closing);
+    expect(panel(host)).toBeNull();
+    expect(document.activeElement).toBe(opened);
+  });
+
   it("says a charged call's charge, and that a computer's own time is not metered here", async () => {
     const host = await open(TRACE, { run: { ...RUN, computer: { kind: "browser", provider: "browserbase" } as Run["computer"] }, open: "t:0:call_08" });
     expect(panel(host)!.textContent).toContain("$0.0004 was charged under this call, and is in the run's cost. Time on the run's computer is billed by its provider and is not metered here.");
