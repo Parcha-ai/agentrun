@@ -308,21 +308,31 @@ export function waitResumedText(cell: string, resumed: readonly NestedFact[]): s
 /** waitResumedText, and the calls whose outcome it tells. */
 export function waitResumed(cell: string, resumed: readonly NestedFact[]): Recovered {
   const told = resumed.map((fact, i) => describeCall(fact, `${i + 1}. ${fact.tool}`));
-  return fitted(told, (cap) => `${waitCutOpener(cell)}${told.map((t) => lineOf(t, cap)).join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.`);
+  return fitted(told, (cap) => `${waitCutOpener(cell)}${told.map((t) => lineOf(t, cap)).join("\n")}\nNothing else of the script was run again. Check the actual state before relying on it.${declinedTail(resumed)}`);
 }
+
+/** What follows the outcomes when a person declined one of the calls: their answer, not a failure to work around. Without
+ *  it, a model told its script was cut off read the refusal as the stop's and made the same call again, asking the person
+ *  the same question until they cancelled. */
+const DECLINED_TAIL = "\nA refused call (a person declined it, or a setting on this server denies it) is an answer, not a failure: don't make it again. Finish without it, or say what you needed it for.";
+const declinedTail = (facts: readonly NestedFact[]): string => (facts.some((fact) => fact.resumed && !fact.resumed.ran) ? DECLINED_TAIL : "");
 
 /** The words a resumed `wait`'s output opens with (waitResumed): the model is told its cell's script went with the session. */
 const waitCutOpener = (cell: string): string => `The session stopped while waiting on cell ${cell}; that cell's script was cut off. Its calls that waited for a person's approval were answered since, each once:\n`;
 /** The words a cut-off `exec`'s output opens with when it lists its own calls (execRecovery). */
 const EXEC_CUT_OPENER = "The exec was cut short after these calls (the session stopped), and nothing was run again. Their outcomes, in order:\n";
+/** The words a recovered `exec`'s output opens with when the session stopped for a person's approval of one of its calls
+ *  (a call of it was resumed): the stop was the wait for their answer, never a crash to retry past. */
+const EXEC_ANSWERED_OPENER = "The exec stopped at a call that waited for a person's approval, and its script did not go on after their answer; nothing was run again. Its calls' outcomes, in order:\n";
 
 /** What the host's row of an `exec` a recovery answered shows: the model is told its script was cut short, but on the record
  *  those words belong to an exec that failed (recoveredFailed). One that ended ok shows its calls' outcomes alone. */
 export function recoveredRowText(output: string, failed: boolean): string {
   if (failed) return output;
   const cell = /^The session stopped while waiting on cell (\S+);/.exec(output)?.[1];
-  const opener = cell === undefined ? EXEC_CUT_OPENER : waitCutOpener(cell);
-  return output.startsWith(opener) ? output.slice(opener.length) : output;
+  const openers = cell === undefined ? [EXEC_ANSWERED_OPENER, EXEC_CUT_OPENER] : [waitCutOpener(cell)];
+  const opener = openers.find((o) => output.startsWith(o));
+  return opener ? output.slice(opener.length) : output;
 }
 
 /** Whether a cut-off `exec` answered with its recovered output (execRecovery) failed, by the rule a codemode script stopped
@@ -350,8 +360,8 @@ export function execRecovery(facts: readonly NestedFact[], loose: readonly Neste
     const apart = others.length
       ? `\n${others.length} ${others.length === 1 ? "call" : "calls"} ran whose script could not be told (an answer of the model's could not be read to its end):\n${others.map((t) => lineOf(t, cap)).join("\n")}`
       : "";
-    if (own.length === 0) return `The exec was cut short, and no call of its own was recorded; the calls below ran, though which script made them could not be told, so do not run it again to find out.${apart}`;
-    return `${EXEC_CUT_OPENER}${own.map((t) => lineOf(t, cap)).join("\n")}${apart}`;
+    if (own.length === 0) return `The exec was cut short, and no call of its own was recorded; the calls below ran, though which script made them could not be told, so do not run it again to find out.${apart}${declinedTail(loose)}`;
+    return `${facts.some((fact) => fact.resumed) ? EXEC_ANSWERED_OPENER : EXEC_CUT_OPENER}${own.map((t) => lineOf(t, cap)).join("\n")}${apart}${declinedTail([...facts, ...loose])}`;
   });
 }
 

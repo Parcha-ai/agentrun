@@ -55,7 +55,7 @@ export interface CodeModeDeps {
     get(name: string): { name: string; replay: string } | undefined;
     take?(callId: string): { images?: readonly { mimeType: string; data: string }[]; structured?: unknown } | undefined;
     /** A call through the bridge (gate, intent, call, result): a resumed nested call that never reached its intent (recoverItems). */
-    call?(name: string, args: unknown, callId: string): Promise<{ text: string; isError: boolean }>;
+    call?(name: string, args: unknown, callId: string): Promise<{ text: string; isError: boolean; /** The gate refused it: it never ran. */ refused?: true }>;
   };
   log(message: string, fields?: Record<string, unknown>): void;
   /** The rollout lines restored from the log. */
@@ -391,7 +391,8 @@ export function codeMode(deps: CodeModeDeps) {
           await journal.flush();
         }
         const result = await deps.bridge.call(tie.tool, tie.args ?? {}, tie.callId);
-        resumed.set(tie.callId, { text: result.text, isError: result.isError, ran: ctx.state().effects.has(toolKey(tie.callId)) });
+        // Whether it ran is the gate's answer, not its record: a tool that `nests` (a learned workflow) leaves no effect of its own.
+        resumed.set(tie.callId, { text: result.text, isError: result.isError, ran: !result.refused });
         if (yielded) yieldedTies.push(tie);
       }
       const state: SessionState = ctx.state();
