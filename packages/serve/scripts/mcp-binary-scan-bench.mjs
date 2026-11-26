@@ -1,21 +1,26 @@
 #!/usr/bin/env node
-// What the check of a binary payload filed whole costs (mcp-gateway.ts binaryKept): one image's data at the most of an
-// answer the gateway reads (mcp-wire.ts MAX_RESPONSE, as base64), against a runner's redactor holding a full set of keys
+// What the check of a binary payload filed whole costs (mcp-gateway.ts binaryKept): one image's data, by default at the
+// most of an answer the gateway reads (mcp-wire.ts MAX_RESPONSE, as base64), against a runner's redactor holding a full set of keys
 // of the shapes and lengths runners hold, made here from random bytes (no key is real). On demand, never on a PR:
 // nothing here fails on time. It prints the median of each step over the runs, and how many random payloads of that
-// size the shape check withholds by chance. Run it from packages/serve after a build:
-//   node scripts/mcp-binary-scan-bench.mjs [--runs 5] [--values 32] [--chance 20]
+// size the shape check withholds by chance. --size sets the payload's base64 length in MiB; --whole also times the held
+// values read over every byte, which binaryKept does not do. Run it from packages/serve after a build:
+//   node scripts/mcp-binary-scan-bench.mjs [--runs 5] [--values 32] [--chance 20] [--size 4] [--whole]
 import { randomBytes } from "node:crypto";
 import { parseArgs } from "node:util";
 import { binaryKept } from "../dist/mcp-gateway.js";
 import { MAX_RESPONSE } from "../dist/mcp-wire.js";
-import { secretShapes, valueLeft } from "../dist/learn/secrets.js";
+import { MIN_SECRET, secretShapes, valueLeft } from "../dist/learn/secrets.js";
 import { heldRedactor, secretRedactor } from "../dist/runner/redact.js";
 
-const { values: args } = parseArgs({ options: { runs: { type: "string", default: "5" }, values: { type: "string", default: "32" }, chance: { type: "string", default: "20" } } });
+const { values: args } = parseArgs({ options: { runs: { type: "string", default: "5" }, values: { type: "string", default: "32" }, chance: { type: "string", default: "20" }, size: { type: "string" }, whole: { type: "boolean", default: false } } });
 const runs = Number(args.runs);
 const count = Number(args.values);
 const chances = Number(args.chance);
+const size = args.size ? Math.floor((Number(args.size) * 1024 * 1024) / 4) * 4 : MAX_RESPONSE;
+/** The runs of text binaryKept reads in a payload's bytes, as it reads them. */
+const TEXT_RUN = new RegExp(`[\\t\\n\\r\\x20-\\x7e]{${MIN_SECRET},}`, "g");
+const textOf = (bytes) => (bytes.match(TEXT_RUN) ?? []).join("\n");
 
 const ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 const UPPER = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -50,8 +55,8 @@ const values = redact.heldValues();
 const clean = (text) => redact(text);
 const own = (text) => text;
 
-/** An image's data at the cap: random bytes (as compressed image data reads) whose base64 is MAX_RESPONSE characters. */
-const payload = () => randomBytes((MAX_RESPONSE / 4) * 3).toString("base64");
+/** An image's data: random bytes (as compressed image data reads) whose base64 is `size` characters. */
+const payload = () => randomBytes((size / 4) * 3).toString("base64");
 
 const median = (times) => [...times].sort((a, b) => a - b)[Math.floor(times.length / 2)];
 const timed = (work) => {
@@ -60,28 +65,33 @@ const timed = (work) => {
   return { ms: performance.now() - started, out };
 };
 
-const steps = { decode: [], "shapes (bytes)": [], "held values (base64)": [], "held values (bytes)": [], "binaryKept, whole": [] };
+const steps = { decode: [], "text runs": [], "shapes (text runs)": [], "held values (base64)": [], "held values (text runs)": [], ...(args.whole ? { "held values (every byte)": [] } : {}), "binaryKept, whole": [] };
+let runChars = 0;
 let kept = 0;
 for (let run = 0; run < runs; run++) {
   const data = payload();
   const decode = timed(() => Buffer.from(data, "base64").toString("latin1"));
   steps.decode.push(decode.ms);
-  steps["shapes (bytes)"].push(timed(() => secretShapes(decode.out)).ms);
+  const text = timed(() => textOf(decode.out));
+  steps["text runs"].push(text.ms);
+  runChars += text.out.length;
+  steps["shapes (text runs)"].push(timed(() => secretShapes(text.out)).ms);
   steps["held values (base64)"].push(timed(() => valueLeft(data, values, [])).ms);
-  steps["held values (bytes)"].push(timed(() => valueLeft(decode.out, values, [])).ms);
+  steps["held values (text runs)"].push(timed(() => valueLeft(text.out, values, [])).ms);
+  if (args.whole) steps["held values (every byte)"].push(timed(() => valueLeft(decode.out, values, [])).ms);
   const whole = timed(() => binaryKept(data, clean, own, values));
   steps["binaryKept, whole"].push(whole.ms);
   if (whole.out === data) kept++;
 }
 
-const byChance = { base64: 0, bytes: 0 };
+const byChance = { base64: 0, text: 0 };
 for (let one = 0; one < chances; one++) {
   const data = payload();
   if (secretShapes(data).length) byChance.base64++;
-  if (secretShapes(Buffer.from(data, "base64").toString("latin1")).length) byChance.bytes++;
+  if (secretShapes(textOf(Buffer.from(data, "base64").toString("latin1"))).length) byChance.text++;
 }
 
-console.log(`payload: ${MAX_RESPONSE} base64 characters (${(MAX_RESPONSE / 4) * 3} bytes), ${values.length} held values (lengths ${Math.min(...values.map((v) => v.length))}-${Math.max(...values.map((v) => v.length))}), ${runs} runs, node ${process.version}`);
-for (const [step, times] of Object.entries(steps)) console.log(`  ${step.padEnd(22)} median ${median(times).toFixed(1)} ms   (${times.map((ms) => ms.toFixed(0)).join(", ")})`);
+console.log(`payload: ${size} base64 characters (${(size / 4) * 3} bytes, ${Math.round(runChars / runs)} characters of text runs), ${values.length} held values (lengths ${Math.min(...values.map((v) => v.length))}-${Math.max(...values.map((v) => v.length))}), ${runs} runs, node ${process.version}`);
+for (const [step, times] of Object.entries(steps)) console.log(`  ${step.padEnd(26)} median ${median(times).toFixed(1)} ms   (${times.map((ms) => ms.toFixed(0)).join(", ")})`);
 console.log(`  kept whole: ${kept} of ${runs}`);
-console.log(`withheld by chance by a shape, of ${chances} random payloads: read in the base64 text ${byChance.base64}, read in the bytes ${byChance.bytes}`);
+console.log(`withheld by chance by a shape, of ${chances} random payloads: read in the base64 text ${byChance.base64}, read in the bytes' text runs ${byChance.text}`);
