@@ -65,7 +65,7 @@ import {
 	withoutCreateLabel,
 } from "./browser.js";
 import { CreateRequests, endedWords, labelsDiffer, otherSpecWords } from "./create-requests.js";
-import { httpsBase } from "./hosted/rest.js";
+import { httpsBase, keyBase } from "./hosted/rest.js";
 import type { KindCapabilities } from "./kinds.js";
 import {
 	type AttachedComputer,
@@ -323,20 +323,12 @@ export function throughGateway(connectUrl: string, connectBase: string | undefin
 }
 
 /**
- * The gateway that fronts the sessions' sockets (BROWSERBASE_CONNECT_BASE_URL), held to wss: or https: as httpsBase holds
- * an API URL, since every session's signed CDP URL rides it; throws in words on another, loopback included. One that is
- * no URL is not echoed: it may carry the gateway's own token.
+ * The gateway that fronts the sessions' sockets (BROWSERBASE_CONNECT_BASE_URL), held to the rule of a URL a key goes to
+ * over wss: or https: (keyBase), since every session's signed CDP URL rides it: another scheme, loopback included, a user
+ * or password, a query or a fragment throws in keyBase's words, which name the origin at most.
  */
 function connectBaseOf(url: string | undefined): string | undefined {
-	if (url === undefined) return undefined;
-	let parsed: URL;
-	try {
-		parsed = new URL(url);
-	} catch {
-		throw new Error("BROWSERBASE_CONNECT_BASE_URL is not a URL");
-	}
-	if (parsed.protocol !== "wss:" && parsed.protocol !== "https:") throw new Error(`BROWSERBASE_CONNECT_BASE_URL must be wss or https, so a session's signed URL never crosses in the clear: ${parsed.protocol}`);
-	return url;
+	return url === undefined ? undefined : keyBase(url, "BROWSERBASE_CONNECT_BASE_URL", ["wss:", "https:"]);
 }
 
 const refOf = (s: BrowserbaseSession): ComputerRef => ({ id: s.id, name: s.id });

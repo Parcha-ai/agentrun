@@ -49,9 +49,10 @@ const driveAsk = ({ body }) => {
 
 /** A pi run granted `tools`, through the runner's adapter loop; its model calls ask_person once. Settles to its park (or,
  *  with `settled`, to what that reads). `personWait`: a tool host's hold the spec's lifecycle carries (HostLifecycle
- *  .personWait), as the browser's is. `mcpOf(claim)`: the n-th claim's MCP (1 first), in place of the spec's. The runner
+ *  .personWait), as the browser's is. `mcpOf(claim)`: the n-th claim's MCP (1 first), in place of the spec's.
+ *  `sessionOf(session, claim)`: the n-th claim's session as the loop sees it, in place of the one its adapter opened. The runner
  *  stays up so a test may resume it; its store, server and gateway are returned. */
-async function askRun(t, { tools, personWait, beforeRelease, settled, loopOptions = {}, upstream, drive = driveAsk, outcomes = [], mcpOf }) {
+async function askRun(t, { tools, personWait, beforeRelease, settled, loopOptions = {}, upstream, drive = driveAsk, outcomes = [], mcpOf, sessionOf }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-ask-person-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -75,7 +76,9 @@ async function askRun(t, { tools, personWait, beforeRelease, settled, loopOption
   const specOf = async (claim, run) => {
     const made = await adapterRunSpecFromLaunch(launch, run, deps, claim);
     claims += 1;
-    const spec = mcpOf ? { ...made, mcp: mcpOf(claims) } : made;
+    const nth = claims;
+    const adapter = sessionOf ? new Proxy(made.adapter, { get: (target, key) => (key === "open" ? async (...args) => sessionOf(await target.open(...args), nth) : Reflect.get(target, key, target)) }) : made.adapter;
+    const spec = { ...made, adapter, ...(mcpOf ? { mcp: mcpOf(claims) } : {}) };
     // `beforeRelease`: a tool host's release (HostLifecycle.beforeRelease, as the browser's session release is), which a
     // park runs before its seal.
     const lifecycle = { ...spec.lifecycle, ...(personWait ? { personWait: [personWait] } : {}), ...(beforeRelease ? { beforeRelease: [...(spec.lifecycle?.beforeRelease ?? []), beforeRelease] } : {}) };
@@ -279,6 +282,7 @@ test("wait in the claim: a hold that lapses before the answer (the cap refused m
   }, "the lapsed wait parks the run");
   assert.equal(parked.state, "parked");
   assert.ok(wait.seen.dropped >= 1, "the hold was dropped");
+  assert.equal(wait.seen.confirmed ?? 0, 1, "a hold that lapsed is confirmed to its host as its lapse, once");
   const view = await viewOverStore(server, RUN, VIEW_DEPS);
   assert.equal(view.status, "input_required");
   assert.equal(view.pending?.question, QUESTION, JSON.stringify(view.pending));
@@ -287,6 +291,64 @@ test("wait in the claim: a hold that lapses before the answer (the cap refused m
     const now = await server.runs.get(RUN);
     return now.state === "ended" && now.runner === null && now;
   }, "the answer resumes it from the park");
+});
+
+/** The claim's session with the send of `text` held until the test refuses it: `sending` settles once that send was
+ *  made, `refuse()` fails it, once. Every other send goes through. */
+function refusedSend(text) {
+  let made = () => {};
+  const sending = new Promise((resolve) => (made = resolve));
+  let refuse = () => {};
+  const refused = new Promise((_, reject) => (refuse = () => reject(new Error("the session refused the message"))));
+  refused.catch(() => undefined);
+  let once = false;
+  const sessionOf = (session) => new Proxy(session, {
+    get: (target, key) => {
+      if (key === "send") return async (content, ...rest) => {
+        if (content !== text || once) return target.send(content, ...rest);
+        once = true;
+        made();
+        return refused;
+      };
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  return { sessionOf, sending, refuse: () => refuse() };
+}
+
+test("wait in the claim: a hold that lapses while the person's answer is being placed, the answer then refused, parks the run on its question, the lapse confirmed to its host, and a later answer resumes it", async (t) => {
+  const wait = fakeWait();
+  const ANSWER = "us-west-2";
+  const send = refusedSend(ANSWER);
+  const outcomes = [];
+  const { server } = await askRun(t, { tools: ["ask_person"], personWait: wait.personWait, settled: waitingInClaim(wait.seen), sessionOf: send.sessionOf, outcomes });
+  const sent = await sendCommand(server, RUN, { kind: "steer", body: { text: ANSWER } });
+  await send.sending;
+  // The hold lapses while the answer is in the session's hands: the answer's turn would stand, so the wait holds on.
+  wait.lapse("spend_cap_reached: no room for more of your time");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  send.refuse();
+  const { outcome } = await until(() => outcomes.find((one) => one.id === sent.id), "the loop's answer to the person's message");
+  assert.ok("refused" in outcome, `the answer the session refused is refused: ${JSON.stringify(outcome)}`);
+  // Nothing more reaches the wait: its hold has lapsed and the answer was refused, so the run parks on its question at once,
+  // never left running in a claim that holds nothing.
+  const end = Date.now() + 5_000;
+  let now = await server.runs.get(RUN);
+  while (!(now.state === "parked" && now.runner === null) && Date.now() < end) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    now = await server.runs.get(RUN);
+  }
+  assert.equal(now.state, "parked", `the lapsed wait parks once the answer is refused: ${JSON.stringify({ state: now.state, runner: now.runner })}`);
+  assert.equal(wait.seen.confirmed ?? 0, 1, "the lapse is confirmed to its host, once");
+  const view = await viewOverStore(server, RUN, VIEW_DEPS);
+  assert.equal(view.status, "input_required");
+  assert.equal(view.pending?.question, QUESTION, JSON.stringify(view.pending));
+  await sendCommand(server, RUN, { kind: "steer", body: { text: ANSWER } });
+  await until(async () => {
+    const again = await server.runs.get(RUN);
+    return again.state === "ended" && again.runner === null && again;
+  }, "a later answer resumes it from the park");
 });
 
 /** A claim's MCP that left the server `gw` out of its tools (ClaimMcp.leftOut) and finds it connected at every check

@@ -214,6 +214,27 @@ test("a vendor call that fails before an answer says only which vendor and the e
   assert.ok(!JSON.stringify(answer).includes(pointer));
 });
 
+test("a vendor's base URL its key may not go to is never sent the key: one with a user or password, a query, a fragment or plain http is refused by the provider, in its words for the setting, holding neither the password nor the query", async () => {
+  // The credentialed URL is made at run time, so no source line holds a URL with a password in it.
+  const FAKE = "not-a-secret";
+  const credentialed = "https://agent:" + FAKE + "@vendor.example";
+  for (const [vendor, variable, keyName, named] of [["kernel", "KERNEL_BASE_URL", "KERNEL_API_KEY", "the Kernel API URL "], ["browserbase", "BROWSERBASE_BASE_URL", "BROWSERBASE_API_KEY", "the Browserbase API URL "]]) {
+    for (const url of [credentialed, "https://vendor.example/?key=not-a-secret", "https://vendor.example/#not-a-secret", "http://vendor.example"]) {
+      const asked = [];
+      const fake = async (to) => (asked.push(String(to)), Response.json({ id: "ctx-1", name: "x" }));
+      const vendors = vendorsOver(() => ({ [keyName]: "fake-test-key", BROWSERBASE_PROJECT_ID: "proj-1", [variable]: url }), async () => fake);
+      for (const [what, call] of [["create", () => vendors.create(vendor)], ["remove", () => vendors.remove(vendor, "ctx-1")]]) {
+        await assert.rejects(call(), (error) => {
+          assert.ok(error.message.startsWith(named), `${vendor} ${what} at ${url} names the setting: ${error.message}`);
+          assert.ok(!/not-a-secret|key=|agent:/.test(error.message), `${vendor} ${what} at ${url} says the password or the query: ${error.message}`);
+          return true;
+        }, `${vendor} ${what} at ${url}`);
+      }
+      assert.deepEqual(asked, [], `${vendor} at ${url}: the key was sent`);
+    }
+  }
+});
+
 test("a follow-up of a run that saved, opened while another run holds the lease, saves nothing: the save flag its sessions carry is its current launch's", { skip: "follow-up: #2067", timeout: 180_000 }, async (t) => {
   const dir = await scratch(t);
   const log = join(dir, "browser.jsonl");
