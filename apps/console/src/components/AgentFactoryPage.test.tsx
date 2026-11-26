@@ -167,6 +167,23 @@ describe("Agent Factory page", () => {
       expect(document.activeElement).toBe(link(el, "#/factory?session=works"));
     });
 
+    it("gives the keyboard to the board's view switch when the closed session's card has left the board", async () => {
+      const { v2, listFactoryRuns } = server(); const el = host();
+      // The run still reads, and its panel is open, but the board no longer lists it (it ended while the panel was open).
+      listFactoryRuns.mockImplementation(async (scope: "active" | "review") => ({ scope, observed_at: at, runs: scope === "active" ? [asking("asks")] : [], next_cursor: null } as FactoryRunPage));
+      await act(async () => root!.render(createElement(AgentFactoryPage, { v2, agentName, go: vi.fn(), place: { repository: "all", control: "all", session: "works" } })));
+      await many();
+      expect(link(el, "#/factory?session=works")).toBeUndefined();
+      expect(document.activeElement?.getAttribute("aria-label")).toBe("Close session");
+      await act(async () => root!.render(createElement(AgentFactoryPage, { v2, agentName, go: vi.fn(), place: { repository: "all", control: "all" } })));
+      await many();
+      expect(el.querySelector('aside[aria-label="Session"]')).toBeNull();
+      // Never the page's body, where the next Tab would start from the top of the page.
+      const view = el.querySelector<HTMLInputElement>('input[name="factory-view"]:checked')!;
+      expect(view).toBeTruthy();
+      expect(document.activeElement).toBe(view);
+    });
+
     it("reads the board again as soon as an answer sent from the panel is read back, not at its next 10 seconds", async () => {
       const { v2, listFactoryRuns, sendMessage } = server(); const el = host();
       await act(async () => root!.render(createElement(AgentFactoryPage, { v2, agentName, go: vi.fn(), place: { repository: "all", control: "all", session: "asks" }, caps: { features: { messages: messageFeatures }, harnesses: [{ id: "pi", available: true, steer: true }] } })));

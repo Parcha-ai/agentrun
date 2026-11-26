@@ -74,7 +74,10 @@ export function AgentFactoryPage({ v2, agentName, caps = null, place = NO_FACTOR
     opened.current = session;
     if (before === undefined || session !== undefined) return;
     const href = factoryHash({ repository: place.repository, control: place.control, session: before });
-    [...document.querySelectorAll<HTMLAnchorElement>("[data-factory-pane] a")].find((a) => a.getAttribute("href") === href)?.focus();
+    const link = [...document.querySelectorAll<HTMLAnchorElement>("[data-factory-pane] a")].find((a) => a.getAttribute("href") === href);
+    // Its card may have left the board while the panel was open (an answered run that ended): the keyboard then goes to
+    // the board's view switch, which is always there, never to the page's body.
+    (link ?? document.querySelector<HTMLInputElement>('[data-factory-pane] input[name="factory-view"]:checked'))?.focus();
   }, [session, place.repository, place.control]);
   return <AgentFactoryBoard cards={cards} review={review} loading={reading && snapshot.updatedAt === null && !cards.length && !review.length}
     refreshing={reading} error={error} updatedAt={snapshot.updatedAt} hasMore={snapshot.active.hasMore || snapshot.review.hasMore}

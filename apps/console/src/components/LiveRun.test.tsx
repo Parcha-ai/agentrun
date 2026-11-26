@@ -364,6 +364,39 @@ describe("LiveRun, a take-over while the run is slow to read", () => {
     await settle();
     expect(panel()).toContain("Yours after the agent's step");
   });
+
+  // The Agent Factory's panel draws this view: its board must read the card again after a take-over or a hand-back, as
+  // after a message, and only once the run's own re-read has landed (the board reads what the run now says).
+  it("tells its holder once the re-read that follows a take-over has landed, not before", async () => {
+    let reads = 0;
+    let slow: (() => void) | undefined;
+    const desktop = { ...at("working", false), computer: { kind: "desktop", provider: "e2b", state: "ready" } } as Run;
+    const v2 = {
+      getRun: () => (++reads === 1 ? Promise.resolve(desktop) : new Promise<Run>((resolve) => { slow = () => resolve(desktop); })),
+      listFiles: async () => ({ run_id: "r1", files: [], complete: true, truncated: false }),
+      listRevisions: async () => ({ revisions: [], next_cursor: null }),
+      getTimeline: () => new Promise<TimelinePage>(() => {}),
+      runComputer: async () => ({ state: "live", kind: "desktop", viewer: "/v2/runs/r1/computer/live/v/AbCdEfGhIjKlMnOpQrStUv#t=SECRET", hold: "agent" }),
+      takeOverComputer: async () => ({ hold: "pending" }),
+      computers: async () => ({ kinds: [] }),
+    };
+    const changed = vi.fn();
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(LiveRun, { v2: v2 as never, runId: "r1", caps: null, agentName: () => "Drive", onChanged: changed })));
+    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+    await settle();
+    await act(async () => { [...host.querySelectorAll('[role="tab"]')].find((t) => t.textContent === "Screen")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await settle();
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => (b.textContent ?? "").trim() === "Take over")!.click(); });
+    await settle();
+    // The take-over is answered and the run's re-read is still on its way: nothing to read on the board yet.
+    expect(slow).toBeTypeOf("function");
+    expect(changed).not.toHaveBeenCalled();
+    await act(async () => { slow!(); });
+    await settle();
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
 });
 
 // A recording starts with its computer's first frames, during a tool round, and is finished a few seconds after the run's
