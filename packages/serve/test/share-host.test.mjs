@@ -426,6 +426,18 @@ test("LVI (11-26): the host reads a bundle's /run/title as the export cuts it, l
   await screenShare(await bundleOf({ answer: "Run $ env SYNTH_MODE=dev node app.js" }), []);
 });
 
+test("LVI (11-26 r2): an exported title holding any env command's output is cut, and the host takes the export's own cut", async () => {
+  const seed = `meadow${nonce()}basalt`;
+  for (const title of [`Say: $ printenv SYNTH_ROOM ${seed} $ ls`, `Say: $ echo $SYNTH_ROOM ${seed}`, `Say: $ cat .env ${seed} $ ls`, `$ env | sort SYNTH_A=1 SYNTH_ROOM=${seed} $ ls`]) {
+    const body = await bundleOf({ title });
+    assert.ok(!body.includes(seed), title);
+    await screenShare(body, []);
+    // Built by hand, uncut: refused.
+    const doc = JSON.parse(await bundleOf());
+    await assert.rejects(screenShare(resigned({ ...doc, run: { ...doc.run, title } }), []), (error) => error.code === "input_invalid" && (error.extra.details.counts["env-dump"] ?? 0) >= 1, title);
+  }
+});
+
 test("a call's long command is read once per call, never once per string of its output: ≥1 MiB of command over 5,000 strings screens in bounded time", { timeout: 900_000 }, async () => {
   // Each string of a call's output is read with the call's context (its command): a read key, or any per-string work,
   // that copies or re-reads the command costs strings × command, minutes and gigabytes here, while every other upload

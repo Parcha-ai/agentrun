@@ -1987,6 +1987,33 @@ test("LVI (11-26): a transcript flattened onto one line (a run's title) is cut a
   assert.deepEqual((await scrub(`Run $ env SYNTH_MODE=dev node app.js`, { mode: "count" })).cuts, []);
 });
 
+test("LVI (11-26 r2): a flattened title cuts any env command's output, not only one that opens with NAME=value: printenv NAME, echo $NAME, cat .env, docker inspect, heroku config", async () => {
+  const seed = "Basalt7meadow19";
+  // No NAME=value word marks where the command ends: the fewest words that print the environment, or that read a
+  // .env file, are the command, and the rest up to the next prompt is cut (an argument with it: an over-cut, title-only).
+  const shapes = [
+    [`Say: $ printenv SYNTH_ROOM ${seed} $ ls`, "Say: $ printenv [redacted:env-dump 1 lines] $ ls"],
+    [`Say: $ echo $SYNTH_ROOM ${seed} $ ls`, "Say: $ echo $SYNTH_ROOM [redacted:env-dump 1 lines] $ ls"],
+    [`Say: $ cat .env.local SYNTH_ROOM=${seed} $ ls`, "Say: $ cat .env.local [redacted:env-dump 1 lines] $ ls"],
+    [`Say: $ cat .env ${seed}…`, "Say: $ cat .env [redacted:env-dump 1 lines]"],
+    [`user@host:~$ docker inspect app [{"Config": {"Env": ["SYNTH_ROOM=${seed}"]}}]`, "user@host:~$ docker inspect [redacted:env-dump 1 lines]"],
+    [`Say: $ heroku config === app Config Vars SYNTH_ROOM: ${seed} $ ls`, "Say: $ heroku config [redacted:env-dump 1 lines] $ ls"],
+  ];
+  for (const [text, cut] of shapes) {
+    const out = await gone(text, [seed], { flattened: true });
+    assert.equal(out.text, cut, text);
+    assert.deepEqual(out.cuts.map((c) => [c.rule, c.kind]), [["env-dump", "dump"]], text);
+    // Read again as the share host reads an uploaded title: what the export cut is no new hit.
+    assert.deepEqual((await scrub(out.text, { mode: "count", flattened: true })).cuts, [], out.text);
+  }
+  // A cut whose command runs past its fewest env words (a pipe, a sort) is read again as no new hit too.
+  assert.deepEqual((await scrub("user@host:~$ env | sort [redacted:env-dump 1 lines] user@host:~$ ls", { mode: "count", flattened: true })).cuts, []);
+  // A command that prints nothing of the environment, a .env template, or one with no output after it: kept.
+  for (const text of ["Fix it: $ echo hello world $ ls", "Say: $ cat README.md then fix it", "Say: $ cat .env.example SYNTH_ROOM=placeholder", "Say: $ printenv", "Say: $ ls src/env.ts"]) {
+    assert.deepEqual((await scrub(text, { mode: "count", flattened: true })).cuts, [], text);
+  }
+});
+
 test("LIX: a dotted name is no code evidence alone; a self./this./cls. root, a trailing `;` or an environment root is", async () => {
   const wrappers = [
     (s) => s,
