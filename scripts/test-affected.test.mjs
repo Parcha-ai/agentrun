@@ -106,37 +106,32 @@ test('a package.json, tsconfig or build script change picks that package\'s ever
 });
 
 // @fx/c's test script preloads register.mjs, which registers hooks.mjs (node:module's register), which names guard.mjs by
-// new URL: every test process runs all three, and no test imports any of them. The suites are given to select() as CI
-// reads them; package.json's script is what readPackages reads for the files it names.
-function preloaded(root, script) {
-  const sets = readTestSets(root);
-  const c = {
-    'packages/c/test/fixtures/register.mjs': "import { register } from 'node:module';\nregister('./hooks.mjs', import.meta.url);\n",
-    'packages/c/test/fixtures/hooks.mjs': "const GUARD = new URL('./guard.mjs', import.meta.url).href;\nexport async function resolve(specifier, context, next) { return next(specifier, context); }\n",
-    'packages/c/test/fixtures/guard.mjs': 'export const guarded = true;\n',
-    'packages/c/test/one.test.mjs': "import test from 'node:test';\n",
-    'packages/c/test/two.test.mjs': "import test from 'node:test';\n",
-    'packages/c/package.json': JSON.stringify({ name: '@fx/c', version: '1.0.0', type: 'module', scripts: { test: script } }),
-  };
-  for (const [path, text] of Object.entries(c)) { mkdirSync(join(root, dirname(path)), { recursive: true }); writeFileSync(join(root, path), text); }
-  return [...sets, { name: '@fx/c', dir: 'packages/c', files: ['test/one.test.mjs', 'test/two.test.mjs'], command: (files) => ({ argv: ['node', '--test', ...files], env: {} }) }];
-}
+// new URL: every test process runs all three, and no test imports any of them. The suite is read as CI reads it.
+const PRELOADED = {
+  'packages/c/test/fixtures/register.mjs': "import { register } from 'node:module';\nregister('./hooks.mjs', import.meta.url);\n",
+  'packages/c/test/fixtures/hooks.mjs': "const GUARD = new URL('./guard.mjs', import.meta.url).href;\nexport async function resolve(specifier, context, next) { return next(specifier, context); }\n",
+  'packages/c/test/fixtures/guard.mjs': 'export const guarded = true;\n',
+  'packages/c/test/one.test.mjs': "import test from 'node:test';\n",
+  'packages/c/test/two.test.mjs': "import test from 'node:test';\n",
+  'packages/c/package.json': JSON.stringify({ name: '@fx/c', version: '1.0.0', type: 'module', scripts: { test: "node --test --test-concurrency=8 --import=./test/fixtures/register.mjs 'test/*.test.mjs'" } }),
+};
 
 test("a file the test script's preload reaches (register.mjs registers hooks.mjs, which names guard.mjs) picks the package's every test", (t) => {
+  const root = fixture(t);
+  for (const [path, text] of Object.entries(PRELOADED)) { mkdirSync(join(root, dirname(path)), { recursive: true }); writeFileSync(join(root, path), text); }
   const every = ['packages/c/test/one.test.mjs', 'packages/c/test/two.test.mjs'];
-  for (const script of ["node --test --test-concurrency=8 --import=./test/fixtures/register.mjs 'test/*.test.mjs'", "node --import ./test/fixtures/register.mjs --test 'test/*.test.mjs'"]) {
-    const root = fixture(t);
-    const sets = preloaded(root, script);
-    for (const path of ['packages/c/test/fixtures/guard.mjs', 'packages/c/test/fixtures/hooks.mjs', 'packages/c/test/fixtures/register.mjs']) {
-      const result = select(root, [path], { sets, smoke: {} });
-      const files = Object.fromEntries(result.suites.flatMap((suite) => suite.files.map((file) => [`${suite.dir}/${file}`, suite.why[file].map((why) => why.kind)])));
-      assert.deepEqual(files, Object.fromEntries(every.map((test) => [test, ['package']])), `${script}: ${path}`);
-      assert.deepEqual(result.paths, [{ path, kinds: { package: 2 } }], `${script}: ${path}`);
-    }
-    // The chain runs from the file the script names to the changed path.
-    const why = select(root, ['packages/c/test/fixtures/guard.mjs'], { sets, smoke: {} }).suites[0].why['test/one.test.mjs'][0];
-    assert.deepEqual(why.chain, ['packages/c/test/fixtures/register.mjs', 'packages/c/test/fixtures/hooks.mjs', 'packages/c/test/fixtures/guard.mjs'], script);
+  for (const path of ['packages/c/test/fixtures/guard.mjs', 'packages/c/test/fixtures/hooks.mjs', 'packages/c/test/fixtures/register.mjs']) {
+    const { files, result } = picked(root, [path]);
+    assert.deepEqual(files, Object.fromEntries(every.map((test) => [test, ['package']])), path);
+    assert.deepEqual(result.paths, [{ path, kinds: { package: 2 } }], path);
   }
+  // The chain runs from the file the script names to the changed path.
+  const { result } = picked(root, ['packages/c/test/fixtures/guard.mjs']);
+  assert.deepEqual(result.suites[0].why['test/one.test.mjs'][0].chain, ['packages/c/test/fixtures/register.mjs', 'packages/c/test/fixtures/hooks.mjs', 'packages/c/test/fixtures/guard.mjs']);
+  // The command line, as CI's selection runs it: both tests, under the script's own preload.
+  const run = spawnSync(process.execPath, [selector, '--no-smoke', 'packages/c/test/fixtures/guard.mjs'], { cwd: root, encoding: 'utf8' });
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(run.stdout.trim(), "npm exec -w @fx/c -c 'node --test --test-concurrency=8 --import=./test/fixtures/register.mjs test/one.test.mjs test/two.test.mjs'");
 });
 
 test('the files a script names: plain words, the value of a --flag=value word, and the word after --import, --require or --loader', (t) => {
