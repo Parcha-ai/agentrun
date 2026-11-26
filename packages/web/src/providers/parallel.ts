@@ -66,6 +66,8 @@ export function parallelExtract(apiKey: string, send: typeof fetch = fetch, pay:
         method: "POST",
         headers: { "x-api-key": apiKey, "content-type": "application/json" },
         body: JSON.stringify(body),
+        // It carries the key: a redirect is an error, never followed to an address the key was not meant for.
+        redirect: "error",
         signal: AbortSignal.any([AbortSignal.timeout(PARALLEL_TIMEOUT_MS), ...(signal ? [signal] : [])]),
       });
       if (response.status === 401 || response.status === 403) refused = true;

@@ -88,5 +88,32 @@ test("each provider's settings are checked by its own entry, and a provider that
   assert.deepEqual(web.settingsProblemsOf({ native: { x: 1 } }), ["settings name native, which takes no settings here (parallel, exa and firecrawl do)"]);
   assert.deepEqual(web.settingsProblemsOf({ exa: { type: "auto" }, parallel: { mode: "fast" }, firecrawl: { onlyMainContent: false } }), []);
   assert.equal(web.settingsProblemsOf({ exa: { pageVerbosity: "loud" } }).length, 1);
+  // A setting named as one of a plain object's own members is a setting the provider does not take, never a check.
+  for (const provider of ["exa", "parallel", "firecrawl"]) {
+    let problems = [];
+    assert.doesNotThrow(() => (problems = web.settingsProblemsOf({ [provider]: JSON.parse('{"constructor": 1, "__proto__": 2}') })), `${provider}: a settings key named constructor or __proto__ is looked up as the checks' own, never as Object's`);
+    assert.equal(problems.length, 2, `${provider}: a settings key named constructor or __proto__ is reported as unknown, not run as a check`);
+    assert.match(problems[0], /takes no setting "constructor"/);
+    assert.match(problems[1], /takes no setting "__proto__"/);
+  }
   assert.throws(() => web.createWeb({ order: { search: ["exa"], fetch: ["direct"] }, settings: { "exa-keyless": {} } }), /web settings: settings name exa-keyless, which takes no settings here/);
+});
+
+test("a setting's refused value is named by its type, never echoed: a key pasted into the wrong setting stays out of the error", () => {
+  const pasted = "pasted-value-0123456789abcdef";
+  const cases = [
+    [{ exa: { type: pasted } }, /^Exa's type must be one of .* \(it was a string\)$/],
+    [{ exa: { snippetChars: pasted } }, /^Exa's snippetChars must be a whole number from \d+ to \d+ \(it was a string\)$/],
+    [{ exa: { pageLinks: [pasted] } }, /^Exa's pageLinks must be true or false \(it was a list\)$/],
+    [{ parallel: { mode: { key: pasted } } }, /^Parallel's mode must be one of .* \(it was an object\)$/],
+    [{ firecrawl: { onlyMainContent: 7 } }, /^Firecrawl's onlyMainContent must be true or false \(it was a number\)$/],
+    [{ firecrawl: { onlyMainContent: null } }, /^Firecrawl's onlyMainContent must be true or false \(it was null\)$/],
+  ];
+  for (const [settings, said] of cases) {
+    const problems = web.settingsProblemsOf(settings);
+    assert.equal(problems.length, 1, `one problem for ${Object.keys(settings)[0]}`);
+    assert.ok(!problems[0].includes(pasted.slice(0, 8)), `the refused value is not in the problem line: ${problems[0]}`);
+    assert.match(problems[0], said, "the line names the setting, what it must be, and the value's type");
+  }
+  assert.throws(() => web.createWeb({ order: { search: ["exa"], fetch: ["direct"] }, settings: { exa: { type: pasted } } }), (error) => !String(error.message).includes(pasted.slice(0, 8)), "createWeb's error does not carry the value either");
 });

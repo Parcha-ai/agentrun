@@ -51,7 +51,7 @@ function searchRun(env, now = Date.now, bounds) {
   return (query) => tool.execute({ query }, { callId: `call-${(n += 1)}` }, {});
 }
 
-test("with no key, web_search and web_fetch resolve to keyless Firecrawl on every harness that has no native search; a Parallel key wins for web_search and keeps web_fetch direct; explicit picks keep their meaning", () => {
+test("with no key, web_search and web_fetch resolve to keyless Firecrawl on every harness that has no native search; a Parallel key wins for both, Parallel first with the guarded direct fetch behind it for web_fetch; explicit picks keep their meaning", () => {
   assert.deepEqual(PROVIDERS.web_fetch, ["auto", "firecrawl-keyless", "kernel", "parallel"]);
   assert.ok(PROVIDERS.web_search.includes("firecrawl-keyless"));
   for (const harness of ["pi", "opencode"]) {
@@ -60,11 +60,13 @@ test("with no key, web_search and web_fetch resolve to keyless Firecrawl on ever
   }
   assert.deepEqual(planeFor({}, { tools: ["web_search", "web_fetch"] }, {}), { web_search: "firecrawl-keyless", web_fetch: "firecrawl-keyless" }, "a run's plane on a server with no key");
   const keyed = { PARALLEL_API_KEY: "not-a-secret" };
-  assert.deepEqual(planeFor(keyed, { tools: ["web_search", "web_fetch"] }, {}), { web_search: "parallel", web_fetch: "kernel" }, "the Parallel key wins: search on it, and no URL goes to a keyless service");
+  assert.deepEqual(planeFor(keyed, { tools: ["web_search", "web_fetch"] }, {}), { web_search: "parallel", web_fetch: "parallel" }, "the Parallel key wins for both: search and fetch on it, and no URL goes to a keyless service");
   // The privacy line, where the resolution is shown.
   const fetchWhy = explainCapability("web_fetch", { ...base, harness: "pi" }).why;
   assert.match(fetchWhy, /web_fetch sends each URL to Firecrawl's keyless service/);
-  assert.match(fetchWhy, /set PARALLEL_API_KEY or choose kernel to fetch directly/);
+  // A Parallel key now sends each URL to Parallel's extract (auto on a keyed server), so the way to fetch directly is kernel.
+  assert.match(fetchWhy, /choose kernel to fetch directly/);
+  assert.doesNotMatch(fetchWhy, /PARALLEL_API_KEY/, "the keyless fetch's why never advises a key that sends each URL to Parallel");
   assert.equal(explainCapability("web_fetch", { ...base, harness: "pi", pick: "kernel" }).resolves, "kernel");
   assert.equal(explainCapability("web_fetch", { ...base, harness: "pi", parallelKey: true, pick: "firecrawl-keyless" }).resolves, "firecrawl-keyless", "a pick of Firecrawl is Firecrawl, key or not");
   assert.equal(explainCapability("web_search", { ...base, harness: "pi", parallelKey: true, pick: "exa-keyless" }).resolves, "exa-keyless");

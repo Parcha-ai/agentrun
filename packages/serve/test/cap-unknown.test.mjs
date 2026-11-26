@@ -3,7 +3,7 @@
 // cut at the figure its start mark holds, so a stopped run goes on while its cap allows. The meters and a refused run's pause
 // are read over the same marks. (The admission side of these figures is the kernel cap's: run-adapters kernel-cap-*.test.mjs.)
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -14,6 +14,7 @@ import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { bookedCapSpend } from "../dist/runner/metrics.js";
 import { runEntries } from "../dist/store-reads/journal.js";
 import { agent, follow, serve } from "./support.mjs";
+import { until } from "./runner-support.mjs";
 
 
 /** `entries`, in order, as the one store's journal hands them to the cap's reading (store-reads/cap.ts spentOverStore runs
@@ -319,12 +320,21 @@ async function releasedOf(store, runId) {
 }
 const PAUSED = ["input_required", "waiting", null, "budget"];
 const pausedState = (run) => [run.status, run.state, run.error, run.pending?.kind];
-/** A run under a cap of `cap` whose turn is stopped while its first request is in flight, once it reads stopped. */
+/** A run under a cap of `cap` whose turn is stopped while its first request is in flight, once it reads stopped. The
+ *  stop waits for the faux model's mark: a run reads working before its request is out, and a stop before it stops no
+ *  request, so nothing is counted for it. */
 async function stopped(api, id, cap) {
-  const runId = await inFlight(api, id, "Take your time.", cap);
-  assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
-  await follow(api, runId, ["input_required"]);
-  return runId;
+  const dir = mkdtempSync(join(tmpdir(), "cap-stop-"));
+  const mark = join(dir, "asked");
+  try {
+    const runId = await inFlight(api, id, `Take your time, and mark ${mark} as you start.`, cap);
+    await until(() => existsSync(mark), "the run's first request is out", 30_000);
+    assert.equal((await api("POST", `/runs/${runId}/stop`)).body.stopped, true);
+    await follow(api, runId, ["input_required"]);
+    return runId;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 test("a capped pi run stopped mid-answer goes on while its cap allows: in its process, and in the process a later message opens, the stopped request counts what it streamed and the 1,024-token allowance", async (t) => {

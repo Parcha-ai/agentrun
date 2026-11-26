@@ -26,8 +26,9 @@ export type Draft = { name: string; kind: WhenKind; cron: string; timezone: stri
  *  `shape`: how the picked agent takes its input, given when the form saves (none: the message alone). `values`: the text
  *  typed in the agent's input fields, by key (none yet: the fields as they start). `json`: the whole input as JSON, for an
  *  agent whose input_schema the fields can't show (none yet: its example). `inputRead`: an edited trigger's input as
- *  read, of which what the form doesn't show is kept. */
-export type InputDraft = { shape?: AgentInput; values?: ParameterText; json?: string; inputRead?: Record<string, unknown> };
+ *  read, of which what the form doesn't show is kept. `stored`: the agent and input it was read with, which picking that
+ *  agent again after another brings back. */
+export type InputDraft = { shape?: AgentInput; values?: ParameterText; json?: string; inputRead?: Record<string, unknown>; stored?: { agentId: string; input: Record<string, unknown> } };
 
 const isRecord = (x: unknown): x is Record<string, unknown> => !!x && typeof x === "object" && !Array.isArray(x);
 const scalar = (x: unknown) => typeof x === "string" || typeof x === "number" || typeof x === "boolean";
@@ -721,7 +722,7 @@ export function draftOf(t: Schedule): Draft {
   const s = t.source;
   const zone = "cron" in s ? s.timezone : browserZone();
   const base = { ...emptyDraft(t.target.agent_id), name: t.name, timezone: zone, content: typeof t.target.input.content === "string" ? t.target.input.content : "",
-    values: inputText(t.target.input), json: JSON.stringify(t.target.input, null, 2), inputRead: t.target.input, maxCost: typeof t.target.max_cost_usd === "number" ? String(t.target.max_cost_usd) : "", enabled: t.enabled };
+    values: inputText(t.target.input), json: JSON.stringify(t.target.input, null, 2), inputRead: t.target.input, stored: { agentId: t.target.agent_id, input: t.target.input }, maxCost: typeof t.target.max_cost_usd === "number" ? String(t.target.max_cost_usd) : "", enabled: t.enabled };
   if ("cron" in s) return { ...base, kind: "cron", cron: s.cron };
   if ("at" in s) return { ...base, kind: "at", at: wallOf(s.at), read: { at: s.at } };
   const unit: EveryUnit = s.every_s % 3600 === 0 ? "hours" : s.every_s % 60 === 0 ? "minutes" : "seconds";

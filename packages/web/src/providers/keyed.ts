@@ -31,6 +31,8 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn }: 
           method: "POST",
           headers: { ...headers, "content-type": "application/json" },
           body: JSON.stringify(body),
+          // It carries the key: a redirect is an error, never followed to an address the key was not meant for.
+          redirect: "error",
           signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]),
         });
         if (refuseOn.includes(response.status)) refused = true;
@@ -123,14 +125,19 @@ export const yesNo: Check = [(value) => typeof value === "boolean", "true or fal
 export const matching = (pattern: RegExp, must: string): Check => [(value) => typeof value === "string" && pattern.test(value), must];
 export const domains = (max: number): Check => [(value) => Array.isArray(value) && value.length <= max && value.every((one) => typeof one === "string" && one.trim() !== "" && one.length <= 253), `a list of at most ${max} domains`];
 
+/** A refused value's kind in words, for a problem line that names it without echoing it. */
+const kindOf = (value: unknown): string =>
+  value === null ? "null" : Array.isArray(value) ? "a list" : typeof value === "object" ? "an object" : `a ${typeof value}`;
+
 /** What is wrong with `settings` for `who` by `checks`, one line each: not an object, a setting it does not take, or a
- *  value its check refuses. */
+ *  value its check refuses, named by its kind and never echoed (a key pasted into the wrong setting stays out of it). */
 export function settingsProblems(who: string, settings: unknown, checks: Readonly<Record<string, Check>>): string[] {
   if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return [`${who}'s settings must be an object`];
   return Object.entries(settings).flatMap(([name, value]) => {
-    const check = checks[name];
+    // Its own checks alone: a setting named constructor or __proto__ is not Object's member.
+    const check = Object.hasOwn(checks, name) ? checks[name] : undefined;
     if (!check) return [`${who} takes no setting ${JSON.stringify(name)} (it takes ${Object.keys(checks).join(", ")})`];
     if (value === undefined || check[0](value)) return [];
-    return [`${who}'s ${name} must be ${check[1]} (it was ${String(JSON.stringify(value)).slice(0, 60)})`];
+    return [`${who}'s ${name} must be ${check[1]} (it was ${kindOf(value)})`];
   });
 }

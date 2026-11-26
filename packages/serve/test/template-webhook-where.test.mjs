@@ -18,6 +18,7 @@ const MANIFEST = (repo) => `---
 name: issues
 version: 0.1.0
 description: Triages each new issue in one repository.
+tools: []
 parameters:
   owner: { type: string, description: The repository's owner. }
   repo: ${repo}

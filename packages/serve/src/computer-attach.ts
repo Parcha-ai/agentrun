@@ -34,7 +34,7 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, hostedDaemonPath, MAX_LINE_BYTES, type MachineTokens, mintedComputer, newMachineToken, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
+import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, attachSubprotocolOf, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, helloProblem, hostedDaemonPath, laterProtocol, MAX_LINE_BYTES, type MachineTokens, mintedComputer, newMachineToken, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, RUN_LABEL, upgradeRefusal } from "@parcha/agentrun-computer";
 import { WebSocket, WebSocketServer } from "ws";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { dialHost, LIVE_PROOF_HEADER, type LiveReach, RELAY_CONNECT_MS, RELAY_TOKEN_HEADER, relayProof } from "./live-reach.js";
@@ -180,10 +180,13 @@ export function pairBodyOf(body: unknown): { code: string; name: string; hello: 
 }
 
 /** Why a driver's hello may not pair here, in the version rule's words (attach.ts helloMismatch), or undefined: its
- *  protocol version must be this server's. The code stays good, for the driver once it is updated. */
+ *  protocol version must be one this server takes (helloProblem: 0.2 or a later 0.x). The words name the side to
+ *  update, and the code stays good, for the driver once it is updated. */
 export function pairRefusal(name: string, hello: HelloResult): string | undefined {
-  if (hello.protocol === PROTOCOL_VERSION) return undefined;
-  return `${name}'s driver ${hello.version} speaks protocol ${hello.protocol}, and this server ${PROTOCOL_VERSION}: update whichever is older (the driver on that computer, or this server, which whoever runs it updates), then pair with the same code`;
+  const problem = helloProblem(hello.protocol, "server");
+  if (!problem) return undefined;
+  const update = laterProtocol(hello.protocol) ? "the server is older, so once whoever runs it updates it, pair" : `update the driver on ${name}, then pair`;
+  return `${name}'s driver ${hello.version} ${problem}: ${update} with the same code`;
 }
 
 /** A paired computer as GET /v2/computers lists it under `paired`: whatever its hello says it is (its os and version, its
@@ -407,7 +410,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   const fetches = new MinuteLimit(DAEMON_FETCHES_PER_MINUTE, undefined, now);
   const sockets = new Set<WebSocket>();
   let closing = false;
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_LINE_BYTES, clientTracking: false, handleProtocols: () => ATTACH_SUBPROTOCOL });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_LINE_BYTES, clientTracking: false, handleProtocols: (asked) => attachSubprotocolOf([...asked]) ?? false });
 
   // The server's side of the paired computers' routes (no owner: this is the server, not a runner's listener).
   /** Each paired computer whose socket is in this hub, by its id: the socket the tick closes for a move. */
@@ -726,8 +729,9 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
   }
 
   /** GET /v2/computers/attach's upgrade: the token's paired computer or minted machine, then the protocol, then the hub's
-   *  hello. A refusal is an HTTP answer before the upgrade (401 for a token neither has good, 426 for another protocol
-   *  version). A minted machine's socket goes to the hub under its name.
+   *  hello. A refusal is an HTTP answer before the upgrade (401 for a token neither has good, 426 when no
+   *  subprotocol it asks for names a protocol this server takes, in words naming the side to update: upgradeRefusal). A
+   *  minted machine's socket goes to the hub under its name.
    *
    *  On a runner's listener (`owner`), a paired computer's token comes as `hop`, its SHA-256 alone as the server's
    *  relay hop names it (dial-relay.ts reads it off RELAY_TOKEN_HEADER, its proof checked): a paired token as a bearer
@@ -748,9 +752,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
       const dialer = row !== undefined ? pairedDialer(row) : machine !== undefined && (relayed || takes(machine)) ? machineDialer(machine) : undefined;
       if (dialer === undefined) return deny("401 Unauthorized", options.machinesOnly ? MACHINE_TOKEN_REFUSED : TOKEN_REFUSED, { "www-authenticate": "Bearer" });
       const asked = String(req.headers["sec-websocket-protocol"] ?? "").split(",").map((one) => one.trim()).filter(Boolean);
-      if (!asked.includes(ATTACH_SUBPROTOCOL)) {
-        return deny("426 Upgrade Required", `this server speaks ${ATTACH_SUBPROTOCOL}, and the driver asked for ${asked.join(", ") || "no subprotocol"}: update whichever is older`, { "sec-websocket-protocol": ATTACH_SUBPROTOCOL });
-      }
+      if (attachSubprotocolOf(asked) === undefined) return deny("426 Upgrade Required", upgradeRefusal(dialer.computer, asked), { "sec-websocket-protocol": ATTACH_SUBPROTOCOL });
       // A paired computer on the server: its route says where its socket goes (no route, or a run's of the runner beside
       // this server: this hub).
       const routed = row !== undefined && !options.owner && settings !== undefined ? await seeRoute(settings, row.id) : undefined;

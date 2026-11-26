@@ -122,7 +122,7 @@ export const KINDS = {
   learningMerged: "agentrun.learning.merged",
   /** Why a learning run merged nothing, with the run's end. */
   learningDropped: "agentrun.learning.dropped",
-  /** The learning folder could not be reached: the run parks and tries again after a backoff. */
+  /** The learning could not be reached: the run parks and tries again after a backoff. */
   learningUnavailable: "agentrun.learning.unavailable",
   /** A browser hand-over (pi-browser's browser_request_handoff), on the root. The run's browser host commits the ask, the
    *  whole of it (HandoverAsked); its answer is an entry too (HandoverAnswered): the person's (a browser_hand_back row
@@ -204,6 +204,9 @@ export interface CallStartData {
   readonly parentCallId?: string;
   readonly tool: string;
   readonly input: unknown;
+  /** An SDK learned_workflow start whose input is stored withheld: the workflow it names, one the run was given, as the
+   *  server kept it apart from the input (sdk/runs.ts SdkInbox.workflow_calls). Never the caller's text otherwise. */
+  readonly workflow?: string;
   /** May run again after a crash (it changes nothing outside the run): the tool registry's own flag. */
   readonly replaySafe: boolean;
   /** Written as its CLI's tool bridge's gate asked about it (adapter-loop.ts bridgeGate), before any answer: nothing is sent

@@ -1,0 +1,51 @@
+name: Re-run a failed release or main check
+
+# A release run, or the checks of a push to main, that fails on its first attempt has its failed and cancelled jobs re-run
+# once. A runner that never picked a job up, or a registry that answered once with an error, then costs a second attempt
+# rather than a person's re-run. A cancelled first attempt is re-run only when release.yml's pypi-watchdog cancelled it:
+# its jobs (read with actions: read) show the watchdog's watch step passed and its cancel step ran. A person's cancel,
+# or a cancel whose cause cannot be read, is never re-run. A second attempt is never re-run: it is the one that says the
+# fault is real. Only runs of this repository's own code reach the re-run: a release run dispatched at a beta tag, and a
+# checks run of a push to main, each with its head in this repository. Pull requests (a fork's included) and the merge
+# queue are never re-run here.
+on:
+  workflow_run:
+    workflows: [Package checks, Publish verified beta]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  rerun:
+    if: >-
+      github.repository == 'Parcha-ai/agentrun' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.run_attempt == 1 &&
+      (github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'cancelled') &&
+      ((github.event.workflow_run.path == '.github/workflows/release.yml' && github.event.workflow_run.event == 'workflow_dispatch' &&
+      startsWith(github.event.workflow_run.head_branch, 'v') && contains(github.event.workflow_run.head_branch, '-beta.')) ||
+      (github.event.workflow_run.path == '.github/workflows/ci.yml' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WATCH_STEP: Watch pypi until it starts
+          CANCEL_STEP: Cancel the run, pypi alone left in it
+        run: |
+          if [ "$CONCLUSION" = cancelled ]; then
+            jobs=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100") || jobs=
+            by_watchdog=$(jq -r --arg watch "$WATCH_STEP" --arg cancel "$CANCEL_STEP" '[.jobs[]? | select(.name == "pypi-watchdog") | .steps // [] | ((map(select(.name == $watch))[0].conclusion == "success") and (map(select(.name == $cancel))[0].conclusion | IN("success", "cancelled")))] | length == 1 and all' <<<"$jobs") || by_watchdog=
+            if [ "$by_watchdog" != true ]; then
+              echo "::notice::not re-run: run $RUN_ID was cancelled, and its jobs do not show pypi-watchdog's cancel (a person's cancel, or jobs that could not be read)"
+              exit 0
+            fi
+            echo "run $RUN_ID was cancelled by pypi-watchdog; re-running its cancelled jobs"
+          fi
+          gh run rerun "$RUN_ID" --failed

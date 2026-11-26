@@ -92,6 +92,9 @@ const { answer, receipt } = await web.search({ objective: "Where Widgets, Inc. i
   fixed words (`siftRequest`, `judgeRequest`): every provider is asked the same thing. The need is only ever what the
   call carries: a search's `task` takes its objective's place when the call gives one, else the objective is the need; a
   fetch's need is its `objective`, else its `task`.
+- A Jev decider on TypeSafe's route (`jevProvider` reading `TYPESAFE_API_KEY`) sends `JEV_MODEL` (`jev-1.14.0`, the
+  version the thresholds were read on) unless `model` names another; on OpenRouter's route, and for any other provider,
+  no model is sent and the provider's own default holds.
 - Every provider is sent the same states. A request's state is at most `STATE_BUDGET_BYTES` (90,000, within Parallel's
   96,000) and asks at most `QUESTIONS_PER_REQUEST` (100), a judge request at most `PASSAGES_MAX` (50) passages. A
   search over the budget has every snippet cut to the longest length that fits (`trimmed: { snippets, to_chars }`; the
@@ -147,8 +150,10 @@ const { answer, receipt } = await web.search({ objective: "Where Widgets, Inc. i
   model read, it is what the step saved. A web with no decider writes none.
 - Each decider request goes through `pay` before it is sent, held at the most it may cost (`holdOf` its `price`:
   `JEV_PUBLISHED_PRICING`, `PARALLEL_DECISION_PRICE`, `anthropicDecisionPrice()`), and is a line of its own in
-  `receipt.cost` (`"jev's decision"`). One refused unbilled (configuration, auth, no connection) settles at $0; one the
-  cap refuses is never sent, and the step does not run (`pay_refused`). The record's `cost` is the provider's own
+  `receipt.cost` (`"jev's decision"`). One answered is charged, and its line says, the cost its provider gave
+  (reported, or estimated where it reported none; the line's basis says which), never above its hold, and the hold
+  where it gave none; `pay` is told that charge (`charged`), so a cap books what the receipt says. One refused
+  unbilled (configuration, auth, no connection) settles at $0; one the cap refuses is never sent, and the step does not run (`pay_refused`). The record's `cost` is the provider's own
   figure for what was spent, summed over its requests, and `requests` how many were sent. A request after the first that
   fails fails the step, at what every request sent cost.
 

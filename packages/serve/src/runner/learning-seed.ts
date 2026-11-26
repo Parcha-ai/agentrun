@@ -1,20 +1,18 @@
-// A claim's read of a run's learning seed: the learned workflows its learning folder held active at the commit the run
-// started from, which the run's learned_workflow tool runs and workflow-first serves (learning.ts chooseWorkflows: within
-// the tool's budget, none holding a host secret). Nothing is laid in the run's work: its corrections reach it in its
-// instructions (learning.ts laidLearned, from the launch's learning start).
+// A claim's read of a run's learning seed: the learned workflows its agent's learning held active at the save the run
+// started from, read now (a purged run's text gone from it), which the run's learned_workflow tool runs and
+// workflow-first serves (learning.ts chooseWorkflows: within the tool's budget, none holding a host secret). Nothing is
+// laid in the run's work: its corrections reach it in its instructions (learning.ts laidLearned, from the launch's
+// learning start).
 import { chooseWorkflows, type LearnedWorkflow, type Seed, seedAt, type Shown } from "../learning.js";
-import type { LearningFolder } from "../learn/folder.js";
-import type { Store } from "../store/index.js";
+import { learningOf, type LearningRows } from "../learn/rows.js";
 
-/** What a claim reads its seed with: the commit, the agent's learning folder where the run's place keeps it (opened for
- *  the read and ended after it), the store whose runs say which are purged (a purged run's workflow is no seed's:
- *  learning.ts seedAt; null in a run's own process, which reads no other run: its lay only tells its runner whether it
- *  laid any, and the runner reads the seed again with its store, workflowsAt), the server's secrets as cuts (`shown`),
- *  its log, and `workflows: false` for a run that takes none (an SDK run with no workflow binding). */
+/** What a claim reads its seed with: the save, the store's learning rows (a run's own process reads them through its
+ *  runner, run-child-host.ts storeCall), the agent, the server's secrets as cuts (`shown`), its log, and
+ *  `workflows: false` for a run that takes none (an SDK run with no workflow binding). */
 export interface LearningSeedLay {
   readonly seed: string | null;
-  readonly folder: () => LearningFolder;
-  readonly store: Pick<Store, "runs"> | null;
+  readonly store: { readonly learning: LearningRows };
+  readonly agentId: string;
   readonly shown: () => Promise<Shown>;
   readonly log: (line: string) => void;
   readonly workflows?: false;
@@ -34,14 +32,11 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
  *  throws: a learning fault never stops a run. */
 export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | undefined> {
   let seed: Seed;
-  const folder = lay.folder();
   try {
-    seed = await seedAt(folder.workspace, lay.seed, lay.store);
+    seed = await seedAt(learningOf(lay.store, lay.agentId), lay.seed);
   } catch (error) {
     lay.log(`the run starts with no learned workflow: ${message(error)}`);
     return undefined;
-  } finally {
-    await folder.end().catch(() => undefined);
   }
   if (lay.workflows === false) return { seed, workflows: [] };
   try {
@@ -54,17 +49,10 @@ export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | 
   }
 }
 
-/** The learned workflows the folder held active at `commit`, as a claim's read hands them to the learned_workflow tool
- *  (chooseWorkflows): what a champion serves from while a newer revision of it is on main (runner/promotion.ts), and
- *  what a run's process is laid at its claim's seed (run-child-host.ts). Throws when the folder cannot answer or the
- *  commit is gone. */
-export async function workflowsAt(read: Pick<LearningSeedLay, "folder" | "shown"> & { readonly store: Pick<Store, "runs"> }, commit: string | null): Promise<LearnedWorkflow[]> {
-  const folder = read.folder();
-  let seed: Seed;
-  try {
-    seed = await seedAt(folder.workspace, commit, read.store);
-  } finally {
-    await folder.end().catch(() => undefined);
-  }
-  return chooseWorkflows(seed, await read.shown()).flows;
+/** The learned workflows the agent's learning held active at save `save`, read now, as a claim's read hands them to the
+ *  learned_workflow tool (chooseWorkflows): what a champion serves from while a newer revision of it is the newest
+ *  (runner/promotion.ts), and what a run's process is laid at its claim's seed (run-child-host.ts). Throws when the
+ *  store cannot answer or the save is gone. */
+export async function workflowsAt(read: Pick<LearningSeedLay, "store" | "agentId" | "shown">, save: string | null): Promise<LearnedWorkflow[]> {
+  return chooseWorkflows(await seedAt(learningOf(read.store, read.agentId), save), await read.shown()).flows;
 }

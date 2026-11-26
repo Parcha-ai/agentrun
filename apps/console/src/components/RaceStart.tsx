@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { Field, Input, Textarea } from "@/components/ui/field";
 import { Picker } from "@/components/ui/picker";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import type { ToolOffer } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
 import { keepersByRun } from "@/lib/idempotency";
@@ -34,10 +34,12 @@ function firstPick(runnable: RaceHarness[], i: number): LaneChoice {
   return { harness: h.id, model: models[(start + Math.floor(i / runnable.length)) % models.length] };
 }
 
-/** Whether `e` is the server saying no, nothing started: a 4xx with its error object, other than an idempotency answer
- *  (a start under this key it may still be making). A lost answer, a timeout or a 5xx may have started the run. */
+/** Whether `e` is the server saying no, nothing started: a 4xx with its error object that isn't retryable, and isn't an
+ *  idempotency answer (a start under this key it may still be making). A retryable answer may follow a saved run: a
+ *  busy store (home_busy) can answer after the run was saved, and Start sends the same request again to find it. A lost
+ *  answer, a timeout or a 5xx may have started the run too. */
 const refused = (e: unknown): e is ClientError =>
-  e instanceof ClientError && e.status >= 400 && e.status < 500 && e.code !== "http_error" && !e.code.startsWith("idempotency_");
+  e instanceof ClientError && e.status >= 400 && e.status < 500 && e.code !== "http_error" && !e.retryable && !e.code.startsWith("idempotency_");
 
 /** Makes a lane's agent, or finds it made, and answers its first revision, the one the lane's run runs. Its id is already
  *  here only when an earlier send of this same lane made it (laneStart), so its version 1 is that send's definition,
@@ -78,9 +80,10 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
     if (!picks.has(key)) picks.set(key, ++counted.current);
     return picks.get(key)!;
   };
-  // Each lane's agent made for a run that has not started (refused): archived when the lane is removed or picked again,
-  // and its pick forgotten, so that pick sent again makes a new agent. Best effort: an agent the archive misses stays in
-  // the Agents list, archivable there.
+  // Each lane's agent made for a run that has not started yet: archived as soon as the server refuses that run (a refusal
+  // started nothing), so a person who leaves the form keeps none of it, and its pick forgotten, so that pick sent again
+  // makes a new agent. One whose run's answer was lost is kept: its run may have started, and Start sends it again. Best
+  // effort: an agent the archive misses stays in the Agents list, archivable there.
   const idle = useRef(new Map<number, { id: string; key: string }>()).current;
   const letGo = (i: number) => {
     const made = idle.get(i);
@@ -104,9 +107,9 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   if (runnable.length === 0) return (
-    <div className="flex flex-col">
+    <div className={pageClass}>
       <div className={cn(pageToolbarClass, "px-5 md:px-8")}><h1 className={pageTitleClass}>New race</h1></div>
-      <p role="status" className="px-5 py-8 text-body text-muted-foreground md:px-8">No harness runs on this server yet, so there is nothing to race. Add a model key in Settings → Model keys.</p>
+      <p role="status" data-page-body className={cn(pageBodyClass, "px-5 py-8 text-body text-muted-foreground md:px-8")}>No harness runs on this server yet, so there is nothing to race. Add a model key in Settings → Model keys.</p>
     </div>
   );
 
@@ -120,7 +123,6 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   const left = lanes.map((_, i) => i).filter((i) => !(outcomes[i] && "run" in outcomes[i]));
   // A lane picked again after a refusal drops the refusal's words: they were about the pick it had.
   const pick = (i: number, lane: LaneChoice) => {
-    letGo(i);
     setLanes((all) => all.map((l, j) => (j === i ? lane : l)));
     setOutcomes((all) => Object.fromEntries(Object.entries(all).filter(([j]) => Number(j) !== i)));
   };
@@ -136,7 +138,6 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   const removable = !last || "error" in last;
   const remove = () => {
     const count = lanes.length - 1;
-    letGo(count);
     const kept = Object.fromEntries(Object.entries(outcomes).filter(([j]) => Number(j) < count));
     setLanes((all) => all.slice(0, count));
     setOutcomes(kept);
@@ -160,7 +161,9 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
         idle.delete(i);
         return [i, { run }];
       } catch (e) {
-        return [i, refused(e) ? { error: e.message } : { unsure: sent }];
+        if (!refused(e)) return [i, { unsure: sent }];
+        letGo(i);
+        return [i, { error: e.message }];
       }
     }));
     const next: Record<number, Outcome> = { ...outcomes, ...Object.fromEntries(done) };
@@ -171,11 +174,12 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   };
 
   return (
-    <div className="flex flex-col">
+    <div className={pageClass}>
       <div className={cn(pageToolbarClass, "gap-3 px-5 md:px-8")}>
         <h1 className={pageTitleClass}>New race</h1>
         <span className="truncate font-mono text-small text-muted-foreground" title={raceFilter(label)}>{label}</span>
       </div>
+      <div data-page-body className={pageBodyClass}>
       <form className="flex max-w-5xl flex-col gap-6 p-5 md:p-8" onSubmit={(e) => { e.preventDefault(); void start(); }}>
         <p className="text-body text-muted-foreground">Each lane runs the same task on its own harness and model, as an agent and a run of its own, labeled <span className="font-mono text-foreground">{raceFilter(label)}</span>. The race page shows them side by side.</p>
         <Field label="Task" required error={asked && taskMissing ? "Say what every lane does: the task they all run." : undefined}>
@@ -220,6 +224,7 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
           {startedAny && <a className="font-mono text-small text-primary-text hover:underline" href={`#/races/${encodeURIComponent(label)}`}>Watch the race</a>}
         </div>
       </form>
+      </div>
     </div>
   );
 }
