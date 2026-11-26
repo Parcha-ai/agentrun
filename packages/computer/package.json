@@ -57,6 +57,10 @@
       "types": "./dist/fly.d.ts",
       "default": "./dist/fly.js"
     },
+    "./render": {
+      "types": "./dist/render.d.ts",
+      "default": "./dist/render.js"
+    },
     "./cloudflare": {
       "types": "./dist/cloudflare.d.ts",
       "default": "./dist/cloudflare.js"

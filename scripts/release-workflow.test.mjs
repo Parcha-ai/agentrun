@@ -139,6 +139,14 @@ test('the publish job keeps the changelog its fold wrote, right after the fold, 
   assert.equal(kept.with.overwrite, true, 'a re-run of publish keeps its own fold');
 });
 
+test('the publish job folds the changelog fragments the tag carries only after computerd is built, and the fold is there', () => {
+  const built = stepAt('publish', /^npm run build:daemon -w @parcha\/agentrun-computer$/);
+  const fold = stepAt('publish', /^node scripts\/changes\.mjs --fold "\$\{RELEASE_TAG#v\}"$/);
+  assert.ok(built >= 0, 'publish builds the daemon');
+  assert.ok(fold >= 0, 'publish folds the fragments');
+  assert.ok(built < fold, 'the daemon is built from the tag as it is, before the fold edits the tree');
+});
+
 test('the GitHub release is published once every publish job passed, from the folded changelog, by the only job that may write the repository', () => {
   const release = jobs['github-release'];
   assert.deepEqual(needs('github-release').sort(), ['box', 'chart', 'image-release', 'publish', 'pypi'], 'after npm, PyPI, the server image, the Helm chart and the box image');

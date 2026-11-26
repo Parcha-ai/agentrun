@@ -185,8 +185,13 @@ test("the drift case's patch writes the version string over where it occurs exac
   assert.equal(String(patchVersion(bytes, VERSION, to)), `\0go:${to}\0`);
   assert.equal(String(bytes), `\0go:${VERSION}\0`, "the bytes it was given are left as they were");
   assert.equal(driftedVersion("1.0.x"), "1.0.y");
+  // A daemon built at a release tag: Go's build info holds the module version twice more, as v<version> (once with
+  // +dirty on a modified tree). Only the stamp changes.
+  const tagged = Buffer.from(`\0go:${VERSION}\0mod\tcomputerd\tv${VERSION}\t\0dep v${VERSION}+dirty\0`);
+  assert.equal(String(patchVersion(tagged, VERSION, to)), `\0go:${to}\0mod\tcomputerd\tv${VERSION}\t\0dep v${VERSION}+dirty\0`);
   for (const [given, from, into, words] of [
     [Buffer.from("no version here"), VERSION, to, "nowhere"],
+    [Buffer.from(`build info only: v${VERSION}`), VERSION, to, "nowhere"],
     [Buffer.from(`${VERSION} and ${VERSION}`), VERSION, to, "more than once"],
     [bytes, VERSION, `${to}x`, "printable characters"],
     [bytes, VERSION, `${to.slice(0, -1)} `, "printable characters"],

@@ -1471,11 +1471,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // the run's next turn, on a claim that lists them: the run's end opens it again with the message (as for a message
     // that comes while the run ends), and a park's resume takes it. Every message after it waits the same way, whatever
     // the credentials say at its own check (a later message may hand them no longer), so none runs before it. Said once
-    // on the timeline, since the API answered the message as steered.
+    // on the timeline, since the API answered the message as steered. A reopen's own message (the claim's turn, not yet
+    // sent; never a wait's answer) came before the claim opened, so whatever it handed, the claim opened with: a
+    // credential handed since is a later message's, and this one is still the claim's turn. Held, a reopen of a session
+    // still new would wait for a first input that never comes.
     if (leftForNextTurn) return { later: "a message before this one runs as the run's next turn: this one runs after it" };
     const claimMcp = mcp;
     const leftOut = claimMcp?.leftOut;
-    if (claimMcp && leftOut?.length) {
+    const reopenTurn = reopen !== undefined && !reopen.sent && reopen !== waitTurn;
+    if (claimMcp && leftOut?.length && !reopenTurn) {
       const still = new Set(await claimMcp.fresh());
       const handed = leftOut.filter((server) => !still.has(server));
       if (handed.length) {
@@ -2628,7 +2632,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               const traced = specNow?.trace;
               const routed = request.route === undefined ? traced?.model : traced?.routes?.get(request.route)?.model;
               const known = (asked: string) => asked === traced?.model || [...(traced?.routes?.values() ?? [])].some((via) => via.model === asked) || specNow?.runCap.modelOf(asked)?.id === asked;
-              const model = tracedModel(request.model, { known, ...(routed ? { routed } : {}), ...(deps.redact ? { redact: deps.redact } : {}) });
+              const model = tracedModel(request.model, { known, ...(routed ? { routed } : {}), redact: deps.redact });
               chats.set(ticket.turn, trace.request(model, request.route));
             }
             // The conversation that asked, as its client named it (pi's, one of several asking at once): whose answer reads
@@ -2764,10 +2768,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // go is marked first (LEARNED_ALLOWED), committed before the tool runs: a call issued again after a crash cut it may
         // have run nodes and spent on such an attempt, so its refusal is then no proof it ran nothing, and it is kept
         // `failed`, never `refused`, priced from what its call id booked (failedRecord). The newest of the call's marks and
-        // records says which (learned-nodes.ts learnedCallRan): its bridge can't alone (a tool that nests is asked alike on
-        // every attempt: process/tools.ts runNesting), nor can the call's start on the CLI record, which a refusal writes
-        // too. With neither, the bridge's `replayed` stands in: a run begun before the marks existed has none. Whatever is
-        // kept, a refusal reads `failed` once anything was booked under the call id (workflow-calls.ts workflowCallsOf).
+        // records says which (learned-nodes.ts learnedCallRan): its bridge can't alone (a tool that nests is asked as
+        // `replayed` only once an earlier attempt fixed a value or nested a call: process/tools.ts runNesting), nor can the
+        // call's start on the CLI record, which a refusal writes too. With neither, the bridge's `replayed` stands in: a
+        // run begun before the marks existed has none. Whatever is
+        // kept, a refusal reads `failed` once anything was booked under the call id, or while an attempt let go was closed
+        // by no refusal (workflow-calls.ts workflowCallsOf).
         const learnedEntry = async (call: Parameters<typeof gateOf>[0], answer: Awaited<ReturnType<typeof gateOf>>): Promise<void> => {
           const named = call.tool === LEARNED_WORKFLOW_TOOL ? spec.gate?.learnedOf?.(call.args) : undefined;
           const [journalOf, rootOf] = [harness, root];
@@ -2809,7 +2815,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // Every harness's events reach its trace first (its tool calls, a plan harness's turns), with a record or without.
         const recorded = record ? onEvent(record) : undefined;
         const traceAnd = (event: Parameters<PiSessionIO["onEvent"]>[0]) => {
-          trace?.event(tracedEvent(event, { mcp: (name) => mcp?.catalogOf(specNow?.facts?.hostName?.(name) ?? name) !== undefined, ...(deps.redact ? { redact: deps.redact } : {}) }));
+          trace?.event(tracedEvent(event, { mcp: (name) => mcp?.catalogOf(specNow?.facts?.hostName?.(name) ?? name) !== undefined, redact: deps.redact }));
           recorded?.(event);
         };
         const io: PiSessionIO = { writer, models: counted, signal: deps.signal, onEvent: traceAnd, gate: sessionGate, ...(permission ? { permission } : {}), hostTool: hosted, ...(ownCalls ? { ownCalls } : {}), bookedCost, keepCalls, ...(record ? {} : { nestedEnded }) };
@@ -2978,6 +2984,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const resumes = raising.resumes;
           await takeRaises();
           if (paused) {
+            // No raise resumed it (each refused, or a retry of one before): its pause stands as it was, its budget entry
+            // unanswered, so it parks again on that entry with nothing written, never a second entry at the same cap.
+            if (!resumes && (await raiseStateOf()).pause !== undefined) return await parkAgain(harness, gate);
             if (!resumes || raising.capUsd === undefined || !spec.cap?.followUpOf) return await parkAtCap(harness, root, gate, paused, "cap");
             // The server's words, shown as its row ("AgentRun: …"), never as the person's; under the id a raise's answer named.
             const followUp = spec.cap.followUpOf(raising.capUsd).text;
@@ -3927,8 +3936,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const next = new Promise<TurnEnd | "lapsed">((resolve, reject) => {
       let done = false;
       let lapsed = false;
-      /** Ended by a message left for the run's next turn (endWaitNow), no hold having lapsed. */
-      let cut = false;
       const finish = (value: Promise<TurnEnd> | "lapsed") => {
         if (done) return;
         done = true;
@@ -3947,13 +3954,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       }, () => undefined);
       // So does a message left for the run's next turn (steer), the same way; one left while the wait was starting ends it
       // as soon as it holds.
-      if (waitTurn === mine) {
-        endWaitNow = () => {
-          cut = true;
-          if (!mine.sent) finish("lapsed");
-        };
-        if (leftForNextTurn) endWaitNow();
-      }
+      endWaitNow = () => {
+        if (!mine.sent) finish("lapsed");
+      };
+      if (leftForNextTurn) endWaitNow();
       void (async () => {
         for (;;) {
           await placing;
@@ -3964,7 +3968,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             // Not placed (the steer was refused): the next message may be.
             mine.sent = undefined;
             placing = new Promise<void>((resolve) => (mine.placed = resolve));
-            if (lapsed || cut) return finish("lapsed");
+            if (lapsed) return finish("lapsed");
           }
         }
       })().catch(reject);
@@ -4198,6 +4202,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   async function parkAtCap(on: Harness, conversation: Conversation, theGate: Gate, data: BudgetData, cause: "cap" | "refusal"): Promise<LoopEnd> {
     await pauseAtCap(on, conversation, theGate, data);
     return parkClaim(on, theGate, cause);
+  }
+
+  /** The run parked again at the pause it was woken from, which no raise of this claim answered: nothing is written (its
+   *  budget entry and the row's words stand), and the release parks the row again (LoopEnd `again`). */
+  async function parkAgain(on: Harness, theGate: Gate): Promise<LoopEnd> {
+    const end = await parkClaim(on, theGate, "cap");
+    return end.state === "parked" ? { ...end, again: true } : end;
   }
 
   /** Waits, at most the spec's parkSiblingsMs (PARK_SIBLINGS_MS), until no call pi started beside a parked one is still
