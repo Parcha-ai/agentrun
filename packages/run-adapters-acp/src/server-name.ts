@@ -6,8 +6,10 @@
 //  - A name kept that long could be aimed at: a config the agent reads that declares a server under it (one the agent
 //    itself wrote in a turn) would pass for ours. So at each start, a config the recipe lists (mcpConfigs) that declares
 //    a server under the kept name has it refused for that start: a fresh name is minted and kept, the run is told which
-//    file declared it, and a call titled under the old name is that server's, asked at the host's gate. The file is never
-//    edited: what is in it is the run's.
+//    file declared it, and a call titled under the old name is that server's, asked at the host's gate. A config that
+//    can't be read through (past MCP_CONFIG_MAX, or a read that fails) or that does not parse as JSON but names the kept
+//    name (an agent may read comments or trailing commas) counts as declaring it: the name is never kept on a guess. The
+//    file is never edited: what is in it is the run's.
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { START_SERVER } from "./calls.js";
@@ -17,11 +19,16 @@ import { mcpConfigPath } from "./recipe.js";
  *  use; a record that also says `refused` and `file` minted that name because `file` declared a server under `refused`. */
 export const SERVER_STREAM = "acp.server";
 
+/** How a config has the kept name refused: it declares a server under it (`declares`), it does not parse as JSON but
+ *  names it (`names`), or it is there and could not be read through (`unread`: past MCP_CONFIG_MAX, or the read failed). */
+export type Refusal = "declares" | "names" | "unread";
+
 /** A record of SERVER_STREAM. */
 export interface ServerRecord {
   readonly name: string;
   readonly refused?: string;
   readonly file?: string;
+  readonly how?: Refusal;
 }
 
 /** A name a run may keep: mcpServerName's per-start form, and nothing else a record could say. */
@@ -30,11 +37,12 @@ export const KEPT_SERVER = new RegExp(`^${START_SERVER}$`);
 /** The most bytes of an MCP config read for a server's name; a larger one is not read, and declares nothing. */
 export const MCP_CONFIG_MAX = 1024 * 1024;
 
-/** The first of `configs` (the recipe's mcpConfigs: `~/<path>` in `home`, any other in `work`) whose `mcpServers` object
- *  declares a server named `name`, as the recipe spells it; undefined when none does. One that is not there, is no file,
- *  is larger than MCP_CONFIG_MAX or does not parse declares nothing, and `log` is told of one that is there and could not
- *  be read. Nothing is written. */
-export function configDeclaring(name: string, configs: readonly string[], home: string, work: string, log: (message: string, fields?: Record<string, unknown>) => void): string | undefined {
+/** The first of `configs` (the recipe's mcpConfigs: `~/<path>` in `home`, any other in `work`) that has `name` refused,
+ *  and how (Refusal): its `mcpServers` object declares a server named `name`, as the recipe spells it; or it does not
+ *  parse as JSON and its text has `name` in it; or it is a file that is larger than MCP_CONFIG_MAX or whose read failed.
+ *  Undefined when none does. One that is not there or is no file declares nothing; `log` is told of each one refused
+ *  unread or unparsed. Nothing is written. */
+export function configDeclaring(name: string, configs: readonly string[], home: string, work: string, log: (message: string, fields?: Record<string, unknown>) => void): { readonly file: string; readonly how: Refusal } | undefined {
   for (const config of configs) {
     const where = mcpConfigPath(config);
     if (!where) continue;
@@ -42,30 +50,33 @@ export function configDeclaring(name: string, configs: readonly string[], home: 
     let text: string;
     try {
       const stat = statSync(file, { throwIfNoEntry: false });
-      if (!stat) continue;
-      if (!stat.isFile() || stat.size > MCP_CONFIG_MAX) {
-        log("acp: an MCP config the agent reads was not read for our server's name: no file, or too large", { config, bytes: stat.size });
-        continue;
+      if (!stat || !stat.isFile()) continue;
+      if (stat.size > MCP_CONFIG_MAX) {
+        log("acp: an MCP config the agent reads is too large to read for our server's name; the name is refused", { config, bytes: stat.size });
+        return { file: config, how: "unread" };
       }
       text = readFileSync(file, "utf8");
     } catch (error) {
-      log("acp: an MCP config the agent reads could not be read for our server's name", { config, error: error instanceof Error ? error.message : String(error) });
-      continue;
+      log("acp: an MCP config the agent reads could not be read for our server's name; the name is refused", { config, error: error instanceof Error ? error.message : String(error) });
+      return { file: config, how: "unread" };
     }
     let servers: unknown;
     try {
       servers = (JSON.parse(text) as { mcpServers?: unknown } | null)?.mcpServers;
     } catch {
-      log("acp: an MCP config the agent reads does not parse; it declares no server under our name", { config });
-      continue;
+      if (!text.includes(name)) continue;
+      log("acp: an MCP config the agent reads does not parse as JSON and names our server; the name is refused", { config });
+      return { file: config, how: "names" };
     }
-    if (typeof servers === "object" && servers !== null && !Array.isArray(servers) && Object.hasOwn(servers, name)) return config;
+    if (typeof servers === "object" && servers !== null && !Array.isArray(servers) && Object.hasOwn(servers, name)) return { file: config, how: "declares" };
   }
   return undefined;
 }
 
-/** The run's notice that `label`'s config `file` declares an MCP server under `refused`, the name the run's earlier
- *  starts gave ours: this start gives ours `name`, and a call under `refused` is that server's. */
-export function nameRefused(label: string, file: string, refused: string, name: string): string {
-  return `${file} declares an MCP server named ${refused}, the name this run gave its own tools' server before, so ${label} could take that server's calls for ours: this start names ours ${name}, and a call ${label} names under ${refused} is that server's, not ours, and asks you first. The file was left as it is.`;
+/** The run's notice that `label`'s config `file` has `refused` refused (`how`: it declares a server under it, names it
+ *  unparsed, or could not be read), the name the run's earlier starts gave ours: this start gives ours `name`, and a
+ *  call under `refused` is that server's. */
+export function nameRefused(label: string, file: string, refused: string, name: string, how: Refusal = "declares"): string {
+  const what = how === "unread" ? `${file} could not be read to see whether it declares an MCP server named ${refused}` : how === "names" ? `${file} does not parse as JSON and names ${refused}` : `${file} declares an MCP server named ${refused}`;
+  return `${what}, the name this run gave its own tools' server before, so ${label} could take that server's calls for ours: this start names ours ${name}, and a call ${label} names under ${refused} is that server's, not ours, and asks you first. The file was left as it is.`;
 }

@@ -640,14 +640,14 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     let serverName = minted;
     if (minted !== MCP_SERVER) {
       const kept = journal.records<ServerRecord>(SERVER_STREAM).map((r) => r.data?.name).filter((name): name is string => typeof name === "string" && KEPT_SERVER.test(name)).at(-1);
-      const file = kept === undefined ? undefined : configDeclaring(kept, recipe.mcpConfigs ?? [], home, root, log);
-      if (kept !== undefined && file === undefined) serverName = kept;
+      const refusal = kept === undefined ? undefined : configDeclaring(kept, recipe.mcpConfigs ?? [], home, root, log);
+      if (kept !== undefined && refusal === undefined) serverName = kept;
       else {
-        journal.append(SERVER_STREAM, { name: minted, ...(file !== undefined ? { refused: kept, file } : {}) } satisfies ServerRecord);
+        journal.append(SERVER_STREAM, { name: minted, ...(refusal !== undefined ? { refused: kept, file: refusal.file, how: refusal.how } : {}) } satisfies ServerRecord);
         await journal.flush();
-        if (file !== undefined) {
-          log("acp: a config the agent reads declares a server under the run's name; this start names ours afresh", { file, refused: kept, name: minted });
-          ctx.live({ type: "notice", text: nameRefused(recipe.label ?? recipe.id, file, kept!, minted) });
+        if (refusal !== undefined) {
+          log("acp: a config the agent reads has the run's server name refused; this start names ours afresh", { file: refusal.file, how: refusal.how, refused: kept, name: minted });
+          ctx.live({ type: "notice", text: nameRefused(recipe.label ?? recipe.id, refusal.file, kept!, minted, refusal.how) });
         }
       }
     }
