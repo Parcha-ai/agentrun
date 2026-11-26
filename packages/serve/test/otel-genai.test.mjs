@@ -1040,6 +1040,13 @@ const SEMI_ROWS = [
     ["parse error at & near region", "parse error at & near region"],
   ],
   [
+    "a header value's credential pair holding only an & written %26",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=region=us&api_key=%26" },
+    [],
+    ["&", "%26"],
+    ["parse error at & near region", "parse error at & near region"],
+  ],
+  [
     "a header value's credential pair whose value opens with a space, then one character",
     { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=sentry_key= @" },
     [],
@@ -1110,19 +1117,38 @@ test("OTLP values that overlap or touch in a line are cut as one by every redact
   assert.deepEqual(missed, [], "every overlapping or touching held value is cut as one [redacted]");
 });
 
-test("a 16 KB OTLP header value of 900 pairs joined by %20, or of 1,000 credential pairs, holds a credential pair's value up to each separator within 4,096 characters in all, never a prefix before every pair", () => {
+test("a 16 KB OTLP header value of 900 pairs joined by %20, or a 30 KB one of 1,000 credential pairs with their own keys, holds a credential pair's value up to each separator within 4,096 characters in all, never a prefix before every pair", () => {
   // A credential pair's value runs to the header value's end: held up to each of its 1,800 %20, it would hold 1,800
   // values of up to 16 KB; and 1,000 credential pairs, each held up to each separator after it, 1,000 times that.
+  // Each of the 1,000 pairs has its own key, so a budget of 4,096 characters per pair, not per value, shows as the
+  // 501st pair held past its first separator, and as a held list of megabytes. The value whole and its first pair's
+  // value to the end, each written and decoded, are about four times the value, so each value has its own bound.
   const key = `key-${"dummy"}-1`;
-  const many = `key-${"dummy"}-2`;
-  for (const [what, header, first] of [["900 pairs", `X-Relay=api_key=${`${key}%20b=1%20`.repeat(900)}`, key], ["1,000 credential pairs", `X-Relay=${`api_key=${many}%20v%3B`.repeat(1000)}`, many]]) {
+  const many = (at) => `key-${"dummy"}-2-${at}`;
+  const pairs = Array.from({ length: 1000 }, (_, at) => `api_key=${many(at)}%20v%3B`).join("");
+  for (const [what, header, bound, first, later] of [
+    ["900 pairs", `X-Relay=api_key=${`${key}%20b=1%20`.repeat(900)}`, 128, key, undefined],
+    ["1,000 credential pairs", `X-Relay=${pairs}`, 192, many(0), `${many(500)}%20v`],
+  ]) {
     const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: header };
     for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
       const size = values.reduce((sum, value) => sum + value.length, 0);
-      assert.ok(size < 128 * 1024, `${what}: ${list} holds ${size} characters, under 128 KB`);
+      assert.ok(size < bound * 1024, `${what}: ${list} holds ${size} characters, under ${bound} KB`);
       assert.ok(values.includes(first), `${what}: ${list} holds the key before the first separator`);
+      if (later) assert.ok(!values.includes(later), `${what}: ${list} does not hold the 501st pair's value up to its second separator`);
     }
   }
+  // The first pair's value up to its second separator, 4,080 characters, leaves 16 of the 4,096; the last pair's value
+  // to the end, 31 characters, is held all the same, so its key, in quotes written %22 with a %20 in it, is held bare
+  // and a line quoting it is cut whole.
+  const tail = `prefix-${"dummy"}%20tail-${"dummy"}`;
+  const spent = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${key}%20${"b".repeat(4066)}%20token=%22${tail}%22` };
+  for (const [list, values] of [["runnerSecrets", runnerSecrets(spent)], ["hostSecrets", hostSecrets(spent)]]) {
+    assert.ok(values.includes(tail) && values.includes(decodeURIComponent(tail)), `the last pair after a spent budget: ${list} holds its key bare, written and decoded`);
+  }
+  const line = `401 from relay: key prefix-${"dummy"} tail-${"dummy"} refused`;
+  assert.equal(otlpHeaderCut(spent)(line), "401 from relay: key [redacted] refused", "the last pair after a spent budget: the [otel] cut takes its key whole");
+  assert.equal(secretRedactor(runnerSecrets(spent))(line), "401 from relay: key [redacted] refused", "the last pair after a spent budget: the runner's redactor takes its key whole");
 });
 
 test("after a header value's first URL query, a later URL's query is read while 4,096 characters of them in all fit: one that fits has its + read as a space, and a longer one's key is still held as written by the pair read", () => {
