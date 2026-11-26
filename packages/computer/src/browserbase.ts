@@ -54,7 +54,7 @@ import {
 	type ReleaseConfirm,
 	RECOVER_MS,
 	recoverCreate,
-	leftToConverge,
+	type MadeBrowser,
 	releaseConfirmed,
 	boundedRelease,
 	restBytes,
@@ -104,7 +104,7 @@ export const BROWSERBASE_MIN_LIFETIME_MS = 60_000;
 /** The statuses of a session that runs (PENDING bills once it starts); any other has ended. */
 type SessionStatus = "RUNNING" | "PENDING" | "COMPLETED" | "ERROR" | "TIMED_OUT";
 const LIVE: ReadonlySet<SessionStatus> = new Set(["RUNNING", "PENDING"]);
-/** Every status a session reads as, ended ones included: a request's whole record (#leftToConverge). */
+/** Every status a session reads as, ended ones included: a request's whole record (#requestBrowsers). */
 const EVER: ReadonlySet<SessionStatus> = new Set([...LIVE, "COMPLETED", "ERROR", "TIMED_OUT"]);
 /**
  * The order #sessions asks for the statuses, a session's own: it is PENDING, then RUNNING, then ended, and never goes
@@ -661,14 +661,14 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			const found = await this.#sessions(labels, signal);
 			return found.ok ? ok(found.value.map((s) => s.id)) : found;
 		};
-		const leave = (id: string, signal: AbortSignal) => this.#leftToConverge(request, id, signal);
-		return recoverCreate("session", find, (id, signal) => this.release({ id, name: id }, "delete", { signal }), this.#sleep, this.#cleanupMs, leave);
+		const made = (signal: AbortSignal) => this.#requestBrowsers(request, signal);
+		return recoverCreate("session", find, (id, signal) => this.release({ id, name: id }, "delete", { signal }), this.#sleep, this.#cleanupMs, made);
 	}
 
-	/** Whether a lost create's session is left to another create of its request (leftToConverge); a listing that fails releases it. */
-	async #leftToConverge(request: string, id: string, signal: AbortSignal): Promise<boolean> {
+	/** The request's sessions, ended ones included, for a lost create's recovery (recoverCreate, leftToConverge). */
+	async #requestBrowsers(request: string, signal: AbortSignal): Promise<Result<MadeBrowser[]>> {
 		const made = await this.#sessions({ [CREATE_LABEL]: request }, signal, EVER);
-		return made.ok && leftToConverge(id, made.value.map((s) => ({ ...heldOf(s), live: LIVE.has(s.status as SessionStatus) })));
+		return made.ok ? ok(made.value.map((s) => ({ ...heldOf(s), live: LIVE.has(s.status as SessionStatus) }))) : made;
 	}
 
 	/**

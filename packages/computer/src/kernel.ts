@@ -49,7 +49,7 @@ import {
 	type ReleaseConfirm,
 	RECOVER_MS,
 	recoverCreate,
-	leftToConverge,
+	type MadeBrowser,
 	releaseConfirmed,
 	boundedRelease,
 	restCall,
@@ -418,14 +418,14 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 			const found = await this.#browsers(labels, signal);
 			return found.ok ? ok(found.value.map((b) => b.id)) : found;
 		};
-		const leave = (id: string, signal: AbortSignal) => this.#leftToConverge(request, id, signal);
-		return recoverCreate("browser", find, (id, signal) => this.release(refOf(id), "delete", { signal }), this.#sleep, this.#cleanupMs, leave);
+		const made = (signal: AbortSignal) => this.#requestBrowsers(request, signal);
+		return recoverCreate("browser", find, (id, signal) => this.release(refOf(id), "delete", { signal }), this.#sleep, this.#cleanupMs, made);
 	}
 
-	/** Whether a lost create's browser is left to another create of its request (leftToConverge); a listing that fails releases it. */
-	async #leftToConverge(request: string, id: string, signal: AbortSignal): Promise<boolean> {
+	/** The request's browsers, deleted ones included, for a lost create's recovery (recoverCreate, leftToConverge). */
+	async #requestBrowsers(request: string, signal: AbortSignal): Promise<Result<MadeBrowser[]>> {
 		const made = await this.#browsers({ [CREATE_LABEL]: request }, signal, true);
-		return made.ok && leftToConverge(id, made.value.map((row) => ({ ...heldOf(row), live: row.deleted === undefined })));
+		return made.ok ? ok(made.value.map((row) => ({ ...heldOf(row), live: row.deleted === undefined }))) : made;
 	}
 
 	/**
@@ -498,7 +498,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	 * browser still starting, which bills), and a row with deleted_at is dropped here; so list and attach show a starting
 	 * browser, as Browserbase lists a PENDING session, and a lost create's recovery misses none. The match is the
 	 * provider's own, so a lane that drops the filter never hands back another's. A page that cannot be read fails the
-	 * whole list: a release trusts it. `withDeleted` keeps the deleted rows too, marked deleted (#leftToConverge).
+	 * whole list: a release trusts it. `withDeleted` keeps the deleted rows too, marked deleted (#requestBrowsers).
 	 */
 	async #browsers(labels: Record<string, string>, signal?: AbortSignal, withDeleted = false): Promise<Result<KernelRow[]>> {
 		const problem = labelsProblem(labels);
