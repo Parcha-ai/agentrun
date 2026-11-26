@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, open, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readdir, readFile, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -276,37 +276,86 @@ for (const [kind, script] of Object.entries(SCRIPTS)) {
     await made.end();
   });
 
-  test(`checkout ${kind}, run: a proxy and sslVerify=false another writer of the folder puts in the checkout's .git/config before its fetch are not used: the fetch goes to GitHub itself`, { timeout: 120_000 }, async (t) => {
+  test(`checkout ${kind}, run: a proxy, sslVerify=false and an insteadOf, generic and for the fetch's own URL, that another writer of the run's folder puts in its ${CHECKOUT_DIR}/.git/config before the fetch are never read by a git that reaches GitHub: the fetch runs in a private folder and goes to GitHub itself`, { timeout: 120_000 }, async (t) => {
     const dir = await scratch(t);
     const server = await privateServer(t, dir);
     const { folder, workspace } = await runFolder(dir);
-    // A proxy that keeps the proxy requests sent to it (an absolute URL, or CONNECT), and answers none. Anything else that
-    // dials a new loopback port is not counted.
+    // A proxy that keeps the requests for the repository sent to it (an absolute URL, CONNECT, or the repository's own
+    // paths, as an insteadOf would send them), and answers none. Anything else that dials a new loopback port is not counted.
     const reached = [];
     const proxy = createServer((socket) => {
       socket.once("data", (chunk) => {
         const line = chunk.toString("latin1").split("\r\n")[0];
-        if (/^(?:CONNECT \S+|[A-Z]+ https?:\/\/\S+) HTTP\//.test(line)) reached.push(line);
+        if (/^(?:CONNECT \S+|[A-Z]+ https?:\/\/\S+|[A-Z]+ \S*(?:info\/refs|git-upload-pack)\S*) HTTP\//.test(line)) reached.push(line);
         socket.destroy();
       });
       socket.on("error", () => {});
     });
     await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
     t.after(() => new Promise((resolve) => proxy.close(resolve)));
-    // A git in front of the run's PATH that, once the remote is added, writes the proxy and sslVerify=false into the
-    // checkout's own .git/config, as a writer to the shared folder could between the init and the fetch.
+    const at = `http://127.0.0.1:${proxy.address().port}`;
+    // A git in front of the run's PATH. Once the remote is added, it writes the keys into the run folder's
+    // ${CHECKOUT_DIR}/.git/config, as a writer to the shared folder could before the fetch: the generic ones, the fetch URL's
+    // own (which beat a generic -c), and an insteadOf. Each call that reaches GitHub logs its folder and the proxy and
+    // sslVerify keys git reads there.
     const spy = join(dir, "spy");
+    const planted = join(dir, "planted");
+    const seen = join(dir, "seen.log");
     await mkdir(spy);
-    const config = `[http]\\n\\tproxy = http://127.0.0.1:${proxy.address().port}\\n\\tsslVerify = false\\n`;
-    writeFileSync(join(spy, "git"), `#!${system("sh")}\n'${system("git")}' "$@"; code=$?\ncase " $* " in *" remote add origin "*) printf '${config}' >> .git/config ;; esac\nexit $code\n`, { mode: 0o755 });
+    const target = join(folder, CHECKOUT_DIR, ".git");
+    const config = `[http]\\n\\tproxy = ${at}\\n\\tsslVerify = false\\n[http "${server.url}/"]\\n\\tproxy = ${at}\\n\\tsslVerify = false\\n[url "${at}/"]\\n\\tinsteadOf = ${server.url}/\\n`;
+    writeFileSync(
+      join(spy, "git"),
+      [
+        `#!${system("sh")}`,
+        `case " $* " in *" fetch "*|*" ls-remote "*) { printf 'cwd %s\\n' "$PWD"; '${system("git")}' config --get-regexp '(proxy|sslverify|insteadof)$'; } >> '${seen}' 2>/dev/null ;; esac`,
+        `'${system("git")}' "$@"; code=$?`,
+        `case " $* " in *" remote add origin "*) mkdir -p '${target}' && printf '${config}' >> '${target}/config' && : > '${planted}' ;; esac`,
+        "exit $code",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
     const spied = Object.create(workspace);
     spied.exec = (argv, options) => workspace.exec(argv, { ...options, env: { ...options.env, PATH: `${spy}:${options.env.PATH}` } });
     const made = await script.run({ workspace: spied, mint: server.mint }, server);
-    assert.deepEqual(reached, [], `no request went through the proxy: ${made.note}`);
-    assert.match(readFileSync(join(folder, CHECKOUT_DIR, ".git", "config"), "utf8"), /proxy = http:\/\/127\.0\.0\.1:/, "the proxy was written before the fetch");
+    assert.deepEqual(reached, [], `no request went to the planted address: ${made.note}`);
+    assert.ok(existsSync(planted), "the keys were planted before the fetch");
+    const log = readFileSync(seen, "utf8");
+    assert.ok(!log.includes(at), `no git that reaches GitHub read the planted keys: ${log}`);
+    const folders = [...log.matchAll(/^cwd (.*)$/gm)].map(([, cwd]) => cwd);
+    assert.ok(folders.length > 0, "the calls that reach GitHub were logged");
+    for (const cwd of folders) {
+      assert.ok(!cwd.startsWith(folder), `the fetch ran outside the run's folder: ${cwd}`);
+      assert.equal(existsSync(cwd), false, `the private folder ${cwd} is gone`);
+    }
     assert.equal(git(join(folder, CHECKOUT_DIR), "rev-parse", "HEAD"), script.at(server.pull), made.note);
+    assert.ok(!readFileSync(join(target, "config"), "utf8").includes(at), "the checkout's config is the one the script wrote");
     assert.ok(server.seen.length > 0, "the fetch reached GitHub itself");
     await made.end();
+  });
+
+  test(`checkout ${kind}, run: the repository moved into ${CHECKOUT_DIR}/ is whole: its own .git with the refs, the shallow file and the owner file, no worktree pointing elsewhere, and git status and merge-base work there`, { timeout: 120_000 }, async (t) => {
+    const dir = await scratch(t);
+    const server = await privateServer(t, dir);
+    const { folder, workspace } = await runFolder(dir);
+    const made = await script.run({ workspace, mint: server.mint }, server);
+    const repo = join(folder, CHECKOUT_DIR);
+    assert.equal(git(repo, "rev-parse", "HEAD"), script.at(server.pull), made.note);
+    assert.ok((await stat(join(repo, ".git"))).isDirectory(), ".git is a folder, not a gitdir file");
+    assert.equal(git(repo, "rev-parse", "--show-toplevel"), await realpath(repo), "the work tree is the checkout's own folder");
+    assert.throws(() => git(repo, "config", "--get", "core.worktree"), undefined, "no core.worktree");
+    assert.ok(readFileSync(join(repo, ".git", "shallow"), "utf8").trim().length > 0, "the shallow file came with it");
+    assert.ok(readFileSync(join(repo, ".git", "agentrun-claim"), "utf8").trim().length > 0, "the owner file came with it");
+    assert.equal(git(repo, "status", "--porcelain"), "", "git status works, and the checkout is clean");
+    if (kind === "pull_request") {
+      for (const ref of ["pr/head", "pr/base", "pr/merge-base"]) git(repo, "rev-parse", "--verify", `refs/${ref}`);
+      assert.equal(git(repo, "merge-base", "refs/pr/base", "refs/pr/head"), git(repo, "rev-parse", "refs/pr/merge-base"), "merge-base works over the shallow history");
+    } else {
+      assert.equal(git(repo, "merge-base", "HEAD", "refs/repo/head"), git(repo, "rev-parse", "refs/repo/head"), "merge-base works, at refs/repo/head");
+    }
+    await made.end();
+    assert.deepEqual(await readdir(folder), [], "the end removed it");
   });
 
   test(`checkout ${kind}, run: sh, git and every program the script runs are the system's (/usr/bin, /bin), never one a folder ahead of them on the run's PATH holds (/usr/local/bin, which an image or a root agent may fill)`, { timeout: 120_000 }, async (t) => {

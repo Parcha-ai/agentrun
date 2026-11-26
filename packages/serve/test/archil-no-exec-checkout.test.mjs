@@ -32,6 +32,8 @@ const AWS = "aws-us-east-1";
 const NO_EXEC = /gcp-us-central1 has no serverless exec/;
 /** Why a computer this claim did not start gets no checkout. */
 const REUSED_WORDS = /the run's computer is not one this claim started \(a sandbox kept through a wait, the agent's own computer or a paired one\): it may already have run the agent's code, so the server hands it no GitHub token/;
+/** What a computer this claim did not start is told about a repo/ folder its mount may still hold. */
+const NOT_ITS_REPO = /A repo\/ folder in the run's folder, if there is one, is not this claim's checkout: an earlier claim's, whose removal failed, so it may be stale\./;
 
 async function scratch(t) {
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "no-exec-checkout-"));
@@ -131,7 +133,8 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
         assert.ok(!(await readdir(run.scratch)).includes(CHECKOUT_DIR), `${which}, ${kind}: no repo/ folder`);
         assert.deepEqual(execsOf(disk), [], "the disk's exec was never asked");
         assert.ok(line, `the run is told about its checkout: ${spec.session.system.join(" | ")}`);
-        assert.match(line, /^No checkout was made, so there is no repo\/ folder: /, `${which}, ${kind}`);
+        assert.match(line, /^No checkout was made: /, `${which}, ${kind}`);
+        assert.match(line, NOT_ITS_REPO, `${which}, ${kind}`);
         assert.match(line, NO_EXEC, `${which}, ${kind}`);
         assert.match(line, REUSED_WORDS, `${which}, ${kind}`);
         const told = run.said.find((words) => /^No checkout in repo\//.test(words));
@@ -175,7 +178,8 @@ test("checkoutWhereNoExec, a computer that mounts the run's folder but that the 
     assert.deepEqual(asked, [], `${kind}: the App was never opened, so no token was minted`);
     assert.deepEqual(ran, [], `${kind}: nothing ran in the computer`);
     assert.deepEqual(held, [], `${kind}: no removal to hold`);
-    assert.match(made.note, /^No checkout was made, so there is no repo\/ folder: /);
+    assert.match(made.note, /^No checkout was made: /);
+    assert.match(made.note, NOT_ITS_REPO);
     assert.match(made.note, REUSED_WORDS);
     assert.match(made.note, kind === "pull_request" ? /Read the change through the GitHub tools/ : /Read it through the GitHub tools/);
     assert.equal(said.length, 1);
@@ -187,7 +191,7 @@ test("checkoutWhereNoExec, a computer that mounts the run's folder but that the 
   assert.equal(ran.length, 1, `its fetch ran in the computer: ${fresh.note}`);
 });
 
-test("checkoutWhereNoExec, a computer the claim did not start whose mount still holds a repo/ folder (an earlier claim's checkout whose removal failed): the run is told that folder is not this claim's checkout and may be stale; with none there, or a look that fails, it is told there is no repo/ folder", { timeout: 60_000 }, async (t) => {
+test("checkoutWhereNoExec, a computer the claim did not start: whatever its mount holds, the run gets the one note, that a repo/ folder there, if there is one, is not this claim's checkout and may be stale; the computer is never asked to look, and nothing runs in it", { timeout: 60_000 }, async (t) => {
   const deps = { store: { triggerSettings: { get: async () => [] } }, sealKey: Buffer.alloc(32, 1) };
   const named = pullRepo(join(await scratch(t), "gh"), "acme/widgets");
   const ran = [];
@@ -195,24 +199,23 @@ test("checkoutWhereNoExec, a computer the claim did not start whose mount still 
   const computer = (stat) => ({ exec: async (argv) => (ran.push(argv), { code: 0, signal: null, stdout: new Uint8Array(), stderr: "", timedOut: false, truncated: false }), stat: async (path) => (looked.push(path), stat(path)) });
   for (const kind of Object.keys(KINDS)) {
     const { launch } = KINDS[kind](named);
-    const told = (stat) => checkoutWhereNoExec(deps, { workspace: computer(stat), fresh: false }, GCP, launch, { hold: () => {} }, undefined, () => {}, kind, () => {});
-    const stale = await told((path) => (path === CHECKOUT_DIR ? { kind: "dir", size: 0, mtimeMs: 0 } : undefined));
-    assert.match(stale.note, /^No checkout was made: /, `${kind}: ${stale.note}`);
-    assert.doesNotMatch(stale.note, /there is no repo\/ folder/, `${kind}: never that there is none, with one there`);
-    assert.match(stale.note, /The repo\/ folder in the run's folder is not this claim's checkout: an earlier claim's, whose removal failed, so it may be stale\./, `${kind}: ${stale.note}`);
-    assert.match(stale.note, REUSED_WORDS);
+    const notes = [];
     for (const [what, stat] of [
+      ["a repo/ there", (path) => (path === CHECKOUT_DIR ? { kind: "dir", size: 0, mtimeMs: 0 } : undefined)],
       ["none there", () => undefined],
-      ["a look that fails", () => {
-        throw new Error("computerd went away");
-      }],
+      ["a look that would never answer", () => new Promise(() => {})],
     ]) {
-      const none = await told(stat);
-      assert.match(none.note, /^No checkout was made, so there is no repo\/ folder: /, `${kind}, ${what}: ${none.note}`);
-      assert.doesNotMatch(none.note, /stale/, `${kind}, ${what}`);
+      const made = await checkoutWhereNoExec(deps, { workspace: computer(stat), fresh: false }, GCP, launch, { hold: () => {} }, undefined, () => {}, kind, () => {});
+      assert.match(made.note, /^No checkout was made: /, `${kind}, ${what}: ${made.note}`);
+      assert.match(made.note, NOT_ITS_REPO, `${kind}, ${what}: ${made.note}`);
+      assert.doesNotMatch(made.note, /there is no repo\/ folder/, `${kind}, ${what}`);
+      assert.match(made.note, REUSED_WORDS);
+      notes.push(made.note);
+      await made.end();
     }
+    assert.equal(new Set(notes).size, 1, `${kind}: one note, whatever the mount holds`);
   }
-  assert.deepEqual([...new Set(looked)], [CHECKOUT_DIR], "it looks for repo/ alone");
+  assert.deepEqual(looked, [], "the computer is never asked to look");
   assert.deepEqual(ran, [], "nothing ran in the computer");
 });
 
