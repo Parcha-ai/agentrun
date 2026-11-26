@@ -236,11 +236,12 @@ function needlesOf(value: string): { plain: string[]; hex: string; folded: strin
 
 const longEnough = (value: string) => [...value].length >= MIN_SECRET;
 
-/** The punctuation between JSON's strings that a held value can hold: a value holding one, JSON can split there (a
- *  login's ":" as a name and its value, a "," between an array's strings), and the join view reads it without them
- *  (redact/match.ts Needles `joined`). Gone from that needle only, so it never reads past a value's own length. */
-const JOIN_DROPS = /[,:]/;
-const JOIN_DROPPED = /[,:]/g;
+/** The punctuation between strings that a held value can hold: a value holding one, JSON can split there (a login's
+ *  ":" as a name and its value, a "," between an array's strings), and so can code at its "+" (`"ab" + "cd"`, the
+ *  operator the value's own "+"), and the join view reads it without them (redact/match.ts Needles `joined`; its values'
+ *  pass leaves out such an operator). Gone from that needle only, so it never reads past a value's own length. */
+const JOIN_DROPS = /[,:+]/;
+const JOIN_DROPPED = /[,:+]/g;
 
 /** The fewest characters a line of a held value must have to be held as a part of it: a key's base64 line (64) is, a
  *  short line any text may hold ("-----END …-----", "}", a JSON field's name and a word) is not. */

@@ -662,9 +662,10 @@ export function shapeKinds(text: string, shapes: readonly Shape[]): string[] {
  *    two, and cut in place;
  *  - `plain`: what the whole-text check looks for in each squeezed view (with `hexes` in it lowered, `folds` in it
  *    folded);
- *  - `joined`: a held value that holds a "," or a ":", squeezed, with them gone: what the whole-text check also looks
- *    for in the join view alone, which drops JSON's punctuation between strings, so a value JSON split there
- *    ({"alice":"<rest>"}, two strings of an array) reads as itself. */
+ *  - `joined`: a held value that holds a ",", a ":" or a "+", squeezed, with them gone: what the whole-text check also
+ *    looks for in the join view alone, which drops JSON's punctuation between strings and code's "+" between two
+ *    (partsOf `joins`), so a value split there ({"alice":"<rest>"}, two strings of an array, `"<head>" + "<rest>"` for
+ *    a value whose own "+" stood there) reads as itself. */
 export type Needles = {
   readonly forms: readonly string[];
   readonly hexes: readonly string[];
@@ -1043,10 +1044,13 @@ const VIEWS: readonly ViewSpec[] = [
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
 
 /** A stretch of a text the join view reads: a string's contents (a property name's, `name`), or a run of characters
- *  outside any string (a number, a word, a line after the JSON). `joins`: a run that is one "+", or one "\" (Python's
- *  line continuation), between two strings with nothing but whitespace and such runs around it, the operator that
- *  joins them in code (`"ab" + "cd+ef"`). */
+ *  outside any string (a number, a word, a line after the JSON). `joins`: a run that is an operator (OPERATORS) between
+ *  two value strings with nothing but whitespace and such runs around it, joining them in code (`"ab" + "cd+ef"`). */
 type Part = { from: number; to: number; name: boolean; joins?: boolean };
+
+/** The runs that join two strings in code: "+", Python's line continuation "\" (before the "+" on the next line, or
+ *  with none), and the two together as Python takes them, "+" then "\" before a line break ("\+" is no code). */
+const OPERATORS: ReadonlySet<string> = new Set(["+", "\\", "+\\"]);
 
 /** JSON's punctuation between its values. */
 const STRUCTURE = only("{}[],:");
@@ -1081,8 +1085,9 @@ function unitAt(text: string, at: number, to: number, level: 0 | 1): { char: str
  *  and in the whitespace after a string looking for a ":"). */
 function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part[], kind: JoinKind = "nested", written?: Span[]): void {
   let bare = -1;
-  // The run's one character ("" once it has two), whether the last part added here is a string (or an operator after
-  // one), and the operators after it that a string will make `joins` (any other run, or JSON's punctuation, ends them).
+  // The run's characters while it could be an operator (OPERATORS; "" once it cannot), whether the last part added here
+  // is a string (or an operator after one), and the operators after it that a string will make `joins` (any other run,
+  // or JSON's punctuation, ends them).
   let lone = "";
   let string = false;
   let operators: Part[] = [];
@@ -1090,7 +1095,7 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
     if (bare >= 0) {
       const part: Part = { from: bare, to: end, name: false };
       out.push(part);
-      if (string && (lone === "+" || lone === "\\")) operators.push(part);
+      if (string && OPERATORS.has(lone)) operators.push(part);
       else [string, operators] = [false, []];
     }
     bare = -1;
@@ -1104,7 +1109,7 @@ function partsOf(text: string, from: number, to: number, level: 0 | 1, out: Part
         endBare(at);
         [string, operators] = [false, []];
       } else if (bare < 0) [bare, lone] = [at, char];
-      else lone = "";
+      else lone = lone.length === 1 ? lone + char : "";
       at = end;
       continue;
     }
@@ -1165,7 +1170,8 @@ function joinOf(text: string, kind: Exclude<JoinKind, "both">, cuts?: readonly S
   const moved: Span[] = [];
   let length = 0;
   // The values' pass leaves out the operators that join two strings, so a held value split across them reads whole with
-  // its own "+"; the pass over all of them reads them as they stand.
+  // its own "+"; the pass over all of them reads them as they stand. One whose own "+" is the operator reads in the
+  // values' pass as its `joined` needle (Needles), its "+" gone.
   const passes: readonly ((part: Part) => boolean)[] = [(part) => !part.name && !part.joins, (part) => part.name, () => true];
   for (const pass of passes) {
     let cut = 0;
