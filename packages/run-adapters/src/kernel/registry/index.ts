@@ -6,7 +6,7 @@ export { BACKGROUND_EXECUTORS, endBackground, NEEDS_A_COMPUTER, NO_SHELL } from 
 export { boundedBash } from "./bash.js";
 export { bashTimeoutWords, CAPABILITY_KINDS, hostToolDefs } from "./defs.js";
 export type { ShellPlace, ToolDef } from "./defs.js";
-export { COMPUTER_OP_TOOL, COMPUTER_OPS, COMPUTER_TOOLS, computerExecutors, computerOpsFor, computerToolDefs, computerToolsFor, GUI_REACH, STEP_TOOL_OPS, unsavedScreenshot, withoutOps } from "./computer.js";
+export { COMPUTER_OP_TOOL, COMPUTER_OPS, COMPUTER_TOOLS, computerExecutors, computerOpsFor, computerToolDefs, computerToolsFor, GUI_REACH, savePathOf, STEP_TOOL_OPS, unsavedScreenshot, withoutOps } from "./computer.js";
 export { COMPUTER_TOOL_SCHEMAS, computerDeclarations } from "./computer-surface.generated.js";
 export { defaultPermissionOf, SHELL_FAMILY, SHELL_WATCHERS, shellPermission, shellToolOf } from "./gate.js";
 export type { Permission } from "./gate.js";

@@ -223,6 +223,10 @@ export type LearnedWorkflowRun = {
    *  each call node runs, before `policy` is asked: a tool set to deny since the call began is then refused. None: the
    *  gate reads its settings live (main's process). */
   refresh?: () => Promise<void>;
+  /** Why a call node of `tool` with the arguments the workflow resolved is refused for a filed folder (tool-gate.ts
+   *  RunGate.filedRefused: a path in the folder an MCP tool's file setting files its answers in), asked as each call node
+   *  runs, after `policy`; undefined when it is not. None: no folder is filed for the run (main's process). */
+  filed?: (tool: string, args: unknown) => string | undefined;
   /** The run's own Workspace (on the runner: its local folder in Mode 1, its folder on the run's disk in Mode 2), which
    *  a decision node's images are read through. Absent: the local folder at `work`. */
   workspace?: Workspace;
@@ -517,6 +521,9 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const permission = run.policy(tool!);
     if (permission === "deny") throw new Error(deniedText(tool!, undefined, run.denyFrom(tool!)));
     if (permission === "ask") throw new Error(`This ${tool} call needs a person's approval, which a workflow's call node cannot wait for; it was not run.`);
+    // Its arguments as the agent's own call's are held: a path in a filed folder is refused in the gate's words.
+    const filed = run.filed?.(tool!, given);
+    if (filed) throw new Error(filed);
     // Its paid requests booked under the tool's call, as a call of its own: the node, its execution path, its item in a map.
     const booked = ledger ? { ledger: { ...ledger, call: callId } } : {};
     return effect(given, { signal: own, env: run.env, work: run.work, ...(run.complete ? { complete: run.complete } : {}), ...(run.search ? { search: run.search } : {}), ...booked });
