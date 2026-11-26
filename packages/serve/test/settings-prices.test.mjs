@@ -16,6 +16,7 @@ const NAMES = [
   "AGENTRUN_BROWSER_USD_PER_HOUR_BROWSERBASE",
   "AGENTRUN_BROWSER_USD_PER_HOUR_KERNEL",
   "AGENTRUN_BROWSER_USD_PER_HOUR_ACME",
+  "AGENTRUN_BROWSER_USD_PER_HOUR_LOCAL_CHROME",
 ];
 
 const pricesOf = async (t, vars) => {
@@ -49,8 +50,9 @@ test("compute prices: a setting as written with source setting, an unset resourc
   assert.deepEqual(body.compute.filter((row) => row.provider === "daytona").map((row) => row.resource), ["vcpu", "memory", "disk", "gpu"]);
 });
 
-test("a provider that bills nothing is $0 from the list for every resource, whatever a setting says", async (t) => {
-  const body = await pricesOf(t, { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_DOCKER: "0.5" });
+test("a provider that bills nothing is $0 from the list for every compute resource, whatever a setting says; its browser row follows a browser setting", async (t) => {
+  const body = await pricesOf(t, { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_DOCKER: "0.5", AGENTRUN_BROWSER_USD_PER_HOUR_LOCAL_CHROME: "0.5" });
+  assert.deepEqual(browser(body, "local-chrome"), { provider: "local-chrome", unit: "hour", usd: "0.5", minimum_s: 0, source: "setting" });
   for (const resource of ["vcpu", "memory", "disk"]) assert.deepEqual(compute(body, "docker", resource), { provider: "docker", resource, gpu_type: null, unit: { vcpu: "vcpu_second", memory: "gib_second", disk: "gb_month" }[resource], usd: "0", source: "list" });
 });
 
