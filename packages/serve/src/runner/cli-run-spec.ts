@@ -408,7 +408,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin, the one its revision's save made, read, its
   // credentials opened under the runner's seal key (deps.sealKey) into this claim's memory, one gateway for the claim.
   // Before the session opens: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its words.
-  // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactors.
+  // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactors. A
+  // per_run server the run was handed no credential for is left out of its tools, and its timeline says so; not on a
+  // harness whose tools are fixed at its thread's start (AdapterFacts.toolsFixedAtStart), where it would never come back.
   // A held run its model kept from running at its create (hold.refused) opens none: nothing can call one.
   const heldRefusal = launch.hold?.refused?.message;
   // What its gateway files (a long answer, a server's results) goes in the run's own files. In Mode 1 that is the run's
@@ -420,7 +422,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // as the pi spec makes it: a refusal lets the Workspace and the Archil claim go (holds above).
   let filedIn: Workspace | undefined;
   const hold = (values: string[]) => { for (const redact of [...(run.redact ? [heldRedactor(run.redact)] : []), cut]) redact.hold(values); };
-  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, ...claimMetering(deps, web, launch) });
+  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...(facts.toolsFixedAtStart ? { toolsFixedAtStart: true } : {}), ...claimMetering(deps, web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
   // The pull request's checkout, when the revision asks for one, as the pi spec makes it (pr-checkout.ts).
