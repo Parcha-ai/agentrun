@@ -54,14 +54,14 @@ describe("the provider's image on real Docker", { skip: LIVE ? false : "set AGEN
 		const text = recipe(`RUN echo ${nonce} > /made`);
 		const tag = recipeTag(text);
 		made.add(tag);
-		const results = await Promise.all([1, 2, 3].map(() => ensureImage({ recipe: text }, { docker: wrapped })));
+		const results = await Promise.all([1, 2, 3].map(() => ensureImage({ recipe: text }, { env: process.env, docker: wrapped })));
 		for (const result of results) assert.deepEqual(result, { ok: true, value: tag });
 		assert.equal(builds().length, 1, `one build for three callers: ${builds().join(" | ")}`);
 		assert.equal(labelOf(tag), recipeHash(text), "the image carries the recipe's whole sha256");
 		assert.equal(docker("run", "--rm", "--network", "none", tag, "cat", "/made").trim(), nonce, "the image is this recipe's");
-		assert.deepEqual(await ensureImage({ recipe: text }, { docker: wrapped }), { ok: true, value: tag });
+		assert.deepEqual(await ensureImage({ recipe: text }, { env: process.env, docker: wrapped }), { ok: true, value: tag });
 		assert.equal(builds().length, 1, "the next call finds the tag: no build");
-		const provider = new DockerProvider({ daemonPath: wrapped, docker: wrapped, image: { recipe: text } });
+		const provider = new DockerProvider({ env: process.env, daemonPath: wrapped, docker: wrapped, image: { recipe: text } });
 		assert.deepEqual(await provider.image(), { ok: true, value: tag });
 		assert.equal(builds().length, 1, "nor through the provider");
 	});
@@ -73,7 +73,7 @@ describe("the provider's image on real Docker", { skip: LIVE ? false : "set AGEN
 		const text = recipe(`RUN echo ${nonce} > /made && sleep 2`);
 		const tag = recipeTag(text);
 		made.add(tag);
-		const script = `const { ensureImage } = await import(${JSON.stringify(INDEX)}); process.stdout.write(JSON.stringify(await ensureImage({ recipe: ${JSON.stringify(text)} })));`;
+		const script = `const { ensureImage } = await import(${JSON.stringify(INDEX)}); process.stdout.write(JSON.stringify(await ensureImage({ recipe: ${JSON.stringify(text)} }, { env: process.env })));`;
 		const all = await Promise.all([1, 2, 3].map(() => run(process.execPath, ["--input-type=module", "-e", script], { encoding: "utf8", timeout: 600_000 })));
 		for (const { stdout } of all) assert.deepEqual(JSON.parse(stdout), { ok: true, value: tag });
 		assert.equal(labelOf(tag), recipeHash(text));
@@ -86,14 +86,14 @@ describe("the provider's image on real Docker", { skip: LIVE ? false : "set AGEN
 		const text = recipe(`RUN ${step}`);
 		const tag = recipeTag(text);
 		made.add(tag);
-		assert.deepEqual(await ensureImage({ recipe: text }), {
+		assert.deepEqual(await ensureImage({ recipe: text }, { env: process.env }), {
 			ok: false,
 			error: { code: "vendor", vendor: "docker", message: `the recipe of ${tag} failed at the step \`RUN ${step}\` with exit code 1: fix that step` },
 		});
 		assert.throws(() => docker("image", "inspect", tag), /No such image/i, "nothing was tagged");
 		const unparsed = recipe(`BOGUS ${nonce}`);
 		made.add(recipeTag(unparsed));
-		assert.deepEqual(await ensureImage({ recipe: unparsed }), {
+		assert.deepEqual(await ensureImage({ recipe: unparsed }, { env: process.env }), {
 			ok: false,
 			error: { code: "vendor", vendor: "docker", message: `Docker could not parse the recipe of ${recipeTag(unparsed)} at line 2: fix that line` },
 		});
@@ -101,12 +101,12 @@ describe("the provider's image on real Docker", { skip: LIVE ? false : "set AGEN
 
 	it("an image by name Docker has is ready with no pull; one at a registry that cannot be reached is refused in words", async () => {
 		const start = readFileSync(logged, "utf8").split("\n").length;
-		assert.deepEqual(await ensureImage({ image: "alpine:3.20" }, { docker: wrapped }), { ok: true, value: "alpine:3.20" });
+		assert.deepEqual(await ensureImage({ image: "alpine:3.20" }, { env: process.env, docker: wrapped }), { ok: true, value: "alpine:3.20" });
 		const calls = readFileSync(logged, "utf8").split("\n").slice(start - 1).filter(Boolean);
 		assert.deepEqual(calls, ["image inspect --format {{json .Config.Labels}} alpine:3.20"], "one inspect, no pull");
 		// Port 9 on this machine: nothing listens, so the registry is refused at once, with no call off the machine.
 		const nowhere = `127.0.0.1:9/agentrun-nosuch:${randomBytes(4).toString("hex")}`;
-		assert.deepEqual(await ensureImage({ image: nowhere }, { timeoutMs: 120_000 }), {
+		assert.deepEqual(await ensureImage({ image: nowhere }, { env: process.env, timeoutMs: 120_000 }), {
 			ok: false,
 			error: { code: "vendor", vendor: "docker", message: `the registry could not be reached to pull ${nowhere}: run docker pull ${nowhere} on this machine to see why` },
 		});

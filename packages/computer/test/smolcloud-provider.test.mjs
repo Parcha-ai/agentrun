@@ -3,9 +3,10 @@
 // lifecycle is tested once, against its fake host (hosted-provider.test.mjs); smol cloud's own is proven live.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const { SmolcloudProvider } = await import("../dist/smolcloud.js");
-const { SMOLCLOUD_ENV: ENV, settingsFromEnv, createProvider, createHost, conformanceImage, sweepScope } = await import("../dist/conformance/smolcloud.js");
+const { SMOLCLOUD_ENV: ENV, settingsFromEnv, createProvider, createDriftedProvider, createHost, conformanceImage, sweepScope } = await import("../dist/conformance/smolcloud.js");
 
 const KEY = "smolcloud_fake_key_0123456789";
 const API = "https://api.example.test";
@@ -199,4 +200,68 @@ test("the conformance module reads COMPUTER_SMOLCLOUD_* alone, after its live sw
 	assert.match(await conformanceImage({ env: {} }), /^ghcr\.io\/parcha-ai\/agentrun-box:[0-9a-f]{12}$/);
 	assert.match(sweepScope({ env }), /sha256:[0-9a-f]{12}/);
 	assert.doesNotMatch(sweepScope({ env }), new RegExp(KEY));
+});
+
+test("the API URL is https alone, loopback included, so the key never crosses in the clear: the provider refuses another before any call", async () => {
+	const key = "fake-test-key";
+	const heard = [];
+	const fetch = async (url) => (heard.push(url), new Response("[]", { status: 200 }));
+	for (const apiUrl of ["http://api.smolmachines.com", "http://10.0.0.5:8080", "http://127.0.0.1:8080", "http://[::1]:8080", "http://localhost:8080", "ws://api.smolmachines.com"]) {
+		assert.throws(() => new SmolcloudProvider({ apiKey: key, apiUrl, fetch }), refusesHttp("the smol cloud API URL", apiUrl, key));
+		await assert.rejects(createProvider({ env: { [ENV.key]: key, [ENV.live]: "1", [ENV.apiUrl]: apiUrl } }), refusesHttp("the smol cloud API URL", apiUrl, key));
+	}
+	assert.throws(() => new SmolcloudProvider({ apiKey: key, apiUrl: "api.smolmachines.com", fetch }), (error) => /the smol cloud API URL is not a URL/.test(error.message) && !error.message.includes(key));
+	assert.deepEqual(heard, [], "no call went out");
+	const { host } = new SmolcloudProvider({ apiKey: key, apiUrl: "https://api.smolmachines.com/", fetch });
+	await host.list({}, CTX);
+	assert.deepEqual(heard, ["https://api.smolmachines.com/v1/machines"]);
+});
+
+/** A fetch that records each call and answers what route(method, path) gives, as recorder's does, for a provider made elsewhere. */
+function fetchOf(route) {
+	const calls = [];
+	const fetch = async (url, init) => {
+		const { pathname, search } = new URL(url);
+		calls.push({ method: init.method, path: `${pathname}${search}` });
+		const [status, json] = (await route(init.method, `${pathname}${search}`)) ?? [404, { detail: "no such route" }];
+		return new Response(json === undefined ? null : JSON.stringify(json), { status });
+	};
+	return { calls, fetch };
+}
+
+test("the conformance module hands the caller's onNote to the provider: a release whose run folder was not let go cleanly is said through it", async () => {
+	// A running Archil computer: release lets go of its folder first, through an exec smol cloud refuses here.
+	const labels = { "agentrun.computer": "1", "agentrun.computer.name": "computer-0123456789ab", "agentrun.run": "r1", "agentrun.mount": JSON.stringify({ kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", agent: "a1" }) };
+	let deleted = false;
+	const { fetch } = fetchOf((method, path) => {
+		if (method === "POST" && path === `/v1/machines/${ID}/execs`) return [400, { detail: "no exec here" }];
+		if (path !== `/v1/machines/${ID}`) return undefined;
+		if (method === "DELETE") {
+			deleted = true;
+			return [204, undefined];
+		}
+		if (method === "GET") return deleted ? [404, { detail: "machine not found" }] : [200, { id: ID, state: "started", labels, createdAt: "2026-11-17T00:00:00Z", error: null }];
+		return undefined;
+	});
+	const notes = [];
+	const provider = await createProvider({ env: { [ENV.key]: KEY, [ENV.apiUrl]: API, [ENV.live]: "1" }, fetch, timeouts: { pollMs: 1 }, onNote: (note) => notes.push(note) });
+	const released = await provider.release({ id: ID, name: "computer-0123456789ab" }, "delete");
+	assert.equal(released.ok, true, JSON.stringify(released));
+	assert.equal(deleted, true);
+	assert.equal(notes.length, 1, JSON.stringify(notes));
+	assert.equal(notes[0].computer, "computer-0123456789ab");
+	assert.match(notes[0].note, /was deleted, and the run's folder was not let go cleanly/);
+});
+
+test("the conformance module's daemon: an option's path, and the drifted twin uploads the one it built", async () => {
+	const { fetch } = fetchOf((method, path) => (method === "GET" && path.startsWith("/v1/machines?") ? [200, []] : undefined));
+	const env = { [ENV.key]: KEY, [ENV.apiUrl]: API, [ENV.live]: "1" };
+	const spec = { image: "alpine:3.20", lifetimeMs: 600_000, network: "none" };
+	const options = { env, fetch, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await (await createProvider(options)).create(spec, { requestId: "req-untangle-smolcloud-1" });
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await (await createDriftedProvider(options)).create(spec, { requestId: "req-untangle-smolcloud-2" });
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
 });

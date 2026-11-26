@@ -85,7 +85,6 @@ if [ -n "$token$seal$url" ]; then
     [ -z "$url" ] || printf 'AGENTRUN_PUBLIC_URL=%s\n' "$url"
   } | fly secrets import --stage -a "$app"
 fi
-unset token seal
 
 # One Machine: the SQLite store is on its one volume, which the first deploy makes from fly.toml's [[mounts]].
 fly deploy -a "$app" -c "$config" --primary-region "$region" --ha=false --yes

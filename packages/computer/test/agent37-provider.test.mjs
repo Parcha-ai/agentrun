@@ -9,6 +9,7 @@ import test from "node:test";
 import { codeOfError } from "../dist/hosted/process.js";
 import * as registry from "../dist/providers.js";
 import { API_URL, fakeAgent37, fakeRest, KEY, keyPair, MAX_SESSIONS, PROXY } from "./fake-agent37.mjs";
+import { refusesHttp } from "./https-refusal.mjs";
 
 const agent37 = await import("../dist/agent37.js");
 const { Agent37Provider, create, workspaceOf } = agent37;
@@ -112,17 +113,21 @@ test("kind desktop declares the screen and input besides the shell, as its descr
 	assert.throws(() => restOnly({ kind: "phone" }), /kind is desktop or linux/);
 });
 
-test("the provider takes the key and the SSH key as options, a key's contents never a path, and refuses a type or region Agent37 has not", async () => {
+test("the provider takes the key and an optional SSH key as options, a key's contents never a path, and refuses a type or region Agent37 has not", async () => {
 	const ssh2 = { Client: class {} };
 	await assert.rejects(create({ sshKey: SSH_KEY, ssh2 }), /options\.apiKey/);
-	await assert.rejects(create({ apiKey: KEY, ssh2 }), /options\.sshKey/);
+	// No SSH key: the provider makes its own on first use (agent37-ssh-key.test.mjs).
+	assert.equal((await create({ apiKey: KEY, ssh2 })).id, "agent37");
+	assert.throws(() => new Agent37Provider({ apiKey: KEY, ssh2, secrets: { get: async () => undefined } }), /options\.secrets/);
 	await assert.rejects(create({ apiKey: KEY, sshKey: "~/.ssh/id_ed25519", ssh2 }), (error) => {
 		assert.match(error.message, /never a path/);
 		assert.doesNotMatch(error.message, new RegExp(KEY));
 		return true;
 	});
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2: {} }), /ssh2 package/);
-	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl: "http://api.agent37.com" }), /https URL/);
+	for (const apiUrl of ["http://api.agent37.com", "http://127.0.0.1:8080", "http://localhost:8080"]) {
+		assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, apiUrl }), refusesHttp("the Agent37 API URL", apiUrl, KEY));
+	}
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, type: "gpu" }), /vm or default/);
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, region: "mars" }), /us, eu or ap-south/);
 	assert.throws(() => new Agent37Provider({ apiKey: KEY, sshKey: SSH_KEY, ssh2, region: "eu", type: "default" }), /takes type vm/);
@@ -603,7 +608,7 @@ test("the conformance module reads COMPUTER_AGENT37_* alone, needs its live swit
 		{ apiKey: KEY, sshKey: SSH_KEY, type: "default", region: "us", kind: "desktop", apiUrl: API_URL, daemonPath: "/tmp/computerd", maxLifetimeMs: 3_600_000, daemonUser: "2510:2510" },
 	);
 	assert.throws(() => settingsFromEnv({ AGENT37_API_KEY: BARE, AGENT37_SSH_KEY: SSH_KEY }), (error) => /set COMPUTER_AGENT37_API_KEY/.test(error.message) && !error.message.includes(BARE));
-	assert.throws(() => settingsFromEnv({ [ENV.key]: KEY }), /set COMPUTER_AGENT37_SSH_KEY/);
+	assert.deepEqual(settingsFromEnv({ [ENV.key]: KEY }), { apiKey: KEY }, "COMPUTER_AGENT37_SSH_KEY is optional");
 	assert.throws(() => settingsFromEnv({ ...env, [ENV.maxLifetimeMs]: "1h" }), /whole number of milliseconds/);
 	const rest = fakeRest();
 	const doubles = { ssh2: { Client: class {} }, fetch: rest.fetch };
@@ -643,4 +648,17 @@ test("the conformance module's drifted twin uploads a daemon of another version"
 	assert.equal(built.length, 1);
 	assert.match(built[0], /-drift$/);
 	assert.equal(drifted.id, "agent37");
+});
+
+test("the conformance module's daemon: an option's path over COMPUTER_AGENT37_DAEMON, and the drifted twin uploads the one it built", async () => {
+	const rest = fakeRest();
+	const env = { [ENV.key]: KEY, [ENV.sshKey]: SSH_KEY, [ENV.live]: "1", [ENV.apiUrl]: API_URL, [ENV.daemon]: "/nonexistent/untangle-env/computerd" };
+	const spec = { image: "agent37-base", lifetimeMs: 600_000, network: "none" };
+	const options = { env, ssh2: { Client: class {} }, fetch: rest.fetch, daemonPath: "/nonexistent/untangle-option/computerd", buildDaemon: async () => "/nonexistent/untangle-drift/computerd" };
+	const made = await (await conformanceModule.createProvider(options)).create(spec, { requestId: "req-untangle-agent37-1" });
+	assert.equal(made.ok, false);
+	assert.match(made.error.message, /no daemon binary at \/nonexistent\/untangle-option\/computerd/);
+	const drifted = await (await conformanceModule.createDriftedProvider(options)).create(spec, { requestId: "req-untangle-agent37-2" });
+	assert.equal(drifted.ok, false);
+	assert.match(drifted.error.message, /no daemon binary at \/nonexistent\/untangle-drift\/computerd/);
 });

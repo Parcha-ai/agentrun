@@ -6,7 +6,15 @@ import { test } from "node:test";
 import { createReflectHook } from "../dist/runner/reflect-hook.js";
 import { COMPILE_TIMEOUT_MS, compilePrompt } from "../dist/learn/compile.js";
 import { said, STOPPED } from "../dist/learning-words.js";
-import { runCostOf } from "../dist/learning-cost.js";
+import { figuresOf, record } from "../dist/learn/ledger.js";
+
+/** A run's series figures as its ledger row gives them (learn/ledger.ts record, figuresOf): its row's cost `costUsd` and
+ *  the one round its end kept. */
+const runCostOf = (costUsd, end) => {
+  const { row } = record({ id: "run-1", agentId: "a", startedAt: 0, costUsd, costAtMostUsd: null, metrics: { path: "agent" }, rounds: [{ round: 1, proposal: end }] });
+  const figures = figuresOf(row, { compile: 0, shadow: 0, share: 0 });
+  return { cost_usd: figures.usd, learning_usd: figures.series_learning_usd, total_usd: figures.series_total_usd };
+};
 
 const claim = { runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "running" };
 /** The hooks' clock; a run's spend reads 0.01 throughout unless a test says otherwise. */
@@ -263,7 +271,7 @@ test("a compile ask the cap refused keeps nothing, saying so; a turn that failed
   }
 });
 
-test("a merge that could not be written drops the learning: unavailable as failed, a conflict in the checks' words", async () => {
+test("a merge that could not be written drops the learning: unavailable as failed, a conflict in the checks' words, a purge since its seed as purged_since_seed", async () => {
   const unavailable = hookWith({ words: ["Keep it short."], commit: () => ({ ok: false, reason: "unavailable", problems: [] }) });
   const one = kept(await unavailable.hook(unavailable.input()));
   assert.deepEqual([one.state, one.reason, one.detail], ["dropped", "reflect_failed", said.stopped(STOPPED.failed)]);
@@ -273,6 +281,9 @@ test("a merge that could not be written drops the learning: unavailable as faile
   const conflict = hookWith({ compile: NEW, commit: () => ({ ok: false, reason: "conflict", problems }) });
   const two = kept(await conflict.hook(conflict.input()));
   assert.deepEqual([two.state, two.reason, two.problems], ["dropped", "checker", problems]);
+  const purged = hookWith({ compile: NEW, words: ["Keep it short."], commit: () => ({ ok: false, reason: "purged", problems: [] }) });
+  const three = kept(await purged.hook(purged.input()));
+  assert.deepEqual([three.state, three.reason, three.detail], ["dropped", "purged_since_seed", said.purgedSinceSeed]);
 });
 
 test("every string the step keeps is cut of what the run must never learn", async () => {

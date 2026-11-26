@@ -144,6 +144,7 @@ const WORDS: Record<string, string> = {
   cancelled: "Not kept: learning stopped (the run was cancelled).",
   crashed: "Not kept: learning stopped (the run ended unexpectedly).",
   reflect_failed: "Not kept: learning stopped (an error).",
+  purged_since_seed: "Dropped: another run's learning was purged after this run started.",
 };
 export function dropWords(l: NonNullable<RunLearning>): string {
   if (l.detail && l.detail.trim()) return l.detail.trim();

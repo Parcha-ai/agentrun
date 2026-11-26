@@ -110,13 +110,19 @@ const docsFlow = () => ({
 /** The smoke's faux decision providers: each call waits AGENTRUN_SMOKE_DECISION_MS and is filed in AGENTRUN_SMOKE_DECISION_CALLS. */
 const FAUX_DECISIONS = new URL("../scripts/dwf-smoke/faux-decisions.mjs", import.meta.url).pathname;
 
-// SKIP (follow-up #2089): the run's graph never shows a map item working, so the paused-map read never starts
+// SKIP (#3550): waits on a pause mid-map that holds on the runner. Run alone it passes some of the time; it has also failed at
+// "the judges in flight finish within a minute" (after the pause, the graph's decisions never matched the requests the
+// faux decisions filed: a request sent with no receipt, or a receipt never read), and in CI, after the resume, its items
+// ended escalated, needs_review and not_run. The pause is applied at the run's next decision (workflow-loop.ts, the
+// PAUSED_WORDS throw in workflow-spec.ts decisionJudging): what it does to the judges in flight is what this waits on.
 test.skip("a run's graph reads while it goes and while it is paused mid-map at maxConcurrency 4, live and never waiting on a busy store", async (t) => {
   const dir = await scratch(t);
   const docs = join(dir, "docs");
   await mkdir(docs);
   const names = ["a", "b", "c", "d", "e", "f"];
-  for (const name of names) pdf(join(docs, `${name}.pdf`), `Document ${name}`);
+  // The faux System One draws a verdict from a hash of the page's text, which this host's pdftotext shapes: FAUX_YES in
+  // the text pins every judge to a confident yes, so each item ends done wherever it runs.
+  for (const name of names) pdf(join(docs, `${name}.pdf`), `Document ${name} FAUX_YES`);
   withEnv(t, { TYPESAFE_API_KEY: STAND_IN, AGENTRUN_SMOKE_DECISION_MS: "300", AGENTRUN_SMOKE_DECISION_CALLS: join(dir, "calls.jsonl") }, ["PARALLEL_API_KEY", "OPENROUTER_API_KEY"]);
   const { api } = await serve(t, { documents: docs, allowCodeNodes: true, fauxJev: FAUX_DECISIONS });
   const flow = {
@@ -167,8 +173,14 @@ test.skip("a run's graph reads while it goes and while it is paused mid-map at m
   }
   assert.deepEqual(graph.nodes["/root/steps/0"].items.map((i) => i.label), names.map((n) => `${n}.pdf`));
   assert.equal((await api("POST", `/runs/${id}/pause`)).body.paused, true);
-  graph = await read();
-  assert.equal(graph.run.status, "paused");
+  // The pause is a command the runner records at once and applies at the run's next decision or model request
+  // (workflow-loop.ts), so the graph says paused once that has come: within a decision's 300 ms, bounded here by 30 s.
+  for (const end = Date.now() + 30_000; ; ) {
+    graph = await read();
+    if (graph.run.status === "paused") break;
+    assert.ok(Date.now() < end, `the run is paused within 30 s: ${graph.run.status}`);
+    await sleep(100);
+  }
   // The judges in flight finish: every request sent has its receipt, and no call is working. Nothing new starts; every
   // read answers live.
   const sent = async () => (await readFile(join(dir, "calls.jsonl"), "utf8").catch(() => "")).split("\n").filter(Boolean).length;
@@ -223,8 +235,7 @@ test("a tool that fails in a map item fails that item only when the map collects
   assert.match(failed.error, /pdf/i);
 });
 
-// SKIP (follow-up #2089): saving an invalid workflow answers 201 instead of 422
-test.skip("POST /workflows/validate answers every issue by path, writes nothing; a save of an invalid workflow is 422 with each issue as a field", async (t) => {
+test("POST /workflows/validate answers every issue by path, writes nothing; a save of an invalid workflow is 422 with each issue as a field", async (t) => {
   const { api } = await serve(t);
   const good = await api("POST", "/workflows/validate", { workflow: docsFlow(), tools: ["pdf_pages", "llm"] });
   assert.deepEqual([good.status, good.body.ok, good.body.issues], [200, true, []]);
@@ -244,6 +255,9 @@ test.skip("POST /workflows/validate answers every issue by path, writes nothing;
   assert.ok(field, JSON.stringify(saved.body.error.fields));
   assert.equal(field.code, "NODE_FIELD_INVALID");
   assert.match(field.message, /itemsPath/);
+  // A call node's tool its tools leave out is validate's TOOL_NOT_LISTED above, but the run binds it anyway (tools.ts
+  // grantedTools): the save takes it.
+  assert.equal((await api("POST", "/agents", flowAgent("unlisted", docsFlow(), { tools: ["pdf_pages"] }))).status, 201);
 });
 
 test("a map's items name the branch each route in its body took for them", async (t) => {

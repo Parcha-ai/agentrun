@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { personHands, personWaitMs, personWindows, releasedAfterWait } from "../dist/browser-person.js";
 import { browserAsk, handBackTarget, waitingAsk } from "../dist/browser-commands.js";
+import { secretRedactor } from "../dist/runner/redact.js";
 import { scratch, toolLedger } from "./support.mjs";
 
 /** A run's journal of hand-over entries (their data, in order): the asks' waiting entries and their answers, as the
@@ -33,6 +34,8 @@ const entriesAt = (root) => journalAt(root).list.map((data) => ({ kind: "agent.h
 function personAt({ root, note, answered, ...options }) {
   const journal = journalAt(root);
   return personHands({
+    // The run's redactor, as tools.ts hands the person's process one (a test's run holds no secrets), unless a test gives its own.
+    redact: secretRedactor([]),
     ...options,
     asks: options.asks ?? journal.asks,
     answered: answered ?? journal.answered,
@@ -62,9 +65,10 @@ const ask = (n, tag) => ({ requestId: `00000000-0000-4000-8000-00000000000${n}`,
 
 /** The run's process's side on `root`, with a cap that grants every hold (or refuses once `refuse` is set), counting them. */
 function hands(root, { gates = () => ({ give: () => false }), timers, holdMs, now } = {}) {
-  const held = { taken: 0, dropped: 0, refuse: null, notes: [] };
+  const held = { taken: 0, dropped: 0, refuse: null, notes: [], drives: [] };
   const person = personAt({
     root, gates, timers, holdMs, now, pollMs: 60_000,
+    held: (tag, on) => held.drives.push([tag, on]),
     personTime: async () => {
       if (held.refuse) return { refused: held.refuse };
       held.taken += 1;
@@ -384,10 +388,11 @@ test("a take that ends before its hold goes live (the agent's call still running
   }
   await sleep(5);
   assert.deepEqual(held.notes, [], "nothing taken over, nothing handed back");
+  assert.deepEqual(held.drives, [], "the person never drove: the run read never says so");
   assert.deepEqual([held.taken, held.dropped], [5, 5], "each one's time let go");
 });
 
-test("a take-over's row is written when its hold goes live, and a take whose hold never started is let go with no row", async (t) => {
+test("a take-over's row is written when its hold goes live, and a take whose hold never started is let go with no row; who drives is told as the take goes live and as it ends, however it ends", async (t) => {
   const root = await scratch(t);
   const { person, held } = hands(root);
   t.after(() => person.close());
@@ -404,6 +409,14 @@ test("a take-over's row is written when its hold goes live, and a take whose hol
   never.cancel();
   await sleep(5);
   assert.deepEqual([held.notes.length, held.taken, held.dropped], [2, 2, 2], "cancelled: its hold dropped, no row");
+  // Every end of a live take, the person's hand-back or not, tells the run read the agent drives again.
+  for (const why of ["idle", "away", "released", "cap", "answered"]) {
+    const other = await person.take("ar-run-18-2");
+    other.started();
+    other.end(why);
+  }
+  await sleep(5);
+  assert.deepEqual(held.drives, [["ar-run-18-1", true], ["ar-run-18-1", false], ...["idle", "away", "released", "cap", "answered"].flatMap(() => [["ar-run-18-2", true], ["ar-run-18-2", false]])]);
 });
 
 test("the person's time a take-over holds never pauses the agent's run when the cap refuses it; an ask's does", async (t) => {

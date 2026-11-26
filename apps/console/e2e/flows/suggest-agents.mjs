@@ -39,11 +39,31 @@ const scanAndCreate = {
     check((await page.getByRole("button", { name: /Scan again/ }).count()) === 1, "a scanned repository is offered twice for a scan");
     await shot(page, "2-suggestions");
     await darkShot(page, "2-suggestions-dark");
+    // A list taller than the window scrolls under the bar: the title and Refresh stay where they were, and the page's body
+    // is the one box that scrolls (the shell's main has nothing left to scroll).
+    await page.setViewportSize({ width: 1440, height: 600 });
+    const bar = page.locator("header", { has: page.getByRole("heading", { name: "Suggested agents" }) });
+    const before = await bar.boundingBox();
+    const scrolled = await page.evaluate(() => {
+      const body = document.querySelector("[data-page-body]");
+      const main = document.querySelector("main");
+      if (!body || !main) return { body: 0, main: -1 };
+      body.scrollTop = body.scrollHeight;
+      return { body: body.scrollTop, main: main.scrollHeight - main.clientHeight };
+    });
+    check(scrolled.body > 0, `the suggestions did not scroll in their own box: ${JSON.stringify(scrolled)}`);
+    check(scrolled.main === 0, `the shell's main scrolls the whole page, bar and all: ${JSON.stringify(scrolled)}`);
+    const after = await bar.boundingBox();
+    check(before && after && after.y === before.y && after.y + after.height <= 600, `the bar moved when the suggestions scrolled: ${JSON.stringify({ before, after })}`);
+    await shot(page, "2-suggestions-scrolled");
     // On a phone (390 px) the page has no sideways scroll: the cards, the evidence and the actions fit; a long line of code
     // scrolls inside its own block.
     await page.setViewportSize({ width: 390, height: 844 });
-    const wide = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth - innerWidth, main: (() => { const m = document.querySelector("main"); return m ? m.scrollWidth - m.clientWidth : 0; })() }));
-    check(wide.doc <= 0 && wide.main <= 0, `at 390 px the page scrolls sideways: ${JSON.stringify(wide)}`);
+    const wide = await page.evaluate(() => {
+      const sideways = (sel) => { const el = document.querySelector(sel); return el ? el.scrollWidth - el.clientWidth : 0; };
+      return { doc: document.documentElement.scrollWidth - innerWidth, main: sideways("main"), body: sideways("[data-page-body]") };
+    });
+    check(wide.doc <= 0 && wide.main <= 0 && wide.body <= 0, `at 390 px the page scrolls sideways: ${JSON.stringify(wide)}`);
     await shot(page, "2-suggestions-phone");
     await page.setViewportSize({ width: 1440, height: 1000 });
 
@@ -66,11 +86,18 @@ const scanAndCreate = {
     const pull = dialog.getByRole("link", { name: /Open pull request #1/ });
     check((await pull.getAttribute("href")) === "https://github.com/faux-org/demo/pull/1", "the pull request's link is the fake GitHub's");
     await dialog.getByText("AGENTRUN_AGENT_TICKET_TRIAGE").waitFor();
+    check(await dialog.getByText("AGENTRUN_BASE_URL", { exact: true }).count() === 1, "the created dialog does not name the address as AgentRun's clients read it");
+    check(await dialog.getByText(`${origin}/v2`, { exact: true }).count() === 1, "the created dialog does not give this server's API address");
     await shot(page, "5-created");
     await page.keyboard.press("Escape");
-    // The list shows it created, with its pull request.
-    await page.getByRole("link", { name: /#1/ }).waitFor();
+    // The list shows it created: its card, its pull request open, its first call still to come.
+    const made = page.locator('[data-created="ticket-triage"]');
+    await made.getByRole("link", { name: "Review #1" }).waitFor();
+    check(await made.locator('[data-step="Pull request"][data-tone="done"]').count() === 1, "the created card does not show its pull request open");
+    check(await made.locator('[data-step="First call"][data-tone="waiting"]').count() === 1, "the created card does not wait for its first call");
+    await made.scrollIntoViewIfNeeded();
     await shot(page, "6-created-row");
+    await darkShot(page, "6-created-row-dark");
     check(errors.length === 0, `the page reported errors: ${errors.join(" | ")}`);
   },
 };

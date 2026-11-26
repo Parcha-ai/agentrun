@@ -47,7 +47,7 @@ describe("the Tools step's MCP servers", () => {
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find((b) => b.textContent?.trim().startsWith("Tools"))!.click(); });
     await settle();
     const group = host.querySelector('[aria-label="MCP server fake"]')!;
     expect(group.textContent).toContain("Add two numbers.");
@@ -98,7 +98,7 @@ describe("the Tools step's MCP servers", () => {
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find((b) => b.textContent?.trim().startsWith("Tools"))!.click(); });
     await settle();
     expect(host.textContent).toContain("The MCP servers could not be read.");
     expect((host.querySelector('input[value="mcp:fake/add"]') as HTMLInputElement).checked).toBe(true);
@@ -125,7 +125,7 @@ describe("the Tools step's MCP servers", () => {
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find((b) => b.textContent?.trim().startsWith("Tools"))!.click(); });
     // A second read while the first is still out (the page given its client again reads them again).
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
     await settle();
@@ -134,7 +134,7 @@ describe("the Tools step's MCP servers", () => {
     await settle();
     await act(async () => { answers[0](json(503, { error: { code: "unavailable", message: "busy", retryable: true } })); });
     await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await act(async () => { [...host.querySelectorAll<HTMLButtonElement>('nav[aria-label="Agent settings sections"] ul button')].find((b) => b.textContent?.trim().startsWith("Tools"))!.click(); });
     await settle();
     expect(host.querySelector('[aria-label="MCP server fake"]')).not.toBeNull();
     expect(host.textContent).not.toContain("could not be read");
@@ -208,82 +208,8 @@ describe("a call to an MCP server's tool on the timeline", () => {
   });
 });
 
+// The filter's own cases (built-in and MCP cards, counts, a grant no saved server answers for) are ToolPicker.test.tsx's.
 describe("the Tools step's filter box", () => {
-  it("hides the built-in and MCP cards its words miss, by tool or server name, says how many it keeps, and never unticks a card it hides", async () => {
-    const OCTO: McpServer = { ...FAKE, name: "octo", tools: [tool("GITHUB_LIST_ISSUES", "List a repository's issues."), tool("GITHUB_CREATE_AN_ISSUE_COMMENT", "Comment on an issue.")] };
-    const puts: { body: { definition: { tools: string[] } } }[] = [];
-    const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
-    const fetch = (async (url: string, init?: RequestInit) => {
-      const path = String(url);
-      if (init?.method === "PUT") {
-        const body = JSON.parse(String(init.body));
-        puts.push({ body });
-        return json(200, { ...agent(body.definition.tools), revision: "r2", revisions: 2, definition: body.definition }, { etag: '"r2"' });
-      }
-      if (path === "/v2/agents/calc") return json(200, agent(["read", "mcp:fake/delete_thing"]), { etag: '"r1"' });
-      if (path.startsWith("/v2/agents/calc/revisions")) return json(200, { revisions: [{ revision: "r1", version: 1, current: true, note: null, created_at: "2026-11-04T10:00:00Z", kind: "agentic", definition: definition(["read", "mcp:fake/delete_thing"]) }], next_cursor: null });
-      if (path === "/v2/settings/mcp-servers") return json(200, { servers: [FAKE, OCTO] });
-      return json(404, { error: { code: "not_found", message: path, retryable: false } });
-    }) as typeof globalThis.fetch;
-    const host = document.body.appendChild(document.createElement("div"));
-    root = createRoot(host);
-    act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
-    const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
-    await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
-    await settle();
-    const filter = () => host.querySelector('input[aria-label="Filter tools"]') as HTMLInputElement;
-    const typeFilter = async (value: string) => { await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter(), value); filter().dispatchEvent(new Event("input", { bubbles: true })); }); };
-    const cards = () => [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"][value]')].map((b) => b.value).filter((v) => v === "read" || v.startsWith("mcp:"));
-    const status = () => filter().closest("div")!.querySelector('[role="status"]')!.textContent;
-    const all = ["read", "mcp:fake/add", "mcp:fake/delete_thing", "mcp:octo/GITHUB_LIST_ISSUES", "mcp:octo/GITHUB_CREATE_AN_ISSUE_COMMENT"];
-    expect(cards()).toEqual(all);
-    await typeFilter("issue");
-    expect(cards()).toEqual(["mcp:octo/GITHUB_LIST_ISSUES", "mcp:octo/GITHUB_CREATE_AN_ISSUE_COMMENT"]);
-    expect(host.querySelector('[aria-label="MCP server fake"]'), "a server with no tool kept is left out").toBeNull();
-    expect(status()).toBe("2 of 5 shown");
-    await typeFilter("octo comment");
-    expect(cards(), "by server and tool words together").toEqual(["mcp:octo/GITHUB_CREATE_AN_ISSUE_COMMENT"]);
-    await act(async () => { (host.querySelector('input[value="mcp:octo/GITHUB_CREATE_AN_ISSUE_COMMENT"]') as HTMLInputElement).click(); });
-    await typeFilter("no-such-tool");
-    expect(cards()).toEqual([]);
-    expect(host.textContent).toContain("No tool matches “no-such-tool”.");
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Save revision")!.click(); });
-    await settle();
-    expect(puts.map((p) => p.body.definition.tools)).toEqual([["read", "mcp:fake/delete_thing", "mcp:octo/GITHUB_CREATE_AN_ISSUE_COMMENT"]]);
-    await typeFilter("");
-    expect(cards()).toEqual(all);
-    expect(status()).toBe("");
-  });
-
-  it("counts a grant it shows that no saved server answers for, or shown after the servers could not be read, as one it keeps", async () => {
-    for (const servers of ["listed", "failed"] as const) {
-      const grants = ["read", "mcp:gone/search", "mcp:fake/delete_thing"];
-      const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
-      const fetch = (async (url: string) => {
-        const path = String(url);
-        if (path === "/v2/agents/calc") return json(200, agent(grants), { etag: '"r1"' });
-        if (path.startsWith("/v2/agents/calc/revisions")) return json(200, { revisions: [{ revision: "r1", version: 1, current: true, note: null, created_at: "2026-11-04T10:00:00Z", kind: "agentic", definition: definition(grants) }], next_cursor: null });
-        if (path === "/v2/settings/mcp-servers") return servers === "listed" ? json(200, { servers: [FAKE] }) : json(500, { error: { code: "internal", message: "down", retryable: false } });
-        return json(404, { error: { code: "not_found", message: path, retryable: false } });
-      }) as typeof globalThis.fetch;
-      const host = document.body.appendChild(document.createElement("div"));
-      root = createRoot(host);
-      act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
-      const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
-      await settle();
-      await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
-      await settle();
-      const filter = host.querySelector('input[aria-label="Filter tools"]') as HTMLInputElement;
-      await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, "gone"); filter.dispatchEvent(new Event("input", { bubbles: true })); });
-      const shown = [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"][value]')].map((b) => b.value).filter((v) => v.startsWith("mcp:"));
-      expect(shown, servers).toEqual(["mcp:gone/search"]);
-      expect(filter.closest("div")!.querySelector('[role="status"]')!.textContent, servers).toMatch(/^1 of \d+ shown$/);
-      expect(host.textContent, servers).not.toContain("No tool matches");
-      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
-    }
-  });
-
   it("filters a monid grant by its name, as every other card, and counts the one it keeps", async () => {
     const grants = ["read", "monid:acme/search"];
     const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -299,7 +225,7 @@ describe("the Tools step's filter box", () => {
     act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
     const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
     await settle();
-    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+    await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.trim().startsWith("Tools"))!.click(); });
     await settle();
     const filter = host.querySelector('input[aria-label="Filter tools"]') as HTMLInputElement;
     const type = (q: string) => act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, q); filter.dispatchEvent(new Event("input", { bubbles: true })); });

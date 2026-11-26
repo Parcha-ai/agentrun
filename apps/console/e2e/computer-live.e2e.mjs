@@ -107,7 +107,12 @@ try {
   // The desktop's frame: drawn, and acked by the page once drawn.
   await until(() => desktop.record.acks === 1, "the page drew the frame and acked it").catch(() => {});
   check("the page drew the frame and acked it", desktop.record.acks === 1);
-  check("the canvas has the frame's size", await viewer.locator("#screen").evaluate((c) => c.width === 64 && c.height === 40));
+  // The canvas holds the device's pixels under its box (CSS size times devicePixelRatio), at the frame's shape: drawn
+  // there once, never stretched again by the browser.
+  check("the canvas holds the device's pixels, at the frame's shape", await viewer.locator("#screen").evaluate((c) => {
+    const r = c.getBoundingClientRect();
+    return c.width > 0 && Math.abs(c.width - r.width * devicePixelRatio) < 1 && Math.abs(c.height - r.height * devicePixelRatio) < 1 && Math.abs(c.width / c.height - 64 / 40) < 0.05;
+  }));
 
   // Take over: a take-over row the runner applies to the run's hold.
   await take.click();

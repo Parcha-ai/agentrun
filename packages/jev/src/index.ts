@@ -483,7 +483,9 @@ export function createJevRunner(options: JevOptions = {}): JevJudge {
     // keeps an OpenRouter request from falling back to TYPESAFE_API_KEY, and lets diagnostics redact whichever runner key is in use.
     if (hostClient === undefined && (apiKey !== undefined || provider === "openrouter") && (typeof apiKey !== "string" || apiKey.trim().length === 0)) throw new Error("no key");
     client = hostClient ?? new TypeSafeClient({
-      apiKey, baseURL: options.baseURL ?? (provider === "openrouter" ? OPENROUTER_BASE_URL : undefined), fetch: options.fetch,
+      apiKey, baseURL: options.baseURL ?? (provider === "openrouter" ? OPENROUTER_BASE_URL : undefined),
+      // A host's fetch is used as given. Without one, a request that carries the key never follows a redirect.
+      fetch: options.fetch ?? ((input, init) => fetch(input, { ...init, redirect: "error" })),
       defaultModel: model, retry: { maxRetries: 0 }, timeout: timeoutMs ?? undefined, logLevel: "off",
       // Bodies go as they always have: uncompressed JSON, which a host's own fetch, a gateway and OpenRouter all read.
       compression: false,
@@ -645,6 +647,7 @@ function jevErrorCode(error: JevError, timedOut: boolean, cancelled: boolean): D
   if (error.code !== "http") return error.code;
   if (error.status === 408 || (error.status !== undefined && error.status >= 500)) return "outcome_unknown";
   if (error.status === 401 || error.status === 403) return "auth";
+  if (error.status === 402) return "payment_required";
   if (error.status === 429) return "rate_limited";
   if (error.status === 400 || error.status === 422) return "invalid_request";
   return "http";

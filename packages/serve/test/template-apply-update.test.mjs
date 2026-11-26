@@ -28,12 +28,14 @@ const V1 = { version: "0.1.0", triggers: [NEW_PR(), SCHEDULE("daily", "0 9 * * *
 /** digest 0.2.0: the feed trigger's input changed, the daily schedule dropped, a weekly one added. */
 const V2 = { version: "0.2.0", instructions: "Write a short piece about ${parameters.topic}.", triggers: [NEW_PR("Say who opened it, and what it changes."), SCHEDULE("weekly", "0 9 * * 1")] };
 
-const manifest = ({ name = "digest", version, instructions = "Write about ${parameters.topic}.", triggers = [] }) => `---
+// Each names its tools (none, `tools: []`), unless `tools` is null: a package that names none is given Docker's box, and
+// where these servers have none (AGENTRUN_BOXES=none, the runner with no shell) its apply is refused.
+const manifest = ({ name = "digest", version, instructions = "Write about ${parameters.topic}.", triggers = [], tools = [] }) => `---
 name: ${name}
 version: ${version}
 description: Writes about a topic and watches a repository.
 budget: { per_run_usd: 0.25 }
-parameters:
+${tools ? `tools: [${tools.join(", ")}]\n` : ""}parameters:
   topic: { type: string, description: "the topic" }
   owner: { type: string, required: false, default: acme, description: "the repository's owner" }
   repo: { type: string, required: false, default: web, description: "the repository" }
@@ -61,6 +63,7 @@ const KEYED = `---
 name: keyed
 version: 1.0.0
 description: Calls a service with the owner's token.
+tools: []
 parameters:
   api_token: { type: string, description: "the service's token" }
 ---
@@ -71,6 +74,7 @@ const shaped = (v1) => `---
 name: shaped
 version: ${v1 ? "1.0.0" : "2.0.0"}
 description: Answers about a project.
+tools: []
 ${v1 ? `inputs:
   project: { type: string, description: "the project" }
 budget: { per_run_usd: 0.40 }
@@ -80,10 +84,10 @@ Answer about the project.
 `;
 
 /** A templates folder holding digest at `digest`, the plain package `other`, keyed, shaped (1.0.0, or 2.0.0 with `v1`
- *  false), bare, and each of `extra` (its name, its agent.md). */
+ *  false), bare, unnamed (other's, naming no tools), and each of `extra` (its name, its agent.md). */
 async function templates(t, digest, { v1 = true, extra = {} } = {}) {
   const root = join(await scratch(t), "templates");
-  for (const [name, text] of [["digest", manifest(digest)], ["other", manifest({ name: "other", version: "1.0.0" })], ["keyed", KEYED], ["shaped", shaped(v1)], ["bare", BARE], ...Object.entries(extra)]) {
+  for (const [name, text] of [["digest", manifest(digest)], ["other", manifest({ name: "other", version: "1.0.0" })], ["keyed", KEYED], ["shaped", shaped(v1)], ["bare", BARE], ["unnamed", manifest({ name: "unnamed", version: "1.0.0", tools: null })], ...Object.entries(extra)]) {
     mkdirSync(join(root, name), { recursive: true });
     writeFileSync(join(root, name, "agent.md"), text);
   }
@@ -426,7 +430,8 @@ async function fakeDocker(t) {
   const state = join(dir, "state");
   mkdirSync(bin);
   mkdirSync(state);
-  writeFileSync(join(bin, "docker"), `#!/bin/sh\nexec '${process.execPath}' '${new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname}' "$@"\n`, { mode: 0o755 });
+  // Its state is set in its own program: the Docker provider hands docker only the names docker reads.
+  writeFileSync(join(bin, "docker"), `#!/bin/sh\nexport FAKE_DOCKER_STATE='${state}'\nexec '${process.execPath}' '${new URL("./fixtures/fake-docker.mjs", import.meta.url).pathname}' "$@"\n`, { mode: 0o755 });
   withEnv(t, { PATH: `${bin}:${process.env.PATH}`, FAKE_DOCKER_STATE: state, AGENTRUN_BOXES: "docker" }, ["AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
   assert.equal(spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8" }).stdout.trim(), join(bin, "docker"), "the fake is the docker on PATH");
 }
@@ -435,10 +440,10 @@ test("an update of a package that names no tools keeps the shell tools a fresh a
   await fakeDocker(t);
   const { NEW_AGENT_TOOLS } = await import("../dist/place.js");
   const { api } = await served(t);
-  const made = await applied(api, "other", { parameters: { topic: "cats" } });
+  const made = await applied(api, "unnamed", { parameters: { topic: "cats" } });
   const fresh = (await api("GET", `/agents/${made.agent_id}`)).body.definition;
   assert.deepEqual([fresh.place, fresh.tools], [{ mode: "sandbox", box: "docker" }, [...NEW_AGENT_TOOLS]], "a fresh apply puts the agent in the box, with its shell tools");
-  await updated(api, "other", { parameters: { topic: "dogs" }, agent_id: made.agent_id }, "the same package again");
+  await updated(api, "unnamed", { parameters: { topic: "dogs" }, agent_id: made.agent_id }, "the same package again");
   const after = (await api("GET", `/agents/${made.agent_id}`)).body.definition;
   assert.deepEqual([after.place, after.tools], [fresh.place, fresh.tools], "the update keeps them, as a fresh apply would give them");
   const bare = await applied(api, "bare", {});
@@ -453,6 +458,7 @@ const WATCH = `---
 name: watch
 version: 1.0.0
 description: Watches vendors' status feeds.
+tools: []
 budget: { per_run_usd: 0.25 }
 parameters:
   status_feeds: { type: array, items: { type: string }, required: false, default: [], description: "each vendor's status feed" }

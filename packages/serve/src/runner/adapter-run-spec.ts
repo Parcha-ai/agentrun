@@ -25,7 +25,8 @@ import type { installForClaim, installSettled } from "../harness-install.js";
 import type { LiveHandover, LiveViewerStore } from "../browser-live.js";
 import { dropLiveViewer, putLiveViewer } from "../browser-live.js";
 import { liveForRun, type RunnerLive, runnerLiveOf } from "../live-reach.js";
-import { llmTiers, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
+import { llmTiers, type ModelRef, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
+import { heldRefusedProvider } from "../provider.js";
 import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
@@ -33,24 +34,23 @@ import { isWebHostTool } from "../tool-list.js";
 import { type ArgumentsOf, deniedText, noApproverText, type Permission, type RunFiles, runGate, type SettingFrom, type ToolEffect } from "../tool-gate.js";
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
-import { ASK_TOOL, askPerson, type EmailFake, type ToolEntry, type ToolHost, toolOf } from "../tools.js";
+import { ASK_TOOL, askPerson, type EmailFake, type ToolEntry, type ToolHost, toolOf, webAnswerCut } from "../tools.js";
 import type { SaveSlots } from "../web-save.js";
 import type { WebFake } from "../web-fake.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
-import { webCut } from "../timeline/web-calls.js";
 import { environmentLine, runZone } from "../environment.js";
 import { effortGuidance } from "../effort-guidance.js";
 import { outputContract } from "../answer-json.js";
-import { laidLearned, type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
+import { laidLearned, type LearnedWorkflow, secretsShown } from "../learning.js";
 import { laidOf, layLearningSeed } from "./learning-seed.js";
-import { learningWorkspace } from "../learn/folder.js";
 import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type LearnedAction, learnedAskShown, LEARNED_WORKFLOW_TOOL, learnedMcpCalls, learnedWorkflowTool } from "../learned-workflow.js";
 import { PORT_PROVIDER, tieredModels, tierProvider } from "../port-models.js";
 import { promptOf, readsFiles } from "../skills.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
+import { withoutKindSkill } from "../workspace/kind-skills.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
 import { COMPUTER_ROOT, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
@@ -58,38 +58,38 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
-import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
+import { catalogSessionNames, claimMetering, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
 import { held as runnerSeam, heldOrThrow, heldSignInReads } from "./held.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { RUNNER_HARNESSES, type RunnerHarness } from "./adapters/index.js";
 import { DEFAULT_HARNESS } from "../harness.js";
-import { agentEntriesOf } from "./loop.js";
-import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
+import { agentEntriesOf, type BoundTimer } from "./loop.js";
+import { routedSubagentTiers, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
 import { bookedSpend, cliRunMetrics, costBasisOf, endCostOf, runCostOf, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { replayCallsOver } from "./promotion.js";
-import { learnedFirstWhereHeld } from "./learned-first.js";
+import { type LearnedFirst, learnedFirstWhereHeld } from "./learned-first.js";
 import type { ReplayCalls } from "../learn/replay-calls.js";
-import { pathMetrics, servedOf } from "./workflow-first.js";
+import { servedOf, workflowDigest } from "./workflow-first.js";
 import { AUDIT_PARKED, withAudit } from "./audit.js";
-import { runPathOverStore } from "../store-reads/learning.js";
+import { runPathMetricsOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import type { ModelRoute, RouteCost } from "./model-route.js";
 import { archilClaim, archilWhereHeld, type ArchilClaimOptions, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
-import { type claimComputer, type ComputerDeps, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
+import { type claimComputer, type ComputerDeps, computerFilesNote, computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import type { RunComputer } from "../workspace/run-tools.js";
-import { hadComputer, type RunComputerHold } from "./computer-journal.js";
+import { computerTurnedOff, hadComputer, recordComputerOff, type RunComputerHold } from "./computer-journal.js";
 import type { KeptKind, MadeKind, Replaced } from "../workspace/computer-for-claim.js";
 import type { ShellPlace } from "../workspace/resolve-computer.js";
 import type { Workspace } from "../workspace/workspace.js";
-import { type HeldRedact, heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
+import { type HeldRedact, holdClaimed, mustHold, type Redact, runnerSecrets } from "./redact.js";
 import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
@@ -102,6 +102,7 @@ import { monidForClaim, type MonidFake, withMonid } from "./monid-run.js";
 import { verifyPlacedProject, movedSkillFiles } from "../source-sync/claim.js";
 import { projectCheckpointForRun } from "./project-checkpoint.js";
 import { sourceAuxiliaryAdmitter } from "../source-sync/auxiliary.js";
+import { agentOfRun, routeTrace } from "../otel/genai.js";
 
 /** What a claim gives the shared computerForClaim: the run, its epoch, the claim itself (a live view's row is fenced on it
  *  and names its runner), its revision, its place and any computer choice. */
@@ -137,6 +138,8 @@ export interface ClaimComputer {
   release(): Promise<void>;
   /** The release at the run's park, which keeps the computer it `keeps` (computer-for-claim.ts ClaimComputer.park). */
   park?(): Promise<boolean>;
+  /** The park's keep written before the run's timeline says it (computer-for-claim.ts ClaimComputer.keepRow). */
+  keepRow?(): Promise<boolean>;
 }
 /** The one shared claim-time computer every spec takes (computer-for-claim.ts), passed in by the runner: the composer's
  *  (workspace/computer-deps.ts computerDepsFrom), or a test's stand-in. */
@@ -178,6 +181,9 @@ export interface AdapterSpecDeps {
   readonly log?: (message: string) => void;
   /** For tests: a learning run's grade bound, as a signal (learning-dispatch.ts gradeBound). Default: GRADE_TIMEOUT_MS. */
   readonly gradeBound?: () => AbortSignal;
+  /** For tests: the timer a native or SDK run's end arms its bound on (END_PATCH_MS, loop.ts) while it waits on its cost
+   *  and metrics read, as the adapter loop's spec.endPatchTimer. Default: the real one (REAL_TIMER). */
+  readonly endPatchTimer?: BoundTimer;
   /** The one shared claim-time computer (computer-for-claim.ts), for both the pi and the CLI spec: none for a runner place.
    *  The runner gives it; a test gives its own. */
   readonly computerForClaim: ComputerForClaim;
@@ -232,6 +238,9 @@ export interface AdapterSpecDeps {
    *  on purpose does not wait out MODEL_RETRY's two and a half minutes. No environment variable, flag or setting maps onto
    *  it; absent, MODEL_RETRY and MODEL_STREAM. */
   readonly modelRetry?: Pick<AdapterLoopOptions, "retry" | "stream">;
+  /** The runs' GenAI tracing (AdapterLoopOptions.tracing): in a run's own process, the one posted to its runner
+   *  (run-child.ts); absent, this process's own. */
+  readonly tracing?: AdapterLoopOptions["tracing"];
   /** web_save's download slots (ToolHost.saveSlots): in a run's own process, its runner's (run-child.ts). */
   readonly saveSlots?: SaveSlots;
 }
@@ -240,8 +249,24 @@ export interface AdapterSpecDeps {
  *  case, and its harness's own search is never offered (web-fake.ts, fakedPlane). `now`: its clock, the date and time it
  *  is told wherever it reads "now" (environment.ts environmentLine, claude-agent's turn date); absent, the real clock.
  *  `monid`: its monid endpoints answer as monid unreachable does, never sent (monid-run.ts monidForClaim). `email`: the
- *  case's fake mail account's servers (eval-mailbox.ts), the only account its email tools open (email/tools.ts). */
-export type EvalFakes = { readonly web?: WebFake; readonly now?: Date; readonly monid?: MonidFake; readonly email?: EmailFake };
+ *  case's fake mail account's servers (eval-mailbox.ts), the only account its email tools open (email/tools.ts). `files`:
+ *  the case's files, by their path in the run's work folder, written there at its claim (seedEvalFiles). */
+export type EvalFakes = { readonly web?: WebFake; readonly now?: Date; readonly monid?: MonidFake; readonly email?: EmailFake; readonly files?: Readonly<Record<string, string>> };
+
+/** A template eval case's files (EvalFakes.files) written into the run's work folder at its claim, after its inputs and
+ *  before its computer and its first turn, so they reach a computer's /workspace as its uploads do. Each one the folder
+ *  does not hold yet: a claim that resumes the run keeps what the run made of it. A write that fails ends the run failed,
+ *  saying which file. */
+export async function seedEvalFiles(workspace: Workspace, files: Readonly<Record<string, string>> | undefined): Promise<void> {
+  for (const [path, text] of Object.entries(files ?? {})) {
+    if (await workspace.stat(path)) continue;
+    try {
+      await workspace.write(path, text);
+    } catch (error) {
+      throw new Error(`The eval case's file ${path} could not be written in the run's work folder: ${(error as Error).message}`, { cause: error });
+    }
+  }
+}
 
 /** A model as the cap prices it, from the route's catalog cost: its price WITH TIERS (the money rule — a request past a
  *  model's tier is held and booked at the tier, as main's calculateCost does). `api` is the proxy's shape, for the
@@ -264,6 +289,23 @@ export function capModelOf(route: ModelRoute): CapModel {
   return { id: route.model, api: route.provider.api, price, outputCeiling: route.outputCeiling ?? null, ...(route.local ? { local: true } : {}) };
 }
 
+/** The model of a held run its model kept from running at its create (run-launch.ts hold.refused): as its revision names
+ *  it (`provider/model-id`). Its launch pins none (runs-over-store.ts skips modelOf for it). Nothing chooses it and
+ *  nothing prices it. */
+export function heldModelOf(ref: string | undefined): ModelRef {
+  const at = ref?.indexOf("/") ?? -1;
+  return ref && at > 0 ? { provider: ref.slice(0, at), modelId: ref.slice(at + 1) } : { provider: "none", modelId: ref ?? "none" };
+}
+
+/** The route of a held run its model kept from running at its create (run-launch.ts hold.refused): its provider is the
+ *  stand-in (provider.ts heldRefusedProvider), so a host with no key for its model still opens its claim and holds its
+ *  computer. Its agent never starts (its start and every message are refused in `why`, its create's words:
+ *  computer-held.ts), and a request that reached its proxy anyway is refused in them too, and never sent. */
+export function heldRefusedRoute(model: ModelRef, why: string): ModelRoute {
+  const { origin, credential } = heldRefusedProvider(model, why);
+  return { model: model.modelId, named: `${model.provider}/${model.modelId}`, provider: { api: "anthropic-messages", origin, credential }, price: () => null, unpriced: true, outputCeiling: null };
+}
+
 /** Particle requests are never automatically replayed after an uncertain failure. Retry is a harness-wide setting,
  *  so a claim with any Particle route disables it for all its conversations, including subagents on other tiers. */
 export function modelRetryOf(routes: Iterable<Pick<ModelRoute, "like">>): Pick<AdapterRunSpec, "retry"> {
@@ -276,12 +318,21 @@ const SUBAGENT_ROUTE = "subagent-";
 const subagentRoute = (tier: SubagentTier): string => `${SUBAGENT_ROUTE}${tier}`;
 const isSubagentRoute = (key: string): boolean => key.startsWith(SUBAGENT_ROUTE);
 
-/** A replay run's or an audit shadow's grader route (runner/compare-end.ts): its fast model (the revision's
- *  modelTiers.fast, else AGENT_MODEL_FAST) when its revision names no agree_on, on pi's wires. A fast model may be another
- *  provider's than the run's own, whose key claimSecrets never opened: so its route reads every model key the server
- *  holds (savedModelKeys) as a subagent's tier does, held by the run's redactor, on the route's env alone. A run with its
- *  own model key carries that key, and no saved key is read. Undefined when there is no fast model, the revision names
- *  agree_on, or no route can be made (logged: the pair is then compared whole). */
+/** A model route as the run's GenAI trace names it: its provider, the host its requests go to, its model. A route that
+ *  translates its model's requests (its own `fetch`) is named by its upstream's host (ModelRoute.upstreamOrigin), never
+ *  its proxy's placeholder origin; one whose upstream is unknown names no host. */
+export const traceOfRoute = (route: ModelRoute) => {
+  const origin = route.fetch ? route.upstreamOrigin : route.provider.origin;
+  return routeTrace({ ...(route.named ? { named: route.named } : {}), ...(origin ? { origin } : {}), model: route.model });
+};
+
+/** A replay run's or an audit shadow's grader route (runner/compare-end.ts): on the fast tier routedSubagentTiers names
+ *  (the revision's modelTiers.fast, else AGENT_MODEL_FAST), on pi's wires, when its revision names no agree_on. Its route
+ *  reads the saved key of that tier's model alone (subagentTierKeys), held by the run's redactors, on the route's env
+ *  alone; in a run's own process its runner hands it that tier's model's key (run-child-host.ts subagentTierKeys). A run
+ *  with its own model key carries that key, and no saved key is read. Undefined, with nothing read, when
+ *  there is no fast tier or the revision names agree_on; undefined when no route can be made (logged: the pair is then
+ *  compared whole). */
 export async function graderRouteOf(
   body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>; readonly learning?: unknown },
   keyed: boolean,
@@ -294,17 +345,50 @@ export async function graderRouteOf(
   claim?: Pick<Claim, "runId" | "turn" | "attempt">,
 ): Promise<ModelRoute | undefined> {
   if (agreeOnOf(body.learning)?.length) return undefined;
-  const savedKeys = keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
+  const { tiers, refs } = routedSubagentTiers(body, deps.env ?? {});
+  if (!tiers.includes("fast")) return undefined;
+  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, ["fast"], refs);
   for (const redact of new Set(holds)) holdClaimed(redact, savedKeys);
   // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
-  const env = claimModelEnv(deps.env, { ...savedKeys, ...claimed }, runKey, claim);
-  if (body.modelTiers?.fast === undefined && tierModelOf(env, "fast") === undefined) return undefined;
+  const env = claimModelEnv(deps.env, [claimed, savedKeys], runKey, claim);
   try {
-    return await deps.routeOf(body.modelTiers?.fast, env, "fast", PI_WIRES, undefined, cut);
+    return await deps.routeOf(refs.fast, env, "fast", PI_WIRES, undefined, cut);
   } catch (error) {
     log(`learning: no grader route (${error instanceof Error ? error.message : String(error)}): the answers are compared whole`);
     return undefined;
   }
+}
+
+/** A subagent run's tier routes (runner/subagent.ts): each tier routedSubagentTiers names, on its model (the revision's
+ *  modelTiers, else the host's tier variable), under its own key (subagentRoute), on a route of its own. A tier's model may
+ *  be another provider's than the run's own, whose key claimSecrets never opened (it scopes the claim's keys to the run's
+ *  model): so the routes read the saved model keys of those tiers' models alone (subagentTierKeys), held by the run's
+ *  redactor, on the routes' env alone, never the run's tools (toolEnv). A run with its own model key carries that key,
+ *  and no saved key is read. A tier no route can be made for here is in `why`, cut, and no failure of the run: a call on
+ *  it answers why. */
+export async function subagentTierRoutes(
+  body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>> },
+  keyed: boolean,
+  runKey: ClaimModelKey | undefined,
+  toolEnv: NodeJS.ProcessEnv,
+  cut: HeldRedact,
+  deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf">,
+  claim?: Pick<Claim, "runId" | "turn" | "attempt">,
+): Promise<{ readonly routes: Map<string, ModelRoute>; readonly why: Map<SubagentTier, string> }> {
+  const routes = new Map<string, ModelRoute>();
+  const why = new Map<SubagentTier, string>();
+  const { tiers, refs } = routedSubagentTiers(body, deps.env ?? {});
+  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, tiers, refs);
+  holdClaimed(cut, savedKeys);
+  const tierEnv = claimModelEnv(deps.env, [toolEnv, savedKeys], runKey, claim);
+  for (const tier of tiers) {
+    try {
+      routes.set(subagentRoute(tier), await deps.routeOf(refs[tier], tierEnv, tier, PI_WIRES, undefined, cut));
+    } catch (error) {
+      why.set(tier, cut(error instanceof Error ? error.message : String(error)));
+    }
+  }
+  return { routes, why };
 }
 
 /** The revision's body, as the store keeps it (agent-body.ts); agentic runs only reach here, a workflow run is
@@ -340,6 +424,12 @@ export function modelAskOf(pinned: { provider: string; modelId: string } | undef
  *
  * Whether anyone can answer an ask is the store's too (server-approvers.ts), read once at the claim: no one (the
  * server's accounts off), an asked call is refused at once in words, never parked.
+ *
+ * The run's computer once off for the run (RunGate.computerOff): a call of its tools is refused before any settings read.
+ * `turnedOff`: an earlier claim turned it off (computer-journal.ts computerTurnedOff), so this claim's gate starts off.
+ * `onComputerOff`: told the computer's kind, and awaited, when this claim's first deny of a call of its tools turns it off,
+ * for the run's journal (computer-journal.ts recordComputerOff), so a later claim starts it off too. The gate's
+ * `computerOff` says whether it is off now, so a park lets it go instead of keeping it (spec-holds.ts Held.computerOff).
  */
 /** The run's tool permissions as a learned workflow's call nodes are held to them (learned-workflow.ts policy, denyFrom,
  *  refresh): the same gate as the run's own calls, its settings read again from the store before each call node. */
@@ -349,7 +439,7 @@ export type RunPermissions = {
   readonly refresh: () => Promise<void>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined; readonly turnedOff?: boolean; readonly onComputerOff?: (kind: string) => Promise<void> }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void; readonly computerOff: () => boolean; /** Whether the run can write a file now, as its gate decides a save_as (RunGate.writeBar): what its files note and computer_screenshot's save_as are offered by. */ readonly writes: () => boolean; /** The computer ops the gate refuses for a tool the agent is not given (RunGate.opsNotGiven): what computer_op and a script's `computer` leave out. */ readonly opsNotGiven: () => readonly string[] }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -359,6 +449,10 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // An MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf): what "allow reads" lifts an ask by.
   const where = { root: folder, work: folder, ...(options.effectOf ? { effectOf: options.effectOf } : {}), ...(options.argumentsOf ? { argumentsOf: options.argumentsOf } : {}), facts: options.facts };
   const gate = runGate({ ...where, ...(shell === undefined ? {} : { computer: shell === "computer" }) }, claim.runId, revision, () => current, approvers);
+  if (options.turnedOff) gate.turnOff();
+  // Whether the run's journal has the computer off already (an earlier claim's, or this claim's first deny's): written once.
+  let offSaid = options.turnedOff === true;
+  const { onComputerOff } = options;
   // The run's learned workflows, once its spec has read them (learn): a learned_workflow call is asked about its MCP nodes.
   let learned: readonly LearnedWorkflow[] = [];
   // The host the run's tools bind through, once the spec has made it (askedOn): a tool's own ask reads it.
@@ -368,31 +462,65 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // count. Its calls are asked about one at a time (asking, a chain by tool): the count read and the reservation with
   // nothing between. A reserved call whose result is in the journal leaves it: counted there, or its slot freed (an
   // error, a deny). A new claim's gate starts with none: what finished is the journal's.
-  const reserved = new Map<string, Set<string>>();
+  // Each reserved call is kept with its arguments: a tool's own ask reads what the run's calls of it were made with
+  // (AskContext.made), those let through here among them. A call its tool asks about that a person has approved
+  // (approved: its answer in the journal, or their approve waiting for it) is reserved the same way, in its turn, before
+  // it runs: a call of the tool asked about after it (two sends at once to one new address) reads it as made, never
+  // asking again for what the person just approved; its slot goes as any reserved call's does.
+  const reserved = new Map<string, Map<string, unknown>>();
   const asking = new Map<string, Promise<unknown>>();
-  const counted = (ran: NonNullable<NonNullable<Parameters<NonNullable<AdapterRunSpec["gate"]>>[1]>["ran"]>) => async (tool: string): Promise<number> => {
+  type GateOptions = NonNullable<Parameters<NonNullable<AdapterRunSpec["gate"]>>[1]>;
+  type Ran = NonNullable<GateOptions["ran"]>;
+  /** The journal's calls of `tool`, the reserved ones that have a result there let go. */
+  const read = async (ran: Ran, tool: string) => {
     const calls = await ran(tool);
     const held = reserved.get(tool);
-    for (const id of held ?? []) if (calls.ran.has(id) || calls.ended.has(id)) held!.delete(id);
+    for (const id of [...(held?.keys() ?? [])]) if (calls.ran.has(id) || calls.ended.has(id)) held!.delete(id);
+    return { calls, held };
+  };
+  const counted = (ran: Ran) => async (tool: string): Promise<number> => {
+    const { calls, held } = await read(ran, tool);
     return calls.ran.size + calls.unnamed + (held?.size ?? 0);
   };
-  const askedOne = (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], asks: NonNullable<ToolEntry["asks"]>, made: ToolHost, ran: Parameters<typeof counted>[0]): Promise<string | undefined> => {
+  const madeWith = (ran: Ran) => async (tool: string): Promise<unknown[]> => {
+    const { calls, held } = await read(ran, tool);
+    return [...[...calls.ran].flatMap((id) => (calls.args.has(id) ? [calls.args.get(id)] : [])), ...(held?.values() ?? [])];
+  };
+  const askedOne = (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], asks: NonNullable<ToolEntry["asks"]>, made: ToolHost, ran: Ran, approved: GateOptions["approved"]): Promise<string | undefined> => {
     const turn = (asking.get(call.tool) ?? Promise.resolve()).then(async () => {
-      const because = await asks((call.args ?? {}) as Record<string, unknown>, { host: made, ran: counted(ran) });
-      if (because === undefined && call.callId) reserved.set(call.tool, (reserved.get(call.tool) ?? new Set()).add(call.callId));
+      const because = await asks((call.args ?? {}) as Record<string, unknown>, { host: made, ran: counted(ran), made: madeWith(ran) });
+      if (call.callId && (because === undefined || (await approved?.(call.callId)))) reserved.set(call.tool, (reserved.get(call.tool) ?? new Map()).set(call.callId, call.args));
       return because;
     });
     asking.set(call.tool, turn.catch(() => undefined));
     return turn;
   };
+  // The computer off, written to the run's journal once. A write that fails (a fenced claim, a journal error) never fails
+  // the call, whose refusal stands: the claim's next refusal of the computer's tools writes it again.
+  const sayOff = async (): Promise<void> => {
+    const turnedOff = offSaid ? undefined : gate.computerOff;
+    if (!turnedOff) return;
+    offSaid = true;
+    try {
+      await onComputerOff?.(turnedOff);
+    } catch {
+      offSaid = false;
+    }
+  };
   const decide = async (call: Parameters<NonNullable<AdapterRunSpec["gate"]>>[0], options: Parameters<NonNullable<AdapterRunSpec["gate"]>>[1] = {}) => {
+    const off = gate.offRefusal(call.tool, options);
+    if (off) {
+      await sayOff();
+      return off;
+    }
     current = await storeSettings(store);
     const decision = await gate.decide(call.tool, call.args, options);
+    await sayOff();
     // A call its setting allows that its tool asks about itself (ToolEntry.asks: email_send past its cap, or to someone
     // outside the run's thread): put to a person with the tool's reason on its card, whatever the setting; where no one
     // can approve, refused in those words. No tool's name is read here: the reason is the tool's.
     const asksOf = decision === "allow" && host && options.ran ? toolOf(call.tool)?.asks : undefined;
-    const because = asksOf ? await askedOne(call, asksOf, host!, options.ran!) : undefined;
+    const because = asksOf ? await askedOne(call, asksOf, host!, options.ran!, options.approved) : undefined;
     if (because !== undefined) return approvers ? { ask: {}, because } : { deny: noApproverText(gate.askedAs(call.tool, call.args), options.replayed ? "unknown" : "no", because) };
     // A learned workflow's MCP nodes are the run's own MCP calls, held to the same settings: one set to deny refuses the
     // whole call in the gate's words before any node runs, nothing sent; the actions set to ask are put to a person on the
@@ -410,10 +538,17 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     if (asks.length && !approvers) return refused(noApproverText(asks[0]!.tool, "no"));
     return asks.length ? { ask: learnedAskShown(asks) } : decision;
   };
+  /** The learned workflow of the run's a learned_workflow call's arguments name, if any. */
+  const flowOf = (args: unknown) => learned.find((one) => one.name === (args as { name?: unknown } | undefined)?.name);
   /** The MCP actions the learned workflow a learned_workflow call names can call; none for another call or workflow. */
   const mcpOf = async (args: unknown): Promise<LearnedAction[]> => {
-    const flow = learned.find((one) => one.name === (args as { name?: unknown } | undefined)?.name);
+    const flow = flowOf(args);
     return flow ? learnedMcpCalls(flow.workflow) : [];
+  };
+  /** That workflow's name and digest (SpecGate.learnedOf): what the record of a call of it the gate refuses names. */
+  const learnedOf = (args: unknown) => {
+    const flow = flowOf(args);
+    return flow ? { workflow: flow.name, digest: workflowDigest(flow) } : undefined;
   };
   // An ask is named as main's pending approval is (RunGate.askedAs: its settings key), beside the decision, which is
   // unchanged. The permissions are the learned workflow's (main's toolGate.policy and denyFrom), over the same settings.
@@ -425,7 +560,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
     current = await storeSettings(store);
     return current.unreadable ? "deny" : gate.policy(tool);
   };
-  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), askedOn: (made: ToolHost) => void (host = made) });
+  return Object.assign(decide, { askedAs: (tool: string, args?: unknown) => gate.askedAs(tool, args), permissions, permission, learnedOf, learn: (flows: readonly LearnedWorkflow[]) => void (learned = flows), askedOn: (made: ToolHost) => void (host = made), computerOff: () => gate.computerOff !== undefined, writes: () => gate.writeBar() === undefined, opsNotGiven: () => gate.opsNotGiven() });
 }
 
 /** The server's tool settings from the store now; a read that throws is unread (no value of it said). A workflow's call
@@ -447,13 +582,14 @@ export function adapterRunSpecFromLaunch(launch: RunLaunch, run: AdapterRun, dep
 }
 
 async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpecDeps, claim: Claim, holds: SpecHolds, runner: RunnerHarness): Promise<AdapterRunSpec> {
+  mustHold(run.redact, "A pi run's spec");
   const context = BACKGROUND_CONTEXT;
   // What this claim may reach on loopback, read once for its MCP servers and its calendar_events alike (mcpReachOf).
   const reach = await mcpReachOf(deps);
   // The runner's one redactor (the loop's, LoopDeps.redact), for every text a secret could reach: the spec's log lines
-  // (a release, a workspace's end), the model route's translation and the session's model proxy. A spec built with no
-  // runner around it cuts every secret the runner's env holds. It holds the keys the claim opens (below), too.
-  const cut = heldRedactor(run.redact ?? secretRedactor(runnerSecrets(deps.env)));
+  // (a release, a workspace's end), the model route's translation and the session's model proxy. It holds the keys the
+  // claim opens (below), too.
+  const cut = run.redact;
   const log = (line: string) => (deps.log ?? (() => {}))(cut(line));
   holds.logTo(log);
   const runRow = await deps.store.runs.get(claim.runId);
@@ -465,7 +601,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
   const body = (revisionRow.body ?? {}) as RevisionBody;
   const movedProject = await verifyPlacedProject(deps.store, runRow, revisionRow, launch, { data: deps.data, sealKey: deps.sealKey, env: deps.env, ...(run.signal ? { signal: run.signal } : {}), control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
-  const revision = { kind: revisionRow.kind, body } as { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } };
+  const revision = { kind: revisionRow.kind, body } as { kind: string; body: { tools?: readonly string[]; toolSettings?: unknown; harness?: string; approvals?: Approvals } };
   const granted = body.tools ?? [];
 
   // The run's mode is the server's: Mode 2 where its Archil settings are saved (archil-settings.ts), the run's folder then
@@ -499,6 +635,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // a copy that fails ends the run failed, saying why. A run's own process copies nothing: its runner placed them before
   // the process started (run-child-host.ts), as the server's held uploads are never the run's to read.
   if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
+  // The run's template eval fakes (AdapterSpecDeps.evalFakes), read once: its files, its metered jobs' media and its tools.
+  const fakes = deps.evalFakes?.(runRow.agentId);
+  await seedEvalFiles(ws.workspace, fakes?.files);
 
   // The pull request's checkout, when the revision asks for one (pr-checkout.ts): the server's own fetch before the first
   // turn, with the GitHub App's read-only token for that one repository (or none); the run is told what it holds, or why
@@ -520,24 +659,31 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // setting, the one computerForClaim starts) brings its kind's skill, named in the prompt beside the revision's own.
   const kindSkills = movedProject ? [] : await layOwnSkills(ws.workspace, (revisionRow.skills ?? {}) as Record<string, string>, { computer: settingOfDefinition(body)?.computer.kind });
   const currentSkills = movedProject ? await movedSkillFiles(ws.workspace, body.skills ?? {}, settingOfDefinition(body)?.computer.kind) : [...Object.keys(body.skills ?? {}), ...kindSkills];
-  // A learning run's seed, read once from its learning folder where the run's place keeps it (runner/learning-seed.ts):
-  // its learned workflows, cut of the server's secrets, the ones its learned_workflow tool runs. Read before the run's
-  // tools are bound. A learning fault, or a seed that failed (seedFailed), gives none. None a purged run wrote, by the
-  // store's runs; a run's own process (no seal key) reads no other run, and its runner reads the seed again
-  // (learned-first.ts learnedFirstWhereHeld).
+  // A learning run's seed, read once from its agent's learning rows (runner/learning-seed.ts): its learned workflows,
+  // cut of the server's secrets, the ones its learned_workflow tool runs. Read before the run's tools are bound. A
+  // learning fault, or a seed that failed (seedFailed), gives none.
   const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(deps.store, deps.sealKey, deps.data)), { local: true });
-  const learningFolder = () => (archil === undefined ? learningFolderOf(deps.data, runRow.agentId) : learningWorkspace({ mode: "archil", agentId: runRow.agentId, archil }));
   const seedLaid = start && !seedFailed(start)
-    ? await layLearningSeed({ seed: start.seed, folder: learningFolder, store: deps.sealKey ? deps.store : null, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
+    ? await layLearningSeed({ seed: start.seed, store: deps.store, agentId: runRow.agentId, shown, log, ...(start.noWorkflows ? { workflows: false as const } : {}) })
     : undefined;
 
   // The run's MCP for this claim (mcp-run.ts mcpForClaim): its pin, the one its revision's save made, read, its
   // credentials opened under the server's seal key into this claim's memory, one gateway for the claim. First, before
   // anything the spec would have to let go: a refusal (a granted tool its pin does not hold, a pinned meta tool) ends the run in its
   // words before the session opens. The seal key is the runner's own (deps.sealKey), not re-read from the environment.
-  // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor.
+  // A credential the claim opens mid-run (a GitHub App token, a saved or per_run server's) joins the run's redactor. A
+  // per_run server the run was handed no credential for is left out of its tools, and its timeline says so.
+  // A held run its model kept from running at its create (hold.refused) opens none: nothing can call one.
+  const heldRefusal = launch.hold?.refused?.message;
+  // What its gateway files (a long answer, a server's results) goes in the run's own files. In Mode 1 that is the run's
+  // folder on this machine (ws.workspace below, the folder a box bind-mounts). In Mode 2 it is the run's Archil disk:
+  // through the run's computer once it mounts the folder (filedIn, set at runTools), since the mount holds the disk's
+  // write delegation and a write over the disk's file API is refused (409) while it does; over that file API (ws.workspace)
+  // when no computer mounts it. The gateway reads work() only when a call is answered (mcp-gateway.ts textOf, fileResults),
+  // and a call reaches it only through the session this spec returns, after `tools` is made.
+  let filedIn: Workspace | undefined;
   const hold = (values: string[]) => cut.hold(values);
-  const mcp = await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, work: () => ws.workspace, launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, capped: launch.maxCostUsd !== undefined, media: { env: deps.env, web: deps.evalFakes?.(runRow.agentId)?.web, slots: deps.saveSlots } });
+  const mcp = heldRefusal !== undefined ? undefined : await mcpWhereHeld({ claim, store: deps.store, sealKey: deps.sealKey, grants: granted, harness: run.harness, toolSettings: body.toolSettings, work: () => (mode === 2 ? filedIn ?? ws.workspace : ws.workspace), launchInput: launch.input, hold, githubAppAccess: (store, key, input) => githubAppAccess(store, key, input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub: launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github", hold, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) }), ...(deps.githubMcpOrigin ? { githubMcpOrigin: deps.githubMcpOrigin } : {}), ...(deps.composioMcpOrigin ? { composioMcpOrigin: deps.composioMcpOrigin } : {}), ...reach, say: (words) => run.phase?.(words), ...claimMetering(deps, fakes?.web, launch) });
   // The claim's MCP goes to the loop, which lets it go; a build that throws lets it go itself.
   holds.hold({ passed: mcp });
 
@@ -545,6 +691,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Docker container for a sandbox, under the claim's epoch (the one fence). It throws computer_unavailable (nothing made)
   // when the computer cannot be had: the run fails in its words.
   const claimSignal = run.stopped ?? run.signal;
+  // An earlier claim's deny turned the run's computer off for the run (computerTurnedOff): this claim starts none, and
+  // ends the one a park kept, its mount with it, before the run's tools touch its folder (turnedOff).
+  const offAlready = await computerTurnedOff(deps.journal(claim), context);
   const computer = await deps.computerForClaim(
     // The runner holding the claim (its name, its presence incarnation): a computer a park keeps that only it can reach
     // again is pinned to it.
@@ -556,9 +705,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // A person's stop ends the claim's waits at once: a first image pull or registration (Agent37's runs minutes) among them.
     // Whether an earlier claim made the run a computer of its own is the run's journal's to say (hadComputer): a later
     // claim's is a new one whatever ended the earlier claim (a lost runner, a server's stop, a park past its keep). The
-    // computer a park kept, attached again, brings its mount credential with it (inheritMount): none is minted. A
-    // recording of its screen (computer.record) goes in the run's recordings folder, beside its folder, said on its timeline.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    // computer a park kept, attached again, brings its mount credential with it (inheritMount): none is minted. A park's
+    // row names the disk that credential is on (mountDisk), asked only at the park: a run's own process hands its claim to
+    // its runner, whose computerForClaim asks its own Archil claim. A recording of its screen (computer.record) goes in
+    // the run's recordings folder, beside its folder, said on its timeline.
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, ...(offAlready ? { turnedOff: offAlready } : {}), recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit(), mountDisk: () => archil.disk.id } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
@@ -574,6 +725,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // as `tools.<name>`, each a nested call, gated and recorded as the model's own call is. A computer that replaced an
   // earlier claim's holds its acts to what it showed.
   const tools = await runTools(ws.workspace, computer.computer, { mode, context, ...(computer.hold ? { hold: computer.hold } : {}), ...(bashPolicy === undefined ? {} : { bashPolicy }), ...(computer.replaced ? { replaced: true } : {}) });
+  filedIn = tools.workspace;
   let remoteProjectCapture = false;
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
 
@@ -597,8 +749,12 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   holdClaimed(cut, toolEnv);
   // The route reads its model's key from the runner's environment, else the one the claim opened from the store: a key
   // saved in Settings → Model keys runs the next run with no restart (withModelKeys). A run with its own key: that key.
-  const modelEnv = claimModelEnv(deps.env, toolEnv, runKey, claim);
-  const route = await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
+  const modelEnv = claimModelEnv(deps.env, [toolEnv], runKey, claim);
+  // A held run its model kept from running at its create is never routed (heldRefusedRoute): its model's route chooses no
+  // model and reads no key, so a key saved since runs a new run, never this one. Its claim lays only the keys any claim
+  // of the run lays (its tools', a key handed with it: claimSecrets lays it no model key), routes no subagent tier and
+  // takes no learning step (below).
+  const route = heldRefusal !== undefined ? heldRefusedRoute(heldModelOf(body.model), heldRefusal) : await deps.routeOf(modelAskOf(launch.model, body.model), modelEnv, "default", PI_WIRES, undefined, cut);
   await planBeforeRun(modelEnv, route.provider.plan ? { provider: PLAN_PROVIDER } : undefined);
   // The run's models of other tiers, for its learned workflows' nodes of a tier (learnedTierRoutes, filled once the seed's
   // lay chose the workflows, below): read when the session opens (pi.ts options.tiers), each on a proxy of its own.
@@ -618,26 +774,19 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // host's for the tier (AGENT_MODEL_FAST, AGENT_MODEL_STRONG), each on a route of its own (its proxy on the session's
   // booking, adapters/pi.ts tiers). A tier with neither is the agent's own model, as a learned workflow's node of it runs
   // on the run's. A tier no route can be made for here is no failure of the run: a call on it answers why. A tier's model may be another
-  // provider's than the run's own, whose key claimSecrets never opened (it scopes the claim's keys to the run's model): so
-  // its route reads every model key the server holds (savedModelKeys). Those reach the tier's proxy alone, as its
-  // credential, never the run's tools (toolEnv).
+  // provider's than the run's own, whose key claimSecrets never opened: so its route reads the saved model keys of its
+  // tiers' models alone (subagentTierRoutes). Those reach the tier's proxy alone, as its credential, never the run's tools
+  // (toolEnv).
   // Each is in tierRoutes under its own key (subagentRoute: never a learned workflow's tier, whose nodes keep their own
   // routes and fallback), on a proxy of its own that names that key on each request, so the cap prices a child's
-  // requests as that route books them.
+  // requests as that route books them. A held run its model kept from running routes none: its subagent's calls run on
+  // the stand-in, refused in its create's words.
   const tierWhy = new Map<SubagentTier, string>();
-  if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL)) {
+  if (revision.kind === "agentic" && granted.includes(SUBAGENT_TOOL) && heldRefusal === undefined) {
     // A run with its own model key: its subagents' models carry that key too, and no saved key is read.
-    const savedKeys = keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env });
-    holdClaimed(cut, savedKeys);
-    const tierEnv = claimModelEnv(deps.env, { ...savedKeys, ...toolEnv }, runKey, claim);
-    for (const tier of SUBAGENT_TIERS) {
-      if (body.modelTiers?.[tier] === undefined && tierModelOf(tierEnv, tier) === undefined) continue;
-      try {
-        tierRoutes.set(subagentRoute(tier), await deps.routeOf(body.modelTiers?.[tier], tierEnv, tier, PI_WIRES, undefined, cut));
-      } catch (error) {
-        tierWhy.set(tier, cut(error instanceof Error ? error.message : String(error)));
-      }
-    }
+    const subagent = await subagentTierRoutes(body, keyed, runKey, toolEnv, cut, deps, claim);
+    for (const [key, at] of subagent.routes) tierRoutes.set(key, at);
+    for (const [tier, why] of subagent.why) tierWhy.set(tier, why);
   }
   // The run's adapter is its runner's (runner/adapters/index.ts RunnerHarness: pi's, or the one a harness module's entry
   // brings), made from the run's launch on its route. Its private files, where it keeps any, go in this claim's folder of
@@ -677,7 +826,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf). The harness's facts
   // are its entry's on the owner's table (factsOf): none for pi, nor for a module's harness on a runner of its own.
   const facts = factsOf(deps.env, revision.body.harness);
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts });
+  // The run's computer off for the run (its first deny's, this claim's or an earlier one's) is on the run's journal.
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts, turnedOff: offAlready !== undefined, onComputerOff: (kind) => recordComputerOff(run.harness, kind) });
+  // A park lets a computer the gate turned off go rather than keep it (SpecHolds Held.computerOff).
+  holds.hold({ computerOff: gate.computerOff });
 
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped — every paid request still books through the one cap), the run's model priced WITH tiers, strict where the
@@ -732,14 +884,14 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // five); while the folder's revision replays or is held, the champion (the digest promoted last) serves in its place
   // (laidFor). Or the one the money rule stopped, over the agent's past runs (costLineOf): the agent takes the run.
   // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
-  // Model spend beside the run that its caller's key does not pay for (claimSpendOff): a shadow audit and a replay check
-  // are skipped, in words, where the run brought its own key or the server holds none.
-  const spendOff = await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey);
   const admitAuxiliary = runnerSeam() ? undefined : sourceAuxiliaryAdmitter(deps.store, { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
-  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff, admitAuxiliary };
+  // None for a held run, so its claim reads no saved key for spend beside it (claimSpendOff).
+  const audits = heldRefusal === undefined ? { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, shown, sealKey: deps.sealKey, spendOff: await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey), admitAuxiliary } : undefined;
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
-  // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself.
-  const learned = await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff, admitAuxiliary }, seedLaid?.workflows ?? []);
+  // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself. A held run its model kept from
+  // running takes none of them: it settles no audit and starts no replay run, starts on no workflow, and its tool runs
+  // none (so no learned tier is routed, below).
+  const learned: LearnedFirst = audits ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, shown, spendOff: audits.spendOff, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: { reason: "held" }, workflows: [] };
   const firstChoice = learned.choice;
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsOver, learn/replay-calls.ts).
@@ -757,7 +909,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // A run with its own model key: its learned nodes' tiers carry that key too, and no saved key is read.
     const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
     holdClaimed(cut, tierKeys);
-    const tierEnv = claimModelEnv(deps.env, { ...toolEnv, ...tierKeys }, runKey, claim);
+    const tierEnv = claimModelEnv(deps.env, [tierKeys, toolEnv], runKey, claim);
     for (const [tier, routed] of await learnedTierRoutes(workflows, tierEnv, (tier) => deps.routeOf(undefined, tierEnv, tier, PI_WIRES, undefined, cut))) {
       if ("why" in routed) tierUnreachable.set(tier, routed.why);
       else tierRoutes.set(tier, routed);
@@ -767,8 +919,9 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     underClaimed(toolEnv, learnedKeys);
   }
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a route of its own beside the session's, on the
-  // session's booking under the run's one cap. None: the pair is compared whole, in words saying so.
-  const graderRoute = launch.replay || launch.audit ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, deps, [cut], claim) : undefined;
+  // session's booking under the run's one cap. None: the pair is compared whole, in words saying so. None for a held run
+  // its model kept from running, whose model runs nowhere.
+  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, deps, [cut], claim) : undefined;
   if (graderRoute) tierRoutes.set(GRADER, graderRoute);
 
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the
@@ -784,7 +937,6 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // spec builds too), on the claim's keys and the run's one ledger and redactor.
   // An agent whose computer is a browser the claim started gets the browser tool on that one session (tools.ts).
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
-  const fakes = deps.evalFakes?.(runRow.agentId);
   const liveAt = await claimLiveAt(deps, claim.runId);
   const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}), ...(deps.saveSlots ? { saveSlots: deps.saveSlots } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
   gate.askedOn(host);
@@ -792,7 +944,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
   // Workspace and computer (runTools.hostTools); the gate is the adapter loop's own (spec.gate), so they run as asked.
   const results: ToolResults = new Map();
-  const handTools = tools.hostTools(withKindTools(granted, tools), results);
+  const handTools = tools.hostTools(withKindTools(granted, tools), { results, writes: gate.writes(), opsNotGiven: gate.opsNotGiven() });
   // The non-hand tools run on the claim's keys (host.env), so a vendor's error may echo one: each answer, and a throw's
   // words, pass the run's one redactor before the harness, the model or the record has them.
   const tiers = new Map<string, LearnedTier>([...[...tierRoutes].filter(([tier]) => !isSubagentRoute(tier) && tier !== GRADER).map(([tier, { model }]): [string, LearnedTier] => [tier, { model }]), ...[...tierUnreachable].map(([tier, why]): [string, LearnedTier] => [tier, { why }])]);
@@ -808,12 +960,14 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The run's system prompt, as main's per-run process builds it (app.ts): the environment line first (environment.ts, as
   // pi installs it before every other section), then the revision's instructions with what the agent learned laid in
   // (learning.ts laidLearned, from the launch's learning start — the # Learned section decided once at launch, so the runner
-  // reads no learning folder), its own skills through skills.ts promptOf, the output schema it answers in (answer-json.ts
+  // reads no learning rows), its own skills through skills.ts promptOf, the output schema it answers in (answer-json.ts
   // outputContract, the CLI spec's too), then the effort guidance (the launch's effort, never this process's environment).
   // The one path for every harness.
   // A start whose seed failed tells the run nothing: it is never asked what to keep (learning-end.ts drops it).
   const laid = start && !seedFailed(start) ? laidLearned(body.instructions ?? "", start.section) : (body.instructions ?? "");
-  const instructions = await promptOf(laid, currentSkills, ws.workspace, { onDemand: movedProject || readsFiles(granted) });
+  // A computer the claim did not start (every tool of it set to deny: ClaimComputer.off) has its kind's skill named to no one.
+  const skills = computer.off ? withoutKindSkill(currentSkills, body.skills ?? {}, settingOfDefinition(body)?.computer.kind) : currentSkills;
+  const instructions = await promptOf(laid, skills, ws.workspace, { onDemand: movedProject || readsFiles(granted) });
   const guidance = effortGuidance(launch.effort);
   // The run's clock: a template eval case's (EvalFakes.now), else the real one.
   const now = fakes?.now;
@@ -864,14 +1018,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
 
   // The run's end-of-run step, when it learns (learningEndOfRun from the launch's learning start; none otherwise): the
   // compile turn and the owner's correction over the run's store, asked in the end turn while the claim is held
-  // (adapter-loop.ts stepOf). Its learning folder is where the run's place keeps it — Mode 1 the agent's folder under the
-  // data directory, Mode 2 the agent's folder on THIS claim's Archil disk (the draft is checked against the seed on the disk, never this machine's
-  // local path) — so the end-of-run step reads the run's own Workspace, the one the run worked in.
+  // (adapter-loop.ts stepOf), its draft checked against the seed in the agent's learning rows.
   // A replay run or an audit's shadow run learns nothing at its end: it is the promotion's, never the agent's to learn
   // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  // A held run (no audits) takes none, and its runner refuses one too (run-child-host.ts heldFor).
+  const endOfRun = audits === undefined ? undefined : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, log, redact: run.redact }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -884,10 +1037,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     log,
     // A workflow draft's decision nodes are checked against the host's decision providers, on its keys (LS-07).
     decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, DECISION_PROVIDER_KEYS)) }),
-    learningFolder: archil === undefined
-      ? (agentId: string) => learningFolderOf(deps.data, agentId)
-      : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil }),
-  }), { ...audits, launch, ...(run.redact ? { redact: run.redact } : {}) });
+  }), { ...audits, launch, redact: run.redact });
 
   return {
     adapter,
@@ -906,6 +1056,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The answer's schema: a miss is asked again once (adapter-loop.ts, the output contract's retry).
     ...(body.outputSchema !== undefined ? { outputSchema: body.outputSchema } : {}),
     ...(cap ? { cap } : {}),
+    // Its routes, as its GenAI trace names them (otel/genai.ts): the session's, and each tier's by its name.
+    // And the agent the run is of (its id and name; the loop cuts them).
+    trace: {
+      ...traceOfRoute(route),
+      routes: new Map([...tierRoutes].map(([tier, routed]) => [tier, traceOfRoute(routed)])),
+      agent: await agentOfRun(deps.store.agents, runRow.agentId),
+    },
     // The run's MCP for a harness with its own client (mcp-run.ts), with its monid endpoints beside it (monid-run.ts):
     // the catalog tools the session mounts; absent when none.
     ...(catalog ? { mcp: catalog } : {}),
@@ -925,10 +1082,14 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The run's computer as the claim made it, with the person's hold on a desktop or phone: the loop shows the hold up,
     // applies a take-over and a hand-back to it, and answers the computer call channel's rows on it.
     ...(loopComputer ? { computer: loopComputer } : {}),
-    // A desktop or a phone as a codemode script gets it: the script's `computer`, over the run's computer tools.
-    ...(tools.computer ? { scriptComputer: tools.computer } : {}),
+    // A desktop or a phone as a codemode script gets it: the script's `computer`, over the run's computer tools, its
+    // declarations without the ops the gate refuses for a tool the agent is not given.
+    ...(tools.computer ? { scriptComputer: { ...tools.computer, opsNotGiven: gate.opsNotGiven() } } : {}),
     // A computer that replaced an earlier claim's: the model is told once, on its next request (the loop's computer note).
     ...(computer.replaced ? { computerNote: computerReplacedNote(computer.replaced) } : {}),
+    // A desktop or a phone that holds none of the run's files: the model is told once in the run where they are, or, where
+    // the gate would refuse a save (RunGate.writeBar), that a screenshot can't be saved to them.
+    ...(tools.apart ? { computerFilesNote: computerFilesNote({ ...tools.apart, writes: gate.writes(), outlives: computer.outlives === true }) } : {}),
     workRoot: root,
     // The end's cost: its booking's, by the one rule every reader of an ended run's cost takes (metrics.ts runCostOf):
     // every model request its session's proxy booked (pi's own answers and its side calls: a learned workflow's nodes,
@@ -943,9 +1104,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     endPatch: async () => {
       // The root's entries and every conversation a task of the run owns (a subagent's): a child's requests are the run's.
       const entries = await agentEntriesOf(deps.journal(claim), context);
-      // The path it took and the learned revision it ran on, for a run that learns (workflow-first.ts pathMetrics), by the
-      // one classifier the cost per run reads back (runPathOverStore).
-      const path = pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning, run.redact) : undefined, entries as never);
+      // The path it took, the learned revision it ran on, its learned workflow calls and why its first choice served or
+      // did not, for a run that learns (workflow-first.ts pathMetrics), by the one writer every harness's end calls
+      // (runPathMetricsOverStore).
+      const path = await runPathMetricsOverStore(deps.store, claim.runId, launch, { redact: run.redact, choice: firstChoice.reason });
       // A run its learned workflow served first: that call is on the loop's record (no pi answer carries its tokens), so its
       // metrics are its booking's, as a CLI harness's run reads them: the workflow's nodes and the agent's own after a handback.
       // An MCP tool called by a hashed wire name is counted under its catalog name, as its timeline names it.
@@ -968,8 +1130,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // The run's Archil mount credential is revoked at its end on every outcome, even with no computer (the computer's
     // release revokes it too; revoke is idempotent, so a second call is a no-op). A run that minted none revokes nothing.
     // At a park, a desktop or a phone is kept for the resume instead (spec-holds.ts SpecHolds.release `parked`), its mount
-    // credential with it, and the run's timeline is told so.
-    ...(computer.keeps ? { keptWords: computerKeptWords(computer.keeps) } : {}),
+    // credential with it, and the run's timeline is told so once its row is written (keep: a park that keeps nothing
+    // says nothing of a keep). A computer the gate turned off is not kept (spec-holds.ts Held.computerOff), so the
+    // timeline says nothing of keeping it and no row is written.
+    keptWords: () => (computer.keeps === undefined || gate.computerOff() ? undefined : computerKeptWords(computer.keeps)),
+    ...(computer.keeps && computer.keepRow ? { keep: () => computer.keepRow!() } : {}),
     release: (how) => holds.release(how),
     ...(movedProject ? { projectCheckpoint: projectCheckpointForRun({ store: deps.store, agentId: runRow.agentId, claim, launch, tools, computer,
       workspace: { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } },
@@ -1139,15 +1304,16 @@ export function liveViewersOf(store: LiveViewerStore, sealKey: Buffer | undefine
 }
 
 /** `tool` with its answer's text, and a throw's message, cut by `cut` (the run's one redactor). A web call's answer is cut
- *  string by string inside its JSON (timeline/web-calls.ts webCut), so what the harness stores still parses and keeps
- *  its links whole for a grader's link check. */
-export function answersCut(tool: HostTool, cut: (text: string) => string): HostTool {
+ *  string by string inside its JSON (tools.ts webAnswerCut), so what the harness stores still parses and keeps its links
+ *  whole for a grader's link check; one whose strings, read joined, hold a held value split across two of them is
+ *  "[redacted]". */
+export function answersCut(tool: HostTool, cut: Redact): HostTool {
   return {
     ...tool,
     call: async (args, context) => {
       try {
         const answer = await tool.call(args, context);
-        return { ...answer, text: webCut(tool.name, answer.text, cut) ?? cut(answer.text) };
+        return { ...answer, text: webAnswerCut(cut)(tool.name, answer.text) ?? cut(answer.text) };
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
@@ -1284,10 +1450,10 @@ async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly 
 
   // The browser (tl-browser), on pi's native route: tools.ts's own binding on this run's ToolHost (its store, claim and seal
   // key, its live viewers through the store, its sign-in read under the claim, its money on host.ledger), its vendor the
-  // launch's plane checked again against the keys this claim read from the store, as main's launch hands its process the
-  // plane (runs.ts relaunchPlane). Its durable extension goes to piAdapter (`native`), never wrapped as a HostTool and never
-  // installed here too (piAdapter installs it once); its lifecycle (the Config per conversation, reconcile, the release
-  // drain) through the host's hooks into the spec's lifecycle.
+  // launch's plane (resolved when the run was created, runs-over-store.ts planeFor) checked again against the keys this
+  // claim read from the store (recheckPlane, which keeps the plane's Jev off). Its durable extension goes to piAdapter
+  // (`native`), never wrapped as a HostTool and never installed here too (piAdapter installs it once); its lifecycle (the
+  // Config per conversation, reconcile, the release drain) through the host's hooks into the spec's lifecycle.
   if (browser) {
     const checked = plane ? recheckPlane(plane, host.env) : {};
     const env = { ...host.env };

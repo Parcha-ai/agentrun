@@ -4,7 +4,8 @@
 // or in a process of its own (runner/main.ts), so a server in another process, or on another host over one Postgres, reads
 // it. A runner in a process of its own with a relay (dial-relay.ts) says on the same row where its relay answers, under the
 // same incarnation (runner/main.ts makes one per process), so the server relays a dial only to a runner this row says is
-// there. Each row is renewed every PRESENCE_RENEW_MS and read as gone once it is PRESENCE_STALE_MS old: a runner that died
+// there. Each row is renewed every PRESENCE_RENEW_MS and read as gone once it is the store's RUNNER_STALE_MS old (three
+// renewals missed, the age the claim rule reads for a kept computer's pin too): a runner that died
 // without its close stops counting within that. While every runner still there refused, and one at least is, the server
 // refuses a launch in their words (runs-over-store.ts prepareLaunch), says so in capabilities and health, and fails the
 // runs still queued (server.ts). With no runner there at all (a server with --no-runner and its runner not started yet),
@@ -12,13 +13,21 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { ApiError } from "../errors.js";
-import { RUNNER_STALE_MS, type Runners } from "../store/store.js";
+import { RUNNER_STALE_MS, type RunnerRow, type Runners } from "../store/store.js";
 
 /** How often a runner says again that it is there. */
 export const PRESENCE_RENEW_MS = 10_000;
-/** How old a runner's word can be and still count: three renewals missed. The store's (RUNNER_STALE_MS), which its claim
- *  rule reads for a kept computer's pin. */
-export const PRESENCE_STALE_MS = RUNNER_STALE_MS;
+
+/** A runner's row that says where its relay answers. */
+export type RelayRow = RunnerRow & { readonly host: string; readonly port: number };
+
+/** The runners whose relay takes dials now: their rows seen within RUNNER_STALE_MS on the store's clock (Runners.live,
+ *  the database's on Postgres), never one process's, that say where their relay answers. The server relays a dial only
+ *  to one of these (computer-attach.ts), says a dial provider is served while one answers at a host it dials (server.ts
+ *  relayed), and a paired computer's route to a runner not among them is stale (workspace/paired-route.ts). */
+export async function liveRelays(runners: Pick<Runners, "live">): Promise<RelayRow[]> {
+  return (await runners.live(RUNNER_STALE_MS)).filter((row): row is RelayRow => row.host !== null && row.port !== null);
+}
 
 /** This build's version (the serve package's), which every runner says on its row (runners.version) for the server's
  *  capacity read (GET /v2/capacity). */
@@ -67,7 +76,7 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
   // one Runners.renew, with the place it holds now) touches its own row only, or puts one where no other process of the
   // name is live (Runners.put unlessLiveMs): an older process overlapping a restart never takes the later one's row back,
   // nor clears its relay.
-  const again = () => runners.put(row(), { unlessLiveMs: PRESENCE_STALE_MS });
+  const again = () => runners.put(row(), { unlessLiveMs: RUNNER_STALE_MS });
   // A refusal changed (refuse) and not yet on the row: a renewal only marks the row seen, so until a put of the row lands
   // each renewal is that put. A put that fails leaves it unsaid, for the next renewal.
   let unsaid = false;
@@ -123,7 +132,7 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
 
 /** Why no runner here can take a run, in the runners' own words, or undefined while one can (or none is there): the rows
  *  seen within `staleMs` on the store's clock (Runners.live), when there is one at least and every one refused. */
-export async function runnersRefused(runners: Pick<Runners, "live">, staleMs = PRESENCE_STALE_MS): Promise<string | undefined> {
+export async function runnersRefused(runners: Pick<Runners, "live">, staleMs = RUNNER_STALE_MS): Promise<string | undefined> {
   const live = await runners.live(staleMs);
   if (live.length === 0 || live.some((row) => row.refused === null)) return undefined;
   const reasons = [...new Set(live.map((row) => row.refused as string))];

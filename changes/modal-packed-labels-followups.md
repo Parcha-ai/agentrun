@@ -1,0 +1,7 @@
+---
+packages: @parcha/agentrun-computer
+kind: fix
+---
+Contract change: a hosted computer refuses a caller's label named `agentrun` or `agentrun-<n>` (`agentrun-0`, `agentrun-1` and on), which it accepted before. Those names hold a computer's packed labels, and a label under one, stored as given, could read back as a packed map. `check()` answers the refusal `{ field: "labels", message: "the label agentrun-0 is reserved: agentrun and agentrun-<n> (agentrun-0, agentrun-1 and on) hold a computer's packed labels" }`, with the label's own name in place of `agentrun-0`, and `create` fails `refused` with the message `labels: the label agentrun-0 is reserved: …`, before any vendor call. A spec that carries one of those labels must rename it.
+
+Modal's packed tags are one-way across an upgrade. A server from before the change finds a request's sandbox by its labels as given alone, so its retry of a create can make a second sandbox beside a newer server's packed one. A newer server's create of the same request keeps the older of the two only while the two creates race, its own reads of the name after its sandbox is made seeing both. A later create of that request that finds both already there refuses as `exists`, naming both ids, and keeps both; the extra sandbox then lasts until it is deleted or Modal ends it at its lifetime. Upgrade every server that shares a Modal app together to avoid it.

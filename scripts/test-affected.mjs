@@ -11,18 +11,22 @@
 //   test      a test file of a suite picks itself.
 //   import    a file a test imports, directly or through other files, picks that test. Imports are read from each file's
 //             parse tree: import and export from (not a type-only one: it is erased before the code runs), require(),
-//             import(), require.resolve(), import.meta.resolve() and new URL('<relative path>', import.meta.url). A
+//             import(), require.resolve(), import.meta.resolve(), new URL('<relative path>', import.meta.url) and
+//             node:module's register('<relative path>', import.meta.url). A
 //             relative path, a workspace package's name (through its "exports", the "source" condition first) and a
 //             tsconfig "paths" alias resolve to a file in the repository, and a built file maps back to its source by the
 //             outDir and rootDir of the tsconfig its package's build compiles (dist/x.js to src/x.ts).
-//   package   a package's package.json, tsconfig*.json, vite or vitest config, or a file its build or test script names,
-//             picks every test file of the package.
+//   package   a package's package.json, tsconfig*.json, vite or vitest config, a file its build or test script names (a
+//             --flag=value word's value too, as a test script's --import=<preload>), or a file one of those reaches by
+//             import, picks every test file of the package: a preload runs in every test process.
 //   fallback  where the parse tree cannot be sure (a computed import(), a path built from strings, a fixture read by path),
 //             a file of the path's package that names the path's file (its basename, alone or after folders that could be
 //             its own; for a source file its path under src/, as .ts or .js) picks the tests that are or import that
 //             file; for a code file, only a file outside the package's source counts. A code file no test reaches either way
 //             picks its package's test files that import by a computed path themselves.
 //   smoke     SMOKE below, a fast file per package, always (--no-smoke drops it), so a round catches a gross break.
+//   tree      TREE_WIDE below, a test that reads every tracked file of a kind (git ls-files), for any change at all: any
+//             path may break it, and no import or name says so.
 //   A shared root (SHARED_ROOTS: the root manifests, lockfile, scripts/, .github/) picks the tests that import it and the
 //   smoke set only, not every suite, and says so: CI runs every test for it (scripts/ci-affected.mjs).
 // - Output: by default a shell command per suite, run from the root, on stdout, and what each changed path picked on stderr.
@@ -48,12 +52,22 @@ export const SMOKE = {
   '@parcha/agentrun-dsl': 'test/job.test.mjs',
   '@parcha/agentrun-import': 'test/usage.test.mjs',
   '@parcha/agentrun-jev': 'test/adapter.test.mjs',
+  '@parcha/agentrun-web': 'test/fees.test.mjs',
   '@parcha/pi-browser': 'test/dial.test.mjs',
   '@parcha/agentrun-kernel': 'test/kernel.test.mjs',
   '@parcha/agentrun-harness-claude': 'test/names.test.mjs',
   '@parcha/agentrun-harness-codex': 'test/machine.test.mjs',
   '@parcha/agentrun-serve': 'test/harness-default-model.test.mjs',
   'agentrun-console': 'src/App.setup.test.tsx',
+};
+
+/** The tests that read every tracked file of a kind (`git ls-files`, a listing of every package), so any change may break
+ *  them and no import or name says which: suite name to its files, relative to the suite's directory. Each runs for any
+ *  change. A pull request's CI that skipped entry-points.test.mjs let #3689 break its policy in the merge queue. */
+export const TREE_WIDE = {
+  // Every tracked script's entry check; every tracked TypeScript's TypeBox use; every package source's doc
+  // checkpoints; every tracked Markdown link.
+  'test:release': ['scripts/entry-points.test.mjs', 'scripts/typebox-out.test.mjs', 'scripts/doc-checkpoint.test.mjs', 'scripts/check-doc-anchors.test.mjs'],
 };
 
 /** Paths outside the packages that every suite may read: a change to one picks its importers and the smoke set only. */
@@ -84,8 +98,10 @@ export function readPackages(root) {
     const own = compilerOptions(join(root, dir, 'tsconfig.json'));
     const base = own.baseUrl ? posix.join(dir, toPosix(own.baseUrl)) : dir;
     const aliases = Object.entries(own.paths ?? {}).map(([pattern, targets]) => ({ pattern, targets: targets.map((target) => posix.join(base, toPosix(target))) }));
-    // The files the build and test scripts name (`node scripts/copy-page.mjs`, `tsc -p tsconfig.build.json`).
-    const named = [...new Set(scripts.split(/\s+/).map((word) => word.replace(/^['"]|['"]$/g, ''))
+    // The files the build and test scripts name (`node scripts/copy-page.mjs`, `tsc -p tsconfig.build.json`), a
+    // --flag=value word's value among them (`--import=./test/fixtures/register.mjs`, a preload every test process runs).
+    // The word after --import, --require or --loader is a plain word already.
+    const named = [...new Set(scripts.split(/\s+/).map((word) => word.replace(/^--[\w-]+=/, '').replace(/^['"]|['"]$/g, ''))
       .filter((word) => /^[\w./-]+\.\w+$/.test(word))
       .map((word) => posix.normalize(posix.join(dir, word)))
       .filter((path) => !path.startsWith('..') && isFile(root, path)))];
@@ -178,9 +194,15 @@ export function scan(text, file) {
       const callee = node.expression;
       const loads = callee.kind === ts.SyntaxKind.ImportKeyword || (ts.isIdentifier(callee) && callee.text === 'require')
         || (ts.isPropertyAccessExpression(callee) && callee.name.text === 'resolve' && ((ts.isIdentifier(callee.expression) && callee.expression.text === 'require') || ts.isMetaProperty(callee.expression)));
+      // node:module's register('<relative>', import.meta.url), bare or as module.register: the hooks it loads run in
+      // every process that runs this file.
+      const registers = (ts.isIdentifier(callee) && callee.text === 'register') || (ts.isPropertyAccessExpression(callee) && callee.name.text === 'register' && ts.isIdentifier(callee.expression));
       if (loads && node.arguments.length) {
         specifier = literal(node.arguments[0]);
         if (specifier === undefined) computed = true;
+      } else if (registers && isImportMetaUrl(node.arguments[1])) {
+        const path = literal(node.arguments[0]);
+        if (path !== undefined && path.startsWith('.')) specifier = path;
       }
     } else if (ts.isNewExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'URL' && isImportMetaUrl(node.arguments?.[1])) {
       const path = literal(node.arguments[0]);
@@ -362,13 +384,24 @@ export function ownFolders(before, folders) {
  * What the changed paths pick: `{ suites: [{ name, dir, files, why }], paths: [{ path, kinds, note }], warnings }`.
  * `files` are relative to the suite's `dir`; `why` maps each to its reasons, `{ kind, changed, chain }` (paths from the root).
  */
-export function select(root, changed, { sets = readTestSets(root), packages = readPackages(root), smoke = SMOKE } = {}) {
+export function select(root, changed, { sets = readTestSets(root), packages = readPackages(root), smoke = SMOKE, treeWide = TREE_WIDE } = {}) {
   const tests = new Map();
   for (const set of sets) for (const file of set.files) tests.set(set.dir === '.' ? file : `${set.dir}/${file}`, set);
   const resolve = resolver(root, packages);
-  const graph = buildGraph(root, [...tests.keys()], resolve);
+  // The files the packages' scripts name are roots too: a test script's preload imports and registers what every test runs.
+  const graph = buildGraph(root, [...tests.keys(), ...packages.flatMap((pkg) => pkg.named)], resolve);
   const reverse = new Map();
   for (const [from, targets] of graph.edges) for (const to of targets) { if (!reverse.has(to)) reverse.set(to, []); reverse.get(to).push(from); }
+  // Each package's named files and every file they reach, each with its chain from the named file: a change to any of them
+  // picks every test of the package.
+  const reached = new Map(packages.map((pkg) => {
+    const chains = new Map(pkg.named.map((file) => [file, [file]]));
+    const queue = [...pkg.named];
+    for (let i = 0; i < queue.length; i++) {
+      for (const next of graph.edges.get(queue[i]) ?? []) if (!chains.has(next)) { chains.set(next, [...chains.get(queue[i]), next]); queue.push(next); }
+    }
+    return [pkg, chains];
+  }));
   const inside = (path, dir) => path === dir || path.startsWith(`${dir}/`);
   const ownerOf = (path) => packages.filter((pkg) => inside(path, pkg.dir)).sort((a, b) => b.dir.length - a.dir.length)[0];
   const setOf = (pkg) => sets.find((set) => set.dir === pkg.dir);
@@ -395,12 +428,13 @@ export function select(root, changed, { sets = readTestSets(root), packages = re
     }
     let config = false;
     for (const owner of packages) {
-      if (!(dirname(path) === owner.dir && CONFIG.test(basename(path))) && !owner.named.includes(path)) continue;
+      const chain = dirname(path) === owner.dir && CONFIG.test(basename(path)) ? [path] : reached.get(owner).get(path);
+      if (!chain) continue;
       config = true;
       const set = setOf(owner);
       for (const file of set?.files ?? []) {
         const test = set.dir === '.' ? file : `${set.dir}/${file}`;
-        add(test, { kind: 'package', changed: path, chain: [path] });
+        add(test, { kind: 'package', changed: path, chain });
         count('package', test);
       }
     }
@@ -440,6 +474,13 @@ export function select(root, changed, { sets = readTestSets(root), packages = re
     const set = sets.find((s) => s.name === name);
     if (!set || !set.files.includes(file)) { warnings.push(`SMOKE names ${name} ${file}, which is not one of its test files here; update SMOKE in scripts/test-affected.mjs`); continue; }
     add(set.dir === '.' ? file : `${set.dir}/${file}`, { kind: 'smoke', changed: null, chain: [] });
+  }
+  for (const [name, files] of Object.entries(treeWide ?? {})) {
+    for (const file of files) {
+      const set = sets.find((s) => s.name === name);
+      if (!set || !set.files.includes(file)) { warnings.push(`TREE_WIDE names ${name} ${file}, which is not one of its test files here; update TREE_WIDE in scripts/test-affected.mjs`); continue; }
+      if (changed.length) add(set.dir === '.' ? file : `${set.dir}/${file}`, { kind: 'tree', changed: null, chain: [] });
+    }
   }
   const suites = sets.filter((set) => picks.has(set)).map((set) => {
     const mine = picks.get(set);

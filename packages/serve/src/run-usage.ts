@@ -436,7 +436,8 @@ const micro = (value: number) => Math.round(value * 1e6) / 1e6;
 
 /** The run's `compute_time` lines: one per provider and resource of the computers it made (`rows`), each second of each at
  *  its figure, an open one's up to `at` (the read), and the part no claim held (its life less its booked time) apart in
- *  `unheld_quantity`. Its money is what the run's ledger booked for it (`booked`, by computeKey): `estimate` when any was;
+ *  `unheld_quantity` (0 for a provider that bills nothing: none of its time costs anything, booked or not, so none is
+ *  outside the run's cost). Its money is what the run's ledger booked for it (`booked`, by computeKey): `estimate` when any was;
  *  $0 for a provider that bills nothing; else `unpriced`, its usd null. A figure no one said makes its quantity null. */
 function computeLinesOf(rows: readonly ComputerIntervalRow[], at: number, booked: ReadonlyMap<string, { booked: ReturnType<typeof joined>; at: AttemptTag }>, spans: (from: number, to: number) => { at: AttemptTag; ms: number }[]): RunUsageLine[] {
   type Sum = { provider: string; resource: ComputeResource; gpuType: string | null; quantity: number | null; unheld: number | null; open: number; at: AttemptTag };
@@ -479,7 +480,7 @@ function computeLinesOf(rows: readonly ComputerIntervalRow[], at: number, booked
     return {
       meter: "compute_time", model: null, provider: sum.provider, charged_by: sum.provider,
       quantity: sum.quantity === null ? null : micro(sum.quantity), unit: COMPUTE_UNITS[sum.resource], basis: charged || free ? "estimate" : "unpriced", ...sum.at, ...words,
-      resource: sum.resource, gpu_type: sum.gpuType, unheld_quantity: sum.unheld === null ? null : micro(sum.unheld), open_computers: sum.open,
+      resource: sum.resource, gpu_type: sum.gpuType, unheld_quantity: unmetered(sum.provider) ? 0 : sum.unheld === null ? null : micro(sum.unheld), open_computers: sum.open,
       ...(sum.open > 0 ? { measured_to: new Date(at).toISOString() } : {}),
     };
   });
@@ -556,7 +557,7 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
 /** Run `runId`'s usage lines as served: each name taken from its record (a model, its provider, a tool's charger) through
  *  the run's cut, as its trace serves a model's name, since a decision provider or a tool names itself in what it
  *  returns. A run withheld (its sign-in can't be read back here) is refused (403), as its trace is. */
-export async function servedRunUsage(deps: { serverSecrets: () => string[]; signIns?: SignInReader }, store: Store, runId: string): Promise<RunUsage | undefined> {
+export async function servedRunUsage(deps: { serverSecrets: () => string[]; signIns?: SignInReader; sealKey: Buffer | undefined }, store: Store, runId: string): Promise<RunUsage | undefined> {
   if ((await runCutValues(deps, store, runId)) === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   const usage = await runUsageOverStore(store, runId);
   // The cut after the read: it only grows, so it holds every value the read could have seen.

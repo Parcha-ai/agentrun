@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { COMPUTER_TOOLS, computerToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { deniedText, noApproverText, runGate } from "../dist/tool-gate.js";
+import { computerOffWords } from "../dist/refusal-words.js";
 import { KIND_KEYS, permissionsOf, settingsIssues } from "../dist/tool-plane.js";
 import { builtinKeyOf, runnerGate, storedSettings } from "./gate-support.mjs";
 
@@ -66,13 +67,16 @@ const PHONE_REVISION = { kind: "agentic", body: { computer: { kind: "phone", pro
 const DESKTOP_REVISION = { kind: "agentic", body: { computer: { kind: "desktop", provider: "e2b" } } };
 const gateOf = (revision, read, approvers = true) => runGate({ root: "/nonexistent/run", work: "/nonexistent/run", facts: undefined }, "r1", revision, typeof read === "function" ? read : () => storedSettings(read), approvers);
 const STEP_CALLS = [["computer_act", { steps: [{ press: "@e1" }] }], ["computer_observe", {}], ["computer_op", { op: "input.act", args: { actions: [] } }], ["computer_op", { op: "apps.open", args: { id: "com.android.settings" } }]];
+/** A run's first deny of its computer's own tools: `key`'s deny words, then that computer (`kind`) off for the run. Each
+ *  call below is decided on a gate of its own, a run's first: what follows a first deny is computer-all-denied.test.mjs's. */
+const firstDeny = (key, from, kind) => ({ deny: `${deniedText(key, key, from, "no")} ${computerOffWords(kind)}` });
 
 test("phone set to deny refuses a phone run's step tools and a script's nested computer_op in phone's words", async () => {
   for (const from of ["server", "agent"]) {
-    const gate = from === "server" ? gateOf(PHONE_REVISION, { phone: { permission: "deny" } }) : gateOf({ ...PHONE_REVISION, body: { ...PHONE_REVISION.body, toolSettings: { phone: { permission: "deny" } } } }, {});
-    for (const [tool, args] of STEP_CALLS) assert.deepEqual(await gate.decide(tool, args), { deny: deniedText("phone", "phone", from, "no") }, `${from}: ${tool} ${JSON.stringify(args)}`);
+    const gate = () => (from === "server" ? gateOf(PHONE_REVISION, { phone: { permission: "deny" } }) : gateOf({ ...PHONE_REVISION, body: { ...PHONE_REVISION.body, toolSettings: { phone: { permission: "deny" } } } }, {}));
+    for (const [tool, args] of STEP_CALLS) assert.deepEqual(await gate().decide(tool, args), firstDeny("phone", from, "phone"), `${from}: ${tool} ${JSON.stringify(args)}`);
     // A script's shell op is the kind's first, in its words.
-    assert.deepEqual(await gate.decide("computer_op", { op: "shell.run", args: { command: "ls" } }), { deny: deniedText("phone", "phone", from, "no") }, `${from}: shell.run`);
+    assert.deepEqual(await gate().decide("computer_op", { op: "shell.run", args: { command: "ls" } }), firstDeny("phone", from, "phone"), `${from}: shell.run`);
   }
 });
 
@@ -89,18 +93,16 @@ test("a phone run's asked computer call is asked as phone, and where no one can 
 });
 
 test("a desktop run's refusals and asks still name desktop", async () => {
-  const gate = gateOf(DESKTOP_REVISION, { desktop: { permission: "deny" } });
-  for (const [tool, args] of STEP_CALLS) assert.deepEqual(await gate.decide(tool, args), { deny: deniedText("desktop", "desktop", "server", "no") }, tool);
+  for (const [tool, args] of STEP_CALLS) assert.deepEqual(await gateOf(DESKTOP_REVISION, { desktop: { permission: "deny" } }).decide(tool, args), firstDeny("desktop", "server", "desktop"), tool);
   const asked = gateOf(DESKTOP_REVISION, () => ({ settings: {}, problems: [], unreadable: true }));
   for (const [tool, args] of STEP_CALLS) assert.equal(asked.askedAs(tool, args), "desktop", tool);
 });
 
 test("a phone run is still held to the stricter key: desktop set to deny refuses it, in the words of the key that refused", async () => {
-  const gate = gateOf(PHONE_REVISION, { desktop: { permission: "deny" } });
-  for (const [tool, args] of STEP_CALLS) assert.deepEqual(await gate.decide(tool, args), { deny: deniedText("desktop", "desktop", "server", "no") }, tool);
+  // The words name the key that refused; the computer that goes off is the run's own, the phone.
+  for (const [tool, args] of STEP_CALLS) assert.deepEqual(await gateOf(PHONE_REVISION, { desktop: { permission: "deny" } }).decide(tool, args), firstDeny("desktop", "server", "phone"), tool);
   // Both set to deny: the run's own kind's words.
-  const both = gateOf(PHONE_REVISION, { desktop: { permission: "deny" }, phone: { permission: "deny" } });
-  for (const [tool, args] of STEP_CALLS) assert.deepEqual(await both.decide(tool, args), { deny: deniedText("phone", "phone", "server", "no") }, tool);
+  for (const [tool, args] of STEP_CALLS) assert.deepEqual(await gateOf(PHONE_REVISION, { desktop: { permission: "deny" }, phone: { permission: "deny" } }).decide(tool, args), firstDeny("phone", "server", "phone"), tool);
 });
 
 // A codemode script's `computer` reaches its shell and its files through computer_op: each op is held to the run's own
@@ -108,15 +110,19 @@ test("a phone run is still held to the stricter key: desktop set to deny refuses
 const op = (name, args) => ["computer_op", { op: name, args }];
 test("a script's computer_op is decided as the run's own bash, write and read are, on every harness: a deny, a read-only policy, the default, and the kind's deny first", async () => {
   const held = [op("shell.run", { command: "ls" }), op("processes.start", { command: ["sleep", "1"] }), op("files.write", { path: "/workspace/a", data: "x" }), op("files.read", { path: "/workspace/a" }), op("files.list", { path: "/workspace" }), op("files.stat", { path: "/workspace/a" })];
+  const tools = ["bash", "read", "write"];
   for (const harness of ["pi", "claude-agent", "codex", "opencode"]) {
-    const denied = runnerGate({ harness, settings: { bash: { permission: "deny" }, write: { permission: "deny" }, read: { permission: "deny" } } });
+    const denied = runnerGate({ harness, tools, settings: { bash: { permission: "deny" }, write: { permission: "deny" }, read: { permission: "deny" } } });
     for (const [tool, args] of held) {
       const decided = await denied.decide(tool, args);
       assert.ok(typeof decided === "object" && "deny" in decided, `${harness} ${args.op} is refused: ${JSON.stringify(decided)}`);
     }
     // An op no tool of the run's runs (the apps, raw input) is the kind's alone.
     assert.equal(await denied.decide(...op("apps.list", {})), "allow", `${harness}: apps.list is the kind's`);
-    for (const [tool, args] of held) assert.equal(await runnerGate({ harness }).decide(tool, args), "allow", `${harness} ${args.op}: the default allows`);
+    for (const [tool, args] of held) assert.equal(await runnerGate({ harness, tools }).decide(tool, args), "allow", `${harness} ${args.op}: the default allows`);
+    // files.write needs write among the agent's tools, whatever write's setting says.
+    const unwritten = await runnerGate({ harness, tools: ["bash", "read"] }).decide(...op("files.write", { path: "/workspace/a", data: "x" }));
+    assert.match(unwritten.deny ?? "", /not given write/, `${harness}: ${JSON.stringify(unwritten)}`);
   }
   const readOnly = runnerGate({ overrides: { bash: { policy: "read-only" } } });
   assert.equal(await readOnly.decide(...op("shell.run", { command: "ls" })), "allow");

@@ -25,7 +25,7 @@
 // asked anything.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
-import { type Ask, asking, type ComposioControl, managedConfig } from "./composio-preset.js";
+import { accountsUnder, type Ask, asking, type ComposioControl, managedConfig } from "./composio-preset.js";
 import type { Source } from "./trigger-adapter.js";
 import { COMPOSIO_HOOK, COMPOSIO_SECRET, CONFIG_SECRET, CONFIG_UNLISTED, configScope, configSecrets, MOVE_FIELD, SEALED_FIELD, SEALED_MASK, sealableValue, sealedConfigFields, sealedKept, sealedSchemaFields, shownSource } from "./trigger-composio.js";
 import type { TriggerUpstream } from "./triggers.js";
@@ -44,6 +44,11 @@ const MAX_PAGES = 10;
  *  on (the managed one found or made, or the one auth_config_id named; none for a server saved before that was recorded,
  *  whose link is then under managedConfig's, or of a toolkit with no sign-in). */
 export type ComposioCredential = { key: string; user: string; toolkit: string; auth_config?: string };
+/** What a saved server's own routes read of it (`route`): no user, which none of them sends Composio; only a trigger's
+ *  own steps (`field`) read the user. */
+export type ComposioRouteCredential = Omit<ComposioCredential, "user">;
+/** The credential a read for `refusal` answers. */
+export type ComposioCredentialOf<R extends "field" | "route"> = R extends "field" ? ComposioCredential : ComposioRouteCredential;
 /** What an instance comes to once a trigger no longer holds it (leftWith). */
 type Left = "delete" | "off" | "keep";
 /** A trigger of kind composio, as the engine keeps it. */
@@ -57,9 +62,10 @@ export type ComposioTriggerDeps = {
   publicUrl?: string;
   /** The composio source's sealed settings: each hook's subscription secret. */
   sealed: Sealed;
-  /** Saved server `name`'s key, user, toolkit and auth config; refused (thrown) when it is no Composio server: by the source's field at
-   *  a trigger's create (`field`), as a 404 on its own routes (`route`). */
-  credential(name: string, refusal: "field" | "route"): Promise<ComposioCredential>;
+  /** Saved server `name`'s key, toolkit and auth config, and for a trigger's own steps (`field`) its user; refused (thrown)
+   *  when it is no Composio server: by the source's field at a trigger's create (`field`), as a 404 on its own routes
+   *  (`route`). */
+  credential<R extends "field" | "route">(name: string, refusal: R): Promise<ComposioCredentialOf<R>>;
   /** Every trigger of kind composio, on or off. */
   holders(): Promise<Holder[]>;
   signal?: AbortSignal;
@@ -548,7 +554,7 @@ export class ComposioTriggers implements TriggerUpstream {
 
   /** Composio asked with the server's key; a failure's words end with what it left (`outcome`), and pass on none of
    *  Composio's own with a value of `sealed` (a trigger's sealed config) in play. */
-  private ask(credential: ComposioCredential, outcome = "nothing was changed", sealed: readonly string[] = []): Ask {
+  private ask(credential: Pick<ComposioCredential, "key">, outcome = "nothing was changed", sealed: readonly string[] = []): Ask {
     return asking(this.deps.control, credential.key, this.deps.signal, outcome, sealed);
   }
 
@@ -642,14 +648,13 @@ export class ComposioTriggers implements TriggerUpstream {
     return hook;
   }
 
-  /** The id of the one ACTIVE account the server's user has for its toolkit, under the auth config the server's save stands
-   *  on (as its MCP server serves only those; every config, for a server saved before that was recorded); none: refused,
-   *  with the link to connect it under that config; several: refused, naming each with when it was connected, so the
-   *  owner disconnects the ones it shouldn't run as. */
+  /** The id of the one ACTIVE account the server's user has for its toolkit (accountsUnder: never another user's), under
+   *  the auth config the server's save stands on (as its MCP server serves only those; every config, for a server saved
+   *  before that was recorded); none: refused, with the link to connect it under that config; several: refused, naming
+   *  each with when it was connected, so the owner disconnects the ones it shouldn't run as. */
   private async accountOf(ask: Ask, credential: ComposioCredential, server: string): Promise<string> {
     const config = credential.auth_config;
-    const accounts = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${enc(credential.user)}&toolkit_slugs=${enc(credential.toolkit)}${config ? `&auth_config_ids=${enc(config)}` : ""}&statuses=ACTIVE`);
-    const active = (Array.isArray(accounts.items) ? accounts.items : []).filter((a): a is Json => isObject(a) && a.status === "ACTIVE" && !!text(a.id) && (!config || (isObject(a.auth_config) && a.auth_config.id === config)));
+    const active = (await accountsUnder(ask, { user: credential.user, toolkit: credential.toolkit, ...(config ? { auth_config: config } : {}) }, true)).filter((a) => !!text(a.id));
     if (active.length === 1) return text(active[0]!.id);
     const under = config ? ` under auth config ${config}` : "";
     // Several: never one picked, which would run the trigger as an account the owner didn't choose, unseen.

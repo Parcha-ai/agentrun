@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useResumed } from "@/components/Connection";
 import { NotHere, ProblemCard } from "@/components/Problem";
 import { RunDetail } from "@/components/RunDetail";
+import type { InFlightItem } from "@/components/InFlight";
 import { RunError } from "@/components/RunError";
 import { type GraphActions, GraphUnavailable, isPermanent, RunGraphView, useRunGraph } from "@/components/RunGraphView";
 import { RunSkeleton } from "@/components/Skeleton";
@@ -36,6 +37,8 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   // The newest timeline page's cost: each page carries the run's cost as it stands, so while the run works the header
   // follows it (the first read of the run can be older than every priced request); once it ends, the run's own read has it.
   const [pageCost, setPageCost] = useState<Run["cost"] | null>(null);
+  // What the run waits on now, as the newest page says (its `in_flight`): shown while it is live (GRE-4835).
+  const [inFlight, setInFlight] = useState<InFlightItem[]>([]);
   const [rows, setRows] = useState<TimelineRow[]>([]);
   const [files, setFiles] = useState<RunFile[]>([]);
   const [error, setError] = useState<Failure | null>(null);
@@ -81,6 +84,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   useEffect(() => {
     const ctl = new AbortController();
     setPageCost(null);
+    setInFlight([]);
     follow(v2, runId, {
       signal: ctl.signal,
       // A tool round can write files, and start a recording of its computer's screen, while the run stays working: re-read
@@ -91,7 +95,7 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
       // answers the agent's browser ask and it asks its question at once, between two timeline reads, which sample the run
       // about once a second): while it waits, a page that brings anything new reads the run again, so its `pending` (the
       // card the person answers) is never an earlier wait's.
-      onPage: (p) => { if (p.cost) setPageCost(p.cost); const s = `${p.status}/${p.state}`; if (s !== status.current || (p.status === "input_required" && !p.unchanged)) { status.current = s; void refresh(); } },
+      onPage: (p) => { if (p.cost) setPageCost(p.cost); setInFlight(p.final ? [] : [...(p.in_flight ?? [])]); const s = `${p.status}/${p.state}`; if (s !== status.current || (p.status === "input_required" && !p.unchanged)) { status.current = s; void refresh(); } },
     }).catch((e) => { if (!ctl.signal.aborted) setError(failure(e)); });
     return () => ctl.abort();
   }, [runId, follows]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -163,11 +167,11 @@ export function LiveRun({ v2, runId, caps, agentName }: { v2: Client; runId: str
   return (
     <div className="flex h-full min-h-0 flex-col short:h-auto">
       {error && <div className="border-b p-3"><RunError title={error.title} error={error.api} /></div>}
-      <RunDetail key={run.run_id} run={shown} agentName={agentName(run.agent_id)} messages={offer.messages} harnessSteers={offer.steers}
+      <RunDetail key={run.run_id} run={shown} agentName={agentName(run.agent_id)} inFlight={FINAL_RUN.has(run.status) ? [] : inFlight} messages={offer.messages} harnessSteers={offer.steers}
         graphView={run.kind === "workflow" && !noGraph ? <LiveGraph v2={v2} runId={runId} graph={graph} onMoved={() => { void refresh(); }} /> : undefined}
         costText={run.kind === "workflow" && !FINAL_RUN.has(run.status) && graph.data ? graphCostText(graph.data) : undefined}
         outputSchema={harness.state === "read" ? harness.outputSchema : undefined}
-        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} fileUrl={(path) => v2.fileUrl(runId, path)} readTrace={() => v2.runTrace(runId)} readUsage={() => v2.runUsage(runId)} readLearningDiff={() => v2.runLearningDiff(runId)} readLearning={() => v2.runLearning(runId)} readLearningResult={() => v2.runLearningResult(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve} onGrade={grade}
+        rows={rows} files={files} readFile={(f) => v2.readFile(runId, f.path)} fileUrl={(path) => v2.fileUrl(runId, path)} readTrace={() => v2.runTrace(runId)} readUsage={() => v2.runUsage(runId)} freeRequests={caps?.limits?.free_model_requests} readLearningDiff={() => v2.runLearningDiff(runId)} readLearning={() => v2.runLearning(runId)} readLearningResult={() => v2.runLearningResult(runId)} readComputer={() => v2.runComputer(runId)} onTakeOver={() => computerMove(() => v2.takeOverComputer(runId))} onHandBack={(outcome) => computerMove(() => v2.handBackComputer(runId, outcome))} readComputers={() => v2.computers()} onMessage={message} onApprove={approve} onGrade={grade}
         actions={{ onStop: () => void act("stop"), onCancel: () => void act("cancel"), onArchive: () => void archive(), onRaiseCap: raiseCap, busy }} />
     </div>
   );

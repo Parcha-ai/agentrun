@@ -11,7 +11,7 @@
 //   hold_window, hold_disagree: it stops serving (a hold) when its last hold_window audit rows hold at least
 //     hold_disagree disagreements;
 //   stop_window: a second hold within this many served runs of the first stops it for good.
-// Both compare two answers (learn/promote.ts sameAnswer) on agree_on, the definition's dotted paths into the answer's
+// Both judge an answer (runner/promotion.ts checkInputOf, one field each) on agree_on, the definition's dotted paths into the answer's
 // JSON object that say the decision (`verdict.decision`); absent, the whole answer. Nothing is read off the output
 // schema: its enum can be an echo of the owner's setting, not the decision, and a wrong field that promotes is worse than
 // none.
@@ -68,11 +68,21 @@ export const AGREE_ON_PATH_MAX = 128;
 export const AGREE_ON_SEGMENTS_MAX = 8;
 /** An agree_on path's segments: each a key of an object, from the answer's top level down (a dot always splits). */
 export const pathSegments = (path: string): string[] => path.split(".");
+/** The one name an object literal's prototype setter answers to: never an agree_on segment, nor a key of a grade's
+ *  expected answer (server.ts), so no field a check or an audit reads is named by it. Refused on a write and on a read. */
+export const RESERVED_SEGMENT = "__proto__";
+/** Whether `value` holds an own key RESERVED_SEGMENT at any depth (in an object, or one inside an array): a grade's
+ *  expected answer that does is refused. */
+export const holdsReservedKey = (value: unknown): boolean =>
+  Array.isArray(value) ? value.some(holdsReservedKey)
+  : value !== null && typeof value === "object" ? Object.hasOwn(value, RESERVED_SEGMENT) || Object.values(value).some(holdsReservedKey)
+  : false;
 /** What is wrong with one agree_on path, in words, or undefined. */
 function pathIssue(path: string): string | undefined {
   if (path.length > AGREE_ON_PATH_MAX) return `over ${AGREE_ON_PATH_MAX} characters`;
   const segments = pathSegments(path);
   if (segments.some((segment) => !segment)) return "an empty segment";
+  if (segments.includes(RESERVED_SEGMENT)) return `a reserved segment (${RESERVED_SEGMENT})`;
   if (segments.length > AGREE_ON_SEGMENTS_MAX) return `more than ${AGREE_ON_SEGMENTS_MAX} segments`;
   return undefined;
 }

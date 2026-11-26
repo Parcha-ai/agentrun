@@ -62,7 +62,7 @@ export interface HostTool {
    *  way, by the child's key. `model`: the calling session's model as its harness resolves it (pi's: a pi-ai Model, whose
    *  input and input limits a file read sizes an image by); `output`: where the call's output goes while it runs (the
    *  session's live view of the running tool). Each is absent where a harness has none to give. */
-  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number; model?: unknown; output?(chunk: string): void; /** The session's other tools, called as calls of their own nested in this one (NestedCalls): given to a tool that `nests`, where the harness has a way to. */ nested?: NestedCalls }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; /** The answer as a value (a computer tool's), its images' data left out: what a script's nested call reads (Codex's code mode) and an MCP client's structuredContent. */ structured?: JsonValue; parked?: true }>;
+  call(args: unknown, context: { callId: string; signal: AbortSignal; sessionDir?: (key: string) => string; /** The kernel's attempt at this call: 0 the first time; above 0 when a crash cut an earlier attempt of a replay-safe tool and this one runs it again, so the earlier one may have been sent. */ attempt?: number; model?: unknown; output?(chunk: string): void; /** The session's other tools, called as calls of their own nested in this one (NestedCalls): given to a tool that `nests`, where the harness has a way to. */ nested?: NestedCalls }): Promise<{ text: string; isError?: boolean; images?: readonly ToolImage[]; /** The answer as a value (a computer tool's), its images' data left out: what a script's nested call reads (Codex's code mode) and an MCP client's structuredContent. */ structured?: JsonValue; parked?: true; /** A tool that `nests` ended at a nested call the gate refused (a script that stopped there): an error whose Timeline rows read refused, as the nested call's do, never as a call that ran and failed. */ refused?: true }>;
   /** The tool only calls the session's other tools (tools_call, codemode), each as a call of its own nested in this one
    *  (`context.nested`): each nested call passes the gate as itself and is recorded under its own id, so this call writes
    *  no intent or outcome of its own. A harness runs it again after a crash, its recorded nested calls answered from their
@@ -402,7 +402,9 @@ export type AdapterEvent =
   /** The model's message ended inside the turn, and another may follow in it (a CLI that resumes a cut answer itself):
    *  what it said so far is one message. */
   | { type: "text_end" }
-  | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
+  /** `refused`: the harness turned the call down itself (a tool the session does not have), so `name` is only the
+   *  model's words, never a tool of the session's. */
+  | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string; refused?: true }
   | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string; truncated?: true }
   /** `stopReason: "length"` only when the turn's final answer was cut at the model's output limit (unfinished), with that
    *  answer's output tokens when the adapter knows them: a host reads the answer as cut, never as the run's end. `capCut`:
@@ -511,6 +513,15 @@ export interface AdapterFacts {
   /** It defers a run's MCP tools behind a tool search of its own (Claude Code's ToolSearch), so the host offers no
    *  `tools_search` or `tools_call` beside it. Absent: the host's are offered when a run's catalog tools are deferred. */
   readonly ownToolSearch?: true;
+  /** Its tool list is the one its thread was started with: a resume takes no new one (Codex's app-server takes
+   *  `dynamicTools` on thread/start alone; thread/resume and its settings updates take none). So the host never leaves a
+   *  tool out at a claim for a reason a later claim of the same run may lift (a per_run MCP server's credential, handed
+   *  with a message): that tool would never come back. Absent: it takes the host's tools again at every claim. */
+  readonly toolsFixedAtStart?: true;
+  /** Its model proxy forwards with the fetch its launch hands it (ModuleLaunch.fetch, a provider's `fetch`), so a model
+   *  only that fetch reaches (one the host's route translates onto its wire: an Ollama model on Messages or Responses) is
+   *  its to run. Absent: the host offers it no such model, names none as its default, and refuses one a run names. */
+  readonly forwardsRoute?: true;
   /** The model as the harness names it (Anthropic's id has no dot). */
   normalizeModel(model: { provider: string; modelId: string }): { provider: string; modelId: string };
   /** How it is installed and pinned: the line that installs it into a project, the package it pins, and the codes its

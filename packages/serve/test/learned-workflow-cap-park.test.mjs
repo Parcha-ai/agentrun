@@ -46,7 +46,7 @@ test("a learned workflow's node refused for room parks the run: pi's next reques
   assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness: "pi", instructions: ASK }))).status, 201);
   await landWorkflows(data, id, [{ name: "answer", description: "Answers a question as a number; use when the person asks for the answer", workflow: flow }]);
   // The cap still governs a workflow that already passed its independent check.
-  await promoteChecked(store.settings, id, [{ name: "answer", workflow: flow }]);
+  await promoteChecked(store, id, [{ name: "answer", workflow: flow }]);
   /** Each request the gateway took: its model, and ":node" for a workflow node's (it offers submit). */
   const sent = () => gw.requests.map((request) => `${request.body?.model}${(request.body?.tools ?? []).some((tool) => tool?.name === "submit") ? ":node" : ""}`);
 

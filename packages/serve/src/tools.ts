@@ -17,11 +17,12 @@ import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { Revision } from "./agent-rows.js";
-import { registerTurnEnding } from "./timeline/index.js";
+import { registerTurnEnding, webCut } from "./timeline/index.js";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
-import { fetchOptions, HTML_READ_CHARS, TEXT_CAP } from "./web-fetch-direct.js";
+import { HTML_READ_CHARS, TEXT_CAP } from "@parcha/agentrun-web";
+import { fetchOptions } from "./web-run.js";
 import { harnessIds, onAdapter } from "./harness-table.js";
 import { META_TOOLS } from "./meta-tool-names.js";
 import { localFolderOf } from "./workspace/local.js";
@@ -35,25 +36,26 @@ import { browserPrice, browserSpend } from "./browser-cost.js";
 import { sessionEnds } from "./browser-sessions.js";
 import { sessionRecordings } from "./computer-record.js";
 import { forModel } from "./result.js";
-import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
+import { fetchFor, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { fakeFetch, fakeSaveOptions, fakeSearch, type WebFake } from "./web-fake.js";
-import { SAVE_MAX_BYTES, type SaveSlots, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
-import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
+import { LENGTH_TYPES, SAVE_MAX_BYTES, type SaveSlots, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
+import { browserNeeds, DEFAULT_BROWSER_VENDOR, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { unattachable } from "./attach-images.js";
 import { handedSignIn } from "./secrets.js";
-import { redactedAnswer } from "./key-refusal.js";
+import { redactedAnswer, withheldWhole } from "./key-refusal.js";
 import { SIGN_IN_KEY, vendorsOver } from "./sign-ins.js";
 import { answerIn, answerOnce } from "./runner/hand-back.js";
 import { waitingAsk } from "./browser-commands.js";
-import { runnerSecrets } from "./runner/redact.js";
+import { type Redact, runnerSecrets } from "./runner/redact.js";
 import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
 import { provenFor, type RunnerLive } from "./live-reach.js";
 import { clearWaitEnded, markWaitEnded } from "./browser-wait-ended.js";
+import { browserHoldWriter } from "./browser-hold.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
 import { held } from "./runner/held.js";
@@ -150,8 +152,8 @@ export type ToolHost = {
    *  (adapter-run-spec.ts browserListed). */
   ledger?: { paid: PaidBooking; pause?: (refusal: Refusal) => Promise<void>; flush: () => Promise<void> };
   /** The run's one redactor (the runner's: every secret value the runner and the claim hold, in every form): what the
-   *  browser's answers pass through before pi stores them or the model reads them. Absent on the old per-run process. */
-  redact?: (text: string) => string;
+   *  browser's answers pass through before pi stores them or the model reads them. */
+  redact: (text: string) => string;
   /** The run's own Workspace (on the runner: the run's local folder in Mode 1, its folder on the run's disk in Mode 2),
    *  where a tool files what the run's read finds later (monid's whole answer past the model's cut). Absent, the local
    *  folder at `where.work`. */
@@ -201,8 +203,10 @@ function installTool(host: Pick<ToolHost, "install">, name: string, tool: ToolRe
 export type EffectRun = { signal: AbortSignal; env: NodeJS.ProcessEnv; work: string; complete?: Complete; ledger?: Ledger; search?: SearchOn };
 
 /** What a tool's own ask (ToolEntry.asks) reads: the run's host, and how many calls of a tool the run has run to a good
- *  end, from the run's record (its journal), so a pause and a new host count them all. */
-export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number> };
+ *  end, from the run's record (its journal), so a pause and a new host count them all; `made`, the arguments of those
+ *  calls (each one whose arguments the record names), with those of the calls the gate let through that have no result
+ *  yet. */
+export type AskContext = { readonly host: ToolHost; ran(tool: string): Promise<number>; made(tool: string): Promise<readonly unknown[]> };
 
 export type ToolEntry = {
   /** One line, for capabilities. */
@@ -249,7 +253,7 @@ const emailTool = (name: string): ToolEntry => ({
 
 /** web_fetch, bound under `name`. */
 const webFetchEntry = (name: string): ToolEntry => ({
-  summary: `Read one public web page from a public host through Firecrawl's keyless fetch where the server holds no Parallel key (each URL sent to Firecrawl, never a private or local one; the guarded direct fetch when Firecrawl answers no page or its free limit is spent), else through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error? }; html_chars, the page's whole length, when its HTML was cut at ${HTML_READ_CHARS.toLocaleString("en-US")} characters before it was read, so its text is only the start of the page; converted: "text" when the text is plain text, its conversion to markdown having run out of time; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.`,
+  summary: `Read one public web page from a public host through Firecrawl's keyless fetch where the server holds no Parallel key (each URL sent to Firecrawl, never a private or local one; the guarded direct fetch when Firecrawl answers no page or its free limit is spent), else through Parallel's extract (the default) or the guarded direct fetch where it is picked (Parallel's falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error? }; html_chars, the page's whole length, when its HTML was cut at ${HTML_READ_CHARS.toLocaleString("en-US")} characters before it was read, so its text is only the start of the page; converted: "text" when the text is plain text, its conversion to markdown having run out of time; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.`,
   needs: [],
   nodes: true,
   bind: async (host) => {
@@ -260,9 +264,9 @@ const webFetchEntry = (name: string): ToolEntry => ({
     return { tools: [tool], extensions: [extension] };
   },
   // A call node's Page is the workflow's, not a model's context: it reads the most of a part by default, from the page
-  // the run read (pagesOf(run.env)) where it holds the URL. Its request to Parallel, when it makes one, is booked under the call
+  // the run read (its Web's pages) where it holds the URL. Its request to Parallel, when it makes one, is booked under the call
   // (paid-calls.ts); a part from what the run read makes none and books nothing.
-  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, pages: pagesOf(run.env), signal: run.signal })),
+  effect: async (args, run) => bookedIn(run.ledger, async () => fetchFor(run.env, args.url, { ...(await fetchOptions(run.env, FAUX_ENV)), offset: args.offset as number | undefined, maxChars: (args.max_chars as number | undefined) ?? TEXT_CAP, ...(typeof args.objective === "string" ? { objective: args.objective } : {}), signal: run.signal })),
 });
 
 /** A file or shell tool: listed here for its words and its rules, bound by the run's workspace registry
@@ -367,14 +371,49 @@ export function cutAnswer<T>(value: T, cut: (text: string) => string): T {
   return value;
 }
 
+/** One call's web answer cut by `cut` (timeline/web-calls.ts webCut): each of its JSON's strings cut once, and the whole
+ *  "[redacted]" when its strings, read joined, hold a held value no cut in place takes (a value split across two of
+ *  them). The join is read against the values `cut` holds (key-refusal.ts withheldWhole), or through `cut` itself when
+ *  it does not know them (joinCut). Undefined for an answer that is not a web call's JSON. Make one per call. */
+export function webAnswerCut(cut: Redact): (tool: string, text: string) => string | undefined {
+  const seen = new Map<string, string>();
+  const once = (text: string): string => {
+    let out = seen.get(text);
+    if (out === undefined) seen.set(text, (out = cut(text)));
+    return out;
+  };
+  const holds = (joined: string, parts: readonly string[]): boolean => {
+    const values = cut.heldValues?.();
+    return values ? withheldWhole(joined, values) : joinCut(joined, parts, once);
+  };
+  return (tool, text) => webCut(tool, text, once, holds);
+}
+
+/** Whether `cut`, a redactor that does not know its values, takes from `joined` (`parts` joined by line breaks) what it
+ *  does not take from the parts each read alone: a held value split across two parts. Its cut of the join whole being
+ *  "[redacted]" is not enough: it reads a text longer than a piece in pieces of 8,192 characters (key-refusal.ts
+ *  redactedAnswer), and a value split inside one piece withholds only that piece, the rest of the join served. It misses
+ *  nothing: no value split across parts is in a part to cut, so the join's cut and the parts' differ wherever the join
+ *  holds one; where nothing spans two parts they are the same, as every piece ends at whitespace or inside a run longer
+ *  than a piece, and a line break ends each part. */
+function joinCut(joined: string, parts: readonly string[], cut: (text: string) => string): boolean {
+  const whole = cut(joined);
+  return whole === "[redacted]" || whole !== parts.map(cut).join("\n");
+}
+
 /** `tool` whose answer, and a throw's message, pass `cut` inside its execute: before pi stores the result or the model
- *  reads it. */
-function answersCutInside(tool: ToolRegistration, cut: (text: string) => string): ToolRegistration {
+ *  reads it. A web call's JSON is cut as the agentic specs' answersCut cuts it (webAnswerCut), so it still parses and
+ *  keeps its links, and a held value split across its strings withholds it whole. */
+export function answersCutInside(tool: ToolRegistration, cut: Redact): ToolRegistration {
+  // Fail closed and loud: a host with no redactor would only throw inside each call, an error a model may read past.
+  if (typeof cut !== "function") throw new TypeError(`${tool.name}: the run's redactor (host.redact) is required to cut its answers`);
   return {
     ...tool,
     execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
       try {
-        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
+        const web = webAnswerCut(cut);
+        const textCut = (text: string) => web(tool.name, text) ?? cut(text);
+        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), textCut);
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
@@ -449,7 +488,7 @@ const browserTool: ToolEntry = {
     // The agent's computer, where it is a browser, wins over the plane's pick: the run's sessions are that provider's,
     // opened through the claim, with no saved sign-in or plane check of their own.
     const computer = host.browserComputer;
-    const planeVendor: string = planeOf(host.env).browser ?? "browserbase";
+    const planeVendor: string = planeOf(host.env).browser ?? DEFAULT_BROWSER_VENDOR;
     const vendor = computer?.provider ?? planeVendor;
     const planeRefused = !computer && isUnavailable(planeVendor as Resolution) ? new BrowserFailureError(browserFailure("browser_unavailable", `The browser does not run here: ${whyUnavailable(planeVendor)}.`)) : undefined;
     // The run's saved sign-in: on the runner (one process, many claims) read from the store under this run's own claim
@@ -484,7 +523,7 @@ const browserTool: ToolEntry = {
         })();
     const refused = "refused" in made ? made.refused : undefined;
     const parts = {
-      provider: "browser" in made ? claimBrowserProvider(made.browser, { headless: true, ...(host.env.BROWSERBASE_CONNECT_BASE_URL ? { connectBaseUrl: host.env.BROWSERBASE_CONNECT_BASE_URL } : {}), ...(kept ? { signIn: { name: SIGN_IN_KEY, pointer: kept.ref } } : {}) }) : undefined,
+      provider: "browser" in made ? claimBrowserProvider(made.browser, { headless: true, ...(kept ? { signIn: { name: SIGN_IN_KEY, pointer: kept.ref } } : {}) }) : undefined,
       driver: stand ? stand.driver : cdpDriver(),
     };
     // The save flag every session carries is this launch's (asHanded), never the one stored with its conversation.
@@ -507,6 +546,8 @@ const browserTool: ToolEntry = {
         cursor = page.next;
       }
     }, context)) ?? [];
+    // The browser's take as the server reads it: written in order, and none from an earlier process of the run kept.
+    const holdWriter = host.store && host.claim ? browserHoldWriter(host.store.settings, host.claim.runId, host.claim.epoch) : undefined;
     const hands = person.personHands({
       gates,
       personTime: (what, seconds, options) => spend.personTime(what, seconds, options),
@@ -514,12 +555,14 @@ const browserTool: ToolEntry = {
       // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound:
       // the run's own cut on the runner (host.redact: the claim's keys too, every tool's, in every form), and the secrets
       // its env holds (runnerSecrets: hostSecrets and every launcher name's value) with its sign-in's pointer.
-      redact: (text) => redactedAnswer(host.redact ? host.redact(text) : text, [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
+      redact: (text) => redactedAnswer(host.redact(text), [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
       // The Screen tab's ended state, one settings row the server reads per poll (browser-wait-ended.ts); cleared as a
       // session opens (onSessions, below).
       waitEnded: (at, why) => {
         if (host.store && host.claim) void markWaitEnded(host.store.settings, host.claim.runId, { at: new Date(at).toISOString(), why }, host.claim.epoch).catch(() => undefined);
       },
+      // Who drives the browser, for the run read's computer state (browser-hold.ts): one settings row while a take is live.
+      held: (tag, on, at) => void holdWriter?.held(tag, on, at),
       note: async (kind, data) => {
         // A hand-over's waiting entry, on the runner: the row says the run waits on the person in its browser from that
         // commit (the server tells run.needs_input by it), and no more from its answer's, whoever writes it.
@@ -616,7 +659,7 @@ const browserTool: ToolEntry = {
     const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
     // (its result record) and what the model reads hold no value the runner or the claim holds.
-    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => (host.redact ? answersCutInside(tool, host.redact) : tool));
+    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => answersCutInside(tool, host.redact));
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {
@@ -731,7 +774,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   },
   [WEB_FETCH_TOOL]: webFetchEntry(WEB_FETCH_TOOL),
   [WEB_SEARCH_TOOL]: {
-    summary: "Search the web: codex's own search (claude-agent's where it is picked), on pi the model provider's hosted search (Anthropic, OpenAI), with none of those Parallel's Search API where the server holds its key, else Firecrawl's keyless search with Exa's behind it; or the provider picked: { query, n? } -> { provider, query, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
+    summary: "Search the web: Parallel's Search API where the server holds its key, else Firecrawl's keyless search with Exa's behind it; or the provider picked, the harness's own search (claude-agent's, codex's) or on pi the model provider's hosted search (Anthropic, OpenAI) only where native is picked: { objective, queries?, n? } (query is deprecated: a model's call gives objective, which the schema requires; a call node's { query } alone is the objective and its one query) -> { provider, objective, queries, results: [{ url, title, snippet, published? }], text? }, provider naming the one that served it, 1 to 25 results, each snippet at most 3,000 characters; { error } when the search gives no answer.",
     needs: [],
     nodes: true,
     // On the runner its hosted search goes through the run's own route (host.search, run.search), labelled web_search.
@@ -742,7 +785,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   // web_save (web-save.ts). It makes no paid request, so nothing books it. No node or call node names it: a workflow's
   // effect has only a local work path, not the run's Workspace.
   [WEB_SAVE_TOOL]: {
-    summary: `Download one public file into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, duration_s?, url } (duration_s an mp3, wav, mp4 or m4a's length in seconds) or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, a media type only when its bytes agree.`,
+    summary: `Download one public file into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, duration_s?, url } (duration_s the length in seconds of an ${LENGTH_TYPES}) or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, a media type only when its bytes agree.`,
     needs: [],
     nodes: false,
     bind: async (host) => {
@@ -902,7 +945,7 @@ export const toolsView = (env: NodeJS.ProcessEnv, settings: ToolSettingsMap = {}
     // Unavailable says why: a sandbox-only tool no box here can run, why none can (`noBox`); on a tool a user picks a
     // provider for, the resolutions' own words (`web_search is turned off in settings`); else the variables it needs.
     const reason = available ? undefined : refusal ?? boxless ?? (plane ? [...new Set(Object.values(plane).filter(isUnavailable).map(whyUnavailable))].join("; ") : `Needs ${keyNeeded(missing)}`);
-    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...everyHarness] : [...generalSpec], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
+    return { name, summary: entry.summary, ...(blurbOf(name) ? { blurb: blurbOf(name) } : {}), nodes: entry.nodes, calls: entry.effect !== undefined, ...(entry.callOnly ? { call_only: true } : {}), ...(entry.sandboxOnly ? { sandbox_only: true } : {}), ...(entry.runnerOnly ? { runner_only: true } : {}), available, ...(reason ? { reason } : {}), ...(missing.length ? { missing } : {}), harnesses: isHostTool(name) ? [...everyHarness] : [...generalSpec], ...serverGate(name, settings), ...(plane ? { providers: [...PROVIDERS[name as Pickable]], provider: picked[name as Pickable].provider, default_provider: PROVIDERS[name as Pickable][0], resolves: plane, why: view!.why } : {}) };
   });
   // The host tools over a run's own tools (META_TOOLS): not in the table, never granted or named by a node (`meta`), listed
   // so the owner sees them and their setting (allow or deny; a deny is not offered at all).

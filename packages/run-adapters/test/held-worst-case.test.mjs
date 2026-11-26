@@ -17,7 +17,9 @@ const port = async (store, hold, asked = []) => modelPortFor(await store.open(ke
     return hold === undefined ? undefined : { holdUsd: hold };
   },
 });
-const runnerRecords = async (store) => (await store.read(key)).filter((r) => r.kind.startsWith('runner.')).map((r) => [r.kind, r.data]);
+// A request's record says when it left (`at`, an ISO time: GRE-4835's in-flight rows read it); the rest is compared whole.
+const unstamped = (r) => { if (r.kind !== RUNNER_RECORDS.request) return [r.kind, r.data]; const { at, ...data } = r.data; assert.match(at, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/, 'its record says when it left'); return [r.kind, data]; };
+const runnerRecords = async (store) => (await store.read(key)).filter((r) => r.kind.startsWith('runner.')).map(unstamped);
 
 test('the figure a host holds for a request is written on its record before it leaves; a request answered at a known cost counts at that cost', async () => {
   const store = memorySessionStore();

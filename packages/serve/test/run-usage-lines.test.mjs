@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { usageLinesOf } from "../dist/run-usage.js";
+import { StoreLaunchMissing } from "../dist/store/index.js";
 
 let id = 0;
 const e = (conversationId, kind, data) => ({ id: String(++id), conversationId, kind, data });
@@ -296,7 +297,7 @@ test("served, a name on a line is cut of the server's secrets, as the run's trac
   const secret = "sk-planted-0123456789abcdef";
   const { store } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, `acme/${secret}`, 0.01, usage(10, 1))] });
   // The cut reads the run's row outside the snapshot, as the trace's does.
-  const served = new Proxy(store, { get: (target, key) => (key === "runs" ? { get: async () => ended(), launch: async () => { throw new Error("no launch"); } } : target[key]) });
+  const served = new Proxy(store, { get: (target, key) => (key === "runs" ? { get: async () => ended(), launch: async () => { throw new StoreLaunchMissing("run_1"); } } : target[key]) });
   const read = await servedRunUsage({ serverSecrets: () => [secret] }, served, "run_1");
   assert.equal(read.lines.length, 1);
   assert.ok(!JSON.stringify(read).includes(secret), "the secret is not served");
@@ -304,12 +305,19 @@ test("served, a name on a line is cut of the server's secrets, as the run's trac
   assert.deepEqual(read.total, { usd: 0.01 }, "the figures are as read");
 });
 
+test("served, a run whose launch row can't be read is withheld: it may hold what the run's caller handed it sealed", async () => {
+  const { servedRunUsage } = await import("../dist/run-usage.js");
+  const { store } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))] });
+  const served = new Proxy(store, { get: (target, key) => (key === "runs" ? { get: async () => ended(), launch: async () => { throw new Error("the store failed the read"); } } : target[key]) });
+  await assert.rejects(servedRunUsage({ serverSecrets: () => [] }, served, "run_1"), (error) => error.status === 403, "withheld, never cut of the server's secrets alone");
+});
+
 test("served, a browser session's words are cut of the server's secrets too: its provider's id for it and its provider's record", async () => {
   const { servedRunUsage } = await import("../dist/run-usage.js");
   const secret = "sk-planted-session-0123456789";
   const ending = e(0, "agentrun.browser_session_ended", { tag: "t1", provider: "browserbase", provider_session_id: `sess-${secret}`, started_at: "2026-11-19T10:00:00.000Z", ended_at: "2026-11-19T10:01:00.000Z", release_reason: `closed ${secret}`, provider_record: { started_at: secret, ended_at: null, proxy_bytes: 12 }, provider_record_status: "read" });
   const { store } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1)), ending] });
-  const served = new Proxy(store, { get: (target, key) => (key === "runs" ? { get: async () => ended(), launch: async () => { throw new Error("no launch"); } } : target[key]) });
+  const served = new Proxy(store, { get: (target, key) => (key === "runs" ? { get: async () => ended(), launch: async () => { throw new StoreLaunchMissing("run_1"); } } : target[key]) });
   const read = await servedRunUsage({ serverSecrets: () => [secret] }, served, "run_1");
   assert.equal(read.browser_sessions.length, 1);
   assert.ok(!JSON.stringify(read).includes(secret), "the secret is not served");
@@ -376,6 +384,11 @@ test("a computer still open is counted up to the read, and says so; a provider t
     ["vcpu", 60, "estimate", 0, 1, new Date(ENDED).toISOString()],
     ["memory", 60, "estimate", 0, 1, new Date(ENDED).toISOString()],
   ]);
+  // No claim books a provider that bills nothing, yet none of its time is outside the run's cost: unheld reads 0, so a
+  // free run on Docker reads as free all through (the console's $0 receipt), where a paid provider's unbooked time does not.
+  assert.deepEqual(lines.map((one) => one.unheld_quantity), [0, 0]);
+  const paid = usageLinesOf([...keys()], undefined, new Map(), { rows: [interval("sbx-1", { provider: "e2b", cpus: 1, memoryMb: 1024, startedAt: ENDED - 60_000, endedAt: ENDED })], at: ENDED }).lines;
+  assert.deepEqual(paid.map((one) => [one.basis, one.usd, one.unheld_quantity]), [["unpriced", null, 60], ["unpriced", null, 60]]);
 });
 
 test("a run that made no computer reads [] for its computers; a run with no lines reads null, as its browser sessions do", async () => {
@@ -391,7 +404,7 @@ test("served, a computer's words are cut of the server's secrets: a secret plant
   const secret = "sk-planted-computer-0123456789";
   const intervals = [interval(`sbx-${secret}`, { gpuType: `gpu-${secret}`, gpuCount: 2, kind: `k-${secret}` })];
   const { store } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))], intervals });
-  const served = new Proxy(store, { get: (target, key) => (key === "runs" ? { get: async () => ended(), launch: async () => { throw new Error("no launch"); } } : target[key]) });
+  const served = new Proxy(store, { get: (target, key) => (key === "runs" ? { get: async () => ended(), launch: async () => { throw new StoreLaunchMissing("run_1"); } } : target[key]) });
   const read = await servedRunUsage({ serverSecrets: () => [secret] }, served, "run_1");
   assert.equal(read.computer_intervals.length, 1);
   assert.ok(!JSON.stringify(read).includes(secret), "the secret is not served");

@@ -9,7 +9,8 @@
 // it on every call, and gets it from this step's memory). The disk token a computer's mount takes
 // (ArchilWorkspace.mountSpec) is no saved row: it is minted per run, at Archil's control plane with that key, the first
 // time a mount asks (archil-mount-credential.ts), so a run with no computer never has one; revoke() removes it at the
-// computer's release and the run's end, and its ttl (the run's lifetime bound) ends it if no remove ever comes.
+// computer's release and the run's end, a remove that fails there is left for the janitor (leave, mount-revoke-left.ts),
+// and its ttl (the run's lifetime bound) ends it if no remove ever comes.
 //
 // The values live in this step's memory only: never in the environment, the journal, a command row or a log line. Both
 // go in `secrets`, for the redaction set. release(), or the claim's signal aborting, drops them; a call after that is
@@ -18,7 +19,9 @@
 // the store's sealed keys and the seal key are handed in.
 import { ARCHIL_API_KEY_ROW, type ArchilSettings, DEFAULT_ARCHIL_EXEC_IMAGE } from "../archil-settings.js";
 import type { KeyEnv } from "../key-meta.js";
-import type { SealedKeys } from "../store/store.js";
+import type { SealedKeys, Settings } from "../store/store.js";
+import { leaveMountRevoke } from "./mount-revoke-left.js";
+import { stderrLog } from "./computer-intervals.js";
 import { archilApiKey } from "./archil-key.js";
 import { type ArchilDisk, type ArchilDiskOptions, type ArchilImage, archilDisk, pinnedImage } from "./archil-disk.js";
 import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken, nicknameOf, removeMountToken, removeOlderMountTokens, removeRunMountTokens } from "./archil-mount-credential.js";
@@ -44,8 +47,9 @@ export const MOUNT_TTL_MS = COMPUTER_LIFETIME_MS;
 export interface ArchilClaimOptions {
   /** The server's Archil settings (loadArchilSettings); undefined when they are not set up. */
   readonly settings: ArchilSettings | undefined;
-  /** The store's sealed_keys rows (store.sealedKeys): a row's sealed bytes, or undefined when none is saved. */
-  readonly keys: Pick<SealedKeys, "get">;
+  /** The store's sealed_keys rows (store.sealedKeys): a row's sealed bytes, or undefined when none is saved; and the
+   *  store's clock, which stamps a remove left for the janitor (leave). */
+  readonly keys: Pick<SealedKeys, "get" | "clock">;
   /** The runner's seal key (the server's): undefined when it was started without one. */
   readonly sealKey: Buffer | undefined;
   /** The claim's signal: aborted when the claim is lost or the runner stops. */
@@ -62,8 +66,11 @@ export interface ArchilClaimOptions {
   /** The server's environment, passed in (never read here): an ARCHIL_API_KEY variable overrides the saved key. */
   readonly env?: KeyEnv;
   /** The run whose disk the claim resolves (run-disk.ts runDiskOf): its agent, the disk its launch record names, and the
-   *  store the agent's disk and the server's id are kept in. */
-  readonly run: { readonly agentId: string; readonly launch?: LaunchDisk; readonly store: RunDiskOptions["store"] };
+   *  store the agent's disk and the server's id are kept in, where a remove left for the janitor is written (leave). */
+  readonly run: { readonly agentId: string; readonly launch?: LaunchDisk; readonly store: { readonly settings: RunDiskOptions["store"]["settings"] & Pick<Settings, "replaceIf"> } };
+  /** Where a remove the claim's end could not leave for the janitor is said (its release's, a lost claim's). Default: the
+   *  runner's stderr. */
+  readonly log?: (line: string) => void;
 }
 
 export interface ArchilClaim {
@@ -83,6 +90,11 @@ export interface ArchilClaim {
   /** Takes on the credential an earlier claim of the run minted, the one in the computer that claim kept at the run's
    *  park (computer-kept.ts) and this claim attached again: nothing is minted, and this claim's revoke removes it. */
   inherit(): void;
+  /** The claim's end with its last revoke failed: the remove left for the janitor (mount-revoke-left.ts), written once; a
+   *  write that failed is tried again by the next leave. Nothing owed, nothing written. The release does it too, and so
+   *  does a revoke that fails after the release (a lost claim's), each saying on the log a write that failed. Never
+   *  before the claim's end: until then it may mint again under its own epoch. */
+  leave(): Promise<void>;
   /** Every value held, for the redaction set. */
   readonly secrets: ReadonlySet<string>;
   /** Drops every value held: the loop ended, or the claim is lost. */
@@ -115,6 +127,8 @@ export async function archilWhereHeld(options: ArchilClaimOptions): Promise<Arch
     token: async (): Promise<never> => none("mount credential"),
     revoke: () => given.revoke(),
     inherit: () => void given.inherit().catch(() => undefined),
+    // Its runner's claim leaves the remove at its release.
+    leave: async () => undefined,
     secrets: new Set<string>(),
     release: () => void given.release().catch(() => undefined),
   } as unknown as ArchilClaim;
@@ -174,17 +188,49 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
   let inherited = false;
   /** The identifier and token of the credential minted, until it is removed. */
   let live: MountCredential | undefined;
+  /** The last revoke failed: a credential of this claim may stand at Archil, its remove owed. */
+  let owed = false;
+  /** The remove left for the janitor, once written (or being written): at most one per claim. A write that failed is
+   *  forgotten, so the next leave tries again. */
+  let left: Promise<void> | undefined;
+  /** The claim's end with a remove owed: the remove left for the janitor (mount-revoke-left.ts), by this claim's epoch on
+   *  its disk, stamped on the store's clock. */
+  const leave = (): Promise<void> => {
+    const mount = options.mount;
+    if (!owed || mount === undefined) return Promise.resolve();
+    const writing = (left ??= options.keys.clock().then((until) => leaveMountRevoke(options.run.store.settings, mount.runId, { epoch: mount.epoch, disk: chosen.diskId, until })));
+    void writing.catch(() => {
+      if (left === writing) left = undefined;
+    });
+    return writing;
+  };
+  /** A leave at the claim's end, whose failure no caller hears: said on the log, as the credential then lapses at its ttl. */
+  const leaveSaid = (): Promise<void> =>
+    leave().catch((error: unknown) => (options.log ?? stderrLog)(`run ${options.mount?.runId}'s Archil mount credential remove could not be left for the janitor, so it lapses at its ttl: ${error instanceof Error ? error.message : String(error)}`));
   const release = (): void => {
     released = true;
     held.clear();
+    void leaveSaid();
   };
   /** Removes the credential minted, by its identifier: idempotent. Then the run's users of this claim's epoch and earlier,
    *  by their names, once per mint asked for: a mint whose answer was lost (Archil made the user, this claim never heard
    *  of it) is found there; and Archil's list, read right after another caller's mint, may not hold that user yet
    *  (mint-4), so the reclaim before this claim's mint can miss an earlier claim's, which by the run's end the list holds.
-   *  A mint never heard of always gets one more read 2 s later, past that lag. Best effort: one still missed ends at its
-   *  ttl. */
+   *  A mint never heard of always gets one more read 2 s later, past that lag. A remove by name that fails (the last
+   *  read's, where there are two) rejects the revoke in Archil's words, and the next revoke tries again: a kept row's
+   *  end is left ending for the janitor (computer-kept.ts). A user the list never showed still ends at its ttl. */
   const revoke = async (): Promise<void> => {
+    try {
+      await removeOwn();
+      owed = false;
+    } catch (error) {
+      owed = true;
+      // After the release (a lost claim's, or a run's process's revoke its runner made last) nothing revokes again.
+      if (released) await leaveSaid();
+      throw error;
+    }
+  };
+  const removeOwn = async (): Promise<void> => {
     const credential = live ?? (await minted?.catch(() => undefined));
     if (credential !== undefined) {
       await removeMountToken(credentialOptions, credential.identifier, { token: credential.token });
@@ -195,15 +241,23 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     const mount = options.mount;
     if (!(asked || inherited) || mount === undefined) return;
     const minting = asked;
+    const taken = inherited;
     asked = false;
     inherited = false;
     // No signal: a lost claim's is aborted already, and this remove is what its loss asks for.
-    await removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
+    const removed = (): Promise<{ readonly error: unknown } | undefined> =>
+      removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).then(() => undefined, (error: unknown) => ({ error }));
+    let failed = await removed();
     // A mint never heard of: its user may not be in the list yet, whatever this read found (another epoch's user it
     // removed is not this mint's), so the list is read once more past Archil's lag, and every match then removed too.
     if (credential === undefined && minting) {
       await new Promise((done) => setTimeout(done, LOST_MINT_REREAD_MS));
-      await removeRunMountTokens(credentialOptions, mount.runId, mount.epoch).catch(() => undefined);
+      failed = await removed();
+    }
+    if (failed !== undefined) {
+      asked ||= minting;
+      inherited ||= taken;
+      throw failed.error;
     }
   };
   // A lost claim (or a stopped runner): the values dropped, and the credential removed at once, not left for the ttl.
@@ -247,6 +301,7 @@ export async function archilClaim(options: ArchilClaimOptions): Promise<ArchilCl
     inherit: () => {
       inherited = true;
     },
+    leave,
     release,
   };
 }

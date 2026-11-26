@@ -12,6 +12,7 @@ import { createHarnessRunner } from '@parcha/agentrun-kernel';
 import { runWorkflow } from '@parcha/agentrun-dsl';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { durableEnv } from '../dist/env.js';
+import { claudeSandboxSettings } from '../dist/harness.js';
 import { loginBooking } from '../dist/login.js';
 
 process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = '1';
@@ -22,14 +23,14 @@ const scratch = () => mkdtempSync(join(ROOT, `t${n++}-`));
 /** What never reaches the CLI on a login. */
 const TOKENS = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
 
-/** A login whose directories no one may open: anything that reads them fails. */
+/** A login whose profiles directory no one may open, so anything that reads it fails; its folder holds no account file
+ *  yet, the one file of it a status check opens (to copy it). */
 function sealedLogin() {
   const base = scratch();
   const login = { dir: join(base, 'login'), profiles: join(base, 'login', 'anthropic') };
   mkdirSync(login.profiles, { recursive: true });
   chmodSync(login.profiles, 0o000);
-  chmodSync(login.dir, 0o000);
-  after(() => { chmodSync(login.dir, 0o700); chmodSync(login.profiles, 0o700); });
+  after(() => { chmodSync(login.profiles, 0o700); });
   return login;
 }
 
@@ -64,6 +65,18 @@ test("a run on a login on macOS runs its CLI in the person's real home, where th
   assert.equal(durableEnv({ ...dirs, baseUrl: 'http://127.0.0.1:1', token: 'k', platform: 'darwin' }).HOME, '/s/session', 'darwin: a run on a model key runs in the session\'s home');
 });
 
+test("a run on a login on macOS runs in the home the login names (`userHome`, which the host reads once where it makes the login), never one read again here; a status check and the sign-in take the same", async () => {
+  const userHome = scratch();
+  const own = { dir: '/data/claude-login', profiles: '/data/claude-login/anthropic', userHome };
+  const env = durableEnv({ home: '/s/session', configDir: '/s/config', tmpDir: '/s/tmp', cacheDir: '/s/cache', login: own, platform: 'darwin', model: 'claude-haiku-5-5' });
+  assert.equal(env.HOME, userHome, "darwin: a run on AgentRun's own folder runs in the login's userHome");
+  const base = scratch();
+  const login = { dir: join(base, 'login'), profiles: join(base, 'login', 'anthropic'), userHome };
+  const status = fakeCli({ loggedIn: false, authMethod: 'none' });
+  await claudeLoginStatus(status.cli, login);
+  assert.equal(status.seen().env.HOME, userHome, "the status check runs in the login's userHome");
+});
+
 test('the login status reads loggedIn and the account words, and nothing that is not an answer', () => {
   assert.deepEqual(parseClaudeLoginStatus('{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"a@b.c","orgName":"Org","subscriptionType":"max"}'), { signedIn: true, method: 'claude.ai', email: 'a@b.c', organization: 'Org', plan: 'max' });
   assert.deepEqual(parseClaudeLoginStatus('{"loggedIn":false,"authMethod":"none"}'), { signedIn: false, method: 'none' });
@@ -78,6 +91,12 @@ test('the sign-in line names the login directories for the CLI, quoted where a s
   assert.match(claudeLoginCommand({ dir: "/my data/it's", profiles: '/p' }), /^CLAUDE_CONFIG_DIR='\/my data\/it'\\''s' /);
 });
 
+test("the sign-in line carries HOME first where the login's home is not the terminal's, on the CLI's default folder and on a folder of its own; elsewhere it leaves HOME to the terminal", () => {
+  assert.equal(claudeLoginCommand({ dir: '/data/runner/.claude', profiles: '/data/runner/.config/anthropic', home: '/data/runner', userHome: '/data/runner', homeApart: true }, 'claude', 'linux'), 'env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR HOME=/data/runner ANTHROPIC_CONFIG_DIR=/data/runner/.config/anthropic claude auth login');
+  assert.equal(claudeLoginCommand({ dir: '/data/claude-login', profiles: '/data/claude-login/anthropic', userHome: '/data/runner', homeApart: true }, 'claude', 'linux'), 'HOME=/data/runner CLAUDE_CONFIG_DIR=/data/claude-login CLAUDE_SECURESTORAGE_CONFIG_DIR=/data/claude-login ANTHROPIC_CONFIG_DIR=/data/claude-login/anthropic claude auth login');
+  assert.equal(claudeLoginCommand({ dir: '/data/runner/.claude', profiles: '/data/runner/.config/anthropic', home: '/data/runner', userHome: '/data/runner' }, 'claude', 'linux'), 'env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ANTHROPIC_CONFIG_DIR=/data/runner/.config/anthropic claude auth login');
+});
+
 /** A stand-in CLI that writes what it was started with beside itself and answers `status`. */
 function fakeCli(status) {
   const dir = scratch();
@@ -86,7 +105,7 @@ function fakeCli(status) {
   return { cli, seen: () => JSON.parse(readFileSync(join(dir, 'seen.json'), 'utf8')) };
 }
 
-test('the status check asks the CLI with the login directories alone, never opening them, and reads its answer', async () => {
+test('the status check asks the CLI with the login directories, opening only the account file to copy it, and reads its answer', async () => {
   const login = sealedLogin();
   const signedIn = fakeCli({ loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'max' });
   assert.deepEqual(await claudeLoginStatus(signedIn.cli, login), { signedIn: true, method: 'claude.ai', plan: 'max' });
@@ -95,8 +114,9 @@ test('the status check asks the CLI with the login directories alone, never open
   assert.equal(env.CLAUDE_SECURESTORAGE_CONFIG_DIR, login.dir);
   assert.equal(env.ANTHROPIC_CONFIG_DIR, login.profiles);
   for (const name of TOKENS) assert.equal(env[name], undefined, name);
-  // Its config dir is the login's, as the sign-in's is: `auth status` reads the account `auth login` wrote there.
-  assert.equal(env.CLAUDE_CONFIG_DIR, login.dir);
+  // Its config dir is a copy of the account file `auth login` wrote in the login's folder, never that folder, which the
+  // CLI would rewrite on start.
+  assert.ok(env.CLAUDE_CONFIG_DIR && env.CLAUDE_CONFIG_DIR !== login.dir, env.CLAUDE_CONFIG_DIR);
   assert.notEqual(env.HOME, login.dir);
   const signedOut = fakeCli({ loggedIn: false, authMethod: 'none' });
   assert.deepEqual(await claudeLoginStatus(signedOut.cli, login), { signedIn: false, method: 'none' });
@@ -183,4 +203,26 @@ test('a session on a login starts its CLI with no model URL, key or token, a con
   }
   // No host port: no request of the host's goes on a person's login.
   assert.deepEqual(ports, [undefined]);
+});
+
+test("the sandbox of a run on a login denies its commands the folder the CLI reads the credentials from when the server's env sets it apart; the macOS empty value adds nothing, and no folder is named twice", () => {
+  const machine = { root: '/workspace', dirs: { tmp: '/s/tmp', home: '/s/home', cache: '/s/cache', config: '/s/claude/config' } };
+  const denied = (login, platform) => claudeSandboxSettings(machine, 'deny-all', login, platform).filesystem.denyRead;
+  assert.deepEqual(claudeSandboxSettings(machine, 'deny-all').filesystem.denyRead, ['/s/claude']);
+  const folder = { dir: '/data/claude-login', profiles: '/data/claude-login/anthropic' };
+  const base = ['/s/claude', folder.dir, folder.profiles];
+  // CLAUDE_SECURESTORAGE_CONFIG_DIR=/u/p/secure in the server's env: the CLI reads the credentials there.
+  for (const platform of ['linux', 'darwin']) assert.deepEqual(denied({ ...folder, secure: '/u/p/secure' }, platform), [...base, '/u/p/secure'], platform);
+  // Set and empty: on Linux the CLI reads `<home>/.claude`; on macOS it gets the empty value (a Keychain item, no folder).
+  const empty = { ...folder, secure: '/u/p/.claude', unsuffixed: true };
+  assert.deepEqual(denied(empty, 'linux'), [...base, '/u/p/.claude']);
+  assert.deepEqual(denied(empty, 'darwin'), base);
+  // The credentials in the login's own folder (none set apart, or set to that folder): named once.
+  for (const platform of ['linux', 'darwin']) {
+    assert.deepEqual(denied(folder, platform), base, platform);
+    assert.deepEqual(denied({ ...folder, secure: folder.dir }, platform), base, platform);
+  }
+  // The CLI's default folder: its own folder on Linux, the empty value on macOS; nothing added either way.
+  const home = { dir: '/u/p/.claude', profiles: '/u/p/.claude/anthropic', home: '/u/p' };
+  for (const platform of ['linux', 'darwin']) assert.deepEqual(denied(home, platform), ['/s/claude', home.dir, home.profiles], platform);
 });

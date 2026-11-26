@@ -26,6 +26,8 @@ export function hex(name: string, length = 40): string {
 
 type Held = {
   story: RunStory;
+  /** The model at start: later agent saves and restores do not rewrite run history. */
+  model: string;
   start: number;
   beats: Beat[] | null;
   answers: GateAnswer[];
@@ -99,6 +101,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
   // A copy of each, nested parts too: what a person changes (a connection, a note) is this world's, never the story's.
   const list: DemoAgent[] = structuredClone(AGENTS);
   const agents = new Map(list.map((a) => [a.id, a]));
+  const skillFiles = new Map<string, Record<string, string>>();
   const held = new Map<string, Held>();
   const hold = (story: RunStory, start = opened - story.startAgo) => {
     const agent = agents.get(story.agent)!;
@@ -111,7 +114,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
       if (!p.pending) break;
       answers.push({ at: p.lastAt + a.afterMs, ...(a.text === undefined ? {} : { text: a.text }), ...(a.decision ? { decision: a.decision } : {}) });
     }
-    const h: Held = { story, start, beats, answers };
+    const h: Held = { story, model: agent.model, start, beats, answers };
     held.set(story.id, h);
     return h;
   };
@@ -236,7 +239,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
 
   // ---- Agents ----
 
-  const BLURB: Record<string, string> = { read: "Read files in the run's folder", write: "Write files in the run's folder", web_fetch: "Read a public web page", web_search: "Search the web", email_send: "Send an email", email_draft: "Save an email draft", ask_person: "Ask you a question mid-run", bash: "Run shell commands in the sandbox" };
+  const BLURB: Record<string, string> = { read: "Read files in the run's folder", write: "Write files in the run's folder", web_fetch: "Read a public web page", web_search: "Search the web", email_send: "Send an email", email_draft: "Save an email draft", ask_person: "Lets the agent stop and ask you a question", bash: "Run shell commands in the sandbox" };
   const nativeOf = (a: DemoAgent) => (a.native ? {
     runtime: a.native.runtime, project: a.native.project, selector: a.native.selector, machine_id: "mch_demo_laptop", version: a.native.version, model: a.model, fingerprint: hex(`${a.id}:setup`, 64),
     configuration: [{ path: a.native.runtime === "codex" ? "AGENTS.md" : "CLAUDE.md", sha256: hex(`${a.id}:config`, 64) }], skills: a.native.skills, mcp_servers: a.native.mcp,
@@ -255,7 +258,8 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const runs = all().filter((h) => h.story.agent === a.id && h.start <= now);
     const made = opened - a.madeDaysAgo * DAY;
     return {
-      agent_id: a.id, definition: definitionOf(a), kind: a.kind, mcp_pin: null, revision: revisionOf(a), revisions: a.notes.length, source: null, template: null, skills: [], sign_ins: [],
+      agent_id: a.id, definition: definitionOf(a), kind: a.kind, mcp_pin: null, revision: revisionOf(a), revisions: a.notes.length, source: null, template: null,
+      skills: Object.entries(skillFiles.get(revisionOf(a)) ?? {}).map(([path, text]) => ({ path, sha256: hex(text, 64), size_bytes: new TextEncoder().encode(text).length })), sign_ins: [],
       runs: { count: runs.length, live: runs.filter((h) => !viewOf(h, now).ended_at).length }, own_computer: null, region: "local", home_etag: `"${revisionOf(a)}"`, archived_at: a.archivedAt ? iso(a.archivedAt) : null,
       ...(a.learning ? { learning: { pending: a.id === FULL_STORY && !pendingApproved ? 1 : 0 } } : {}),
       ...(a.native ? { native_status: nativeOf(a) } : {}),
@@ -486,14 +490,14 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     });
     return {
       agent: id, runs: rows, total_runs: rows.length, unknown_cost_runs: 0, unknown_path_runs: 0,
-      workflows: takeover ? [{ workflow: LEARNING_WORKFLOW, digest: LEARNING_DIGEST, state: "serving", served: { runs: served.length, mean_usd: mean(served.map((r) => r.cost_usd)) }, by_hand: byHand.length ? { runs: byHand.length, mean_usd: mean(byHand.map((r) => r.cost_usd)) } : null, unknown_cost_runs: 0 }] : [],
+      workflows: takeover ? [{ workflow: LEARNING_WORKFLOW, digest: LEARNING_DIGEST, state: "serving", reason: null, served: { runs: served.length, mean_usd: mean(served.map((r) => r.cost_usd)) }, by_hand: byHand.length ? { runs: byHand.length, mean_usd: mean(byHand.map((r) => r.cost_usd)) } : null, unknown_cost_runs: 0 }] : [],
       summary: {
         takeover: takeover ? { n: takeover.n, run_id: takeover.run_id } : null,
         before: before.length ? { runs: before.length, mean_usd: agentMean } : null,
         after: takeover ? { runs: rows.length - before.length, mean_usd: afterMean } : null,
         after_state: takeover ? "priced" : "no_served_runs",
         times_cheaper: takeover && afterMean ? Number((agentMean / afterMean).toFixed(1)) : null,
-        hand_backs: takeover ? { ran: served.length + byHand.length, back: byHand.length } : null, withheld: null,
+        hand_backs: takeover ? { ran: served.length + byHand.length, back: byHand.length, cut: 0 } : null, withheld: null,
         replay: takeover ? { n: 24, workflow_pct: 100, agent_pct: 100, cleared: true, agreed: 22, alone: 22, agree_min: 0.95 } : null,
       },
       bill: {
@@ -613,26 +617,30 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     return viewOf(h);
   };
   /** Makes an agent from a definition, as the builder or the playground's create would: kept in this page's memory. */
-  const createAgent = (definition: Record<string, unknown>): Agent => {
+  const createAgent = (definition: Record<string, unknown>, skills: Record<string, string> = {}): Agent => {
     const name = typeof definition.name === "string" && definition.name.trim() ? definition.name.trim() : "New agent";
     const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "agent";
     let id = slug;
     for (let n = 2; agents.has(id); n++) id = `${slug}-${n}`;
     const a: DemoAgent = { id, name, description: typeof definition.description === "string" ? definition.description : "", kind: definition.workflow ? "workflow" : "agentic", harness: typeof definition.harness === "string" ? definition.harness : "pi", model: typeof definition.model === "string" ? definition.model : MODELS.default, tools: Array.isArray(definition.tools) ? (definition.tools as string[]) : [], learning: !!definition.learning, madeDaysAgo: (opened - clock()) / DAY, notes: [null], saved: [{ skills: [], tools: [], ...definition }] };
     list.push(a); agents.set(id, a);
+    skillFiles.set(revisionOf(a), { ...skills });
     return agentOf(a);
   };
   /** Saves an edit as the agent's next revision. A story's agent keeps its earlier revisions as they were. */
-  const saveDefinition = (id: string, definition: Record<string, unknown>, note: string | null): Agent | null => {
+  const saveDefinition = (id: string, definition: Record<string, unknown>, note: string | null, skills?: Record<string, string>): Agent | null => {
     const a = agents.get(id);
     if (!a) return null;
+    const files = skills ?? skillFiles.get(revisionOf(a)) ?? {};
     a.saved ??= a.notes.map((_, i) => definitionOf(a, i + 1) as Record<string, unknown>);
-    // An edit is made on the definition that is current, and becomes the current one, whichever revision was before.
-    a.saved.push({ ...a.saved[versionOf(a) - 1], ...definition });
+    // PUT saves the complete definition. Omitted optional settings reset to their defaults; merging would
+    // resurrect a model or thinking choice the editor explicitly cleared. Earlier revisions stay intact.
+    a.saved.push({ ...definition });
     a.notes = [...a.notes, note];
     a.current = undefined;
+    skillFiles.set(revisionOf(a), { ...files });
     if (typeof definition.description === "string") a.description = definition.description;
-    if (typeof definition.model === "string") a.model = definition.model;
+    a.model = typeof definition.model === "string" ? definition.model : MODELS.default;
     if (typeof definition.harness === "string") a.harness = definition.harness;
     a.learning = !!a.saved.at(-1)!.learning;
     return agentOf(a);
@@ -730,6 +738,8 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const version = a ? a.notes.findIndex((_, i) => revisionOf(a, i + 1) === revision) + 1 : 0;
     if (!a || !version) return null;
     a.current = version === a.notes.length ? undefined : version;
+    const definition = definitionOf(a);
+    a.model = typeof definition.model === "string" ? definition.model : MODELS.default;
     return agentOf(a);
   };
   const writeCorrections = (id: string, text: string): string | null => { if (!agents.get(id)?.learning) return null; corrections.set(id, text); return text; };
@@ -854,8 +864,8 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     run: (id: string) => (held.has(id) ? viewOf(held.get(id)!) : null),
     rows: (id: string) => (held.has(id) ? rowsOf(held.get(id)!) : null),
     graph: (id: string) => (held.has(id) ? graphOf(held.get(id)!, clock()) : null),
-    trace: (id: string): RunTrace | null => { const h = held.get(id); if (!h) return null; const run = viewOf(h); return traceOf(id, rowsOf(h), agents.get(h.story.agent)!.model, run.cost.usd ?? 0, Math.max(requestsOf(h.beats ?? []), 1)); },
-    usage: (id: string): RunUsage | null => { const h = held.get(id); return h ? usageOf(viewOf(h), agents.get(h.story.agent)!.model) : null; },
+    trace: (id: string): RunTrace | null => { const h = held.get(id); if (!h) return null; const run = viewOf(h); return traceOf(id, rowsOf(h), h.model, run.cost.usd ?? 0, Math.max(requestsOf(h.beats ?? []), 1)); },
+    usage: (id: string): RunUsage | null => { const h = held.get(id); return h ? usageOf(viewOf(h), h.model) : null; },
     files: (id: string) => (held.has(id) ? filesOf(held.get(id)!) : null),
     runLearning: (id: string) => (held.has(id) ? runLearningOf(held.get(id)!) : undefined),
     stats: statsOver,
@@ -863,7 +873,12 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     setTriggerEnabled: (id: string, on: boolean) => { if (!enabled.has(id)) return null; enabled.set(id, on); return triggerOf(TRIGGERS.find((x) => x.id === id)!); },
     fire: (id: string): Firing | null => { const t = TRIGGERS.find((x) => x.id === id); const run = t && start(t.agent, firedInput(t.input), "trigger", id); return run ? { key: `${id}:${run.run_id}`, by: "manual", nominal_at: run.created_at, status: "started", at: run.created_at, run_id: run.run_id, reason: null, error: null } : null; },
     learning: (id: string) => (agents.has(id) ? learningOf(id) : null),
-    createAgent, saveDefinition, learningCost: learningCostOf, promotions: promotionsOf, loop: loopOf, audits: auditsOf, workflowRevisions: workflowRevisionsOf,
+    createAgent, saveDefinition,
+    revisionSkills: (id: string, revision: string) => {
+      const a = agents.get(id);
+      return a && revisionsOf(a).some((r) => r.revision === revision) ? { revision, skills: { ...skillFiles.get(revision) } } : null;
+    },
+    learningCost: learningCostOf, promotions: promotionsOf, loop: loopOf, audits: auditsOf, workflowRevisions: workflowRevisionsOf,
     learningFile: learningFileOf, workflowAction,
     holdScan, applyTemplate, discoverNative, connectNative, disconnectNative, verifyNative, start, answer, stop, archive, message, grade, raiseCap, setPaused, archiveAgent, setCurrent, writeCorrections, createTrigger, updateTrigger, deleteTrigger, rotateTriggerSecret,
     /** A sample page image by its run-relative path, as a data URL. */

@@ -52,19 +52,19 @@ function standInCli(turns, replies = []) {
 }
 
 /** The adapter loop over the stand-in (`replies`: its scripted end-of-run answers), the run's agent named, the end-of-run
- *  step `endOfRun` in its deps. Only run-1's turns are `turns` and only it takes `replies`: a learning run its end queues,
+ *  step `endOfRun` on its spec. Only run-1's turns are `turns` and only it takes `replies`: a learning run its end queues,
  *  which the same runner claims whenever it does, talks to a stand-in of its own. */
 function loopWith(turns, endOfRun, replies = []) {
-  const inner = createAdapterLoop((claim) => ({
+  return createAdapterLoop((claim) => ({
     adapter: claim.runId === "run-1" ? standInCli(turns, replies) : standInCli([]),
     session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
     input: INPUT,
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
     record: "loop",
     agentId: "agent-1",
+    endOfRun,
     hooks: quiet,
   }));
-  return (deps) => inner({ ...deps, endOfRun });
 }
 
 const ended = (server) =>
@@ -201,16 +201,16 @@ test("a CLI feedback round whose runner died mid end-of-run turn: the next claim
     answers.push(await input.ask("What did you learn?", { origin: "reflect", deadlineMs: 5_000, round }));
     return undefined;
   };
-  const loop = createAdapterLoop((claim) => ({
+  const createLoop = createAdapterLoop((claim) => ({
     adapter: claim.runId === "run-1" ? durableCli(log, hold) : standInCli([]),
     session: { key: "root", label: "root", system: [], tools: [], context: "fresh" },
     input: INPUT,
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
     record: "loop",
     agentId: "agent-1",
+    endOfRun,
     hooks: quiet,
   }));
-  const createLoop = (deps) => loop({ ...deps, endOfRun });
   const first = startRunner({ store: opened.runners[0], createLoop, name: "runner-a", ...TIMING });
   let second;
   t.after(async () => {

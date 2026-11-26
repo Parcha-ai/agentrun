@@ -12,6 +12,7 @@ import { closeOpenSessions, hostTools, MODEL, scriptedOrigin } from "./conforman
 import { capRun, quiet, SONNET } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 after(closeOpenSessions);
 
@@ -45,7 +46,7 @@ function nodeRun(question) {
   };
   const specOf = () => (_claim, run) => {
     atBuild = run.ledger?.models(LABEL);
-    return { adapter: piAdapter({ run, model: MODEL, provider, fetch, price: () => 0 }), session: { key: "root", label: "root", system: ["Answer."], tools: hostTools({ node }), context: "fresh" }, input: "Run the node.", hooks: quiet, gate: () => "allow" };
+    return { adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider, fetch, price: () => 0 }), session: { key: "root", label: "root", system: ["Answer."], tools: hostTools({ node }), context: "fresh" }, input: "Run the node.", hooks: quiet, gate: () => "allow" };
   };
   return { specOf, said, upstream, script, built: () => atBuild };
 }

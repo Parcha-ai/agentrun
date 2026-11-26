@@ -14,7 +14,12 @@ type Held = {
   /** `park`: its release at the run's park, for its cause, true when it kept the computer (computer-for-claim.ts
    *  ClaimComputer.park). */
   readonly computer?: { release(): Promise<void>; park?(cause: ParkCause): Promise<boolean>; readonly keeps?: string };
-  readonly archil?: { revoke(): Promise<void> } | undefined;
+  /** Whether this claim's gate turned the run's computer off for the rest of the run (RunGate.computerOff): a park lets
+   *  it go instead of keeping it, since no later claim of the run attaches it. */
+  readonly computerOff?: () => boolean;
+  /** The claim's Archil step: its revoke at an end that keeps nothing, and where that fails, its remove left for the
+   *  janitor (ArchilClaim.leave). */
+  readonly archil?: { revoke(): Promise<void>; leave?(): Promise<void> } | undefined;
   readonly ws?: { end(): Promise<void> };
   /** The claim's Archil keys, dropped from memory last, once nothing more reads the disk (the CLI spec's). */
   readonly keys?: { release(): void } | undefined;
@@ -50,7 +55,8 @@ export class SpecHolds {
    *  Workspace's end, the CLI's scratch, then the claim's keys where they are held. A second call waits for the first and
    *  does nothing more. At a park (`parked`, its cause), a computer that keeps (a desktop, a phone or a sandbox) is kept
    *  for the resume first: the tools' end is left out (the processes they started and their output live on it) and so is
-   *  the revoke (its mount writes on); a keep that fails lets it go as above. */
+   *  the revoke (its mount writes on); a keep that fails lets it go as above, as does a park of a computer this claim's
+   *  gate turned off (computerOff). */
   release(how?: { readonly parked?: ParkCause }): Promise<void> {
     return (this.#released ??= this.#releaseAll(how?.parked));
   }
@@ -78,7 +84,7 @@ export class SpecHolds {
   async #releaseAll(parked: ParkCause | undefined): Promise<void> {
     const { computer, archil, ws, scratch, keys } = this.#held;
     const log = this.#log;
-    const kept = parked !== undefined && computer?.keeps !== undefined && computer.park
+    const kept = parked !== undefined && computer?.keeps !== undefined && computer.park && this.#held.computerOff?.() !== true
       ? await computer.park(parked).catch((error: unknown) => {
           log(`the run's computer could not be kept: ${words(error)}`);
           return false;
@@ -88,7 +94,12 @@ export class SpecHolds {
     if (kept) await (this.#checkoutEnded ?? this.#held.checkout?.end())?.catch((error: unknown) => log(words(error)));
     else await this.endCheckout();
     await computer?.release().catch((error: unknown) => log(`the run's computer could not be let go: ${words(error)}`));
-    if (!kept) await archil?.revoke().catch((error: unknown) => log(`the run's Archil mount credential could not be revoked: ${words(error)}`));
+    if (!kept) {
+      await archil?.revoke().catch(async (error: unknown) => {
+        log(`the run's Archil mount credential could not be revoked: ${words(error)} (its remove is left for the janitor's next pass)`);
+        await archil.leave?.().catch((left: unknown) => log(`the run's Archil mount credential's remove could not be left for the janitor, so it lapses at its ttl: ${words(left)}`));
+      });
+    }
     await ws?.end().catch((error: unknown) => log(`the run's workspace end failed: ${words(error)}`));
     await scratch?.sweep().catch((error: unknown) => log(`the run's scratch folder could not be swept: ${words(error)}`));
     keys?.release();

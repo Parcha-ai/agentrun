@@ -26,6 +26,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { runFolder, runKey, scratchFolder } = await import("../dist/workspace/paths.js");
@@ -171,7 +172,7 @@ async function mode2Spec(t, { harness, build, watch = false, use = async () => {
   try {
     // `signal`: the claim's, as the adapter loop hands the run (AdapterRun.signal: aborted on a lost claim or a shutdown).
     // `phase`: the loop's AdapterRun.phase, a host step said on the run's timeline.
-    spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given), ...(signal ? { signal } : {}), ...(phase ? { phase } : {}) }, deps, claim);
+    spec = await build(launch, { redact: heldRedactor((text) => text), harness: harnessRun, registry, setModels: (given) => (models = given), ...(signal ? { signal } : {}), ...(phase ? { phase } : {}) }, deps, claim);
     await use(spec);
   } catch (thrown) {
     // `fails`: the build is expected to throw; its error is answered, with what the control plane saw by then.

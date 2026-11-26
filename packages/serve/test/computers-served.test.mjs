@@ -44,11 +44,17 @@ test("served: capabilities.features.computers names the kinds offered now", asyn
 
 test("served: the Archil routes turn Mode 2 on and off, never echoing the key", async (t) => {
   const { api } = await serve(t, { runner: false });
-  assert.deepEqual((await api("GET", "/workspace/archil")).body, { on: false, secret: { name: "workspace:archil", set: false, source: null, changed_at: null } });
+  const off = (await api("GET", "/workspace/archil")).body;
+  assert.deepEqual(off, { on: false, regions: off.regions, secret: { name: "workspace:archil", set: false, source: null, changed_at: null } });
+  assert.equal(off.regions["aws-us-east-1"], "https://s3.green.us-east-1.aws.prod.archil.com", "each region serve knows, with its S3 URL");
   const on = await api("PUT", "/workspace/archil", { region: "aws-us-east-1", s3Url: "https://s3.archil.example", keys: { ARCHIL_API_KEY: "fake-test-key" } });
   assert.equal(on.status, 200);
   assert.deepEqual([on.body.on, on.body.secret.set], [true, true]);
   assert.ok(!JSON.stringify(on.body).includes("fake-test-key"));
+  // A known region needs no S3 URL: the body the API takes leaves it out, and the region's is in force.
+  const byRegion = await api("PUT", "/workspace/archil", { region: "aws-eu-west-1" });
+  assert.equal(byRegion.status, 200, JSON.stringify(byRegion.body));
+  assert.deepEqual([byRegion.body.s3Url, byRegion.body.s3UrlFrom], ["https://s3.green.eu-west-1.aws.prod.archil.com", "region"]);
   assert.equal((await api("PUT", "/workspace/archil", { region: "r", s3Url: "https://s3.archil.example", keys: { ARCHIL_DISK_TOKEN: "x" } })).status, 422);
   assert.equal((await api("PUT", "/workspace/archil", { diskId: "dsk-00000000000fake0", region: "r", s3Url: "https://s3.archil.example" })).status, 422, "no server-wide disk: each agent has its own");
   assert.equal((await api("DELETE", "/workspace/archil")).body.on, false);

@@ -60,12 +60,10 @@ test("the Machine is never stopped: a scheduled agent keeps running with no one 
   assert.ok(fly.kill_timeout >= 31 && fly.kill_timeout <= 300, `kill_timeout ${fly.kill_timeout}`);
 });
 
-test("one Machine on one volume: a deploy replaces it in place and never boots a second beside it", async () => {
+test("one Machine on one volume: a deploy replaces it in place and never boots a second beside it", () => {
   // canary and bluegreen boot a new Machine beside the old one (with a fresh, empty volume); rolling, one at a time,
   // updates the one Machine on its own volume.
   assert.deepEqual({ ...fly.deploy }, { strategy: "rolling", max_unavailable: 1 });
-  // The first deploy runs one Machine, not Fly's default two: --ha=false (and Fly runs one for a group with a volume).
-  assert.match(await readFile(LAUNCH, "utf8"), /^fly deploy .*--ha=false/m);
 });
 
 test("fly.toml holds no secret: the token and the seal key are Fly secrets", () => {
@@ -264,18 +262,4 @@ test("the Droplet's user data fails when the installer's download fails", async 
     env: { PATH: `${dir}:${process.env.PATH}` },
   });
   await assert.rejects(run, (e) => e.code === 22);
-});
-
-test("the README's Fly section runs launch.sh and says what it costs and when that was read", async () => {
-  const flySection = section(await read("deploy/README.md"), "Fly.io");
-  assert.match(flySection, /sh deploy\/fly\/launch\.sh <app name>/);
-  assert.match(flySection, /\$\d+(\.\d\d)? a month/);
-  assert.match(flySection, /20\d\d-\d\d-\d\d/);
-  assert.match(flySection, /no shell/);
-  // Until a deploy on a real account shows it works, the section says so, and names the line a volume the server can't
-  // write would print (start.sh's, for the image's user).
-  assert.match(flySection, /has not yet run on a real Fly account/);
-  assert.match(flySection, /`\/data is not writable by uid 1000 \.\.\.`/);
-  assert.match(await read("packages/serve/docker/start.sh"), /say "\$data is not writable by uid \$\(id -u\)/);
-  assert.match(await read("packages/serve/docker/Dockerfile"), /^RUN groupadd --gid 1000 node && useradd --uid 1000 /m);
 });

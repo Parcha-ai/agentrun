@@ -4,8 +4,10 @@
 // scripts; process calls answer ok (realProcesses, in workspace-fake-processes.mjs, runs them for real). A handler
 // may answer a promise. It records every call, in order, as [method, params], so a test can show what an
 // attached Workspace asked the computer for, without the computer module's daemon.
-import { appendFileSync, closeSync, fchmodSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { appendFileSync, closeSync, fchmodSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, renameSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
+import { untar } from "@parcha/agentrun-computer";
 
 const ok = (value) => ({ ok: true, value });
 const fail = (code, message) => ({ ok: false, error: { code, message } });
@@ -18,9 +20,11 @@ const b64 = (bytes) => Buffer.from(bytes).toString("base64");
  * options.page: the most entries one files.list returns. options.chunk: the most bytes one files.read returns.
  * options.exec: (params) => the exec.run value with stdout and stderr as bytes, default an exit 0 with no output.
  * options.onRead: called after each files.read (a test replaces the file between chunks there).
+ * options.onMove: called with each files.move's params before it moves (a test lands a file at its target there).
  */
 export function fakeComputer(root, options = {}) {
   const calls = [];
+  const pushes = new Map();
   const chunk = options.chunk ?? 512 * 1024;
   const host = (path) => {
     if (path !== "/workspace" && !path.startsWith("/workspace/")) throw new Error(`the fake computer was asked for ${path}, outside /workspace`);
@@ -64,7 +68,15 @@ export function fakeComputer(root, options = {}) {
       return { entries, truncated: offset + page < names.length };
     },
     "files.mkdir": ({ path, parents }) => { mkdirSync(host(path), { recursive: Boolean(parents) }); return {}; },
-    "files.move": ({ from, to }) => { renameSync(host(from), host(to)); return {}; },
+    // As computerd: what is at `to` is replaced only with overwrite; without it the move never replaces (a link, then
+    // the source unlinked: EEXIST, "exists", when anything is there).
+    "files.move": (params) => {
+      const { from, to, overwrite } = params;
+      options.onMove?.(params);
+      if (overwrite) renameSync(host(from), host(to));
+      else { linkSync(host(from), host(to)); unlinkSync(host(from)); }
+      return {};
+    },
     "files.remove": ({ path, recursive }) => {
       if (!lstatSync(host(path)).isDirectory()) unlinkSync(host(path));
       else if (recursive) rmSync(host(path), { recursive: true });
@@ -72,6 +84,23 @@ export function fakeComputer(root, options = {}) {
       return {};
     },
     "files.stat": ({ path }) => statOf(lstatSync(host(path))),
+    // A tar push, held whole and extracted at its end by the system's tar, which keeps each file's mode and mtime and
+    // makes dirs and links, as computerd's extraction does.
+    "tar.push.begin": ({ path }) => {
+      const id = `push-${pushes.size + 1}`;
+      pushes.set(id, { dir: path, bytes: [] });
+      return { id };
+    },
+    "tar.push.write": ({ id, data }) => { pushes.get(id).bytes.push(Buffer.from(data, "base64")); return {}; },
+    "tar.push.end": ({ id }) => {
+      const { dir, bytes } = pushes.get(id);
+      pushes.delete(id);
+      const tar = Buffer.concat(bytes);
+      mkdirSync(host(dir), { recursive: true });
+      const extracted = spawnSync("tar", ["-x", "-p", "--no-same-owner", "-C", host(dir)], { input: tar });
+      if (extracted.status !== 0) throw new Error(`the fake computer's tar refused the push: ${extracted.stderr}`);
+      return { entries: untar(tar).length };
+    },
     "exec.run": (params) => {
       const ran = options.exec?.(params) ?? { exitCode: 0, stdout: new Uint8Array(0), stderr: new Uint8Array(0), timedOut: false, truncated: false };
       return { ...ran, stdout: b64(ran.stdout), stderr: b64(ran.stderr) };

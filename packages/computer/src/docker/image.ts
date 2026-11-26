@@ -19,6 +19,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { failFor, ok, type Result, vendorFail } from "../result.js";
+import { dockerEnv, type HostEnv } from "../child-env.js";
 
 /** This module's failures: one with code vendor names Docker. */
 const fail = failFor("docker");
@@ -53,6 +54,9 @@ export type ImageSource = { recipe: string } | { image: string };
 export interface EnsureImageOptions {
 	/** The docker CLI. */
 	docker?: string;
+	/** The host's environment variables: each docker call holds the names docker reads of them (DOCKER_ENV_NAMES), and
+	 *  nothing else; without env, none. A pull's credential helper finds its credentials through these. */
+	env?: HostEnv;
 	/** Ends this caller's wait; the last caller's abort stops the build or pull. */
 	signal?: AbortSignal;
 	/** The flight's bound, when this call starts it; default IMAGE_TIMEOUT_MS. */
@@ -138,19 +142,22 @@ function sourceOf(source: unknown): Source | string {
  * The image ready in Docker: its tag, for create's spec.image. A recipe is built when Docker has no image of it under its
  * tag; an image by name is pulled when Docker has none. Concurrent callers share one flight; see the top of this file.
  */
-export async function ensureImage(source: ImageSource, { docker = "docker", signal, timeoutMs = IMAGE_TIMEOUT_MS, onWait }: EnsureImageOptions = {}): Promise<Result<string>> {
+export async function ensureImage(source: ImageSource, { docker = "docker", env, signal, timeoutMs = IMAGE_TIMEOUT_MS, onWait }: EnsureImageOptions = {}): Promise<Result<string>> {
 	const checked = sourceOf(source);
 	if (typeof checked === "string") return fail("invalid", checked);
 	if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMER_MS) {
 		return fail("invalid", `timeoutMs must be a whole number of milliseconds above 0 and at most ${MAX_TIMER_MS}, not ${JSON.stringify(timeoutMs) ?? String(timeoutMs)}`);
 	}
 	if (signal?.aborted) return fail("aborted", `the wait for ${checked.tag} was aborted before it began`);
-	const key = JSON.stringify([docker, checked.kind, checked.kind === "recipe" ? checked.hash : checked.tag]);
+	// The environment docker is started with is part of the flight: two Docker hosts (DOCKER_HOST, DOCKER_CONTEXT) never
+	// share one pull or build. Its names are sorted, so the same environment is the same flight.
+	const childEnvOf = dockerEnv(env);
+	const key = JSON.stringify([docker, Object.entries(childEnvOf).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)), checked.kind, checked.kind === "recipe" ? checked.hash : checked.tag]);
 	let flight = flights.get(key);
 	// A flight every caller left is stopping: a new caller starts its own.
 	if (flight === undefined || flight.controller.signal.aborted) {
 		const crew = { controller: new AbortController(), waiting: 0, toTell: new Set<() => void>() };
-		const started: Flight = Object.assign(crew, { result: fly(docker, checked, timeoutMs, crew) });
+		const started: Flight = Object.assign(crew, { result: fly(docker, childEnvOf, checked, timeoutMs, crew) });
 		flight = started;
 		flights.set(key, started);
 		void started.result.finally(() => {
@@ -207,14 +214,14 @@ export async function ensureImage(source: ImageSource, { docker = "docker", sign
  * that fails asks Docker once more: another process may have tagged the image first (Docker 29's containerd image store
  * fails the loser of that race with "already exists"), and an image of this source under the tag is the answer.
  */
-async function fly(docker: string, source: Source, timeoutMs: number, flight: Omit<Flight, "result">): Promise<Result<string>> {
+async function fly(docker: string, env: Record<string, string>, source: Source, timeoutMs: number, flight: Omit<Flight, "result">): Promise<Result<string>> {
 	const { controller } = flight;
 	let late = false;
 	const timer = setTimeout(() => {
 		late = true;
 		controller.abort();
 	}, timeoutMs);
-	const call = (args: string[], input?: string) => run(docker, args, controller.signal, () => late, input);
+	const call = (args: string[], input?: string) => run(docker, env, args, controller.signal, () => late, input);
 	const inspect = () => call(["image", "inspect", "--format", "{{json .Config.Labels}}", source.tag]);
 	const ready = (answer: Answer) => answer.code === 0 && (source.kind === "image" || labelsOf(answer.stdout)[RECIPE_LABEL] === source.hash);
 	try {
@@ -243,10 +250,10 @@ async function fly(docker: string, source: Source, timeoutMs: number, flight: Om
 	}
 }
 
-/** `docker` with args, the input on its stdin, killed with SIGKILL when the signal aborts. */
-function run(docker: string, args: string[], signal: AbortSignal, late: () => boolean, input?: string): Promise<Answer> {
+/** `docker` with args, the input on its stdin, killed with SIGKILL when the signal aborts; `env` is its whole environment. */
+function run(docker: string, env: Record<string, string>, args: string[], signal: AbortSignal, late: () => boolean, input?: string): Promise<Answer> {
 	return new Promise((resolve) => {
-		const child = execFile(docker, args, { encoding: "utf8", signal, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
+		const child = execFile(docker, args, { env, encoding: "utf8", signal, killSignal: "SIGKILL", maxBuffer: 32 * 1024 * 1024 }, (error, stdout, stderr) => {
 			if (error === null) return resolve({ code: 0, stdout, stderr });
 			const failed = error as NodeJS.ErrnoException & { code?: number | string };
 			const code = signal.aborted ? (late() ? "timeout" : "aborted") : typeof failed.code === "number" ? failed.code : (failed.code ?? failed.name);

@@ -1,9 +1,11 @@
-// A fake Ollama: its native API alone, GET /api/tags, POST /api/show and POST /api/chat, in Ollama's own shapes (the
-// chat streamed as NDJSON, one JSON object a line, usage in prompt_eval_count and eval_count on the last). Every other
+// A fake Ollama: its native API alone, GET /api/tags, POST /api/show, POST /api/chat, GET /api/version and POST /api/pull,
+// in Ollama's own shapes (the chat and the pull streamed as NDJSON, one JSON object a line, the chat's usage in
+// prompt_eval_count and eval_count on its last). Every other
 // request (another path or method, as the GET / a dev tool on the box sends each new listener) is answered 404 and
 // never counted. No imports but node's, so a walk with no built serve takes it too (packages/agentrun/test/walk-model.mjs).
 // Its models are synthetic: a name, its capabilities, its family and its context length, as /api/show reports them.
 import { createServer } from "node:http";
+import { freePort } from "./ports.mjs";
 
 /** The models a fake lists by default: one that does not take tools (tools as text) trained on a 40,960-token context,
  *  one that takes tools and thinks trained on 131,072, one that only embeds. A model with no `context_length` has none in
@@ -23,19 +25,25 @@ const json = (res, status, value) => res.writeHead(status, { "content-type": "ap
 /**
  * The request handler: `models` as the fake lists them; `hang`, a fake that takes each request to its paths and never
  * answers (an Ollama stuck loading); `reply(body, n)` the answer to the n-th chat (from 1), as
- * `{ text?, thinking?, calls?: [{ name, arguments }], usage?: { input, output } }`, or `{ status, error }` for a refusal;
+ * `{ text?, thinking?, calls?: [{ name, arguments }], usage?: { input, output }, doneReason? }` (doneReason: the last line's
+ * done_reason, "stop" when absent; "length" for an answer cut at its output limit), or `{ status, error }` for a refusal;
  * `got`, where each counted request is kept: `tags` (a count), `show` (each model asked), `chat` (each body).
  * `hangOn(route, body)`: true for a request it takes, counts and never answers (`tags`, `show` or `chat`), the rest
- * answered (an Ollama whose listing is stuck, or one model's /api/show).
+ * answered (an Ollama whose listing is stuck, or one model's /api/show). `refuseOn(route, body)`: true for a request it
+ * answers 500 (one model's /api/show failing, so a listing that is otherwise whole leaves it out).
+ * `version`: what GET /api/version says (`got.version` counts them). `pullable`: the models a pull adds, by tag; a pull of
+ * any other tag streams Ollama's error line. A pull streams the manifest, one layer of 1,000 bytes at 400, then waits for
+ * `pullHold` (a promise; none, at once), then the layer whole, `success`, and lists the model from then on (`got.pull`:
+ * each tag asked).
  * The handler keeps a copy of `models`: a test changes what it lists through its `remove(tag)` (`ollama rm`), never by
  * changing the array it gave.
  */
-export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ text: "Done." }), hang = false, hangOn = () => false, got = { tags: 0, show: [], chat: [] } } = {}) {
+export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ text: "Done." }), hang = false, hangOn = () => false, refuseOn = () => false, version = "0.40.17", pullable = {}, pullHold, got = { tags: 0, show: [], chat: [], version: 0, pull: [] } } = {}) {
   const models = [...given];
   let tagsDelayMs = 0;
   const handle = (req, res) => {
     const path = new URL(req.url ?? "/", "http://ollama").pathname;
-    const route = req.method === "GET" && path === "/api/tags" ? "tags" : req.method === "POST" && path === "/api/show" ? "show" : req.method === "POST" && path === "/api/chat" ? "chat" : undefined;
+    const route = req.method === "GET" && path === "/api/tags" ? "tags" : req.method === "POST" && path === "/api/show" ? "show" : req.method === "POST" && path === "/api/chat" ? "chat" : req.method === "GET" && path === "/api/version" ? "version" : req.method === "POST" && path === "/api/pull" ? "pull" : undefined;
     if (!route) {
       req.resume();
       return void res.writeHead(404).end();
@@ -58,6 +66,11 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
         if (route === "show") got.show.push(body?.model);
         return;
       }
+      if (route === "version") {
+        got.version = (got.version ?? 0) + 1;
+        return json(res, 200, { version });
+      }
+      if (route === "pull") return void pull(body?.model, res);
       if (route === "tags") {
         got.tags += 1;
         const listed = { models: models.map((m) => ({ name: m.name, model: m.name, ...remoteOf(m), modified_at: "2026-01-01T00:00:00Z", size: 1, digest: "0", details: { family: m.family } })) };
@@ -65,6 +78,7 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
       }
       if (route === "show") {
         got.show.push(body?.model);
+        if (refuseOn(route, body)) return json(res, 500, { error: "synthetic show failure" });
         const model = models.find((m) => m.name === body?.model);
         if (!model) return json(res, 404, { error: `model '${body?.model}' not found` });
         return json(res, 200, { ...remoteOf(model), details: { family: model.family }, model_info: { "general.architecture": model.family, ...(model.context_length === undefined ? {} : { [`${model.family}.context_length`]: model.context_length }) }, capabilities: model.capabilities });
@@ -81,10 +95,10 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
       const cut = Math.ceil(text.length / 2);
       for (const part of [text.slice(0, cut), text.slice(cut)]) if (part) lines.push({ ...base, message: { role: "assistant", content: part }, done: false });
       if (answer.calls?.length) lines.push({ ...base, message: { role: "assistant", content: "", tool_calls: answer.calls.map((call) => ({ function: { name: call.name, arguments: call.arguments } })) }, done: false });
-      lines.push({ ...base, message: { role: "assistant", content: "" }, done: true, done_reason: "stop", total_duration: 1, prompt_eval_count: usage.input, eval_count: usage.output });
+      lines.push({ ...base, message: { role: "assistant", content: "" }, done: true, done_reason: answer.doneReason ?? "stop", total_duration: 1, prompt_eval_count: usage.input, eval_count: usage.output });
       if (body?.stream === false) {
         const message = { role: "assistant", content: text, ...(answer.thinking ? { thinking: answer.thinking } : {}), ...(answer.calls?.length ? { tool_calls: answer.calls.map((call) => ({ function: { name: call.name, arguments: call.arguments } })) } : {}) };
-        return json(res, 200, { ...base, message, done: true, done_reason: "stop", prompt_eval_count: usage.input, eval_count: usage.output });
+        return json(res, 200, { ...base, message, done: true, done_reason: answer.doneReason ?? "stop", prompt_eval_count: usage.input, eval_count: usage.output });
       }
       res.writeHead(200, { "content-type": "application/x-ndjson" });
       res.end(lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
@@ -99,30 +113,54 @@ export function ollamaHandler({ models: given = SYNTH_MODELS, reply = () => ({ t
   /** Each /api/tags answered `ms` late from now on (what it lists read when asked): an Ollama slow to list, so a listing
    *  asked behind a caller lands after that caller has moved on. */
   handle.slowTags = (ms) => void (tagsDelayMs = ms);
+
+  /** POST /api/pull of `tag`, streamed as Ollama streams it. */
+  async function pull(tag, res) {
+    (got.pull ??= []).push(tag);
+    const line = (value) => res.write(`${JSON.stringify(value)}\n`);
+    res.writeHead(200, { "content-type": "application/x-ndjson" });
+    line({ status: "pulling manifest" });
+    const model = pullable[tag];
+    if (!model) return void res.end(`${JSON.stringify({ error: "pull model manifest: file does not exist" })}\n`);
+    const digest = "sha256:0000000000000000000000000000000000000000000000000000000000000001";
+    line({ status: `pulling ${digest.slice(7, 19)}`, digest, total: 1_000, completed: 400 });
+    await pullHold;
+    line({ status: `pulling ${digest.slice(7, 19)}`, digest, total: 1_000, completed: 1_000 });
+    for (const status of ["verifying sha256 digest", "writing manifest"]) line({ status });
+    if (!models.some((m) => m.name === model.name)) models.push(model);
+    res.end(`${JSON.stringify({ status: "success" })}\n`);
+  }
   return handle;
 }
 
 /** A fake Ollama on 127.0.0.1, closed at the test's end: `url` (http://127.0.0.1:<port>), `host` (127.0.0.1:<port>, the
  *  form OLLAMA_HOST usually takes), `got`, `remove(tag)` and `slowTags(ms)` (ollamaHandler's). `port`: one to listen on (an Ollama started late, on the
- *  address closedPort gave), else any. */
-export async function fakeOllama(t, { port: asked = 0, ...options } = {}) {
-  const got = { tags: 0, show: [], chat: [] };
+ *  address freePort gave, fixtures/ports.mjs), else a new one from freePort, never port 0: serve keeps each address's
+ *  good listing fresh for OLLAMA_TTL_MS, so a fake handed the port of one closed earlier in its file would be answered
+ *  for by that fake's listing and never asked. A port another listener holds rejects with its error (EADDRINUSE), never an
+ *  uncaught one. `down`: its switch, off: every connection is reset as it comes, so it answers nothing, as an Ollama
+ *  that is not running, on a port the test still holds (no other listener can take it, as one can take a port freePort
+ *  gave and nothing holds); `setDown(false)` turns it on. */
+export async function fakeOllama(t, { port: given, down = false, ...options } = {}) {
+  const asked = given ?? (await freePort());
+  const got = { tags: 0, show: [], chat: [], version: 0, pull: [] };
   const handle = ollamaHandler({ ...options, got });
   const server = createServer(handle);
-  await new Promise((resolve) => server.listen(asked, "127.0.0.1", resolve));
+  let off = down;
+  server.on("connection", (socket) => {
+    if (off) socket.destroy();
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(asked, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
   t.after(() => new Promise((resolve) => {
     server.closeAllConnections();
     server.close(() => resolve());
   }));
   const { port } = server.address();
-  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags };
-}
-
-/** A loopback port nothing listens on: one a server held, then closed. */
-export async function closedPort() {
-  const server = createServer();
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address();
-  await new Promise((resolve) => server.close(resolve));
-  return port;
+  return { url: `http://127.0.0.1:${port}`, host: `127.0.0.1:${port}`, got, remove: handle.remove, slowTags: handle.slowTags, setDown: (value) => void (off = value) };
 }

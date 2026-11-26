@@ -1,6 +1,5 @@
-// A model gateway's answers, as OpenRouter's or Ollama's: OpenAI Responses, Anthropic Messages and OpenAI Chat Completions,
-// each streamed (`stream: true`) or one JSON answer, with its usage. No imports, so a walk that has no built serve uses
-// them too: faux-gateway.mjs (the serve tests) and packages/agentrun/test/walk-model.mjs (the first-run walk's local model).
+// A model gateway's answers, as OpenRouter's or a LiteLLM proxy's: OpenAI Responses, Anthropic Messages and OpenAI Chat
+// Completions, each streamed (`stream: true`) or one JSON answer, with its usage, for faux-gateway.mjs (the serve tests).
 // Each writer takes the response, the request's body, the answer's text (or a tool call), its usage and whether to stream.
 const sse = (res, events, { named = false, done = false } = {}) => {
   res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });

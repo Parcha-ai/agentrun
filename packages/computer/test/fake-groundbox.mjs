@@ -33,14 +33,14 @@ export function recorder(route) {
  * One sandbox's commands. webSocket is the factory the provider takes, and exec answers POST .../exec for a recorder's
  * route. opened lists what each socket was opened with and sent; commands holds each resumable command by its exec id.
  * drop() closes every open socket as a lost connection does (the commands run on). refuse, when set, refuses every
- * upgrade from then on: the socket errors and closes before it opens. startedAfter(ms) holds each `started` back that
- * long, with the command already running, as a slow sandbox does.
+ * upgrade from then on: the socket errors and closes before it opens. holdStarted() holds each `started` back until
+ * releaseStarted(), with the command already running, as a slow sandbox does.
  */
 export function fakeCommands() {
 	const opened = [];
 	const commands = new Map();
 	const sockets = new Set();
-	const state = { refuse: false, startedAfterMs: 0 };
+	const state = { refuse: false, holding: false, held: [] };
 	const killGroup = (command) => {
 		if (command.exit !== undefined) return;
 		try {
@@ -128,7 +128,7 @@ export function fakeCommands() {
 							command.followers.add(follow);
 							follow();
 						};
-						if (state.startedAfterMs > 0) setTimeout(started, state.startedAfterMs);
+						if (state.holding) state.held.push(started);
 						else queueMicrotask(started);
 					} else {
 						command = commands.get(message.exec_id);
@@ -173,7 +173,12 @@ export function fakeCommands() {
 			for (const socket of [...sockets]) socket.drop();
 		},
 		refuse: (on) => void (state.refuse = on),
-		startedAfter: (ms) => void (state.startedAfterMs = ms),
+		holdStarted: () => void (state.holding = true),
+		/** Says every `started` held back, now: a slow sandbox's answer, once the test chooses. */
+		releaseStarted: () => {
+			state.holding = false;
+			for (const started of state.held.splice(0)) started();
+		},
 		/** Ends every command still running: for a test's end. */
 		stopAll: () => {
 			for (const command of commands.values()) killGroup(command);

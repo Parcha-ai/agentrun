@@ -6,14 +6,15 @@
 import type { Store } from "../store/store.js";
 import { costOfRun, runReadState, type RunReadState } from "./runs.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
+import { shadowOfRun, shadowUsdOf } from "../learn/ledger.js";
 import { type CostBasis, joinedBasis, storedBasisOf } from "../runner/metrics.js";
 
 /** The run states the stats count by, as the old store named them. */
 export type RunState = RunReadState;
 const RUN_STATES: readonly RunState[] = ["running", "completed", "failed", "stopped", "escalated"];
 export type RunCounts = Record<RunState, number> & { total: number };
-/** `usd` sums the `known` runs' costs (those that ended with one); null when there are none, never 0. A run still running,
- *  or one that ended with no cost, is `unknown`. `basis`: how the summed costs were reached (metrics.ts joinedBasis over
+/** `usd` sums the costs of the runs that ended with one and their shadows' known costs; null when there are none, never
+ *  0. A run still running, one that ended with no cost, or one whose shadow is at work or unpriced, is `unknown`. `basis`: how the summed costs were reached (metrics.ts joinedBasis over
  *  each one's stored basis, storedBasisOf). */
 export type CostSum = { usd: number | null; known: number; unknown: number; basis: CostBasis };
 export type StoreStats = {
@@ -44,7 +45,7 @@ export async function stats(store: Store): Promise<StoreStats> {
   const runs = await store.runs.list({ purged: true });
 
   // Per agent, the runs whose own archive is null (shown) and the count whose own archive is set (hidden).
-  const shown = new Map<string, { counts: RunCounts; costUsd: number; known: number; shadowUsd: number; bases: CostBasis[] }>();
+  const shown = new Map<string, { counts: RunCounts; costUsd: number; priced: number; known: number; shadowUsd: number; bases: CostBasis[] }>();
   const hidden = new Map<string, number>();
   const running: string[] = [];
   // Each revision's kind, read once: an agentic run a person stopped reads running (runReadState).
@@ -63,19 +64,23 @@ export async function stats(store: Store): Promise<StoreStats> {
       continue;
     }
     let g = shown.get(run.agentId);
-    if (g === undefined) shown.set(run.agentId, (g = { counts: emptyCounts(), costUsd: 0, known: 0, shadowUsd: 0, bases: [] }));
+    if (g === undefined) shown.set(run.agentId, (g = { counts: emptyCounts(), costUsd: 0, priced: 0, known: 0, shadowUsd: 0, bases: [] }));
     const shadow = shadows.get(shadowRunId(run.id));
-    if (shadow && runReadState(shadow, "agentic") !== "running" && shadow.costUsd !== null) {
-      g.shadowUsd += shadow.costUsd;
-      g.bases.push(storedBasisOf(shadow.metrics, shadow.costUsd));
+    // Its shadow's cost as the ledger reads it (shadowUsdOf): unknown while at work or unpriced, never $0.
+    const shadowUsd = shadowUsdOf(shadow && shadowOfRun(shadow));
+    if (shadow && shadowUsd !== null) {
+      g.shadowUsd += shadowUsd;
+      g.bases.push(storedBasisOf(shadow.metrics, shadowUsd));
     }
     g.counts.total += 1;
     g.counts[state] += 1;
-    // Its cost as its read says it (costOfRun): an imported session's catalog estimate when its source priced none.
+    // Its cost as its read says it (costOfRun): an imported session's catalog estimate when its source priced none. Its
+    // $ is spent either way; the run is known only with its shadow's.
     const cost = costOfRun(run);
     if (state !== "running" && cost !== null) {
       g.costUsd += cost;
-      g.known += 1;
+      g.priced += 1;
+      if (shadowUsd !== null) g.known += 1;
       g.bases.push(storedBasisOf(run.metrics, cost));
     }
   }
@@ -96,7 +101,7 @@ export async function stats(store: Store): Promise<StoreStats> {
     for (const key of ["total", ...RUN_STATES] as const) stats.runs[key] += counts[key];
     const known = g?.known ?? 0;
     // A shadow's known $ is spent whether or not the run it audits has a known cost: never a null for its dollars.
-    if (known > 0 || (g?.shadowUsd ?? 0) > 0) stats.cost.usd = (stats.cost.usd ?? 0) + (g?.costUsd ?? 0) + (g?.shadowUsd ?? 0);
+    if ((g?.priced ?? 0) > 0 || (g?.shadowUsd ?? 0) > 0) stats.cost.usd = (stats.cost.usd ?? 0) + (g?.costUsd ?? 0) + (g?.shadowUsd ?? 0);
     stats.cost.known += known;
     stats.cost.unknown += counts.total - known;
     bases.push(...(g?.bases ?? []));

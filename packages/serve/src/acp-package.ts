@@ -30,8 +30,18 @@ export type AcpPackage = {
   cursorRecipe(options: { command: string; limits: { readonly maxTurns: number; readonly maxToolCalls: number }; model?: string }): AcpRecipe;
   /** The folder Cursor was installed into, from its launcher's path and the pin's `cmd`; undefined when it is not there. */
   cursorRootOf(binary: string, cmd: string): string | undefined;
+  /** The recipes the package ships whole, by name (Google Antigravity's), and the file of each: absent from a package
+   *  older than them. */
+  readonly BUNDLED_RECIPES?: readonly string[];
+  bundledRecipePath?(name: string): string | undefined;
   /** The form a model id an ACP agent lists takes (Cursor's `gpt-5.4-nano[reasoning=medium]` among them). */
   readonly MODEL_ID: RegExp;
+  /** The forms a recipe's allowFile may take (`goose-permission`). */
+  readonly ALLOW_FILE_FORMS: readonly string[];
+  /** What is wrong with a recipe's announces field, and with a title tie without it, each in words. */
+  announcesProblems(announces: unknown, permissionTie: unknown): string[];
+  /** The form a sign-in method's id an ACP agent lists takes (`gemini-api-key`): a recipe's keyMethod is checked by it. */
+  readonly AUTH_METHOD: RegExp;
   acpPlatform(): string | undefined;
   /** `pin`'s release for `platform` (default this host's) with its binary's digest, and its tree's when `tree`; undefined
    *  where none is pinned so. */
@@ -50,8 +60,26 @@ export type AcpPackage = {
 const requireHere = createRequire(import.meta.url);
 let loaded: AcpPackage | null | undefined;
 
+/** serve's one debug switch for the ACP adapter, AGENTRUN_LOG=debug, read as each adapter is made: it logs each call the
+ *  agent announces, by its ids and names only (the package's AcpHarnessOptions.debug). Serve owns the variable, so the
+ *  package never reads it. */
+const debugOption = (): { debug?: true } => (process.env.AGENTRUN_LOG === "debug" ? { debug: true } : {});
+
+/** `pkg` with each adapter factory it exports (every function named `...Adapter`: acpAdapter, gooseAdapter,
+ *  cursorAdapter) handed serve's debug switch at each call. Here, where serve loads the package, so no place that builds
+ *  an ACP agent's adapter has to remember it. */
+function withDebug(pkg: AcpPackage): AcpPackage {
+  const made: Record<string, unknown> = { ...pkg };
+  for (const [name, value] of Object.entries(pkg)) {
+    if (typeof value !== "function" || !name.endsWith("Adapter")) continue;
+    const factory = value as (options: Record<string, unknown>) => AgentAdapter;
+    made[name] = (options: Record<string, unknown>) => factory({ ...options, ...debugOption() });
+  }
+  return Object.freeze(made) as AcpPackage;
+}
+
 /** The package, or undefined where it is not installed beside serve. Only its absence is: a package that is there and
- *  fails to load throws. */
+ *  fails to load throws. Its adapter factories take serve's debug switch (withDebug). */
 export function acpPackage(): AcpPackage | undefined {
   if (loaded === undefined) {
     let found = true;
@@ -60,7 +88,7 @@ export function acpPackage(): AcpPackage | undefined {
     } catch {
       found = false;
     }
-    loaded = found ? (requireHere(ACP_PACKAGE) as AcpPackage) : null;
+    loaded = found ? withDebug(requireHere(ACP_PACKAGE) as AcpPackage) : null;
   }
   return loaded ?? undefined;
 }
