@@ -20,7 +20,7 @@ test("AGENTRUN_API_ONLY=1 reaches the started server: its start says so, and mak
     await exited;
   });
   const out = await printed(child, /^API only /m);
-  assert.match(out, /^API only \(AGENTRUN_API_ONLY=1\): the run and deploy routes, the MCP server names, a Composio server's save, a per_run server's save at an origin AGENTRUN_API_ONLY_MCP_ORIGINS lists and a server's delete are served; /m, out);
+  assert.match(out, /^API only \(AGENTRUN_API_ONLY=1\): the run and deploy routes, a trigger's reads and its turn on or off, the MCP server names, a Composio server's save, a per_run server's save at an origin AGENTRUN_API_ONLY_MCP_ORIGINS lists and a server's delete are served; /m, out);
   const port = Number(/^agentrun-serve on http:\/\/127\.0\.0\.1:(\d+)\/v2 /m.exec(out)[1]);
   const api = client(`http://127.0.0.1:${port}/v2`, TOKEN);
 

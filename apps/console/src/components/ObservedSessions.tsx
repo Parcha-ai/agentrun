@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 import type { Client } from "@/lib/client";
 import { when } from "@/lib/format";
 import { observationHash, observedHarness, observedNumber, observedState, observedTone, type ObservedSession, type ObservedUsage, useObservations } from "@/lib/observations";
-import { pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { cn } from "@/lib/utils";
 
 /** A connected coding agent shares the agent grid, with only the controls its connection supports. */
@@ -56,11 +56,11 @@ function UsageFacts({ usage }: { usage: Omit<ObservedUsage, "status"> & { status
 export function ObservedSessionPage({ v2, sessionId, go }: { v2: Client; sessionId: string; go: (hash: string) => void }) {
   const read = useObservations(v2, { sessionId });
   const session = read.data?.sessions.find((s) => s.id === sessionId);
-  return <section className="flex min-h-full flex-col" aria-label="Connected agent detail">
+  return <section className={pageClass} aria-label="Connected agent detail">
     <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5")}><Button size="icon" variant="ghost" aria-label="Back" title="Back" onClick={() => goBack("#/agents")}><ArrowLeft aria-hidden /></Button><Bot className="size-4" aria-hidden /><strong className="min-w-0 flex-1 truncate text-body">{session?.display_name ?? "Connected agent"}</strong><Button size="icon" aria-label="Refresh agent" disabled={read.loading} onClick={read.refresh}><RefreshCw aria-hidden /></Button>
       {session && <><CodingAgentAction label="Edit agent" prompt={observedAgentPrompt(location.origin, session, "edit")} /><CodingAgentAction variant="primary" label="Run agent" prompt={observedAgentPrompt(location.origin, session, "run")} /></>}
     </header>
-    <main className="mx-auto w-full max-w-page space-y-6 p-5 md:p-8">
+    <div data-page-body className={pageBodyClass}><main className="mx-auto w-full max-w-page space-y-6 p-5 md:p-8">
       {read.error && <Banner tone="error">Could not read this agent: {read.error}</Banner>}
       {!session ? <p className="text-body text-muted-foreground">{read.loading ? "Loading connected agent…" : read.data ? "This agent was not found." : "Connected agent activity is unavailable on this server."}</p> : <>
         <div><h1 className="text-2xl font-semibold">{session.display_name}</h1><div className="mt-3 flex flex-wrap gap-2"><Chip tone={observedTone(session)}>{observedState(session)}</Chip><Chip>{observedHarness(session.harness)}</Chip></div></div>
@@ -77,6 +77,6 @@ export function ObservedSessionPage({ v2, sessionId, go }: { v2: Client; session
         <dl className="grid gap-4 border bg-card p-4 sm:grid-cols-2">{([["Harness", <HarnessName harness={session.harness} name={observedHarness(session.harness)} />], ["Model", session.models.join(", ") || "Not reported"], ["Project", session.project_name || "Not reported"], ["Connection", session.connection_state], ["Last reported activity", session.reported_activity], ["First seen", when(session.created_at)], ["Last received", when(session.received_at)], ["Session", session.external_session_id], ["Source", session.source_id], ["Connector", session.connector_id], ["Record", session.id]] as [string, ReactNode][]).map(([label, value]) => <div key={label}><dt className="text-small text-muted-foreground">{label}</dt><dd className="mt-1 break-all text-body">{value}</dd></div>)}</dl>
         <section className="space-y-4 border bg-card p-4" aria-label="Session token usage"><h2 className="text-lead font-semibold">Reported token usage · retained session</h2><UsageFacts usage={session.usage} /><p className="text-small text-muted-foreground">Session totals cover retained reports. Input includes cache reads and writes. Missing cache counters are shown as a dash. Activity signals do not establish a completed task or its outcome.</p></section>
       </>}
-    </main>
+    </main></div>
   </section>;
 }

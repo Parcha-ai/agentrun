@@ -20,6 +20,7 @@ import { closeOpenSessions, MODEL } from "./conformance-pi-adapter.mjs";
 import { capRun, cap, quiet, specCap } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { sendCommand } = await import("../dist/runner/commands.js");
 after(closeOpenSessions);
@@ -82,7 +83,7 @@ async function stoppedRun(t, { capUsd, spentUsd = 0, text, journalOf, abortAfter
   const specOf = (sent) => {
     origin = stallingOrigin(sent, text, abortAfter);
     return (_claim, run) => ({
-      adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: origin.fetch, price: () => 0 }),
+      adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: origin.fetch, price: () => 0 }),
       session: { key: "root", label: "root", system: ["Follow the script."], tools: [], context: "fresh" },
       input: "Take your time.",
       hooks: quiet,

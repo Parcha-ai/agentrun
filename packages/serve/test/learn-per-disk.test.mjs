@@ -3,7 +3,7 @@
 // learned workflow, and every learning read of the agent's runs reads only runs on no named disk (compile's traces and
 // its due count, a check's inputs, the money rule's past runs, an audit's served runs, the cost page's ledger). A run
 // with no named disk (none, or its agent's own) is the default disk's, where the agent learns. So a customer's traces
-// never reach the agent's learned workflows. The disks a run named are where the reset and the delete remove a folder.
+// never reach the agent's learned workflows.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -14,16 +14,15 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
 import { storeOn } from "./store-helpers.mjs";
+import { putPromotions } from "./learned-workflow-seed-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
-const { seedOf } = await import("../dist/learning.js");
-const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { launchBody, launchOnItsDisk, readLaunchBody } = await import("../dist/run-launch.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { SCHEMA_VERSION } = await import("../dist/store/index.js");
-const { namedDisksOf } = await import("../dist/learn/learning-of.js");
 const { notAuditableOf } = await import("../dist/runner/audit.js");
 const { lastOwnRuns } = await import("../dist/learn/compile.js");
 const { pastRunsOverStore } = await import("../dist/store-reads/learning.js");
@@ -80,8 +79,8 @@ async function purgedRun(store, id, launch) {
   await store.runs.purge(id, KEPT);
 }
 
-test("a store as the run purge left it (version 14, no runs.disk) comes to 16 at its server's open, never at a runner's: each run's disk from its launch, a run purged before as the default disk's", async (t) => {
-  assert.equal(SCHEMA_VERSION, 16);
+test("a store as the run purge left it (version 14, no runs.disk) comes to this version (17) at its server's open, never at a runner's: each run's disk from its launch, a run purged before as the default disk's", async (t) => {
+  assert.equal(SCHEMA_VERSION, 17);
   const dir = scratch("agentrun-per-disk-upgrade-");
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const first = await openSqliteStore({ dataDir: dir, role: "server" });
@@ -108,21 +107,21 @@ test("a store as the run purge left it (version 14, no runs.disk) comes to 16 at
       db.close();
     }
   };
-  await assert.rejects(openSqliteStore({ dataDir: dir, role: "runner" }), /Start the AgentRun server to bring this store from version 14 to 16 before opening a runner/, "a runner, whose learning reads runs by disk, waits for the server");
+  await assert.rejects(openSqliteStore({ dataDir: dir, role: "runner" }), new RegExp(`Start the AgentRun server to bring this store from version 14 to ${SCHEMA_VERSION} before opening a runner`), "a runner, whose learning reads runs by disk, waits for the server");
   assert.equal(version(), 14, "a runner's refusal changes nothing");
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   try {
-    assert.equal(version(), 16);
+    assert.equal(version(), SCHEMA_VERSION);
     assert.deepEqual(await Promise.all(["on-a", "on-own", "on-none", "purged-b"].map(async (id) => (await store.runs.get(id)).disk)), ["disk-a", null, null, null], "each run's disk from its launch: a named one by its id, the agent's own or none as the default; a purged run, its launch gone, the default's");
   } finally {
     await store.close();
   }
   await (await openSqliteStore({ dataDir: dir, role: "server" })).close();
-  assert.equal(version(), 16, "a second open changes nothing");
+  assert.equal(version(), SCHEMA_VERSION, "a second open changes nothing");
   await (await openSqliteStore({ dataDir: dir, role: "runner" })).close();
 });
 
-test("a purged run's tombstone keeps its disk: the disks the reset and the delete remove the agent's folder on still name it", async (t) => {
+test("a purged run's tombstone keeps its disk", async (t) => {
   const dir = scratch("agentrun-per-disk-purged-");
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   t.after(async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -131,7 +130,7 @@ test("a purged run's tombstone keeps its disk: the disks the reset and the delet
   await purgedRun(store, "purged-own", { archilDisk: { diskId: "agent-disk", kind: "agent" } });
   await store.runs.create({ id: "on-none", agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody(BASE) });
   assert.equal((await store.runs.get("purged-b")).disk, "disk-b", "its tombstone keeps its disk");
-  assert.deepEqual(await namedDisksOf(store, "agent-1"), ["disk-b"], "a named disk alone: the agent's own disk and none are the default");
+  assert.equal((await store.runs.get("purged-own")).disk, null, "the agent's own disk is the default");
 });
 
 test("learning reads only runs on no named disk since the reset: compile_after's count and a check's inputs, the money rule's past runs and the audit's served runs", async (t) => {
@@ -171,7 +170,7 @@ test("a runner runs a named-disk launch with no seed, no # Learned section and n
   // What the runner's dispatch hands the harness it picks: the launch as the run runs it.
   const ran = async (body) => {
     const seen = [];
-    const loop = createDispatchLoop({ launchOf: async () => ({ body }), resolve: (_harness, launch) => void seen.push(launch) })({});
+    const loop = createDispatchLoop({ launchOf: async () => ({ body }), resolve: (_harness, launch) => void seen.push(launch) })({ redact: heldRedactor((text) => text) });
     await assert.rejects(loop.start({ runId: "run-1" }));
     return seen[0];
   };
@@ -188,26 +187,25 @@ test("a runner runs a named-disk launch with no seed, no # Learned section and n
 // -------------------------------------------------------------------------------------------- compile (the look-back)
 
 /** One agent (compile_after 2) whose runs run through a real runner, one at a time, each on its disk (`disk`: a named
- *  one, or none for the default): a run that learns gets its learning end over the agent's learning folder. Every model
+ *  one, or none for the default): a run that learns gets its learning end over the agent's learning rows. Every model
  *  request a run makes is kept. */
 async function world(t) {
   const local = scratch("agentrun-per-disk-local-");
-  const data = scratch("agentrun-per-disk-default-");
   const server = await openSqliteStore({ dataDir: local, role: "server" });
   const open = [];
   t.after(async () => {
     for (const close of open.reverse()) await close().catch(() => {});
     await server.close().catch(() => {});
-    for (const dir of [local, data]) rmSync(dir, { recursive: true, force: true });
+    rmSync(local, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: { compile_after: 2 } } });
   const run = async (runId, { disk, content, learns = false }) => {
-    const seed = learns ? await seedOf(data, "agent-1") : undefined;
-    const launch = { input: { content }, title: "t", place: { mode: "runner" }, ...launchDisk(disk), ...(learns ? { learning: { seed: seed.sha, section: "" } } : {}) };
+    const seed = learns ? (await server.learning.seed("agent-1")).save.id : undefined;
+    const launch = { input: { content }, title: "t", place: { mode: "runner" }, ...launchDisk(disk), ...(learns ? { learning: { seed, section: "" } } : {}) };
     await server.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody(launch) });
     const store = await openSqliteStore({ dataDir: local, role: "runner" });
     open.push(() => store.close());
-    const endOfRun = learningEndOfRun(launch, { store, data: local, env: {}, learningFolder: (agentId) => learningWorkspace({ mode: "local", data, agentId }) });
+    const endOfRun = learningEndOfRun(launch, { store, data: local, env: {} });
     const requests = [];
     const spec = piAdapterSpec({ script: learns ? [{ say: "42" }, { say: DRAFT }] : [{ say: "42" }], tools: {}, hooks: quiet }, { requests });
     const createLoop = (deps) => {
@@ -274,7 +272,7 @@ test("the cost page's revision ledger is the default disk's: a named disk's repl
   await end("served-d1", null, 0.1, served);
   await end("served-d2", null, 0.1, served);
   const check = { compile_after: 2, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 1, agreed: 1, alone: 1, of: ["run-01"], cost_usd: 0.3 };
-  await store.settings.put("learning.promotions.agent-1", { v: 1, items: [{ workflow: "answer", digest: A, at: promoted, decided: "promote", reason: "checked: promoted", check }] });
+  await putPromotions(store, "agent-1", [{ workflow: "answer", digest: A, at: promoted, decided: "promote", reason: "checked: promoted", check }]);
   const cost = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(cost.bill.revisions.map((one) => [one.digest, one.check_usd, one.served, one.attributed_usd, one.unattributed_usd]), [[A, 0.3, 2, 0.3, 0]], JSON.stringify(cost.bill.revisions));
   // Each run's own figures read the same ledger: the default disk's first K served runs carry its check, disk B's none.

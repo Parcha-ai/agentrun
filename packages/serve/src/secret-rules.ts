@@ -2269,7 +2269,7 @@ const DOCKER_AUTHS_BEFORE = 65_536;
 /** Each `"auths"` in the text and whether the call read a config.json are found once a text (ruling LXXIII), never
  *  once a match: a text of many `"auth"` keys is read in linear time. */
 const dockerAuth = (text: string, ctx: ScrubContext): ((m: RegExpExecArray) => Hit | undefined) => {
-  const read = [ctx.path, ...commandPaths(ctx.command)].some((path) => path !== undefined && DOCKER_CONFIG.test(path));
+  const read = (ctx.path !== undefined && dockerConfigPath(ctx.path)) || commandNames(ctx.command, dockerConfigPath);
   const auths: number[] = [];
   if (!read) for (let at = text.indexOf(DOCKER_AUTHS); at >= 0; at = text.indexOf(DOCKER_AUTHS, at + 1)) auths.push(at);
   return (m) => {
@@ -2453,6 +2453,8 @@ function linesOf(text: string): Line[] {
   return lines;
 }
 const blank = (line: Line) => line.body.trim() === "";
+/** Where the raw line holding `offset` starts: its first character, before any JSON field opening linesOf skips. */
+const rawStart = (text: string, offset: number): number => text.lastIndexOf("\n", offset - 1) + 1;
 const block = (lines: readonly Line[], from: number, to: number): Hit => ({ start: lines[from]!.start, end: lines[to]!.end });
 
 /** The lines after `at` while `fits` holds, trailing blank lines left out; undefined when none is left. */
@@ -2466,6 +2468,10 @@ function after(lines: readonly Line[], at: number, fits: (body: string) => boole
 /** A shell's prompt opening a line: the next command, where a file's printed contents end. */
 const PROMPT_LINE = /^\s{0,8}(?:[$#%❯]|>>?)\s{1,3}\S/;
 const notPrompt = (body: string): boolean => !PROMPT_LINE.test(body);
+/** A user's prompt opening a line, `$`, `%` or `❯`, and the command after it. `#` and `>` are left out: they open a
+ *  markdown heading or quote far more often than a root prompt (`# Export`), and their env commands are read by
+ *  ENV_COMMAND as before. */
+const PROMPT_HEAD = /^\s{0,8}[$%❯]\s{1,3}(?=\S)/;
 /** A line that is a dump's cut already made: no file's content (ruling VIII: a cut text read again is cut no more). */
 const DUMP_MARKER_LINE = /^\s{0,8}\[redacted:[a-z0-9-]{1,64}(?: \d{1,9} lines)?\]\s{0,8}$/;
 const notMarker = (body: string): boolean => !DUMP_MARKER_LINE.test(body);
@@ -2485,19 +2491,34 @@ const ENV_UNCOMMANDED_LINES = 8;
 
 /** NAME=value lines in a row printed by an env command on the line before (a blank between allowed), any number of
  *  them; eight or more holding two login names; or all `declare -x` lines (export -p's own output, its command's mark).
- *  And the values printenv NAME... or echo $KEY prints, one line a name. */
+ *  And the values printenv NAME... or echo $KEY prints, one line a name; and all of a prompted command's output when
+ *  the command prints the environment. */
 function envDumps(text: string): Hit[] {
   const lines = linesOf(text);
   const out: Hit[] = [];
   for (let at = 0; at < lines.length; ) {
     const body = lines[at]!.body;
+    // A prompt line whose command prints the environment (11-25 r2): its output runs to the next `$`, `%` or `❯`
+    // prompt or a dump's marker, whatever its lines look like: a multi-line value no longer ends it.
+    const prompt = PROMPT_HEAD.exec(body);
+    if (prompt && printsEnvironment(body.slice(prompt[0].length))) {
+      let to = at;
+      // Only a `$`, `%` or `❯` prompt ends it: a `#` or `>` line is a value's comment or quote, or a continued command.
+      while (to + 1 < lines.length && !PROMPT_HEAD.test(lines[to + 1]!.body) && notMarker(lines[to + 1]!.body)) to++;
+      while (to > at && blank(lines[to]!)) to--;
+      if (to > at) out.push({ start: rawStart(text, lines[at + 1]!.start), end: lines[to]!.end });
+      at = to + 1;
+      continue;
+    }
     const named = PRINTENV_NAMES.exec(body);
     const echoed = ECHO_VARIABLE.exec(body);
     if (named || (echoed && secretName(echoed[2]!))) {
       const count = named ? named[1]!.match(NAME_RUN)!.length : 1;
       let to = at;
       while (to + 1 < lines.length && to - at < count && !blank(lines[to + 1]!) && notPrompt(lines[to + 1]!.body) && notMarker(lines[to + 1]!.body)) to++;
-      if (to > at) out.push(block(lines, at + 1, to));
+      // From the value line's own start, not past a JSON field's opening: a cut starting inside a string would end at
+      // that string's quote (11-25 read, P1-1).
+      if (to > at) out.push({ start: rawStart(text, lines[at + 1]!.start), end: lines[to]!.end });
       at = to + 1;
       continue;
     }
@@ -2524,29 +2545,124 @@ const READ_TOOL = /^\s{0,8}(?:⏺\s{0,2})?Read\(([^()\s]{1,512})\)\s{0,8}$/;
 const readPath = (body: string): string | undefined => READ_COMMAND.exec(body)?.[2] ?? READ_TOOL.exec(body)?.[1];
 /** The file a command prints whole, when it is one read alone (`cat ~/.pgpass`): its output is that file's content
  *  (ruling LVI). */
-export const commandReadPath = (command: string | undefined): string | undefined => (command === undefined ? undefined : readPath(command));
+export const commandReadPath = (command: string | undefined): string | undefined => (command === undefined ? undefined : factsOf(command).readPath);
 
-/** envDumps with `command` as the line before the text (ruling LVI): the output of `env`, `printenv NAME` or
- *  `echo $KEY`, given apart from its command, is cut as it is when the command stands in the text. A caller's text may
- *  open with one line of its own above the command's output (an approval outcome's head line, run-view.ts outcomeShows),
- *  so the text after its first line is read with the command before it too, whatever that line says, and the hits of both
- *  reads are cut. */
-function commandDumps(text: string, command: string | undefined): Hit[] {
-  if (command === undefined || command.trim() === "") return [];
-  const shift = command.length + 1;
-  const read = (body: string, offset: number): Hit[] =>
-    envDumps(`${command}\n${body}`).filter((hit) => hit.end > shift).map((hit) => ({ ...hit, start: Math.max(hit.start - shift, 0) + offset, end: hit.end - shift + offset }));
-  const hits = read(text, 0);
-  const firstLine = text.indexOf("\n");
-  if (firstLine < 0) return hits;
-  const seen = new Set(hits.map((hit) => `${hit.start}:${hit.end}`));
-  for (const hit of read(text.slice(firstLine + 1), firstLine + 1)) {
-    if (seen.has(`${hit.start}:${hit.end}`)) continue;
-    seen.add(`${hit.start}:${hit.end}`);
-    hits.push(hit);
-  }
-  return hits;
+/** What the rules read of a call's command, read once for a run of reads with it: every string of a call's output is
+ *  scrubbed with its command (run-export.ts, share-host.ts screenShare), so reading the command again for each would cost
+ *  strings × command. The last command's alone is kept: a caller reads a call's strings together and hands each the same
+ *  string, so a hit compares one reference, and a miss is a new run's first read. (No map: V8 hashes a long string by its
+ *  length, so long commands of one length would be compared whole on each lookup.) */
+type CommandFacts = { readonly readPath: string | undefined; readonly paths: readonly string[]; readonly dumps: boolean; readonly names: Map<(path: string) => boolean, boolean> };
+let lastCommand: { readonly command: string; readonly facts: CommandFacts } | undefined;
+function factsOf(command: string): CommandFacts {
+  if (lastCommand?.command === command) return lastCommand.facts;
+  const facts: CommandFacts = { readPath: readPath(command), paths: pathWords(command), dumps: command.trim() !== "" && printsEnvironment(command), names: new Map() };
+  lastCommand = { command, facts };
+  return facts;
 }
+
+/** Quote and escape characters, dropped before a command line is read: a quoted script's words are the line's own
+ *  words however deep its shells nest (`bash -c "bash -c 'env'"`), and a word spelled across quotes or behind a
+ *  backslash (`e"n"v`, `\env`) reads whole. No depth is followed, so none can run out. */
+const COMMAND_QUOTES = /["'\\]/g;
+/** Where a command line splits into the commands it runs: `;`, `&&`, `||`, a pipe, a lone `&` (not a redirection's:
+ *  `2>&1`, `&>`), a line break, a subshell's or a substitution's `(` and `)`, a backtick. */
+const COMMAND_SPLIT = /;|&&|\|\||\||(?<![<>&])&(?![&>])|\n|\(|\)|`/;
+const COMMAND_BLANKS = /[ \t\r]{1,4096}/;
+/** A redirection (`2>&1`, `>/tmp/e`, `&>log`); one that is its operator alone takes the next word as its file. */
+const REDIRECT_WORD = /^(?:\d{1,2}|&)?(?:<<?|>>?)(?:&\d{0,2}-?)?/;
+const REDIRECT_ALONE = /^(?:\d{1,2}|&)?(?:<<?|>>?)$/;
+/** A redirection written against a word (`env>/tmp/e`): the word is what comes before it. */
+const WORD_REDIRECT = /\d{0,2}[<>]/;
+/** Where a line, quotes dropped and lower-cased, splits into the tokens an env name is read from: anything but a
+ *  letter, a digit, `_` or `-`. A name joined to other characters is a token of its own (`process["env"]`,
+ *  `env.APP_SEED`, `o.environ`, `Bun.env`, `ENVIRON[`, `</proc/1/environ`, `$env:A`, `std::env`). */
+const ENV_TOKEN_BREAK = /[^a-z0-9_-]{1,4096}/;
+/** A dotfile `.env` (`.env`, `.env.example`, `src/.env`) named as a word or after a path's `/`, `=`, `<`, `>`, `,` or
+ *  `:`: a file, which env-file reads, not the environment. `process.env`, `process?.env`, `Bun.env` keep the character
+ *  before their dot and are read. */
+const DOT_ENV_FILE = /(^|[ \t/=<>,:])\.env(?![a-z0-9_-])/gi;
+/** A token that runs, names or reads the environment wherever it stands in a line: env, printenv, envsubst, environ (a
+ *  /proc file, awk's ENVIRON, Python's os.environ), getenv and GetEnvironmentVariables, PHP's $_ENV and $_SERVER,
+ *  compgen, systemd's show-environment, a container's inspect, xtrace. An env token in a file's name is read so too
+ *  (`ls src/env.ts`, `cp .env.example .env`): an over-cut, ruled so. */
+const ENV_WORD = /^(?:(?:print)?env|envsubst|environ|compgen|show-environment|inspect|_env|_server|xtrace)$|^getenv/;
+/** A variable's expansion: sh's `$NAME` and any `${...}` (`${!v}` too), cmd's `%NAME%`. */
+const VARIABLE_WORD = /\$(?:\{|[A-Za-z_])|%[A-Za-z_][A-Za-z0-9_]{0,127}%/;
+/** A flag that turns xtrace on (`set -x`, `set -ex`, `bash -x`, `sh -xc`): each command is printed with its variables
+ *  expanded. */
+const XTRACE_FLAG = /^-[a-z]{0,8}x[a-z]{0,8}$/;
+/** A here-document or here-string: what it holds is expanded into a command's input. */
+const HERE_INPUT = /<</;
+/** export's or declare's flag that prints (`-p`, `-px`). */
+const PRINT_FLAG = /^-[A-Za-z]{0,8}p/;
+/** ps's BSD-style option word that adds each process's environment (`ps e`, `ps eww`, `ps auxe`). */
+const PS_ENV_OPTION = /^[a-z]{0,16}e[a-z]{0,16}$/;
+/** Commands that print their arguments: with a variable anywhere in the line, its value is read as printed. */
+const PRINT_WORDS = new Set(["echo", "printf", "print", "puts", "say", "write-output", "write-host"]);
+/** Builtins that print every variable given no name to set: with flags alone, or a printing flag. */
+const DECLARE_WORDS = new Set(["export", "declare", "typeset", "readonly"]);
+/** set and the shells, whose -x flag turns xtrace on. */
+const XTRACE_WORDS = new Set(["set", "sh", "bash", "zsh", "dash", "ksh"]);
+/** A word's name: before a redirection written against it, past its path, lower case. */
+const wordName = (word: string): string => {
+  const bare = word.split(WORD_REDIRECT)[0]!;
+  return bare.slice(bare.lastIndexOf("/") + 1).toLowerCase();
+};
+/** A command's arguments after the word at `at`, its redirections left out. */
+function argsAfter(words: readonly string[], at: number): string[] {
+  const args: string[] = [];
+  for (let i = at + 1; i < words.length; i++) {
+    if (REDIRECT_ALONE.test(words[i]!)) i++;
+    else if (!REDIRECT_WORD.test(words[i]!)) args.push(words[i]!);
+  }
+  return args;
+}
+
+/** Whether a command of a line, quotes dropped, prints the environment by its builtins' arguments: set with nothing
+ *  after it, or set or a shell with an xtrace flag; export, declare, typeset or readonly with flags alone or a printing
+ *  flag; ps with an `e` option. */
+function pieceDumps(piece: string): boolean {
+  const words = piece.split(COMMAND_BLANKS).filter(Boolean);
+  return words.some((word, at) => {
+    const name = wordName(word);
+    if (!XTRACE_WORDS.has(name) && !DECLARE_WORDS.has(name) && name !== "ps") return false;
+    const args = argsAfter(words, at);
+    if (XTRACE_WORDS.has(name) && args.some((arg) => XTRACE_FLAG.test(arg.toLowerCase()))) return true;
+    if (name === "set") return args.length === 0;
+    if (DECLARE_WORDS.has(name)) return args.every((arg) => arg.startsWith("-")) || args.some((arg) => PRINT_FLAG.test(arg));
+    return name === "ps" && args.some((arg) => PS_ENV_OPTION.test(arg));
+  });
+}
+/** Whether a call's command line prints the environment or a variable's value (`env`, `cd app && env | sort`,
+ *  `bash -c "bash -c 'env'"`, `cat</proc/self/environ`, `node -p 'process["env"]'`). Quotes and escapes are dropped,
+ *  and the line is read as tokens, not command shapes (11-25 r2: a reader of shapes, wrappers, env's own command or
+ *  nested shells, missed one more each time). A dump when any token is an env token (`sudo -n env`, `ssh host env`,
+ *  `jq -rn 'env.A'`), a builtin's arguments make one (pieceDumps), or a token that prints (echo, printf, print, an
+ *  awk program's print) or a here-string stands in a line with a variable anywhere (`cd x && echo $PWD && npm test`
+ *  cuts the test's output too: an over-cut, fails closed). A line longer than is read is read so too. Not seen: what
+ *  an earlier call set up (an alias, a symlink to an environ file, a script it wrote), which no line reader can. */
+function printsEnvironment(command: string): boolean {
+  if (command.length > COMMAND_MAX) return true;
+  const line = command.replace(COMMAND_QUOTES, "").replace(DOT_ENV_FILE, "$1");
+  const tokens = line.toLowerCase().split(ENV_TOKEN_BREAK);
+  if (tokens.some((token) => ENV_WORD.test(token))) return true;
+  if (VARIABLE_WORD.test(command) && (HERE_INPUT.test(command) || tokens.some((token) => PRINT_WORDS.has(token)))) return true;
+  return line.split(COMMAND_SPLIT).some(pieceDumps);
+}
+/** All of a call's output as one dump, from its first character that is not a blank to its last (11-25 read): its
+ *  lines can't be told apart by command, a value can span lines, and a first line that opens like a JSON field or a
+ *  quote is no head to start after. A one-line summary is cut whole, its head with it. Already a dump's cut: no cut. */
+function wholeDump(text: string): Hit[] {
+  if (DUMP_MARKER_LINE.test(text)) return [];
+  const end = text.trimEnd().length;
+  const start = text.length - text.trimStart().length;
+  return end > start ? [{ start, end }] : [];
+}
+/** A command's output, given apart from its command (ruling LVI): all of it is a dump when the command prints the
+ *  environment or a variable's value, alone on its line or among others. An approval outcome's head line is cut with
+ *  it (ruled so: never split on run-view's words). */
+const commandDumps = (text: string, given: string | undefined): Hit[] => (given !== undefined && factsOf(given).dumps ? wholeDump(text) : []);
 
 const PATH_SEPARATOR = /[\\/]/;
 const ENV_FILE_NAME = /^(?:\.env(?:rc)?|\.env\.[A-Za-z0-9_.-]{1,64}|[A-Za-z0-9_.-]{1,64}\.env)$/;
@@ -2597,13 +2713,22 @@ const COMMAND_WORD_SPLIT = /[\s|;&<>()]{1,64}/;
 const OPTION_NAME = /^-{1,2}[A-Za-z0-9-]{1,64}=/;
 const WORD_QUOTES = /["']/g;
 const COMMAND_MAX = 65_536;
-export const commandPaths = (command: string | undefined): string[] =>
-  command === undefined ? [] : command.slice(0, COMMAND_MAX).split(COMMAND_WORD_SPLIT).map((word) => word.replace(OPTION_NAME, "").replace(WORD_QUOTES, "")).filter(Boolean);
+/** Whether a command names, anywhere in its words, a path `fits` takes: asked once a command and predicate (factsOf),
+ *  so a call's output read string by string never walks its command's words again. `fits` is a module-level function. */
+function commandNames(command: string | undefined, fits: (path: string) => boolean): boolean {
+  if (command === undefined) return false;
+  const { paths, names } = factsOf(command);
+  let named = names.get(fits);
+  if (named === undefined) names.set(fits, (named = paths.some(fits)));
+  return named;
+}
+const dockerConfigPath = (path: string): boolean => DOCKER_CONFIG.test(path);
+const pathWords = (command: string): string[] => command.slice(0, COMMAND_MAX).split(COMMAND_WORD_SPLIT).map((word) => word.replace(OPTION_NAME, "").replace(WORD_QUOTES, "")).filter(Boolean);
 /** The text whole, its trailing blanks left out, when the caller says it is the content of a file `fits` names: the call
  *  read that file (`ctx.path`), or its command names one anywhere (ruling LXII d: `grep app ~/.pgpass`, `jq . ~/.docker/
  *  config.json`, `grep -v ^# .env`; an over-cut, `ls ~/.ssh/known_hosts`'s, fails closed). */
 const wholeText = (text: string, ctx: ScrubContext, fits: (path: string) => boolean): Hit[] => {
-  if (!((ctx.path !== undefined && fits(ctx.path)) || commandPaths(ctx.command).some(fits)) || DUMP_MARKER_LINE.test(text)) return [];
+  if (!((ctx.path !== undefined && fits(ctx.path)) || commandNames(ctx.command, fits)) || DUMP_MARKER_LINE.test(text)) return [];
   const end = text.trimEnd().length;
   return end > 0 ? [{ start: 0, end }] : [];
 };
@@ -2824,7 +2949,7 @@ export const RULE_PATTERNS: Readonly<Record<string, RegExp>> = Object.freeze({
   CODE_CALL, IDENT_CHAIN, MEMBER_CHAIN, CODE_CASE, CAMEL_OR_SNAKE, CALL_AFTER, LITERAL_START, YAML_NODE, ELIDED_AFTER, REFERENCE, ELIDED, TRAILING_PUNCTUATION, SENTENCE_END, BARE_START, EDGE_BLANK, EDGE_TOKEN_PUNCT, SLUG_OFF, SLUG_ENDS, PEM_END, PEM_BEGIN, PEM_OFF, PEM_TAIL, PEM_BODY_LINE, PEM_LAST_LINE, PEM_END_LINE, LEAD_TOKEN, DIGIT_START, BASE64_CHAR, BACKSLASH_RUN, BARE_STOP, URL_USERINFO, NAME_KEY_OFF, IDENTIFIER, ENDS_ENTRY, ENTRY_END_AFTER, TYPE_SUFFIX, TYPE_AFTER, LOCAL_LEAD, LOCAL_END, NESTED_ESCAPE, COOKIE_SPLIT, LINT_URL, CAMEL_HUMP, NAME_SEPARATORS, DIGITS_ONLY,
   UPPER_NAME, LEAD_AT_START, LINE_PREFIX, LINE_REST, CODE_KEYWORD, CODE_EXPRESSION, OPENERS, CLOSERS, INI_HEADER, INI_LINE, NPMRC_AUTH, NPM_COMMAND, NPM_SET_SCAN, NPM_SET_AUTH, NPM_AUTH_KEY, ESCAPED_QUOTE_BEFORE, ESCAPED_QUOTE_AFTER, DOTTED_KEY_BEFORE, CODE_END, MEMBER_OBJECT_BEFORE, CODE_ROOT_BEFORE, STATEMENT_END_AFTER, REFERENCE_START, ENV_ASSIGN, HF_TOKEN, DIGITALOCEAN_TOKEN, PYPI_TOKEN, SENDGRID_KEY, ASSIGN, ASSIGN_SPACED, ASSIGN_COLON, SSHPASS, MYSQL_COMMAND, PASSWORD_FLAG, LOGIN_COMMAND,
   REDIS_COMMAND, LOGIN_SCAN, LOGIN_P, REDIS_SCAN, REDIS_A, MYSQL_SCAN, MYSQL_P, OPENSSL_PASS, NETRC, AUTH_HEADER, TOKEN_RUN, CODE_KEY_BEFORE, URL_SAFE_RUN, BASE64_RUN_BEFORE, BASE64_RUN_AFTER, LETTER_OR_DIGIT, ENV_NAME_RUN, BASE64_CHARS, COOKIE_HEADER, COOKIE_PAIR, CURL_COMMAND, CURL_SCAN, CURL_USER, GLUED_STOP, NUMBERED, JSON_FIELD_OPEN, PROMPT_LINE,
-  ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
+  ENV_LINE, ENV_COMMAND, PRINTENV_NAMES, ECHO_VARIABLE, COMMAND_QUOTES, COMMAND_SPLIT, COMMAND_BLANKS, REDIRECT_WORD, REDIRECT_ALONE, WORD_REDIRECT, ENV_TOKEN_BREAK, DOT_ENV_FILE, ENV_WORD, VARIABLE_WORD, XTRACE_FLAG, HERE_INPUT, PRINT_FLAG, PS_ENV_OPTION, PROMPT_HEAD, NAME_RUN, READ_COMMAND, READ_TOOL, PATH_SEPARATOR, ENV_FILE_NAME, ENV_TEMPLATE, SSH_FILE,
   CREDENTIAL_FILE, FILE_VARIABLE, ENV_FILE_LINE, KEY_LINE, SSH_CONFIG, COMMENT_LINE, PEM_LINE, BASE64_LINE, PEM_HEADER_LINE, HOME_UNIX, HOME_WINDOWS, SEGMENT_AFTER,
   TRAILING_SLASHES, HOME_USER, CLAUDE_SLUG, CLAUDE_PROJECTS_BEFORE, SLUG_OFF_CHARS, SLUG_USER, BOT_TRAILER, DUMP_MARKER_LINE, EMAIL, EXAMPLE_DOMAIN, NO_REPLY_LOCAL, NO_REPLY_DOMAIN, FORGE_NO_REPLY, USER_ONLY_BEFORE, PORT_PASSWORD, HOST_SHAPED, IPV4, VERSION_BEFORE, PRE_RELEASE_AFTER,
   BUILD_AFTER, RANGE_AFTER, IPV6, IPV6_GROUPS, ENV_PREFIX_BEFORE, ENV_PREFIX_AFTER, ENV_PREFIX_CHAIN, ENV_PREFIX_STATEMENT, ENV_FLAG, HELM_LIST_FLAG, HELM_SET, HELM_NAME, RESOURCE_NAME, SECRET_OBJECT_NAME, CONNECTION_PASSWORD, ADO_PAIR, CONNECTION_KEY_PAIR, BLANKS, LIBPQ_PAIR_AFTER, FORMAT_FIELD, PWD_PATH, QUERY_VALUE_STOP, QUERY_PASSWORD, ARGUMENT_TAIL, NEXT_ASSIGNMENT, ASSIGNMENT_BEFORE,

@@ -28,7 +28,7 @@ function mount(props: Props & { start?: string[]; changed?: (tools: string[]) =>
   const { start = [], changed, ...rest } = props;
   function Held() {
     const [tools, setTools] = useState<string[]>(start);
-    return createElement(ToolPicker, { offers, harness: "pi", place: undefined, places: null, mcp: true, servers: [FAKE, OCTO], mcpHarnesses: ["pi"], ...rest, tools, onChange: (next: string[]) => { changed?.(next); setTools(next); } });
+    return createElement(ToolPicker, { offers, harness: "pi", place: undefined, places: null, mcp: true, servers: [FAKE, OCTO], mcpHarnesses: ["pi"], ...rest, runnerShell: rest.runnerShell ?? new Set(), tools, onChange: (next: string[]) => { changed?.(next); setTools(next); } });
   }
   host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);

@@ -124,8 +124,26 @@ const members = computerNode.members.map((member) => {
   for (const group of groups) if (!protocol.GROUPS.includes(group)) throw new Error(`Computer.${member.name?.getText(api)}: @group ${group} is not one of the protocol's groups`);
   const text = member.getFullText(api).replace(/^\s*\n/, '').split('\n').map((line) => line.replace(/^\t/, '')).join('\n').trim().replace(/\t/g, '  ');
   const uses = [...referencesOf(member)].filter((used) => listed.has(used));
-  return { ...(groups.length > 0 ? { groups } : {}), uses, text: text.replace(/\n/g, '\n  '), compact: compactOf(member, api) };
+  const compact = compactOf(member, api);
+  return { ...(groups.length > 0 ? { groups } : {}), uses, text: text.replace(/\n/g, '\n  '), compact, ...opsOf(member, compact) };
 });
+
+/** A member whose type is an object of methods (`files: { read(...); write(...) }`), split into its ops, each named as
+ *  computer_op names it (`files.read`), so a script's declarations can leave out an op its agent is not given: the
+ *  member's compact form up to its object's `{` (`open`), and each method's compact form and the types it names. None
+ *  for any other member. Put back together, all of them are the member's compact form, or this throws. */
+function opsOf(member, compact) {
+  if (!ts.isPropertySignature(member) || !member.type || !ts.isTypeLiteralNode(member.type)) return {};
+  const name = member.name.getText(api);
+  const ops = member.type.members.map((method) => {
+    if (!ts.isMethodSignature(method)) throw new Error(`Computer.${name}: ${method.getText(api)} is not a method, so it is no op`);
+    return { op: `${name}.${method.name.getText(api)}`, uses: [...referencesOf(method)].filter((used) => listed.has(used)), text: printedOf(method, api) };
+  });
+  const open = compact.slice(0, compact.indexOf('{') + 1);
+  const whole = `${open} ${ops.map((one) => one.text).join(' ')} };`;
+  if (whole !== compact) throw new Error(`Computer.${name}: its ops put back together (${whole}) are not the member (${compact})`);
+  return { open, ops };
+}
 const computerDoc = textOf(computerNode, api).split('\ninterface Computer')[0].trim();
 
 /** The types the kept members reach, in the list's order. The kernel's computerDeclarations does the same at run time. */
@@ -214,13 +232,22 @@ export const ACT_STEPS = ${JSON.stringify(actSteps)};
 /** The types \`computer\` names, in order, each with the types it names, in the compact form a model reads: one line,
  *  no comments (spec/computer/computer.d.ts has them). */
 const TYPES: readonly { name: string; uses: readonly string[]; text: string }[] = ${JSON.stringify(typeList.map(({ name, compactUses, compact }) => ({ name, uses: compactUses, text: compact })), null, 2)};
-/** Computer's members, each with the groups it needs one of and the types it names. */
-const MEMBERS: readonly { groups?: readonly string[]; uses: readonly string[]; text: string }[] = ${JSON.stringify(members.map(({ groups, uses, compact }) => ({ ...(groups ? { groups } : {}), uses, text: compact })), null, 2)};
+/** One op of a member that is an object of methods: its name as computer_op names it, the types it names, its text. */
+type Op = { readonly op: string; readonly uses: readonly string[]; readonly text: string };
+/** Computer's members, each with the groups it needs one of: one that is an object of methods as its ops, put back
+ *  together after \`open\` (its text up to the object's \`{\`); any other with the types it names and its text. */
+const MEMBERS: readonly ({ groups?: readonly string[]; open: string; ops: readonly Op[] } | { groups?: readonly string[]; uses: readonly string[]; text: string })[] = ${JSON.stringify(members.map(({ groups, uses, compact, open, ops }) => ({ ...(groups ? { groups } : {}), ...(ops ? { open, ops } : { uses, text: compact }) })), null, 2)};
 
 /** The declarations a script on a computer with these groups reads: the types its members reach, Computer with only
- *  the members its groups offer, and \`declare const computer\`, one line each. */
-export function computerDeclarations(groups: readonly string[]): string {
-  const members = MEMBERS.filter((member) => member.groups === undefined || member.groups.some((group) => groups.includes(group)));
+ *  the members its groups offer, less each op in \`without\` (a member left with none goes), and
+ *  \`declare const computer\`, one line each. */
+export function computerDeclarations(groups: readonly string[], without: readonly string[] = []): string {
+  const members = MEMBERS.flatMap((member): { uses: readonly string[]; text: string }[] => {
+    if (member.groups !== undefined && !member.groups.some((group) => groups.includes(group))) return [];
+    if (!("ops" in member)) return [member];
+    const kept = member.ops.filter((one) => !without.includes(one.op));
+    return kept.length === 0 ? [] : [{ uses: kept.flatMap((one) => one.uses), text: \`\${member.open} \${kept.map((one) => one.text).join(" ")} };\` }];
+  });
   const uses = new Map(TYPES.map((type) => [type.name, type.uses]));
   const reached = new Set<string>();
   const visit = (name: string): void => {

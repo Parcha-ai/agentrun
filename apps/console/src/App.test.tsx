@@ -219,6 +219,8 @@ describe("App, the race form when the capabilities can't be read", () => {
         tools: [{ name: "read", available: true, harnesses: ["pi"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }],
         places: { modes: ["runner", "sandbox"], boxes: [{ id: "local", available: true }], default_place: { mode: "sandbox", box: "local" } },
       });
+      // The computers list a race waits for: Mode 1's, whose no-computer choice has no shell.
+      if (path === "/v2/computers") return json(200, { kinds: [{ kind: "none", offered: true, groups: [], tools: [], settings: [], record: { available: false }, providers: [], shell: "none" }] });
       if (path === "/v2/agents" && init?.method === "POST") {
         const { definition } = JSON.parse(String(init.body)) as { definition: { id: string; tools?: string[] } };
         made.push(definition);
@@ -381,21 +383,22 @@ describe("App, Settings", () => {
     expect([...none.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).not.toContain("AgentRun API keys");
   });
 
-  it("#/settings/harness-keys opens Harness keys, a tab only on a server started with a plan-billed recipe", async () => {
-    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: ["model-agent"], kept: [] } }, "#/settings/harness-keys");
+  it("#/settings/harness-keys opens Harness keys, a tab wherever the server serves its routes, as tool keys' is", async () => {
+    const page = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: ["model-agent"] } }, "#/settings/harness-keys");
     expect(page.host.querySelector("h1")?.textContent).toBe("Harness keys");
     expect([...page.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => [a.textContent, a.getAttribute("aria-current")]).slice(0, 2)).toEqual([["API Keys", null], ["Harness keys", "page"]]);
     expect(page.asked).toContain("GET /v2/settings/harness-keys");
     expect(page.host.querySelector('[data-harness="model-agent"]')?.textContent).toContain("MODEL_AGENT_API_KEY");
     act(() => root?.unmount());
     document.body.innerHTML = "";
-    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [], kept: [] } }, "#/settings/keys");
-    expect([...none.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).not.toContain("Harness keys");
+    // No recipe named: the tab is still offered (the page's own GET lists any id with keys kept, to remove them).
+    const none = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [] } }, "#/settings/keys");
+    expect([...none.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).toContain("Harness keys");
     act(() => root?.unmount());
     document.body.innerHTML = "";
-    // No recipe named, keys still kept: the tab stays, so its keys can be removed.
-    const kept = await open({ tool_keys: { routes: true, at_rest: "sealed" }, harness_keys: { routes: true, at_rest: "sealed", harnesses: [], kept: ["old-agent"] } }, "#/settings/keys");
-    expect([...kept.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).toContain("Harness keys");
+    // A server that serves no routes of them (an older one): no tab.
+    const old = await open({ tool_keys: { routes: true, at_rest: "sealed" } }, "#/settings/keys");
+    expect([...old.host.querySelectorAll('nav[aria-label="Settings"] a')].map((a) => a.textContent)).not.toContain("Harness keys");
   });
 
   it("a server with a choice of provider and no tool keys has Settings, which opens on Tools", async () => {
@@ -568,7 +571,7 @@ describe("App, archiving a run and filtering the runs list", () => {
 });
 
 describe("App, an agent's address", () => {
-  it("opens the agent's page, and /edit opens its editor", async () => {
+  it("opens the agent's page, and /edit opens its settings", async () => {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
     const calc = { agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] } };
     vi.stubGlobal("fetch", async (url: string) => {
@@ -593,7 +596,9 @@ describe("App, an agent's address", () => {
     const saveButton = () => [...host.querySelectorAll("button")].find((b) => /^(Save revision|Saved)/.test(b.textContent?.trim() ?? ""));
     await wait(() => !!saveButton());
     expect(saveButton()).toBeTruthy();
+    expect(host.querySelector('header[aria-label="Agent toolbar"] button[aria-label="Agent settings"]')).toBeNull();
     expect(host.querySelector('[role="tab"]')).toBeNull();
+    expect(host.querySelector('nav[aria-label="Agent settings sections"] [aria-current="page"]')?.textContent?.trim()).toMatch(/^General/);
   });
 
   it("opens the editor creating, blank, after an agent named new's editor: it never keeps that agent", async () => {
@@ -859,7 +864,7 @@ describe("App, the no-model bar", () => {
     expect(asked.filter((a) => a === "GET /v2/capabilities").length).toBeGreaterThanOrEqual(2);
   });
 
-  it("sits above the run request panels, leaving their footer in view, and is absent from the build page", async () => {
+  it("sits above the run request panels, leaving their footer in view, and is absent from the new-agent editor", async () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, undefined, agentsList());
     const host = await mount("#/playground");
     const request = () => host.querySelector('section[aria-label="Request"]');
@@ -869,16 +874,16 @@ describe("App, the no-model bar", () => {
     expect(bar(host)!.compareDocumentPosition(request()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(bar(host)!.parentElement!.className.split(" ")).toEqual(expect.arrayContaining(["flex", "flex-col", "min-h-0"]));
     expect(request()!.querySelector("footer")!.className.split(" ")).toContain("shrink-0");
-    // Describing an agent or handing it to a local coding agent needs no model key on this server.
+    // Configuring an agent or handing it to a local coding agent needs no model key on this server.
     await act(async () => { location.hash = "#/agents/new"; });
-    await until(() => !!host.textContent?.includes("What do you want to build?"));
+    await until(() => !!host.querySelector("#agent-name"));
     expect(bar(host)).toBeNull();
   });
 
-  it("opens the editor, creating, from Build's link: the one place a Decision or a Workflow agent is made", async () => {
+  it("opens the shared editor directly and keeps the legacy creation link", async () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), true, undefined, agentsList());
     const host = await mount("#/agents/new");
-    await until(() => !!host.querySelector('a[href="#/agents/new?editor"]'));
+    await until(() => !!host.querySelector("#agent-name"));
     await act(async () => { location.hash = "#/agents/new?editor"; });
     const heading = () => [...host.querySelectorAll("h1")].map((h) => h.textContent);
     await until(() => heading().includes("New agent"));

@@ -19,8 +19,10 @@ export type Trimmed = { snippets: number; to_chars: number };
 /** One verdict per item asked about, in order, and one questions hash per request; model and temperature are the
  *  first request's. */
 export type Verdicts = { verdicts: Verdict[]; model: string | null; tokens: Tokens | null; cost: Cost; questions_sha256: string[]; trimmed?: Trimmed } & Temperature;
-/** How a decider's request is paid: `send` once the run's cap admits `fee`, as web's Pay sends a provider's request. */
-export type DecisionPay = <T>(fee: Fee, send: () => Promise<T>) => Promise<T>;
+/** How a decider's request is paid: `send` once the run's cap admits `fee`, as web's Pay sends a provider's request.
+ *  `costOf`: what the answer says it cost (its provider's cost_usd and its basis), which the cap settles it at and its
+ *  receipt line says, never above its hold. */
+export type DecisionPay = <T>(fee: Fee, send: () => Promise<T>, costOf?: (answer: T) => Cost) => Promise<T>;
 /** `pay` absent: the request is sent unmetered. */
 export type DecideContext = { signal: AbortSignal; deadlineMs: number; pay?: DecisionPay };
 
@@ -49,6 +51,8 @@ export type DecisionAsk = { label: string; kind: "sift" | "judge"; state: unknow
 /** The part of the DSL's DecisionProvider a decider calls: its DecisionProvider satisfies this as it is. */
 export interface DecisionAsker {
   readonly id: string;
+  /** The keys it reads (DecisionProvider's `needs`): jevProvider's needs name its route, TypeSafe's or OpenRouter's. */
+  readonly needs?: readonly string[];
   decide(request: DecisionAsk, ctx: { decisionId: string; signal: AbortSignal; deadlineMs: number | null }): Promise<{
     answers: Record<string, unknown>;
     model: string | null;
@@ -127,6 +131,14 @@ export const STATE_BUDGET_BYTES = 90_000;
 export const QUESTIONS_PER_REQUEST = 100;
 /** The most requests of one ask in flight at once. */
 export const REQUESTS_AT_ONCE = 4;
+/** The Jev model a decider sends on TypeSafe's own route when the caller names none: the version its thresholds were
+ *  read on (INJECTION_THRESHOLD over 507 pages; THRESHOLD and LOW_RELEVANCE in C1 and D11), never the moving alias.
+ *  TypeSafe: "If you have tuned confidence thresholds against one version, send that version's ID instead of the
+ *  alias." OpenRouter's route names models its own way and is sent none: the provider's own default holds there. */
+export const JEV_MODEL = "jev-1.14.0";
+const TYPESAFE_KEY = "TYPESAFE_API_KEY";
+/** The model `provider`'s requests are sent with when the caller names none: JEV_MODEL for Jev on TypeSafe's route. */
+const pinnedModel = (provider: DecisionAsker): string | undefined => (provider.id === "jev" && provider.needs?.includes(TYPESAFE_KEY) ? JEV_MODEL : undefined);
 
 const stateBytes = (request: DecisionAsk) => Buffer.byteLength(JSON.stringify(request.state));
 const fits = (request: DecisionAsk) => stateBytes(request) <= STATE_BUDGET_BYTES;
@@ -212,17 +224,36 @@ const noulOf = (answer: Record<string, unknown>): number | undefined => (answer.
 const choiceOf = (answer: Record<string, unknown>): Record<string, number> | undefined =>
   answer.type === "choice" && isRecord(answer.probabilities) && Object.values(answer.probabilities).every(isUnit) ? (answer.probabilities as Record<string, number>) : undefined;
 
+/** What a host hands jevWebDecider: TypeSafe's key, agentrun-jev's jevProvider (web depends on no provider), Jev's price
+ *  for the run's cap, and the fetch its requests go through when not the global one (a test's fake). */
+export type JevWeb = {
+  key: string;
+  jevProvider: (options: { apiKey: string; fetch?: typeof fetch }) => DecisionAsker;
+  price: DecisionPrice;
+  fetch?: typeof fetch;
+};
+/** The web decider Jev gives on TypeSafe's route, as a host's web tools run it: JEV_MODEL on every request, results
+ *  ranked under rerank+label. Built from what it is handed alone, never from the process's environment: `null` (no
+ *  TypeSafe key, or Jev turned off) gives none. */
+export function jevWebDecider(jev: JevWeb | null): { decider: WebDecider; policy: "rerank+label"; model: typeof JEV_MODEL } | undefined {
+  if (jev === null) return undefined;
+  if (typeof jev?.key !== "string" || jev.key.trim() === "") throw new TypeError("jevWebDecider needs TypeSafe's key, or null for no Jev");
+  const provider = jev.jevProvider({ apiKey: jev.key, ...(jev.fetch ? { fetch: jev.fetch } : {}) });
+  return { decider: deciderFrom(provider, { price: jev.price, model: JEV_MODEL }), policy: "rerank+label", model: JEV_MODEL };
+}
+
 export function deciderFrom(provider: DecisionAsker, options: DeciderOptions): WebDecider {
   if (options?.price === null || typeof options?.price !== "object") throw new TypeError(`deciderFrom needs ${provider.id}'s price, so the run's cap can hold each request`);
   const { price } = options;
+  const model = options.model ?? pinnedModel(provider);
   /** `asked` sent through ctx.pay under the fee `name`, and what came back with its cost, tokens and temperature. */
   const send = async (asked: DecisionAsk, ctx: DecideContext, name = `${provider.id}'s decision`) => {
-    const request = options.model ? { ...asked, model: options.model } : asked;
+    const request = model ? { ...asked, model } : asked;
     const text = JSON.stringify({ state: request.state, questions: request.questions });
     const bytes = Buffer.byteLength(text);
     const fee: Fee = { name, by: provider.id, usd: holdOf(price, bytes), basis: `the most a request of ${bytes} bytes may cost at ${provider.id}'s price` };
     const go = () => provider.decide(request, { decisionId: `web-${request.kind}-${sha256(text).slice(0, 24)}`, signal: ctx.signal, deadlineMs: ctx.deadlineMs });
-    const outcome = await (ctx.pay ? ctx.pay(fee, go) : go());
+    const outcome = await (ctx.pay ? ctx.pay(fee, go, (answered) => ({ usd: answered.cost_usd, basis: answered.cost_basis })) : go());
     const cost: Cost = { usd: outcome.cost_usd, basis: outcome.cost_basis };
     const tokens: Tokens | null = outcome.usage
       ? { in: outcome.usage.input_tokens, out: outcome.usage.output_tokens, basis: "reported" }

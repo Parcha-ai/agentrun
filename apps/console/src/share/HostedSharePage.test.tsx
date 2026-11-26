@@ -79,6 +79,20 @@ describe("HostedSharePage: a share host's public page", () => {
   });
 });
 
+describe("HostedSharePage: a stored bundle the page can't draw", () => {
+  it("shows a refusal and nothing of the run, not a blank page", async () => {
+    const quiet = vi.spyOn(console, "error").mockImplementation(() => {}); // React reports the caught error
+    try {
+      const broken = { ...bundle, run: { ...bundle.run, title: {} } } as unknown as ShareBundle;
+      const host = await mount(createElement(HostedSharePage, { source: fixed({ ok: true, bundle: broken }) }));
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain("This share can't be shown.");
+      for (const text of RUN_TEXT) expect(host.textContent).not.toContain(text);
+    } finally {
+      quiet.mockRestore();
+    }
+  });
+});
+
 describe("VerdictCard shared: a public page loads no image from elsewhere", () => {
   const decision = { id: "d1", node: "judge", status: "answered", provider: "parallel", answers: {}, questions: {}, images: [{ token: "img1", ref: "", url: "https://images.example/page.png" }] } as unknown as Decision;
   it("falls back to the provider's http URL on the owner's console, and never on a shared page", async () => {

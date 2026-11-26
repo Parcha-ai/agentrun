@@ -169,7 +169,8 @@ export function anthropicProvider(options: AnthropicOptions = {}): AnthropicProv
       for (let attempt = 1; ; attempt++) {
         let response: Response;
         try {
-          response = await fetcher(`${root}/v1/messages`, { method: "POST", headers, body, signal });
+          // It carries the key: a redirect is an error, never followed to an address the key was not meant for.
+          response = await fetcher(`${root}/v1/messages`, { method: "POST", headers, body, signal, redirect: "error" });
         } catch (error) {
           if (signal.aborted) throw ctx.signal.aborted ? stopped(attempt) : lost(attempt, "passed its deadline");
           if (!neverSent(error)) throw lost(attempt, "lost the connection");
@@ -195,6 +196,7 @@ export function anthropicProvider(options: AnthropicOptions = {}): AnthropicProv
         }
         const details = { status, attempts: attempt };
         if (status === 401 || status === 403) throw new DecisionProviderError("auth", `Anthropic refused the key (HTTP ${status}).`, details);
+        if (status === 402) throw new DecisionProviderError("payment_required", `Anthropic refused the key's account: it is out of credit (HTTP 402).`, details);
         if (status === 400 || status === 404 || status === 413 || status === 422) throw new DecisionProviderError("invalid_request", `Anthropic refused the request (HTTP ${status}).`, details);
         if (status === 429) throw new DecisionProviderError("rate_limited", `Anthropic rate-limited the request after ${attempt} attempts.`, details);
         throw new DecisionProviderError("http", `Anthropic answered HTTP ${status}.`, details);

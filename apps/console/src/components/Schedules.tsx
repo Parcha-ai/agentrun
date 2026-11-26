@@ -25,10 +25,10 @@ import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
 import { ACCEPT_LIMITS, acceptFields, emptyRule, type RuleDraft, ruleDraftOf } from "@/lib/accept";
-import { agentCapOf, atLeast, bodyOf, capOf, type CapRule, CONNECTED_NO_CAP, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, type InputDraft, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, type EmailDraft, emptyEmail, emailBodyOf, EMAIL_FIELDS, MAX_FEEDS, span, TRIGGER_KINDS } from "@/lib/schedules";
+import { agentCapOf, inputText, atLeast, bodyOf, capOf, type CapRule, CONNECTED_NO_CAP, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, type InputDraft, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, type EmailDraft, emptyEmail, emailBodyOf, EMAIL_FIELDS, MAX_FEEDS, span, TRIGGER_KINDS } from "@/lib/schedules";
 import type { ComposioEvent, ComposioTriggers, Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 import type { McpServer } from "@/lib/mcp";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { cn } from "@/lib/utils";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or its editor
@@ -113,9 +113,9 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
   const startsOf = (t: Trigger) => (t.target.kind === "start_run" ? t.target.agent_id : null);
   const { asks, outcome } = useAskingTools(v2, (triggers ?? []).flatMap((t) => startsOf(t) ?? []));
   return (
-    // The page's frame is every list page's (Connected agents, Runs): a header bar with the place's icon and name in caps
+    // The page's frame is every list page's (Agents, Runs): a header bar with the place's icon and name in caps
     // and its actions at the right, the main one last, then the content.
-    <section className="flex min-h-full flex-col" aria-label="Triggers">
+    <section className={pageClass} aria-label="Triggers">
       <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
         <h1 className={pageTitleClass}><CalendarClock className="size-4" aria-hidden />Triggers</h1>
         {/* With no trigger yet the panel below offers each kind, with what it is for: the page says each once. */}
@@ -131,7 +131,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
         )}
       </header>
       {/* The content starts where the header's name does (px-5). */}
-      <div className="px-5 py-5 md:py-6">
+      <div data-page-body className={cn(pageBodyClass, "px-5 py-5 md:py-6")}>
       {noAddress && triggers && triggers.length > 0 && <p className="mb-4 text-small text-muted-foreground">{NO_ADDRESS_LINE}</p>}
       {error && !triggers ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !triggers ? <ListSkeleton label="Loading the triggers" rows={4} />
@@ -507,9 +507,11 @@ function RunTargetFields({ v2, draft, edit, issues, agents, input, agentCap, cap
 }) {
   // Another agent's input starts afresh (its fields as they start, its example), and the issues at the last one's fields go.
   // An edited trigger's stored input goes too (inputRead): it was the last agent's, keys the new one may refuse or never show.
+  // Picking the trigger's own agent again brings its stored input back whole, the keys no field shows with it.
   const pick = (agentId: string) => {
     if (agentId === draft.agentId) return;
-    edit({ agentId, values: undefined, json: undefined, inputRead: undefined });
+    const back = draft.stored?.agentId === agentId ? draft.stored.input : undefined;
+    edit(back ? { agentId, values: inputText(back), json: JSON.stringify(back, null, 2), inputRead: back } : { agentId, values: undefined, json: undefined, inputRead: undefined });
     input.setFieldIssues([]);
   };
   return <>

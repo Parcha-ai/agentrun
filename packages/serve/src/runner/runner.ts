@@ -176,7 +176,7 @@ export interface RunnerOptions {
   onBeat?: () => void;
   /** Whether this runner may claim now: undefined while it may, else why not, in words a person can act on (runner/main.ts
    *  diskFreeGate: a runner whose data directory is not the server's, while the server keeps runs' folders on its own
-   *  disk). Asked before each poll's claims (`fresh` false: an answer a few seconds old will do) and again, fresh, once a
+   *  disk; a runner given an Archil region whose S3 URL may not be the server's). Asked before each poll's claims (`fresh` false: an answer a few seconds old will do) and again, fresh, once a
    *  poll claimed any, before a loop starts on them: a run claimed as the answer changed is released at once, untouched,
    *  for a runner that can serve it. While it refuses, the runner claims nothing and says why on its presence row, where
    *  the server reads it (presence.ts runnersRefused); a throw is said as an error and that poll claims nothing. Absent:
@@ -902,6 +902,8 @@ export function startRunner(options: RunnerOptions): Runner {
       // loop ended interrupted on its own and the run is tried again. The next claim works its turn again.
       const cut = end.state !== "interrupted" ? undefined : closedItself ? "retry" as const : held.stoppedFor === "shutdown" ? "drain" as const : undefined;
       await release(claim, {
+        // Parked again with nothing written (LoopEnd `again`): the release parks the row, its words left as they stood.
+        ...(end.state === "parked" && end.again ? { state: "parked" as const } : {}),
         ...(end.state === "parked" && end.wakeAt !== undefined ? { wakeAt: end.wakeAt }
         : inARow > 0 ? { backoffUntil: now() + interruptBackoffMs * 2 ** Math.min(inARow - 1, 6) }
         : {}),

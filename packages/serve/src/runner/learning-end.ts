@@ -23,11 +23,12 @@
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
+import type { AgentLearning } from "../learn/rows.js";
 import { correctionRefused, learningCommit, type LearningChange, type LearningCommitResult } from "../learn/commit.js";
 import { CAPS, type Change, checkDraft, problemWords, type Problem, unstorable } from "../learn/index.js";
 import { repickSiteOf } from "../learn/check.js";
 import { repickLabelOf, repickRewrite } from "../learn/repick.js";
-import { folderAt, type FolderRead, holdsCommit, type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
+import { holdsSave, learningOf, type LearningRead, readAt, readLearning, readOf, runMergeOf } from "../learn/rows.js";
 import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, draftFailedOf, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
 import { heldOnGiveBacks, reviseAttemptOf, sdkInputText } from "./promotion.js";
 import { loopOf, repickOf } from "../learning-setting.js";
@@ -46,7 +47,6 @@ import type { SignInReader } from "../run-view.js";
 import { type AlsoRow, FINAL_STATES, type LearningProposal, type McpServerRow, type Store } from "../store/store.js";
 import { shadowRunId } from "../learn/audit.js";
 import { getMcpServer } from "../mcp-store.js";
-import { purgeGate, refusedIn } from "../purged-workflow.js";
 import { readApprovers } from "../server-approvers.js";
 import { isCliRecord, runEntries, runTimeline, withoutFeedbackRounds } from "../store-reads/journal.js";
 import { capNowOf, KINDS } from "./journal-kinds.js";
@@ -60,16 +60,13 @@ import { runnerSecrets } from "./redact.js";
 import { mcpNameOf } from "../tool-names.js";
 import { held, heldEndOfRun } from "./held.js";
 
-/** What the step reads: the run's store, the data directory (the server's tool settings a draft's tools are read with),
- *  the agent's learning folder (where the run's place keeps it), the runner's environment (the host's secrets a draft or
+/** What the step reads: the run's store (its agent's learning among it), the data directory (the server's tool settings
+ *  a draft's tools are read with), the runner's environment (the host's secrets a draft or
  *  a correction is refused for), and what the run was handed (its claim's keys, its sign-in's pointers through
  *  `signIns`), which it never learns. */
 export interface LearningEndDeps {
   readonly store: Store;
   readonly data: string;
-  /** Agent `agentId`'s learning folder, where the run's place keeps it: learningWorkspace({ mode: "local", agentId, data })
-   *  in Mode 1, { mode: "archil", agentId, archil } in Mode 2. Opened for each read or write, and ended after it. */
-  readonly learningFolder: (agentId: string) => LearningFolder;
   readonly env?: NodeJS.ProcessEnv;
   /** The agent's sign-ins, opened (sign-ins-store.ts signInReads over the store and the seal key): the pointers the run's
    *  row says it was handed are read back through them and never learned. Absent, a run marked as handed one learns
@@ -133,7 +130,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     },
     // A round whose merge is on main already (a stop after its commit, before its end was saved) is not checked for room
     // again: its merge gives back what it did.
-    correctionRefused: ({ runId, agentId, round: at, text, refuse }) => withFolder(deps, agentId, (folder) => correctionRefused(folder.workspace, text, refuse, { runId, round: at })),
+    correctionRefused: ({ runId, agentId, round: at, text, refuse }) => correctionRefused(learningOf(deps.store, agentId), text, refuse, { runId, round: at }),
     // A run with no workflow binding (an SDK run's `noWorkflows`) compiles nothing.
     ...(start.noWorkflows ? {} : {
       compileFacts: (input: { runId: string; agentId: string; outcome: "completed" | "failed"; refuse: readonly string[]; round: number }) => compileAskOf(deps, { ...input, input: launch.input, ...(launch.sdk ? { sdkTask: sdkInputText(launch) } : {}), seedWorkflows: start.workflows?.length ?? 0, corrections: start.section }),
@@ -159,7 +156,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     checkDraft: ({ runId, agentId, draft, refuse, revised }) => checkDraftOf(deps, { runId, agentId, seed, draft, refuse, ...(revised ? { revised } : {}) }),
     commit: async ({ runId, agentId, round: at, draft, correction, refuse }) => {
       const reason = draft ? `Compiled the job as workflow ${draft.name}${correction !== undefined ? ", with its owner's correction" : ""}.` : "Its owner's correction.";
-      const done = await commitDirect({ folder: () => deps.learningFolder(agentId), log: deps.log ?? (() => undefined) }, {
+      const done = await commitDirect({ learning: learningOf(deps.store, agentId), log: deps.log ?? (() => undefined) }, {
         runId, round: at, reason, seed, ...(mustHold ? { mustHold } : {}), files: draft ? draft.files.map((file) => ({ ...file })) : [],
         ...(draft?.held?.length ? { held: [...draft.held] } : {}), ...(draft?.bases ? { bases: draft.bases } : {}),
         ...(correction !== undefined ? { correction, refuseValues: refuse } : {}),
@@ -179,15 +176,14 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     // The one check at the entry of a run's learning end, before any merge, look-back, compile, draft check or record: a
     // run whose seed was read at or before a reset of its agent's learning (its watermark, learn/promote.ts resetAtOf; a
     // start that records no time is read as before it) learns nothing, whole. Its corrections and compile would land on
-    // what the reset left. Read by time alone: a Mode 2 run's end writes the folder on its disk, which never held the
-    // seed the server read from its own folder, so a commit missing here says nothing of a reset.
+    // what the reset left.
     const reset = await resetAtOf(deps.store.settings, input.agentId);
     if (reset !== undefined && !(start.seededAt !== undefined && start.seededAt > reset)) {
       return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "reset", detail: said.reset } } }] };
     }
-    // The second wall, once the agent's learning was reset: a seed this folder holds now is one its merge must still
-    // find (commit.ts mustHold), so a reset after this check refuses the merge whole in the script.
-    const mustHold = reset !== undefined && (await withFolder(deps, input.agentId, (folder) => holdsCommit(folder.workspace, start.seed!))) ? start.seed! : undefined;
+    // The second wall, once the agent's learning was reset: a seed its learning holds now is one its merge must still
+    // find (commit.ts mustHold), so a reset after this check refuses the merge whole in the save's own transaction.
+    const mustHold = reset !== undefined && (await holdsSave(learningOf(deps.store, input.agentId), start.seed!)) ? start.seed! : undefined;
     // Which end of the run this is: the round after the newest it kept (a follow-up opened the run again after it), else
     // its first. A replayed end reads the same round: its rows are written only with the end that closes it.
     const prior = await deps.store.learning.proposal(input.runId);
@@ -243,33 +239,17 @@ export async function capSpendOf(store: Pick<Store, "runs">, runId: string, entr
   return beside === null ? null : spent + beside;
 }
 
-/** `read` over agent `agentId`'s learning folder, opened for it and always ended after. */
-async function withFolder<T>(deps: Pick<LearningEndDeps, "learningFolder">, agentId: string, read: (folder: LearningFolder) => Promise<T>): Promise<T> {
-  const folder = deps.learningFolder(agentId);
-  try {
-    return await read(folder);
-  } finally {
-    await folder.end().catch(() => undefined);
-  }
-}
-
 /**
- * A run's merge on the agent's learning folder, written by the runner directly (learn/commit.ts learningCommit, one
- * exec): its compiled draft's files and its owner's correction, committed by `change.runId` (its Run-Id trailer). A file
- * changed on main since the run's seed (or a revision's `bases` commit) is a conflict, never written over; a correction
- * that holds what must never be stored, or would take corrections.md past its cap, is refused (past the cap beside a
- * draft, it is left out alone and the draft merges). Any failure is logged by its reason alone. The folder is always
- * released.
+ * A run's merge on the agent's learning, written by the runner directly (learn/commit.ts learningCommit, one save): its
+ * compiled draft's files and its owner's correction, saved by `change.runId`. A file changed since the run's seed (or a
+ * revision's `bases` save) is a conflict, never written over; a correction that holds what must never be stored, or
+ * would take corrections.md past its cap, is refused (past the cap beside a draft, it is left out alone and the draft
+ * merges). Any failure is logged by its reason alone.
  */
-export async function commitDirect(deps: { readonly folder: () => LearningFolder; readonly log: (line: string) => void }, change: LearningChange): Promise<LearningCommitResult> {
-  const folder = deps.folder();
-  try {
-    const done = await learningCommit(folder.workspace, change);
-    if (!done.ok) deps.log(`learning: run ${change.runId}: its merge could not be written (${done.reason})`);
-    return done;
-  } finally {
-    await folder.end();
-  }
+export async function commitDirect(deps: { readonly learning: AgentLearning; readonly log: (line: string) => void }, change: LearningChange): Promise<LearningCommitResult> {
+  const done = await learningCommit(deps.learning, change);
+  if (!done.ok) deps.log(`learning: run ${change.runId}: its merge could not be written (${done.reason})`);
+  return done;
 }
 
 /** A merge's result as the hook reads it. */
@@ -329,16 +309,6 @@ export function runPathOf(rows: readonly TimelineEvent[]): RunPath {
   return onlyLearnedWorkflows(rows) ? "workflow" : "handed_back";
 }
 
-/** The learned workflow a run's job called last by its call's `name` (callArgsOf's arguments, in the job's order: `calls`),
- *  or null when it called none by a name. */
-export function workflowNameOf(calls: readonly { tool: string; args: Record<string, unknown> }[]): string | null {
-  for (let i = calls.length - 1; i >= 0; i--) {
-    const call = calls[i]!;
-    if (LEARNED_NAMES.has(call.tool) && typeof call.args.name === "string") return call.args.name;
-  }
-  return null;
-}
-
 /** Whether a draft's workflow.json (`json`) waits for its owner's OK whatever its checks say: a step of it calls an MCP
  *  tool with no declared price (workflow-draft.ts unpricedCalls), from the prices each server's row keeps (mcp-probe.ts
  *  McpPrices), or an SDK run's manifest gives. A server the store can't read gives no price: held. */
@@ -381,15 +351,11 @@ export async function checkDraftOf(deps: LearningEndDeps, input: { runId: string
   const readmePath = `${WORKFLOWS_DIR}/${name}/README.md`;
   const revised = input.revised && input.revised.workflow === name && input.revised.base !== input.seed ? input.revised : undefined;
   const base = revised?.base ?? input.seed;
-  const at = await withFolder(deps, input.agentId, async (folder) => {
-    const now = await readSnapshot(folder.workspace);
-    const snapshot = now?.main === base ? now : await snapshotAt(folder.workspace, base);
-    if (!snapshot) throw new Error(`the learning folder has no commit ${base}`);
-    return { snapshot, texts: (await textsAt(folder.workspace, base, [jsonPath, readmePath])) ?? {} };
-  });
-  if (at.texts[jsonPath] === json && at.texts[readmePath] === readme) return { errors: [] };
+  const at = await readAt(learningOf(deps.store, input.agentId), base);
+  if (!at) throw new Error(`the agent's learning has no save ${base}`);
+  if (at.text(jsonPath) === json && at.text(readmePath) === readme) return { errors: [] };
   const refused = (problems: readonly Problem[]) => ({ errors: problems.map((problem) => problemWords([problem])), problems });
-  const held = new Set(at.snapshot.workflows.flatMap((item) => item.files.map(({ path }) => path)));
+  const held = new Set((at.view?.workflows ?? []).flatMap((item) => item.files.map(({ path }) => path)));
   const changeOf = (path: string, text: string): Change => ({ path, status: held.has(path) ? "modified" : "added", mode: "100644", bytes: Buffer.from(text) });
   // Its example is the run's own input, read as every text it gave is: one that holds what must never be stored refuses
   // the draft, said at its README, though it is never written there.
@@ -404,7 +370,7 @@ export async function checkDraftOf(deps: LearningEndDeps, input: { runId: string
   // none of the compact state rule), so an SDK agent's drafts are never rewritten.
   const repick = workflowAdapters === undefined ? repickOf(await learningOfRun(deps.store, input.runId)) : undefined;
   // A draft whose text on main has a status is a person's call (retired, or waiting for their OK): never changed.
-  const kept = at.snapshot.workflows.filter((item) => item.status !== "active").map((item) => item.file);
+  const kept = (at.view?.workflows ?? []).filter((item) => item.status !== "active").map((item) => item.file);
   const check = (text: string, dryRuns?: Parameters<typeof checkDraft>[0]["dryRuns"]) => checkDraft({
     changes: [changeOf(jsonPath, text), changeOf(readmePath, readme)], refuseValues: input.refuse, tools, dsl,
     ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ...(decisions ? { decisions } : {}),
@@ -432,7 +398,7 @@ export async function checkDraftOf(deps: LearningEndDeps, input: { runId: string
     if (!again.length) text = marked;
     else deps.log?.(`learning.repick: workflow ${name} is kept as compiled; its re-pick over the run's pages failed the checks (${[...new Set(again.map((problem) => problem.rule))].join(", ")})`);
   }
-  if (text !== json && at.texts[jsonPath] === text && at.texts[readmePath] === readme) return { errors: [] };
+  if (text !== json && at.text(jsonPath) === text && at.text(readmePath) === readme) return { errors: [] };
   const files = [{ path: jsonPath, text }, { path: readmePath, text: readme }];
   return {
     errors: [],
@@ -507,11 +473,11 @@ export const draftFailedDigest = (runId: string): string => createHash("sha256")
  *  does (the agent's next due run compiles once more: learn/compile.ts newCompileAttempt); a recompile's (a revision of
  *  a held workflow, or a new one after a first compile's failed drafts) stops (compileStoppedOf, heldNamesOf): nothing
  *  compiles it again. A revision of a connected agent's hold on give-backs is no recompile (runner/promotion.ts
- *  reviseAttemptOf). One record per run (its digest is the run's), written once: a claim that ends the run again
- *  writes none. */
-export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "log" | "learningFolder">, input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }): Promise<void> {
+ *  reviseAttemptOf). One record per run (its digest is the run's, and the record is the run's: its purge takes it, and
+ *  one written after that purge writes nothing), written once: a claim that ends the run again writes none. */
+export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "log">, input: { runId: string; agentId: string; compile: CompileAsk; workflow: string; errors: readonly string[] }): Promise<void> {
   try {
-    const records = await promotionsOf(deps.store.settings, input.agentId);
+    const records = await promotionsOf(deps.store.learning, input.agentId);
     const attempt = input.compile.mode === "revise" ? reviseAttemptOf(records, input.compile.held) : newCompileAttempt(records);
     const { compile_after, agree_min, alone_min } = await loopOfRun(deps.store, input.runId);
     const workflow = input.compile.mode === "revise" ? input.compile.workflow : input.workflow;
@@ -519,7 +485,7 @@ export async function recordDraftFailed(deps: Pick<LearningEndDeps, "store" | "l
     const failed = input.errors.join("; ").slice(0, CHECK_TEXT_MAX) || "no draft passed";
     const reason = `${DRAFT_FAILED}: ${failed}. ${attempt === 2 ? "It was the recompile, so it stops: nothing compiles again until its owner acts" : "It is not promoted; the next due run compiles it once more"}`;
     const check = { compile_after, agree_min, alone_min, attempt, n: 0, agreed: 0, alone: 0, agent_agreed: 0, of: [], ...(attempt === 2 ? { stopped: true as const } : {}) };
-    const kept = await recordPromotion(deps.store.settings, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined, refusedIn(() => deps.learningFolder(input.agentId), deps.store, deps.log));
+    const kept = await recordPromotion(deps.store.learning, input.agentId, { workflow, digest, at: new Date().toISOString(), decided: "hold", reason, check }, (was) => was === undefined, { anyDigest: true, runId: input.runId });
     if (kept.won) deps.log?.(`learning: run ${input.runId}: the compile of ${workflow} failed its checks (attempt ${attempt}${attempt === 2 ? ", stopped" : ""})`);
   } catch (error) {
     deps.log?.(`learning: run ${input.runId}: the compile's failed drafts were not recorded: ${error instanceof Error ? error.message : String(error)}`);
@@ -557,8 +523,8 @@ export function traceFrom(timeline: readonly TimelineEvent[], refuse: readonly s
 /** The compile turn's facts for run `runId` of agent `agentId` (learn/compile.ts): a revision of the learned workflow
  *  that fits the run's input and whose promotion holds it at main's digest (runner/promotion.ts: its one check on the
  *  agent's own runs fell under the bar; its champion served the run, or the agent did by hand), its text as main holds
- *  it, with the check's numbers and the inputs it disagreed on, once per hold (none when any run since the hold compiled
- *  it, read from the agent's kept learning; a stopped check's none; a connected agent's hold on give-backs only once it
+ *  it, with the check's numbers and the inputs it disagreed on, once per hold (none when any run since the hold was asked
+ *  its revise, read from the agent's kept learning; a stopped check's none; a connected agent's hold on give-backs only once it
  *  is due, as a first compile is, on its runs since the hold); else, when the job is due (compileDue: the run
  *  completed, the agent has no learned workflow active or waiting, and it has its definition's compile_after completed
  *  agent runs), a new one, compiled once: one more after a first compile whose drafts all failed their checks, and none
@@ -575,10 +541,8 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const { agentId } = input;
   // A revision is asked only of a workflow its promotion holds, once per hold. The workflows whose newest revision other
   // than their champion (learn/promote.ts championOf: it serves while that one is held) is held: the run's own may be one.
-  // A record the purge gate refuses is skipped as the champion's readers skip it (purged-workflow.ts refusedOf); a gate
-  // that can't be asked skips none, and the text read below is gated again.
-  const records: PromotionRecord[] = await promotionsOf(deps.store.settings, agentId).catch(() => []);
-  const heldNames = heldNamesOf(records, records.length ? await refusedIn(() => deps.learningFolder(agentId), deps.store, deps.log)(records).catch(() => undefined) : undefined);
+  const records: PromotionRecord[] = await promotionsOf(deps.store.learning, agentId).catch(() => []);
+  const heldNames = heldNamesOf(records);
   // The loop's numbers on the agent's definition (the revision this run runs): the first compile waits for compile_after
   // completed agent runs, the ending one counted.
   const { compile_after: compileAfter } = await loopOfRun(deps.store, input.runId);
@@ -594,7 +558,7 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   // Due on the agent's own completed runs, the ending one counted.
   const ending = input.outcome === "completed" ? 1 : 0;
   const dueWith = (workflows: number) => compileDue({ completed: ending === 1, runs: own.length + ending, workflows, compileAfter });
-  const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown } } | null | undefined)?.compiled;
+  const compiledOf = (kept: LearningProposal | undefined) => (kept?.proposal as { compiled?: { workflow?: unknown; held?: unknown } } | null | undefined)?.compiled;
   // Compile once: a recompile whose drafts failed their checks stopped the agent's new compiles (recordDraftFailed).
   const stopped = compileStoppedOf(records);
   // First by what the run started from (the workflows it was offered): a run not due by them opens no folder, unless one
@@ -607,17 +571,15 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   const shown = secretsShown(input.refuse);
   const holds = (value: unknown) => holdsSecret(typeof value === "string" ? value : (JSON.stringify(value) ?? ""), shown);
   const leftOut = { workflows: new Set<string>(), traces: 0, input: false };
-  const folder = deps.learningFolder(input.agentId);
-  // `main`: the commit the snapshot read is main's at, which `current` was read from.
+  const learning = learningOf(deps.store, input.agentId);
+  // `main`: the save the read is at, which `current` was read from.
   let read: { workflows: number; current?: string; held?: PromotionRecord; main?: string };
   try {
-    // A workflow a purged run wrote is neither counted nor told (purgeGate), on main or at a replayed round's parent.
-    const readFrom = async ({ snapshot, body }: Pick<FolderRead, "snapshot" | "body">) => {
-      const purged = (await purgeGate(snapshot, deps.store)).workflows;
-      const workflows = (snapshot?.workflows ?? []).filter(({ name, status }) => (status === "active" || status === "pending") && !purged.has(name));
+    const readFrom = async ({ view, text: textAt }: LearningRead) => {
+      const workflows = (view?.workflows ?? []).filter(({ status }) => status === "active" || status === "pending");
       const textOf = async (name: string) => {
         const file = workflows.find((one) => one.name === name)?.files.find(({ path }) => path.endsWith("/workflow.json"));
-        const text = file ? await body(file.path, file.oid) : undefined;
+        const text = file ? textAt(file.path) : undefined;
         if (text === undefined || !(holds(name) || holds(text))) return text;
         leftOut.workflows.add(shown.name(name));
         return undefined;
@@ -634,21 +596,16 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
         const record = fitting.length === 1 ? promotionOf(records, fitting[0]!.name, workflowDigest(fitting[0]!)) : undefined;
         if (record?.decided === "hold" && !record.check?.stopped && !record.audit?.stopped) [held, current] = [record, fitting[0]!.workflow];
       }
-      return { workflows: workflows.length, ...(current !== undefined ? { current } : {}), ...(held ? { held } : {}), ...(snapshot?.main ? { main: snapshot.main } : {}) };
+      return { workflows: workflows.length, ...(current !== undefined ? { current } : {}), ...(held ? { held } : {}), ...(view?.main ? { main: view.main } : {}) };
     };
-    // A round that merged already (a crash between its commit and its end): main holds its own merge, so the turn is
-    // decided again on main as that merge read it (its parent), and the replayed answer lands on the merge it made
-    // (learn/commit.ts learningCommit: a round merges once), never a drop that leaves its commit unrecorded. A stop
-    // between the merge and its diff file is read back from the run's ref (runMergeOf).
-    const own = await runMergeOf(folder.workspace, input.runId, input.round);
-    const before = own ? await folderAt(folder.workspace, own.parent) : undefined;
-    read = before
-      ? await readFrom({ snapshot: before.snapshot, body: async (path, oid) => { const blob = before.blobs.get(oid); if (!blob) throw new Error(`${path} is not in ${own!.parent}`); return blob.toString("utf8"); } })
-      : await readLearning(folder.workspace, readFrom);
+    // A round that merged already (a crash between its save and its end): the newest save holds its own merge, so the
+    // turn is decided again as that merge read it (the save before it), and the replayed answer lands on the merge it
+    // made (learn/commit.ts learningCommit: a round merges once), never a drop that leaves its save unrecorded.
+    const own = await runMergeOf(learning, input.runId, input.round);
+    const before = own ? (own.parent ? await readAt(learning, own.parent) : readOf(undefined)) : undefined;
+    read = before ? await readFrom(before) : await readLearning(learning, readFrom);
   } catch {
     return undefined;
-  } finally {
-    await folder.end().catch(() => undefined);
   }
   // What it left out, by name and count: said once the facts are gathered, or now when it asks nothing.
   const sayLeftOut = () => {
@@ -662,15 +619,17 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
     const after = (run: { readonly startedAt: number } | undefined) => run !== undefined && run.startedAt > heldAt;
     const sinceHold = own.filter(after).length + (after(listed[at]) ? ending : 0);
     if (heldOnGiveBacks(read.held.check) && !(ending === 1 && sinceHold >= compileAfter)) return sayLeftOut(), undefined;
-    // Once per hold: a run since it that compiled this workflow asked already, whatever came of it (its revision is on its
-    // way to a replay, or its draft failed its checks), however many runs ago. Read from the agent's kept learning since
-    // the hold, never a window of its last runs; one that can't be read asks nothing. A draft that failed since, not stopped
-    // (only a revise of a connected agent's hold on give-backs: reviseAttemptOf), asks once more: counted from it, its own
-    // run's kept learning (written after its record, at the run's end) not counted.
+    // Once per hold: a run since it that was asked this hold's revise (its compile record names the held digest) asked
+    // already, whatever came of it (its revision is on its way to a replay, or its draft failed its checks), however many
+    // runs ago. A new compile asked before the hold (in flight as it was decided) that drafted the same workflow and ended
+    // after it is no revise. Read from the agent's kept learning since the hold, never a window of its last runs; one that
+    // can't be read asks nothing. A draft that failed since, not stopped (only a revise of a connected agent's hold on
+    // give-backs: reviseAttemptOf), asks once more: counted from it, its own run's kept learning (written after its record,
+    // at the run's end) not counted.
     const failed = records.findLast((one) => one.workflow === read.held!.workflow && draftFailedOf(one) && !one.check?.stopped && !(one.at < read.held!.at));
     const since = Date.parse(failed?.at ?? read.held.at);
     const kept = await deps.store.learning.proposals(agentId, { limit: HELD_ASKED_READ }).catch(() => undefined);
-    const asked = (one: LearningProposal) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow && draftFailedDigest(one.runId) !== failed?.digest;
+    const asked = (one: LearningProposal) => !(one.createdAt < since) && compiledOf(one)?.workflow === read.held!.workflow && compiledOf(one)?.held === read.held!.digest && draftFailedDigest(one.runId) !== failed?.digest;
     if (!kept || kept.some(asked)) return sayLeftOut(), undefined;
     const { workflow, digest, reason, check, audit } = read.held;
     // A check's or an audit's disagreements are the agent's own inputs and answers: cut of the run's secrets as a trace is

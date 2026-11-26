@@ -77,7 +77,7 @@ async function piRun(t, { tools, learned }) {
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools, ...(learned ? { learning: true } : {}) } });
   const seed = learned ? await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]) : undefined;
-  if (learned) await promoteChecked(server.settings, "agent-1", [{ name: "answer", workflow: answerFlow }]);
+  if (learned) await promoteChecked(server, "agent-1", [{ name: "answer", workflow: answerFlow }]);
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, ...(learned ? { learning: startAt(seed) } : {}) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -101,7 +101,7 @@ async function piRun(t, { tools, learned }) {
   const timeline = await runTimeline(server, RUN, ctx, { settled: true });
   // What its claim laid of its learning seed (KINDS.learningLaid): the newest entry.
   const laid = (await runEntries(server, RUN, ctx)).findLast((entry) => entry.kind === "agentrun.learning.laid")?.data;
-  return { row, requests, turns, timeline, laid };
+  return { row, requests, turns, timeline, laid, server };
 }
 
 test("a pi run's learned_workflow model node books on the run's one ledger, a side call labelled learned_workflow", async (t) => {
@@ -130,4 +130,21 @@ test("a pi run's learned_workflow call shows the nodes its workflow ran on its r
   assert.deepEqual(result.learned_nodes?.map(({ label, kind, status }) => ({ label, kind, status })), [{ label: "answer", kind: "extract", status: "ok" }], JSON.stringify(result));
   assert.equal(typeof result.learned_nodes[0].duration_ms, "number");
   assert.deepEqual(laid, { workflows: ["answer"] }, "its claim recorded the learned workflow it laid");
+});
+
+test("a pi run whose agent called its learned workflow keeps the call on its record and its ledger row, and the money rule counts it", async (t) => {
+  const { workflowDigest, costLineOf } = await import("../dist/runner/workflow-first.js");
+  const { pastRunsOverStore } = await import("../dist/store-reads/learning.js");
+  const { row, requests, turns, server } = await piRun(t, { tools: ["read"], learned: true });
+  assert.equal(row.state, "ended", `the run ended: ${JSON.stringify(row)}`);
+  const node = requests.find((request) => request.host === LEARNED_WORKFLOW_TOOL);
+  const booked = turns.find((turn) => turn.turn === node.turn);
+  const digest = workflowDigest({ workflow: JSON.stringify(answerFlow) });
+  const call = { workflow: "answer", digest, caller: "agent", outcome: "answered", usd: booked.usd };
+  assert.deepEqual(row.metrics.workflow_calls, [call], JSON.stringify(row.metrics));
+  // Its input is no `answer` input, so the platform ran nothing first: why, on its record.
+  assert.equal(row.metrics.first_choice, "none_fit");
+  assert.equal(row.metrics.workflow_digest, undefined, "the top-level digest is the platform's call's alone");
+  assert.deepEqual((await server.learning.ledger("agent-1")).rows.map((one) => one.workflowCalls), [[call]]);
+  assert.equal(costLineOf(await pastRunsOverStore(server, "agent-1"), "answer", digest).served.runs, 1, "the money rule counts the agent's own call");
 });

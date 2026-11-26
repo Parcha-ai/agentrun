@@ -60,7 +60,7 @@ it by them alone:
 | A native two-way process stream | reads the stream's bytes itself | E2B, [`src/e2b.ts`](src/e2b.ts) |
 | Split calls: one starts a process, one streams its output as text, one call per stdin write; maybe no end of stdin or kill | the three calls, handed to `framedExec`, which queues the writes, decodes the output and kills by pid ([below](#a-text-exec-in-split-calls)) | Daytona, [`src/daytona.ts`](src/daytona.ts): a session command, its log WebSocket, and its input call, which takes whole lines; the tests' REST-shaped vendor, [`test/fake-text-host.mjs`](test/fake-text-host.mjs) |
 | The same, with the output as server-sent events (`text/event-stream`) | the same calls, with `sse` reading the events ([below](#output-as-server-sent-events)) | none yet; Hyperbrowser's shape, the same fake |
-| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key, over a WebSocket tunnel to the instance's sshd, and the shared pid wrapper for `kill`. Morph, [`src/morph.ts`](src/morph.ts): the same SshExec over plain TCP to the vendor's gateway, as the instance id with the instance's own key, read over REST; never an account key in the username, since an unpinned gateway would read it |
+| SSH to an sshd in the machine | opens one SSH channel per process, as the user and with the auth your vendor gives | Agent37, [`src/hosted/ssh-exec.ts`](src/hosted/ssh-exec.ts): root with a private key (the caller's, else one the provider makes, keeps in the store its descriptor's `secrets` names, and registers on the workspace before its first machine; a login refused while the vendor is still handing the key out is tried again, `deniedUntil`), over a WebSocket tunnel to the instance's sshd, and the shared pid wrapper for `kill`. Morph, [`src/morph.ts`](src/morph.ts): the same SshExec over plain TCP to the vendor's gateway, as the instance id with the instance's own key, read over REST; never an account key in the username, since an unpinned gateway would read it |
 | An exec only inside its SDK | calls the SDK, loaded lazily and pinned exactly ([Wire it up](#wire-it-up)) | Modal's `sandbox.exec(argv, { mode: "binary" })`, [`src/modal.ts`](src/modal.ts). Modal has no kill for an exec, so its `kill` kills by the pid the shared wrapper reports |
 | Any binary two-way stream into the machine (a WebSocket, an open port) | runs a relay of yours in the image that starts the process and carries its three streams and its kill | none yet |
 | No exec, only screen and input calls | none: this isn't a `MachineHost`. Write a `ComputerProvider` with daemon `none` that answers the methods itself | Orgo's Windows and macOS desktops, [`src/orgo-desktop.ts`](src/orgo-desktop.ts); the phone harness, [`src/phone-harness.ts`](src/phone-harness.ts) |
@@ -248,7 +248,9 @@ AgentRun polls `get`. The exception is a vendor that applies a machine's setting
 its egress allowlist (`["none"]`, network none) and its idle hibernation timer: there `create` may wait until the
 machine is ready, within `ctx.timeoutMs`, set them, and answer then. Store `req.labels` on the machine, since `list`
 finds machines by them. Where your API keeps fewer or shorter labels than AgentRun writes, declare
-`labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
+`labels: { count, bytes }` in `facts`, and where its values are short, `labels: { packed: { valueBytes } }`. Packed,
+a machine's labels are stored as `agentrun` (its name) and `agentrun-0`, `agentrun-1` and on, and a caller's label
+under one of those names is refused at `check()`. Where your API takes `req.name` and refuses a name it already holds (a 409), throw
 `HostError("exists", …)`: AgentRun lists that name and adopts the machine, as a retry of the request does. `req.egress` is `false` for a computer whose network is `none`, except with an Archil storage
 mount. There AgentRun asks `true` so its root can reach Archil, and the agent's programs still have no network. It is
 `true` under `open` or a list: the egress proxy init starts goes out through the machine's network, and the agent's
@@ -383,7 +385,10 @@ function codeOf(error: unknown): ComputerErrorCode {
 
 **Optional hooks.** `upload(id, path, bytes, ctx)` puts a file in the machine. E2B has one because it has a file API;
 without it, AgentRun streams its daemon through `exec`'s stdin as base64 text, so the image needs `head` and
-`base64` (coreutils and busybox both have them). `extend(id, endsAt, ctx)` moves a machine's end when
+`base64` (coreutils and busybox both have them). `download(id, path, ctx)` hands back a file's bytes, read as root;
+give it when your exec's output is slow (Daytona's is a log read at about 0.3 MB/s). A `files.read` past one chunk then
+takes its first chunk from the daemon and the rest from a copy AgentRun makes as the daemon's user (`setpriv`,
+util-linux) and downloads, so the read shows nothing that user can't read. `extend(id, endsAt, ctx)` moves a machine's end when
 an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline label with `"janitor"`. Never
 move it past its `agentrun.computer.max-deadline` label, which AgentRun writes only on a host with `extend`. When no end your API takes lands there, throw
 `HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if
@@ -431,8 +436,8 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   the tool user. Where the host's facts say `windowManager`, computerd starts xfwm4 itself (init `--window-manager`;
   see `daemon/internal/windowmanager`); hello's `windowManager` says how it went, and create waits on it. A machine
   minted a desktop may say `linux` (same os and arch) until its display answers; a `connect` while it says `linux`
-  fails as drift, as on exec. Every dial provider takes one, from the box image, whose
-  `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad and firefox-esr. A desktop gets the
+  fails as drift, as on exec. Every dial provider but Render (linux alone, for now) takes one, from the box image, whose
+  `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad, firefox-esr and thunar. A desktop gets the
   sandbox's size, 2 CPUs and 4 GiB by default, which holds Xvfb at 1280x800, xfwm4 and a browser:
   - **E2B**: its default on either connect, from the box template (the template's own size).
   - **Fly Machines**: `kind: "desktop"`; 2 shared CPUs and 4 GiB (`guest`), up to 8 shared CPUs and 2 GiB a CPU
@@ -481,6 +486,14 @@ starts it once more in the same machine. Their conformance
 modules' `dialKit()` refuse, since a machine dials the server that minted its token: the Core run happens inside the
 public server's process.
 
+Render ([`src/render.ts`](src/render.ts)) dials alone and starts `agentrun-dial` itself the same way. Its runs take a
+command and no stdin, and its API names no command a sandbox runs at boot, so create posts the sandbox with the boot env
+(the attach URL left out), waits for it to read `running`, and starts `agentrun-dial` under `setsid` in one `runs/sync`
+call, which also writes the launch script and the computer's labels to files only root can read. Render keeps no
+labels: a sandbox's name gives the computer's own two, and `get` and `list` read the rest from that file. `dialLog`,
+`dialExit` and `redial` read and rerun the same files. The image is the box image as a sandbox build of the workspace
+(`agentrun-box-<tag>`), which `prepareImage()` imports once.
+
 #### Worked example: Fly Machines
 
 [`src/fly.ts`](src/fly.ts) is a dial host on the [Machines API](https://fly.io/docs/machines/api/machines-resource/).
@@ -508,6 +521,10 @@ hello's `windowManager`, so a live run shows that computerd started the manager
 COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=agentrun-computers-<org slug> AGENTRUN_PUBLIC_URL=https://… PORT=8080 \
   node packages/serve/scripts/dial-conformance.mjs --provider fly
 ```
+
+Render's is `COMPUTER_RENDER_API_KEY=… COMPUTER_RENDER_WORKSPACE_ID=tea-… AGENTRUN_PUBLIC_URL=https://… PORT=8080 node
+packages/serve/scripts/dial-conformance.mjs --provider render`, with `COMPUTER_RENDER_IMAGE` naming a build of your own
+in place of the box build.
 
 `COMPUTER_FLY_KIND=desktop` runs the desktop suite (unset, linux); Cloudflare, Modal and Daytona's modules read `COMPUTER_CLOUDFLARE_KIND`, `COMPUTER_MODAL_KIND` and `COMPUTER_DAYTONA_KIND` the same way.
 

@@ -125,6 +125,20 @@ function linesOf({ cuts, restored, omitted, sha256, bytes }) {
   return lines;
 }
 
+/** `bytes` written to `path` as a new file (0600; EEXIST when one is there). A write that fails partway removes the file
+ *  this call made, never one that was there, so the same command can run again. `files`: the fs calls it makes. */
+function writeNew(path, bytes, files) {
+  const fd = files.openSync(path, "wx", 0o600);
+  try {
+    for (let at = 0; at < bytes.length; ) at += files.writeSync(fd, bytes, at, bytes.length - at);
+    files.closeSync(fd);
+  } catch (error) {
+    try { files.closeSync(fd); } catch {}
+    try { files.unlinkSync(path); } catch {}
+    throw error;
+  }
+}
+
 /** A share host's answer's error object, or {}: read for its code and details alone, never its message. */
 function hostErrorOf(bytes) {
   try {
@@ -300,20 +314,6 @@ export const SHARE_DELETE = {
     return 0;
   },
 };
-
-/** `bytes` written to `path` as a new file (0600; EEXIST when one is there). A write that fails partway removes the file
- *  this call made, never one that was there, so the same command can run again. `files`: the fs calls it makes. */
-function writeNew(path, bytes, files) {
-  const fd = files.openSync(path, "wx", 0o600);
-  try {
-    for (let at = 0; at < bytes.length; ) at += files.writeSync(fd, bytes, at, bytes.length - at);
-    files.closeSync(fd);
-  } catch (error) {
-    try { files.closeSync(fd); } catch {}
-    try { files.unlinkSync(path); } catch {}
-    throw error;
-  }
-}
 
 /** The command, given what opens a browser here and the fs calls `--out` makes (a test's seam); SHARE (below) binds it
  *  to this machine. */

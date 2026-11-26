@@ -22,7 +22,10 @@ const FIELDS: { name: "region" | "s3Url" | "image"; label: string; placeholder?:
   { name: "image", label: "Image", placeholder: "serve's default, Debian with git 2.47 (recommended)" },
 ];
 type Fields = Record<(typeof FIELDS)[number]["name"], string>;
-const fieldsOf = (v: Archil): Fields => ({ region: v.region ?? "", s3Url: v.s3Url ?? "", image: v.image ?? "" });
+// An S3 URL the server took from the region stays out of the field: its placeholder shows it, and a save leaves it out.
+const fieldsOf = (v: Archil): Fields => ({ region: v.region ?? "", s3Url: v.s3UrlFrom === "region" ? "" : v.s3Url ?? "", image: v.image ?? "" });
+/** The datalist of the regions the server knows, which the Region field offers. */
+const REGIONS_LIST = "archil-regions";
 
 /** Archil's secret, served as "workspace:archil": the page says it, and the PUT takes it, as ARCHIL_API_KEY. */
 const KEY = "ARCHIL_API_KEY";
@@ -30,7 +33,8 @@ const KEY = "ARCHIL_API_KEY";
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 
 /** Settings → Workspace: Archil, where runs keep their folders (Mode 2: each agent's own disk), as GET /v2/workspace/archil
- *  answers it. On or off with its region; its fields and its secret as a SecretRow said ARCHIL_API_KEY (never a value). Save
+ *  answers it. On or off with its region; its fields (Region offers the regions the server knows, and S3 URL, left empty,
+ *  is the region's, shown as its placeholder) and its secret as a SecretRow said ARCHIL_API_KEY (never a value). Save
  *  sends the fields, and the key only when pasted (PUT), and a refusal is said under its field; Remove asks, then saves
  *  the key null; Test (POST …/test) says the server's detail or its why as given; Turn off (DELETE) asks first, and the
  *  key is kept. */
@@ -73,7 +77,7 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
 
   const keyValue = () => (form.current?.elements.namedItem(KEY) as HTMLInputElement | null)?.value ?? "";
   const put = async (key: string | null | undefined) => {
-    const body: ArchilBody = { region: fields.region, s3Url: fields.s3Url, ...(fields.image ? { image: fields.image } : {}), ...(key !== undefined ? { keys: { [KEY]: key } } : {}) };
+    const body: ArchilBody = { region: fields.region, ...(fields.s3Url ? { s3Url: fields.s3Url } : {}), ...(fields.image ? { image: fields.image } : {}), ...(key !== undefined ? { keys: { [KEY]: key } } : {}) };
     setBusy(true); setInvalid(null); setProblem(null);
     try {
       const answer = await v2.saveArchil(body);
@@ -142,11 +146,13 @@ export function WorkspacePage({ v2, writable, whyNot = "sign_in" }: {
             {FIELDS.map((f) => (
               <label key={f.name} className="block">
                 <span className="caps mb-2 block text-small font-semibold">{f.label}</span>
-                <Input name={f.name} value={fields[f.name]} placeholder={f.placeholder} spellCheck={false} autoCapitalize="off" autoCorrect="off"
+                <Input name={f.name} value={fields[f.name]} spellCheck={false} autoCapitalize="off" autoCorrect="off"
+                  placeholder={f.name === "s3Url" && Object.hasOwn(view.regions, fields.region.trim()) ? view.regions[fields.region.trim()] : f.placeholder} list={f.name === "region" ? REGIONS_LIST : undefined}
                   onChange={(e) => { const value = e.currentTarget.value; setFields((now) => ({ ...now, [f.name]: value })); }} />
                 {invalid?.fields[f.name] && <span className="mt-2 block font-mono text-small text-destructive-text" role="alert">{invalid.fields[f.name]}</span>}
               </label>
             ))}
+            <datalist id={REGIONS_LIST}>{Object.keys(view.regions).map((region) => <option key={region} value={region} />)}</datalist>
             {/* The key sits with the settings it saves with; SecretRow's buttons never submit this form. */}
             <ul>
               <SecretRow field={view.secret} label={KEY} writable={writable && !pasting && !removingKey}

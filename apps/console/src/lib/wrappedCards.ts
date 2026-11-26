@@ -15,7 +15,7 @@ export const WRAPPED_CARDS: readonly WrappedCard[] = [
   { id: "cover", name: "Year in tokens", reads: ["year", "sessions", "turns", "requests", "tokens", "cost_usd", "unpriced_requests", "days", "unread_files"], waits: ["race-card-renderer"] },
   { id: "split", name: "Harnesses and models", reads: ["year", "harnesses", "models", "unread_files"], waits: ["race-card-renderer"] },
   { id: "hours", name: "When you work", reads: ["year", "hours", "weekdays", "active_ms", "days", "unread_files"], waits: ["race-card-renderer"] },
-  { id: "cache", name: "Cache grade", reads: ["tokens"], waits: ["race-card-renderer", "cache-analyzer"] },
+  { id: "cache", name: "Cache grade", reads: ["year", "cache"], waits: ["race-card-renderer", "cache-analyzer"] },
   { id: "laptop", name: "On your laptop", reads: ["tokens", "days", "models"], waits: ["race-card-renderer", "derived"] },
   { id: "leak", name: "Leak receipt (opt-in)", reads: [], waits: ["race-card-renderer", "scrubber-count-mode"] },
   { id: "type", name: "Your agent type", reads: ["hours", "weekdays", "harnesses", "models", "tokens"], waits: ["race-card-renderer", "derived"] },

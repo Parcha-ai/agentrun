@@ -7,6 +7,7 @@ import { createClient } from "@/lib/client";
 import type { Places } from "@/lib/place";
 import { laneStart } from "@/lib/race";
 import { pick, picker } from "@/test/picker";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 // #/races/new: the task, and 2 to 4 lanes (a harness and a model each, from the harnesses this server runs). Start sends
 // one inline run per lane (POST /v2/runs), each under its own Idempotency-Key, then opens the race. A lane the server
@@ -33,14 +34,19 @@ const TOOLS = toolOffers([
 const BOXED: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "local", available: true }], defaultPlace: { mode: "sandbox", box: "local" } };
 const LABEL = "20261123-1004-1f2e";
 const TASK = "Fix the failing test in the parser";
+// GET /v2/computers' kinds with the no-computer choice's run shell: "local" in Mode 2 (Archil's exec, which runs bash),
+// "none" in Mode 1.
+const kindsWith = (shell: string) => [{ kind: "none", offered: true, groups: [], tools: [], settings: [], record: { available: false }, providers: [], shell }];
+const RUNNER: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "modal", available: true }], defaultPlace: { mode: "runner" } };
 
 type Sent = { lane: string; agentId: string; body: Record<string, unknown>; key: string };
 type Made = Record<string, unknown> & { id: string };
 /** A fake server: every POST /v2/agents recorded in `made` (an id it has already is 409 agent_exists, as the server
  *  answers), and every POST /v2/agents/{id}/runs in `sent`, answered by `answer` (202 with a run, or a refusal).
  *  `places`: the server's (capabilities `places`), none by default. `agent`: a POST /v2/agents answer of the test's
- *  own (a refusal or a lost answer), else the server's. `harnesses`: capabilities' harnesses, HARNESSES by default. */
-function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null, agent?: (made: Made) => Response | Promise<Response> | undefined, harnesses: typeof HARNESSES = HARNESSES) {
+ *  own (a refusal or a lost answer), else the server's. `harnesses`: capabilities' harnesses, HARNESSES by default.
+ *  `computers`: GET /v2/computers' answer, a Mode 1 list (no shell with no computer) by default. */
+function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Places | null = null, agent?: (made: Made) => Response | Promise<Response> | undefined, harnesses: typeof HARNESSES = HARNESSES, computers: () => Response | Promise<Response> = () => json(200, { kinds: kindsWith("none") })) {
   const sent: Sent[] = [];
   const made: Made[] = [];
   const archived: string[] = [];
@@ -48,6 +54,7 @@ function mount(answer: (sent: Sent) => Response | Promise<Response>, places: Pla
   const fetch = (async (url: string, init?: RequestInit) => {
     const path = new URL(url, "http://serve.test").pathname;
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
+    if (path === "/v2/computers") return computers();
     if (path === "/v2/agents" && init?.method === "POST") {
       const definition = body.definition as Made;
       const theirs = agent?.(definition);
@@ -89,6 +96,13 @@ async function type(host: Element, task: string) {
 }
 
 describe("RaceStart", () => {
+  it("keeps the New race bar in view, with lanes to race or none: the form scrolls in the one box under it", () => {
+    const { host } = mount(started);
+    expect(expectPinnedBar(host).querySelectorAll("[data-race-lane]")).toHaveLength(2);
+    act(() => root!.unmount());
+    const none = mount(started, null, undefined, HARNESSES.map((h) => ({ ...h, available: false })));
+    expect(expectPinnedBar(none.host).textContent).toContain("nothing to race");
+  });
   it("offers the harnesses this server runs, and makes each lane an agent of the console's own and starts a run of it, each under its own key, then opens the race", async () => {
     const { host, sent, made, went } = mount(started);
     const lanes = [...host.querySelectorAll("[data-race-lane]")];
@@ -136,9 +150,69 @@ describe("RaceStart", () => {
     for (const d of definitions) expect(Object.keys(d).filter((k) => k === "computer" || k === "place"), String(d.harness)).toEqual([]);
   });
 
-  it("a lane the server refuses says why in its own place; the others start, and Start again sends only that lane, under the key it had", async () => {
+  // Mode 2: the runner is a new agent's place, and GET /v2/computers serves the no-computer choice's run shell as the
+  // runner's own ("local", Archil's exec), which runs bash: pi's lane gets bash on the runner. Where that list says
+  // "none" (Mode 1), it gets no shell tool.
+  it("on a server whose runner's shell runs bash (Mode 2), pi's lane gets bash on the runner; where it has no shell, none", async () => {
+    const tools = async (shell: string) => {
+      const { host, made } = mount(started, RUNNER, undefined, HARNESSES, () => json(200, { kinds: kindsWith(shell) }));
+      await settle();
+      await type(host, TASK);
+      await act(async () => { button(host, "Start the race")!.click(); });
+      await settle();
+      act(() => root!.unmount()); root = undefined; document.body.innerHTML = "";
+      return (made as Record<string, unknown>[]).map((d) => [d.harness, d.tools]);
+    };
+    expect(await tools("local")).toEqual([["pi", ["read", "write", "bash", "web_search"]], ["codex", ["read", "write"]]]);
+    expect(await tools("none")).toEqual([["pi", ["read", "write", "web_search"]], ["codex", ["read", "write"]]]);
+  });
+
+  // A lane's tools are fixed when its agent is made, so a race started before the computers list answers would give pi's
+  // lane no bash in Mode 2, and the later answer can't add it to the run already started: Start waits for the list.
+  it("Start pressed while the computers list is still being read sends nothing until it answers, and then pi's lane gets bash (Mode 2)", async () => {
+    let answer!: (r: Response) => void;
+    const reading = new Promise<Response>((resolve) => { answer = resolve; });
+    const { host, made, sent, went } = mount(started, RUNNER, undefined, HARNESSES, () => reading);
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    expect(made).toEqual([]);
+    expect(sent).toEqual([]);
+    expect(host.querySelector("[data-computers-read]")?.textContent).toBe("Reading this server's computers, which say what each lane's shell runs: the race starts once they answer.");
+    await act(async () => { answer(json(200, { kinds: kindsWith("local") })); });
+    await settle();
+    expect((made as Record<string, unknown>[]).map((d) => [d.harness, d.tools])).toEqual([["pi", ["read", "write", "bash", "web_search"]], ["codex", ["read", "write"]]]);
+    expect(sent.map((s) => s.lane)).toEqual(["1", "2"]);
+    expect(host.querySelector("[data-computers-read]")).toBeNull();
+    expect(went).toEqual([`#/races/${LABEL}`]);
+  });
+
+  it("a computers list that can't be read holds Start: the form says why and offers a retry, and a retry that reads it starts the race", async () => {
+    let down = true;
+    const { host, made, sent, went } = mount(started, RUNNER, undefined, HARNESSES, () => down
+      ? json(503, { error: { code: "unavailable", message: "fixture: the computers list is down", retryable: true } })
+      : json(200, { kinds: kindsWith("local") }));
+    await settle();
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    expect(made).toEqual([]);
+    expect(sent).toEqual([]);
+    const said = host.querySelector("[data-computers-read]")!;
+    expect(said.getAttribute("role")).toBe("alert");
+    expect(said.textContent).toContain("This server's computers couldn't be read (fixture: the computers list is down), so which shell tools each lane gets is unknown: the race waits for them.");
+    down = false;
+    await act(async () => { button(host, "Read them again")!.click(); });
+    await settle();
+    expect((made as Record<string, unknown>[]).map((d) => [d.harness, d.tools])).toEqual([["pi", ["read", "write", "bash", "web_search"]], ["codex", ["read", "write"]]]);
+    expect(sent.map((s) => s.lane)).toEqual(["1", "2"]);
+    expect(host.querySelector("[data-computers-read]")).toBeNull();
+    expect(went).toEqual([`#/races/${LABEL}`]);
+  });
+
+  it("a lane the server refuses says why in its own place and its agent is archived at once; the others start, and Start again sends only that lane, as a new agent", async () => {
     let refuse = true;
-    const { host, sent, went } = mount((one) => one.lane === "2" && refuse
+    const { host, sent, made, archived, went } = mount((one) => one.lane === "2" && refuse
       ? json(409, { error: { code: "agent_not_runnable", message: "codex doesn't run on this server: no OpenAI key.", retryable: false } })
       : started(one));
     await type(host, TASK);
@@ -149,13 +223,29 @@ describe("RaceStart", () => {
     expect(two.textContent).toContain("codex doesn't run on this server: no OpenAI key.");
     expect(two.querySelector<HTMLButtonElement>('button[aria-label="Lane 2 harness"]')!.disabled, "a refused lane may be picked again").toBe(false);
     expect(went).toEqual([]);
+    const refused = sent.find((s) => s.lane === "2")!;
+    // Its run never started: the agent made for it goes at once, so a person who leaves the form keeps none of it.
+    expect(archived, "the refused lane's agent").toEqual([refused.agentId]);
     refuse = false;
-    const first = sent.find((s) => s.lane === "2")!.key;
     await act(async () => { button(host, "Start the lanes left")!.click(); });
     await settle();
     expect(sent.map((s) => s.lane)).toEqual(["1", "2", "2"]);
-    expect(sent.at(-1)!.key).toBe(first);
+    const again = sent.at(-1)!;
+    expect(again.agentId, "a new agent: the refused one is archived").not.toBe(refused.agentId);
+    expect(made.map((m) => m.id)).toContain(again.agentId);
+    expect(again.key).not.toBe(refused.key);
+    expect(archived, "the started lane's agent stays").toEqual([refused.agentId]);
     expect(went).toEqual([`#/races/${LABEL}`]);
+  });
+
+  it("every lane refused (Mode 2 refusing a Docker sandbox, say) leaves no agent behind: each one made is archived", async () => {
+    const { host, made, archived, went } = mount(() => json(409, { error: { code: "agent_not_runnable", message: "Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them.", retryable: false } }));
+    await type(host, TASK);
+    await act(async () => { button(host, "Start the race")!.click(); });
+    await settle();
+    expect(made).toHaveLength(2);
+    expect([...archived].sort()).toEqual(made.map((m) => m.id).sort());
+    expect(went).toEqual([]);
   });
 
   it("a lane whose answer never came whole keeps its pick and key, and Start again sends the same request, so it never starts twice", async () => {
@@ -163,6 +253,9 @@ describe("RaceStart", () => {
       ["a request that never got an answer", () => Promise.reject(new TypeError("Failed to fetch"))],
       ["a 5xx with no refusal in it", () => new Response("<html>Bad gateway</html>", { status: 502, headers: { "content-type": "text/html" } })],
       ["a start the server is still making", () => json(409, { error: { code: "idempotency_in_progress", message: "A request with this key is still in progress.", retryable: true } })],
+      // The server saves the run, then its read of the run's view times out: the run exists although the answer is a 409.
+      ["a busy store after the run was saved", () => json(409, { error: { code: "home_busy", message: "the agent store is busy with another write; try again", retryable: true, details: { retry_after_ms: 500 } } })],
+      ["a rate limit", () => json(429, { error: { code: "rate_limited", message: "Too many requests; try again.", retryable: true } })],
     ];
     for (const [why, answer] of lost) {
       let lose = true;
@@ -214,7 +307,7 @@ describe("RaceStart", () => {
     expect(went).toEqual([`#/races/${LABEL}`]);
   });
 
-  it("a refused lane picked again lets its agent go (archived, so the Agents list keeps none of it) and makes a new one", async () => {
+  it("a refused lane's agent is archived at its refusal (the Agents list keeps none of it), once, and the lane picked again makes a new one", async () => {
     let refuse = true;
     const { host, sent, made, archived } = mount((one) => one.lane === "2" && refuse
       ? json(409, { error: { code: "agent_not_runnable", message: "That model doesn't run on this server: no key for it.", retryable: false } })
@@ -223,10 +316,10 @@ describe("RaceStart", () => {
     await act(async () => { button(host, "Start the race")!.click(); });
     await settle();
     const refusedAgent = sent.find((s) => s.lane === "2")!.agentId;
-    expect(archived).toEqual([]);
+    expect(archived, "the refused pick's agent").toEqual([refusedAgent]);
     await pick(picker(host.querySelector('[data-race-lane="2"]')!, "Lane 2 harness")!, "pi");
     await settle();
-    expect(archived, "the refused pick's agent").toEqual([refusedAgent]);
+    expect(archived, "archived once").toEqual([refusedAgent]);
     refuse = false;
     await act(async () => { button(host, "Start the lanes left")!.click(); });
     await settle();

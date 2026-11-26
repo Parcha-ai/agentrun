@@ -382,6 +382,85 @@ test("a restored record that names no value the host finds is a stale or edited 
   assert.deepEqual(sharesIn(s.shares), []);
 });
 
+test("a file's content is read knowing its path: a credential file's plain contents refuse, also when another file holds the same text", async () => {
+  const pgpass = `db.example:5432:app:alice:orchard${nonce()}plain`;
+  const doc = JSON.parse(await bundleOf());
+  const fileOf = (path) => ({ ...doc.files[0], path, content: `${pgpass}\n`, bytes: Buffer.byteLength(`${pgpass}\n`), sha256: fileSha(path, `${pgpass}\n`) });
+  // Alone, and after a file of the same text under a name that is no credential file's (read first, by the order).
+  for (const files of [[fileOf(".pgpass")], [fileOf("notes/a.txt"), fileOf(".pgpass")]]) {
+    const body = resigned({ ...doc, files });
+    await assert.rejects(screenShare(body, []), (error) => error.code === "input_invalid" && (error.extra.details.counts["credential-file"] ?? 0) >= 1, files.map((file) => file.path).join());
+  }
+  // A string read with no path (the agent's name, read before the files) that spells the file's read can't stand in for it.
+  const forged = resigned({ ...doc, agent: { ...doc.agent, name: JSON.stringify([".pgpass", `${pgpass}\n`]) }, files: [fileOf(".pgpass")] });
+  await assert.rejects(screenShare(forged, []), (error) => error.code === "input_invalid" && (error.extra.details.counts["credential-file"] ?? 0) >= 1, "a forged name");
+});
+
+test("a workflow call's output is read knowing its call: a credential file's plain contents in a graph effect refuse", async () => {
+  const pgpass = `db.example:5432:app:alice:orchard${nonce()}plain`;
+  const doc = JSON.parse(await bundleOf());
+  const effect = (tool, input, output) => ({ node: "step", executionPath: "step", item: null, tool, status: "done", input, output, error: null, startedAt: "2026-01-02T03:04:05.000Z", endedAt: "2026-01-02T03:04:06.000Z" });
+  const plain = effect("notes", { topic: "a" }, `${pgpass}\n`);
+  for (const [name, read] of [
+    ["a read of .pgpass", effect("read", { path: ".pgpass" }, `${pgpass}\n`)],
+    ["a shell's cat of it, its output nested", effect("bash", { command: "cat ~/.pgpass" }, { stdout: `${pgpass}\n`, exit: 0 })],
+  ]) {
+    // Alone, and after a call whose output is the same text but says no file (read first, by the order).
+    for (const effects of [[read], [plain, read]]) {
+      const body = resigned({ ...doc, graph: { ...GRAPH, effects, totals: { ...GRAPH.totals, effects: effects.length } } });
+      await assert.rejects(screenShare(body, []), (error) => error.code === "input_invalid" && (error.extra.details.counts["credential-file"] ?? 0) + (error.extra.details.counts["env-dump"] ?? 0) >= 1, `${name}, ${effects.length} effect(s)`);
+    }
+  }
+  // A call whose output says no file is read as before: its text is no credential file's.
+  const body = resigned({ ...doc, graph: { ...GRAPH, effects: [plain], totals: { ...GRAPH.totals, effects: 1 } } });
+  await screenShare(body, []);
+});
+
+test("a call's long command is read once per call, never once per string of its output: ≥1 MiB of command over 5,000 strings screens in bounded time", { timeout: 900_000 }, async () => {
+  // Each string of a call's output is read with the call's context (its command): a read key, or any per-string work,
+  // that copies or re-reads the command costs strings × command, minutes and gigabytes here, while every other upload
+  // on the host waits. One effect, a long command that prints no environment, and many short distinct strings.
+  const strings = Number(process.env.SHARE_LONG_COMMAND_STRINGS ?? 5_000);
+  const doc = JSON.parse(await bundleOf());
+  const script = Array.from({ length: Math.ceil((1 << 20) / 26) }, (_, i) => `printf '%s' row${String(i).padStart(8, "0")}x; `).join("");
+  const output = Array.from({ length: strings }, (_, i) => `row ${i} of the report`);
+  const effect = { node: "step", executionPath: "step", item: null, tool: "bash", status: "done", input: { command: script }, output, error: null, startedAt: "2026-01-02T03:04:05.000Z", endedAt: "2026-01-02T03:04:06.000Z" };
+  const body = resigned({ ...doc, graph: { ...GRAPH, effects: [effect], totals: { ...GRAPH.totals, effects: 1 } } });
+  assert.ok(script.length >= 1 << 20);
+  const started = performance.now();
+  await screenShare(body, []).catch((error) => assert.ok(error.status === 413 || error.code === "input_invalid", String(error)));
+  const ms = performance.now() - started;
+  // Under a second at the fix on an idle box (a pass per string, the command read once; about 6 s at a load of 160, as
+  // with a two-character command): 60 s is far over that, and far under strings × command (about 5 minutes before).
+  assert.ok(ms < 60_000, `${Math.round(ms)} ms`);
+});
+
+test("the string cap counts a text once per call context it is read under, and bounds the reads: past it is 413 before any scrub", async () => {
+  // Each string is read once per context it stands under (a file's path, a call's command), so the cap counts those
+  // reads: the same output under three commands is three reads each, under one command one.
+  const doc = JSON.parse(await bundleOf());
+  const effect = (command) => ({ node: "step", executionPath: "step", item: null, tool: "bash", status: "done", input: { command }, output: ["alpha", "beta", "gamma"], error: null, startedAt: "2026-01-02T03:04:05.000Z", endedAt: "2026-01-02T03:04:06.000Z" });
+  const bodyOf = (commands) => resigned({ ...doc, graph: { ...GRAPH, effects: commands.map(effect), totals: { ...GRAPH.totals, effects: commands.length } } });
+  let passes = 0;
+  const counting = async (text, opts) => {
+    passes++;
+    return scrub(text, opts);
+  };
+  const countOf = async (body) => {
+    const refused = await screenShare(body, [], counting, 1).then(() => assert.fail("a cap of 1 took the bundle"), (error) => error);
+    assert.ok(refused.status === 413 && refused.extra.details.reason === "share_strings", String(refused));
+    return refused.extra.details.strings;
+  };
+  const three = bodyOf(["ls a", "ls b", "ls c"]);
+  const counted = await countOf(three);
+  // Two more commands (two strings) and the three outputs read twice more (six reads).
+  assert.equal(counted - (await countOf(bodyOf(["ls a", "ls a", "ls a"]))), 8);
+  assert.equal(passes, 0, "a refusal past the cap reads nothing");
+  // At the cap, taken: the whole body once and each counted read once, no more.
+  await screenShare(three, [], counting, counted);
+  assert.equal(passes, 1 + counted);
+});
+
 test("each string is read alone too: a label the whole-body read misses still refuses", async (t) => {
   const planted = plantedRestorable();
   const doc = JSON.parse(await restoredBundleOf(planted.content));
@@ -500,11 +579,26 @@ test("the bundle's shape is checked: its format, its closed keys at each level t
   // A workflow's graph as its route serves it (graph-view.ts) is taken; one the page cannot draw is refused.
   const graphed = { ...structuredClone(doc), graph: GRAPH };
   assert.equal(checkShareBundle(resigned(graphed)).sha256, JSON.parse(resigned(graphed)).sha256);
+  // Each run field the page reads may be null, or of its type; a run with every field set so is taken.
+  const typed = structuredClone(doc);
+  Object.assign(typed.run, { error: null, review: null, cost: { usd: 0.01, basis: "metered" }, stopped_for: null, budget_refused_calls: 0, effort: null, approvals: "auto" });
+  assert.equal(checkShareBundle(resigned(typed)).sha256, JSON.parse(resigned(typed)).sha256);
   const refused = {
     format: (d) => (d.format = "agentrun.share/2"),
     extraTop: (d) => (d.exported_by = "someone"),
     missingTop: (d) => delete d.omitted,
     runField: (d) => (d.run.run_id = "run_1"),
+    // A run field of another type: the page would throw on it (Redactions reads a title's text).
+    runTitleObject: (d) => (d.run.title = {}),
+    runStatusNumber: (d) => (d.run.status = 1),
+    runCreatedArray: (d) => (d.run.created_at = []),
+    runEndedNumber: (d) => (d.run.ended_at = 1),
+    runResultString: (d) => (d.run.result = "done"),
+    runErrorArray: (d) => (d.run.error = []),
+    runReviewString: (d) => (d.run.review = "x"),
+    runCostString: (d) => (d.run.cost = "$1"),
+    runRefusedCallsString: (d) => (d.run.budget_refused_calls = "2"),
+    runEffortObject: (d) => (d.run.effort = {}),
     importedSession: (d) => (d.run.imported_from = { source: "claude-code", session: "abc" }),
     agentField: (d) => (d.agent.id = "a1"),
     sourceField: (d) => (d.source.host = "x"),
@@ -716,6 +810,8 @@ test("the page and its assets load under /r/: share.html at /r/<id> with every a
   assert.doesNotMatch(SHARE_HOST_CSP, /https?:/, "no outside origin: a VerdictCard's http image is blocked on a public page");
   assert.match(SHARE_HOST_CSP, /img-src 'self' data:;/);
   assert.match(SHARE_HOST_CSP, /frame-ancestors 'none'/);
+  // The hosted page's CSP is the local preview's, never a looser copy of it.
+  assert.equal(SHARE_HOST_CSP, (await import("../dist/page.js")).SHARE_PAGE_CSP);
   assert.equal((await send(s.port, { method: "HEAD", path: `/r/${id}` })).status, 200);
   for (const path of [`/r/${"b".repeat(26)}`, "/r/not-an-id", "/r/_assets/missing.js", "/r/_assets/../share.html", "/r/_assets/%2e%2e/share.html", "/r/_assets/.hidden.js", "/r/_assets/x.html", `/r/${id}/other.json`, `/r/${id}/bundle.json/x`]) {
     assert.equal((await send(s.port, { path })).status, 404, path);

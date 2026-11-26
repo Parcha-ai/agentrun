@@ -23,6 +23,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Context, Span } from "@opentelemetry/api";
 import type { SpanExporter, TracerProvider } from "@opentelemetry/sdk-trace";
+import { keyBase } from "@parcha/agentrun-computer";
 import type { Ended, ModelUsage } from "@parcha/agentrun-kernel";
 import { runnerSecrets, secretRedactor } from "../runner/redact.js";
 import { keyValues, otlpHeaderCut } from "../secrets.js";
@@ -40,10 +41,18 @@ export const FLUSH_MS = 3_000;
 export const OPEN_MAX = 512;
 
 /** The OTLP exporter's settings from `env`, as the spec reads them: the traces endpoint as given, else the endpoint's
- *  /v1/traces; the headers (the traces' over the general ones); the timeout. */
+ *  /v1/traces; the headers (the traces' over the general ones); the timeout. The headers go to the endpoint, so it takes
+ *  the rule of a URL a key goes to (keyBase) over http or https, since OTLP allows both and a collector is often a plain
+ *  http one beside the server: one with a user, a password, a query or a fragment throws in those words, which name the
+ *  variable and the origin alone, and tracing is off for it (made). */
 export function exporterConfig(env: NodeJS.ProcessEnv): { url: string; headers: Record<string, string>; timeoutMillis?: number } {
   const traces = env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT?.trim();
-  const url = traces || `${(env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "").trim().replace(/\/+$/, "")}/v1/traces`;
+  const endpoint = (env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "").trim();
+  // A traces endpoint, once checked, is used as given, as the spec says: a collector may tell /ingest/ from /ingest. The
+  // general endpoint's /v1/traces is added to the rule's normalized return, never the raw string: a bare ? or # passes
+  // the rule, and would put the path in a query.
+  const checked = keyBase(traces || endpoint, traces ? "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" : "OTEL_EXPORTER_OTLP_ENDPOINT", ["http:", "https:"]);
+  const url = traces || `${checked}/v1/traces`;
   const timeout = Number(env.OTEL_EXPORTER_OTLP_TRACES_TIMEOUT ?? env.OTEL_EXPORTER_OTLP_TIMEOUT);
   return { url, headers: { ...keyValues(env.OTEL_EXPORTER_OTLP_HEADERS), ...keyValues(env.OTEL_EXPORTER_OTLP_TRACES_HEADERS) }, ...(Number.isFinite(timeout) && timeout > 0 ? { timeoutMillis: timeout } : {}) };
 }
@@ -235,8 +244,8 @@ export interface TracingTest {
 
 let shared: Promise<GenAiTracing | undefined> | undefined;
 
-/** This process's tracing, or undefined while `env` leaves it off: then no @opentelemetry module is ever loaded. Made
- *  once per process; a test's (`test`) is its own. */
+/** This process's tracing, or undefined while `env` leaves it off or its endpoint is refused (made): then no
+ *  @opentelemetry module is ever loaded. Made once per process; a test's (`test`) is its own. */
 export function genAiTracing(env: NodeJS.ProcessEnv = process.env, test?: TracingTest): Promise<GenAiTracing | undefined> {
   if (!otelOn(env)) return Promise.resolve(undefined);
   if (test) return made(env, test);
@@ -270,10 +279,18 @@ function saidOf(env: NodeJS.ProcessEnv, given?: (line: string) => void): (line: 
   return (line) => log(headers(cut(line)));
 }
 
-async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTracing> {
-  const [api, sdk, resources] = await Promise.all([import("@opentelemetry/api"), import("@opentelemetry/sdk-trace"), import("@opentelemetry/resources")]);
+async function made(env: NodeJS.ProcessEnv, test?: TracingTest): Promise<GenAiTracing | undefined> {
   const log = saidOf(env, test?.log);
-  const config = exporterConfig(env);
+  let config: ReturnType<typeof exporterConfig>;
+  try {
+    config = exporterConfig(env);
+  } catch (error) {
+    // The endpoint the rule of a URL a key goes to refuses: no exporter is built on it and nothing is sent, never a
+    // thrown start or run. Said once (genAiTracing makes this once per process), in keyBase's words.
+    log(`[otel] tracing is off: ${(error as Error).message}`);
+    return undefined;
+  }
+  const [api, sdk, resources] = await Promise.all([import("@opentelemetry/api"), import("@opentelemetry/sdk-trace"), import("@opentelemetry/resources")]);
   const where = shownEndpoint(config.url);
   const exporter = safeExporter(test?.exporter ?? new (await import("@opentelemetry/exporter-trace-otlp-http")).OTLPTraceExporter(config), log, where, test?.now ?? Date.now);
   // The next root span's trace id (the run's), taken by the one startSpan that asks for it: startSpan is synchronous.

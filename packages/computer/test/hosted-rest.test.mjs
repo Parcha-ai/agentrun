@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
-import { allPages, httpCode, httpsBase, rest } from "../dist/hosted/rest.js";
+import { allPages, httpCode, httpsBase, keyBase, rest } from "../dist/hosted/rest.js";
 
 const answers = (...replies) => {
 	const calls = [];
@@ -52,6 +52,22 @@ test("httpsBase returns the normalized URL: a lower-case scheme and host, a defa
 	assert.equal(httpsBase("HTTPS://Api.Example.test:8443/v1/", "the API URL"), "https://api.example.test:8443/v1");
 	// Only the scheme and host are case-blind: a path is the server's to read, so its case stays.
 	assert.equal(httpsBase("HTTPS://Api.Example.test/V1/Tenant/", "the API URL"), "https://api.example.test/V1/Tenant");
+});
+
+test("keyBase is httpsBase's rule over the schemes given: wss alongside https, ws refused, and the in-the-clear words only where every scheme is encrypted", () => {
+	const socket = ["https:", "wss:"];
+	assert.equal(keyBase("WSS://Connect.Example.test/ws/", "the connect URL", socket), "wss://connect.example.test/ws");
+	assert.equal(keyBase("https://connect.example.test", "the connect URL", socket), "https://connect.example.test");
+	for (const [url, scheme] of [["ws://connect.example.test", "ws:"], ["http://connect.example.test", "http:"]]) {
+		assert.throws(() => keyBase(url, "the connect URL", socket), (error) => error.message === `the connect URL must be https or wss, so the key never crosses in the clear: ${scheme}`, url);
+	}
+	// Where a scheme in the clear is allowed (a collector's http), the words drop the clause they would contradict.
+	const collector = ["http:", "https:"];
+	assert.equal(keyBase("http://localhost:4318/", "the endpoint", collector), "http://localhost:4318");
+	assert.throws(() => keyBase("wss://collector.example.test", "the endpoint", collector), (error) => error.message === "the endpoint must be http or https: wss:");
+	// The rest of the rule is httpsBase's, in its words.
+	assert.throws(() => keyBase("wss://agent@connect.example.test", "the connect URL", socket), (error) => error.message === "the connect URL takes no user or password, since the key goes to it: wss://connect.example.test");
+	assert.throws(() => keyBase("wss://connect.example.test/?signingKey=fake-test-key", "the connect URL", socket), (error) => error.message === "the connect URL takes no query or fragment: wss://connect.example.test");
 });
 
 test("httpCode maps a status to one code", () => {

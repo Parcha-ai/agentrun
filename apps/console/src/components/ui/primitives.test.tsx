@@ -1,7 +1,7 @@
 import { act, type ReactElement, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Banner, Button, Checkbox, Chip, ConfirmDialog, CopyButton, Dialog, Field, fieldBoxClass, Input, Menu, MenuItem, NavItem, Picker, SearchPicker, type SearchPickerOption, Segmented, Spinner, tabPanelProps, Tabs, Textarea, ToastProvider, useToast } from ".";
 import * as foundations from "@/design/Foundations.stories";
 import * as primitives from "./Primitives.stories";
@@ -362,6 +362,37 @@ describe("the design-system stories", () => {
 
 // A picker sized by its words changes width with each pick unless it is `steady`. jsdom lays nothing out, so this holds
 // what the width comes from: every option's words in the field, hidden, in the picked words' own grid cell.
+describe("Picker, option descriptions", () => {
+  it("shows a disabled choice's full reason in the list while keeping its selected label compact", async () => {
+    const reason = "Install the runtime package and configure its provider key, then restart the server before choosing this runtime.";
+    const picked = vi.fn();
+    const options = [{ value: "ready", label: "Ready" }, { value: "missing", label: "Missing runtime", disabled: true, description: reason }];
+    const host = mount(<Picker label="Runtime" value="missing" onChange={picked} options={options} />);
+    const field = host.querySelector("button")!;
+    expect(field.textContent).toBe("Missing runtime");
+    await click(field);
+    const list = document.querySelector('[role="listbox"]')!;
+    const missing = list.querySelector('[role="option"][data-value="missing"]')!;
+    expect(missing.textContent).toContain(reason);
+    expect(missing.getAttribute("aria-disabled")).toBe("true");
+    expect(missing.getAttribute("aria-label")).toBe("Missing runtime");
+    expect(missing.getAttribute("title")).toBeNull();
+    const description = [...missing.querySelectorAll("span")].find(span => span.textContent === reason)!;
+    expect(description).toBeTruthy();
+    expect([...description.classList]).toEqual(expect.arrayContaining(["font-sans", "text-small"]));
+    expect(description.closest(".break-words")).toBeTruthy();
+    expect(document.getElementById(missing.getAttribute("aria-describedby")!)).toBe(description);
+    expect(missing.classList.contains("data-[disabled]:opacity-50")).toBe(false);
+    expect(description.closest('[hidden], [aria-hidden="true"], .hidden, .sr-only, .truncate')).toBeNull();
+    expect(list.querySelector('[role="option"][data-value="ready"]')?.textContent).toBe("Ready");
+    await click(missing);
+    expect(picked).not.toHaveBeenCalled();
+    await key(list, "Escape");
+    expect(field.textContent).toBe("Missing runtime");
+    expect(host.textContent).not.toContain(reason);
+  });
+});
+
 describe("Picker, steady", () => {
   const options = [{ value: "a", label: "GET · Short" }, { value: "b", label: "POST · The longest of them all" }];
   const sizers = (host: HTMLElement) => [...host.querySelectorAll("button [data-picker-sizer]")];
@@ -443,5 +474,41 @@ describe("SearchPicker", () => {
   it("is off whole when disabled", () => {
     const host = mount(<SearchPicker label="Event" value="" onChange={() => {}} options={events} disabled placeholder="Composio offers no event for this toolkit" />);
     expect(searchPicker(host, "Event")!.disabled).toBe(true);
+  });
+});
+
+// jsdom lays nothing out, so the search box's size is given here and its changes are sent by hand. Every width the list
+// has had since it was put on the page is read (a MutationObserver), not only the one it ends with: a list first drawn
+// at its minimum width and widened a frame later is what this holds off.
+describe("SearchPicker, a list as wide as its field from the render that opens it", () => {
+  const box = (width: number) => ({ width, height: 40, top: 0, left: 0, right: width, bottom: 40, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+  const options = [{ value: "a", label: "First" }, { value: "b", label: "Second" }];
+  let watched: { el: Element; changed: (entries: ResizeObserverEntry[]) => void }[] = [];
+  let seen: string[] = [];
+  let lists: MutationObserver | undefined;
+  beforeEach(() => {
+    watched = [];
+    seen = [];
+    vi.stubGlobal("ResizeObserver", class { constructor(private readonly changed: (entries: ResizeObserverEntry[]) => void) {} observe(el: Element) { watched.push({ el, changed: this.changed }); } unobserve() {} disconnect() { watched = watched.filter((w) => w.changed !== this.changed); } });
+    lists = new MutationObserver(() => { const list = document.querySelector<HTMLElement>("[data-picker-list]"); if (list) seen.push(list.style.getPropertyValue("--field-width")); });
+    lists.observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["style"] });
+  });
+  afterEach(() => { lists?.disconnect(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  const resize = (field: Element) => act(() => { for (const w of watched.filter((x) => x.el === field)) w.changed([]); });
+  const widths = () => { const all = [...new Set(seen)]; seen = []; return all; };
+
+  it("takes the field's width as it opens, and the field's new width after its size changes", async () => {
+    const measured = vi.spyOn(HTMLInputElement.prototype, "getBoundingClientRect").mockReturnValue(box(608));
+    const host = mount(<SearchPicker label="Event" value="" onChange={() => {}} options={options} />);
+    const field = searchPicker(host, "Event")!;
+    await shownIn(field, "first");
+    expect(document.querySelector("[data-picker-list]")!.className).toContain("w-[var(--field-width)]");
+    expect(widths(), "every width its list had").toEqual(["608px"]);
+    await key(field, "Escape");
+    expect(document.querySelector("[data-picker-list]")).toBeNull();
+    measured.mockReturnValue(box(400));
+    resize(field);
+    await shownIn(field, "second");
+    expect(widths(), "opened again after its field shrank").toEqual(["400px"]);
   });
 });

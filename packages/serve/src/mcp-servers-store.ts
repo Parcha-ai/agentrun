@@ -18,6 +18,7 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 // MCP's secret writes, registered with the one gate as the registry loads (the server's dispatch reads them).
 import { credentialMark, ownersAuthConfig, tokensAccount } from "./mcp-secret-writes.js";
 import { ownersComposioUsers, ownersUser } from "./composio-owners.js";
+import type { ComposioCredentialOf } from "./composio-triggers.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
 import { type Cleanup, cleanupOf, COMPOSIO_KEY_ENV, COMPOSIO_ORIGIN, composioAccountKey, composioEnvKey, composioKeyFromEnv, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
@@ -824,12 +825,13 @@ export class McpServersOverStore {
     return "credential" in open && open.credential.type === "oauth" ? (open.credential.set as TokenSet) : undefined;
   }
 
-  /** A saved Composio preset server's key (its sealed x-api-key), the Composio user its address names (`user_id`, the
-   *  preset's default when none), its toolkit and the auth config its save recorded (composio-made.ts; none for a server
-   *  saved before that was recorded): what its Composio triggers are made with (composio-triggers.ts). Refused
-   *  when `name` is no such server: on the trigger's `source.server` at its create (`field`), as a 404 on the server's own
+  /** A saved Composio preset server's key (its sealed x-api-key), its toolkit and the auth config its save recorded
+   *  (composio-made.ts; none for a server saved before that was recorded), and for a trigger's own steps (`field`) the
+   *  Composio user its address names (`user_id`, the preset's default when none): what its Composio triggers are made with
+   *  (composio-triggers.ts). The server's own routes (`route`) are answered no user: none of them sends one. Refused when
+   *  `name` is no such server: on the trigger's `source.server` at its create (`field`), as a 404 on the server's own
    *  routes (`route`). The key goes only to Composio. */
-  async composioOf(name: string, refusal: "field" | "route"): Promise<{ key: string; user: string; toolkit: string; auth_config?: string }> {
+  async composioOf<R extends "field" | "route">(name: string, refusal: R): Promise<ComposioCredentialOf<R>> {
     const refuse = (message: string) => (refusal === "route" ? new ApiError("not_found", message) : invalid([{ field: "source.server", reason: "not_an_option", message }]));
     const row = await this.store.mcp.server(name);
     if (!row) throw refusal === "route" ? notFound(name) : refuse(`No MCP server ${name}: save a Composio server in Settings → MCP servers first.`);
@@ -843,14 +845,18 @@ export class McpServersOverStore {
     const key = Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1];
     if (!key) throw refuse(`${name}'s saved credential holds no Composio key: save it again with its key.`);
     const config = recordedMade(recorded, row.createdAt)?.auth_config?.id;
+    const made = { key, toolkit, ...(config ? { auth_config: config } : {}) };
+    // A route sends Composio no user: its events, its triggers and the project's subscription are read by the key, and a
+    // delete or a save takes the project's turn by it, so it is answered none, and a server with a blank user keeps its
+    // routes and that turn.
+    if (refusal === "route") return made as ComposioCredentialOf<R>;
     // Only an address with no user_id at all is the default user's: an empty one is a blank user, refused below.
     const user = new URL(row.url).searchParams.get("user_id") ?? COMPOSIO_USER;
     // A user that is no Composio user id (a blank one Composio may read as every user) is refused for a trigger's own steps
-    // (`field`) before Composio is asked anything: a create sends the user (its account read, its connect link, its
-    // instance's upsert). A route sends none: its events, its triggers and the project's subscription are read by the key,
-    // and a delete or a save takes the project's turn by it, so a server with a blank user keeps its routes and that turn.
-    if (refusal === "field" && !COMPOSIO_USER_ID.test(user)) throw refuse(`${name}'s saved Composio user ${JSON.stringify(user)} is no Composio user id: save the server again with its user.`);
-    return { key, user, toolkit, ...(config ? { auth_config: config } : {}) };
+    // before Composio is asked anything: a create sends the user (its account read, its connect link, its instance's
+    // upsert).
+    if (!COMPOSIO_USER_ID.test(user)) throw refuse(`${name}'s saved Composio user ${JSON.stringify(user)} is no Composio user id: save the server again with its user.`);
+    return { ...made, user } as ComposioCredentialOf<R>;
   }
 
   /** What the saved server `row` is, for a template's apply to match (mcp-sources.ts sourceOf): github on the GitHub App's
@@ -869,7 +875,7 @@ export class McpServersOverStore {
 
   /** On an API-only server, the refusal of a run's binding (`binding`, handed at `field`) of the per-run Composio server
    *  `name` (`row`), or undefined when it stands: its user must be none the owner calls as here (composio-owners.ts ownersComposioUsers), and
-   *  a connected account it names one Composio lists under that user for the server's toolkit, read with the server's
+   *  a connected account it names an ACTIVE one Composio lists under that user for the server's toolkit, read with the server's
    *  key (composioListsAccount). Composio not answering, or the key not opening, throws, and an account past the read's
    *  bound is refused: a binding is never taken unchecked. Each refusal says which check refused it, and never quotes
    *  what was sent. */
@@ -887,7 +893,7 @@ export class McpServersOverStore {
       throw new ApiError("upstream_failed", `Composio didn't answer the check of this run's connected account for the MCP server ${name}, and a run's account is never taken unchecked: nothing was started. Try again.`);
     }
     if (listed === "unbounded") return { field: `${field}.connected_account_id`, reason: "not_allowed", message: `That connected_account_id can't be checked: Composio lists ${composioAccountBoundWords()} for this run's composio_user_id and the server's toolkit, so this start can't check them all, and a run's account is never taken unchecked. Nothing was started.` };
-    if (listed === "unlisted") return { field: `${field}.connected_account_id`, reason: "not_allowed", message: `That connected_account_id is not listed under this run's composio_user_id: Composio lists no such account of that user for the server's toolkit. Name one of that user's own accounts, or none. Nothing was started.` };
+    if (listed === "unlisted") return { field: `${field}.connected_account_id`, reason: "not_allowed", message: `That connected_account_id is not listed under this run's composio_user_id: Composio lists no such ACTIVE account of that user for the server's toolkit. Name one of that user's own accounts, or none. Nothing was started.` };
     return undefined;
   }
 

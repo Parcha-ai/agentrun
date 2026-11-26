@@ -72,15 +72,17 @@ export function webFixtureOf(value: unknown, at: string, bad: (message: string) 
   return problems.length ? undefined : (value as unknown as WebFixture);
 }
 
-/** `args` searched in `fake`, as the run's web_search answers: `provider`, the one the run's plane names. */
+/** `args` searched in `fake`, as the run's web_search answers: `provider`, the one the run's plane names. An answer's
+ *  `query` pattern matches the search's objective or any of its queries. */
 export function fakeSearch(fake: WebFake, args: Record<string, unknown>, provider: Exclude<Search, { error: string }>["provider"]): Search {
-  const { query, n } = searchArgs(args);
-  if (!query) return { error: "web_search needs a query" };
+  const { objective, queries, n } = searchArgs(args);
+  if (!objective) return { error: "web_search needs an objective" };
   if (fake === "unavailable") return { error: RATE_LIMITED };
-  const answer = fake.search.answers.find((one) => new RegExp(one.query, "i").test(query)) ?? fake.search.default;
+  const asked = [objective, ...queries];
+  const answer = fake.search.answers.find((one) => asked.some((text) => new RegExp(one.query, "i").test(text))) ?? fake.search.default;
   if ("error" in answer) return { error: answer.error };
   const results = answer.results.slice(0, n).map((hit) => ({ url: hit.url, title: clip(hit.title, TITLE_CAP), snippet: snippetOf(hit.snippet), ...(hit.published === undefined ? {} : { published: hit.published }) }));
-  return { provider, query, results };
+  return { provider, objective, queries, results };
 }
 
 /** The part `part` names of the page at `url` in `fake`, as the run's web_fetch answers, through the guarded direct

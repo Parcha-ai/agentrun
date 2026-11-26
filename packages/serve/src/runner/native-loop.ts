@@ -9,7 +9,6 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT, withAbortSignal } from '@earendil-works/chord/context';
 import { ROOT_CONVERSATION_ID, type StorageWrite } from '@earendil-works/pi-durable';
-import { learningFolderOf } from '../learning.js';
 import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED } from '../native/binding.js';
 import { launchNative } from '../native/connection.js';
 import { openNativeSession } from '../native/runtime.js';
@@ -23,7 +22,7 @@ import { outputContract, outputMiss, outputRetryWords } from '../answer-json.js'
 import { cutStrings, redactedOutput } from '../key-refusal.js';
 import type { Store, RunPatch } from '../store/store.js';
 import { learningEndOfRun } from './learning-end.js';
-import { pathMetrics } from './workflow-first.js';
+import { runPathMetricsOverStore } from '../store-reads/learning.js';
 import { reflectRequestId } from './end-of-run.js';
 import { journalEntries } from './journal-reader.js';
 import { HOST_PHASE } from '../timeline/index.js';
@@ -32,7 +31,7 @@ import { bookedSpend, cliRunMetrics } from './metrics.js';
 import { stopEnd, type AlsoRow, type Claim, type LoopFactory, type StopReason } from './loop-contract.js';
 import { END_PATCH_MS, END_PATCH_UNKNOWN, REAL_TIMER } from './loop.js';
 import { storeSecrets } from './store-secrets.js';
-import { runnerSecrets, heldRedactor, processSecretRedactor } from './redact.js';
+import { runnerSecrets, mustHold } from './redact.js';
 import { secretRedactor } from './redact.js';
 import type { AdapterSpecDeps } from './adapter-run-spec.js';
 
@@ -60,7 +59,7 @@ async function lockProject(data:string,target:NativeBinding,runId:string):Promis
 
 export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFactory{
  return deps=>{
- const held=heldRedactor(deps.redact??processSecretRedactor());
+ const held=mustHold(deps.redact,'A native loop');
  let stopped:StopReason|undefined;const abort=new AbortController();let session:NativeSession|undefined;
  let settled:Promise<unknown>|undefined;
  const signal=AbortSignal.any([deps.signal,abort.signal]);
@@ -137,7 +136,9 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
      // Only reads race the deadline. A late result never writes a patch or changes the chosen end.
      const read=async()=>{
       const entries=await journalEntries(journal,ctx);const spend=bookedSpend(entries as never,'model');
-      return {costUsd:spend.usd,metrics:{...nativeMetrics(launch,entries,spend,model,turn,runtime),native_session_id:nativeSessionId,...(usage?{native_usage:usage}:{})}};
+      // Its path by the one writer every harness's end calls: a native task never calls a learned workflow, so `agent`.
+      const path=await runPathMetricsOverStore(host.store,claim.runId,launch,{redact});
+      return {costUsd:spend.usd,metrics:{...nativeMetrics(entries,spend,model,turn,path,runtime),native_session_id:nativeSessionId,...(usage?{native_usage:usage}:{})}};
      };
      endPatch=await Promise.race([read(),late]);
     }catch{endPatch=END_PATCH_UNKNOWN;}finally{bound.clearTimeout(timer);}
@@ -198,7 +199,7 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
      await append(KINDS.message,{role:'person',text:retry,at:Date.now(),origin:{kind:'server',reason:'output_retry'}});
      result=await task(retry);
     }
-    const end=automaticLearningUnavailable?undefined:learningEndOfRun(launch,{store:host.store,data:host.data,learningFolder:id=>learningFolderOf(host.data,id),env:process.env,stored:()=>storeSecrets(host.store,host.sealKey,host.data)});
+    const end=automaticLearningUnavailable?undefined:learningEndOfRun(launch,{store:host.store,data:host.data,env:process.env,stored:()=>storeSecrets(host.store,host.sealKey,host.data)});
     if(end){reflect=true;also=(await end({runId:claim.runId,agentId,claim,outcome:'completed',signal,ask:async(prompt,opts)=>{
      const requestId=reflectRequestId(claim.runId,opts.again);await append(KINDS.endOfRunTurn,{role:'person',text:prompt,requestId});
      try{const answer=await send(prompt,'reflection',opts.deadlineMs);await append(KINDS.endOfRunTurn,{role:'model',text:redact(answer.answer),requestId});return {ended:true,answer:answer.answer};}
@@ -221,7 +222,7 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
     // A waiting run may receive its cancel before the source owner releases the lock. Its stop is final even while
     // the project is busy; parking it again would keep the optimistic cancelled view unsettled indefinitely.
     if(error instanceof NativeProjectBusy){await append(`${MARK}.waiting`,{project:launch.native?.project},{state:'parked',summary:'Waiting for the other native job in this source project.'});return {state:'parked' as const,wakeAt:Date.now()+1000};}
-    const hook=automaticLearningUnavailable?undefined:learningEndOfRun(launch,{store:host.store,data:host.data,learningFolder:id=>learningFolderOf(host.data,id)});
+    const hook=automaticLearningUnavailable?undefined:learningEndOfRun(launch,{store:host.store,data:host.data});
     if(hook&&!also)also=(await hook({runId:claim.runId,agentId,claim,outcome:'failed',cut:reflect?'stopped-looking':'faulted',signal,ask:async()=>({failed:{code:'native_failed',message}})}))?.also;
     await append(KINDS.end,{state:'failed',error:message},{state:'failed',outcome:null,summary:message,...partial},also);
     return {state:'failed' as const,error:{code:'native_failed',message}};
@@ -239,11 +240,10 @@ function nativeInput(usage:NativeUsage,runtime?:string):number|null{
  return usage.input_tokens===null||usage.cache_read_tokens===null||usage.cache_write_tokens===null?null:Math.max(0,usage.input_tokens-usage.cache_read_tokens-usage.cache_write_tokens);
 }
 
-function nativeMetrics(launch:RunLaunch,entries:readonly {kind:string;data?:unknown}[],spend:ReturnType<typeof bookedSpend>,model:string,turns:number,runtime?:string){
+function nativeMetrics(entries:readonly {kind:string;data?:unknown}[],spend:ReturnType<typeof bookedSpend>,model:string,turns:number,path:Awaited<ReturnType<typeof runPathMetricsOverStore>>,runtime?:string){
  const counted=cliRunMetrics(entries as never,spend,{model});
  const usage=entries.filter(e=>e.kind===`${MARK}.usage`).map(e=>(e.data as {usage:NativeUsage}).usage);
  const count=(native:keyof NativeUsage,key:'input'|'output'|'cacheRead'|'cacheWrite')=>usage.length<turns||usage.some(u=>u[native]===null)?null:counted[key];
- // Native tasks always run their agent: this lane never serves or calls an AgentRun learned workflow.
- return {...counted,...pathMetrics(launch,{path:'agent',workflow:null},entries as never),input:usage.some(u=>nativeInput(u,runtime)===null)?null:count('input_tokens','input'),output:count('output_tokens','output'),cacheRead:count('cache_read_tokens','cacheRead'),cacheWrite:count('cache_write_tokens','cacheWrite'),requests:null,unmetered:null,models:{},native_model_requests:null,native_turns:turns};
+ return {...counted,...path,input:usage.some(u=>nativeInput(u,runtime)===null)?null:count('input_tokens','input'),output:count('output_tokens','output'),cacheRead:count('cache_read_tokens','cacheRead'),cacheWrite:count('cache_write_tokens','cacheWrite'),requests:null,unmetered:null,models:{},native_model_requests:null,native_turns:turns};
 }
 

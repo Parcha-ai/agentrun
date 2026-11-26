@@ -53,7 +53,8 @@ function rowsOf(p = PLANTED) {
     row(1, "message", `Connect with PGPASSWORD=${p.pg} psql -h db, then mail ${p.email}`),
     row(2, "text_block", `Set OPENAI_API_KEY=${p.sk} and GITHUB_TOKEN=${p.ghp}; the AWS id ${p.aws}.`),
     row(3, "tool_result", ["$ env", `HOME=${unixHome(p.user)}`, "PATH=/usr/bin", `SECRET_THING=${p.envValue}`, "SHELL=/bin/sh", "$ echo done"].join("\n")),
-    row(4, "text_block", `The host ${p.ip} answered from ${unixHome(p.user)}/work.`),
+    // A value saved after these rows were served (the cut only grows, and is read last): the scrubber cuts it as held.
+    row(4, "text_block", `The host ${p.ip} answered from ${unixHome(p.user)}/work with the key saved since, ${p.held}.`),
     row(5, "final_answer", `Done. Mail ${p.email} about ${unixHome(p.user)}/work; key ${p.sk}.`),
   ];
 }
@@ -179,7 +180,8 @@ test("files: UTF-8 text within the caps is carried with its bytes and sha256 as 
     const digest = createHash("sha256").update(file.path).update(Buffer.from([0])).update(file.content).update(Buffer.from([0])).digest("hex");
     assert.equal(file.sha256, digest, "packageSha256 of the file as carried");
   }
-  assert.match(doc.files[0].content, /held again: \[redacted:held-value\]/);
+  // A file is cut as the served cut read cuts it (cutFileText) before the scrubber reads it: its held value is "[redacted]".
+  assert.match(doc.files[0].content, /held again: \[redacted\]\n/);
   assert.deepEqual(doc.omitted, [{ what: "file", path: "out/shot.png", why: "binary" }, { what: "recordings", why: "never" }]);
 
   const caps = { fileBytes: 64, filesBytes: 100, files: 3 };
@@ -198,6 +200,36 @@ test("files: UTF-8 text within the caps is carried with its bytes and sha256 as 
   let read = 0;
   await build({ caps, files: [{ path: "big.txt", size: 1_000_000, read: async () => ((read += 1), Buffer.alloc(0)) }] });
   assert.equal(read, 0);
+});
+
+test("files: a held value wrapped over line breaks in a run's file is not carried in part: a file is cut as the served cut read cuts it before the scrubber reads it", async () => {
+  // Wrapped over two line breaks, as a terminal or a PEM-style writer wraps it: the scrubber's held rule finds a form
+  // split by one run of blanks, and its final check reads only its own cut text; the served read withholds the text.
+  const held = `Wq${hex("wrapped-held", 34)}`;
+  const pieces = [held.slice(0, 12), held.slice(12, 24), held.slice(24)];
+  for (const content of [`deploy key: ${pieces.join("\n")}\n`, `token=${pieces[0]}\n${pieces[1]}\n\n${pieces[2]}\n`, `${pieces.join("\r\n")}`]) {
+    const { body, doc } = await build({ held: [held], files: [textFile("out/wrapped.txt", content)] });
+    for (const piece of pieces) assert.ok(!body.includes(piece), `${JSON.stringify(content.slice(0, 20))}: a piece of the held value is carried`);
+    assert.deepEqual(doc.files.map((file) => file.path), ["out/wrapped.txt"], "the file is still carried, cut");
+  }
+});
+
+test("files: a path holding a held value is cut in the bundle, and the file's content is still cut as that path's: .env.<held> is an env file", async () => {
+  const held = `Hp${hex("path-held", 30)}`;
+  const plain = `orchard${hex("plain-env", 12)}`;
+  const { body, doc } = await build({ held: [held], files: [textFile(`.env.${held}`, `APP_REGION=north\nAPP_NOTE=${plain}\n`)] });
+  assert.ok(!body.includes(held), "the held value in the path is carried");
+  assert.ok(!body.includes(plain), "an env file's value with no secret shape is carried");
+  assert.equal(doc.files.length, 1);
+});
+
+test("files: a census-cut run (its end erased a value it was handed, so the cut set no longer holds it) carries no file through runExport, whatever a file holds", async () => {
+  const erased = `Er${hex("erased-handed", 30)}`;
+  const reads = { ...readsOf({ rows: [] }), files: async () => ({ files: [textFile("out/key.txt", `the key: ${erased}\n`)], truncated: false }), cut: async () => ({ values: [], censusDigest: "d".repeat(64) }) };
+  const { body, doc } = await exported(reads);
+  assert.deepEqual(doc.files, []);
+  assert.deepEqual(doc.omitted, [{ what: "files", why: "uncounted" }, { what: "recordings", why: "never" }]);
+  assert.ok(!body.includes(erased) && !body.includes("out/key.txt"), "no file's content or name");
 });
 
 test("files: a run whose cut is its census's carries no file and names none, reading none; a file whose read fails is left out as unreadable", async () => {
@@ -436,6 +468,21 @@ test("LVI: a failed call's summary, the first line of its output, is cut with th
   assertNoPlanted(body, { pw: CTX_PW });
 });
 
+test("LVI: a failed env call's summary (`env; sleep 5`, timed out) is cut with its call's context: a plain variable's value is not carried", async () => {
+  // Its first line is a variable with no key-shaped name and no format: only the env command's context cuts it.
+  const region = `basin${hex("ctx-region", 10)}`;
+  const output = `APP_REGION=${region}\nAPP_SEED=${CTX_PW}\nCommand timed out after 5s`;
+  const { rows, calls } = callRows("Bash", { command: "env; sleep 5" }, output);
+  const failed = (row) => (row.kind === "tool_result" ? { ...row, tool_status: "failed", summary: `Bash failed: APP_REGION=${region}` } : row);
+  const { doc, body } = await exported(readsOf({ rows: rows.map(failed), calls: calls.map(failed) }));
+  assert.deepEqual(cutsAt(doc, "/rows/1/tool_result_preview").map((cut) => [cut.kind, cut.rule]), [["dump", "env-dump"]], JSON.stringify(doc.cuts));
+  assert.deepEqual(cutsAt(doc, "/rows/1/summary").map((cut) => [cut.kind, cut.rule]), [["dump", "env-dump"]], JSON.stringify(doc.cuts));
+  // `env; sleep 5` runs another command beside env: the whole one-line summary is the dump, its head with it.
+  assert.equal(valueAt(doc, "/rows/1/summary"), "[redacted:env-dump 1 lines]");
+  assert.ok(!body.includes(region), "the variable's value is not carried");
+  assertNoPlanted(body, { pw: CTX_PW });
+});
+
 test("LVI: a read of an unrelated file, or a command that is no read or dump, is cut as it was: its prose kept as is", async () => {
   for (const [name, tool, input, output] of [
     ["Read notes.txt, prose", "Read", { file_path: "notes.txt" }, "The notes say: meet at noon by the north door."],
@@ -508,12 +555,13 @@ test("LVI: a restore of a cut id a context-free read named on a call's output an
   await assert.rejects(exported(readsOf({ rows, calls }), [label.id]), (error) => error instanceof ApiError && error.status === 400 && /no cut/.test(error.message) && !error.message.includes(CTX_PW));
 });
 
-test("LVI: an env command a person approved: its outcome row's text holds one env-dump cut below the outcome's head line, and no planted value", async () => {
+test("LVI: an env command a person approved: its outcome row's text is one env-dump cut, its head line with it, and no planted value", async () => {
   for (const [tool, input] of [["Bash", { command: "env | sort" }], ["shell", { command: ["bash", "-lc", "printenv"] }], ["Bash", { command: "printenv" }]]) {
     const { doc, body } = await exported(readsOf(callRows(tool, input, CTX_ENV, { approved: true })));
     const at = doc.rows.findIndex((row) => row.id === "approval:toolu_01:after:outcome");
     assert.deepEqual(cutsAt(doc, `/rows/${at}/text`).map((cut) => [cut.kind, cut.rule, cut.restorable]), [["dump", "env-dump", false]], `${JSON.stringify(input)}: ${JSON.stringify(doc.cuts)}`);
-    assert.equal(doc.rows[at].text, `${tool} ran once you allowed it. Its result:\n[redacted:env-dump 2 lines]`);
+    // The whole text is the dump (11-25 read, P2-3): the outcome's head is never split from it on run-view's words.
+    assert.equal(doc.rows[at].text, "[redacted:env-dump 3 lines]");
     oneDump(doc, `/rows/${doc.rows.findIndex((row) => row.kind === "tool_result")}/tool_result_preview`, "env-dump");
     assertNoPlanted(body, { pw: CTX_PW });
   }

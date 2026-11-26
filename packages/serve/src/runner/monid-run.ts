@@ -179,11 +179,13 @@ export function withMonid(mcp: ClaimMcp | undefined, monid: ClaimMonid | undefin
   if (!monid) return mcp;
   return {
     tools: [...(mcp?.tools ?? []), ...monid.tools],
+    unconnected: mcp?.unconnected ?? [],
+    ...(mcp?.leftOut ? { leftOut: mcp.leftOut } : {}),
     catalogOf: (tool) => mcp?.catalogOf(tool) ?? monid.catalogOf(tool),
     argumentsOf: (name) => mcp?.argumentsOf(name),
     effectOf: (name) => mcp?.effectOf(name),
     priceOf: (name) => mcp?.priceOf(name) ?? monid.priceOf(name),
-    fresh: async () => mcp?.fresh(),
+    fresh: async () => (await mcp?.fresh()) ?? [],
     release: () => mcp?.release(),
   };
 }
