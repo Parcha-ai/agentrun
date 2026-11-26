@@ -14,6 +14,7 @@ This release keeps each agent's learning as rows in the server's store, SQLite o
 - Set an MCP tool's `file` option (`mcp[].file`) only once the server is on this release: an older server refuses a package that carries it (#3890).
 - If `<data>/claude-login` is a link, remove it before you turn AgentRun's own Claude login on again, and move what it led to into `<data>/claude-login` if you want that login kept (see Breaking, #3878).
 - On a server with no Docker box whose runner has no shell, name the place of each new agent, template apply and deploy package that names none: a box, or the runner (see Breaking, #3898). A client that read `features.harness_keys.kept` reads `GET /settings/harness-keys` instead (see Breaking, #3822).
+- On a server with no Docker box, an agent with a shell must name its place or computer. A template that names neither is now refused at import and apply (422, definition.place missing) instead of placed where it can't run (#3898).
 
 **Breaking:**
 
