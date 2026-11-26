@@ -2187,12 +2187,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const packageHarness = (pkg: Package): string | undefined => pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
   /** Each package's subagent tiers read against this server now, as a listing shows them (`model_tiers_here`): the
    *  harness an apply here would make its agent on (packageHarness), and the model of each tier it would keep there
-   *  (packageTiers), null where the package names none or this server would not use it, the tier then on this server's
-   *  own model for it; `note`, the warning that apply would give. */
+   *  (packageTiers), the agent's own tier on the model an apply with no override gives the agent (packageModel), as apply
+   *  saves it; null where the package names none or this server would not use it, the tier then on this server's own
+   *  model for it; `note`, the warning that apply would give. */
   const tiersHere = async (packages: readonly Package[]) => {
     const read = new Map(await Promise.all(packages.map(async (pkg) => {
       const harness = packageHarness(pkg) ?? DEFAULT_HARNESS;
-      const { modelTiers, warning } = await packageTiers(env, pkg.model, harness);
+      const { modelTiers, warning } = await packageTiers(env, pkg.model, harness, (await packageModel(env, pkg.model, harness)).model);
       return [pkg, { harness, fast: modelTiers?.fast ?? null, strong: modelTiers?.strong ?? null, note: warning ?? null }] as const;
     })));
     return (pkg: Package) => read.get(pkg)!;

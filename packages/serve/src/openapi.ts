@@ -1685,7 +1685,7 @@ const TEMPLATE = closed({
     type: "object", additionalProperties: false, required: ["harness", "fast", "strong", "note"],
     properties: {
       harness: { type: "string", description: "The harness an apply here with no `overrides.choice` would make the agent on: the first of `harness` this server runs now, else its first; with none named, the server's default." },
-      fast: { type: ["string", "null"], description: "The model the agent's `fast` subagents would run on: the package's `model.fast`, which apply keeps where this server runs it on `harness` with a key for its provider, never through a gateway (AGENT_MODEL_BASE_URL). Null: the package names none, or this server would not use it, and those subagents run on this server's model for the tier (AGENT_MODEL_FAST)." },
+      fast: { type: ["string", "null"], description: "The model the agent's `fast` subagents would run on: the package's `model.fast`, which apply keeps where this server runs it on `harness` with a key for its provider, never through a gateway (AGENT_MODEL_BASE_URL); with none named and `fast` the agent's own tier (`model.tier`), the model an apply with no override gives the agent. Null: the package names none, or this server would not use it, and those subagents run on this server's model for the tier (AGENT_MODEL_FAST)." },
       strong: { type: ["string", "null"], description: "The same for `strong` subagents (`model.strong`; else AGENT_MODEL_STRONG)." },
       note: { type: ["string", "null"], description: "What an apply here would say of them: its `model` warning naming a tier's model this server would not use. Null: none." },
     },

@@ -12,12 +12,14 @@ import { scratch, serve, withEnv } from "./support.mjs";
 const FAST = "anthropic/claude-haiku-4-5";
 const STRONG = "anthropic/claude-sonnet-4-5";
 const DELEGATES = `---\nname: delegates\nversion: 1.0.0\ndescription: Hands work to subagents.\ntools: [read, subagent]\nmodel:\n  tier: fast\n  fast: ${FAST}\n  strong: ${STRONG}\n---\nDelegate.\n`;
+/** Its own tier, fast, names no model of its own: its fast subagents run on the agent's own model, `prefer`. */
+const OWN_TIER = `---\nname: own-tier\nversion: 1.0.0\ndescription: Hands work to subagents on its own tier.\ntools: [read, subagent]\nmodel:\n  tier: fast\n  prefer: ${FAST}\n  strong: ${STRONG}\n---\nDelegate.\n`;
 const PLAIN = "---\nname: plain\nversion: 1.0.0\ndescription: Reads.\ntools: [read]\n---\nRead.\n";
 const GATEWAY = { AGENT_MODEL_BASE_URL: "https://gateway.example/v1", AGENT_MODEL_API_KEY: "fake-test-key", AGENT_MODEL: "gpt-6-luna" };
 
 async function server(t, env) {
   const dir = join(await scratch(t), "templates");
-  for (const [name, text] of Object.entries({ delegates: DELEGATES, plain: PLAIN })) {
+  for (const [name, text] of Object.entries({ delegates: DELEGATES, "own-tier": OWN_TIER, plain: PLAIN })) {
     mkdirSync(join(dir, name), { recursive: true });
     writeFileSync(join(dir, name, "agent.md"), text);
   }
@@ -41,6 +43,9 @@ test("a server that runs a package's tier models lists them as its subagents' mo
   assert.deepEqual(await read("delegates"), here, "one package's read says the same");
   assert.deepEqual(await applied("delegates"), { tiers: { fast: FAST, strong: STRONG }, warnings: [] }, "apply keeps what the listing said");
   assert.deepEqual(await listed("plain"), { harness: "pi", fast: null, strong: null, note: null }, "a package that names no model: its subagents on the server's");
+  // A tier the package names no model for that is the agent's own runs on the agent's model, as apply saves it.
+  assert.deepEqual(await listed("own-tier"), { harness: "pi", fast: FAST, strong: STRONG, note: null }, "the own tier is the agent's model, prefer");
+  assert.deepEqual((await applied("own-tier")).tiers, { fast: FAST, strong: STRONG }, "as apply saves it");
 });
 
 test("behind a model gateway, the package's tier models are listed as not used, with apply's warning, though a key for their provider is here", async (t) => {
