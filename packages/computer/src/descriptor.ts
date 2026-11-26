@@ -53,12 +53,17 @@ export interface HostCommand {
 
 /**
  * Where a provider keeps a secret it makes for itself (its descriptor's `secrets`): one value by each name, shared by
- * every provider made on the same store. A server's is sealed in its store; get answers undefined for none, and for one
- * that does not open there. A put replaces the value.
+ * every provider made on the same store, and by every process on it. A server's is sealed in its store.
  */
 export interface ProviderSecrets {
+	/** The value kept under `name`; undefined for none, and for one that does not open there. */
 	get(name: string): Promise<string | undefined>;
-	put(name: string, value: string): Promise<void>;
+	/**
+	 * Keeps `value` under `name` unless a value is kept there already, and answers the one kept: of callers racing on one
+	 * name, in this process or another on the same store, every one answers the same value. Undefined when none could be
+	 * kept.
+	 */
+	putIfAbsent(name: string, value: string): Promise<string | undefined>;
 }
 
 /**

@@ -277,9 +277,12 @@ test("the private key is in no note, no error and no inspection of the provider"
 	assert.deepEqual(leaks(JSON.stringify(notes), pem), []);
 	assert.deepEqual(leaks(inspect(provider, { depth: 8, showHidden: true }), pem), []);
 	assert.deepEqual(leaks(inspect(provider.host, { depth: 8, showHidden: true }), pem), []);
-	// A refused registration's words carry Agent37's, never the key.
+	// A refused registration's words carry Agent37's, never the key: on another store holding the same key (a restarted
+	// server's), whose registration this process has not made.
 	fake.rest.fail("GET", /^\/v1\/ssh-keys$/, () => jsonAnswer(500, { error: { code: "internal_error", message: "boom" } }));
-	const other = new Agent37Provider({ ...fake.options, secrets });
+	const restarted = memorySecrets();
+	restarted.held.set("ssh_key", pem);
+	const other = new Agent37Provider({ ...fake.options, secrets: restarted });
 	const failed = await other.host.create(request(), CTX).then(
 		() => assert.fail("made an instance"),
 		(error) => error,

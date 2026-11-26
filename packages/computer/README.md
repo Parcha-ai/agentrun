@@ -2218,19 +2218,26 @@ Every command then logs in to the instance's sshd with an SSH key registered on 
 provider's own:
 
 - On first use (the first `create` or exec, never at construction) the provider reads `ssh_key` from `options.secrets`,
-  the store it is given (`get(name)` and `put(name, value)`, `ProviderSecrets`; its descriptor declares the option as
-  `secrets`). With none there, it makes an Ed25519 key with `node:crypto`, puts its private half there (PKCS#8 PEM), and
-  reads it back, so two processes that make one at once on the same store both take the one it kept. Serve's store is
-  the server's sealed one: the row `computer.agent37.ssh_key` in `sealed_keys`, sealed under `AGENTRUN_SEAL_KEY`
-  (AES-256-GCM, as every saved key), one key per server store. Given no store (the conformance module, a caller of the
-  package alone), the key lives in the process's memory, one shared by its providers until it exits.
+  the store it is given (`get(name)` and `putIfAbsent(name, value)`, `ProviderSecrets`; its descriptor declares the
+  option as `secrets`). With none there, it makes an Ed25519 key with `node:crypto` and hands its private half (PKCS#8
+  PEM) to `putIfAbsent`, which keeps it only where no key is and answers the one kept. Of first uses racing on one
+  store, in one process or in several, every one takes the key the store kept, and only that key is registered. In one
+  process, every provider on the same store shares one making of the key and one registration of it on a workspace.
+  Serve's store is the server's sealed one: the row `computer.agent37.ssh_key` in `sealed_keys`, sealed under
+  `AGENTRUN_SEAL_KEY` (AES-256-GCM, as every saved key) and written only where no row is (`ON CONFLICT DO NOTHING`), one
+  key per server store. Given no store (the conformance module, a caller of the package alone), the key lives in the
+  process's memory, one shared by its providers until it exits.
+- So a server with no seal key (`AGENTRUN_SEAL_KEY` unset) makes and registers a new key each time it restarts. The
+  old one stays on the workspace and counts toward its 20 keys until someone deletes it.
 - It registers the public half before its first instance, so the instance has it from boot: `GET /v1/ssh-keys` (which
   echoes no key) matched by fingerprint (`SHA256:`, as `ssh-keygen -l` prints it), else `POST /v1/ssh-keys` with the
   OpenSSH line and the name `agentrun-<first 12 hex of the key's SHA-256>`. A 409 `ssh_key_exists` is a registration
-  another made, and taken as done. Each provider lists once; the key is reused for every instance.
+  another made, and taken as done. The registration is listed once per store and workspace in a process; the key is
+  reused for every instance.
 - Agent37 takes at most 20 keys a workspace, and the 21st POST answers 400 `invalid_request`. A workspace at 20 is
   refused before any instance, code `limit`, in words that name the cap, the `agentrun-…` keys AgentRun registered
-  (`DELETE /v1/ssh-keys/{id}`) and `AGENT37_SSH_KEY`. No key is deleted.
+  (`DELETE /v1/ssh-keys/{id}`) and `AGENT37_SSH_KEY`. No key is deleted. A 400 to the POST is read as the cap only when
+  its words say so or the workspace holds 20 keys when listed again; any other is code `vendor`, in Agent37's words.
 - Agent37 hands a new key to instances already running within about two minutes (docs: agents-api/ssh). A login an
   sshd refuses within three minutes of the key's registration is tried again every 2 s within the call's own bound; past
   them, it is `denied`, in words naming the instance, the key's fingerprint and its registration time, and the next call

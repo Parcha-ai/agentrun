@@ -362,10 +362,6 @@ export function memorySecrets() {
 		held,
 		puts,
 		get: async (name) => held.get(name),
-		put: async (name, value) => {
-			puts.push(name);
-			held.set(name, value);
-		},
 		putIfAbsent: async (name, value) => {
 			puts.push(name);
 			if (!held.has(name)) held.set(name, value);

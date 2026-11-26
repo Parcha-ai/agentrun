@@ -58,13 +58,15 @@ test("Agent37 needs AGENT37_API_KEY alone: AGENT37_SSH_KEY is an optional overri
 test("a provider whose descriptor declares its own secrets is built with the server's sealed store of them; any other gets none, and none without a seal key", async () => {
   const loaded = [];
   const load = async (id, options) => (loaded.push([id, options]), { id });
-  const store = { sealedKeys: { get: async () => undefined, put: async () => {}, remove: async () => {}, all: async () => [] }, computerLedger: {} };
+  const store = { sealedKeys: { get: async () => undefined, putIfAbsent: async () => true, replaceIf: async () => false, all: async () => [] }, computerLedger: {} };
   const { computerDeps } = computerDepsFrom({ env: {}, store, sealKey: randomBytes(32), load, daemon: async () => ({ up: true }) });
   await computerDeps.providers.agent37({ apiKey: "fake-test-key" }, { ledger: undefined });
   await computerDeps.providers.e2b({ apiKey: "fake-test-key" }, { ledger: undefined });
-  const [[, agent37], [, e2b]] = loaded;
+  await computerDeps.providers.agent37({ apiKey: "fake-test-key" }, { ledger: undefined });
+  const [[, agent37], [, e2b], [, again]] = loaded;
   assert.equal(typeof agent37.secrets?.get, "function");
-  assert.equal(typeof agent37.secrets?.put, "function");
+  assert.equal(typeof agent37.secrets?.putIfAbsent, "function");
+  assert.equal(again.secrets, agent37.secrets, "one store of them for the server's store: every provider on it shares its first use");
   assert.equal(e2b.secrets, undefined, "only a provider that declares it");
   const none = computerDepsFrom({ env: {}, store, sealKey: undefined, load, daemon: async () => ({ up: true }) });
   await none.computerDeps.providers.agent37({ apiKey: "fake-test-key" }, { ledger: undefined });
@@ -147,8 +149,11 @@ test("two servers on one database at their first use together keep one key: the 
   t.after(() => fake.sshd.close());
   const sealKey = randomBytes(32);
   const { reopen } = await storeFile(t);
+  // SQLite takes one server a file, so the two are two handles on the one store's rows: each a store of its own to the
+  // server's code (its own provider secrets, its own key in the making, its own registrations), as on Postgres.
   const writes = { n: 0 };
-  const stores = [slowReads(await reopen(), writes), slowReads(await reopen(), writes)];
+  const base = await reopen();
+  const stores = [slowReads(base, writes), slowReads(base, writes)];
   const providers = await Promise.all(
     stores.flatMap((store) => {
       const { computerDeps } = computerDepsFrom({ env: {}, store, sealKey, load: (id, options) => providerFor(id, options), daemon: async () => ({ up: true }) });

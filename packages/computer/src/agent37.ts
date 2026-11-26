@@ -160,13 +160,56 @@ const SSH_KEY_CALL_MS = 30_000;
 /** Where a provider given no store keeps its own key: this process's memory, one key shared by its providers. */
 const PROCESS_SECRETS: ProviderSecrets = (() => {
 	const held = new Map<string, string>();
-	return { get: async (name) => held.get(name), put: async (name, value) => void held.set(name, value) };
+	return {
+		get: async (name) => held.get(name),
+		putIfAbsent: async (name, value) => {
+			if (!held.has(name)) held.set(name, value);
+			return held.get(name);
+		},
+	};
 })();
+/** Words in a 400 to POST /v1/ssh-keys that say it is the workspace's cap, not the key. */
+const CAP_SAID = /\b(?:at most|maximum|limit|too many)\b/i;
+
+/**
+ * Each store's own key, on its way or kept: one read, make and putIfAbsent for every provider on the store in this
+ * process, so of first uses together one key is made; dropped when it fails.
+ */
+const KEPT = new WeakMap<ProviderSecrets, Promise<string>>();
+/**
+ * Each store's registrations of its key, by workspace and fingerprint, and when each was made (ms): one listing and at
+ * most one POST /v1/ssh-keys for every provider on the store in this process; dropped when one fails, and when the key
+ * is refused past KEY_SETTLE_MS (it may be gone from the workspace).
+ */
+const REGISTERED = new WeakMap<ProviderSecrets, Map<string, Promise<number>>>();
+
+/** What `held` has under `key`, else `make()` put there: every caller waits on the one promise, dropped when it fails. */
+function sharedBy<K, T>(held: { get(key: K): Promise<T> | undefined; set(key: K, value: Promise<T>): unknown; delete(key: K): unknown }, key: K, make: () => Promise<T>): Promise<T> {
+	const known = held.get(key);
+	if (known !== undefined) return known;
+	const making = make();
+	held.set(key, making);
+	making.catch(() => {
+		if (held.get(key) === making) held.delete(key);
+	});
+	return making;
+}
+
+/**
+ * The ed25519 key `secrets` keeps (PKCS#8 PEM), else a new one kept there by putIfAbsent: of first uses racing on the
+ * store, in this process or another, every one answers the key the store kept, and only that one is registered.
+ */
+async function keptKey(secrets: ProviderSecrets): Promise<string> {
+	const kept = (await secrets.get(SSH_KEY_SECRET)) ?? (await secrets.putIfAbsent(SSH_KEY_SECRET, newEd25519()));
+	if (kept === undefined) throw new HostError("vendor", "this server's own SSH key could not be kept in its store: it kept none, and read none back");
+	if (ed25519PublicOf(kept) === undefined) throw new HostError("vendor", `this server's store holds a value as its own SSH key (${SSH_KEY_SECRET}) that is not an ed25519 private key: set AGENT37_SSH_KEY to the private half of a key on the workspace`);
+	return kept;
+}
 
 /** The SSH key a login takes: in the form ssh2 reads; for the provider's own, its fingerprint and when the workspace registered it. */
 interface LoginKey {
 	privateKey: string;
-	own?: { fingerprint: string; registeredAt: number };
+	own?: { fingerprint: string; registeredAt: number; /** Drops the store's registration, so the next call lists the workspace's keys again. */ forget: () => void };
 }
 
 /** An id held to Agent37's form before it reaches a URL or a host name (an id is also a DNS label here): not_found else. */
@@ -326,6 +369,8 @@ class Agent37Host implements MachineHost {
 	readonly #declared: { type: Agent37Type; region: Agent37Region };
 	readonly #secrets: ProviderSecrets;
 	readonly #onNote: ProviderNote | undefined;
+	/** The workspace a registration is made on: the API URL and the API key's SHA-256, never the key. */
+	readonly #workspace: string;
 	/** The key every login takes: the given one from the start; the provider's own once kept and registered. */
 	#key: LoginKey | undefined;
 	/** The provider's own key on its way: kept and registered once, every call waiting on the same; dropped when it fails. */
@@ -336,6 +381,7 @@ class Agent37Host implements MachineHost {
 		this.#key = options.sshKey === undefined ? undefined : { privateKey: options.sshKey };
 		this.#secrets = options.secrets;
 		this.#onNote = options.onNote;
+		this.#workspace = `${options.apiUrl} ${createHash("sha256").update(options.apiKey, "utf8").digest("hex")}`;
 		this.#ssh = new SshExec({
 			ssh2: options.ssh2,
 			loginOf: () => ({ username: "root", privateKey: this.#key?.privateKey }),
@@ -398,6 +444,7 @@ class Agent37Host implements MachineHost {
 		} catch (error) {
 			if (key.own === undefined || codeOf(error) !== "denied") throw error;
 			if (this.#key === key) this.#ready = undefined;
+			key.own.forget();
 			const { fingerprint, registeredAt } = key.own;
 			throw new HostError(
 				"denied",
@@ -427,28 +474,26 @@ class Agent37Host implements MachineHost {
 		}
 	}
 
-	/** The provider's own key, kept (#keptKey) and registered (#register): the key every login takes from then on. */
+	/**
+	 * The provider's own key, the one its store keeps (keptKey), registered on the workspace (#register): the key every
+	 * login takes from then on. Both are the store's in this process, shared by every provider on it.
+	 */
 	async #ownKey(): Promise<LoginKey> {
-		const pem = await this.#keptKey();
+		const secrets = this.#secrets;
+		const pem = await sharedBy(KEPT, secrets, () => keptKey(secrets));
 		const pub = ed25519PublicOf(pem) as SshPublicKey;
-		const registeredAt = await this.#register(pub);
+		let registrations = REGISTERED.get(secrets);
+		if (registrations === undefined) REGISTERED.set(secrets, (registrations = new Map()));
+		const at = `${this.#workspace} ${pub.fingerprint}`;
+		const registering = sharedBy(registrations, at, () => this.#register(pub));
+		const registeredAt = await registering;
 		const privateKey = pemOf(pem);
 		if (privateKey === undefined) throw new HostError("vendor", `this server's own SSH key ${pub.fingerprint} could not be read as SSH reads it`);
-		this.#key = { privateKey, own: { fingerprint: pub.fingerprint, registeredAt } };
+		const forget = () => {
+			if (registrations.get(at) === registering) registrations.delete(at);
+		};
+		this.#key = { privateKey, own: { fingerprint: pub.fingerprint, registeredAt, forget } };
 		return this.#key;
-	}
-
-	/**
-	 * The ed25519 key the store keeps (PKCS#8 PEM), else a new one, put there first. Another process on the same store
-	 * may put its own at the same moment: the store is read again after the put, and the key it keeps is the one used.
-	 */
-	async #keptKey(): Promise<string> {
-		const kept = await this.#secrets.get(SSH_KEY_SECRET);
-		if (kept !== undefined && ed25519PublicOf(kept) !== undefined) return kept;
-		const made = newEd25519();
-		await this.#secrets.put(SSH_KEY_SECRET, made);
-		const read = await this.#secrets.get(SSH_KEY_SECRET);
-		return read !== undefined && ed25519PublicOf(read) !== undefined ? read : made;
 	}
 
 	/**
@@ -475,9 +520,14 @@ class Agent37Host implements MachineHost {
 		try {
 			status = orThrow(await this.#client.call("POST", this.#client.url("/v1/ssh-keys"), { json: { public_key: `${line} ${name}`, name }, timeoutMs: SSH_KEY_CALL_MS, accept: (code) => (code >= 200 && code < 300) || code === 409 })).status;
 		} catch (error) {
-			// The one line this sends is well formed: a 400 is the cap, reached since the listing.
-			if (error instanceof HostError && error.code === "invalid") throw fullOf(`Agent37 said so: ${error.message}`);
-			throw failed(error);
+			if (!(error instanceof HostError) || error.code !== "invalid") throw failed(error);
+			// A 400 is the cap when its words say so, or when the workspace holds 20 keys now (taken since the listing);
+			// any other is Agent37's refusal of the key, in its words.
+			if (CAP_SAID.test(error.message)) throw fullOf(`Agent37 said so: ${error.message}`);
+			const again = await this.#rest<{ data?: unknown }>("GET", "/v1/ssh-keys", undefined, { timeoutMs: SSH_KEY_CALL_MS }).catch(() => undefined);
+			const held = Array.isArray(again?.data) ? again.data.length : 0;
+			if (held >= MAX_SSH_KEYS) throw fullOf(`the workspace holds ${held}`);
+			throw new HostError("vendor", `this server's own SSH key ${fingerprint} could not be registered on the Agent37 workspace: Agent37 refused it: ${error.message}`);
 		}
 		if (status !== 409) this.#onNote?.({ computer: name, note: `this server's own SSH key ${fingerprint} was registered on the Agent37 workspace as ${name}` });
 		return Date.now();
@@ -693,7 +743,7 @@ export class Agent37Provider extends HostedProvider {
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Agent37 API key, is required: the provider reads no environment, so the caller passes it");
 		const privateKey = typeof sshKey === "string" ? pemOf(sshKey) : undefined;
 		if (sshKey !== undefined && privateKey === undefined) throw new Error("options.sshKey must be the contents of an SSH private key (-----BEGIN ... PRIVATE KEY-----), never a path");
-		if (typeof secrets?.get !== "function" || typeof secrets.put !== "function") throw new Error("options.secrets must be a store of the provider's own secrets, with get and put, as a server's sealed one is");
+		if (typeof secrets?.get !== "function" || typeof secrets.putIfAbsent !== "function") throw new Error("options.secrets must be a store of the provider's own secrets, with get and putIfAbsent, as a server's sealed one is");
 		if (typeof (ssh2 as { Client?: unknown } | null)?.Client !== "function") throw new Error("options.ssh2 must be the ssh2 package (its Client class): the host installs it, as it does e2b");
 		if (typeof fetcher !== "function") throw new Error("options.fetch must be a function, as the global fetch is");
 		if (typeof WebSocket !== "function") throw new Error("options.WebSocket must be a WebSocket class that takes headers, as Node's global one does");
