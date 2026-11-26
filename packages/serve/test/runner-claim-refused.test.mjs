@@ -117,7 +117,7 @@ test("a claim resuming from a park whose records no longer cross the channel to 
     store: opened.runners[0],
     name: "runner-1",
     ...TIMING,
-    createLoop: () => ({ start: async (claim) => (froms.push(claim.from), Promise.reject(new FrameTooLarge("an answer", 34_369_258, 33_554_432))), command: async () => ({ later: "no loop" }), stop: async () => {} }),
+    createLoop: () => ({ start: async (claim) => (froms.push(claim.from), Promise.reject(new FrameTooLarge("an answer of 34369258 bytes is past the channel's 33554432"))), command: async () => ({ later: "no loop" }), stop: async () => {} }),
     onEvent: (event) => {
       events.push(event);
       if (event.type === "released" && event.runId === "run-1") released(event);

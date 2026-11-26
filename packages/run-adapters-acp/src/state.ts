@@ -27,8 +27,7 @@ export type StateRecord = Readonly<Record<string, unknown>>;
 
 /** A piece of a file's bytes, by its sha256 (base64 `data`): written once per session. */
 interface PieceRecord { piece: string; data: string }
-/** A file: its path in HOME, its sha256, and its pieces in order; or that it was deleted. A record of any other shape (a
- *  whole file in one record, as before pieces) is no file of the mirror's: it restores nothing. */
+/** A file: its path in HOME, its sha256, and its pieces in order; or that it was deleted. */
 type FileRecord = { path: string; sha256: string; pieces: string[]; deleted?: undefined } | { path: string; deleted: true };
 /** The mirror passed its budget: `bytes` its records would have held, past `limit`. No file is restored after it. */
 interface DroppedRecord { dropped: true; bytes: number; limit: number }
@@ -166,7 +165,7 @@ export function restoreState(home: string, records: readonly StateRecord[]): voi
 
 /** The mirror of one agent process's HOME: what changed since the records' newest, appended to `journal`. */
 export class StateMirror {
-  private readonly known = new Map<string, string>();
+  private known = new Map<string, string>();
   /** The pieces the session's records hold already. */
   private readonly pieces = new Set<string>();
   /** The bytes the session's mirror records hold. */
@@ -236,8 +235,7 @@ export class StateMirror {
     for (const record of records) journal.append(stream, record);
     this.spent += bytes;
     for (const piece of pieces) this.pieces.add(piece);
-    this.known.clear();
-    for (const [path, digest] of known) this.known.set(path, digest);
+    this.known = known;
     return records.length;
   }
 }

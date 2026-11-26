@@ -1,12 +1,12 @@
-// A zip archive unpacked by node alone (Google Antigravity's release is a zip on every platform): no unzip on the host is
-// needed or run. Only a verified archive reaches it (harness-archive.ts checks its sha256 first), and still it trusts
+// A zip archive unpacked by node alone: no unzip on the host is needed or run. Only a verified archive reaches it (harness-archive.ts checks its sha256 first), and still it trusts
 // nothing the archive says:
 //  - its central directory is read from the end (zip64 too), and each entry's data is found from its own local header;
 //  - a name that is absolute, holds `..`, a backslash, a drive letter or a NUL is refused, as is any name twice;
 //  - a symlink, a device or any type but a file or a folder is refused, as is an encrypted entry or a method other than
 //    stored and deflate;
 //  - each file is written new (never over another), its size and CRC-32 checked against the directory's, its execute
-//    bits kept (0755, else 0644), and the sum of what it unpacks is held under a limit, checked before and while writing.
+//    bits kept (0755, else 0644); the sum of what it declares is held under a limit before writing, and each file to its
+//    declared size while writing.
 // A refusal throws before or while writing into `root`, which is the caller's fresh folder to remove.
 import { createReadStream, createWriteStream } from "node:fs";
 import { chmod, mkdir, open, type FileHandle } from "node:fs/promises";
@@ -15,7 +15,7 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { crc32, createInflateRaw } from "node:zlib";
 
-/** The most a zip may unpack to, all its files together: Antigravity's 274 MB zip unpacks to 853 MB. */
+/** The most a zip may unpack to, all its files together. */
 export const ZIP_MAX_UNPACKED = 4 * 1024 * 1024 * 1024;
 /** The most entries a zip may hold. */
 const ZIP_MAX_ENTRIES = 100_000;
@@ -133,7 +133,6 @@ export async function unzipInto(archive: string, root: string, options: { maxUnp
     const entries = await directory(file, (await file.stat()).size);
     const total = entries.reduce((sum, entry) => sum + (entry.dir ? 0 : entry.size), 0);
     if (total > maxUnpacked) throw new Error(`it unpacks to ${total} bytes, past the ${maxUnpacked} a zip may`);
-    let written = 0;
     for (const entry of entries) {
       const target = join(root, ...entry.name.split("/"));
       if (entry.dir) {
@@ -150,8 +149,7 @@ export async function unzipInto(archive: string, root: string, options: { maxUnp
       const counted = new Transform({
         transform(chunk: Buffer, _encoding, done) {
           got += chunk.length;
-          written += chunk.length;
-          if (got > entry.size || written > maxUnpacked) return done(new Error(`its entry ${JSON.stringify(entry.name)} unpacks past the size its directory says`));
+          if (got > entry.size) return done(new Error(`its entry ${JSON.stringify(entry.name)} unpacks past the size its directory says`));
           crc = crc32(chunk, crc);
           done(null, chunk);
         },

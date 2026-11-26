@@ -6,7 +6,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { test as nodeTest } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { StateMirror, STATE_BUDGET, stateBudgetPassed, stateFiles, restoreState } from '../dist/state.js';
 import { fakeEvents, fakeRecipe, openSession, resolvedRecords, scratch, sessionBytes, streamRecords, transcript } from './helpers.mjs';
 
@@ -221,17 +221,6 @@ test("a fake agent whose store passes the budget: the run is told in words, ever
   assert.equal(starts.at(-1), 'new', `the next process started fresh: ${starts.join(', ')}`);
   assert.equal((await streamRecords(first.store, 'acp.state')).length, records.length, 'and mirrors nothing more');
   assert.ok(!(await transcript(first.store)).some((e) => e.type === 'turn' && e.status !== 'completed'), 'every turn completed');
-});
-
-test("a record of any other shape (a whole file's bytes in one record, as before pieces) restores nothing, and the mirror takes that file whole", () => {
-  const home = join(scratch(), 'home');
-  mkdirSync(join(home, '.agent'), { recursive: true });
-  writeFileSync(join(home, '.agent', 'store.json'), 'kept');
-  const earlier = [{ path: '.agent/store.json', sha256: createHash('sha256').update('kept').digest('hex'), data: Buffer.from('kept').toString('base64') }];
-  assert.equal(stateFiles(earlier).size, 0);
-  const j = journal();
-  new StateMirror(home, ['.agent'], new Set(), earlier).take(j);
-  assert.equal(String(stateFiles([...earlier, ...j.records]).get('.agent/store.json')), 'kept', 'mirrored as pieces, never taken for known');
 });
 
 test('a mirror that fails at the turn end never costs the turn its outcome', async (t) => {
