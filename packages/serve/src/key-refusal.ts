@@ -7,7 +7,7 @@ import { harnessOf } from "./harness-table.js";
 import { cutSecrets, endsInScheme, foldsHeld, redactSecrets, secretShapes, valueLeft, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
-import { entityAt, joinDrops, jsonEscapeAt, privateKeyEnd, pythonEscapeAt, scanned, sequenceAt, type SequenceUnits, squeeze, type Span } from "./redact/match.js";
+import { entityAt, joinDrops, jsonEscapeAt, jsonEscapeOnceAt, privateKeyEnd, pythonEscapeAt, scanned, sequenceAt, type SequenceUnits, squeeze, type Span } from "./redact/match.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -367,35 +367,50 @@ function counted(found: number, chars: string, fold: boolean): number {
 /** Whether `char` opens a terminal sequence (ESC, the 8-bit CSI or OSC): the views read one as a terminal shows it. */
 const opensSequence = (char: string | undefined): boolean => char === "\u001b" || char === "\u009b" || char === "\u009d";
 /** Where the terminal sequence `intro` opens, read on from text[at], ends, read by the matcher's sequence rules
- *  (match.ts sequenceAt), each unit as charAt or percentAt decodes it; or `at` where it opens none (the views then read on from
- *  there). It counts as nothing, and a backspace inside it, which still moves back, as one would outside it: `found`
- *  comes back with it taken off (counted). A unit that decodes to nothing (an escaped quote, which the view that reads
- *  a string written in a string drops) is passed over. It is read twice, as it stands and with what the join views
- *  drop passed over too (match.ts joinDrops: a ":" or a blank they drop can make a whole escape of the rest), and the
- *  read that ends further is taken. Read no further than a piece of text.
+ *  (match.ts sequenceAt); or `at` where it opens none (the views then read on from there). It counts as nothing, and a
+ *  backspace inside it, which still moves back, as one would outside it: `found` comes back with it taken off
+ *  (counted). It is read three times, and the read that ends furthest is taken:
+ *  - each unit as charAt or percentAt decodes it (every layer at once, JSON's two levels among them), a unit that
+ *    decodes to nothing (an escaped quote, which the view that reads a string written in a string drops) passed over;
+ *  - the same, with what the join views drop passed over too (match.ts joinDrops: a ":" or a blank they drop can make
+ *    a whole escape of the rest);
+ *  - each unit through one level of Python's and JSON's escapes alone (pythonEscapeAt at one level, match.ts
+ *    jsonEscapeOnceAt), as the views that read a string's text once do: where a string ends right after an ST written
+ *    "\u001b" and two backslashes, the second level reads the backslashes and the closing quote as one escaped quote
+ *    and loses the ST's backslash (JSON's drops it, Python's reads an apostrophe; so does an ST written "\u001b\u005c"
+ *    before the quote). This read's end is taken only where it is also an end of a unit as the first two read them,
+ *    or where what is left of that unit is a quote, after any backslashes (the escaped quote that took the ST's
+ *    backslash): elsewhere the rest would be read from inside an escape the other reads decode whole ("\\u001b" read
+ *    once is a backslash and five characters).
+ *  Read no further than a piece of text.
  *
  *  The invariant every count here keeps is one-sided: this read may count fewer characters than the views show
  *  (it then reads further), never more, so no padding the views read past pushes a held value's other half out of
  *  the read. */
 function sequenceEnd(text: string, at: number, to: number, intro: string, found: number): [number, number] {
-  let place = -1;
-  let read: { char: string; end: number } = { char: "", end: at };
-  const unit = (k: number) => {
-    if (k !== place) [place, read] = [k, percentAt(text, k, to) ?? charAt(text, k)];
-    return read;
+  const unitsOf = (decode: (k: number) => { char: string; end: number }): SequenceUnits => {
+    let place = -1;
+    let read: { char: string; end: number } = { char: "", end: at };
+    const unit = (k: number) => {
+      if (k !== place) [place, read] = [k, decode(k)];
+      return read;
+    };
+    return { end: Math.min(to, at + ANSWER_PIECE + 1), code: (k) => unit(k).char.charCodeAt(0), char: (k) => unit(k).char, next: (k) => unit(k).end };
   };
-  const units: SequenceUnits = {
-    end: Math.min(to, at + ANSWER_PIECE + 1),
-    code: (k) => unit(k).char.charCodeAt(0),
-    char: (k) => unit(k).char,
-    next: (k) => unit(k).end,
-  };
+  const units = unitsOf((k) => percentAt(text, k, to) ?? charAt(text, k));
+  const once = unitsOf((k) => pythonEscapeAt(text, k, 1) ?? jsonEscapeOnceAt(text, k) ?? { char: text[k]!, end: k + 1 });
   const code = intro.charCodeAt(0);
   // A unit decoded to nothing (an escaped quote: jsonEscapeAt) has no code; the view it comes from records nothing
-  // there, so both reads pass over it.
+  // there, so every read passes over it (one level of Python's and JSON's escapes never decodes to nothing: passed the same, as a no-op).
   const empty = (unit: number): boolean => Number.isNaN(unit);
   const reads = [sequenceAt(units, code, at, empty), sequenceAt(units, code, at, (unit) => empty(unit) || joinDrops(unit))];
-  const sequence = reads.reduce((far, one) => (one && (!far || one.end > far.end) ? one : far), undefined);
+  let sequence = reads.reduce((far, one) => (one && (!far || one.end > far.end) ? one : far), undefined);
+  const single = sequenceAt(once, code, at, empty);
+  if (single && (!sequence || single.end > sequence.end)) {
+    let k = at;
+    while (k < single.end) k = units.next(k);
+    if (/^(\\*["'])?$/.test(text.slice(single.end, k))) sequence = single;
+  }
   if (!sequence) return [at, found];
   let count = found;
   for (let n = 0; n < sequence.backspaces; n++) count = counted(count, "\b", false);

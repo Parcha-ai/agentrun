@@ -901,6 +901,13 @@ const pythonEscape = (levels: 1 | 2, json: Decoder): Decoder => ({
 });
 const PYTHON_ESCAPE = pythonEscape(1, JSON_ESCAPE_ONCE);
 const PYTHON_ESCAPE_TWICE = pythonEscape(2, JSON_ESCAPE_QUOTED);
+/** One level of JSON's escapes at `at`, as the views that read a string's text once read it (JSON_ESCAPE_ONCE, the join
+ *  view's parts): a "\" and one of ESCAPED's keys (an escaped quote is a quote, "\\" a backslash read no further), or
+ *  "\u" and four hex digits; undefined where none starts. Never "". key-refusal.ts reads a terminal sequence through it
+ *  too, where JSON's second level would read a backslash and the quote after it as one escaped quote. */
+export function jsonEscapeOnceAt(text: string, at: number): { char: string; end: number } | undefined {
+  return text[at] === "\\" ? unescaped(text, at) : undefined;
+}
 /** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels ("" for an escaped
  *  quote, which decodes to nothing), and where it ends; undefined where no escape starts (the "\" is then itself).
  *  key-refusal.ts's peek counts an escape by it, so the read past a call's stop and the JSON view see the same
