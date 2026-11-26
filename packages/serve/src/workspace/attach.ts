@@ -390,8 +390,9 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
     // maxOutput of each kept; at the deadline or an abort it is sent KILL (computerd's guard then ends everything it
     // started), and once it ends its guard kills whatever it left, so nothing it started outlives it. `stdin`: the process
     // starts with its stdin open, and the bytes go by process.write, in chunks, its stdin closed after the last, so they
-    // are never in its argv or its environment (a checkout's token, pr-checkout.ts). A program that ends without reading
-    // them answers as it ended: a write it no longer takes is not the call's failure, as a closed pipe's is not.
+    // are never in its argv or the environment it starts with (a checkout's token, pr-checkout.ts, which then puts it in
+    // the environment of its fetch's git calls alone). A program that ends without reading them answers as it ended: a
+    // write it no longer takes is not the call's failure, as a closed pipe's is not.
     async exec(argv: readonly string[], options: ExecOptions): Promise<ExecResult> {
       if (options.network !== undefined) throw new WorkspaceError("REFUSED", "a command in a computer has the computer's own network: its exec takes no network of its own, and nothing ran");
       const { timeoutMs, signal } = options;
@@ -408,10 +409,17 @@ export function attachedWorkspace(base: Workspace, computer: AttachableComputer,
           const wrote = await call("process.write", { id, data: base64(part), ...(i === parts.length - 1 ? { close: true } : {}) });
           if (wrote.ok) continue;
           // computerd answers invalid once the program closed its stdin or ended (EPIPE, EIO, a closed file, "has ended",
-          // "stdin is closed"): the program answers as it ended. A write it did not read in time (timeout), a lost
-          // connection or any other failure fails the call, which kills the process (the catch below); after this
-          // call's own deadline or abort, that answer stands instead.
-          if (wrote.error.code === "invalid" || timedOut || aborted) return;
+          // "stdin is closed"): the program answers as it ended. Its catch-all for any other error of the write is
+          // invalid too, answered before it closes the stdin a last write asks to close, so the stdin is closed now (its
+          // answer not read: an ended program's is invalid as well), and a program still reading sees its input end and
+          // answers at once, not at the call's deadline. A write it did not read in time (timeout), a lost connection or
+          // any other failure fails the call, which kills the process (the catch below); after this call's own deadline
+          // or abort, that answer stands instead.
+          if (timedOut || aborted) return;
+          if (wrote.error.code === "invalid") {
+            await call("process.write", { id, close: true }).catch(() => undefined);
+            return;
+          }
           throw new WorkspaceError(CODES[wrote.error.code] ?? "UNAVAILABLE", `${JSON.stringify(rel === "" ? "." : rel)}: the program's input could not be written: ${wrote.error.message}`, { path: rel });
         }
       };

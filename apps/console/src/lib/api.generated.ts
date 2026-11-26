@@ -4103,6 +4103,12 @@ export interface operations {
           dropped: string[];
           note: string | null;
         } | null;
+        model_tiers_here: {
+          harness: string;
+          fast: string | null;
+          strong: string | null;
+          note: string | null;
+        };
         category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
         tags: string[];
         mcp: {
@@ -4688,6 +4694,12 @@ export interface operations {
           dropped: string[];
           note: string | null;
         } | null;
+        model_tiers_here: {
+          harness: string;
+          fast: string | null;
+          strong: string | null;
+          note: string | null;
+        };
         category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
         tags: string[];
         mcp: {
@@ -5654,6 +5666,12 @@ export interface operations {
           dropped: string[];
           note: string | null;
         } | null;
+        model_tiers_here: {
+          harness: string;
+          fast: string | null;
+          strong: string | null;
+          note: string | null;
+        };
         category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
         tags: string[];
         mcp: {

@@ -508,7 +508,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   holds.hold({ tools: { end: () => remoteProjectCapture ? Promise.resolve() : tools.end() } });
   // On an Archil region with no serverless exec, the checkout now, as the pi spec makes it (pr-checkout.ts).
   if (body.checkout && noExec !== undefined) {
-    checkout = await checkoutWhereNoExec(deps, tools.shell === "computer" ? tools.workspace : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
+    checkout = await checkoutWhereNoExec(deps, tools.shell === "computer" ? { workspace: tools.workspace, fresh: computer.fresh === true } : undefined, noExec, launch, cut, claimSignal, (part) => holds.hold({ checkout: part }), body.checkout, (words) => run.phase?.(words));
     holds.hold({ checkout });
   }
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
@@ -544,8 +544,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     holdClaimed(redact, claimed);
     if (runKey) holdRunKey(redact, runKey);
   }
-  // A held run its model kept from running asks for no login, here or of its runner: its agent never starts.
-  const login = heldRefusal !== undefined ? undefined : await runLoginOf(deps, keyed, name, launch, hold);
+  // A run that sends no model key (claim-secrets.ts sendsNoModelKey: a held run its model kept from running, any run on a
+  // --faux runner, a faux-pinned one) asks for no login, here or of its runner: the login is a model credential like any
+  // key.
+  const login = sendsNoModelKey(launch, deps.env ?? {}) ? undefined : await runLoginOf(deps, keyed, name, launch, hold);
   const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey, claim), login);
   // A plan-billed recipe's keys saved for its harness alone (harness-keys.ts), opened at each claim for this run's harness
   // and no other (a run's own process asks its runner, which opens its claim's own: held.ts harnessKeys), held by the

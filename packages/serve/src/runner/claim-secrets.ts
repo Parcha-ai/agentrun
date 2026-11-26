@@ -82,11 +82,12 @@ export async function claimSecrets(deps: ClaimSecretsDeps & PlanHandBack & { rea
   const needs = await needsOf(revision);
   const keyless = sendsNoModelKey(launch, deps.env ?? {});
   const modelRefused = launch.hold?.refused !== undefined;
-  // A run that sends no model key (sendsNoModelKey) lays none, so its claim opens none: a key it never lays is never
-  // decrypted. A run with decision nodes still reads the decision keys' own names (DECISION_KEY_NAMES: Jev's TypeSafe key,
-  // OpenRouter's), which decisionKeysFor lays as decision keys alone; the model key filter below lays none of them as a
-  // model key. Parallel's is no model key's name, so it is never left unread. A held run its model kept from running
-  // (hold.refused) lays no built-in harness's own key either (its agent never starts), so it opens none of those.
+  // A run that sends no model key (sendsNoModelKey) lays none, so its claim reads none for the run: a key it never lays is
+  // never read for it (the run's redactors still hold every sealed secret: store-secrets.ts holdStored). A run with
+  // decision nodes still reads the decision keys' own names (DECISION_KEY_NAMES: Jev's TypeSafe key, OpenRouter's), which
+  // decisionKeysFor lays as decision keys alone; the model key filter below lays none of them as a model key. Parallel's
+  // is no model key's name, so it is never left unread. A held run its model kept from running (hold.refused) lays no
+  // built-in harness's own key either (its agent never starts), so it reads none of those for the run.
   const deciding = keyless && needs.decisionProviders.length > 0;
   const unread = [...(keyless ? MODEL_KEY_NAMES.filter((name) => !(deciding && DECISION_KEY_NAMES.has(name))) : []), ...(modelRefused ? BUILTIN_OWN_KEYS : [])];
   const working = await workingEnv(deps, unread);
