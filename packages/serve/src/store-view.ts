@@ -364,7 +364,7 @@ const waitingMessage = (command: Command): boolean => command.kind === "steer" &
  *  end: completed (or as its job ended), its answer, its end time, its learning reflecting, while its runner still holds
  *  it. A person's message waiting (not taken yet) makes it a run going on again, as a completed run a message opens again
  *  reads: its end is the message's turn's to write. */
-async function lookingBackOf(stored: RunRow, entries: Awaited<ReturnType<typeof journalRecords>>["entries"], commands: () => Promise<readonly Command[]>): Promise<KeptEnd | undefined> {
+export async function lookingBackOf(stored: RunRow, entries: Awaited<ReturnType<typeof journalRecords>>["entries"], commands: () => Promise<readonly Command[]>): Promise<KeptEnd | undefined> {
   if (stored.state !== "running") return undefined;
   const rows = await commands();
   const kept = keptEndOf(entries, rows);

@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve
+kind: fix
+---
+A new run now waits on another run's correction only while that run's learning step runs after its job (the compile turn after a follow-up or a grade), not during the person's follow-up turn itself. A run launched while a follow-up turn is still running starts from its agent's learning as it is then, with no wait. A run launched once the corrected run reads `completed` still waits for the correction, as before. A stop or cancel during the wait now ends the run stopped at once, with nothing learned written. When the runner loses the run's claim or shuts down during the wait, the wait ends at once and the runner starts nothing, so another runner takes the run over. A run handed back before its first turn waits and reads its agent's learning again on its next claim. The wait polls less often the longer it lasts (250 ms, doubling to 2 s), and starting a learning run reads the commands of the agent's running runs in one query per 50 runs.
