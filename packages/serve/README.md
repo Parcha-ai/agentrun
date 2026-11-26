@@ -1026,7 +1026,8 @@ its tool among the agent's tools first, as the run's own file tools do: `files.w
 desktop, mounted or not. Naming a desktop does not grant its file ops. The shell's ops (`shell.run`, `processes.start`)
 follow `bash`'s setting alone, not a grant. An op the gate refuses whatever its arguments is not offered:
 `computer_op`'s op list and the script's `computer` declarations leave out an op whose tool the agent is not given, one
-held to a tool set to deny, and one held to a tool set to ask on a server where no one can approve. Leaving `read` out
+held to a tool set to deny, one held to a tool set to ask on a server where no one can approve, and one `bash`'s policy
+refuses whatever its command (`processes.start` under the read-only policy). Leaving `read` out
 keeps no file from an agent that has the shell, paired machines included: on a desktop with exec on,
 `computer.shell.run` reads and writes any file the desktop's user can, held to `bash`'s setting alone, which allows by
 default. To keep files from such an agent, set `bash` to deny or turn the desktop's exec off. Input ops on a desktop
