@@ -500,7 +500,7 @@ test("ownerWords: a message sent with said (POST /runs/{id}/messages) is the per
 
 // A host's follow-up past the row's cut (CAPS.text, 2,000 characters): ~3.5 KB of scaffolding with the person's words at
 // its end, which the row never shows.
-const longFollowUp = (words) => [`You are continuing a session.\n\n## Previous report\n${Array.from({ length: 40 }, (_, i) => `Finding ${i + 1}: step ${i + 1} is done, with nothing left open on it.`).join("\n")}`, `**Follow-up question**: ${words}`, "Reply in English."].join("\n\n");
+const longFollowUp = (words) => [`You are continuing a session.\n\n## Previous report\n${Array.from({ length: 60 }, (_, i) => `Finding ${i + 1}: step ${i + 1} is done, with nothing left open on it.`).join("\n")}`, `**Follow-up question**: ${words}`, "Reply in English."].join("\n\n");
 const shownRow = (id, text) => row(id, "user_message", { text: cut(text.trim(), CAPS.text) });
 
 test("ownerWords: a message past the row's cut (3.5 KB, no said) is its whole text from the run's commands, never the row's 2,000 characters", () => {
