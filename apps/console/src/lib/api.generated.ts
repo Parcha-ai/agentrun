@@ -317,6 +317,7 @@ export interface components {
     compile_usd?: number | null;
     followup_usd?: number | null;
     shadow_usd?: number | null;
+    check_usd?: number | null;
     share_usd?: number | null;
     plan?: {
       requests: number;
@@ -1092,6 +1093,12 @@ export interface components {
       firing_key: string;
     } | null;
     audit_of?: string | null;
+    learning_work: {
+      state: "none" | "running" | "ended";
+      runs: string[];
+      ended_at: string | null;
+      deadline_at: string | null;
+    };
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
     workflow?: {
       name: string | null;
@@ -3036,6 +3043,7 @@ export interface operations {
         compile_usd?: number | null;
         followup_usd?: number | null;
         shadow_usd?: number | null;
+        check_usd?: number | null;
         share_usd?: number | null;
         not_served?: "cost_stop" | "cut" | null;
       }[];
