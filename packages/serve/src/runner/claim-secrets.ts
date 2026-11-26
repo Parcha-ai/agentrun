@@ -6,10 +6,10 @@
 // providers they name, read once the claim's seed lay chose them (learnedDecisionKeys). So a run that names no monid never gets the monid key, and two runs on
 // one runner never see each other's keys: each claim reads its own, into its own environment. (MCP credentials are the
 // other per-claim secret; they come through mcp-claim.ts, which already opens them from the store under the claim.)
-import { decisionKeysFor, JEV_GATEWAY_KEY_ENV, JEV_KEY_ENV, JEV_OPENROUTER_KEY_ENV, PARALLEL_KEY_ENV, providersNamed } from "../decisions.js";
+import { decisionKeysFor, decisionsUseGatewayKey, JEV_GATEWAY_KEY_ENV, JEV_KEY_ENV, JEV_OPENROUTER_KEY_ENV, PARALLEL_KEY_ENV, providersNamed } from "../decisions.js";
 import type { LearnedWorkflow } from "../learning.js";
 import { FAUX_ENV, FAUX_PROVIDER, GATEWAY_KEY_ENV, hostModel, modelKeys, PROVIDER_KEYS, type Tier, tierModelOf, TIERS, workflowNodes } from "../model.js";
-import type { RunLaunch } from "../run-launch.js";
+import { readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { keysFor, needsOf, RUN_SECRETS, type RunNeeds } from "../run-secrets.js";
 import { DECISION_KEYS, withoutSecrets } from "../secrets.js";
 import { getSealedKey } from "../server-keys.js";
@@ -44,6 +44,9 @@ export interface ClaimSecretsDeps {
 
 /** What reads a run's launch sealed column. */
 type RunLaunchReader = { launch(runId: string): Promise<{ readonly sealed: Uint8Array | null }> };
+/** What reads a run's launch for its own model key: its sealed column, and its body, which says whether the run sends a
+ *  model key at all (sendsNoModelKey). */
+type RunModelKeyReader = { launch(runId: string): Promise<{ readonly sealed: Uint8Array | null; readonly body?: unknown }> };
 
 /** The environment a claimed run's tools run under: the runner's base (its secrets stripped), with the keys the run's
  *  revision needs read from the store on top — the tool keys its tools unlock, the model keys its model needs, and its
@@ -63,11 +66,19 @@ export async function claimSecrets(deps: ClaimSecretsDeps & { readonly redact: H
   const needs = await needsOf(revision);
   const keyless = sendsNoModelKey(launch, deps.env ?? {});
   // A run that sends no model key (sendsNoModelKey) lays none, so its claim opens none: a key it never lays is never
-  // decrypted. A run with decision nodes still reads each name its decision keys come from (DECISION_KEY_SOURCES: Jev's
-  // TypeSafe key, OpenRouter's, an OpenRouter gateway's), which decisionKeysFor lays as decision keys alone; the model key
-  // filter below lays none of them as a model key. Parallel's is no model key's name, so it is never left unread.
-  const unread = keyless ? MODEL_KEY_NAMES.filter((name) => !(needs.decisionProviders.length > 0 && DECISION_KEY_SOURCES.has(name))) : [];
+  // decrypted. A run with decision nodes still reads the decision keys' own names (DECISION_KEY_NAMES: Jev's TypeSafe key,
+  // OpenRouter's), which decisionKeysFor lays as decision keys alone; the model key filter below lays none of them as a
+  // model key. Parallel's is no model key's name, so it is never left unread.
+  const deciding = keyless && needs.decisionProviders.length > 0;
+  const unread = keyless ? MODEL_KEY_NAMES.filter((name) => !(deciding && DECISION_KEY_NAMES.has(name))) : [];
   const working = await workingEnv(deps, unread);
+  // The gateway's key (JEV_GATEWAY_KEY_ENV) is read for such a run only where its decisions would run on it
+  // (decisions.ts decisionsUseGatewayKey, asked of the keys read so far): never for a gateway off OpenRouter, nor where
+  // OpenRouter's own key or TypeSafe's answers its nodes. A web tool of a run that sends no model key is ranked by no Jev.
+  if (deciding && decisionsUseGatewayKey(working, { providers: needs.decisionProviders, parallelWeb: launch.plane ? handsParallel(launch.plane) : false, jevWeb: false })) {
+    const gateway = await savedKey(deps, JEV_GATEWAY_KEY_ENV);
+    if (gateway !== undefined) working[JEV_GATEWAY_KEY_ENV] = gateway;
+  }
   // An agentic run's model keys are its PINNED model's (the launch's, chosen at its start), the one its route sends, never
   // the host's default now: a key saved since the run started (another provider's, now first) would otherwise be opened
   // in its place, and the run would hold a key its model never sends and lack the one it does.
@@ -137,10 +148,16 @@ async function workingEnv(deps: ClaimSecretsDeps, unread: readonly string[] = []
   // A name present with no value (`-e NAME`, an empty optional secret) is not a key: the store's saved one stands.
   for (const name of CANDIDATES) {
     if (unread.includes(name)) continue;
-    const value = deps.env?.[name] || (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
+    const value = await savedKey(deps, name);
     if (value !== undefined) working[name] = value;
   }
   return working;
+}
+
+/** The server's key `name`: the runner's environment's value, else the one saved in the store, opened under the seal key
+ *  (none without one). Only that one row is read. */
+async function savedKey(deps: ClaimSecretsDeps, name: string): Promise<string | undefined> {
+  return deps.env?.[name] || (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
 }
 
 /** `keys` (learnedDecisionKeys') laid onto `env`, a claim's environment, where it holds no value of that name: what the
@@ -261,7 +278,7 @@ export async function subagentTierKeys(deps: ClaimSecretsDeps, tiers: readonly T
 export async function savedModelKeys(deps: ClaimSecretsDeps): Promise<NodeJS.ProcessEnv> {
   const out: NodeJS.ProcessEnv = {};
   for (const name of MODEL_KEY_NAMES) {
-    const value = deps.env?.[name] || (deps.sealKey ? await getSealedKey(deps.store, deps.sealKey, name) : undefined);
+    const value = await savedKey(deps, name);
     if (value !== undefined) out[name] = value;
   }
   return out;
@@ -282,13 +299,18 @@ const FRESH_TRIES = 3;
 const FRESH_WAIT_MS = 50;
 
 /** Run `runId`'s own model key as its launch's sealed column holds it, opened under `deps.sealKey`: none for a launch that
- *  holds none (or no launch row: a test's, an import's). Throws, in words, where the launch does not open. */
-export async function openRunModelKey(deps: { readonly store: { readonly runs: { launch(runId: string): Promise<{ readonly sealed: Uint8Array | null }> } }; readonly sealKey: Buffer | undefined }, runId: string): Promise<RunModelKey | undefined> {
-  const sealed = await deps.store.runs.launch(runId).then((launch) => launch.sealed, (error: unknown) => {
-    if (error instanceof StoreLaunchMissing) return null;
+ *  holds none (or no launch row: a test's, an import's), and none for a run that sends no model key (sendsNoModelKey, by
+ *  its launch's body and the runner's `deps.env`), whose launch is never opened for it: a key it never sends is never
+ *  read, at its claim (claimModelKey), at a message's (fresh()), or for its process (held.ts runModelKey). Throws, in
+ *  words, where the launch does not open. */
+export async function openRunModelKey(deps: { readonly store: { readonly runs: RunModelKeyReader }; readonly sealKey: Buffer | undefined; readonly env?: NodeJS.ProcessEnv }, runId: string): Promise<RunModelKey | undefined> {
+  const row = await deps.store.runs.launch(runId).catch((error: unknown) => {
+    if (error instanceof StoreLaunchMissing) return undefined;
     throw error;
   });
-  if (sealed === null) return undefined;
+  if (!row || row.sealed === null) return undefined;
+  if (sendsNoModelKey(readLaunchBody(row.body) ?? {}, deps.env ?? {})) return undefined;
+  const sealed = row.sealed;
   const opened = deps.sealKey ? openRunLaunch(deps.sealKey, runId, sealed) : undefined;
   if (!opened) throw new Error("This run's launch secrets do not open with this runner's seal key: its model key is not sent.");
   return opened.model;
@@ -312,10 +334,11 @@ export async function openRunKeys(deps: { readonly runs: RunLaunchReader; readon
  * server sealed it there with mcp_auth, store/seal.ts). Undefined only where the server has no gateway and the run holds
  * no key: a claim on a gateway server holds one even before the run's first key, so a message that hands it one reaches
  * the next request (fresh()). Read at every claim, a reclaim after a runner's crash among them, so a run's key outlives no
- * process but its own launch row. Throws, in words, when its launch does not open, or when the key was handed for another
+ * process but its own launch row. A run that sends no model key (sendsNoModelKey) holds none, ever: openRunModelKey never
+ * opens its launch for one. Throws, in words, when its launch does not open, or when the key was handed for another
  * gateway than AGENT_MODEL_BASE_URL's now: it is never sent where it was not handed for.
  */
-export async function claimModelKey(deps: { readonly store: { readonly runs: { launch(runId: string): Promise<{ readonly sealed: Uint8Array | null }> } }; readonly sealKey: Buffer | undefined; readonly env?: NodeJS.ProcessEnv }, runId: string): Promise<ClaimModelKey | undefined> {
+export async function claimModelKey(deps: { readonly store: { readonly runs: RunModelKeyReader }; readonly sealKey: Buffer | undefined; readonly env?: NodeJS.ProcessEnv }, runId: string): Promise<ClaimModelKey | undefined> {
   const origin = runModelOrigin(deps.env ?? {});
   // A run's own process holds no seal key: its runner opens the claim's own launch, whatever run id this one names (held.ts).
   const at = deps.sealKey ? undefined : runnerSeam();
@@ -368,9 +391,9 @@ export function holdRunKey(redact: HeldRedact, runKey: ClaimModelKey): void {
 export const keyedAtClaim = (runKey: ClaimModelKey | undefined): boolean => runKey?.key() !== undefined;
 
 /** Whether the server has a gateway (AGENT_MODEL_BASE_URL) and holds no key for it, in the runner's environment or saved:
- *  claimSpendOff's spend with no key to pay it. */
+ *  claimSpendOff's spend with no key to pay it. The gateway's key alone is read, never another saved model key. */
 export async function serverKeyless(deps: ClaimSecretsDeps): Promise<boolean> {
-  return runModelOrigin(deps.env ?? {}) !== undefined && !(await savedModelKeys(deps))[GATEWAY_KEY_ENV];
+  return runModelOrigin(deps.env ?? {}) !== undefined && !(await savedKey(deps, GATEWAY_KEY_ENV));
 }
 
 /** Why the claim's model spend after the run's turn, or beside it on runs the runner starts (a shadow audit, a replay
@@ -397,10 +420,6 @@ export function claimModelEnv(env: NodeJS.ProcessEnv, opened: readonly NodeJS.Pr
 /** The decision providers' own keys (decisions.ts: Jev's TypeSafe key, OpenRouter's, Parallel's): some are also pi-ai
  *  provider names, but a run's model key never replaces them, so withoutModelKeys keeps them. */
 const DECISION_KEY_NAMES: ReadonlySet<string> = new Set([JEV_KEY_ENV, JEV_OPENROUTER_KEY_ENV, PARALLEL_KEY_ENV]);
-/** Every name a decision key is read from (decisions.ts decisionKeysOf): the decision keys' own names, and an OpenRouter
- *  gateway's key (JEV_GATEWAY_KEY_ENV), which Jev and OpenRouter's Decisions models run on when no key of their own is
- *  set. A claim that opens no model key still opens these for a run with decision nodes (claimSecrets). */
-const DECISION_KEY_SOURCES: ReadonlySet<string> = new Set([...DECISION_KEY_NAMES, JEV_GATEWAY_KEY_ENV]);
 
 /** `toolEnv` with no model key in it, for a run that holds its own: a tool's environment never carries a model key the
  *  run's model routes do not send. The decision providers' keys stay (DECISION_KEY_NAMES): a keyed workflow's judge,

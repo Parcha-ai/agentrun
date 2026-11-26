@@ -138,6 +138,18 @@ export function decisionKeysFor(env: NodeJS.ProcessEnv, needs: DecisionNeeds): R
   return Object.fromEntries(Object.entries(decisionKeysOf(env)).filter(([name]) => names.has(name)));
 }
 
+/** A stand-in for the model gateway's key, never a key: what decisionsUseGatewayKey sets in its place. */
+const GATEWAY_KEY_PROBE = "agentrun-gateway-key-probe";
+
+/** Whether decisionKeysFor would lay a key for `needs` from the model gateway's key (JEV_GATEWAY_KEY_ENV), were `env` to
+ *  hold one: asked of decisionKeysFor itself with a stand-in in its place, so the answer is this file's rule
+ *  (openRouterKeyEnv: no OpenRouter key of its own and AGENT_MODEL_BASE_URL on openrouter.ai, for a provider that reads an
+ *  OpenRouter key) and never a copy of it. A claim that lays no model key reads the gateway's only where this holds
+ *  (claim-secrets.ts claimSecrets). */
+export function decisionsUseGatewayKey(env: NodeJS.ProcessEnv, needs: DecisionNeeds): boolean {
+  return Object.values(decisionKeysFor({ ...env, [JEV_GATEWAY_KEY_ENV]: GATEWAY_KEY_PROBE }, needs)).includes(GATEWAY_KEY_PROBE);
+}
+
 /** Why Jev does not run here, naming the variable to set. */
 export const jevMissing = `A workflow's judge, pick, sift, route and ask nodes need ${keyNeeded([JEV_KEY_ENV])}. Jev also runs through OpenRouter, on ${keyNeeded([JEV_OPENROUTER_KEY_ENV])}, or on ${JEV_GATEWAY_KEY_ENV} with AGENT_MODEL_BASE_URL on openrouter.ai, set where the server starts.`;
 
