@@ -194,10 +194,20 @@ test("a relative path is refused: the computer is handed the path as given, so o
   }
 });
 
-test("on that computer, an absolute path inside /workspace or another name of the run's folder still runs, and the filed folder itself is refused as before", async () => {
+test("the run folder's names on this machine (a bind's path, a CLI's scratch folder) are not /workspace on the computer: a path under one is refused", async () => {
+  const HERE = "/nonexistent/bind/run";
+  const gate = mountedGate(true, FILED, [RUN, "/workspace", HERE, SCRATCH]);
+  for (const [op, extra] of Object.entries(OPS)) {
+    for (const given of [`${SCRATCH}/notes/a.json`, SCRATCH, `${HERE}/notes/x`, `${RUN}/notes/x`, `${SCRATCH}/stripe/pages/a.json`]) {
+      assert.equal(await verdictOf(gate, "computer_op", { op, args: { path: given, ...extra } }), outside(op, given), `${op} ${given}`);
+    }
+  }
+});
+
+test("on that computer, an absolute path inside /workspace still runs, and the filed folder itself is refused as before", async () => {
   const gate = mountedGate(true, FILED, ["/workspace", SCRATCH]);
   for (const [op, extra] of Object.entries(OPS)) {
-    for (const given of ["/workspace/other/x", "/workspace", "/workspace/", "/workspace/stripe/x", "/workspace/a/b/../../notes/x", "/workspace//notes/./x", `${SCRATCH}/notes/a.json`]) {
+    for (const given of ["/workspace/other/x", "/workspace", "/workspace/", "/workspace/stripe/x", "/workspace/a/b/../../notes/x", "/workspace//notes/./x"]) {
       assert.equal(await verdictOf(gate, "computer_op", { op, args: { path: given, ...extra } }), "allow", `${op} ${given}`);
     }
   }
