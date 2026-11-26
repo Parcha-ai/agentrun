@@ -1037,6 +1037,44 @@ const CASES = [
         name: 'a held value whose own "+" is the operator between two literals in one JSON string, its rest in the next string past a property name, withholds the text',
         text: JSON.stringify({ a: '"Zq8VbN3x" + "LmT6pR2w"', b: "Yk9HsD4f" }), values: ["Zq8VbN3x+LmT6pR2wYk9HsD4f"], hides: ["Zq8VbN3x", "Yk9HsD4f"], exact: all("[redacted]"),
       },
+      // A held value with two "+", one the operator between two single-quoted literals and one inside the second, its
+      // rest past a property name: withheld before the operator was read as one (the values read with the operator in
+      // them), shown when the operator was left out but the "+" inside a string kept, withheld now that the values read
+      // every "+" as nothing, as the held value's `joined` needle does.
+      {
+        name: 'a held value with two "+", one the operator between two single-quoted literals and one inside a literal, its rest past a property name, withholds the text',
+        text: "{'a': 'Zq8VbN3x' + 'LmT6+pR2w', 'b': 'Yk9HsD4f'}", values: ["Zq8VbN3x+LmT6+pR2wYk9HsD4f"], hides: ["Zq8VbN3x", "Yk9HsD4f"], exact: all("[redacted]"),
+      },
+      // Accepted, as a "," or ":" in a held value already is: the values read with no "+" match a held value with its "+"
+      // dropped, so its two sides in two strings withhold the text though the "+" is not printed.
+      ...[",", "+"].map((mark) => ({
+        name: `a held value's two sides around a "${mark}" in two strings of an array, the "${mark}" not printed, withholds the text (accepted)`,
+        text: JSON.stringify(["Zq8VbN3xLmT6", "pR2wYk9HsD4f"]), values: [`Zq8VbN3xLmT6${mark}pR2wYk9HsD4f`], hides: ["Zq8VbN3x"], exact: all("[redacted]"),
+      })),
+      // Prose before single-quoted literals (P1-3): an apostrophe in "Here's" or "I've" opened a string, so the code's own
+      // apostrophes were read the wrong way round and its literals never joined. An apostrophe with a letter or a digit
+      // on both sides opens no string, and a string an apostrophe opened ends at a line break, as a literal of Python
+      // or JavaScript does.
+      ...[BODY, SHORT, noPlus(BODY)].flatMap((value) => {
+        const [a, b] = at(value, value.includes("+") ? value.indexOf("+") + 1 : value.length >> 1);
+        const code = `key = '${a}' + '${b}'`;
+        return [
+          ["after a line of prose with one apostrophe", `Here's the key in Python:\n${code}`],
+          ["after prose with one apostrophe two lines up", `Here's the key.\nPaste it in:\n${code}`],
+          ["after prose with one apostrophe on the same line", `Here's the key: ${code}`],
+          ["after prose ending in a lone apostrophe", `The servers' key:\n${code}`],
+          ["in a fenced answer between prose with apostrophes", `Here's how:\n\`\`\`python\n${code}\n\`\`\`\nThat's it.`],
+          ["over a Python line continuation after prose with one apostrophe", `I've split it: key = '${a}' ${String.fromCharCode(92)}\n'${b}'`],
+          ["after a comment with one apostrophe, written in a JSON string", JSON.stringify({ path: "a.py", content: `# Here's it\n${code}\n` })],
+        ].map(([how, text]) => ({
+          name: `a held value ${value.includes("+") ? 'with a "+"' : 'with no "+"'} printed as single-quoted literals joined by "+" ${how} withholds the text (${value.length} characters)`,
+          text, values: [value], hides: [value.slice(0, 6), value.slice(-6)], exact: all("[redacted]"),
+        }));
+      }),
+      ...[
+        ["prose with apostrophes around single-quoted literals that hold no held value", "Here's the URL, and it's short:\nurl = 'https://h.example/' + 'a+b' + '/c'\nThat's all, the servers' too."],
+        ["a held value's halves in single-quoted literals on two lines with a word between them, after an apostrophe", `Here's a note:\nk = '${BODY.slice(0, 32)}' + note\n  + '${BODY.slice(32)}'`],
+      ].map(([what, text]) => ({ name: `${what} shows as it came (control)`, text, values: [BODY], hides: [], exact: all(text) })),
       // Python's implicit join, no operator between the literals: read back to back before too.
       ...[BODY, SHORT].map((value) => ({
         name: `a held value with a "+" printed as Python literals joined by nothing but a line break withholds the text, as before (control, ${value.length} characters)`,
@@ -1201,7 +1239,7 @@ const adversarial = (size) => {
     f(`"%41+${B}"${B}${B}n&#65;",`), f(`"a+${B}${B}",`),
     // The quoted joins (a single-quoted dict's, read once as JSON's escapes and once as Python's): a lone apostrophe, a
     // name and its value opened and never closed, an apostrophe escaped, and Python's escapes back to back.
-    f('"a" + '), f("'a'+\\\n"), f("'"), f("'a': '"), f(`'${B}`), f(`'a${B}'b${B}x41${B}${B}',`), f(`${B}x4`),
+    f('"a" + '), f("'a'+\\\n"), f("it's 'a' + '"), f("'a\n"), f("'"), f("'a': '"), f(`'${B}`), f(`'a${B}'b${B}x41${B}${B}',`), f(`${B}x4`),
     // Named and numeric references: whole, a name never closed, a zero, one with no ";", zeros as long as the text, and
     // "+" in a quoted JSON text with a reference.
     f("&amp;"), f("&ampx"), f("&#0"), f("&#65"), `&#${fill("0", size - 2)}`, f('"a&#65;+",'),
@@ -1227,10 +1265,11 @@ const adversarial = (size) => {
     // sixteen, and the held value's strings after it decode to themselves in each. It heads each block of about 4 KiB, so
     // each answer piece holds it too.
     { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}",`.repeat(370)}`), values: [DENSE] },
-    // The same with the held value's strings joined by "+" (and "+\\" and a line break), operators all: the join reads
-    // its values twice, with the operators and without them.
+    // The same with the held value's strings joined by "+" (and "+\\" and a line break), operators all, and single-quoted
+    // after prose with an apostrophe: the join's values read without the operators and with each "+" as nothing.
     { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}" + `.repeat(370)}`), values: [DENSE] },
     { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`"${DENSE}"+${B}\n`.repeat(370)}`), values: [DENSE] },
+    { text: f(`"%41+&#65;${B}"${B}${B}x41${B}${B}'",${`it's '${DENSE}' + '+${DENSE}'\n`.repeat(180)}`), values: [DENSE] },
     // The same in a string never closed, and in one escaped quote after another (JSON written in a string).
     { text: `{"k":"${fill(`${DENSE} `, size - 6)}`, values: [DENSE] },
     { text: f(`${BACKSLASH}"${DENSE}${BACKSLASH}",`), values: [DENSE] },
