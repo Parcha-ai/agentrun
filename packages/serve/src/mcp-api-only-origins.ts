@@ -1,4 +1,6 @@
 // The API-only MCP origin list (API_ONLY_MCP_ORIGINS_ENV), held in the store past the save: the serve README's API-only section.
+import { composioMadeKey, composioPerRun } from "./composio-made.js";
+import { COMPOSIO_TOKEN_USER_PREFIX, COMPOSIO_USER, composioTokenNamespaced } from "./composio-preset.js";
 import { mcpSourceKey, savedByToken } from "./mcp-sources.js";
 import { listMcpServers } from "./mcp-store.js";
 import { isObject } from "./validate.js";
@@ -54,4 +56,38 @@ export async function offApiOnlyMcpServers(store: SettingsReader & Parameters<ty
   const off: string[] = [];
   for (const row of await listMcpServers(store)) if (await offApiOnlyMcpOrigins(store, row.name, row, held)) off.push(row.name);
   return off.sort();
+}
+
+/** Why the Composio server `name` (`row`) the API token saved can't be used on an API-only store, or undefined when it
+ *  can: one calling as a single user (not per-run) whose address names a user outside the token's namespace
+ *  (composioTokenNamespaced), as a save before the namespace (0.1.0-beta.56 and earlier) left it, which may be the
+ *  owner's. Its claim is refused unsent, in words that say to delete it, since a re-save of it is refused where the
+ *  owner's server stands on its auth config. A server the owner saved, or any on a full server's store, is as it was. */
+export async function composioOutsideNamespace(store: SettingsReader, name: string, row: { auth: string; url: string; createdAt: number }, held?: readonly unknown[]): Promise<string | undefined> {
+  if (row.auth !== "headers") return undefined;
+  if (!(held ?? (await heldApiOnlyMcpOrigins(store)))) return undefined;
+  const source = await store.settings.get(mcpSourceKey(name));
+  if (!savedByToken(source, row.createdAt) || !isObject(source) || source.source !== "composio") return undefined;
+  if (composioPerRun(row, await store.settings.get(composioMadeKey(name)))) return undefined;
+  let user: string;
+  try {
+    user = new URL(row.url).searchParams.get("user_id") ?? COMPOSIO_USER;
+  } catch {
+    user = "";
+  }
+  return composioTokenNamespaced(user) ? undefined : composioOutsideNamespaceWords(name);
+}
+
+/** The words a Composio server the token saved before the namespace is refused with (composioOutsideNamespace). */
+export const composioOutsideNamespaceWords = (name: string): string =>
+  `The MCP server ${name} can't be used: the API token saved it before its Composio users were kept in the token's namespace (${COMPOSIO_TOKEN_USER_PREFIX}), so it calls as a user that may be the owner's. Delete it, then save it again. Nothing was sent.`;
+
+/** The names of the saved servers composioOutsideNamespace refuses now, sorted: none on a full server's store. What an
+ *  API-only start says once in its log, by name alone, never a user or an address. */
+export async function composioOutsideNamespaceServers(store: SettingsReader & Parameters<typeof listMcpServers>[0]): Promise<string[]> {
+  const held = await heldApiOnlyMcpOrigins(store);
+  if (!held) return [];
+  const out: string[] = [];
+  for (const row of await listMcpServers(store)) if (await composioOutsideNamespace(store, row.name, row, held)) out.push(row.name);
+  return out.sort();
 }

@@ -107,8 +107,10 @@ async function learningSeedIn(t, dir, read) {
 
 /** A Mode 2 run of a revision with one skill, over the Archil fake `disk`, in a fresh store (`learns`: a learning run whose
  *  seed holds a correction; `read` counts the claim's reads of its learning folder). `claimNext(build)` claims it (a claim taken over a lapsed one when there was
- *  one) and builds its spec; `t.after` lets every spec go. */
-export async function mode2Run(t, { harness, disk, learns = false }) {
+ *  one) and builds its spec; `t.after` lets every spec go. `mcp`: the run's MCP, its revision granted `grants` and
+ *  pinned `pin`, `before(server)` registering the server, `deps` added to the claim's. `computer: false`: a revision with
+ *  no computer, so nothing mounts the run's folder. */
+export async function mode2Run(t, { harness, disk, learns = false, mcp, computer = true }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-skills-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -125,8 +127,9 @@ export async function mode2Run(t, { harness, disk, learns = false }) {
   });
   await server.agents.create(
     { id: AGENT, name: "Agent" },
-    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write"], skills: { "cite/SKILL.md": "0".repeat(64) }, computer: { kind: "sandbox", provider: "e2b" }, ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}) }, skills: { "cite/SKILL.md": SKILL } },
+    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write", ...(mcp?.grants ?? [])], skills: { "cite/SKILL.md": "0".repeat(64) }, ...(computer ? { computer: { kind: "sandbox", provider: "e2b" } } : {}), ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}) }, skills: { "cite/SKILL.md": SKILL }, ...(mcp?.pin ? { mcpPin: mcp.pin } : {}) },
   );
+  await mcp?.before?.(server);
   const read = { count: 0 };
   const learning = learns ? { seed: await learningSeedIn(t, dir, read), section: "" } : undefined;
   const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }), ...(learning ? { learning } : {}) };
@@ -145,12 +148,17 @@ export async function mode2Run(t, { harness, disk, learns = false }) {
     makeArchilDisk: () => disk,
     mountControl: { baseUrl: control.baseUrl, fetch: control.fetch },
     computerForClaim: sandboxOverArchil(disk, scratch, mounts),
+    ...mcp?.deps,
   };
   return {
     mounts,
     read,
+    /** The runner's data folder, where a Mode 1 run's local folder would be. */
+    data: dir,
     /** The computer's folder: the fake computer's /workspace, a local folder that stands in for the mounted run's folder. */
     scratch,
+    /** The claim's deps, as either spec builder is given them (a run's own process's runner takes them too). */
+    deps,
     /** Claim the run (`leaseMs`: the claim's lease) and build its spec with `build`. */
     async claimNext(build, { leaseMs = 60_000 } = {}) {
       const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs });

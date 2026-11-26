@@ -5,5 +5,7 @@ import { paidRequest } from "../../dist/paid-calls.js";
 import { logLine } from "../../dist/print.js";
 import { GUARD } from "../../dist/web-run.js";
 
-export const webFetch = (url, { log, ...options } = {}) => web.webFetch(url, { ...options, guard: GUARD, ...(log ? { log: (event, fields) => log(logLine(event, fields)) } : {}) });
+/** A case's provider clients as webFetch's readers: `parallel`, a Parallel client; `firecrawl`, keyless Firecrawl's reader. */
+const asReaders = ({ parallel, firecrawl, ...options }) => ({ ...options, readers: { ...(parallel ? { parallel: web.readerOf(web.parallelReads(parallel), web.searchBreaker()) } : {}), ...(firecrawl ? { "firecrawl-keyless": firecrawl } : {}) } });
+export const webFetch = (url, { log, ...options } = {}) => web.webFetch(url, { ...asReaders(options), guard: GUARD, ...(log ? { log: (event, fields) => log(logLine(event, fields)) } : {}) });
 export const parallelExtract = (apiKey, send = fetch) => web.parallelExtract(apiKey, send, paidRequest);

@@ -147,8 +147,6 @@ export interface LoopDeps {
   flush(): Promise<void>;
   /** Aborted on claim loss, self-stop or shutdown: in-flight model and tool calls are cut at once. */
   signal: AbortSignal;
-  /** The end-of-run step (EndOfRunTurn): asked once before a run that answered or failed writes its end. Absent: none. */
-  endOfRun?: EndOfRunTurn;
   /** Resolves once the claim's first delivery has handed every untaken row it read to command() (each call returned),
    *  or at once when there were none: a resumed ask with no answer row waits for it before it parks again, so an
    *  approve already on its way is never raced. Never rejects. */

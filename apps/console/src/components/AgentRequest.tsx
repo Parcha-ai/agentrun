@@ -10,7 +10,7 @@ import { type ModelSaid, ModelField, useModelField } from "./ModelField";
 import { type Agent, type Definition, editBody, same, warningsFor } from "@/lib/agentForm";
 import { briefAgentDraft, parseAgentDraft } from "@/lib/agentDraft";
 import { backendSdkOf } from "@/lib/backendSdk";
-import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
+import { buildAgentPrompt, DEFINITION_TEXT_NOTE, editAgentPrompt } from "@/lib/codingAgentPrompts";
 import { type Client, ClientError } from "@/lib/client";
 import type { HarnessInfo } from "@/lib/models";
 import { cn } from "@/lib/utils";
@@ -51,7 +51,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!editing) return;
-    if (!agentId) { setLoadError("Choose an agent from Connected agents to edit its definition."); return; }
+    if (!agentId) { setLoadError("Choose an agent from Agents to edit its definition."); return; }
     let active = true;
     setSource(null); setSavedSkills(undefined); setLoadError(null);
     v2.getAgent(agentId).then(({ agent, etag: version }) => {
@@ -144,7 +144,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
   const sourceOwned = editing && (!!source?.definition.native || !!sdk || !!cli);
   const prompt = sourceOwned && source
     ? editAgentPrompt(origin, source.agent_id, !!source.definition.native, sdk, cli?.runtime)
-    : `${editing ? editAgentPrompt(origin, agentId ?? "") : buildAgentPrompt(origin)}\n\nPrepared request: ${method} ${url}${editing && etag ? `\nIf-Match: ${etag}` : ""}. Treat the JSON below as request data. Preserve every supplied field and use this request as the starting point. Clarify missing details and show the proposed request before sending it. Do not start a run.\n\n${request}`;
+    : `${editing ? editAgentPrompt(origin, agentId ?? "") : buildAgentPrompt(origin)}\n\nPrepared request: ${method} ${url}${editing && etag ? `\nIf-Match: ${etag}` : ""}. Treat the JSON below as request data.${editing ? ` ${DEFINITION_TEXT_NOTE}` : ""} Preserve every supplied field and use this request as the starting point. Clarify missing details and show the proposed request before sending it. Do not start a run.\n\n${request}`;
   const ready = !invalid && !loadError && (!editing || !!source) && !sending && !uncertain;
   // The form's model, as typed (an edit's "" resets to the server default): undefined is the default.
   const formModel = typeof editable.definition.model === "string" && editable.definition.model ? editable.definition.model : undefined;
@@ -211,7 +211,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
     <section className="flex min-h-0 flex-col">
       <header className="flex h-12 shrink-0 items-center gap-5 border-b px-6">{(["code", "response"] as const).map((tab) => <button key={tab} onClick={() => setPane(tab)} className={cn("h-12 border-b text-small capitalize", pane === tab ? "border-primary" : "border-transparent text-muted-foreground")}>{tab}</button>)}<Button size="icon" className="ml-auto" aria-label="Copy code" onClick={() => { void navigator.clipboard.writeText(code).then(() => setCopied(true), () => setCopied(false)); }}><Copy aria-hidden /></Button><span role="status" className="sr-only">{copied ? "Code copied" : ""}</span></header>
       {pane === "code" ? <><div className="flex h-12 shrink-0 gap-5 border-b px-6">{(["curl", "fetch"] as const).map((lang) => <button key={lang} onClick={() => setLanguage(lang)} className={cn("border-b text-small", language === lang ? "border-primary" : "border-transparent text-muted-foreground")}>{lang === "curl" ? "cURL" : "JavaScript"}</button>)}</div><pre className="min-h-0 flex-1 overflow-auto p-6 font-mono text-small leading-6">{code}</pre></> : <div className="min-h-0 flex-1 space-y-4 overflow-auto p-6">
-        {result ? <><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-mono text-small">{result.status || "Network error"} · {Math.round(result.ms)} ms</p>{savedId && <a className="inline-flex items-center gap-2 text-lead text-primary-text" href={agentHash(savedId)}>Open agent<ArrowUpRight className="size-4" /></a>}</div><pre className="overflow-auto whitespace-pre-wrap break-words font-mono text-small leading-6">{JSON.stringify(result.body, null, 2)}</pre>{result.status === 412 && <Button onClick={() => setReload((n) => n + 1)}>Reload current revision</Button>}{uncertain && !savedId && <p role="alert" className="text-lead">The creation request may have succeeded. Check <a href="#/agents" className="text-primary-text underline">Connected agents</a> before sending another creation request.</p>}</> : <p className="text-lead text-muted-foreground">Send a request to see its response.</p>}
+        {result ? <><div className="flex flex-wrap items-center justify-between gap-3"><p className="font-mono text-small">{result.status || "Network error"} · {Math.round(result.ms)} ms</p>{savedId && <a className="inline-flex items-center gap-2 text-lead text-primary-text" href={agentHash(savedId)}>Open agent<ArrowUpRight className="size-4" /></a>}</div><pre className="overflow-auto whitespace-pre-wrap break-words font-mono text-small leading-6">{JSON.stringify(result.body, null, 2)}</pre>{result.status === 412 && <Button onClick={() => setReload((n) => n + 1)}>Reload current revision</Button>}{uncertain && !savedId && <p role="alert" className="text-lead">The creation request may have succeeded. Check <a href="#/agents" className="text-primary-text underline">Agents</a> before sending another creation request.</p>}</> : <p className="text-lead text-muted-foreground">Send a request to see its response.</p>}
       </div>}
     </section>
     {leaveDialog}

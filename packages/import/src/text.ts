@@ -1,6 +1,9 @@
 // What every reader reads a record's fields with.
 import type { Turn } from "./types.js";
 
+/** What a request read without turns keeps of its error: that it failed, never the message (a path, a provider's text). */
+export const FAILED = "failed";
+
 export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 export const str = (value: unknown): string | undefined => (typeof value === "string" && value !== "" ? value : undefined);
 /** The latest (and, negated, earliest) time a Date holds, in ms from the epoch: a number past it is no time. */

@@ -7,7 +7,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { locatorKey, READERS, readSession, SOURCES } from "../dist/index.js";
-import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, parseHome, SESSION, tempHome, writeJsonl } from "./fixtures.mjs";
+import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, parseHome, piAnswer, piFile, piMeta, piUser, SESSION, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 
@@ -34,10 +34,11 @@ const manyInOne = {
   },
 };
 
-test("each built-in reader has discover and read, and carries its harness and display name", () => {
+test("each built-in reader has discover, idOf and read, and carries its harness and display name", () => {
   for (const source of SOURCES) {
     const reader = READERS[source];
     assert.equal(typeof reader.discover, "function");
+    assert.equal(typeof reader.idOf, "function");
     assert.equal(typeof reader.read, "function");
     assert.equal(typeof reader.harness, "string");
     assert.equal(typeof reader.name, "string");
@@ -57,6 +58,18 @@ test("a built-in reader discovers locators and reads one into sessions with an o
   const again = await reader.read({ file }, first.cursor);
   assert.equal(again.resumed, true);
   assert.equal(again.read, 0);
+});
+
+test("idOf names the session a read names when no record does: a pi file's from its name, OpenCode's from its locator", async (t) => {
+  const home = await tempHome(t);
+  const { id: _id, ...nameless } = piMeta("pi-nameless-7");
+  const file = await writeJsonl(piFile(home, "pi-nameless-7"), [nameless, piUser("Fixture question."), piAnswer({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0 })]);
+  const read = await readSession(file, "pi");
+  assert.equal(read.id, "pi-nameless-7");
+  assert.equal(READERS.pi.idOf({ file }), read.id);
+  assert.equal(READERS["claude-code"].idOf({ file: claudeFile(home) }), SESSION);
+  assert.equal(READERS.opencode.idOf({ file: join(home, "opencode.db"), id: "ses_fixture1" }), "ses_fixture1");
+  assert.equal(READERS.opencode.idOf({ file: join(home, "storage", "session", "global", "ses_fixture2.json") }), "ses_fixture2");
 });
 
 test("a fourth reader that keeps many sessions in one file: parseHome keys each by relpath#id, readSession picks one by id", async (t) => {

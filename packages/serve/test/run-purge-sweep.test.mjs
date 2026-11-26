@@ -188,7 +188,7 @@ test(`a purged run leaves no copy of what it was given or did (${STORE}): one se
   // A connected agent's check still collecting native turns, which disagreed on it (runner/promotion.ts sdkCheckTurn).
   const collecting = {
     workflow: "turns", digest: "d-turns", at: new Date().toISOString(), decided: "replaying", via: "sdk", replay_id: "turns-check", reason: "Waiting for the next native turn of the connected agent that it takes.",
-    check: { ...bar, turns: { n: 1, agreed: 0, alone: 1, of: [gone], outcomes: { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [{ run: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] } },
+    check: { ...bar, turns: { n: 1, agreed: 0, alone: 1, agent_agreed: 1, fields: { answer: { agent: { n: 1, workflow_right: 0, agent_right: 1 } } }, of: [gone], outcomes: { answered: 1, handed_back: 0, failed: 0, skipped_write: 0 }, disagreements: [{ run: gone, input: `Keep ${word} everywhere.`, agent: agentAnswer, draft }] } },
   };
   await recordPromotion(store.settings, "calc", collecting, () => true);
   // Its kept learning: what its learning turn asked and what it proposed.

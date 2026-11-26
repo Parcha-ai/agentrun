@@ -383,7 +383,10 @@ function codeOf(error: unknown): ComputerErrorCode {
 
 **Optional hooks.** `upload(id, path, bytes, ctx)` puts a file in the machine. E2B has one because it has a file API;
 without it, AgentRun streams its daemon through `exec`'s stdin as base64 text, so the image needs `head` and
-`base64` (coreutils and busybox both have them). `extend(id, endsAt, ctx)` moves a machine's end when
+`base64` (coreutils and busybox both have them). `download(id, path, ctx)` hands back a file's bytes, read as root;
+give it when your exec's output is slow (Daytona's is a log read at about 0.3 MB/s). A `files.read` past one chunk then
+takes its first chunk from the daemon and the rest from a copy AgentRun makes as the daemon's user (`setpriv`,
+util-linux) and downloads, so the read shows nothing that user can't read. `extend(id, endsAt, ctx)` moves a machine's end when
 an agent extends its deadline: your timer with `lifetime: "vendor"`, AgentRun's deadline label with `"janitor"`. Never
 move it past its `agentrun.computer.max-deadline` label, which AgentRun writes only on a host with `extend`. When no end your API takes lands there, throw
 `HostError("limit", <why>)` and move nothing. AgentRun reads the end back through `get`, from the deadline label: if
@@ -432,7 +435,7 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   see `daemon/internal/windowmanager`); hello's `windowManager` says how it went, and create waits on it. A machine
   minted a desktop may say `linux` (same os and arch) until its display answers; a `connect` while it says `linux`
   fails as drift, as on exec. Every dial provider takes one, from the box image, whose
-  `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad and firefox-esr. A desktop gets the
+  `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad, firefox-esr and thunar. A desktop gets the
   sandbox's size, 2 CPUs and 4 GiB by default, which holds Xvfb at 1280x800, xfwm4 and a browser:
   - **E2B**: its default on either connect, from the box template (the template's own size).
   - **Fly Machines**: `kind: "desktop"`; 2 shared CPUs and 4 GiB (`guest`), up to 8 shared CPUs and 2 GiB a CPU
@@ -474,7 +477,10 @@ Modal's create gives the sandbox `agentrun-dial` as its command and the env as `
 create's env, so E2B's create starts it through envd, with the env as that one process's
 ([README](README.md#e2b-on-dial)). Daytona's create starts it in a toolbox session once the sandbox reads `started`,
 the URL on its line ([README](README.md#daytona-on-dial)). A host that starts it can give `dialLog(id)`, and a machine
-that never dials then fails with its last lines. Their conformance
+that never dials then fails with its last lines first. One that can also read its exit gives `dialExit(id)`: an
+`agentrun-dial` that exited fails create at once, and one that runs and keeps writing is waited for past `createMs`,
+up to twice it. With `redial(id)` too, an exit of 3 (its fetch failed) or 5 (its init never listened, and was ended)
+starts it once more in the same machine. Their conformance
 modules' `dialKit()` refuse, since a machine dials the server that minted its token: the Core run happens inside the
 public server's process.
 

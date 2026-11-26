@@ -97,3 +97,20 @@ export function sealKeyOf(text: string | undefined): Buffer | undefined {
   const trimmed = text?.trim() ?? "";
   return /^[A-Za-z0-9+/_-]{43}=?$/.test(trimmed) ? Buffer.from(trimmed, "base64") : undefined;
 }
+
+/** Why `text`, handed as a seal key, is none (sealKeyOf), by its length alone: never its value, a secret. A host whose
+ *  generator counts bytes where characters were meant hands 60 characters, and the refusal that stops a start says so. */
+export function notASealKey(text: string): string {
+  const length = text.trim().length;
+  return `is not 32 bytes in base64 (43 characters, or 44 ending in =; it has ${length}${length === 43 || length === 44 ? ", but not in that form" : ""})`;
+}
+
+/** The seal key `handed` (SEAL_KEY_ENV's value) gives, for a reader of `what` kept under it; else one refusal, every
+ *  reader's: the one handed by its length (notASealKey), never its value, or that none was. In production the start boots
+ *  the key first (seal-key.ts bootSealKey), which refuses a malformed one itself; this is each reader's own guard.
+ *  `Refused`: the error a caller's own refusals are (a runner's RunnerRefused); `none`: what to do when none was handed. */
+export function sealKeyIn(handed: string | undefined, what: string, { Refused = Error, none = "start the server, which makes or opens it" }: { Refused?: new (message: string) => Error; none?: string } = {}): Buffer {
+  const key = sealKeyOf(handed);
+  if (key) return key;
+  throw new Refused(`${what} are kept under the server's seal key (${SEAL_KEY_ENV}), and ${handed?.trim() ? `the one handed ${notASealKey(handed)}` : `none was handed: ${none}`}`);
+}

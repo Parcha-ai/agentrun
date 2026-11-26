@@ -91,6 +91,12 @@ test('the sign-in line names the login directories for the CLI, quoted where a s
   assert.match(claudeLoginCommand({ dir: "/my data/it's", profiles: '/p' }), /^CLAUDE_CONFIG_DIR='\/my data\/it'\\''s' /);
 });
 
+test("the sign-in line carries HOME first where the login's home is not the terminal's, on the CLI's default folder and on a folder of its own; elsewhere it leaves HOME to the terminal", () => {
+  assert.equal(claudeLoginCommand({ dir: '/data/runner/.claude', profiles: '/data/runner/.config/anthropic', home: '/data/runner', userHome: '/data/runner', homeApart: true }, 'claude', 'linux'), 'env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR HOME=/data/runner ANTHROPIC_CONFIG_DIR=/data/runner/.config/anthropic claude auth login');
+  assert.equal(claudeLoginCommand({ dir: '/data/claude-login', profiles: '/data/claude-login/anthropic', userHome: '/data/runner', homeApart: true }, 'claude', 'linux'), 'HOME=/data/runner CLAUDE_CONFIG_DIR=/data/claude-login CLAUDE_SECURESTORAGE_CONFIG_DIR=/data/claude-login ANTHROPIC_CONFIG_DIR=/data/claude-login/anthropic claude auth login');
+  assert.equal(claudeLoginCommand({ dir: '/data/runner/.claude', profiles: '/data/runner/.config/anthropic', home: '/data/runner', userHome: '/data/runner' }, 'claude', 'linux'), 'env -u CLAUDE_CONFIG_DIR -u CLAUDE_SECURESTORAGE_CONFIG_DIR ANTHROPIC_CONFIG_DIR=/data/runner/.config/anthropic claude auth login');
+});
+
 /** A stand-in CLI that writes what it was started with beside itself and answers `status`. */
 function fakeCli(status) {
   const dir = scratch();

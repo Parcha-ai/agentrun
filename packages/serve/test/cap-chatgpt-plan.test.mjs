@@ -144,7 +144,7 @@ test("a capped codex run and a capped pi run on a ChatGPT plan model are admitte
   // A paid tool on the plan: Parallel's searches, $0.001 each, under a cap of $0.0025. Two are sent and booked; the third
   // could not fit, so it is refused before it is sent and the run waits on a raise of its cap. The cap's spend is the two
   // searches alone: every plan request in the run counts $0.
-  openai.answer = (body) => (offers(body, "web_search") && outputsIn(body) < 5 ? { call: "web_search", args: { query: `widgets ${outputsIn(body)}` } } : {});
+  openai.answer = (body) => (offers(body, "web_search") && outputsIn(body) < 5 ? { call: "web_search", args: { objective: `widgets ${outputsIn(body)}` } } : {});
   for (const harness of ["pi", "codex"]) {
     const searches = openai.parallel.length;
     const done = await run(harness, 0.0025, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } });
@@ -157,18 +157,24 @@ test("a capped codex run and a capped pi run on a ChatGPT plan model are admitte
 
 // The server's limit on free-model requests (AGENTRUN_FREE_MODEL_REQUESTS, 60 by default) is for $0 catalog models alone:
 // a ChatGPT plan's requests don't count. A Codex run on a plan makes 100 requests and more, and the plan has OpenAI's own
-// usage limits (the 429 below). So a plan run past 60 requests runs on, on codex and on pi, capped or not; its paid
-// searches count against its cap as before.
-test("a plan run past 60 requests is not stopped by the free-model limit, on codex and on pi, capped or not", { timeout: 300_000 }, async (t) => {
-  withEnv(t, {}, ["AGENTRUN_FREE_MODEL_REQUESTS"]);
-  const { openai, run } = await planServer(t);
-  const SEARCHES = 61;
-  openai.answer = (body) => (offers(body, "web_search") && outputsIn(body) < SEARCHES ? { call: "web_search", args: { query: `widgets ${outputsIn(body)}` } } : {});
+// usage limits (the 429 below). So a plan run past the limit runs on, on codex and on pi, capped or not; its paid
+// searches count against its cap as before. The server here runs with a limit of 5, so each run goes past it in a few
+// requests (free-ceiling.test.mjs pins the default of 60, and the limit moved through the variable).
+test("a plan run past the free-model request limit is not stopped by it, on codex and on pi, capped or not", { timeout: 300_000 }, async (t) => {
+  const LIMIT = 5;
+  withEnv(t, { AGENTRUN_FREE_MODEL_REQUESTS: String(LIMIT) });
+  const { api, openai, run } = await planServer(t);
+  const limit = (await api("GET", "/capabilities")).body.limits.free_model_requests;
+  assert.equal(limit, LIMIT, "the server runs with the lowered limit");
+  // One search past the limit: the run makes LIMIT + 2 requests (a search each, then the answer).
+  const SEARCHES = LIMIT + 1;
+  openai.answer = (body) => (offers(body, "web_search") && outputsIn(body) < SEARCHES ? { call: "web_search", args: { objective: `widgets ${outputsIn(body)}` } } : {});
   for (const [harness, capUsd] of [["codex", undefined], ["pi", undefined], ["pi", 5]]) {
     const searches = openai.parallel.length;
     const done = await run(harness, capUsd, { tools: ["web_search"], tool_settings: { web_search: { provider: "parallel" } } });
     assert.equal(done.view?.status, "completed", `${harness}: ${said(done)}`);
-    assert.equal(done.asked, SEARCHES + 1, `${harness}: every request reached the plan, the 61st and 62nd included`);
+    assert.equal(done.asked, SEARCHES + 1, `${harness}: every request reached the plan, those past the limit of ${LIMIT} included`);
+    assert.ok(done.asked > limit + 1, `${harness}: the run went past the server's limit and the request it would refuse (${done.asked} requests, limit ${limit})`);
     assert.equal(openai.parallel.length - searches, SEARCHES, `${harness}: each search was sent`);
     const held = requests(done.journal);
     assert.equal(held.length, SEARCHES + 1, `${harness}: each request booked`);

@@ -13,6 +13,8 @@ import { openrouterProvider, type OpenRouterOptions } from "./openrouter.js";
 /** Parallel's list price for one `fast` decision request, up to 100 questions: $1 per 1,000 requests
  *  (https://docs.parallel.ai/resources/pricing, read 2026-11-20). */
 export const PARALLEL_LIST_PRICE_USD = 0.001;
+/** Parallel's price as web's classifier step holds a request to it (deciderFrom's `price`): its list price, whatever the size. */
+export const PARALLEL_DECISION_PRICE = Object.freeze({ requestUsd: PARALLEL_LIST_PRICE_USD });
 
 const KEY_VARIABLE = "PARALLEL_API_KEY";
 const BASE_URL = "https://api.parallel.ai";
@@ -162,7 +164,8 @@ export function parallelProvider(options: ParallelOptions = {}): DecisionProvide
       for (let attempt = 1; ; attempt++) {
         let response: Response;
         try {
-          response = await fetcher(url, { method: "POST", headers: { "content-type": "application/json", "x-api-key": key }, body, signal });
+          // It carries the key: a redirect is an error, never followed to an address the key was not meant for.
+          response = await fetcher(url, { method: "POST", headers: { "content-type": "application/json", "x-api-key": key }, body, signal, redirect: "error" });
         } catch (error) {
           // A deadline that ends a request in flight may have ended it after Parallel answered: only the host's cancel is not a lost outcome.
           if (signal.aborted) throw ctx.signal.aborted ? stopped(attempt) : lost(attempt, "passed its deadline");

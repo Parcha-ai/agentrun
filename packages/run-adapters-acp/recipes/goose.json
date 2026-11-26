@@ -17,7 +17,9 @@
   "files": {
     ".config/goose/config.yaml": "extensions:\n  developer: {enabled: false, type: builtin, name: developer, bundled: true, timeout: 300}\n  analyze: {enabled: false, type: builtin, name: analyze, bundled: true, timeout: 300}\n  apps: {enabled: false, type: platform, name: apps, bundled: true}\n  extensionmanager: {enabled: false, type: platform, name: extensionmanager, bundled: true}\n  skills: {enabled: false, type: platform, name: skills, bundled: true}\n  summon: {enabled: false, type: platform, name: summon, bundled: true}\n  todo: {enabled: false, type: platform, name: todo, bundled: true}\n  chatrecall: {enabled: false, type: platform, name: chatrecall, bundled: true}\n"
   },
+  "allowFile": { "path": ".config/goose/permission.yaml", "form": "goose-permission" },
   "state": [".local/share/goose/sessions"],
+  "announces": { "tool": "_meta.goose.toolCall.toolName" },
   "declares": { "load": true, "mcp": "http" },
   "billing": { "kind": "proxy" }
 }

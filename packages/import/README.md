@@ -19,7 +19,7 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 - `tokens.input` is the input neither read from nor written to the cache, for every source (see `normalizeUsage`).
 - `cost` is USD: the source's own when it wrote one (Claude Code's `cost-state`, pi's and OpenCode's per-request cost,
   an OpenCode subagent's added to its parent's), else the requests at pi-ai's list prices (a dependency, loaded on the
-  first price), else `null`.
+  first price; a load that fails throws with its reason), else `null`.
 - `turns` counts the person's messages; `calls` the model requests, its subagents' with them, each once.
 - `state: {}` handed to each call keeps cursors between calls: the second call reads only the bytes appended since, and
   returns what a fresh call would. When a file holding a copied record now comes before the file it counts in (an append
@@ -142,7 +142,8 @@ type Reader<S extends string, C> = {
   name: string;
   harness: string;
   discover(home: string, env?: Env): Promise<Locator[]>;
-  read(locator: Locator, cursor?: C, options?: { turns?: boolean; totals?: boolean; seen?: Set<string> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
+  idOf(locator: Locator): string;
+  read(locator: Locator, cursor?: C, options?: { turns?: boolean; totals?: boolean; seen?: Set<string>; lookups?: Map<string, unknown> }): Promise<{ sessions: SessionRead<S>[]; cursor: C; read: number; resumed: boolean }>;
   order?(a, b): number;
   children?(home: string, env?: Env): Promise<{ locator: Locator; of: Locator }[]>;
   stat?(locator: Locator): Promise<{ bytes: number; mtimeMs: number; parent?: string } | null>;
@@ -150,11 +151,21 @@ type Reader<S extends string, C> = {
 };
 ```
 
+`idOf` is the id a read gives the locator's session when no record names one (Claude Code's always: its file's name;
+pi's the last `_` part of its file's name; an OpenCode locator's `id`): a caller that names a session without reading it
+takes the same id.
+
+`lookups` is one map per import, shared by all its reads: a reader keeps there what it looks up once for the whole
+import (the Codex reader, the rollouts under a sessions directory, listed the first time a fork's parent is not on its
+own date). `parseHome` passes one; with threads, each worker of its read pool keeps one for the import. Without it, each
+read looks up afresh.
+
 The cursor is the reader's own: hand it back to the same reader for the same locator. A JSONL source builds its reader
 with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole
-line read, and the read's state. A file replaced or truncated since is read from its start, and a last line with no
-newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
-`discover` and `read` itself and returns one locator per session, with its `id`, and `stat`: the session's own size and
+line read, and the read's state. A file replaced or truncated since is read from its start, as is a cursor whose state
+is of another shape than the reader's (its `stateVersion`: a Codex cursor saved by 0.1.0-beta.58 or before), and a last
+line with no newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
+`discover`, `idOf` and `read` itself and returns one locator per session, with its `id`, and `stat`: the session's own size and
 last write, which a caller's size caps and "still being written" check go by (`locatorSize`; without `stat`, the file's).
 
 OpenCode is that source. Its sessions are in `$XDG_DATA_HOME/opencode` (`~/.local/share/opencode`): `opencode*.db` (1.x

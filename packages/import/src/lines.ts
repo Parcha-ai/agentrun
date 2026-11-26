@@ -71,6 +71,9 @@ export type LineSource<S extends string, O> = Pick<Reader<S>, "source" | "name" 
    *  text a totals read drops may be left out); the read itself takes the record's `timestamp`. Without it, or in any
    *  other read, each line is parsed whole. */
   fields?: Shape;
+  /** The shape of the state (`own`) its cursors hold, set when it changes from one a release saved: a cursor saved at
+   *  another (none for a source that never set one) is no place to go on from, and the file is read from its start. */
+  stateVersion?: number;
 };
 
 /** The bytes a read takes from its file at once. */
@@ -106,6 +109,8 @@ export type FileCursor = {
   /** Whether the read kept turns, and whether it was a totals read: a cursor of another kind is no place to go on from. */
   keep: boolean;
   totals?: boolean;
+  /** Its reader's state shape when saved (LineSource.stateVersion). */
+  stateVersion?: number;
   state: ReadState;
 };
 
@@ -125,6 +130,29 @@ const ahead = <T>(read: Promise<T>): Promise<T> => {
   return read;
 };
 
+/** Whether a read from `cursor` of the open file goes on from it: the same source, kind of read and state shape
+ *  (LineSource.stateVersion), the same file (device and inode), no shorter, and the bytes before its offset as they
+ *  were. Else it reads the file from its start. */
+async function goesOn<S extends string, O>(spec: LineSource<S, O>, keep: boolean, totals: boolean, cursor: FileCursor, handle: FileHandle, stats: { dev: number; ino: number; size: number }): Promise<boolean> {
+  return cursor.source === spec.source && cursor.keep === keep && (cursor.totals ?? false) === totals && cursor.stateVersion === spec.stateVersion && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
+}
+
+/** Whether a read with these options is a totals read: asked for, with no turns kept, from a source that has one. */
+const totalsRead = <S extends string, O>(spec: LineSource<S, O>, keep: boolean, asked: boolean): boolean => asked && !keep && spec.totals === true;
+
+/** Whether `spec`'s line reader would go on from `cursor` in `file` now (a read with `options`), as it decides when it
+ *  reads: so a reader built on it can choose how to read before reading. A file it cannot open is no place to go on. */
+export async function resumes<S extends string, O>(spec: LineSource<S, O>, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false }: ReadOptions = {}): Promise<boolean> {
+  if (cursor === undefined) return false;
+  const handle = await open(file, "r").catch(() => undefined);
+  if (!handle) return false;
+  try {
+    return await goesOn(spec, keep, totalsRead(spec, keep, asked), cursor, handle, await handle.stat());
+  } finally {
+    await handle.close();
+  }
+}
+
 /** The records seen, as a source asks: `extra` over `base`, so a line read that is not kept leaves `base` as it was. */
 const overlay = (base: Set<string>): Set<string> => {
   const extra = new Set<string>();
@@ -134,12 +162,13 @@ const overlay = (base: Set<string>): Set<string> => {
 /** One session file of `spec`'s source, read from its start or from `cursor`. */
 async function readLines<S extends string, O>(spec: LineSource<S, O>, shape: Fields | undefined, file: string, cursor: FileCursor | undefined, { turns: keep = true, totals: asked = false, seen, keepsCursor = true, [DROPS_CURSOR]: dropsCursor = false, [NO_READ_AHEAD]: inTurn = false, maxLine = Infinity }: InternalReadOptions = {}): Promise<ReadResult<S, FileCursor>> {
   const { source } = spec;
-  const totals = asked && !keep && spec.totals === true;
+  const totals = totalsRead(spec, keep, asked);
   const fields = totals ? shape : undefined;
   const handle = await open(file, "r");
   try {
     const stats = await handle.stat();
-    const resumed = cursor !== undefined && cursor.source === source && cursor.keep === keep && (cursor.totals ?? false) === totals && cursor.dev === stats.dev && cursor.ino === stats.ino && stats.size >= cursor.offset && (await markOf(handle, cursor.offset)) === cursor.mark;
+    // The cursor's presence checked here, so `resumed` narrows it where its state and offset are read.
+    const resumed = cursor !== undefined && (await goesOn(spec, keep, totals, cursor, handle, stats));
     const state = (
       resumed
         ? structuredClone(cursor.state)
@@ -256,7 +285,7 @@ async function readLines<S extends string, O>(spec: LineSource<S, O>, shape: Fie
       if (!dropsCursor) kept = { ...kept, session: withoutText(kept.session), own: spec.forget ? spec.forget(kept.own) : kept.own, ...(kept.counts ? { counts: trimmed(kept.counts) } : {}) };
       if (resumed) session = withoutText(session);
     }
-    return { sessions: [{ locator: { file }, session, requests: state.answers, ...(state.counts ? { counts: state.counts } : {}) }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, ...(totals ? { totals } : {}), state: kept as ReadState }, read, resumed };
+    return { sessions: [{ locator: { file }, session, requests: state.answers, ...(state.counts ? { counts: state.counts } : {}) }], cursor: { source, dev: stats.dev, ino: stats.ino, offset, mark, keep, ...(totals ? { totals } : {}), ...(spec.stateVersion !== undefined ? { stateVersion: spec.stateVersion } : {}), state: kept as ReadState }, read, resumed };
   } finally {
     await handle.close();
   }
@@ -276,16 +305,27 @@ function finish<S extends string, O>(spec: LineSource<S, O>, file: string, state
   return out;
 }
 
+/** Each source's fields as scan takes them, made once per Shape: a reader built again over the same fields (a Codex
+ *  fork's, whose spec differs only in its start) reads with the node they were compiled to, since the walk's table, which
+ *  holds every compiled node, only grows. */
+const compiled = new WeakMap<Shape, Fields>();
+function fieldsFor(shape: Shape): Fields {
+  let fields = compiled.get(shape);
+  if (!fields) compiled.set(shape, (fields = fieldsOf({ ...shape, timestamp: true })));
+  return fields;
+}
+
 /** The Reader of a JSONL source: each file one locator, its cursor a FileCursor. */
 export function lineReader<S extends string, O>(spec: LineSource<S, O>): Reader<S, FileCursor> {
   const { source, name, harness, order, children } = spec;
-  const fields = spec.fields ? fieldsOf({ ...spec.fields, timestamp: true }) : undefined;
+  const fields = spec.fields ? fieldsFor(spec.fields) : undefined;
   return {
     source,
     name,
     harness,
     ...(order ? { order } : {}),
     discover: async (home, env) => (await spec.files(home, env)).map((file): Locator => ({ file })),
+    idOf: ({ file }) => spec.idOf(file),
     read: (locator, cursor, options) => readLines(spec, fields, locator.file, cursor, options),
     ...(children ? { children: async (home: string, env?: Env) => (await children(home, env)).map(({ file, of }) => ({ locator: { file }, of: { file: of } })) } : {}),
   };

@@ -227,9 +227,9 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
     ...extra,
     // Its wire's vendor's model, or that vendor's on OpenRouter; behind serve's gateway, on the wire it serves, any id,
     // which is the gateway's own string and names no provider here. One that runs on a ChatGPT plan, the plan's models.
-    // A model the route translates onto its wire (wires.ts routed: an Ollama model on Messages or Responses), except
-    // behind a gateway.
-    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)) || (routedId(wire, model) && !env.AGENT_MODEL_BASE_URL),
+    // A model the route translates onto its wire (wires.ts routed: an Ollama model on Messages or Responses), where its
+    // proxy forwards with the route's fetch (its forwardsRoute fact), except behind a gateway.
+    runs: (env, model) => (gateway && Boolean(env.AGENT_MODEL_BASE_URL)) || model.slice(0, Math.max(0, model.indexOf("/"))) === vendor || onOpenRouter(model, vendor) || (onPlan && model.startsWith(`${PLAN_PROVIDER}/`)) || (facts.forwardsRoute === true && routedId(wire, model) && !env.AGENT_MODEL_BASE_URL),
     onWire: (env) => facts.ownModel || openRouterOnly(wire, env),
     model: async (env, ref, available) => (facts.ownModel && !available ? undefined : modelOn(wire, env, ref, id)),
     priceModel: (env, model) => priceModelFor(wire, env, model, id),
@@ -335,6 +335,10 @@ const ACP_PROMISES: HarnessPromises = Object.freeze({ resume: "load", tool_gate:
 /** As ACP_PROMISES, with a resume by a new session given the conversation so far: a module's ACP agent's, unless it
  *  says "load" (AcpEntryOptions.resume). */
 const ACP_RESTART_PROMISES: HarnessPromises = Object.freeze({ ...ACP_PROMISES, resume: "restart" });
+/** Goose's: as ACP_PROMISES, its tool calls held by its config. Its recipe's allowFile (Goose's permission file, written at
+ *  each start) allows each tool of the run by name, so Goose asks nothing for a call of ours and the host's gate is asked at
+ *  the MCP call. */
+const GOOSE_PROMISES: HarnessPromises = Object.freeze({ ...ACP_PROMISES, tool_gate: "config" });
 
 /** The code a module's ACP entry is refused by at its first launch when it promises resume "load" and its recipe
  *  declares no session/load (AcpEntryOptions.resume). */
@@ -375,6 +379,9 @@ export type PlanLaunch = Omit<ModuleLaunch, "provider" | "price" | "skills"> & {
    *  check), never to start its agent: a recipe's route reads its server's listing then, and only what a claim laid when
    *  its agent starts (harness-recipe-entry.ts). */
   readonly probe?: boolean;
+  /** Set for a held run its model kept from running (AdapterNeeds.heldRefusal): its agent never starts, so a recipe's
+   *  route reads no key for it (harness-recipe-entry.ts). */
+  readonly held?: boolean;
 };
 
 /** What serve gives acpEntryOf for an ACP agent billed to its owner's plan (its facts' wire `plan`): Cursor's entry and
@@ -382,6 +389,9 @@ export type PlanLaunch = Omit<ModuleLaunch, "provider" | "price" | "skills"> & {
  *  HarnessUnavailable of its own, which keeps the fix (install, pins) it names; `recipe` may throw one too (a key unset). */
 export interface AcpPlanEntryOptions extends ModuleChecks, Pick<HarnessEntry, "ownKeys" | "card" | "hidden"> {
   readonly facts: AdapterFacts;
+  /** As ModuleChecks.missing. `held`: the run is held, its model kept from running (AdapterNeeds.heldRefusal), so its
+   *  agent never starts and its claim laid no key: what only a key or a sign-in fixes is not asked, its install still is. */
+  missing?(env: NodeJS.ProcessEnv, launch?: { readonly held: boolean }): string | undefined | Promise<string | undefined>;
   recipe(launch: PlanLaunch): AcpRecipe | Promise<AcpRecipe>;
   beforeStart?(command: string): Promise<void>;
 }
@@ -401,17 +411,23 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
   const prefix = `${id}/`;
   const make = async (env: NodeJS.ProcessEnv, needs: AdapterNeeds, probe = false): Promise<AgentAdapter> => {
     const { fixOf, harnessLog } = await import("./adapters.js");
+    // A held run its model kept from running never starts its agent: it is asked for no key or sign-in (`missing`), its
+    // route reads no key (PlanLaunch.held), its recipe names none (no keys, and no keyEnv naming one, which the adapter
+    // refuses), and its start is refused in its create's words.
+    const held = needs.heldRefusal;
     // What no key fixes is said first, as for the built-in harnesses' binaries.
-    const lacks = await options.missing?.(env);
+    const lacks = await options.missing?.(env, { held: held !== undefined });
     if (lacks) throw new HarnessUnavailable(lacks);
     const acp = acpPackage();
     if (!acp) throw new HarnessUnavailable(`${label} needs the ACP adapter (${ACP_PACKAGE}) beside this server`);
     if (needs.model.provider !== id) throw new HarnessUnavailable(`${label} runs ${label}'s models, named ${prefix}<model-id>; the run's model is ${needs.model.provider}/${needs.model.modelId}.`);
     const log = host.log ?? harnessLog(id, env);
     try {
-      const recipe = await ownKeysOnly(facts, await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env, ...(probe ? { probe } : {}) }));
+      const recipe = await ownKeysOnly(facts, await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env, ...(probe ? { probe } : {}), ...(held !== undefined ? { held: true } : {}) }));
+      const beforeStart = held !== undefined ? async () => { throw new HarnessUnavailable(held); } : options.beforeStart;
+      const { keyEnv: _handedAs, ...keyless } = recipe;
       // Its keys (recipe.keys) are read from the run's environment, which holds its own (ownKeys: run-secrets.ts keysFor).
-      return acp.acpAdapter({ recipe, ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}), ...(needs.confine ? { confine: needs.confine } : {}), env, log });
+      return acp.acpAdapter({ recipe: held !== undefined ? { ...keyless, keys: [] } : recipe, ...(beforeStart ? { beforeStart } : {}), ...(needs.confine ? { confine: needs.confine } : {}), env, log });
     } catch (error) {
       if (error instanceof HarnessUnavailable) throw error;
       throw new HarnessUnavailable((error as Error).message, fixOf(facts, error));
@@ -563,7 +579,7 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
         if ("missing" in found) throw gooseRefused(found.missing);
         return undefined;
       },
-      promises: ACP_PROMISES,
+      promises: GOOSE_PROMISES,
       hidden: gooseHidden,
     }),
   } : {}),

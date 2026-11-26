@@ -509,3 +509,27 @@ test("local: every write is durable on return (a crash after it keeps it whole);
   assert.ok(attached.get("deep/er/file.bin")?.equals(expected), "a write through a bound computer that returned is whole after a crash");
   assert.equal(attached.get("log/run.log")?.toString("utf8"), "first\nsecond\n", "an append through a bound computer that returned is kept after a crash");
 });
+
+test("local: writeNew makes a file only where nothing is: a file, a folder or a link there is kept, and it never follows a link", async () => {
+  const { root } = scratch();
+  const workspace = localWorkspace(root);
+  assert.equal(await workspace.writeNew("a/b/new.json", "made"), true, "made where nothing was, its folders with it");
+  assert.equal(readFileSync(join(root, "a/b/new.json"), "utf8"), "made");
+  assert.equal(statSync(join(root, "a/b/new.json")).nlink, 1, "one name: the temporary one is gone");
+  assert.equal(await workspace.writeNew("a/b/new.json", "again"), false, "a file there: not made");
+  assert.equal(readFileSync(join(root, "a/b/new.json"), "utf8"), "made", "and kept");
+  mkdirSync(join(root, "a/dir"));
+  assert.equal(await workspace.writeNew("a/dir", "x"), false, "a folder there: not made");
+  const outside = mkdtempSync(join(tmpdir(), "write-new-outside-"));
+  try {
+    symlinkSync(join(outside, "target"), join(root, "a/dangling"));
+    assert.equal(await workspace.writeNew("a/dangling", "x"), false, "a link there, even one to nothing: not made");
+    assert.equal(existsSync(join(outside, "target")), false, "and not followed");
+    symlinkSync(outside, join(root, "via"));
+    await refused(workspace.writeNew("via/x.json", "x"), "ESCAPE");
+    assert.deepEqual(readdirSync(outside), [], "a link on the way is never written through");
+  } finally {
+    rmSync(outside, { recursive: true, force: true });
+  }
+  assert.deepEqual(readdirSync(join(root, "a/b")).filter((name) => name.endsWith(".tmp")), [], "no temporary file is left");
+});

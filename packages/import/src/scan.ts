@@ -52,6 +52,9 @@ let tableTop = 1;
 let keysTop = 0;
 const named: string[] = [""];
 
+/** The table's next free word: how much of the walk's table the fields compiled so far take (a test reads it). */
+export const tableUsed = (): number => tableTop;
+
 /** The walker, built on first use: a module of a few kilobytes, compiled where it is used (each worker its own). */
 function walkerOf(): Walker {
   return (walker ??= new WebAssembly.Instance(new WebAssembly.Module(Buffer.from(SCAN_WASM, "base64"))).exports as unknown as Walker);
