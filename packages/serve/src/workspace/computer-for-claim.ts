@@ -1247,12 +1247,15 @@ export async function computerForClaim(
       // store Claim from each claim's launch), so a claim another runner superseded is Fenced at the route.
       const provider = pairedRow ? pairedProvider(pairedRow, deps.attached?.hub, deps.attached?.relay, launch.claim as Claim | undefined) : await vendorProvider(entry, keys, configuration);
       outlives = pairedRow !== undefined || persistent === true;
-      const spec: ComputerSpec = { ...(await specOf(entry, provider, kind, configuration, signal, gpu)), ...(mount ? { mount } : {}) };
+      // A paired computer's refusals are serve's own (the attach hub's and computerd's, on the person's own machine, in
+      // words that name the fix): no vendor's text, so they pass as they are.
+      const saying = <T>(step: Promise<T>): Promise<T> => (pairedRow ? step.catch((error: unknown) => { throw asOwnWords(error instanceof Error ? error : new Error(String(error))); }) : step);
+      const spec: ComputerSpec = { ...(await saying(specOf(entry, provider, kind, configuration, signal, gpu))), ...(mount ? { mount } : {}) };
       // A browser makes nothing here: the run's browser tool opens each session through it, so a session lives (and is
       // booked) only while the tool holds it.
       if (kind === "browser") {
         // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder).
-        await releaseOlderClaims(provider, launch, signal, { entry: entry.id, writes });
+        await saying(releaseOlderClaims(provider, launch, signal, { entry: entry.id, writes }));
         const opened = claimBrowser(provider, spec);
         madeBy = entry;
         return { id: entry.id, groups: ["cdp"], browser: opened.browser, release: opened.release };
@@ -1288,7 +1291,7 @@ export async function computerForClaim(
         // janitor's pass is left to wait for, and the run's end removes the row (forgetEnded).
         const ended = givenBack;
         const keptGone = !pairedRow && ended && store.settings ? { id: ended.id, gone: async () => void (await finishedKept(store.settings!, launch.runId, ended)) } : undefined;
-        const fresh = await providerLaunch(provider, launch, spec, signal, pairedRow ? { writes: intervalWrites(undefined), entry: entry.id, kind } : { writes, entry: entry.id, kind, ...(meter ? { meter } : {}), ...(keptGone ? { keptGone } : {}) });
+        const fresh = await saying(providerLaunch(provider, launch, spec, signal, pairedRow ? { writes: intervalWrites(undefined), entry: entry.id, kind } : { writes, entry: entry.id, kind, ...(meter ? { meter } : {}), ...(keptGone ? { keptGone } : {}) }));
         // A sandbox the claim made is started again when its provider loses it mid-run (lostAware): never a paired
         // computer, nor a desktop or a phone (a person may hold or watch it), nor the agent's own (persistent, above).
         const { releasedOlder } = fresh;
