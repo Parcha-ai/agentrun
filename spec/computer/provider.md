@@ -154,6 +154,7 @@ that the server, Settings and the conformance suite all read the same declaratio
 | `prepareImage?` | Its providers have `prepareImage()`, which makes the image ready before the first create ([below](#prepareimage)). |
 | `imageEnv?` | The server's environment variable that, when set, names the image every computer of the provider starts from in place of `defaultImage` (Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`). The provider's `check()` still judges it. |
 | `local?` | Its computers run on this machine's container engine, so the server passes it its local host options. |
+| `defaultBox?` | `true`: its sandbox is the box a server gives a new agent that names no place and needs a shell (Docker's). One provider at most sets it; where its box is not available, a server gives such an agent no other box. |
 | `ledger?` | `{ option }`: `create()` takes a ledger the server keeps for it in that option (the phone harness's sessions). |
 | `profiles?` | `{ settleMs }`, a browser's only: its providers keep profiles (`profiles` on the built provider, a server's saved sign-ins), and `settleMs` is how long after a session that saved to one ends the vendor may still be writing it back (Browserbase 10 s, Kernel 0). The built provider's `capabilities().browser.profiles` is the same, and a server holds a saved sign-in's next save back for it without loading the provider. |
 | `load()` | Imports the provider module on demand: its `create()` and its conformance module. |

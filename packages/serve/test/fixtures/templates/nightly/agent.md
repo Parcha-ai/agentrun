@@ -2,6 +2,7 @@
 name: nightly
 version: 1.0.0
 description: Writes a short brief on a topic, every morning.
+tools: []
 model: { tier: strong }
 parameters:
   topic: { type: string, description: what the brief is about }

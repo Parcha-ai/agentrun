@@ -56,16 +56,39 @@ test("the environment's settings: none set is none; the region and S3 URL are th
   assert.deepEqual(archilSettingsFromEnv({ ...ENV, AGENTRUN_ARCHIL_IMAGE: PINNED }), { region: "aws-us-east-1", s3Url: "https://s3.env.example", image: PINNED });
 });
 
-test("one of the region and S3 URL without the other is refused naming what is missing, never a half-configured Mode 2", () => {
-  assert.throws(() => archilSettingsFromEnv({ AGENTRUN_ARCHIL_REGION: "aws-us-east-1" }), (error) =>
-    error instanceof ArchilSettingsEnvInvalid && /started with AGENTRUN_ARCHIL_REGION but not AGENTRUN_ARCHIL_S3_URL/.test(error.message));
+// Each region Archil's SDK names a control plane for has its S3 endpoint at the same host with `control.` made `s3.`; each
+// of these answered over https on 2026-11-25, and a disk mounted through the first that day.
+const KNOWN = {
+  "aws-us-east-1": "https://s3.green.us-east-1.aws.prod.archil.com",
+  "aws-us-west-2": "https://s3.green.us-west-2.aws.prod.archil.com",
+  "aws-eu-west-1": "https://s3.green.eu-west-1.aws.prod.archil.com",
+  "gcp-us-central1": "https://s3.blue.us-central1.gcp.prod.archil.com",
+};
+const { ARCHIL_S3_URLS } = await import("../dist/archil-settings.js");
+
+test("each region serve knows has its S3 URL, from its control plane's host", () => {
+  assert.deepEqual(ARCHIL_S3_URLS, KNOWN);
+});
+
+test("a known region alone is the whole of the environment's settings: its S3 URL is the region's, and one given is kept over it", () => {
+  for (const [region, s3Url] of Object.entries(KNOWN)) assert.deepEqual(archilSettingsFromEnv({ AGENTRUN_ARCHIL_REGION: region }), { region, s3Url }, region);
+  assert.deepEqual(archilSettingsFromEnv({ AGENTRUN_ARCHIL_REGION: "aws-us-east-1", AGENTRUN_ARCHIL_S3_URL: "https://s3.env.example" }), { region: "aws-us-east-1", s3Url: "https://s3.env.example" }, "the one given wins over the region's");
+});
+
+test("a region serve doesn't know, with no S3 URL, is refused saying that region needs one; no region at all is refused naming it", () => {
+  assert.throws(() => archilSettingsFromEnv({ AGENTRUN_ARCHIL_REGION: "eu-test-9" }), (error) =>
+    error instanceof ArchilSettingsEnvInvalid && error.message.includes("AGENTRUN_ARCHIL_S3_URL is needed for the region eu-test-9: serve knows the S3 URL of aws-us-east-1, aws-us-west-2, aws-eu-west-1 and gcp-us-central1 only"), "an unknown region alone");
   assert.throws(() => archilSettingsFromEnv({ AGENTRUN_ARCHIL_IMAGE: PINNED }), (error) =>
-    error instanceof ArchilSettingsEnvInvalid && /but not AGENTRUN_ARCHIL_REGION, AGENTRUN_ARCHIL_S3_URL/.test(error.message), "the image alone is not Mode 2");
+    error instanceof ArchilSettingsEnvInvalid && /started with AGENTRUN_ARCHIL_IMAGE but not AGENTRUN_ARCHIL_REGION:/.test(error.message), "the image alone is not Mode 2");
+  assert.throws(() => archilSettingsFromEnv({ AGENTRUN_ARCHIL_S3_URL: KNOWN["aws-us-east-1"] }), (error) =>
+    error instanceof ArchilSettingsEnvInvalid && /started with AGENTRUN_ARCHIL_S3_URL but not AGENTRUN_ARCHIL_REGION:/.test(error.message), "the S3 URL alone is not Mode 2");
 });
 
 test("an environment value the PUT would refuse is refused by the same rule, naming its variable", () => {
   assert.throws(() => archilSettingsFromEnv({ ...ENV, AGENTRUN_ARCHIL_S3_URL: "http://s3.env.example" }), (error) =>
-    error instanceof ArchilSettingsEnvInvalid && /AGENTRUN_ARCHIL_S3_URL is the region's S3 endpoint, an https URL/.test(error.message));
+    error instanceof ArchilSettingsEnvInvalid && error.message.includes(`AGENTRUN_ARCHIL_S3_URL is the region's S3 endpoint, an https URL: for aws-us-east-1 it is ${KNOWN["aws-us-east-1"]}`));
+  assert.throws(() => archilSettingsFromEnv({ AGENTRUN_ARCHIL_REGION: "eu-test-9", AGENTRUN_ARCHIL_S3_URL: "http://s3.env.example" }), (error) =>
+    error instanceof ArchilSettingsEnvInvalid && /AGENTRUN_ARCHIL_S3_URL is the region's S3 endpoint, an https URL\.$/.test(error.message), "no URL to name for a region serve doesn't know");
   assert.throws(() => archilSettingsFromEnv({ ...ENV, AGENTRUN_ARCHIL_IMAGE: "ghcr.io/agentrun/exec:latest" }), (error) =>
     error instanceof ArchilSettingsEnvInvalid && /AGENTRUN_ARCHIL_IMAGE is pinned by digest/.test(error.message));
 });

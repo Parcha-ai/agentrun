@@ -6,6 +6,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { raw } from "./store-target.mjs";
 import { agent, follow, scratch, serve, startRun, storeRun } from "./support.mjs";
 
 test("a failed run takes no follow-up, and archiving closes a completed one: an archived run, or a run of an archived agent, is 409 not_continuable", async (t) => {
@@ -104,9 +105,9 @@ test.skip("a follow-up sent while a completed run's end is still being written w
   const { api, data } = await serve(t);
   const { run_id } = await startRun(api, "calc", "What is six times seven?");
   // Another writer holds the agent store, so the run's carry back waits: it reads completed before its end is written.
-  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
-  t.after(() => store.isOpen && store.close());
-  store.exec("BEGIN IMMEDIATE");
+  const store = await raw(join(data, "store.sqlite"));
+  t.after(() => store.close().catch(() => {}));
+  await store.exec("BEGIN IMMEDIATE");
   for (let i = 0; (await api("GET", `/runs/${run_id}`)).body.status !== "completed"; i++) {
     assert.ok(i < 300, "the run answers");
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -121,8 +122,8 @@ test.skip("a follow-up sent while a completed run's end is still being written w
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.equal(answered, false, "it waits for the run's end to be written");
-  store.exec("ROLLBACK");
-  store.close();
+  await store.exec("ROLLBACK");
+  await store.close();
   const answer = await sent;
   assert.equal(answer.status, 202, JSON.stringify(answer.body));
   assert.equal(answer.body.mode, "follow_up");
@@ -135,12 +136,12 @@ test.skip("a follow-up to a completed run whose end the store has not taken yet 
   // One carry back try, then a try every 2 s: with the store held, the run ends here before its row does.
   const { api, data } = await serve(t);
   const { run_id } = await startRun(api, "calc", "What is six times seven?");
-  const store = new DatabaseSync(join(data, "store.sqlite"), { timeout: 0 });
-  t.after(() => store.isOpen && store.close());
-  store.exec("BEGIN IMMEDIATE");
+  const store = await raw(join(data, "store.sqlite"));
+  t.after(() => store.close().catch(() => {}));
+  await store.exec("BEGIN IMMEDIATE");
   await follow(api, run_id, ["completed"]);
-  store.exec("ROLLBACK");
-  store.close();
+  await store.exec("ROLLBACK");
+  await store.close();
   assert.equal(storeRun(data, run_id).state, "running", "its end is not in the store yet");
   const early = await api("POST", `/runs/${run_id}/messages`, { content: "go on" });
   assert.deepEqual([early.status, early.body.error?.code, early.body.error?.retryable], [503, "unavailable", true], JSON.stringify(early.body));

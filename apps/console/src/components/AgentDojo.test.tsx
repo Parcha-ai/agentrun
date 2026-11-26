@@ -6,6 +6,7 @@ import { createClient } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 import type { AgentLearning, LearnedItem, LearningModelAccess } from "@/lib/learning";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root | undefined;
@@ -30,6 +31,12 @@ const refresh = () => host.querySelector<HTMLButtonElement>('button[aria-label="
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("Learning Dojo", () => {
+  it("keeps its bar with Refresh in view: the agents and their learning scroll in the one box under it", async () => {
+    await mount(({ path }) => json(path === "/v2/agents" ? { agents: [agent("a1")], next_cursor: null } : view("a1")));
+    const body = expectPinnedBar(host);
+    expect(body.querySelector('[aria-label="Agents in Dojo"]')).not.toBeNull();
+    expect(body.contains(refresh())).toBe(false);
+  });
   it("keeps shared project learning profiles and their settings accessible outside the agent inventory", async () => {
     const profile = agent("cli-project");
     profile.definition = { ...profile.definition, cli_learning: { runtime: "codex", connection_id: "connection", project: "/projects/example" } } as Agent["definition"];

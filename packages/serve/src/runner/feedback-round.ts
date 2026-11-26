@@ -177,8 +177,8 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
  *  round it asks for (openFeedbackRound), and only then marks the kept grade with that round and its steer. The grade is
  *  kept first, so the round's end reads it; the round is named last, so a reopen that fails (thrown, or a run that can't
  *  be opened again) leaves a grade naming none, never one claiming a round that didn't open. The grade as kept. */
-export async function keepGrade(store: Pick<Store, "runs" | "agents" | "settings">, agentId: string, grade: Grade, label: string | undefined, canTurn?: (launch: RunLaunch) => boolean): Promise<Grade> {
-  const kept = await putGrade(store.settings, agentId, { ...grade, feedback: null });
+export async function keepGrade(store: Pick<Store, "runs" | "agents" | "learning">, agentId: string, grade: Grade, label: string | undefined, canTurn?: (launch: RunLaunch) => boolean): Promise<Grade> {
+  const kept = await putGrade(store.learning, agentId, { ...grade, feedback: null });
   const opened = await openFeedbackRound(store, kept, label, canTurn);
-  return opened ? markGradeRound(store.settings, agentId, kept, opened) : kept;
+  return opened ? markGradeRound(store.learning, agentId, kept, opened) : kept;
 }

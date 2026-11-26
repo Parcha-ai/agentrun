@@ -1,4 +1,4 @@
-// The checker of a workflow draft a run's compile turn gives its agent's learning folder (SPEC.md): its workflow.json and
+// The checker of a workflow draft a run's compile turn gives its agent's learning (SPEC.md): its workflow.json and
 // README.md, each a change against what the folder holds. Structure only, and what must never be stored; nothing the
 // checker refuses is ever written to git. Every problem it reports is printable: its path and detail are cut of the
 // host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.

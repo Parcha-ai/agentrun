@@ -7,11 +7,7 @@ import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { agentFolderOf } from "../dist/files.js";
-import { seedOf } from "../dist/learning.js";
-import { entriesOf, git, resnap } from "./learn-support.mjs";
+import { entriesOf, putLearning } from "./learn-support.mjs";
 import { agent, answerFlow, follow, serve, withEnv } from "./support.mjs";
 
 /** A learned workflow's two files, as the merge keeps them. */
@@ -19,19 +15,6 @@ const flowFiles = (name, workflow) => ({
   [`workflows/${name}/workflow.json`]: JSON.stringify(workflow),
   [`workflows/${name}/README.md`]: `---\nname: ${name}\ndescription: Answers a question as a number; use when the person asks for the answer\n---\n`,
 });
-/** Agent `id`'s learning folder made as a first run makes it, then `files` committed on main. */
-async function folderWith(data, id, files) {
-  await seedOf(data, id);
-  const repo = join(agentFolderOf(data, id), "learning");
-  for (const [path, text] of Object.entries(files)) {
-    mkdirSync(dirname(join(repo, path)), { recursive: true });
-    writeFileSync(join(repo, path), text);
-  }
-  git(repo, ["add", "--", ...Object.keys(files)]);
-  git(repo, ["commit", "-q", "-m", "learned"]);
-  await resnap(data, id);
-}
-
 const ASK = "Use the learned workflow answer on What is six times seven.";
 /** Each model's price, USD per million input, output, cache-read and cache-write tokens. */
 const PRICES = { "gpt-run": [1, 2, 0.5], "gpt-fast": [10, 20, 5], "gpt-strong": [100, 200, 50] };
@@ -59,9 +42,9 @@ async function tiered(t, id, tier, env) {
   const flow = answerFlow();
   if (tier) flow.root.steps[0].tier = tier;
   assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness: "pi", instructions: ASK }))).status, 201);
-  await folderWith(data, id, flowFiles("answer", flow));
+  await putLearning(store, id, flowFiles("answer", flow));
   // Tier routing starts from a workflow whose independent check already passed.
-  await promoteChecked(store.settings, id, [{ name: "answer", workflow: flow }]);
+  await promoteChecked(store, id, [{ name: "answer", workflow: flow }]);
   // Capped: every request is admitted under the run's one cap, held at its model's price before it leaves.
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: ASK }, max_cost_usd: 5 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
