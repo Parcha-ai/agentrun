@@ -22,7 +22,11 @@ export const AGENT37_ENV = {
 	kind: "COMPUTER_AGENT37_KIND",
 	/** apiKey, required: the workspace's API key. */
 	key: "COMPUTER_AGENT37_API_KEY",
-	/** sshKey, required: the private SSH key registered on the workspace, its contents. */
+	/**
+	 * sshKey, optional: the private half of an SSH key already registered on the workspace, its contents. Unset, the run
+	 * makes a key of its own, kept in its process's memory, and registers it on the workspace (POST /v1/ssh-keys), where
+	 * it stays: delete the agentrun-<hash> keys a run leaves (DELETE /v1/ssh-keys/{id}) before the workspace reaches 20.
+	 */
 	sshKey: "COMPUTER_AGENT37_SSH_KEY",
 	/** type: vm (default) or default. */
 	type: "COMPUTER_AGENT37_TYPE",
@@ -49,15 +53,13 @@ export type Agent37Settings = Omit<Agent37Options, "ssh2" | "fetch" | "WebSocket
  */
 export function settingsFromEnv(env: Env = process.env): Agent37Settings {
 	const apiKey = requiredSecret(env, AGENT37_ENV.key, "an Agent37 API key");
-	const sshKey = env[AGENT37_ENV.sshKey];
-	if (sshKey === undefined || sshKey === "") throw new Error(`set ${AGENT37_ENV.sshKey} to the private SSH key registered on the Agent37 workspace (its contents, never a path)`);
 	const lifetime = lifetimeFromEnv(env, AGENT37_ENV.maxLifetimeMs, "86400000");
-	const set = setOptions(env, { type: AGENT37_ENV.type, region: AGENT37_ENV.region, apiUrl: AGENT37_ENV.apiUrl, daemonPath: AGENT37_ENV.daemon, daemonUser: AGENT37_ENV.user });
-	return { apiKey, sshKey, ...(set as Pick<Agent37Settings, "type" | "region" | "apiUrl" | "daemonPath" | "daemonUser">), ...kindFrom(env, AGENT37_ENV.kind), ...lifetime };
+	const set = setOptions(env, { sshKey: AGENT37_ENV.sshKey, type: AGENT37_ENV.type, region: AGENT37_ENV.region, apiUrl: AGENT37_ENV.apiUrl, daemonPath: AGENT37_ENV.daemon, daemonUser: AGENT37_ENV.user });
+	return { apiKey, ...(set as Pick<Agent37Settings, "sshKey" | "type" | "region" | "apiUrl" | "daemonPath" | "daemonUser">), ...kindFrom(env, AGENT37_ENV.kind), ...lifetime };
 }
 
 export const conformanceNotes: string[] = [
-	"agent37: every computer is an instance (type vm by default), made with network deny-all, auto-sleep off and no public port, read back from Agent37 and probed from inside; the daemon is a child, started over SSH through the platform's sshd (port 22022; it and the platform's web terminal on 7681 are declared as the vendor's agent), and every command goes over that SSH as root. Agent37 never ends an instance on its own: lifetime janitor, capped at 30 minutes for the run. No stream() (a screen is streamed through agentrun), so screen.stream is skipped. Kind desktop (COMPUTER_AGENT37_KIND=desktop) starts from agentrun-box-<recipe hash>, our box image registered as a template of the key's workspace (prepareImage), with Xvfb on :0 started through the daemon as the tool user.",
+	"agent37: every computer is an instance (type vm by default), made with network deny-all, auto-sleep off and no public port, read back from Agent37 and probed from inside; the daemon is a child, started over SSH through the platform's sshd (port 22022; it and the platform's web terminal on 7681 are declared as the vendor's agent), and every command goes over that SSH as root. Agent37 never ends an instance on its own: lifetime janitor, capped at 30 minutes for the run. No stream() (a screen is streamed through agentrun), so screen.stream is skipped. Kind desktop (COMPUTER_AGENT37_KIND=desktop) starts from agentrun-box-<recipe hash>, our box image registered as a template of the key's workspace (prepareImage), with Xvfb on :0 started through the daemon as the tool user. With no COMPUTER_AGENT37_SSH_KEY, the run makes an ed25519 key for its process and registers it on the workspace (agentrun-<hash>) before its first instance; the key stays there, one more of the workspace's 20.",
 ];
 
 export interface Agent37ModuleOptions extends HostedModuleOptions, Pick<Agent37Options, "ssh2" | "fetch" | "WebSocket" | "daemonPath" | "timeouts" | "onNote">, ArchilMountOptions {}

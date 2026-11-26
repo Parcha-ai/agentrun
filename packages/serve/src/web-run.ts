@@ -97,7 +97,8 @@ export function ordersOf(env: NodeJS.ProcessEnv): { search: SearchProvider[]; fe
 export function jevWebOf(env: NodeJS.ProcessEnv): ReturnType<typeof jevWebDecider> {
   const key = planeOf(env).jev === "off" || webJevOff(env) ? undefined : handedKeyOf(env, JEV_KEY_ENV);
   if (key === undefined) return jevWebDecider(null);
-  return jevWebDecider({ key, jevProvider, price: JEV_PUBLISHED_PRICING, fetch: async (...args: Parameters<typeof fetch>) => ((await fauxFetch(env, FAUX_JEV_ENV)) ?? fetch)(...args) });
+  // Each request carries the key, so a redirect is an error and is never followed. The faux Jev gets the same init.
+  return jevWebDecider({ key, jevProvider, price: JEV_PUBLISHED_PRICING, fetch: async (input: Parameters<typeof fetch>[0], init?: RequestInit) => ((await fauxFetch(env, FAUX_JEV_ENV)) ?? fetch)(input, { ...init, redirect: "error" }) });
 }
 
 /** One Web for each environment a run's calls are given (main's run process hands process.env; the runner hands each

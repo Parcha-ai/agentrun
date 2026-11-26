@@ -38,6 +38,17 @@ export async function putSealedKey(store: { sealedKeys: Pick<SealedKeys, "put"> 
   await store.sealedKeys.put(name, sealColumn(sealKey, sealedAt.sealedKey(name), value));
 }
 
+/** The value kept under `name`, opened now: the one saved there that opens under `sealKey`, else `value`, saved so that of
+ *  writers racing on the row one's is kept and every one reads it back. A row that does not open (sealed under another
+ *  key, or damaged) is replaced only while it holds the bytes read. Undefined only when the row still does not open. */
+export async function keepSealedKey(store: { sealedKeys: Pick<SealedKeys, "get" | "putIfAbsent" | "replaceIf"> }, sealKey: Buffer, name: string, value: string): Promise<string | undefined> {
+  const was = await store.sealedKeys.get(name);
+  const sealed = sealColumn(sealKey, sealedAt.sealedKey(name), value);
+  if (was === undefined) await store.sealedKeys.putIfAbsent(name, sealed);
+  else if (!("value" in openSealed(sealKey, name, was, undefined))) await store.sealedKeys.replaceIf(name, was, sealed);
+  return getSealedKey(store, sealKey, name);
+}
+
 /** The value saved under `name`, opened now; undefined with none saved, or one that does not open under this seal key
  *  (sealed under another key, or damaged). Never a value the store could read in the clear. */
 export async function getSealedKey(store: { sealedKeys: Pick<SealedKeys, "get"> }, sealKey: Buffer, name: string): Promise<string | undefined> {

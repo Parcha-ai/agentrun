@@ -7,9 +7,8 @@
 // finish; a DELETE of a purged run is 204 again. A live run (not final, or held by a runner) refuses its purge with 409
 // run_not_final and nothing purged. The runs made from a run are purged before it: one a claim made after the DELETE read
 // them is found by the store's purge under the run's row lock (RunsMadeFromLeft, 409 naming it), and one made once the run
-// is purged is refused at its create (RunPurged). A run's purge takes its text off its agent's learning folder's current
-// files (its merges' diff files and feedback lines, forgetCopies) and the folder's history reads serve none of its
-// merges, while the folder's git keeps their bytes until a learning reset or the agent's purge deletes it.
+// is purged is refused at its create (RunPurged). A run's purge deletes its agent's learning rows that hold its text (the
+// store's purge, Store.learning purgeRun) and blanks what its agent's records copied from it (forgetCopies).
 //
 // Another system's agent is first marked refusing new runs (its archive time, set with its triggers off in one commit, read
 // by every path that would start a run), then its runs are cancelled and waited for, then its learning goes, then its
@@ -23,13 +22,11 @@ import { FINAL_STATES, type PurgeKept, type RunState, RunsMadeFromLeft, type Sto
 import { forgetServed } from "./store-view.js";
 import { requireSourceIOIdle } from "./source-sync/io.js";
 
-/** The delete of an agent's learning: the server's is the learning module's deleteLearning over the agent's learning
- *  folder, and its folder on each Archil disk a launch of its runs named, a purged run's included (learn/delete.ts;
- *  server.ts learningDisksOf), and its records. Idempotent; refuses with LearningInFlight while learning work of the
- *  agent is in flight. A reset of the agent's learning (learning-reset.ts), whose agent and runs stay, keeps its reset
- *  ledger and watermark (`keepResetLedger`) and deletes the folder on the agent's own disk too (`agentDisk`), which the
- *  agent's delete removes whole in its step 3. */
-export type DeleteLearning = (store: Store, agentId: string, options?: { keepResetLedger?: boolean; agentDisk?: boolean }) => Promise<unknown>;
+/** The delete of an agent's learning: the server's is the learning module's deleteLearning over the store's learning
+ *  rows (learn/delete.ts). Idempotent; refuses with LearningInFlight while learning work of the agent is in flight. A
+ *  reset of the agent's learning (learning-reset.ts), whose agent and runs stay, keeps its reset ledger and watermark
+ *  (`keepResetLedger`). */
+export type DeleteLearning = (store: Store, agentId: string, options?: { keepResetLedger?: boolean }) => Promise<unknown>;
 
 /** A point of a delete a test may stop it at (AgentDeleteHost.at). An agent's: after step 1, after step 2, in step 3
  *  between a trigger's removal upstream and its settings', between its settings' and its row's, and in step 3 once its
@@ -73,8 +70,8 @@ export interface AgentDeleteHost {
   madeFrom(runId: string): Promise<string[]>;
   /** What agent `agentId`'s learning copied from run `runId`, gone: the grades it keeps of the run dropped, its promotion
    *  records' disagreements naming the run blanked, their decisions, numbers and run ids kept (learn/promote.ts
-   *  forgetRunCopies), and the run's text off its learning folder's current files (learn/commit.ts forgetRunText).
-   *  Idempotent: a purged run's DELETE runs it again. */
+   *  forgetRunCopies), and every SDK run's inbox that holds its workflow text emptied of it (sdk/runs.ts forgetSdkCopies).
+   *  Idempotent: run before the run's purge and again after it commits, and a purged run's DELETE runs it again. */
   forgetCopies(agentId: string, runId: string): Promise<void>;
   /** What run `runId`'s spend reads from its journal, read before its purge removes it (store-reads/cap.ts). */
   kept(runId: string): Promise<PurgeKept>;
@@ -177,6 +174,9 @@ export async function purgeRun(host: AgentDeleteHost, runId: string): Promise<vo
   await host.at?.("run_made_from_gone", runId);
   await host.forgetCopies(run.agentId, runId);
   await purgeOneOrRefuse(host, run.agentId, runId, runId, true);
+  // Again after the purge committed: a copy written meanwhile (an SDK start's inbox, which checks its writers after it is
+  // written) is seen by this pass, or saw the purge itself.
+  await host.forgetCopies(run.agentId, runId);
 }
 
 /** The one per-run step of both purges: the figures its spend's readers read from its journal, its things outside its
