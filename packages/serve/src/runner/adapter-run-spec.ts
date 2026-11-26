@@ -37,7 +37,7 @@ import { readApprovers } from "../server-approvers.js";
 import { ASK_TOOL, askPerson, type EmailFake, type ToolEntry, type ToolHost, toolOf, webAnswerCut } from "../tools.js";
 import type { SaveSlots } from "../web-save.js";
 import type { WebFake } from "../web-fake.js";
-import { type HostToolCtx, hostToolOf } from "../host-tools.js";
+import { type HostToolCtx, hostToolOf, RUNS_ONCE } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
 import { WEB_SEARCH_TOOL } from "../web-search.js";
 import { environmentLine, runZone } from "../environment.js";
@@ -58,7 +58,8 @@ import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
-import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, keyedNow, hostDecisionKeys, learnedDecisionKeys, subagentTierKeys, tierModelKeys, underClaimed, withoutModelKeys } from "./claim-secrets.js";
+import { atRunEnd } from "../learning-work.js";
 import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { agreeOnOf } from "../learning-setting.js";
 import { catalogSessionNames, claimMetering, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
@@ -149,13 +150,14 @@ export type ComputerForClaim = typeof claimComputer;
 export const PI_WIRES: readonly Wire[] = Object.freeze(["anthropic-messages", "openai-responses"]);
 
 /** The browser's catalog name (tools.ts TOOLS.browser). */
-const BROWSER_TOOL = "browser";
+export const BROWSER_TOOL = "browser";
 /** Whether the runner offers the browser at all: on pi's native route (PiAdapterOptions.extensions), where pi-browser's
- *  durable extension runs in the claim's Harness, its tools pi's own tool tasks (their memo, task and conversations). */
+ *  durable extension runs in the claim's Harness, its tools pi's own tool tasks (their memo, task and conversations); on
+ *  another harness, its extension in the same Harness and its tools host tools (browserHostTools). */
 export const BROWSER_ON_RUNNER = true;
 /** Whether the runner installs the browser for a run whose revision grants `granted`, or whose computer is a browser
- *  (host.browserComputer), fail closed: only on the native route (BROWSER_ON_RUNNER), and only with the run's ledger
- *  booking on its ToolHost (host.ledger.paid), so no browser call is held on this process's own spend. */
+ *  (host.browserComputer), fail closed: only where the runner offers it (BROWSER_ON_RUNNER), and only with the run's
+ *  ledger booking on its ToolHost (host.ledger.paid), so no browser call is held on this process's own spend. */
 export const browserListed = (host: Pick<ToolHost, "ledger" | "browserComputer">, granted: readonly string[]): boolean =>
   BROWSER_ON_RUNNER && host.ledger?.paid !== undefined && (granted.includes(BROWSER_TOOL) || host.browserComputer !== undefined);
 
@@ -892,12 +894,13 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // The audits that finished since are written first (runner/audit.ts settleAudits): a hold they make decides this claim.
   const admitAuxiliary = runnerSeam() ? undefined : sourceAuxiliaryAdmitter(deps.store, { data: deps.data, sealKey: deps.sealKey, env: deps.env, control: { ...deps.mountControl, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) } });
   // None for a held run, so its claim reads no saved key for spend beside it (claimSpendOff).
-  const audits = heldRefusal === undefined ? { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, shown, sealKey: deps.sealKey, spendOff: await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey), admitAuxiliary } : undefined;
+  // A claim on the run's own key runs its learning work on that key (keyed), its check at the run's end (atEnd).
+  const audits = heldRefusal === undefined ? { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, shown, sealKey: deps.sealKey, spendOff: await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey), keyed: keyedNow(runKey), atEnd: atRunEnd(log), admitAuxiliary } : undefined;
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself. A held run its model kept from
   // running takes none of them: it settles no audit and starts no replay run, starts on no workflow, and its tool runs
   // none (so no learned tier is routed, below).
-  const learned: LearnedFirst = audits ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, shown, spendOff: audits.spendOff, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: { reason: "held" }, workflows: [] };
+  const learned: LearnedFirst = audits ? await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, shown, spendOff: audits.spendOff, keyed: audits.keyed, atEnd: audits.atEnd, admitAuxiliary }, seedLaid?.workflows ?? []) : { choice: { reason: "held" }, workflows: [] };
   const firstChoice = learned.choice;
   // A replay run's call nodes: reads live through a cache seeded from the graded run's recorded calls, writes only ever
   // answered from that recording (runner/promotion.ts replayCallsOver, learn/replay-calls.ts).
@@ -1015,6 +1018,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     tools: sessionTools,
     context: "fresh",
     ...(thinking ? { thinking: thinking as SessionSpec["thinking"] } : {}),
+    // The run's model's window, from its route's catalog entry: pi holds every tool result to its share (boundPiResult).
+    ...(route.contextWindow ? { contextWindow: route.contextWindow } : {}),
   };
 
   // The person's first message: the start body's content, with the run's file manifest beside it (run-manifest.ts), read
@@ -1437,6 +1442,30 @@ export async function webHostTools(host: ToolHost, granted: readonly string[], c
   return tools;
 }
 
+/** `host` for the browser's binding: its vendor the launch's plane (resolved when the run was created, runs-over-store.ts
+ *  planeFor) checked again against the keys this claim read from the store (recheckPlane, which keeps the plane's Jev
+ *  off), as both specs bind it. */
+function browserHostOf(host: ToolHost, plane: RunLaunch["plane"]): ToolHost {
+  const checked = plane ? recheckPlane(plane, host.env) : {};
+  const env = { ...host.env };
+  delete env[TOOL_PLANE_ENV];
+  if (Object.keys(checked).length) env[TOOL_PLANE_ENV] = JSON.stringify(checked);
+  return { ...host, env };
+}
+
+/** The browser on a harness other than pi (the CLI spec): tools.ts's own binding on this run's ToolHost, as pi's native
+ *  route binds it (its store, claim and seal key, its live viewers, its money on host.ledger, its computer the claim's),
+ *  its durable extension installed in the run's registry (host.install), so its documents and its release and hand-over
+ *  tasks are the run's Harness's, and its reconcile, release and drain on the host's lifecycle (the spec's `lifecycle`).
+ *  Each of its registrations is a host tool (host-tools.ts hostToolOf, RUNS_ONCE: a call a crash cut off is answered
+ *  interrupted, its session left to the next claim's reconcile), under the adapter loop's one gate (spec.gate), which
+ *  holds each to the table's `browser` (tool-gate.ts BROWSER_REGISTRATIONS). None unless browserListed. */
+export async function browserHostTools(host: ToolHost, granted: readonly string[], plane: RunLaunch["plane"], ctx: HostToolCtx): Promise<HostTool[]> {
+  if (!browserListed(host, granted)) return [];
+  const binding = await toolOf(BROWSER_TOOL)!.bind(browserHostOf(host, plane));
+  return binding.tools.flatMap((registration) => hostToolOf(BROWSER_TOOL, registration, ctx, RUNS_ONCE) ?? []);
+}
+
 async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly string[], run: AdapterRun, context: Context, results: ToolResults, root: string, plane: RunLaunch["plane"], workflows: readonly LearnedWorkflow[], native: Extension[], permissions: RunPermissions, tiers: ReadonlyMap<string, LearnedTier>, mcp?: ClaimMcp, modelName?: (tier: string | undefined) => string | undefined, replay?: ReplayCalls): Promise<AdapterRunSpec["session"]["tools"]> {
   // Fail closed (browserListed): the browser binds only on the native route (BROWSER_ON_RUNNER) and with the claim's
   // one-ledger booking on its ToolHost (host.ledger.paid); otherwise its extension is not installed. learned_workflow
@@ -1460,13 +1489,7 @@ async function bindNonHandTools(host: ToolHost, kind: string, granted: readonly 
   // claim read from the store (recheckPlane, which keeps the plane's Jev off). Its durable extension goes to piAdapter
   // (`native`), never wrapped as a HostTool and never installed here too (piAdapter installs it once); its lifecycle (the
   // Config per conversation, reconcile, the release drain) through the host's hooks into the spec's lifecycle.
-  if (browser) {
-    const checked = plane ? recheckPlane(plane, host.env) : {};
-    const env = { ...host.env };
-    delete env[TOOL_PLANE_ENV];
-    if (Object.keys(checked).length) env[TOOL_PLANE_ENV] = JSON.stringify(checked);
-    await toolOf(BROWSER_TOOL)!.bind({ ...host, env, install: (extension) => void native.push(extension) });
-  }
+  if (browser) await toolOf(BROWSER_TOOL)!.bind({ ...browserHostOf(host, plane), install: (extension) => void native.push(extension) });
 
   // TODO (decisions, option (a)): a pi run's decision tools book on the run's ONE cap (runCap's run.decisions), which the
   // adapter loop makes from its own sessions and hands the spec at open — the loop passes { decisions, models } the same way

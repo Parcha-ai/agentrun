@@ -160,6 +160,6 @@ test("capabilities offer a module's harness every tool pi runs, the meta tools a
   assert.ok(onPi.includes("browser") && onPi.includes("read"), onPi.join(", "));
   assert.deepEqual(onOwn, onPi, "a module's harness runs on the general spec, with pi's tools");
   const onClaude = caps.tools.filter((tool) => tool.harnesses.includes("claude-agent")).map((tool) => tool.name);
-  assert.ok(onClaude.includes("read") && !onClaude.includes("browser"), "claude-agent keeps the host tools only");
+  assert.ok(onClaude.includes("read") && onClaude.includes("browser") && !onClaude.includes("subagent"), "claude-agent keeps the tools its adapter binds: the host tools and the browser");
   assert.ok(caps.features.mcp_client.harnesses.includes("own"), "MCP grants run on it, as the save check takes them");
 });

@@ -47,10 +47,13 @@ export async function learningModelOf(env: NodeJS.ProcessEnv, revision?: { kind:
       if (refused) return notReady(model, entry.ownKeys?.some(key => !env[key]) ? "key" : "model", refused.reason);
       return { location: "server", ready: true, model, needs: null, reason: null };
     }
-    const needsServerKey = !env[FAUX_ENV] && (!revision || body.sdk
-      ? noServerKeyFor(env, "Background learning") !== undefined
-      : serverKeyMissing(env, { kind: "agentic", model: choice.model }));
-    if (needsServerKey) return notReady(model, "key", "Add a server-owned model gateway key in Settings → API Keys. Background learning cannot use a caller's per-run key.");
+    // A managed agent's learning runs on each run's own model key where the server holds none for its gateway: its compile
+    // turn in the run's claim, its check's replays and its audit's shadow on a sealed copy of that key (every run of it
+    // brings one: a start without one is refused). Only an SDK agent's compile, tied to no run, needs the server's key.
+    if (!env[FAUX_ENV] && revision && !body.sdk && serverKeyMissing(env, { kind: "agentic", model: choice.model }))
+      return { location: "server", ready: true, model, needs: null, reason: "Compiles, checks and audits on each run's own model key (`model_key`): this server holds no gateway key of its own. A run's check and audit runs start at its end, within what its cap leaves, and the run lists them in `learning_work` until they end." };
+    if (!env[FAUX_ENV] && (!revision || body.sdk) && noServerKeyFor(env, "Background learning") !== undefined)
+      return notReady(model, "key", "Add a server-owned model gateway key in Settings → API Keys. A connected agent's background learning is tied to no run, so it cannot use a run's own key.");
     // Managed agents compile inside their own harness session, with that harness's model and authentication.
     // SDK agents compile separately through pi's server route. A native application's sign-in is never copied here.
     try {

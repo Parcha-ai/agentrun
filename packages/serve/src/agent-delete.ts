@@ -18,7 +18,9 @@
 // agent kept and refusing runs. A trigger that reached it anyway keeps its row (store TriggersLeft): the same 503.
 import { ApiError } from "./errors.js";
 import { LearningInFlight } from "./learn/delete.js";
-import { FINAL_STATES, type PurgeKept, type RunState, RunsMadeFromLeft, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
+import { learningChildrenOf } from "./learning-work.js";
+import { sendCommand } from "./runner/commands.js";
+import { FINAL_STATES, type PurgeKept, RunFinal, type RunState, RunsMadeFromLeft, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
 import { forgetServed } from "./store-view.js";
 import { requireSourceIOIdle } from "./source-sync/io.js";
 
@@ -156,13 +158,51 @@ export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promis
   await host.store.settings.remove(purgingKey(agentId));
 }
 
+/** Run `runId`'s learning work still going, ended before anything of the run is purged: the replay runs of its learned
+ *  workflow's check (learning-work.ts names them), which are made from the runs whose input they replay, never from it,
+ *  so neither its live check nor the store's purge waits for them. Its caller reads the run's `learning_work` to know
+ *  when the run's own model key may be revoked, and a purged run reads nothing: so each one still going has its sealed
+ *  launch secrets (its copy of the run's key, its handed MCP credentials) erased in the same store write as its cancel
+ *  (runs.command's launchSealed), no claim of it from here opening a key, and is waited for until it is final and let go,
+ *  its spend booked. Each child is named in the run's record before it is created, under the run's own claim
+ *  (runner/promotion.ts startReplay, runner/audit.ts startAudit; a keyed one is never relaunched), and this runs only once
+ *  that claim let the run go (liveOf): none starts after it. Its audit's shadow is made from it, so a live one refused
+ *  the purge above (409) and none is here. One not ended by the wait's end refuses the purge with 409 run_not_final,
+ *  nothing of the run purged; its cancel stands, and the next DELETE finds it ended. */
+async function endLearningWork(host: AgentDeleteHost, runId: string): Promise<void> {
+  const going = async () => {
+    const out: string[] = [];
+    for (const child of await learningChildrenOf(host.store.settings, runId)) {
+      if (child.run === null || out.includes(child.run)) continue;
+      const row = await host.store.runs.get(child.run);
+      if (row && row.purgedAt === null && isLive(row)) out.push(child.run);
+    }
+    return out;
+  };
+  let live = await going();
+  if (!live.length) return;
+  for (const id of live) {
+    try {
+      await sendCommand(host.store, id, { kind: "cancel", body: {} }, { launchSealed: () => null });
+    } catch (error) {
+      // Final already: the write that ended it erased its secrets with it.
+      if (!(error instanceof RunFinal)) throw error;
+    }
+  }
+  const deadline = Date.now() + host.waitMs;
+  while ((live = await going()).length && Date.now() < deadline) await sleep(host.pollMs);
+  if (live.length) {
+    throw liveRuns(`The run ${runId}'s learning work was cancelled and has not ended yet (${live.join(", ")}): send the DELETE again once ${live.length === 1 ? "it has" : "they have"} ended. Nothing was purged.`, live);
+  }
+}
+
 /** The setting that marks agent `agentId`'s purge begun and not finished (purgeAgent). */
 export const purgingKey = (agentId: string): string => `agent.purging.${agentId}`;
 
 /** Purges run `runId` with every run made from it, as the header says. 404 not_found when it is not there; 409
- *  run_not_final, nothing purged, while it or a run made from it is live. A purged run's only work is forgetCopies again,
- *  which finds nothing left once a purge finished it; its store scrub was marked before the purge changed a row
- *  (sqlite/store.ts #purging). */
+ *  run_not_final, nothing purged, while it or a run made from it is live. Its learning work still going is ended first
+ *  (endLearningWork). A purged run's only work is forgetCopies again, which finds nothing left once a purge finished it;
+ *  its store scrub was marked before the purge changed a row (sqlite/store.ts #purging). */
 export async function purgeRun(host: AgentDeleteHost, runId: string): Promise<void> {
   const run = await host.store.runs.get(runId);
   if (!run) throw new ApiError("not_found", `no run ${runId}`);
@@ -170,6 +210,7 @@ export async function purgeRun(host: AgentDeleteHost, runId: string): Promise<vo
   const made = await madeFromAll(host, runId);
   const live = await liveOf(host, [run, ...made]);
   if (live.length) throw notFinal(runId, live);
+  await endLearningWork(host, runId);
   for (const one of made) await purgeOneOrRefuse(host, one.agentId, one.id, runId, true);
   await host.at?.("run_made_from_gone", runId);
   await host.forgetCopies(run.agentId, runId);

@@ -30,7 +30,7 @@ export async function runEntries(store: Store, runId: string, context: Context):
 }
 
 /** `entries` (a journal read's, conversation by conversation) in log order: by id across every conversation. */
-const inLogOrder = (entries: readonly unknown[]): EntryLike[] => (entries as EntryLike[]).slice().sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
+export const inLogOrder = (entries: readonly unknown[]): EntryLike[] => (entries as EntryLike[]).slice().sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
 
 /** Where a run's end-of-run turn is in its journal, as the server's Reflect names it for labelled(): its newest round's
  *  `after`, the entry before its input, and `until`, the run's end entry once written; `earlier`, each earlier round's (a

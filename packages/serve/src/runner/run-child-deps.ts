@@ -20,6 +20,8 @@ export interface ChildInit {
   readonly claim: Claim;
   readonly data: string;
   readonly signal: AbortSignal;
+  /** A learning child's deadline (LoopDeps.pastDeadline), aborted by its runner. */
+  readonly pastDeadline?: AbortSignal;
   readonly where?: unknown;
   readonly mcpLoopback?: true;
   readonly mcpOwn?: readonly string[];

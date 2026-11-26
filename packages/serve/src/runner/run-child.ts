@@ -101,6 +101,7 @@ channel.expose("loop", async (method, args) => {
         journal: () => journal,
         flush: () => channel.call("runner", "flush", []) as Promise<void>,
         signal: init.signal,
+        ...(init.pastDeadline ? { pastDeadline: init.pastDeadline } : {}),
         delivered: (channel.call("runner", "delivered", []) as Promise<void>).catch(() => undefined),
         deliverNow: () => channel.call("runner", "deliverNow", []) as Promise<void>,
         live: (reader) => void (read = reader),

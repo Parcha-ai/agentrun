@@ -24,13 +24,13 @@ const BIG = 'x'.repeat(1024 * 1024 - Buffer.byteLength(SKILL_MD));
 const SCHEMA = { type: 'object', required: ['answer'], properties: { answer: { type: 'string' } } };
 
 /** The output `name`'s one call reached Codex with (the function_call_output lines of its rollout), and its tool_end. */
-async function reached({ tools = [], skills, call }) {
+async function reached({ tools = [], skills, call, contextWindow }) {
   const dir = mkdtempSync(join(ROOT, 'n-'));
   const script = join(dir, 'script.json');
   writeFileSync(script, JSON.stringify([call, 'call submit {"value":{"answer":"ok"}}']));
   const events = [{ delta: 'ok' }, { delta: '', type: 'response.completed', response: { usage: { input_tokens: 12, output_tokens: 3 } } }];
   const fetch = async () => new Response(`${events.map((e) => `data: ${JSON.stringify(e)}\n\n`).join('')}data: [DONE]\n\n`, { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  const adapter = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(dir, 'sessions'), standIn: { command: process.execPath, args: [FAKE], env: { FAKE_CODEX_MODEL: 'remote', FAKE_CODEX_SCRIPT: script } }, fetch, ...(skills ? { skills } : {}) });
+  const adapter = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, sessionsDir: join(dir, 'sessions'), standIn: { command: process.execPath, args: [FAKE], env: { FAKE_CODEX_MODEL: 'remote', FAKE_CODEX_SCRIPT: script } }, fetch, ...(skills ? { skills } : {}), ...(contextWindow ? { contextWindow } : {}) });
   const heard = [];
   const runNode = kernel.createHarnessRunner(adapter, { store: memorySessionStore(), tools, onEvent: (e) => heard.push(e) });
   assert.deepEqual(await runNode({ kind: 'agent', label: 'bound', system: [], user: 'Go.', schema: SCHEMA, tools: tools.map((t) => t.name) }), { answer: 'ok' });
@@ -57,4 +57,19 @@ test("a skill file of the most a skill holds (1 MiB) reaches Codex cut at the ho
   for (const output of outputs) cut(output, BIG);
   assert.equal(ended?.truncated, true);
   assert.equal(kernel.HOST_RESULT_MAX_CHARS, BOUND, 'the kernel states the bound');
+});
+
+/** The per-model bound of a 16,384-token window (the kernel's resultMaxChars): a quarter of it at three characters a token. */
+const SMALL_MAX = 12_288;
+const SMALL_MD = 'x'.repeat(50_000);
+
+test("a model with a 16k window: a 50k result reaches Codex cut to the per-model bound, not the host's, saying why", async () => {
+  const { ended, outputs } = await reached({ contextWindow: 16_384, skills: [{ name: 'research', files: { 'SKILL.md': SKILL_MD, 'big.md': SMALL_MD } }], call: 'call read_skill_file {"skill":"research","path":"big.md"}' });
+  assert.ok(outputs.length >= 1, 'the call reached Codex');
+  for (const output of outputs) {
+    assert.ok(output.length <= SMALL_MAX, `${output.length} characters, past ${SMALL_MAX}`);
+    assert.match(output, /\n\[kept \d+ of 50000 characters: the result was cut to fit this model's context window\./);
+    assert.equal(output.slice(0, 1_000), SMALL_MD.slice(0, 1_000), 'its start kept');
+  }
+  assert.equal(ended?.truncated, true);
 });

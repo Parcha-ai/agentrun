@@ -79,12 +79,14 @@ export type CostRun = {
   learning_usd: number | null;
   total_usd: number | null;
   /** `learning_usd`'s parts, each null when unknown: its own compile turns (`compile_usd`, which GET /runs/{id} charges
-   *  to the revision they drafted instead), its follow-up rounds' turns (`followup_usd`) and its audit's shadow run
-   *  (`shadow_usd`). `share_usd`: its share of its revision's compile and check (amortize), which GET /runs/{id}'s
-   *  `learning_usd` carries in place of `compile_usd`. */
+   *  to the revision they drafted instead), its follow-up rounds' turns (`followup_usd`), its audit's shadow run
+   *  (`shadow_usd`) and the replays of a check it started on its own model key (`check_usd`). `share_usd`: its share of
+   *  its revision's compile and check (amortize), which GET /runs/{id}'s `learning_usd` carries in place of
+   *  `compile_usd`. */
   compile_usd: number | null;
   followup_usd: number | null;
   shadow_usd: number | null;
+  check_usd: number | null;
   share_usd: number | null;
   /** Why a learned workflow did not serve it alone (NOT_SERVED), null when nothing says. */
   not_served: NotServed | null;
