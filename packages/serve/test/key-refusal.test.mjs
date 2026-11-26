@@ -138,6 +138,16 @@ const CONTROL_PADS = [
   ["JSON's \\u001b CSI colours", String.raw`\u001b[1;31m`.repeat(300), "json"],
   ["raw OSC titles", "\u001b]0;t\u0007".repeat(300), "json"],
   ["backspace overstrikes", "Z\b".repeat(300), "json"],
+  ["backspace overstrikes of a character past U+FFFF", "\u{10400}\b".repeat(300), "json"],
+  // The same sequences in each escaped form the views decode: each counts as nothing there too.
+  ["percent-encoded CSI colours", "%1B%5B%30%6D".repeat(300), "json"],
+  ["percent-encoded ESC, then the rest as it stands", "%1B%5B0m".repeat(300), "json"],
+  ["Python's \\x1b CSI colours", String.raw`\x1b[0m`.repeat(250), "python"],
+  ["HTML's &#27; CSI colours", "&#27;[0m".repeat(300), "json"],
+  ["HTML's &#x1b; CSI colours", "&#x1b;[0m".repeat(300), "json"],
+  ["raw 8-bit CSI colours", "\u009b0m".repeat(300), "json"],
+  ["JSON's \\u009b CSI colours", String.raw`\u009b0m`.repeat(300), "json"],
+  ["percent-encoded 8-bit CSI colours", "%C2%9B%30%6D".repeat(300), "json"],
   // Characters that show as a box or a blank: U+FFFE, the braille blank, a lone surrogate as JSON's escape.
   ["raw U+FFFE", "\ufffe".repeat(300), "json"],
   ["raw braille blanks", "\u2800".repeat(300), "json"],
