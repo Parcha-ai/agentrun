@@ -1957,7 +1957,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     for (let round = 1; ; round++) {
       const n = await refreshOnce();
       const latest = () => handed.n === n && !handed.failed;
-      if (latest() && !offersMadeFrom(offersInputs(env))) await offersNow();
+      // The inputs moved on with no key changed (a new Ollama listing, the login): what a revision that names no model
+      // needs is made again from them first, as ollamaNow does, or the offers come back with a default it never read.
+      if (latest() && !offersMadeFrom(offersInputs(env))) {
+        await needsNow();
+        await offersNow();
+      }
       if (latest() && offersMadeFrom(offersInputs(env))) return;
       if (round >= LOGIN_ROUNDS) throw new ApiError("unavailable", `Claude Code's login on this machine was handed over again, or the offers made from it failed, each time this request waited for them, ${LOGIN_ROUNDS} times: ask again.`);
     }
