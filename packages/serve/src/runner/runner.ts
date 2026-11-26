@@ -981,12 +981,6 @@ export function startRunner(options: RunnerOptions): Runner {
         await heldNow.inFlight?.catch(() => undefined);
         await deliver(heldNow);
       },
-      // A row the loop took for now and refused later (the dispatch's replay): written refused under this claim, as deliver
-      // writes a refusal the loop answered at once.
-      refuse: async (commandId, reason) => {
-        await store.take(claim, commandId, "refused", reason);
-        emit({ type: "refused", runId: claim.runId, commandId, reason });
-      },
       redact,
     });
     const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib };

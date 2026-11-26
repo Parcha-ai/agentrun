@@ -117,11 +117,7 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     let lastError: unknown;
     const delivers = async (command: Command): Promise<boolean> => {
       try {
-        const outcome = await loop.command(command);
-        // The runner moved past the row on the dispatch's word (taken), so a refusal is the dispatch's to write: left
-        // unwritten, the row stays untaken, and a parked run it woke is claimable again at once and refused again, every
-        // claim, for good.
-        if ("refused" in outcome) await loopDeps.refuse?.(command.id, outcome.refused);
+        await loop.command(command);
         return true;
       } catch (error) {
         lastError = error;
@@ -172,7 +168,7 @@ function dispatchLoop(deps: DispatchDeps, loopDeps: LoopDeps): Loop {
     async command(command): Promise<CommandOutcome> {
       if (inner) return inner.command(command);
       // Before the inner loop is chosen: buffer it, as loop.ts buffers an early steer, taken now and replayed once the
-      // loop is chosen (its own journal commit takes the row; a refusal is written through the runner's refuse).
+      // loop is chosen (its own journal commit takes the row; a loop that then refuses it leaves it for the run's end).
       early.push(command);
       return { taken: true };
     },
