@@ -154,9 +154,11 @@ export function retryAfterHeader(value: string | null, now = Date.now()): number
   return Number.isNaN(at) ? undefined : waitOf(Math.max(0, (at - now) / 1000));
 }
 
-/** The retry time a JSON error names in a known field (RETRY_S, RETRY_MS), in whole seconds. */
+/** The retry time a JSON error names in a known field (RETRY_S, RETRY_MS), in whole seconds: at its top, in its `error`
+ *  or `data`, or in its error's `data` (where a JSON-RPC error carries it, as the gateway files a protocol error). */
 function retryOf(value: unknown): number | undefined {
-  for (const at of [value, isPlain(value) ? value.error : undefined, isPlain(value) ? value.data : undefined]) {
+  const error = isPlain(value) ? value.error : undefined;
+  for (const at of [value, error, isPlain(value) ? value.data : undefined, isPlain(error) ? error.data : undefined]) {
     if (!isPlain(at)) continue;
     for (const key of RETRY_S) if (Object.hasOwn(at, key) && waitOf(at[key]) !== undefined) return waitOf(at[key]);
     for (const key of RETRY_MS) if (Object.hasOwn(at, key) && typeof at[key] === "number") { const wait = waitOf((at[key] as number) / 1000); if (wait !== undefined) return wait; }
