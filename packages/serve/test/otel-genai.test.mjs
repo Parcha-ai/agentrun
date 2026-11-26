@@ -763,11 +763,12 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
 
 // A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
 // read split at & alone keeps the whole value, a %2C in it too, and read split at an & or a space written %26 or %20 too,
-// it keeps that value as written before one, and read split at a %26 alone, one with a %20 in it; a value in quotes
-// written %22 or %27 is kept out of them as written too, and a piece of it that opens with a quote and has no closing one
-// (cut at a %2C) is kept without that quote too; read split at & and %2C, it keeps the value of a pair in
-// a list joined by %2C, and read split at & and %3B, the value of a pair in a list joined by %3B, a %20, quotes or a
-// %26 in it too; read split at ; too, it keeps each pair after a ;. Every reading is held. A value whose part
+// it keeps that value as written before one, and read split at a %26 alone, one with a %20 in it; a value read on past
+// a %20 is also kept up to each %20 in it, at 8 characters or more, so a key with a %20 in it before a %20 is kept; a
+// value in quotes written %22 or %27 is kept out of them as written too, and a piece of it that opens with a quote and
+// has no closing one (cut at a %2C) is kept without that quote too; read split at & and %2C, it keeps the value of a
+// pair in a list joined by %2C, and read split at & and %3B, the value of a pair in a list joined by %3B, a %20, quotes
+// or a %26 in it too; read split at ; too, it keeps each pair after a ;. Every reading is held. A value whose part
 // before its first ; is empty is held after it; a value of only ; is not held.
 // Each row: [what, the env, the credentials held and cut alone, what is on no held list, a line quoting the variable and
 // its cut].
@@ -960,6 +961,13 @@ const SEMI_ROWS = [
     [SEMI_PREFIX, `${SEMI_PREFIX}%2Cmid-${"dummy"}`, `${SEMI_PREFIX},mid-${"dummy"}`],
     ["us-east-1"],
     [`401 from relay: key ${SEMI_PREFIX} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a %20 and a ; in its value, before a space written %20",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_PREFIX}%20tail-${"dummy"};suffix-${"dummy"}%20region=us-east-1` },
+    [`${SEMI_PREFIX}%20tail-${"dummy"};suffix-${"dummy"}`, `${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"}`, SEMI_PREFIX],
+    ["us-east-1", "region=us-east-1", "region=us-east-1%20", " region=us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
   ],
 ];
 
