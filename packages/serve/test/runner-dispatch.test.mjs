@@ -6,9 +6,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createDispatchLoop } from "../dist/runner/dispatch.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const CLAIM = { runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "queued" };
-const deps = { journal: () => ({}), flush: async () => {}, signal: new AbortController().signal };
+const deps = { redact: heldRedactor((text) => text), journal: () => ({}), flush: async () => {}, signal: new AbortController().signal };
 const piBody = { place: { mode: "runner" }, harness: "pi" };
 const defer = () => {
   let resolve;

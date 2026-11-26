@@ -152,8 +152,8 @@ export type ToolHost = {
    *  (adapter-run-spec.ts browserListed). */
   ledger?: { paid: PaidBooking; pause?: (refusal: Refusal) => Promise<void>; flush: () => Promise<void> };
   /** The run's one redactor (the runner's: every secret value the runner and the claim hold, in every form): what the
-   *  browser's answers pass through before pi stores them or the model reads them. Absent on the old per-run process. */
-  redact?: (text: string) => string;
+   *  browser's answers pass through before pi stores them or the model reads them. */
+  redact: (text: string) => string;
   /** The run's own Workspace (on the runner: the run's local folder in Mode 1, its folder on the run's disk in Mode 2),
    *  where a tool files what the run's read finds later (monid's whole answer past the model's cut). Absent, the local
    *  folder at `where.work`. */
@@ -405,6 +405,8 @@ function joinCut(joined: string, parts: readonly string[], cut: (text: string) =
  *  reads it. A web call's JSON is cut as the agentic specs' answersCut cuts it (webAnswerCut), so it still parses and
  *  keeps its links, and a held value split across its strings withholds it whole. */
 export function answersCutInside(tool: ToolRegistration, cut: Redact): ToolRegistration {
+  // Fail closed and loud: a host with no redactor would only throw inside each call, an error a model may read past.
+  if (typeof cut !== "function") throw new TypeError(`${tool.name}: the run's redactor (host.redact) is required to cut its answers`);
   return {
     ...tool,
     execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
@@ -553,7 +555,7 @@ const browserTool: ToolEntry = {
       // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound:
       // the run's own cut on the runner (host.redact: the claim's keys too, every tool's, in every form), and the secrets
       // its env holds (runnerSecrets: hostSecrets and every launcher name's value) with its sign-in's pointer.
-      redact: (text) => redactedAnswer(host.redact ? host.redact(text) : text, [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
+      redact: (text) => redactedAnswer(host.redact(text), [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
       // The Screen tab's ended state, one settings row the server reads per poll (browser-wait-ended.ts); cleared as a
       // session opens (onSessions, below).
       waitEnded: (at, why) => {
@@ -657,7 +659,7 @@ const browserTool: ToolEntry = {
     const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
     // (its result record) and what the model reads hold no value the runner or the claim holds.
-    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => (host.redact ? answersCutInside(tool, host.redact) : tool));
+    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => answersCutInside(tool, host.redact));
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {

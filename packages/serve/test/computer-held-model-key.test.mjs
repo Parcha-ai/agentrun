@@ -42,6 +42,7 @@ const { ApiError } = await import("../dist/errors.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { heldRefusedRoute } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { claimSecrets, MODEL_KEY_NAMES, subagentTierKeys, tierModelKeys } = await import("../dist/runner/claim-secrets.js");
 const { sdkCompileEnv } = await import("../dist/runner/harness-loops.js");
 const { childLoops, heldFor } = await import("../dist/runner/run-child-host.js");
@@ -201,7 +202,7 @@ async function cliClaim(t, hold, extra = {}, host = {}) {
   const env = { ...host.env, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [] }), PATH: process.env.PATH };
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: host.routeOf ?? (async () => assert.fail("a CLI run takes no pi route")), computerForClaim: async () => ({ release: async () => {} }) };
   host.watch?.(store);
-  built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  built = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
   return built;
 }
 
@@ -649,7 +650,7 @@ async function handedNames(t, { env = {}, hold, before } = {}) {
   await writeFile(script, NAMES_OF_KEYS);
   const deps = { store, data: dir, sealKey: SEAL_KEY, env, computerForClaim: async () => assert.fail("the run names no computer") };
   const loop = childLoops({ deps, isolation: { kind: "process", why: "a test's runner" }, log: () => {}, argv: [process.execPath, script, out] })({
-    signal: new AbortController().signal, journal: (claim) => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(),
+    signal: new AbortController().signal, journal: (claim) => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(), redact: heldRedactor((text) => text),
   });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   const ended = await loop.start(claim).then(() => undefined, (error) => error);

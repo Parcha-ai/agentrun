@@ -13,6 +13,7 @@ import { FAUX_ENV } from "../dist/model.js";
 import { PROVIDERS } from "@parcha/agentrun-computer";
 import { browserKeyRow, DEFAULT_BROWSER_VENDOR, keptFromBefore, keptVendor, NO_BROWSER_KEY, NO_CHROME, planeFor, recheckPlane, resolveCapability, settingsIssues, TOOL_PLANE_ENV } from "../dist/tool-plane.js";
 import { FAUX_BROWSER_ENV, TOOLS } from "../dist/tools.js";
+import { heldRedactor, runnerSecrets, secretRedactor } from "../dist/runner/redact.js";
 import { calls as kernelCalls, KEY as KERNEL_KEY } from "./fixtures/faux-kernel-check.mjs";
 import { agent, follow, scratch, serve, storeBytes, withEnv } from "./support.mjs";
 
@@ -83,7 +84,7 @@ test("the browser lists browser_downloads only on a vendor that keeps a session'
   const work = await scratch(t);
   const toolsOf = async (vendor) => {
     const env = { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER, [TOOL_PLANE_ENV]: JSON.stringify({ browser: vendor }) };
-    const host = { where: { work, ref: { id: "run" } }, env, install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {} };
+    const host = { where: { work, ref: { id: "run" } }, env, redact: heldRedactor(secretRedactor(runnerSecrets(env))), install() {}, onConversation() {}, beforeResume() {}, beforeRelease() {} };
     return (await TOOLS.browser.bind(host)).tools.map((tool) => tool.name);
   };
   const kernel = await toolsOf("kernel");

@@ -186,7 +186,9 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   // before the scrubber reads them: a held value the scrubber's own reading misses (wrapped over line breaks, re-encoded)
   // is withheld there. A census-cut run carries no file at all (filesOf), so no census applies here.
   const listed = await filesOf(input.files, input.filesTruncated, input.filesUncounted === true, caps);
-  const carried = listed.carried.map((file) => ({ path: cutFileText(file.path, input.held), content: cutFileText(file.content, input.held) }));
+  // `source` is the path as the run wrote it, never written into the bundle: the scrubber reads a file's content knowing
+  // it (a `.env.<held value>` file is still an env file, cut whole), and the bundle carries the cut path alone.
+  const carried = listed.carried.map((file) => ({ path: cutFileText(file.path, input.held), source: file.path, content: cutFileText(file.content, input.held) }));
   const omitted = listed.omitted.map((one) => (one.what === "file" ? { ...one, path: cutFileText(one.path, input.held) } : one));
   const kind = String(input.view.kind);
   // What is cut: everything that came from the run. The format and source are this server's own words.
@@ -275,10 +277,10 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   // file in or out, a cut id the owner picked would name another file's value. A restore that then puts a carried file
   // over a cap is refused. Files are cut first so their omissions are cut with the rest of `omitted`; their records still
   // follow every other part's, in the order the body is written in.
-  const cutFile = async (file: { path: string; content: string }, index: number, restoring: boolean) => {
+  const cutFile = async (file: { path: string; source: string; content: string }, index: number, restoring: boolean) => {
     const before = { cuts: cuts.length, restored: restored.length, seen: new Set(seen.keys()) };
     const path = await cutString(file.path, `/files/${index}/path`, undefined, restoring);
-    const content = await cutString(file.content, `/files/${index}/content`, { path: file.path }, restoring);
+    const content = await cutString(file.content, `/files/${index}/content`, { path: file.source }, restoring);
     const undo = () => {
       cuts.splice(before.cuts);
       restored.splice(before.restored);
@@ -288,7 +290,7 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   };
   const files: Record<string, unknown>[] = [];
   const fileOf = (cut: { path: string; content: string; bytes: number }) => ({ path: cut.path, bytes: cut.bytes, sha256: packageSha256([{ path: cut.path, encoding: "utf8", content: cut.content }]), encoding: "utf8", content: cut.content });
-  const chosen: { path: string; content: string }[] = [];
+  const chosen: { path: string; source: string; content: string }[] = [];
   let total = 0;
   for (const file of carried) {
     const cut = await cutFile(file, chosen.length, false);

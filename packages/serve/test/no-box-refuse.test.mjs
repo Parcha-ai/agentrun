@@ -51,13 +51,13 @@ test("the default box is the descriptor's default box (Docker's): with Docker do
   assert.deepEqual(newAgentPlace([{ id: "docker", available: true }, { id: "e2b", available: true }]), { place: { mode: "sandbox", box: "docker" } });
 });
 
-test("default_place per mode: Docker's box where it is here; with no Docker, null and the refusal's words where the runner has no shell (Mode 1), the runner where it has one (Mode 2), with no default_reason", () => {
+test("default_place per mode: Docker's box where it is here and the runner has no shell (Mode 1); with no Docker there, null and the refusal's words; where the runner has one (Mode 2), the runner, Docker or not, with no default_reason", () => {
   const docker = [{ id: "docker", available: true }];
   const noDocker = [{ id: "docker", available: false, reason: "Docker isn't running on this machine" }, { id: "e2b", available: true }];
   const NAMED = "name a box: this server has no Docker box for a new agent. Set place to {mode: sandbox, box: <one of: e2b>}, or to {mode: runner} to run without a shell. docker: Docker isn't running on this machine.";
-  for (const shell of [false, true]) {
+  for (const [shell, place] of [[false, { mode: "sandbox", box: "docker" }], [true, { mode: "runner" }]]) {
     const withDocker = placesOf(docker, "none", shell);
-    assert.deepEqual(withDocker.default_place, { mode: "sandbox", box: "docker" });
+    assert.deepEqual(withDocker.default_place, place);
     assert.equal("default_reason" in withDocker, false);
   }
   const mode1 = placesOf(noDocker, "none", false);
