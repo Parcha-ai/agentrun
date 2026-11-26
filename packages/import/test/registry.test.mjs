@@ -6,8 +6,8 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { locatorKey, parseHome, READERS, readSession, SOURCES } from "../dist/index.js";
-import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, piAnswer, piFile, piMeta, piUser, SESSION, tempHome, writeJsonl } from "./fixtures.mjs";
+import { locatorKey, READERS, readSession, SOURCES } from "../dist/index.js";
+import { anthropicUsage, claudeAnswer, claudeFile, claudeUser, parseHome, piAnswer, piFile, piMeta, piUser, SESSION, tempHome, writeJsonl } from "./fixtures.mjs";
 
 const sha = (text) => createHash("sha256").update(text).digest("hex");
 

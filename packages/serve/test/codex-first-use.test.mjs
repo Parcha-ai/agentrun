@@ -16,6 +16,7 @@ import { after, test } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { CODEX_BINARY_SHA256, CODEX_NPM_INTEGRITY, CODEX_VERSION } from "@parcha/agentrun-harness-codex";
+import { installDirOf, installMarkOf } from "../dist/harness-install.js";
 import { codexTarget, findCodex } from "../../run-adapters-codex/dist/binary.js";
 import { verifyCodexBinary } from "../../run-adapters-codex/dist/verify.js";
 import { copyStandIn } from "../../run-adapters-codex/test/stand-in.mjs";
@@ -196,6 +197,10 @@ test("a second codex run doesn't reinstall: on the same data, after a restart, n
   const registry = await registryFor(t);
   const data = join(await scratch(t), "agents");
   const first = await codexServe(t, registry, { data });
+  // The stand-in's claim installs nothing itself: it waits for an install it finds running, by that install's mark, or
+  // finds Codex in. The install is the agent save's, started asynchronously, so its mark may not be written yet when the
+  // run's claim looks: the run starts once the claim would read one or the other.
+  await until("the save-triggered Codex install is marked running, or Codex is in", () => existsSync(installMarkOf(installDirOf(data, "codex"))) || installedIn(data) === PIN, 60_000);
   const run = await first.api("POST", "/agents/coder/runs", { input: { content: "Say what you did." } });
   assert.equal((await follow(first.api, run.body.run_id, ["completed", "failed"], { deadlineMs: 240_000 })).last.status, "completed");
   assert.equal(installedIn(data), PIN, "the first run installed Codex");

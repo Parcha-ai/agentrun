@@ -48,3 +48,7 @@ export const facts: AdapterFacts = Object.freeze<AdapterFacts>({
 // The pinned CLI's renewal of a login (login-refresh.ts), here too so a host that renews a login in the CLI's place
 // reads it without loading the adapter and its SDK.
 export { LOGIN_REFRESH as loginRefresh } from "./login-refresh.js";
+
+// The user a CLI on a login runs as (login-user.ts), here too so a host that starts the person's own `claude` gives it
+// the USER its Keychain item is named by without loading the adapter and its SDK.
+export { loginUser } from "./login-user.js";

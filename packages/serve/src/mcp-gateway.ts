@@ -26,6 +26,7 @@ import { TOOL_UNMETERED } from "./timeline/index.js";
 import { until } from "./until.js";
 import { type FalMeterName, type MediaReader, meterFor, meterNamed } from "./fal-price.js";
 import { filedAnswer } from "./filed-answer.js";
+import { type FileSetting, filedSummary, UNREADABLE, unfiledSummary } from "./filed-tool.js";
 import { saveOnce } from "./save-once.js";
 import { paidLedger, paidStep } from "./paid-calls.js";
 import { metaToolOf } from "./mcp-meta.js";
@@ -201,6 +202,8 @@ function unreachable(error: unknown): string {
 }
 
 const said = (text: string, isError = false): McpCallResult => ({ content: [{ type: "text", text }], ...(isError ? { isError: true } : {}) });
+/** The refusal of a call of a tool whose stored file setting does not read (filed-tool.ts UNREADABLE). */
+const unreadableFile = (server: string, tool: string): string => `${mcpToolName(server, tool)} can't be called: its file setting in the agent's tool settings does not read, so no call is let through until the owner sets it again or removes it (Settings → Tools). Nothing was sent.`;
 
 export interface McpGatewayOptions {
   pin: McpPin;
@@ -234,6 +237,11 @@ export interface McpGatewayOptions {
   now?: () => number;
   /** The run's id: what a meter scopes a server's keys to (McpMeter.keys). None: no key is scoped. */
   run?: string;
+  /** The file setting of a server's tool, read from the agent's own tool settings (filed-tool.ts filedBy): each answer
+   *  of it, an error answer too, is filed whole in its folder of the run's files, and the tool's result is only a
+   *  summary. UNREADABLE for a tool: a stored setting that does not read, and every call of the tool is refused unsent.
+   *  None, or undefined for a tool: its answers are the model's, as always. */
+  filed?: (server: string, tool: string) => FileSetting | typeof UNREADABLE | undefined;
 }
 
 /** A run's journal commit. */
@@ -338,13 +346,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     return upstream;
   };
 
-  /** The model's text of `result`: its text blocks and its embedded text resources (GitHub's get_file_contents answers a
-   *  file as one) joined, its structured content when it has neither. Past MCP_CLIP, its start and the rest filed in the
-   *  run's evidence/mcp/<server>/ as readable lines, through its Workspace (never through a link), the text saying where
-   *  and the read offset that goes on (filed-answer.ts), so read pages through it with no shell. With blocks that are
-   *  neither (an image, a blob), the whole result is filed there as JSON, and the text says where. `clean` scrubs every
-   *  credential the call's server took or sent. */
-  const textOf = async (server: string, tool: string, result: Record<string, unknown>, clean: (text: string) => string): Promise<string> => {
+  /** The answer's text, as textOf reads it before any clip, scrubbed: `other`, how many blocks of it are not text. */
+  const answerOf = (result: Record<string, unknown>, clean: (text: string) => string): { text: string; other: number } => {
     const blocks = Array.isArray(result.content) ? (result.content as { type?: unknown; text?: unknown; resource?: { uri?: unknown; mimeType?: unknown; text?: unknown } }[]) : [];
     const texts = blocks.flatMap((block) => {
       if (block?.type === "text" && typeof block.text === "string") return [block.text];
@@ -355,7 +358,17 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     });
     let text = clean(texts.join("\n\n"));
     if (!text && result.structuredContent !== undefined) text = clean(JSON.stringify(result.structuredContent));
-    const other = blocks.length - texts.length;
+    return { text, other: blocks.length - texts.length };
+  };
+
+  /** The model's text of `result`: its text blocks and its embedded text resources (GitHub's get_file_contents answers a
+   *  file as one) joined, its structured content when it has neither. Past MCP_CLIP, its start and the rest filed in the
+   *  run's evidence/mcp/<server>/ as readable lines, through its Workspace (never through a link), the text saying where
+   *  and the read offset that goes on (filed-answer.ts), so read pages through it with no shell. With blocks that are
+   *  neither (an image, a blob), the whole result is filed there as JSON, and the text says where. `clean` scrubs every
+   *  credential the call's server took or sent. */
+  const textOf = async (server: string, tool: string, result: Record<string, unknown>, clean: (text: string) => string): Promise<string> => {
+    const { text, other } = answerOf(result, clean);
     if (text.length <= MCP_CLIP && other === 0) return text;
     const name = `${tool}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
     if (other === 0) return filedAnswer(async () => workspaceAt(await options.work()), `evidence/mcp/${server}`, name, text, MCP_CLIP);
@@ -367,6 +380,25 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       return `${head}the whole answer could not be saved (${workspaceErrorWords(error) ?? (error as { code?: string })?.code ?? "write failed"})]`;
     }
     return `${head}the whole answer is in the run's files at evidence/mcp/${server}/${name}.json]`;
+  };
+
+  /** An answer of a tool the agent's setting files (options.filed): written whole, scrubbed, at
+   *  <folder>/<tool>-<time>-<id>.json in the run's files before the model is answered, and the tool's result the summary
+   *  alone (filed-tool.ts), never through the clip. An error answer is filed the same way and its summary answers an
+   *  error, so the model can still react through a shown field. An answer with blocks that are not text is filed as the
+   *  whole result's JSON. A write that fails (or a Workspace that cannot open) answers an error in the Workspace's words,
+   *  none of the answer shown. */
+  const filedOf = async (setting: FileSetting, tool: string, result: Record<string, unknown>, clean: (text: string) => string): Promise<McpCallResult> => {
+    const { text: answer, other } = answerOf(result, clean);
+    const text = other === 0 ? answer : clean(JSON.stringify(result));
+    const path = `${setting.folder}/${tool.replace(/[^A-Za-z0-9_.-]/g, "_")}-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.json`;
+    try {
+      await workspaceAt(await options.work()).write(path, text);
+    } catch (error) {
+      // The Workspace's code and the port's line for it, never the error's message, which names paths.
+      return said(unfiledSummary(tool, text, setting.folder, workspaceErrorWords(error) ?? (typeof (error as { code?: unknown })?.code === "string" ? (error as { code: string }).code : "write failed")), true);
+    }
+    return said(filedSummary(tool, text, path, setting.show), result.isError === true);
   };
 
   /** The results `result` carries that `server`'s meter keeps (McpMeter.results), each filed at its `<dir>/<name>.json`
@@ -430,6 +462,10 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
       if (outcome.quiet) return said("", result.isError === true);
       // Filed before the answer is given, so a model that reads it next finds it.
       await fileResults(server, tool.name, result, clean);
+      const filing = options.filed?.(server, tool.name);
+      // UNREADABLE never gets here (unsendable refuses it unsent); never answered unfiled either way.
+      if (filing === UNREADABLE) return said(unreadableFile(server, tool.name), true);
+      if (filing) return await filedOf(filing, tool.name, result, clean);
       return said(await textOf(server, tool.name, result, clean), result.isError === true);
     } catch (error) {
       if (signal.aborted) return said(`The call to the MCP server ${server} was stopped.`, true);
@@ -464,6 +500,9 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   const unsendable = (server: string, tool: string): string | undefined => {
     const pinned = pins.get(server);
     if (!pinned?.tools.some((t) => t.name === tool)) return `${tool} is not a tool of the MCP server ${server} in this run.`;
+    // A file setting that does not read fails closed, as a broken pin does: never a call whose answer goes to the model
+    // unfiled.
+    if (options.filed?.(server, tool) === UNREADABLE) return unreadableFile(server, tool);
     const resourceProblem = resourceToolProblem(pinned.tools.find(t => t.name === tool));
     if (resourceProblem) return `The MCP operation ${tool} is invalid: ${resourceProblem}. Nothing was sent.`;
     const meta = metaToolOf(pinned.url, tool);

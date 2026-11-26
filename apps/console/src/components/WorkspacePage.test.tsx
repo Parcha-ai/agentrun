@@ -20,8 +20,10 @@ const IMAGE = `example/exec@sha256:${"a".repeat(64)}`;
 
 /** Archil's one secret as served, "workspace:archil"; the page says it as ARCHIL_API_KEY, the name the PUT takes. */
 const secret = (set: boolean, source: Archil["secret"]["source"] = set ? "console" : null): Archil["secret"] => ({ name: "workspace:archil", set, source, changed_at: source === "console" ? "2026-11-09T01:00:00.000Z" : null });
-const off: Archil = { on: false, secret: secret(false) };
-const on: Archil = { on: true, region: "aws-us-east-1", s3Url: "https://s3.example.test", secret: secret(true) };
+/** Each region the server knows, with its S3 URL, as every view carries them. */
+const REGIONS = { "aws-us-east-1": "https://s3.green.us-east-1.aws.prod.archil.com", "aws-us-west-2": "https://s3.green.us-west-2.aws.prod.archil.com" };
+const off: Archil = { on: false, regions: REGIONS, secret: secret(false) };
+const on: Archil = { on: true, region: "aws-us-east-1", s3Url: "https://s3.example.test", s3UrlFrom: "given", regions: REGIONS, secret: secret(true) };
 
 type Call = { method: string; path: string; type: string | null; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -135,6 +137,27 @@ describe("Settings → Workspace", () => {
     expect([...host.querySelectorAll("input")].map((i) => i.value)).not.toContain(FAKE);
   });
 
+  it("offers the server's regions, and leaves the S3 URL out for one of them, showing that region's URL as its placeholder", async () => {
+    const { v2, calls } = server([off, on]);
+    const { host, input, type, submit } = await open(v2);
+    const list = host.querySelector(`datalist#${input("region").getAttribute("list")}`);
+    expect([...(list?.querySelectorAll("option") ?? [])].map((o) => o.value)).toEqual(["aws-us-east-1", "aws-us-west-2"]);
+    expect(input("s3Url").getAttribute("placeholder")).toBe("https://");
+    await type("region", "aws-us-west-2");
+    expect(input("s3Url").getAttribute("placeholder")).toBe(REGIONS["aws-us-west-2"]);
+    await submit();
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ region: "aws-us-west-2" });
+  });
+
+  it("an S3 URL the server took from the region is not filled in: the field shows it as its placeholder, and a save leaves it out", async () => {
+    const { v2, calls } = server([{ ...on, s3Url: REGIONS["aws-us-east-1"], s3UrlFrom: "region" }]);
+    const { input, submit } = await open(v2);
+    expect(input("s3Url").value).toBe("");
+    expect(input("s3Url").getAttribute("placeholder")).toBe(REGIONS["aws-us-east-1"]);
+    await submit();
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({ region: "aws-us-east-1" });
+  });
+
   it("keeps the key with the settings it saves with: its row is in the form, and Paste or Remove never saves", async () => {
     const { v2, calls } = server([on]);
     const { host, click } = await open(v2);
@@ -207,7 +230,7 @@ describe("Settings → Workspace", () => {
   });
 
   it("turns Archil off only after a confirm, with DELETE, and keeps the key", async () => {
-    const { v2, calls } = server([on], (c) => json(200, c.method === "DELETE" ? { on: false, secret: secret(true) } : on));
+    const { v2, calls } = server([on], (c) => json(200, c.method === "DELETE" ? { ...off, secret: secret(true) } : on));
     const { host, click } = await open(v2);
     await click(/^Turn off$/);
     expect(calls.some((c) => c.method === "DELETE")).toBe(false);

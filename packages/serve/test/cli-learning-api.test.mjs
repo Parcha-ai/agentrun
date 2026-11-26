@@ -2,7 +2,6 @@ import {runCliLearningHook,flushCliLearning} from '../dist/cli-learning/hook.js'
 import {saveConnection} from '../dist/cli-learning/state.js';
 import {appendFile} from 'node:fs/promises';
 import {sdkInbox} from '../dist/sdk/runs.js';
-import {learningRepo} from '../dist/learning.js';
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {mkdtemp,mkdir,writeFile,readFile,rm} from 'node:fs/promises';
@@ -103,15 +102,14 @@ test('CLI capture serves explicit owner corrections without promoting task dialo
  assert.equal((await run('POST',`${runPath}/complete`,completed)).status,200);await follow(api,first.run_id,['completed']);
  const correctionPath=`/agents/${connection.agent_id}/learning/corrections`;
  const empty=await api('GET',correctionPath);assert.equal(empty.status,200);assert.equal(empty.body.text,'','captured historical prompts and assistant output are evidence, not owner corrections');
- const legacy=join(learningRepo(server.data,connection.agent_id),'notes','legacy.md');await mkdir(join(learningRepo(server.data,connection.agent_id),'notes'),{recursive:true});await writeFile(legacy,'An earlier automatic note stays on disk.\n');
  const owner='- Label release status Launch state.\n';
  const saved=await api('PUT',correctionPath,{text:owner},{'If-Match':empty.headers.get('etag')});assert.equal(saved.status,200,JSON.stringify(saved.body));
  assert.equal((await run('POST',`${runPath}/complete`,completed)).status,200,'immutable completion retry cannot learn a second time');
  const second=await start('two',{input:'Report the release status.'});assert.match(second.learning.context,/Label release status Launch state/);assert.ok(second.learning.revision);assert.deepEqual(second.learning.workflows,[]);
- assert.doesNotMatch(second.learning.context,/Assistant-authored|earlier source task|earlier automatic note/);
+ assert.doesNotMatch(second.learning.context,/Assistant-authored|earlier source task/);
  const secondRun=client(server.baseUrl,second.token);const secondCompleted=await secondRun('POST',`/cli-learning/runs/${second.run_id}/complete`,{status:'completed',answer:'Launch state: ready',evidence_complete:false,seed_observed:true,seed_revision:second.learning.revision});assert.equal(secondCompleted.status,200,JSON.stringify(secondCompleted.body));await follow(api,second.run_id,['completed']);
  assert.equal((await api('GET',`/runs/${second.run_id}`)).body.cli_learning.seed_observed,true);
- assert.equal((await api('GET',correctionPath)).body.text,owner);assert.equal(await readFile(legacy,'utf8'),'An earlier automatic note stays on disk.\n');
+ assert.equal((await api('GET',correctionPath)).body.text,owner);
  await api('PUT',`/agents/${connection.agent_id}/definition`,{definition:{instructions:'',learning:false}});
  const off=await start('off');assert.deepEqual(off.learning,{enabled:false,revision:null,context:'',workflows:[]});
  await client(server.baseUrl,off.token)('POST',`/cli-learning/runs/${off.run_id}/complete`,{status:'completed',answer:'ready',evidence_complete:true});await follow(api,off.run_id,['completed']);

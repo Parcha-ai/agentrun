@@ -7,7 +7,6 @@ import { createHash, randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { openapiDocument } from "../dist/openapi.js";
 import { saveSignIn } from "../dist/sign-ins-store.js";
@@ -16,6 +15,7 @@ import { findPlanted, plantedValue } from "./fixtures/planted-secrets.mjs";
 import { agent, client, flowAgent, follow, serve, withEnv } from "./support.mjs";
 import { firings } from "./trigger-support.mjs";
 import { nativeFixture } from "./native-fixtures/setup.mjs";
+import { raw } from "./store-target.mjs";
 
 const { Webhook } = createRequire(import.meta.url)("standardwebhooks");
 
@@ -122,11 +122,6 @@ async function ranWith(server, agentId, words, { content = `Read the notes. ${wo
   return { id: run.body.run_id, file: "inputs/notes.txt", fileText };
 }
 
-/** How many times the handed mark begins its transaction, each with a busy wait of 15 s: at most 45 s, inside the case's 240 s. */
-const MARK_TRIES = 3;
-/** SQLite's SQLITE_BUSY or SQLITE_LOCKED (its primary code, any extended one): the write lock held by another connection. */
-const isBusy = (error) => typeof error?.errcode === "number" && ((error.errcode & 0xff) === 5 || (error.errcode & 0xff) === 6);
-
 /** Marks run `runId` handed `pointer` as its runner does at a claim (runs.sign_in_handed, its launch plane's browser), with
  *  the agent's sign-in saved under `sealKey`: this server's (it opens, and the run is cut of it) or another (it does not,
  *  and the run is withheld). */
@@ -141,35 +136,24 @@ async function handed(data, runId, agentId, pointer, sealKey) {
   // transaction, as the store's own writer takes every write (store/sqlite/worker.ts): the write lock comes before any
   // read snapshot, so the busy timeout covers an in-flight writer, where a deferred write upgrading a stale snapshot gets
   // SQLITE_BUSY_SNAPSHOT at once. The run's mark and its launch's browser change together, as the runner's bind does.
-  // No store transaction holds the lock that long (each is rolled back 10 s after it begins, and under load 29-35 none
-  // held it 1 s), but on a starved CI runner (eight test files at once) one 15 s busy wait has lost its turn ("database is
-  // locked" at the BEGIN). So the begin is tried again, MARK_TRIES times in all, after a short pause. Only a busy lock is
-  // waited out: any other error fails at once, and a lock still held after the last try fails the case.
-  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 15_000 });
+  // raw() runs it on a worker thread: the server commits its own write from this thread, so a busy wait here would hold
+  // up the commit it waits for.
+  const db = await raw(join(data, "store.sqlite"), { timeout: 15_000 });
   try {
-    for (let tries = 1; ; tries++) {
-      try {
-        db.exec("BEGIN IMMEDIATE");
-      } catch (error) {
-        if (!isBusy(error) || tries >= MARK_TRIES) throw new Error(`the handed mark's write lock, after ${tries} busy waits of 15 s: ${error.message}`, { cause: error });
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        continue;
-      }
-      try {
-        db.prepare("UPDATE runs SET sign_in_handed = ? WHERE id = ?").run(JSON.stringify([createHash("sha256").update(pointer).digest("hex")]), runId);
-        const launch = db.prepare("SELECT body FROM run_launch WHERE run_id = ?").get(runId);
-        assert.ok(launch, `run ${runId} has a launch row`);
-        const body = JSON.parse(launch.body);
-        db.prepare("UPDATE run_launch SET body = ? WHERE run_id = ?").run(JSON.stringify({ ...body, plane: { ...(body.plane ?? {}), browser: "browserbase" } }), runId);
-        db.exec("COMMIT");
-        return;
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
-      }
+    await db.exec("BEGIN IMMEDIATE");
+    try {
+      await db.run("UPDATE runs SET sign_in_handed = ? WHERE id = ?", JSON.stringify([createHash("sha256").update(pointer).digest("hex")]), runId);
+      const launch = await db.get("SELECT body FROM run_launch WHERE run_id = ?", runId);
+      assert.ok(launch, `run ${runId} has a launch row`);
+      const body = JSON.parse(launch.body);
+      await db.run("UPDATE run_launch SET body = ? WHERE run_id = ?", JSON.stringify({ ...body, plane: { ...(body.plane ?? {}), browser: "browserbase" } }), runId);
+      await db.exec("COMMIT");
+    } catch (error) {
+      await db.exec("ROLLBACK");
+      throw error;
     }
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
@@ -196,13 +180,13 @@ test("a scoped CLI run read serves learning with planted secrets cut, and refuse
   // Retained historical learning can contain private values even when current capture is clean.
   // Plant a real kept row so the successful route must apply its serving cut, not merely omit dialogue.
   const values = [server.token, monid, pointer];
-  const db = new DatabaseSync(join(server.data, "store.sqlite"), { timeout: 15_000 });
+  const db = await raw(join(server.data, "store.sqlite"), { timeout: 15_000 });
   try {
-    db.prepare("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, learning_run_id, created_at) VALUES (?, 99, ?, ?, ?, NULL, ?)")
-      .run(receipt.run_id, connection.agent_id, JSON.stringify({ asked: values.join(" ") }),
-        JSON.stringify({ state: "dropped", reason: "nothing", detail: `Visible learning detail: ${values.join(" ")}` }), Date.now());
+    await db.run("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, learning_run_id, created_at) VALUES (?, 99, ?, ?, ?, NULL, ?)",
+      receipt.run_id, connection.agent_id, JSON.stringify({ asked: values.join(" ") }),
+      JSON.stringify({ state: "dropped", reason: "nothing", detail: `Visible learning detail: ${values.join(" ")}` }), Date.now());
   } finally {
-    db.close();
+    await db.close();
   }
   await handed(server.data, receipt.run_id, connection.agent_id, pointer, seal);
   const shown = await get(server.port, receipt.token, path);

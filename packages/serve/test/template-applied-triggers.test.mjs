@@ -14,6 +14,7 @@ const MANIFEST = `---
 name: inbox
 version: 1.0.0
 description: Sorts an inbox and writes a digest.
+tools: []
 budget: { per_run_usd: 0.5 }
 triggers:
   - name: new-mail
