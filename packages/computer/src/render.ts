@@ -59,6 +59,14 @@ interface BuildFlight {
 	toTell: Set<() => void>;
 }
 
+/**
+ * The box build's find-or-import under way in this process, by workspace and box image (owner id, build name, image
+ * tag), never by a key: every provider of the workspace joins it, and it is dropped once it settles. Render's own POST
+ * answers a build of the same name and digest already pending, running or succeeded (S, create-sandbox-build), so this
+ * saves the calls, not a second build.
+ */
+const FLIGHTS = new Map<string, BuildFlight>();
+
 /** What runs/sync answers once its command has ended (the live probe; C reads the stream's exit event's exit_code). */
 interface RunAnswer {
 	stdout: string;
@@ -266,8 +274,6 @@ class RenderHost implements MachineHost {
 	readonly #ending = new Set<string>();
 	/** The box build's name once Render read it succeeded: prepareImage asks no more. */
 	#built: string | undefined;
-	/** The box build's one find-or-import while it runs: every prepareImage in this process waits on it. */
-	#flight: BuildFlight | undefined;
 
 	constructor(options: { apiKey: string; ownerId: string; fetch: typeof fetch; pollMs: number }) {
 		this.#apiKey = options.apiKey;
@@ -581,14 +587,23 @@ class RenderHost implements MachineHost {
 	/**
 	 * The box image as a build of the workspace's default sandbox group (the group a create that names none uses, S),
 	 * named agentrun-box-<recipe hash>, so a new recipe is a new build. Concurrent callers in this process share one
-	 * find-or-import (#flight), forgotten once it settles. `building` is told once, before the wait on an import, its own
-	 * or one under way when it joined; a caller's signal ends its own wait alone: the import's wait goes on, within
-	 * BUILD_MS, for the next caller.
+	 * find-or-import per workspace and box image (FLIGHTS), whichever provider they call through (serve makes one per
+	 * claim), forgotten once it settles. `building` is told once, before the wait on an import, its own or one under way
+	 * when it joined; a caller's signal ends its own wait alone: the import's wait goes on, within BUILD_MS, for the next
+	 * caller.
 	 */
 	async boxBuild(building: () => void, signal: AbortSignal | undefined): Promise<string> {
 		if (this.#built !== undefined) return this.#built;
 		if (signal?.aborted) throw new HostError("aborted", "the wait for the box build was aborted before it began");
-		const flight = (this.#flight ??= this.#fly());
+		const key = JSON.stringify([this.#owner, boxBuildName(), boxImageRef()]);
+		let flight = FLIGHTS.get(key);
+		if (flight === undefined) {
+			const started = this.#fly();
+			FLIGHTS.set(key, (flight = started));
+			void started.answer.then(() => {
+				if (FLIGHTS.get(key) === started) FLIGHTS.delete(key);
+			});
+		}
 		const tell = () => {
 			try {
 				building();
@@ -602,13 +617,13 @@ class RenderHost implements MachineHost {
 			const settled = await untilAborted(flight.answer, [signal]);
 			if (settled === undefined) throw new HostError("aborted", "the wait for the box build was aborted; its import goes on for the next caller");
 			if ("error" in settled) throw settled.error;
-			return settled.name;
+			return (this.#built = settled.name);
 		} finally {
 			flight.toTell.delete(tell);
 		}
 	}
 
-	/** The one find-or-import every boxBuild waits on: never rejects (its error is its answer), and forgotten once settled. */
+	/** A find-or-import through this host's API key: it never rejects (its error is its answer). */
 	#fly(): BuildFlight {
 		const flight: BuildFlight = { answer: Promise.resolve({ error: undefined }), importing: false, toTell: new Set() };
 		const importing = () => {
@@ -616,12 +631,9 @@ class RenderHost implements MachineHost {
 			for (const tell of flight.toTell) tell();
 		};
 		flight.answer = this.#findOrImport(importing).then(
-			(name) => ({ name: (this.#built = name) }),
+			(name) => ({ name }),
 			(error: unknown) => ({ error }),
 		);
-		void flight.answer.then(() => {
-			if (this.#flight === flight) this.#flight = undefined;
-		});
 		return flight;
 	}
 
