@@ -453,6 +453,14 @@ __all__ = [
     "GetLearningLoopResponse",
     "GetLearningLoopResponseCompilesItem",
     "GetLearningLoopResponseCompilesItemAttemptsItem",
+    "GetLocalModelResponse",
+    "GetLocalModelResponseMachine",
+    "GetLocalModelResponseMachineGpu1",
+    "GetLocalModelResponseMachineGpu2",
+    "GetLocalModelResponseMachineGpu3",
+    "GetLocalModelResponseOllama",
+    "GetLocalModelResponsePull",
+    "GetLocalModelResponseRecommended",
     "GetMcpPrivateHostsResponse",
     "GetMcpServerResponse",
     "GetMcpServerResponseAuth",
@@ -478,6 +486,7 @@ __all__ = [
     "GetObservationsResponseUsageDailyItem",
     "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
+    "GetRevisionSkillsResponse",
     "GetRunExportResponse",
     "GetRunExportResponseAgent",
     "GetRunExportResponseCutsItem",
@@ -569,6 +578,7 @@ __all__ = [
     "GetTemplateResponseTemplateComputerHereComputer",
     "GetTemplateResponseTemplateMcpItem",
     "GetTemplateResponseTemplateMcpItemToolsItem",
+    "GetTemplateResponseTemplateMcpItemToolsItemFile",
     "GetTemplateResponseTemplateMcpItemToolsItemPinValue",
     "GetTemplateResponseTemplateModel",
     "GetTemplateResponseTemplateModelChoicesItem",
@@ -672,6 +682,7 @@ __all__ = [
     "ImportTemplateResponseTemplateComputerHereComputer",
     "ImportTemplateResponseTemplateMcpItem",
     "ImportTemplateResponseTemplateMcpItemToolsItem",
+    "ImportTemplateResponseTemplateMcpItemToolsItemFile",
     "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
     "ImportTemplateResponseTemplateModelChoicesItem",
@@ -823,6 +834,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemComputerHereComputer",
     "ListTemplatesResponseTemplatesItemMcpItem",
     "ListTemplatesResponseTemplatesItemMcpItemToolsItem",
+    "ListTemplatesResponseTemplatesItemMcpItemToolsItemFile",
     "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
     "ListTemplatesResponseTemplatesItemModelChoicesItem",
@@ -913,6 +925,15 @@ __all__ = [
     "PreviewMcpServerResponseToolsItem",
     "PublishSourceSyncBody",
     "PublishSourceSyncResponse",
+    "PullLocalModelBody",
+    "PullLocalModelResponse",
+    "PullLocalModelResponseMachine",
+    "PullLocalModelResponseMachineGpu1",
+    "PullLocalModelResponseMachineGpu2",
+    "PullLocalModelResponseMachineGpu3",
+    "PullLocalModelResponseOllama",
+    "PullLocalModelResponsePull",
+    "PullLocalModelResponseRecommended",
     "PutLearningCorrectionsBody",
     "PutLearningCorrectionsResponse",
     "PutToolSettingsBody",
@@ -1039,6 +1060,11 @@ __all__ = [
     "RunError",
     "RunErrorCode",
     "RunErrorDetails",
+    "RunFactory",
+    "RunFactoryChildrenItem",
+    "RunFactoryControls",
+    "RunFactoryGithub",
+    "RunFactoryObservation",
     "RunFile",
     "RunFileList",
     "RunImportedFrom",
@@ -1070,6 +1096,13 @@ __all__ = [
     "RunSummary",
     "RunSummaryCliLearning",
     "RunSummaryCliLearningUsage",
+    "RunSummaryComputer",
+    "RunSummaryComputerHeld",
+    "RunSummaryFactory",
+    "RunSummaryFactoryChildrenItem",
+    "RunSummaryFactoryControls",
+    "RunSummaryFactoryGithub",
+    "RunSummaryFactoryObservation",
     "RunSummaryImportedFrom",
     "RunSummaryLearning",
     "RunSummaryLearningWorkflowsItem",
@@ -1172,6 +1205,11 @@ __all__ = [
     "SetSourceSyncResponseToolConnectionsItemCandidatesItem",
     "SignIn",
     "SignOutChatGPTResponse",
+    "SignOutClaudeLoginResponse",
+    "SignOutClaudeLoginResponseLogin",
+    "SignOutClaudeLoginResponseLoginAccount",
+    "SignOutClaudeLoginResponseLoginMachine",
+    "SignOutClaudeLoginResponseLoginSignIn",
     "SkillFileInfo",
     "SkillFiles",
     "SlackResource",
@@ -1595,7 +1633,7 @@ class DefinitionPlace1(TypedDict):
 
 class DefinitionPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _DefinitionComputerRequired(TypedDict):
@@ -2101,7 +2139,7 @@ class DefinitionInputPlace1(TypedDict):
 
 class DefinitionInputPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _DefinitionInputComputerRequired(TypedDict):
@@ -3420,9 +3458,14 @@ class ReviewSourceProjectResponseToolConnectionsItemCandidatesItem(TypedDict):
 ListRunsResponse: TypeAlias = "RunList"
 
 
-class RunList(TypedDict):
+class _RunListRequired(TypedDict):
     runs: list[RunSummary]
     next_cursor: str | None
+
+
+class RunList(_RunListRequired, total=False):
+    scope: Literal["active", "review"]
+    observed_at: str
 
 
 class _RunSummaryRequired(TypedDict):
@@ -3442,9 +3485,11 @@ class _RunSummaryRequired(TypedDict):
 
 
 class RunSummary(_RunSummaryRequired, total=False):
+    computer: RunSummaryComputer
     sdk: RunSummarySdk | RunSummarySdk2
     cli_learning: RunSummaryCliLearning
     native: RunSummaryNative
+    factory: RunSummaryFactory
     console_url: str
     labels: dict[str, str]
     stopped_for: Literal["budget"] | None
@@ -3489,7 +3534,6 @@ class Cost(_CostRequired, total=False):
     followup_usd: float | None
     shadow_usd: float | None
     share_usd: float | None
-    degraded: Literal[True]
     plan: CostPlan
 
 
@@ -3509,6 +3553,27 @@ class CostPlan(TypedDict):
     requests: int
     tokens: int
     on: Literal["chatgpt", "claude_code"]
+
+
+class _RunSummaryComputerRequired(TypedDict):
+    kind: Literal["sandbox", "desktop", "phone", "browser"]
+    provider: str
+    state: Literal["starting", "ready", "taken_over", "released", "ended", "failed"]
+
+
+class RunSummaryComputer(_RunSummaryComputerRequired, total=False):
+    why: str
+    held: RunSummaryComputerHeld
+
+
+class _RunSummaryComputerHeldRequired(TypedDict):
+    state: Literal["starting", "waiting", "started", "ended", "released"]
+    minutes: int
+
+
+class RunSummaryComputerHeld(_RunSummaryComputerHeldRequired, total=False):
+    until: str
+    why: Literal["timeout", "lost"]
 
 
 class RunSummarySdk(TypedDict):
@@ -3606,6 +3671,46 @@ class RunSummaryNativeUsageReflectionItem(TypedDict):
     cost_usd: float | None
 
 
+class RunSummaryFactory(TypedDict):
+    lifecycle_version: str
+    source: Literal["managed", "native", "sdk", "cli"]
+    runtime: str
+    control: Literal["managed", "observed"]
+    controls: RunSummaryFactoryControls
+    observation: RunSummaryFactoryObservation
+    last_activity_at: str | None
+    github: None | RunSummaryFactoryGithub
+    children: list[RunSummaryFactoryChildrenItem]
+
+
+class RunSummaryFactoryControls(TypedDict):
+    stop: bool
+    cancel: bool
+    approve: bool
+
+
+class RunSummaryFactoryObservation(TypedDict):
+    basis: Literal["runner", "connector", "unreported"]
+    status: Literal["current", "offline", "revoked", "unreported"]
+    last_seen_at: str | None
+
+
+class RunSummaryFactoryGithub(TypedDict):
+    repository: str
+    issue: int | None
+    pull_request: int | None
+    head_sha: str | None
+    provenance: Literal["launch", "github_trigger"]
+
+
+class RunSummaryFactoryChildrenItem(TypedDict):
+    id: str
+    conversation_id: int
+    parent_call_id: str
+    status: Literal["active", "completed"]
+    label: str | None
+
+
 Effort: TypeAlias = "Literal[\"low\", \"medium\", \"high\"]"
 
 
@@ -3649,7 +3754,7 @@ class RunErrorDetails(TypedDict):
 
 class _RunSummaryLearningRequired(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset", "purged_since_seed"] | None
     detail: str | None
 
 
@@ -5062,6 +5167,7 @@ class DeleteModelGatewayResponseSecret(TypedDict):
 
 class _DeleteWorkspaceArchilResponseRequired(TypedDict):
     on: bool
+    regions: dict[str, str]
     secret: DeleteWorkspaceArchilResponseSecret
 
 
@@ -5069,6 +5175,7 @@ class DeleteWorkspaceArchilResponse(_DeleteWorkspaceArchilResponseRequired, tota
     source: Literal["env", "console"]
     region: str
     s3Url: str
+    s3UrlFrom: Literal["region", "given"]
     image: str
 
 
@@ -5293,6 +5400,61 @@ class GetGitHubConnectionResponseObject2InstallationsItem(TypedDict):
     account: str
 
 
+class GetLocalModelResponse(TypedDict):
+    machine: GetLocalModelResponseMachine
+    ollama: GetLocalModelResponseOllama
+    recommended: GetLocalModelResponseRecommended
+    pull: None | GetLocalModelResponsePull
+    can_pull: bool
+    refused: str | None
+
+
+class GetLocalModelResponseMachine(TypedDict):
+    platform: str
+    arch: str
+    ram_bytes: int
+    gpu: GetLocalModelResponseMachineGpu1 | GetLocalModelResponseMachineGpu2 | GetLocalModelResponseMachineGpu3
+
+
+class GetLocalModelResponseMachineGpu1(TypedDict):
+    kind: Literal["apple"]
+    unified: Literal[True]
+
+
+class GetLocalModelResponseMachineGpu2(TypedDict):
+    kind: Literal["nvidia"]
+    name: str
+    memory_bytes: int
+
+
+class GetLocalModelResponseMachineGpu3(TypedDict):
+    kind: Literal["unknown"]
+
+
+class GetLocalModelResponseOllama(TypedDict):
+    asked: bool
+    reachable: bool
+    version: str | None
+
+
+class GetLocalModelResponseRecommended(TypedDict):
+    tag: str | None
+    why: str
+    pulled: bool
+
+
+class _GetLocalModelResponsePullRequired(TypedDict):
+    tag: str
+    state: Literal["pulling", "done", "failed"]
+    status: str
+    completed_bytes: int
+    total_bytes: int
+
+
+class GetLocalModelResponsePull(_GetLocalModelResponsePullRequired, total=False):
+    error: str
+
+
 class GetModelGatewayResponse(TypedDict):
     source: Literal["env", "console"] | None
     base_url: str | None
@@ -5422,6 +5584,7 @@ class GetSuggestionResponseGithub(TypedDict):
 
 class _GetWorkspaceArchilResponseRequired(TypedDict):
     on: bool
+    regions: dict[str, str]
     secret: GetWorkspaceArchilResponseSecret
 
 
@@ -5429,6 +5592,7 @@ class GetWorkspaceArchilResponse(_GetWorkspaceArchilResponseRequired, total=Fals
     source: Literal["env", "console"]
     region: str
     s3Url: str
+    s3UrlFrom: Literal["region", "given"]
     image: str
 
 
@@ -5746,6 +5910,7 @@ class Run(_RunRequired, total=False):
     sdk: RunSdk | RunSdk2
     cli_learning: RunCliLearning
     native: RunNative
+    factory: RunFactory
     console_url: str
     labels: dict[str, str]
     stopped_for: Literal["budget"] | None
@@ -5873,6 +6038,46 @@ class RunNativeUsageReflectionItem(TypedDict):
     cost_usd: float | None
 
 
+class RunFactory(TypedDict):
+    lifecycle_version: str
+    source: Literal["managed", "native", "sdk", "cli"]
+    runtime: str
+    control: Literal["managed", "observed"]
+    controls: RunFactoryControls
+    observation: RunFactoryObservation
+    last_activity_at: str | None
+    github: None | RunFactoryGithub
+    children: list[RunFactoryChildrenItem]
+
+
+class RunFactoryControls(TypedDict):
+    stop: bool
+    cancel: bool
+    approve: bool
+
+
+class RunFactoryObservation(TypedDict):
+    basis: Literal["runner", "connector", "unreported"]
+    status: Literal["current", "offline", "revoked", "unreported"]
+    last_seen_at: str | None
+
+
+class RunFactoryGithub(TypedDict):
+    repository: str
+    issue: int | None
+    pull_request: int | None
+    head_sha: str | None
+    provenance: Literal["launch", "github_trigger"]
+
+
+class RunFactoryChildrenItem(TypedDict):
+    id: str
+    conversation_id: int
+    parent_call_id: str
+    status: Literal["active", "completed"]
+    label: str | None
+
+
 class RunRecordingsItem(TypedDict):
     path: str
     computer: str
@@ -5893,7 +6098,7 @@ class RunPlace1(TypedDict):
 
 class RunPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _RunComputerRequired(TypedDict):
@@ -5919,7 +6124,7 @@ class RunComputerHeld(_RunComputerHeldRequired, total=False):
 
 class _RunLearningRequired(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset", "purged_since_seed"] | None
     detail: str | None
     at: str
 
@@ -6156,12 +6361,71 @@ class ListSuggestionsResponseSuggestionsItemCreatedPullRequest(TypedDict):
     url: str
 
 
+class PullLocalModelBody(TypedDict):
+    tag: Literal["inkling-2-mini", "qwen3:8b", "qwen3:4b"]
+
+
+class PullLocalModelResponse(TypedDict):
+    machine: PullLocalModelResponseMachine
+    ollama: PullLocalModelResponseOllama
+    recommended: PullLocalModelResponseRecommended
+    pull: None | PullLocalModelResponsePull
+    can_pull: bool
+    refused: str | None
+
+
+class PullLocalModelResponseMachine(TypedDict):
+    platform: str
+    arch: str
+    ram_bytes: int
+    gpu: PullLocalModelResponseMachineGpu1 | PullLocalModelResponseMachineGpu2 | PullLocalModelResponseMachineGpu3
+
+
+class PullLocalModelResponseMachineGpu1(TypedDict):
+    kind: Literal["apple"]
+    unified: Literal[True]
+
+
+class PullLocalModelResponseMachineGpu2(TypedDict):
+    kind: Literal["nvidia"]
+    name: str
+    memory_bytes: int
+
+
+class PullLocalModelResponseMachineGpu3(TypedDict):
+    kind: Literal["unknown"]
+
+
+class PullLocalModelResponseOllama(TypedDict):
+    asked: bool
+    reachable: bool
+    version: str | None
+
+
+class PullLocalModelResponseRecommended(TypedDict):
+    tag: str | None
+    why: str
+    pulled: bool
+
+
+class _PullLocalModelResponsePullRequired(TypedDict):
+    tag: str
+    state: Literal["pulling", "done", "failed"]
+    status: str
+    completed_bytes: int
+    total_bytes: int
+
+
+class PullLocalModelResponsePull(_PullLocalModelResponsePullRequired, total=False):
+    error: str
+
+
 class _PutWorkspaceArchilBodyRequired(TypedDict):
     region: str
-    s3Url: str
 
 
 class PutWorkspaceArchilBody(_PutWorkspaceArchilBodyRequired, total=False):
+    s3Url: str
     image: str
     keys: PutWorkspaceArchilBodyKeys
 
@@ -6172,6 +6436,7 @@ class PutWorkspaceArchilBodyKeys(TypedDict, total=False):
 
 class _PutWorkspaceArchilResponseRequired(TypedDict):
     on: bool
+    regions: dict[str, str]
     secret: PutWorkspaceArchilResponseSecret
 
 
@@ -6179,6 +6444,7 @@ class PutWorkspaceArchilResponse(_PutWorkspaceArchilResponseRequired, total=Fals
     source: Literal["env", "console"]
     region: str
     s3Url: str
+    s3UrlFrom: Literal["region", "given"]
     image: str
 
 
@@ -6624,6 +6890,59 @@ class _SignOutChatGPTResponseRequired(TypedDict):
 
 class SignOutChatGPTResponse(_SignOutChatGPTResponseRequired, total=False):
     message: str
+
+
+class _SignOutClaudeLoginResponseRequired(TypedDict):
+    confirmed: bool
+    login: SignOutClaudeLoginResponseLogin
+
+
+class SignOutClaudeLoginResponse(_SignOutClaudeLoginResponseRequired, total=False):
+    message: str
+
+
+class _SignOutClaudeLoginResponseLoginRequired(TypedDict):
+    state: Literal["off", "other_machine", "refused", "signed_in", "signed_out", "no_cli", "unknown"]
+    place: Literal["agentrun", "machine"]
+    command: str
+    can_start: bool
+    folder: str
+    machine: SignOutClaudeLoginResponseLoginMachine
+
+
+class SignOutClaudeLoginResponseLogin(_SignOutClaudeLoginResponseLoginRequired, total=False):
+    refused: str
+    account: SignOutClaudeLoginResponseLoginAccount
+    sign_in: SignOutClaudeLoginResponseLoginSignIn
+
+
+class SignOutClaudeLoginResponseLoginAccount(TypedDict, total=False):
+    method: str
+    email: str
+    organization: str
+    plan: str
+
+
+class _SignOutClaudeLoginResponseLoginMachineRequired(TypedDict):
+    folder: str
+    source: Literal["CLAUDE_CONFIG_DIR", "default"]
+
+
+class SignOutClaudeLoginResponseLoginMachine(_SignOutClaudeLoginResponseLoginMachineRequired, total=False):
+    credentials: str
+
+
+class _SignOutClaudeLoginResponseLoginSignInRequired(TypedDict):
+    state: Literal["waiting", "signed_in", "timed_out", "failed", "not_started"]
+    started_at: str
+    limit_ms: int
+
+
+class SignOutClaudeLoginResponseLoginSignIn(_SignOutClaudeLoginResponseLoginSignInRequired, total=False):
+    ended_at: str
+    exit_code: int
+    signal: str
+    error: str
 
 
 class StartChatGPTSignInResponse(TypedDict):
@@ -7427,6 +7746,11 @@ class SetCurrentBody(TypedDict):
 SetCurrentResponse: TypeAlias = "Agent"
 
 
+class GetRevisionSkillsResponse(TypedDict):
+    revision: str
+    skills: dict[str, str]
+
+
 ArchiveRunResponse: TypeAlias = "dict[str, Any]"
 
 
@@ -7780,7 +8104,7 @@ GetRunLearningResponse: TypeAlias = "GetRunLearningResponseObject | None"
 class _GetRunLearningResponseObjectRequired(TypedDict):
     run: str
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset", "purged_since_seed"] | None
     detail: str | None
     at: str
     seed: str | None
@@ -8132,7 +8456,7 @@ class TimelineRowComputerCallsItemStepsItemOn(_TimelineRowComputerCallsItemSteps
 
 class TimelineRowLearning(TypedDict):
     state: Literal["seeded", "reflecting", "merged", "dropped"]
-    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset"] | None
+    reason: Literal["seed_failed", "no_budget", "unknown_cost", "cancelled", "crashed", "reflect_failed", "empty", "checker", "use", "reset", "purged_since_seed"] | None
     detail: str | None
 
 
@@ -8620,7 +8944,6 @@ class FeaturesHarnessKeys(TypedDict):
     routes: bool
     at_rest: Literal["sealed"]
     harnesses: list[str]
-    kept: list[str]
 
 
 class FeaturesMcpClient(TypedDict):
@@ -8738,7 +9061,7 @@ class CapabilitiesLearning(_CapabilitiesLearningRequired, total=False):
 class _CapabilitiesPlacesRequired(TypedDict):
     modes: list[Literal["runner", "sandbox"]]
     boxes: list[CapabilitiesPlacesBoxesItem]
-    default_place: CapabilitiesPlacesDefaultPlace1 | CapabilitiesPlacesDefaultPlace2
+    default_place: CapabilitiesPlacesDefaultPlace1 | CapabilitiesPlacesDefaultPlace2 | None
     allow: list[str]
 
 
@@ -8747,7 +9070,7 @@ class CapabilitiesPlaces(_CapabilitiesPlacesRequired, total=False):
 
 
 class _CapabilitiesPlacesBoxesItemRequired(TypedDict):
-    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
     available: bool
     state: Literal["ready", "unavailable"]
 
@@ -8765,7 +9088,7 @@ class CapabilitiesPlacesDefaultPlace1(TypedDict):
 
 class CapabilitiesPlacesDefaultPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
@@ -9425,10 +9748,16 @@ class _GetTemplateResponseTemplateMcpItemToolsItemRequired(TypedDict):
 
 class GetTemplateResponseTemplateMcpItemToolsItem(_GetTemplateResponseTemplateMcpItemToolsItemRequired, total=False):
     pin: dict[str, str | float | bool | None | list[str | float | bool | None] | GetTemplateResponseTemplateMcpItemToolsItemPinValue]
+    file: GetTemplateResponseTemplateMcpItemToolsItemFile
 
 
 class GetTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
+
+
+class GetTemplateResponseTemplateMcpItemToolsItemFile(TypedDict):
+    folder: str
+    show: list[str]
 
 
 class _GetTemplateResponseTemplateBudgetRequired(TypedDict):
@@ -9571,10 +9900,16 @@ class _ImportTemplateResponseTemplateMcpItemToolsItemRequired(TypedDict):
 
 class ImportTemplateResponseTemplateMcpItemToolsItem(_ImportTemplateResponseTemplateMcpItemToolsItemRequired, total=False):
     pin: dict[str, str | float | bool | None | list[str | float | bool | None] | ImportTemplateResponseTemplateMcpItemToolsItemPinValue]
+    file: ImportTemplateResponseTemplateMcpItemToolsItemFile
 
 
 class ImportTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
+
+
+class ImportTemplateResponseTemplateMcpItemToolsItemFile(TypedDict):
+    folder: str
+    show: list[str]
 
 
 class _ImportTemplateResponseTemplateBudgetRequired(TypedDict):
@@ -9698,10 +10033,16 @@ class _ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired(TypedDict):
 
 class ListTemplatesResponseTemplatesItemMcpItemToolsItem(_ListTemplatesResponseTemplatesItemMcpItemToolsItemRequired, total=False):
     pin: dict[str, str | float | bool | None | list[str | float | bool | None] | ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue]
+    file: ListTemplatesResponseTemplatesItemMcpItemToolsItemFile
 
 
 class ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue(TypedDict):
     keys: list[str]
+
+
+class ListTemplatesResponseTemplatesItemMcpItemToolsItemFile(TypedDict):
+    folder: str
+    show: list[str]
 
 
 class _ListTemplatesResponseTemplatesItemBudgetRequired(TypedDict):
@@ -11927,7 +12268,7 @@ OPERATIONS: dict[str, Operation] = {
     "getAgentPackage": Operation(method="GET", path="/agents/{agent_id}/package", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "resolveSourceSync": Operation(method="POST", path="/agents/{agent_id}/source/resolve", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "reviewSourceProject": Operation(method="POST", path="/agents/{agent_id}/source/project-review", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status", "scope", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "setSourceSync": Operation(method="PATCH", path="/agents/{agent_id}/source", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
@@ -11992,6 +12333,7 @@ OPERATIONS: dict[str, Operation] = {
     "getClaudeLogin": Operation(method="GET", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getEmailAccount": Operation(method="GET", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getLocalModel": Operation(method="GET", path="/settings/local-model", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getModelGateway": Operation(method="GET", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getSuggestion": Operation(method="GET", path="/suggestions/{suggestion_id}", path_params=("suggestion_id",), multi_segment=(), query=("name",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -12008,6 +12350,7 @@ OPERATIONS: dict[str, Operation] = {
     "listMcpServerNames": Operation(method="GET", path="/settings/mcp-server-names", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRunningComputers": Operation(method="GET", path="/computers/running", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listSuggestions": Operation(method="GET", path="/suggestions", path_params=(), multi_segment=(), query=("repo", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "pullLocalModel": Operation(method="POST", path="/settings/local-model/pull", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "receiveHook_composio": Operation(method="POST", path="/hooks/composio/{hook}", path_params=("hook",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("*/*",)), answer="json", secret=False, public_fields=(), tagged=False),
     "restoreSuggestion": Operation(method="POST", path="/suggestions/{suggestion_id}/restore", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -12021,6 +12364,7 @@ OPERATIONS: dict[str, Operation] = {
     "saveModelGateway": Operation(method="PUT", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("base_url", "ids", "models.default", "models.fast", "models.strong"), tagged=False),
     "scanForSuggestions": Operation(method="POST", path="/suggestions/scans", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "signOutClaudeLogin": Operation(method="POST", path="/settings/claude-login/sign-out", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startClaudeLogin": Operation(method="POST", path="/settings/claude-login/login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startMcpOAuth": Operation(method="POST", path="/settings/mcp-servers/{name}/oauth/start", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("url", "scopes.[]", "client_id"), tagged=False),
@@ -12042,6 +12386,7 @@ OPERATIONS: dict[str, Operation] = {
     "getObservations": Operation(method="GET", path="/observations", path_params=(), multi_segment=(), query=("days", "session_id"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRevisions": Operation(method="GET", path="/agents/{agent_id}/revisions", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "setCurrent": Operation(method="POST", path="/agents/{agent_id}/current", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "getRevisionSkills": Operation(method="GET", path="/agents/{agent_id}/revisions/{revision}/skills", path_params=("agent_id", "revision"), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "archiveRun": Operation(method="POST", path="/runs/{run_id}/archive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "cancelRun": Operation(method="POST", path="/runs/{run_id}/cancel", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "callRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/call", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -12057,7 +12402,7 @@ OPERATIONS: dict[str, Operation] = {
     "handBackRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/hand-back", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearning": Operation(method="GET", path="/runs/{run_id}/learning", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearningDiff": Operation(method="GET", path="/runs/{run_id}/learning/diff", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "archived", "label", "source", "from", "to", "model"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "scope", "archived", "label", "source", "from", "to", "model"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "sendMessage": Operation(method="POST", path="/runs/{run_id}/messages", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "pauseRun": Operation(method="POST", path="/runs/{run_id}/pause", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "raiseRunCap": Operation(method="PATCH", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -12205,9 +12550,9 @@ class AgentsResource(Group):
         """Acknowledge exact unresolved run receipts and allow later runs to use the saved project (POST /agents/{agent_id}/source/project-review)."""
         return self._call("reviewSourceProject", (agent_id,), body, None, timeout=timeout)
 
-    def runs(self, agent_id: str, *, limit: int | None = None, cursor: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, label: str | None = None, timeout: float | None = None) -> ListRunsResponse:
+    def runs(self, agent_id: str, *, limit: int | None = None, cursor: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, scope: Literal["active", "review"] | None = None, label: str | None = None, timeout: float | None = None) -> ListRunsResponse:
         """The agent's runs index (GET /agents/{agent_id}/runs)."""
-        return self._call("listRuns", (agent_id,), None, {"limit": limit, "cursor": cursor, "status": status, "label": label}, timeout=timeout)
+        return self._call("listRuns", (agent_id,), None, {"limit": limit, "cursor": cursor, "status": status, "scope": scope, "label": label}, timeout=timeout)
 
     def set_source_sync(self, agent_id: str, body: SetSourceSyncBody, *, timeout: float | None = None) -> SetSourceSyncResponse:
         """Enable or pause this agent’s source sync (PATCH /agents/{agent_id}/source)."""
@@ -12501,6 +12846,10 @@ class LocalResource(Group):
         """Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github)."""
         return self._call("getGitHubConnection", (), None, None, timeout=timeout)
 
+    def get_local_model(self, *, timeout: float | None = None) -> GetLocalModelResponse:
+        """This machine, its Ollama, the free local model recommended for them, and the pull here (GET /settings/local-model)."""
+        return self._call("getLocalModel", (), None, None, timeout=timeout)
+
     def get_model_gateway(self, *, timeout: float | None = None) -> GetModelGatewayResponse:
         """The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway)."""
         return self._call("getModelGateway", (), None, None, timeout=timeout)
@@ -12557,6 +12906,10 @@ class LocalResource(Group):
         """Suggested agents: each repository's scan and the agents it suggests (GET /suggestions)."""
         return self._call("listSuggestions", (), None, {"repo": repo, "status": status}, timeout=timeout)
 
+    def pull_local_model(self, body: PullLocalModelBody, *, timeout: float | None = None) -> PullLocalModelResponse:
+        """Pull a recommended model into the Ollama here (POST /settings/local-model/pull)."""
+        return self._call("pullLocalModel", (), body, None, timeout=timeout)
+
     def put_workspace_archil(self, body: PutWorkspaceArchilBody, *, timeout: float | None = None) -> PutWorkspaceArchilResponse:
         """Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil)."""
         return self._call("putWorkspaceArchil", (), body, None, timeout=timeout)
@@ -12608,6 +12961,10 @@ class LocalResource(Group):
     def sign_out_chat_gpt(self, *, timeout: float | None = None) -> SignOutChatGPTResponse:
         """Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt)."""
         return self._call("signOutChatGPT", (), None, None, timeout=timeout)
+
+    def sign_out_claude_login(self, *, timeout: float | None = None) -> SignOutClaudeLoginResponse:
+        """Sign out of Claude Code's login on this machine: AgentRun's own login removed, the mode off (POST /settings/claude-login/sign-out)."""
+        return self._call("signOutClaudeLogin", (), None, None, timeout=timeout)
 
     def start_chat_gptsign_in(self, *, timeout: float | None = None) -> StartChatGPTSignInResponse:
         """Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in)."""
@@ -12701,6 +13058,10 @@ class RevisionsResource(Group):
         """Make one of the agent's revisions current again (POST /agents/{agent_id}/current)."""
         return self._call("setCurrent", (agent_id,), body, None, timeout=timeout)
 
+    def skills(self, agent_id: str, revision: str, *, timeout: float | None = None) -> GetRevisionSkillsResponse:
+        """Read all skill files saved with one agent revision (GET /agents/{agent_id}/revisions/{revision}/skills)."""
+        return self._call("getRevisionSkills", (agent_id, revision), None, None, timeout=timeout)
+
 
 class RunsResource(Group):
     """client.runs: its generated methods (the client adds wait and follow)."""
@@ -12765,9 +13126,9 @@ class RunsResource(Group):
         """What the run proposed, file by file (GET /runs/{run_id}/learning/diff)."""
         return self._call("getRunLearningDiff", (run_id,), None, None, timeout=timeout)
 
-    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, archived: bool | None = None, label: str | None = None, source: str | None = None, from_: str | None = None, to: str | None = None, model: str | None = None, timeout: float | None = None) -> ListAllRunsResponse:
+    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, scope: Literal["active", "review"] | None = None, archived: bool | None = None, label: str | None = None, source: str | None = None, from_: str | None = None, to: str | None = None, model: str | None = None, timeout: float | None = None) -> ListAllRunsResponse:
         """Every agent's runs, newest first (GET /runs)."""
-        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "archived": archived, "label": label, "source": source, "from": from_, "to": to, "model": model}, timeout=timeout)
+        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "scope": scope, "archived": archived, "label": label, "source": source, "from": from_, "to": to, "model": model}, timeout=timeout)
 
     def message(self, run_id: str, body: SendMessageBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> SendMessageResponse:
         """Send the run a message (POST /runs/{run_id}/messages)."""

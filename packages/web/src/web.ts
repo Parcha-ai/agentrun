@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { WebDecider } from "./decide/decider.js";
 import { decideFetch, type FetchAnswer, judgePart } from "./decide/fetch.js";
 import { guardPage, type InjectionVerdict, type PageGuard, type WallVerdict } from "./decide/page-guard.js";
-import { decisionPay, type DecisionRecord, type Sift, type StepOptions } from "./decide/record.js";
+import { decisionPay, type DecisionRecord, heldOnRefusal, type Sift, type StepOptions } from "./decide/record.js";
 import { type DecidePolicy, policyOf, siftSearch } from "./decide/search.js";
 import { missesOf, type Pages, type Readers, type WebLog, type WebRead, webFetchText, webPart, webRead } from "./fetch.js";
 import { type Fee, type Pay, unmetered } from "./fees.js";
@@ -12,6 +12,7 @@ import type { Guard, GuardOptions } from "./guard.js";
 import { askedUrl, type Page, type Part, partProblem } from "./page.js";
 import { holdingWords, type NativeSearch, type ProviderRun, readerOf, type WebClient } from "./provider.js";
 import type { Words } from "./providers/mcp.js";
+import { kindOf } from "./providers/keyed.js";
 import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, settingsProblemsOf } from "./providers/registry.js";
 import { type Breaker, breakers, fitSearch, type Holding, type Limit, withKeyBreaker, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
@@ -146,8 +147,10 @@ export function createWeb(config: WebConfig): Web {
   for (const op of ["search", "fetch"] as const) for (const id of config.order[op]) if (!providerOf(id).ops.includes(op)) throw new Error(`web: ${id} gives no ${op}`);
   const now = config.now ?? Date.now;
   const policy = policyOf(config.policy);
-  if (config.pageGuard !== undefined && typeof config.pageGuard !== "boolean") throw new TypeError(`pageGuard must be true or false (it was ${JSON.stringify(config.pageGuard)})`);
+  if (config.pageGuard !== undefined && typeof config.pageGuard !== "boolean") throw new TypeError(`pageGuard must be true or false (it was ${kindOf(config.pageGuard)})`);
   if (config.pageGuard && !config.decider) throw new TypeError("pageGuard needs a decider: the page guard asks the run's decider about each page");
+  // The decider as this Web asks it: held for the Web's life once it refuses its key or its account.
+  const held = config.decider ? heldOnRefusal(config.decider) : undefined;
   /** The page guard's verdict on each read the run's pages hold, kept with the read: it goes when the page is evicted,
    *  and a page read again is asked about again, as is one whose guard failed. */
   const pageVerdicts = new WeakMap<WebRead, Promise<PageGuard>>();
@@ -250,7 +253,7 @@ export function createWeb(config: WebConfig): Web {
         : !order.length ? { error: "web_search has no provider to ask" }
         : await feesOfCall.run(lines, () => searchInTurn(order.map((id) => ({ name: id, ask: (deadline: AbortSignal) => runOf(id).search!(ask, deadline, signal, bounds, session ? { session } : undefined) })), breakerOf, signal, searchMs, tries));
       // Sifted before it is fitted, so the fit sees only the kept results; fitSearch keeps every other field.
-      const sifted = config.decider ? await siftSearch(config.decider, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines), policy }) : { answer: found, classifier: "off" as const };
+      const sifted = held ? await siftSearch(held, found, { task, signal, ms: config.bounds?.decideMs, pay: decisionPay(config.pay ?? unmetered, lines), policy }) : { answer: found, classifier: "off" as const };
       const answer: Search & Sift = fitSearch(sifted.answer);
       const { classifier } = sifted;
       const said = [asked.objective, asked.query].find((one): one is string => typeof one === "string") ?? "";
@@ -268,7 +271,7 @@ export function createWeb(config: WebConfig): Web {
       const problem = partProblem({ offset, maxChars });
       if (problem) {
         const refused: Page = { ok: false, url: askedUrl(asked), status: 0, title: "", text: "", links: [], error: problem };
-        const classifier = config.decider ? (await judgePart(config.decider, asked, refused, {})).classifier : "off";
+        const classifier = held ? (await judgePart(held, asked, refused, {})).classifier : "off";
         return { answer: refused, receipt: { op: "fetch", asked, provider: null, tries, classifier, ...unjudged, out: outOf(webFetchText(refused)), cost: { usd: 0, lines }, ...unsifted(() => webFetchText(refused)) } };
       }
       const cached = typeof url === "string" && pages.has(url);
@@ -289,7 +292,7 @@ export function createWeb(config: WebConfig): Web {
       );
       const part = webPart(whole, { ...(offset === undefined ? {} : { offset }), ...(maxChars === undefined ? {} : { maxChars }) });
       const provider = part.ok && part.via !== "stopped" && part.via !== "none" ? part.via : null;
-      const { decider } = config;
+      const decider = held;
       const guard = config.pageGuard && decider && whole.ok ? (options: StepOptions) => guardOf(decider, asked, whole, options) : undefined;
       const decided = await decideFetch(decider, asked, whole, part, { task, objective: typeof objective === "string" && objective.trim() ? objective : lookingFor, signal, ms: config.bounds?.decideMs, pay: config.pay ?? unmetered, lines, guard });
       // What the objective found names each provider asked ahead that gave no page, as the part does.

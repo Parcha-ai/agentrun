@@ -1,7 +1,8 @@
 // Test kit: a session store in memory, and a scripted harness with no model and no network. The faux harness keeps its
 // own records in the store as a real adapter does (the requests it made, each tool call's intent and outcome, its turns),
 // so a later process resumes from them: a request already made is not made again, and a call a crash cut off is
-// answered interrupted, never run again. Each call asks the host's gate first, as a real harness's tool bridge does
+// answered interrupted, never run again (unless its action says `again`: then it is issued again, asked as the bridge
+// asks it). Each call asks the host's gate first, as a real harness's tool bridge does
 // (process/tools.ts askGate): a deny is the call's answer, and a park holds the turn; a recovered turn runs the calls its
 // last request asked for that never started (a parked one), under their own ids, as a real CLI's resume does.
 import { SessionFenced } from "./errors.js";
@@ -65,7 +66,13 @@ export type FauxRequest = { onRefused?: "next"; tokens?: { input: number; output
 /** One model request of the faux harness, and what its reply does. */
 export type FauxAction =
   | ({ say: string; usd?: number | null } & FauxRequest)
-  | ({ call: string; args?: unknown; usd?: number | null } & FauxRequest)
+  /** One call. `again`: a crash that cuts it off mid-call (its intent recorded, no outcome) leaves it for the recovered
+   *  turn to issue again, under its id, asking the gate first as the tool bridge does (process/tools.ts: `replayed`,
+   *  unless the tool `nests`), as a CLI that sends its transcript's unanswered call again through its bridge; without
+   *  it, the cut call is answered interrupted. `dies`: the process stops once the call's gate has answered, before its
+   *  intent or outcome is written (a refusal's too), so a recovered turn issues it again as a call left unstarted; only
+   *  the first time, never when a recovered turn issues it again. */
+  | ({ call: string; args?: unknown; usd?: number | null; again?: true; dies?: true } & FauxRequest)
   /** One answer that asks for several tools, run one after another, as Claude Code and Codex run a response's calls.
    *  `bookAfter`: the calls run before the answer's cost is booked, as with Claude Code, whose cost comes in after its
    *  response, so a call can end before the request that asked for it is paid. A call's `say` streams that text first,
@@ -164,11 +171,19 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       const turnsEnded = records.filter((r) => r.kind === FAUX_RECORDS.turnEnd).length;
       let state: SessionState = turnsStarted === 0 ? "new" : turnsStarted > turnsEnded ? "open_turn" : "idle";
       stats.opened.push({ key: spec.key, state });
-      // A call whose intent is recorded and whose outcome is not: a crash cut it off. It is answered interrupted, once.
+      // A call whose intent is recorded and whose outcome is not: a crash cut it off. It is answered interrupted, once; one
+      // its action marks `again`, in a turn still open, is issued again by the recovered turn instead, its gate asked as the
+      // tool bridge asks it (process/tools.ts): `replayed` for a tool that runs as one effect, nothing more for one that
+      // `nests` (runNesting), which writes nothing of its own and so has no earlier attempt in the kernel's log to see.
       const results = new Set(records.filter((r) => r.kind === FAUX_RECORDS.result).map((r) => (r.data as { callId: string }).callId));
+      const again = new Map<string, { name: string; args: unknown; callId: string; replayed?: true }>();
       for (const r of records.filter((r) => r.kind === FAUX_RECORDS.call)) {
         const { callId } = r.data as { callId: string };
-        if (!results.has(callId)) await append(FAUX_RECORDS.result, { callId, interrupted: true });
+        if (results.has(callId) || again.has(callId)) continue;
+        const action = script[Number(callId.slice(spec.key.length + 1))];
+        const nests = action && "call" in action ? spec.tools.find((tool) => tool.name === action.call)?.nests === true : false;
+        if (state === "open_turn" && action && "call" in action && action.again) again.set(callId, { name: action.call, args: action.args ?? {}, callId, ...(nests ? {} : { replayed: true as const }) });
+        else await append(FAUX_RECORDS.result, { callId, interrupted: true });
       }
       const tools = new Map<string, HostTool>(spec.tools.map((tool) => [tool.name, tool]));
       /** The calls an action asks for, under their ids: a response's several calls, one call, or a submission. */
@@ -186,9 +201,10 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       // Each keeps its own text (`say`) unless it was said already (FAUX_RECORDS.said: the call that parked said its text
       // before its gate).
       const saidAlready = new Set(records.filter((r) => r.kind === FAUX_RECORDS.said).map((r) => (r.data as { callId: string }).callId));
-      let dangling = state === "open_turn" && answered.has(cursor - 1)
+      // The cut calls issued again (`again`, above) come first: they were asked for before any left unstarted.
+      let dangling: { name: string; args: unknown; callId: string; say?: string; replayed?: true }[] = [...again.values(), ...(state === "open_turn" && answered.has(cursor - 1)
         ? callsOf(script[cursor - 1], cursor - 1).filter((call) => !begun.has(call.callId)).map(({ say, ...call }) => ({ ...call, ...(say && !saidAlready.has(call.callId) ? { say } : {}) }))
-        : [];
+        : [])];
       /** What the session has been sent, as a model would be prompted with it. */
       const prompt = records.filter((r) => r.kind === FAUX_RECORDS.user).map((r) => (r.data as { text: string }).text);
       let ending: { promise: Promise<{ status: TurnStatus; error?: string }>; resolve: (end: { status: TurnStatus; error?: string }) => void } | undefined;
@@ -213,10 +229,12 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
       });
       /** One call of the model's: the host's gate first, before anything of it is written (a deny is its answer, in the
        *  gate's words, recorded so it is never asked again; a park holds the turn until it is stopped), then its intent,
-       *  the tool, and its outcome. */
-      const runCall = async (name: string, args: unknown, callId: string, signal: AbortSignal) => {
+       *  the tool, and its outcome. `replayed`: a cut call issued again, its gate told an earlier attempt may have run.
+       *  `dies`: the process stops once the gate has answered, before anything of the call is written. */
+      const runCall = async (name: string, args: unknown, callId: string, signal: AbortSignal, replayed?: true, dies?: true) => {
         const tool = tools.get(name);
-        const refused = tool && io.gate ? await askGate((call) => io.gate!(call), { callId, tool: name, args: (args ?? {}) as Record<string, unknown> }, signal) : undefined;
+        const refused = tool && io.gate ? await askGate((call) => io.gate!(call), { callId, tool: name, args: (args ?? {}) as Record<string, unknown>, ...(replayed ? { replayed } : {}) }, signal) : undefined;
+        if (dies) await hang(signal);
         if (refused) return void (await append(FAUX_RECORDS.result, { callId, isError: true, refused: true }));
         await append(FAUX_RECORDS.call, { callId, name });
         io.onEvent({ type: "tool_start", callId, name, args });
@@ -235,9 +253,9 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
         const signal = AbortSignal.any([io.signal, (turnSignal = new AbortController()).signal]);
         try {
           // A recovered turn: the calls its last request left dangling run first, then the model goes on.
-          for (const { name, args, callId, say } of dangling.splice(0)) {
+          for (const { name, args, callId, say, replayed } of dangling.splice(0)) {
             if (say) await saying(callId, say);
-            await runCall(name, args, callId, signal);
+            await runCall(name, args, callId, signal, replayed);
           }
           for (;;) {
             const action = script[cursor];
@@ -324,7 +342,7 @@ export function fauxAdapter(options: FauxOptions): FauxAdapter {
                   const side = await io.models.beforeRequest({ model: "faux-small", side: true, inputTokensMax: 100 });
                   await io.models.afterRequest({ input: 10, output: 5, usd: action.sideDuring.usd }, side || undefined);
                 }
-                await runCall(name, args, callId, signal);
+                await runCall(name, args, callId, signal, undefined, "call" in action && action.dies ? true : undefined);
               }
               if (bookAfter) await book();
             }

@@ -11,7 +11,8 @@
  * CLI's behavior; none reaches the child unless it is listed here.
  */
 
-import { type ClaudeAgentLogin, loginEnv, loginUser, personHome } from './login.js';
+import { type ClaudeAgentLogin, loginEnv, personHome } from './login.js';
+import { loginUser } from './login-user.js';
 
 /** What never reaches a CLI that runs on a person's login from the app's own variables: a model URL, key or token of
  *  any kind, a refresh token or a token's file descriptor among them. A login handed as a token sets its own
@@ -69,6 +70,12 @@ export interface DurableEnvOptions {
    */
   toolDescriptionMax?: number;
   /**
+   * How long the CLI waits on a streamed answer that sends nothing (`CLAUDE_STREAM_IDLE_TIMEOUT_MS`; the CLI's own
+   * floor is 5 minutes, its ceiling 30). Unset: the CLI's default, 5 minutes, after which it drops the stream and asks
+   * again without streaming.
+   */
+  streamIdleMs?: number;
+  /**
    * The most tokens an MCP tool's result may take (`MAX_MCP_OUTPUT_TOKENS`). Past it the CLI saves the result to a file
    * and tells the model to read it, or cuts a result that holds an image; its default is 25,000.
    */
@@ -86,7 +93,7 @@ export interface DurableEnvOptions {
  *   cache dirs, which the relay wipes before every spawn (`/var/lib/dh/s`),
  *   but `HOME` on macOS on a login: the person's (login.ts personHome);
  * - on a login, `USER` and `LOGNAME`: the user this process runs as
- *   (login.ts loginUser), the account of the login's Keychain item on macOS;
+ *   (login-user.ts loginUser), the account of the login's Keychain item on macOS;
  * - the projects key fixed (`CLAUDE_CODE_PROJECT_DIR_NAME`), so a transcript
  *   resumes on any VM, whatever the cwd;
  * - the model through the VM's model port, with the attach's key; the
@@ -127,7 +134,7 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
     // session's it finds none and reads signed out. Its config, XDG and temporary dirs stay the session's.
     HOME: options.login && platform === 'darwin' ? personHome(options.login) : home,
     // On a login, the user it is the login of: on macOS the CLI names the Keychain item's account by USER, and with
-    // none it reads the account "unknown", not the one the sign-in saved the tokens under (login.ts loginUser).
+    // none it reads the account "unknown", not the one the sign-in saved the tokens under (login-user.ts loginUser).
     ...(options.login ? loginUser() : {}),
     TMPDIR: options.tmpDir,
     CLAUDE_CONFIG_DIR: options.configDir,
@@ -154,6 +161,7 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
     CLAUDE_AGENT_SDK_CLIENT_APP: 'agentrun-claude-agent',
   });
   if (options.toolDescriptionMax !== undefined && options.toolDescriptionMax > MCP_DESCRIPTION_CUT) env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(options.toolDescriptionMax);
+  if (options.streamIdleMs !== undefined) env.CLAUDE_STREAM_IDLE_TIMEOUT_MS = String(Math.max(1, Math.floor(options.streamIdleMs)));
   if (options.mcpOutputTokens !== undefined) env.MAX_MCP_OUTPUT_TOKENS = String(Math.max(1, Math.floor(options.mcpOutputTokens)));
   if (options.bashTimeoutMs !== undefined) {
     const max = Math.max(1_000, Math.floor(options.bashTimeoutMs));

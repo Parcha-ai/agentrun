@@ -465,8 +465,8 @@ export interface StartDeps {
     hold?(input: { runId: string; agentId: string }): Promise<SourceIOReceipt>;
     place(input: { hold?: SourceIOReceipt; runId: string; agentId: string; revision: Pick<NewRevision, "id" | "kind" | "body">; launch: RunLaunch }): Promise<{ readonly launch: RunLaunch; undo(): Promise<void>; admitted?(): Promise<void> } | undefined>;
   };
-  /** Where a revision naming these tools and no place runs here (server.ts fallbackPlace). */
-  fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Place;
+  /** Where a revision naming these tools and no place runs here, in the folder mode of now (server.ts fallbackPlace). */
+  fallbackPlace(kind: "agentic" | "workflow", tools: readonly unknown[]): Promise<Place>;
   /** The Archil disk the run's launch record keeps (server.ts launchDiskOf): the one its body's `archil_disk` names, else
    *  its agent's when it has one now; undefined for neither, or in Mode 1. A disk named in Mode 1 is refused. Absent, no
    *  disk is kept. */
@@ -824,7 +824,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // right and before anything is pinned or made for it (runner/presence.ts).
   const refused = await deps.runnersRefused?.();
   if (refused !== undefined) throw new ApiError("runner_refused", refused);
-  const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
+  const place = resolvePlace(rbody.place as Place | undefined, await deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
   // A held computer (computer-held.ts): only one that speaks the protocol, its kind as the claim reads it (the
   // revision's computer, else its place's). Read before the run's check, which defers a held run's model refusal.
   const hold = holdOf(body, (settingOfDefinition(rbody as { computer?: unknown; place?: unknown })?.computer ?? computerOfPlace(place)).kind);

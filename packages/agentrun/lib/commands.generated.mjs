@@ -614,6 +614,16 @@ export const COMMANDS = [
         "description": "Only runs with this status."
       },
       {
+        "name": "scope",
+        "type": "string",
+        "enum": [
+          "active",
+          "review"
+        ],
+        "required": false,
+        "description": "Factory active executions (including archived) or unarchived terminal escalations and failures for this agent, excluding imports. Uses keyset cursors bound to filters; incompatible with status and archived. Default scoped page size 50, maximum 100."
+      },
+      {
         "name": "label",
         "type": "string",
         "required": false,
@@ -2878,6 +2888,29 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "revisions",
+      "skills"
+    ],
+    "operationId": "getRevisionSkills",
+    "method": "GET",
+    "path": "/agents/{agent_id}/revisions/{revision}/skills",
+    "pathParams": [
+      "agent_id",
+      "revision"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Read all skill files saved with one agent revision"
+  },
+  {
+    "command": [
       "runs",
       "archive"
     ],
@@ -3456,6 +3489,16 @@ export const COMMANDS = [
         ],
         "required": false,
         "description": "Only runs with this status."
+      },
+      {
+        "name": "scope",
+        "type": "string",
+        "enum": [
+          "active",
+          "review"
+        ],
+        "required": false,
+        "description": "Factory scope: active includes every nonterminal execution and continuable stopped turn, including archived runs; review selects unarchived terminal escalations and failures separately. Both exclude imported history and use keyset cursors bound to scope, agent and revision. Cannot combine with status or archived. Page limit defaults to 50 (maximum 100). No scope preserves the ordinary history listing."
       },
       {
         "name": "archived",

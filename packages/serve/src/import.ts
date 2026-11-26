@@ -7,7 +7,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
 import { lstat, open, realpath, stat } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { availableParallelism, homedir, tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -184,6 +184,17 @@ export const MAX_SESSION_BYTES = 256 * 1024 * 1024;
 export const MAX_RUN_BYTES = MAX_SESSION_BYTES;
 /** The most projects a count names for the owner to choose from: the latest active. */
 export const MAX_CANDIDATES = 500;
+/** The heap of the worker that counts or imports this machine's sessions, or reads a year of them for Wrapped. A run is
+ *  read whole, at most MAX_RUN_BYTES of files, which this holds several times over. */
+export const IMPORT_HEAP_MB = 2048;
+/** The most threads Wrapped's read of the home starts. */
+const WRAPPED_THREADS = 8;
+
+/** How the import worker reads a year of the home for Wrapped (wrappedHome): on the cores less one, at most
+ *  WRAPPED_THREADS, and with a quarter of the worker's heap for the reads waiting, which it holds. */
+export function wrappedReading(cores = availableParallelism()): { threads: number; readAhead: number } {
+  return { threads: Math.max(1, Math.min(cores - 1, WRAPPED_THREADS)), readAhead: (IMPORT_HEAP_MB / 4) * 2 ** 20 };
+}
 /** The most of one instructions or skill file read, and of one agent's skill files together. */
 export const MAX_FILE_BYTES = 256 * 1024;
 export const MAX_SKILL_BYTES = 1024 * 1024;

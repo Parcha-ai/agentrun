@@ -23,6 +23,7 @@ const { chatAttributes, routeTrace, toolAttributes, tracedModel, USAGE_ATTRIBUTE
 const { keepText, runnerSecrets, secretRedactor } = await import("../dist/runner/redact.js");
 const { hostSecrets, otlpHeaderCut } = await import("../dist/secrets.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { exporterConfig } = await import("../dist/otel/tracer.js");
 const { runEnv } = await import("../dist/runner/main.js");
 const { cliRunEnv } = await import("../dist/runner/cli-run-spec.js");
@@ -732,7 +733,7 @@ const INNER_ROWS = [
   ["a URL nested in another URL's query", `X-Upstream=https://relay.invalid/go?next=https://${innerUserinfo(`u2-${"dummy"}-user`, `p2-${"dummy"}-pass`)}@inner.invalid/`, [`u2-${"dummy"}-user`, `p2-${"dummy"}-pass`], []],
   ["a URL nested in another URL's path", `X-Upstream=https://relay.invalid/go/https://${innerUserinfo(`u3-${"dummy"}-user`, `p3-${"dummy"}-pass`)}@inner.invalid/x`, [`u3-${"dummy"}-user`, `p3-${"dummy"}-pass`], []],
   ["an unquoted URL with a raw ' in its password", `X-Upstream=https://${innerUserinfo(`user-${"dummy"}`, `pa'ss-${"dummy"}-99`)}@host.invalid/`, [`user-${"dummy"}`, `pa'ss-${"dummy"}-99`], []],
-  ["sentry's key between commas written %2C", `X-Sentry-Auth=Sentry sentry_version=7%2C sentry_key=${SENTRY_KEY}%2C sentry_client=x`, [SENTRY_KEY], [`${SENTRY_KEY},`, `${SENTRY_KEY}%2C`]],
+  ["sentry's key between commas written %2C", `X-Sentry-Auth=Sentry sentry_version=7%2C sentry_key=${SENTRY_KEY}%2C sentry_client=x`, [SENTRY_KEY], []],
   ["sentry's key between raw commas", `X-Sentry-Auth=Sentry sentry_version=7, sentry_key=${SENTRY_KEY}, sentry_client=x`, [SENTRY_KEY], [`${SENTRY_KEY},`]],
   ["a scheme-relative URL's user", `X-Upstream=//key-${"dummy"}-1234@host.invalid`, [`key-${"dummy"}-1234`], []],
   ["a JSON-escaped URL's user and password", `X-Upstream=https:\\/\\/${innerUserinfo(`u-${"dummy"}-12`, `p-${"dummy"}-34`)}@host.invalid`, [`u-${"dummy"}-12`, `p-${"dummy"}-34`], []],
@@ -758,15 +759,24 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
     const runner = secretRedactor(runnerSecrets(env))(line);
     if (runner !== cut) missed.push(`${what}: the runner's redactor shows ${runner}`);
   }
-  assert.deepEqual(missed, [], "every credential is held and cut alone; the hostname, a comma after a key and the ordinary words are not");
+  assert.deepEqual(missed, [], "each row's credentials are on both held lists and each is cut alone to [redacted] by the [otel] cut and the runner's redactor; its unheld values (a hostname, a key with the raw comma after it) are on neither list, and the ordinary words are left");
 });
 
 // A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
-// read split at & alone keeps the whole value; read split at ; too, it keeps each pair after a ;. Both readings are held.
+// read split at & alone keeps the whole value, a %2C in it too, and read split at an & or a space written %26 or %20 too,
+// it keeps that value as written before one, and read split at a %26 alone, one with a %20 in it; a value in quotes
+// written %22 or %27 is kept out of them as written too; read split at & and %2C, it keeps the value of a pair in
+// a list joined by %2C; read split at ; too, it keeps each pair after a ;. Every reading is held. A value whose part
+// before its first ; is empty is held after it; a value of only ; is not held.
 // Each row: [what, the env, the credentials held and cut alone, what is on no held list, a line quoting the variable and
 // its cut].
 const SEMI_PREFIX = `prefix-${"dummy"}`;
 const SEMI_WHOLE = `${SEMI_PREFIX};suffix-${"dummy"}`;
+const SEMI_COMMA = `${SEMI_PREFIX}%2Cmid-${"dummy"};suffix-${"dummy"}`;
+const SEMI_SPACED = `${SEMI_PREFIX}%2Cmid-${"dummy"}%20tail-${"dummy"};suffix-${"dummy"}`;
+// A double and a single quote, percent-encoded.
+const QUOTE_22 = "%22";
+const QUOTE_27 = "%27";
 const SEMI_ROWS = [
   [
     "an endpoint's credential parameter with a ; in its value",
@@ -802,6 +812,118 @@ const SEMI_ROWS = [
     [SEMI_WHOLE, SEMI_PREFIX],
     ["us-east-1"],
     [`401 for X-Relay: api_key=${SEMI_WHOLE}&region=us-east-1; region us-east-1`, "401 for X-Relay: [redacted]; region us-east-1"],
+  ],
+  [
+    "a header value's credential pair with a ; in its value, before a %2C pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_WHOLE}%2Cregion=us-east-1` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_WHOLE} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; in its value, before a %2C pair, in a value that can't be decoded",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_WHOLE}%2Cnote=100%` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    [],
+    [`401 from relay: key ${SEMI_WHOLE} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; in its value, after a %2C pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=region=us-east-1%2Capi_key=${SEMI_WHOLE}` },
+    [SEMI_WHOLE, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_WHOLE} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; and a %2C in its value",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_COMMA}&region=us-east-1` },
+    [SEMI_COMMA, decodeURIComponent(SEMI_COMMA), SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${decodeURIComponent(SEMI_COMMA)} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; and a %2C in its value, before an & written %26",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_COMMA}%26region=us-east-1` },
+    [SEMI_COMMA, decodeURIComponent(SEMI_COMMA), SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_COMMA} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; and a %2C in its value, before a space written %20",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_COMMA}%20region=us-east-1` },
+    [SEMI_COMMA, decodeURIComponent(SEMI_COMMA), SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_COMMA} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ;, a %2C and a %20 in its value, before an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_SPACED}&region=us-east-1` },
+    [SEMI_SPACED, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_SPACED} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ;, a %2C and a %20 in its value, before an & written %26",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${SEMI_SPACED}%26region=us-east-1` },
+    [SEMI_SPACED, decodeURIComponent(SEMI_SPACED), SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: key ${decodeURIComponent(SEMI_SPACED)} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; and a %2C in its value, in quotes written %22",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${QUOTE_22}${SEMI_COMMA}${QUOTE_22}&region=us-east-1` },
+    [SEMI_COMMA, decodeURIComponent(SEMI_COMMA)],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_COMMA} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair with a ; and a %2C in its value, in quotes written %27, before an & written %26",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${QUOTE_27}${SEMI_COMMA}${QUOTE_27}%26region=us-east-1` },
+    [SEMI_COMMA, decodeURIComponent(SEMI_COMMA)],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_COMMA} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair whose value starts with a ;",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=token=;${SEMI_WHOLE}&region=us-east-1` },
+    [`;${SEMI_WHOLE}`, SEMI_WHOLE, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: token ${SEMI_WHOLE} refused`, "401 from relay: token [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair whose value starts with a ;, after a %2C pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=region=us-east-1%2Ctoken=;${SEMI_WHOLE}` },
+    [`;${SEMI_WHOLE}`, SEMI_WHOLE, SEMI_PREFIX],
+    ["us-east-1"],
+    [`401 from relay: token ${SEMI_WHOLE} refused`, "401 from relay: token [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair whose value starts with a ; written %3B, in a value that can't be decoded",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=token=%3B${SEMI_WHOLE}&note=100%` },
+    [`;${SEMI_WHOLE}`, SEMI_WHOLE, SEMI_PREFIX],
+    [],
+    [`401 from relay: token ${SEMI_WHOLE} refused`, "401 from relay: token [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair left empty before a ;",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=; theme=dark" },
+    [],
+    [";", "dark"],
+    ["parse error at ; near theme", "parse error at ; near theme"],
+  ],
+  [
+    "a header value's credential pair holding a lone quote",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=' theme=dark" },
+    [],
+    ["'", "dark"],
+    ["parse error at ' near theme", "parse error at ' near theme"],
+  ],
+  [
+    "a header value's credential pair holding a lone quote written %27",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=token=%27 theme=dark" },
+    [],
+    ["'", "%27", "dark"],
+    ["parse error at ' near theme", "parse error at ' near theme"],
   ],
 ];
 
@@ -1159,6 +1281,34 @@ test("no OTEL_* setting reaches a run: the run environment and a CLI's have none
   assert.deepEqual(exporterConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://c/traces", OTEL_EXPORTER_OTLP_TIMEOUT: "500" }), { url: "http://c/traces", headers: {}, timeoutMillis: 500 });
 });
 
+test("an OTLP endpoint with a user, password, query or fragment is refused by name, its origin alone said; http stays, as OTLP allows", () => {
+  const FAKE = "not-a-secret";
+  const credentialed = "https://agent:" + FAKE + "@collector.example";
+  for (const variable of ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]) {
+    for (const url of [credentialed, "https://collector.example/?key=not-a-secret", "https://collector.example/#not-a-secret"]) {
+      assert.throws(() => exporterConfig({ [variable]: url }), (error) => {
+        assert.match(error.message, new RegExp(`^${variable} `), url);
+        assert.match(error.message, /https:\/\/collector\.example/, url);
+        assert.doesNotMatch(error.message, /not-a-secret|key=|agent:/, url);
+        return true;
+      }, `${variable}=${url}`);
+    }
+  }
+  assert.equal(exporterConfig({ OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318" }).url, "http://localhost:4318/v1/traces", "a local collector over http");
+  assert.equal(exporterConfig({ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector.example:4318/v1/traces" }).url, "http://collector.example:4318/v1/traces");
+});
+
+test("the exporter's URL: the endpoint as the rule normalized it plus /v1/traces, so an empty query or fragment never holds the path; a traces endpoint, checked, as given", () => {
+  for (const [env, url] of [
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example/?" }, "https://collector.example/v1/traces"],
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: "https://collector.example/otlp/#" }, "https://collector.example/otlp/v1/traces"],
+    [{ OTEL_EXPORTER_OTLP_ENDPOINT: "HTTPS://Collector.Example:443/" }, "https://collector.example/v1/traces"],
+    // The spec uses a signal's own endpoint as it is: a collector or proxy may tell /ingest/ from /ingest.
+    [{ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example/ingest/" }, "https://collector.example/ingest/"],
+    [{ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "https://collector.example/v1/traces?" }, "https://collector.example/v1/traces?"],
+  ]) assert.equal(exporterConfig(env).url, url, JSON.stringify(env));
+});
+
 test("pi: a native extension's tool and a session's native tool each have one execute_tool span, as a host tool has, none twice", { timeout: 90_000 }, async (t) => {
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
@@ -1170,7 +1320,7 @@ test("pi: a native extension's tool and a session's native tool each have one ex
   const script = [{ calls: [{ call: "browse" }, { call: "ask_person" }, { call: "write" }] }, { say: "done" }];
   const createLoop = createAdapterLoop(
     (_claim, run) => ({
-      adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script), price: () => 0, extensions: [defineExtension({ name: "native-browse", tools: [browse] })], tools: [ask] }),
+      adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, fetch: scriptedOrigin(script), price: () => 0, extensions: [defineExtension({ name: "native-browse", tools: [browse] })], tools: [ask] }),
       session: { key: "root", label: "root", system: ["Follow the script."], tools: [write], context: "fresh" },
       input: "Follow the script.",
       hooks: quiet,

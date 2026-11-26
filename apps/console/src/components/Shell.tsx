@@ -1,16 +1,17 @@
-import { Brain, CalendarClock, ChevronDown, Code, Hammer, History, LayoutGrid, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sparkles, Sun } from "lucide-react";
+import { BadgeDollarSign, Brain, CalendarClock, Code, Factory, History, LayoutGrid, LayoutTemplate, LogOut, Menu, Monitor, Moon, Settings, Sparkles, Sun } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ConnectionBanner } from "@/components/Connection";
 import { DojoIcon } from "@/components/DojoIcon";
+import { Wordmark } from "@/components/Wordmark";
 import { Button, NavItem } from "@/components/ui";
 import { cn } from "@/lib/utils";
 import { applyTheme, currentTheme, saveTheme, type Theme, THEMES } from "@/lib/theme";
 
-export type Section = "mission" | "playground" | "agents" | "runs" | "dojo" | "templates" | "suggestions" | "triggers" | "wrapped" | "settings";
+export type Section = "mission" | "factory" | "playground" | "agents" | "runs" | "dojo" | "templates" | "suggestions" | "triggers" | "wrapped" | "settings" | "free";
 
 /** Each section as the browser's tab names it. */
-const PLACES: Record<Section, string> = { mission: "Mission Control", playground: "Playground", agents: "Agents", runs: "Runs", dojo: "Dojo", templates: "Templates", suggestions: "Suggested agents", triggers: "Triggers", wrapped: "Wrapped", settings: "Settings" };
-const ROUTES: Record<Section, string> = { mission: "#/", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", suggestions: "#/suggestions", triggers: "#/triggers", wrapped: "#/wrapped", settings: "#/settings/keys" };
+const PLACES: Record<Section, string> = { mission: "Mission Control", factory: "Agent Factory", playground: "Playground", agents: "Agents", runs: "Runs", dojo: "Dojo", templates: "Templates", suggestions: "Suggested agents", triggers: "Triggers", wrapped: "Wrapped", settings: "Settings", free: "Free" };
+const ROUTES: Record<Section, string> = { mission: "#/", factory: "#/factory", playground: "#/playground", agents: "#/agents", runs: "#/runs", dojo: "#/dojo", templates: "#/templates", suggestions: "#/suggestions", triggers: "#/triggers", wrapped: "#/wrapped", settings: "#/settings/keys", free: "#/free" };
 const THEME_LABEL: Record<Theme, [string, typeof Brain]> = { system: ["System", Monitor], light: ["Light", Sun], dark: ["Dark", Moon] };
 
 /** System (the OS's), Light or Dark: a pick shows at once and is kept in this browser (lib/theme). */
@@ -33,18 +34,11 @@ function ThemeSwitch() {
   );
 }
 
-export function Wordmark() {
-  return <span className="inline-flex items-center whitespace-nowrap text-lg font-semibold font-mono" aria-label="AgentRun">
-    <svg viewBox="0 0 64 64" className="mr-1 size-4 text-primary-text" aria-hidden><path d="M18 12L42 32L18 52" fill="none" stroke="currentColor" strokeWidth="8" strokeLinecap="square" strokeLinejoin="miter" /></svg>
-    agent<span className="text-primary-text">.run()</span>
-  </span>;
-}
-
-export type ShellProps = { active: Section; settings?: boolean; triggers?: boolean; banners?: ReactNode; building?: boolean; onBuild?: () => void; onNavigate?: (s: Section) => void; onSignOut?: () => void; onSignOutEverywhere?: () => void; children: ReactNode };
+export type ShellProps = { active: Section; settings?: boolean; triggers?: boolean; banners?: ReactNode; onNavigate?: (s: Section) => void; onSignOut?: () => void; onSignOutEverywhere?: () => void; children: ReactNode };
 
 /** The hosted console's workspace shell, with only destinations this server supports. The logo row aligns with
- * the 48px page toolbar. Agent creation, management and history share the expandable Agents section. */
-export function Shell({ active, settings = false, triggers = false, banners, building = false, onBuild, onNavigate, onSignOut, onSignOutEverywhere, children }: ShellProps) {
+ * the 48px page toolbar. Agents, Templates and Runs are direct destinations in the sidebar. */
+export function Shell({ active, settings = false, triggers = false, banners, onNavigate, onSignOut, onSignOutEverywhere, children }: ShellProps) {
   const [open, setOpen] = useState(false);
   const [everywhere, setEverywhere] = useState(false);
   // The keyboard's place: the confirm opens on Cancel, and Cancel or Escape gives the focus back to its trigger.
@@ -56,11 +50,7 @@ export function Shell({ active, settings = false, triggers = false, banners, bui
     else if (reopened.current) trigger.current?.focus();
   }, [everywhere]);
   const closeEverywhere = () => { reopened.current = true; setEverywhere(false); };
-  const [agentsExpanded, setAgentsExpanded] = useState(true);
-  const agentsActive = active === "agents" || active === "runs" || active === "templates" || active === "suggestions";
-  useEffect(() => { if (agentsActive || building) setAgentsExpanded(true); }, [active, building]);
   const navigate = (section: Section) => { if (onNavigate) onNavigate(section); else location.hash = ROUTES[section]; setOpen(false); };
-  const build = () => { if (onBuild) onBuild(); else location.hash = "#/agents/new"; setOpen(false); };
   // The browser's tab names the place: "Runs · AgentRun".
   const place = PLACES[active];
   useEffect(() => { document.title = place ? `${place} · AgentRun` : "AgentRun"; }, [place]);
@@ -79,19 +69,13 @@ export function Shell({ active, settings = false, triggers = false, banners, bui
         <nav aria-label="Navigation" className="flex min-h-0 flex-1 flex-col overflow-y-auto px-3 pt-3">
           <div className="space-y-0.5">
             <NavItem className="w-full" active={active === "mission"} onClick={() => navigate("mission")}><LayoutGrid className="size-4 shrink-0" aria-hidden />Mission Control</NavItem>
+            <NavItem className="w-full" active={active === "factory"} onClick={() => navigate("factory")}><Factory className="size-4 shrink-0" aria-hidden />Agent Factory</NavItem>
             <NavItem className="w-full" active={active === "playground"} onClick={() => navigate("playground")}><Code className="size-4 shrink-0" aria-hidden />API playground</NavItem>
-            <div>
-              <NavItem className={cn("w-full", agentsActive && "text-primary-text")} aria-expanded={agentsExpanded} aria-controls="agent-navigation" onClick={() => setAgentsExpanded((value) => !value)}>
-                <Brain className="size-4 shrink-0" aria-hidden /><span className="flex-1">Agents</span><ChevronDown className={cn("size-3.5 transition-transform", !agentsExpanded && "-rotate-90")} aria-hidden />
-              </NavItem>
-              <div id="agent-navigation" hidden={!agentsExpanded} className="space-y-0.5">
-                <NavItem className="w-full pl-8" active={building} onClick={build}><Hammer className="size-3.5 shrink-0" aria-hidden />Build</NavItem>
-                <NavItem className="w-full pl-8" active={active === "suggestions"} onClick={() => navigate("suggestions")}><Sparkles className="size-3.5 shrink-0" aria-hidden />Suggested</NavItem>
-                <NavItem className="w-full pl-8" active={active === "agents" && !building} onClick={() => navigate("agents")}><Brain className="size-3.5 shrink-0" aria-hidden />Connected agents</NavItem>
-                <NavItem className="w-full pl-8" active={active === "templates"} onClick={() => navigate("templates")}><LayoutTemplate className="size-3.5 shrink-0" aria-hidden />Templates</NavItem>
-                <NavItem className="w-full pl-8" active={active === "runs"} onClick={() => navigate("runs")}><History className="size-3.5 shrink-0" aria-hidden />Runs</NavItem>
-              </div>
-            </div>
+            <NavItem className="w-full" active={active === "free"} onClick={() => navigate("free")}><BadgeDollarSign className="size-4 shrink-0" aria-hidden />Free</NavItem>
+            <NavItem className="w-full" active={active === "agents"} onClick={() => navigate("agents")}><Brain className="size-4 shrink-0" aria-hidden />Agents</NavItem>
+            <NavItem className="w-full" active={active === "suggestions"} onClick={() => navigate("suggestions")}><Sparkles className="size-4 shrink-0" aria-hidden />Suggested</NavItem>
+            <NavItem className="w-full" active={active === "templates"} onClick={() => navigate("templates")}><LayoutTemplate className="size-4 shrink-0" aria-hidden />Templates</NavItem>
+            <NavItem className="w-full" active={active === "runs"} onClick={() => navigate("runs")}><History className="size-4 shrink-0" aria-hidden />Runs</NavItem>
             {triggers && <NavItem className="w-full" active={active === "triggers"} onClick={() => navigate("triggers")}><CalendarClock className="size-4 shrink-0" aria-hidden />Triggers</NavItem>}
             <NavItem className="w-full" active={active === "dojo"} onClick={() => navigate("dojo")}><DojoIcon size={16} className="shrink-0" />Learning Dojo</NavItem>
           </div>

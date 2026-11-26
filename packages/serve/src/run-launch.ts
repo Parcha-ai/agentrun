@@ -64,7 +64,7 @@ export interface RunLaunch {
    *  The control marker is outside the run's tool workspace. No source path or credential is kept in this record. */
   readonly sourceProject?: SourceProjectLaunch;
   /** The run's learning start, when its agent learns and the server's learning is on, decided once here so the runner reads
-   *  no learning folder or git: `seed`, the learning commit's sha (or null when the seed could not be read); `section`,
+   *  no learning rows: `seed`, the learning save's id (or null when the seed could not be read); `section`,
    *  the exact # Learned text to lay into the prompt (its owner's corrections, learning.ts learnedSection); `workflows`,
    *  the names of the learned workflows the seed offers the run (chooseWorkflows), absent when none; `noWorkflows`, a run
    *  never answered by a learned workflow and asked for no workflow draft at its end (a native run, an SDK run with no
@@ -263,7 +263,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
   const model = readModel(stored.model);
   const boxAllow = readBoxAllow(stored.box_allow);
   const archilDisk = readDisk(stored.archil_disk);
-  const refused = isObject(stored.hold) ? readRefusal(stored.hold.refused) : undefined;
+  const hold = readHold(stored.hold);
   return {
     input: stored.input,
     ...(isObject(stored.sdk) && sdkBindingOf(stored.sdk) && typeof stored.sdk.instructions === "string" ? {sdk: stored.sdk as unknown as NonNullable<RunLaunch["sdk"]>} : {}),
@@ -292,16 +292,29 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(inputOrigin ? { inputOrigin } : {}),
     ...(stored.follow_up === true ? { followUp: true } : {}),
     ...(archilDisk ? { archilDisk } : {}),
-    ...(isObject(stored.hold) ? { hold: { minutes: typeof stored.hold.minutes === "number" ? stored.hold.minutes : HOLD_MINUTES, ...(refused ? { refused } : {}) } } : {}),
+    ...(hold ? { hold } : {}),
   };
 }
+
+/** A launch's hold as it keeps it, else undefined (none kept). A minutes that isn't a number waits HOLD_MINUTES. A hold
+ *  kept that is not an object (a corrupt row, another version's) is a hold whose model was refused, in words that name
+ *  the field and never what it holds: read as none, the run would start and its claim open its model's keys. */
+function readHold(value: unknown): RunLaunch["hold"] {
+  if (value === undefined) return undefined;
+  if (!isObject(value)) return { minutes: HOLD_MINUTES, refused: unreadable("hold") };
+  const refused = readRefusal(value.refused);
+  return { minutes: typeof value.minutes === "number" ? value.minutes : HOLD_MINUTES, ...(refused ? { refused } : {}) };
+}
+
+/** The refusal of a held run whose launch's `field` can't be read. */
+const unreadable = (field: string): HeldRefusal => ({ message: `This run's model was kept from running at its create, and its launch's ${field} can't be read: it holds its computer only. Start a new run to run its agent.`, fields: [], details: {} });
 
 /** A held run's model refusal as its launch keeps it, else undefined (none kept). One kept that can't be read (a corrupt
  *  row, another version's) is a refusal still, in words that name the field and never what it holds: read as none, the
  *  run would start and its claim open the keys its model was refused for. */
 function readRefusal(value: unknown): HeldRefusal | undefined {
   if (value === undefined) return undefined;
-  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return { message: "This run's model was kept from running at its create, and its launch's hold.refused can't be read: it holds its computer only. Start a new run to run its agent.", fields: [], details: {} };
+  if (!isObject(value) || typeof value.message !== "string" || !Array.isArray(value.fields) || !isObject(value.details)) return unreadable("hold.refused");
   return { message: value.message, fields: value.fields as InputIssue[], details: value.details };
 }
 
@@ -312,9 +325,9 @@ export const learningStartOf = (launch: RunLaunch): RunLaunch["learning"] => lau
 /** The same start read from a launch body's `learning` member alone (Store.runs.learningStarts), as readLaunchBody reads it. */
 export const learningStartOfStored = (stored: unknown): RunLaunch["learning"] => (stored === undefined ? undefined : readLearning(stored) ?? { seed: null, section: "" });
 
-/** Why a learning run starts with nothing learned, as main says it: its agent's learning folder could not be read
+/** Why a learning run starts with nothing learned, as main says it: its agent's learning could not be read
  *  (`unreadable`, STOPPED.unreadable), what was read could not be made into its start (`not_copied`,
- *  STOPPED.notCopied), or its launch names a disk of its own, whose learning folder the server does not read
+ *  STOPPED.notCopied), or its launch names a disk of its own, whose learning the server does not read
  *  (`other_disk`, STOPPED.otherDisk): a run on a named disk learns nothing (learn/learning-of.ts). */
 export type SeedFailed = "unreadable" | "not_copied" | "other_disk";
 const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied", "other_disk"];

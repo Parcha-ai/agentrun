@@ -10,6 +10,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { servedGraphView } from "../dist/graph-served.js";
 import { redacted, redactedCall, withheldWhole } from "../dist/key-refusal.js";
 import { withLiveTicker } from "../dist/runner/live-ticker.js";
+import { heldRedactor } from "../dist/runner/redact.js";
 import { prepareLaunch } from "../dist/runs-over-store.js";
 import { SdkRuns, sdkInbox } from "../dist/sdk/runs.js";
 import { viewOverStore } from "../dist/store-view.js";
@@ -125,6 +126,38 @@ test("a read with no calls (the run's view, its Timeline): a held value split ac
   }
   // A held value whole in one argument is cut in place there too (control).
   assert.equal(rowOf(read({ command: `echo ${KEY}` }), "tool_use").tool_input_preview, "echo [redacted]");
+});
+
+test("a held value split by a control character in a call's argument (JSON's \\u0000 on the wire) or in its result: tool_input is withheld, its preview \"[redacted]\", the result \"[redacted]\", and the grader's prompt shows no half", () => {
+  for (const control of ["\u0000", "\u0001", "\u001b", "\u001f", "\u007f"]) {
+    const rows = rowsOf("bash", { command: `echo ${HEAD}${control}${REST}` }, "ok");
+    const use = rowOf(rows, "tool_use");
+    assert.equal(use.tool_input, undefined, JSON.stringify(control));
+    assert.equal(use.tool_input_preview, "[redacted]", JSON.stringify(control));
+    assert.deepEqual(shows(JSON.stringify(rows)), [], JSON.stringify(control));
+    assert.deepEqual(shows(promptOf(rows)), [], JSON.stringify(control));
+    const read = rowsOf("read", { path: "notes.txt" }, `see ${HEAD}${control}${REST} more`);
+    assert.equal(rowOf(read, "tool_result").tool_result_text, "[redacted]", JSON.stringify(control));
+    assert.deepEqual(shows(JSON.stringify(read)), [], JSON.stringify(control));
+  }
+  // Control: a control after the value's head with no rest after it keeps the call's arguments as they came.
+  assert.deepEqual(rowOf(rowsOf("bash", { command: `echo ${HEAD}\u0000 done` }, "ok"), "tool_use").tool_input, { command: `echo ${HEAD}\u0000 done` });
+});
+
+test("a held value split by U+FFFF in a call's argument (as it stands, or JSON's \\uffff on the wire) or in its result: tool_input is withheld, its preview \"[redacted]\", the result \"[redacted]\", and the grader's prompt shows no half", () => {
+  for (const command of [`echo ${HEAD}\uffff${REST}`, `echo ${HEAD}\\uffff${REST}`]) {
+    const rows = rowsOf("bash", { command }, "ok");
+    const use = rowOf(rows, "tool_use");
+    assert.equal(use.tool_input, undefined, JSON.stringify(command));
+    assert.equal(use.tool_input_preview, "[redacted]", JSON.stringify(command));
+    assert.deepEqual(shows(JSON.stringify(rows)), [], JSON.stringify(command));
+    assert.deepEqual(shows(promptOf(rows)), [], JSON.stringify(command));
+  }
+  const read = rowsOf("read", { path: "notes.txt" }, `see ${HEAD}\uffff${REST} more`);
+  assert.equal(rowOf(read, "tool_result").tool_result_text, "[redacted]");
+  assert.deepEqual(shows(JSON.stringify(read)), [], "the result");
+  // Control: U+FFFF after the value's head with no rest after it keeps the call's arguments as they came.
+  assert.deepEqual(rowOf(rowsOf("bash", { command: `echo ${HEAD}\uffff done` }, "ok"), "tool_use").tool_input, { command: `echo ${HEAD}\uffff done` });
 });
 
 test("a held value whole in one argument is cut in place: tool_input keeps the call's shape (control)", () => {
@@ -318,7 +351,7 @@ async function liveArgsOf(args) {
   }), { tickMs: 3_600_000 });
   let release = () => {};
   const held = new Promise((resolve) => (release = resolve));
-  const loop = ticker.createLoop({ signal: new AbortController().signal, redact: { heldValues: () => SECRETS } });
+  const loop = ticker.createLoop({ signal: new AbortController().signal, redact: heldRedactor(Object.assign((text) => text, { heldValues: () => SECRETS })) });
   const started = loop.start({ runId: "run-1" });
   await ticker.close();
   release();
@@ -447,8 +480,8 @@ async function sdkWorkflowRunOf(t) {
   const server = await serve(t, { runner: false });
   const workflow = { v: 2, name: "release", schemas: { In: { type: "object" }, Out: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" }, root: { node: "call", label: "status", via: "tool", tool: STATUS, args: {}, out: "Out", as: "answer", deadline_s: 5 } };
   assert.equal((await server.api("POST", "/agents", { definition: { id: "sdk-flow", name: "SDK flow", instructions: "Read release status.", sdk: { runtime: "claude-agent-sdk" }, learning: true, tools: [] } })).status, 201);
-  await landWorkflows(server.data, "sdk-flow", [{ name: "release", description: "Read release status.", workflow }]);
-  await promoteChecked(server.store.settings, "sdk-flow", [{ name: "release", workflow }]);
+  await landWorkflows(server.store, "sdk-flow", [{ name: "release", description: "Read release status.", workflow }]);
+  await promoteChecked(server.store, "sdk-flow", [{ name: "release", workflow }]);
   const started = await server.api("POST", "/agents/sdk-flow/sdk-runs", { runtime: "claude-agent-sdk", input: "Read release status.", instructions: "Read release status.", workflow_tools: [{ name: STATUS, description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 }] }, { "Idempotency-Key": "flow" });
   assert.equal(started.status, 201, JSON.stringify(started.body));
   assert.deepEqual(started.body.learning.workflows.map((flow) => flow.name), ["release"]);

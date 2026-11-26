@@ -20,17 +20,16 @@ export type Definition = { native?: NativeBinding; version: number; approvals?: 
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
 export type SaveWarning = NonNullable<Agent["warnings"]>[number];
 export type { Agent };
-export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
+export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { skillFiles?: Record<string, string>; workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; the name stays as the agent was created,
  *  and a changed description is sent (serve writes it with the new revision). Every field the
  *  form does not show (schemas, tools, a workflow, connection references) is kept as it is, never dropped. A workflow
- *  revision keeps no thinking level (the server refuses one). Skill files are not sent, so they stay as they are. */
-export function editBody(agent: Agent, fields: AgentFields, note: string): { definition: Definition; note?: string; unchanged: boolean } {
+ *  revision keeps no thinking level (the server refuses one). Untouched skill files are omitted; an edited file set is sent whole, including supporting files. */
+export function editBody(agent: Agent, fields: AgentFields, note: string, originalSkills?: Record<string, string>): { definition: Definition; skills?: Record<string, string>; note?: string; unchanged: boolean } {
   // The agent store keeps an agent's id and name from its creation: an edit never sends a changed one.
-  const { name: _name, ...editable } = fields as AgentFields & { id?: string };
-  const edited: Definition = { ...agent.definition, ...editable };
-  // An agent with no description, left blank in the form, still has none: not a change.
+  const { name: _name, skillFiles, ...editable } = fields as AgentFields & { id?: string };
+  const edited: Definition = { ...agent.definition, ...editable, ...(skillFiles !== undefined ? { skills: skillNames(skillFiles) } : {}) };
   if (edited.description === "" && agent.definition.description === undefined) delete edited.description;
   // The computer is the setting; place is the server's view of it. A definition with a computer goes without its place,
   // which would still say the old computer after a change (the server writes place from computer).
@@ -59,10 +58,13 @@ export function editBody(agent: Agent, fields: AgentFields, note: string): { def
     if (computer !== undefined) { compared.computer = computer; delete compared.place; }
     return compared;
   };
-  const unchanged = same(comparable(edited), comparable(current));
+  const unchanged = same(comparable(edited), comparable(current)) && (skillFiles === undefined || same(skillFiles, originalSkills));
   edited.version = unchanged ? agent.definition.version : agent.revisions + 1;
-  return { definition: edited, ...(note.trim() ? { note: note.trim() } : {}), unchanged };
+  return { definition: edited, ...(skillFiles !== undefined ? { skills: skillFiles } : {}), ...(note.trim() ? { note: note.trim() } : {}), unchanged };
 }
+
+/** The skill names represented by the complete file set; supporting files remain beside each SKILL.md. */
+export const skillNames = (files: Record<string, string>) => Object.keys(files).filter(path => path.endsWith("/SKILL.md")).map(path => path.slice(0, -"/SKILL.md".length)).sort();
 
 /** Deep equality of two JSON values, whatever their keys' order. */
 export function same(a: unknown, b: unknown): boolean {
@@ -103,21 +105,22 @@ export function decisionProvider(workflows: { adapters?: string[]; decisions?: {
  *  to edit, never empty. Harness-neutral, one sentence. */
 export const DEFAULT_INSTRUCTIONS = "You are a helpful agent. Do the task you're given and report what you found.";
 
-/** The body that creates an agent: its first revision, with what the form names and no skills yet. A starter choice
+/** The body that creates an agent: its first revision, with what the form names and any custom skill files. A starter choice
  *  (Decision, Workflow) makes a workflow agent from that starter (Decision's on the server's decision provider), with no
  *  instructions, harness, thinking, model or tools: a workflow revision keeps none of those beside its workflow. */
-export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: LearningSetting; decisionProvider?: string; tool_settings?: ToolSettings; computer?: Computer; max_cost_usd?: number }): { definition: Definition } {
+export function createBody(f: { name: string; description: string; instructions: string; harness: string; tools: string[]; approvals?: Approvals; thinking?: string; model?: string; learning?: LearningSetting; decisionProvider?: string; tool_settings?: ToolSettings; computer?: Computer; max_cost_usd?: number; skillFiles?: Record<string, string> }): { definition: Definition; skills?: Record<string, string> } {
   if (isStarter(f.harness)) {
-    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: [], tools: [] } };
+    return { definition: { version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), workflow: STARTERS[f.harness]!(f.decisionProvider), skills: skillNames(f.skillFiles ?? {}), tools: [] }, ...(f.skillFiles !== undefined ? { skills: f.skillFiles } : {}) };
   }
   return {
     definition: {
       version: 1, name: f.name, ...(f.description.trim() ? { description: f.description } : {}), instructions: f.instructions, harness: f.harness,
-      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.computer ? { computer: f.computer } : {}), ...(f.learning ? { learning: f.learning } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: [], tools: f.tools,
+      ...(f.thinking ? { thinking: f.thinking } : {}), ...(f.model?.trim() ? { model: f.model.trim() } : {}), ...(f.computer ? { computer: f.computer } : {}), ...(f.learning ? { learning: f.learning } : {}), ...(f.max_cost_usd !== undefined ? { max_cost_usd: f.max_cost_usd } : {}), skills: skillNames(f.skillFiles ?? {}), tools: f.tools,
       ...(f.tool_settings && Object.keys(f.tool_settings).length ? { tool_settings: f.tool_settings } : {}),
       // Approvals: sent only when it never asks (ask is the server's default).
       ...(f.approvals === "never" ? { approvals: "never" as const } : {}),
     },
+    ...(f.skillFiles !== undefined ? { skills: f.skillFiles } : {}),
   };
 }
 
@@ -188,11 +191,14 @@ export function toolsOnSwitch(harness: string, tools: readonly string[], held: r
 }
 
 /** Why `tool` cannot be ticked on an agent whose definition names `place`: a sandbox-only tool (bash) runs in a box, and
- *  this form shows no place, so a new agent's is the runner; a runner-only one (the browser) runs on the server, and the
- *  agent's place is a box. Undefined when it can be ticked. */
-export const sandboxReason = (tool: ToolOffer, place: unknown): string | undefined => {
-  const where = place as { mode?: unknown; box?: unknown } | undefined;
-  if (tool.sandbox_only && where?.mode !== "sandbox") return "Sandbox-only: it runs in a box, and this agent's place is the runner";
+ *  the agent's place is the runner (unless it is one of `runnerShell`, those the agent's run shell runs there, as its
+ *  computer is: computers.ts runnerShellOf), or it has none (null: the server has no default place, so a box is to be
+ *  chosen); a runner-only one (the browser) runs on the server, and the agent's place is a box. Undefined when it can be
+ *  ticked. */
+export const sandboxReason = (tool: ToolOffer, place: unknown, runnerShell: ReadonlySet<string>): string | undefined => {
+  const where = place as { mode?: unknown; box?: unknown } | null | undefined;
+  if (tool.sandbox_only && where === null) return "Sandbox-only: it runs in a box, and this agent has no place yet: choose a box under Where it runs";
+  if (tool.sandbox_only && where?.mode !== "sandbox" && !runnerShell.has(tool.name)) return "Sandbox-only: it runs in a box, and this agent's place is the runner";
   if (tool.runner_only && where?.mode === "sandbox") return `Server-only: it runs on the server, and this agent's place is ${typeof where.box === "string" && where.box ? `the ${where.box} box` : "a box"}`;
   return undefined;
 };
@@ -208,16 +214,18 @@ const SANDBOX_ONLY: ReadonlySet<string> = new Set(["bash", "bash_background", "b
 /** Where a revision that names no place runs, as the server resolves it at each run: this mirrors the server's
  *  defaultPlaceOf (packages/serve/src/place.ts), which the server does not report per revision. The runner for a workflow,
  *  for one whose tools need no shell, and for one that names a tool that runs only there (the browser); else this
- *  server's default_place. The editor's picker and its tool checks both read it, so they agree with the server and with
- *  each other. */
-export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place =>
+ *  server's default_place, null where it has none (the server refuses such a revision's save and its run: it names a box
+ *  or the runner). The editor's picker and its tool checks both read it, so they agree with the server and with each
+ *  other. */
+export const defaultPlaceOf = (workflow: boolean, tools: readonly string[], places: Places | null | undefined): Place | null =>
   workflow || tools.some((tool) => RUNNER_ONLY.has(tool)) || !tools.some((tool) => SANDBOX_ONLY.has(tool)) || !places ? { mode: "runner" } : places.defaultPlace;
 
 /** Where an agent's current revision runs: its own place, else where the server resolves one that names none
- *  (defaultPlaceOf), with `byDefault` saying so. Undefined for a revision that names no place while the server's places are
- *  not read yet (and it names a shell tool and no runner-only one), whose place is not known. The agent page's fact and
- *  the Learning tab's host-bash line both read it. */
-export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Places | null | undefined): { place: Place; byDefault: boolean } | undefined {
+ *  (defaultPlaceOf), with `byDefault` saying so; a null place where the server has no default for it (none to run in).
+ *  Undefined for a revision that names no place while the server's places are not read yet (and it names a shell tool and
+ *  no runner-only one), whose place is not known. The agent page's fact and the Learning tab's host-bash line both read
+ *  it. */
+export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Places | null | undefined): { place: Place | null; byDefault: boolean } | undefined {
   const own = placeOf(agent.definition.place);
   if (own) return { place: own, byDefault: false };
   const workflow = agent.kind === "workflow";
@@ -228,8 +236,10 @@ export function runsWhere(agent: Pick<Agent, "kind" | "definition">, places: Pla
 
 /** A new agent's tools: on by default, every tool its harness runs here that the server can run now. In a sandbox `place`
  *  (the server's default for a new agent, where it has a box) a sandbox-only one (bash) too, and never a runner-only one
- *  (browser); on the runner, no sandbox-only one, since the runner has no shell. */
-export const defaultTools = (harness: string, offers: ToolOffer[], place?: Place) => toolsFor(harness, offers).filter((t) => t.available && (place?.mode === "sandbox" ? !RUNNER_ONLY.has(t.name) : !t.sandbox_only)).map((t) => t.name);
+ *  (browser); on the runner, a sandbox-only one only where the agent's run shell runs it there (`runnerShell`:
+ *  computers.ts runnerShellOf, bash on Archil's exec in Mode 2), since in Mode 1 the runner has no shell. */
+export const defaultTools = (harness: string, offers: ToolOffer[], place: Place | undefined, runnerShell: ReadonlySet<string>) =>
+  toolsFor(harness, offers).filter((t) => t.available && (place?.mode === "sandbox" ? !RUNNER_ONLY.has(t.name) : !t.sandbox_only || runnerShell.has(t.name))).map((t) => t.name);
 
 /** The tools that reach the web: a page read (web_fetch) or a search (web_search). The server's capabilities
  *  mark no tool as one, so they are named here. */

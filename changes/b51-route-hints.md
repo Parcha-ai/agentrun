@@ -1,9 +1,0 @@
----
-packages: @parcha/agentrun-serve, @parcha/agentrun-kernel, @parcha/agentrun-harness-claude, @parcha/agentrun-harness-codex, @parcha/agentrun-harness-acp
-kind: fix
----
-A model the runner's route translates onto a harness's wire (this machine's Ollama models on Anthropic's Messages and OpenAI's Responses) is offered only to a harness whose proxy forwards with the route's `fetch`, and the Messages translation no longer drops what it can't run. Before, any harness on the wire was offered those models, including a module that sends its requests to the network, where nothing answers.
-- `AdapterFacts` gains `forwardsRoute`. claude-agent, Goose, codex and opencode set it, and so does every recipe that builds on Goose's facts. A harness without it is offered none of the route's models, takes none as its default, and its words say to add a key ("No model yet for <harness>: add an OpenRouter or Anthropic key"). A run that names one is refused before it starts.
-- An output schema (`output_config.format` of type `json_schema`) on a Messages request with no tools now reaches Ollama as its `format`. Before, it was dropped and the answer came back unconstrained. Beside tools it is refused with a 400 `invalid_request_error` that says to drop the output schema or use a model route that takes tools with a format, because Ollama holds the whole answer to the format and leaves the model no way to call a tool.
-- The Messages translation answers `POST /v1/messages` and `POST /v1/messages/count_tokens` alone. Any other method or path is a 404 `not_found_error` in Anthropic's error shape, and nothing reaches Ollama.
-- `agentrun harness-check` on a model the route translates (`--model ollama/<tag>`) now reaches it. Its recorder wraps the route's own fetch, so the recipe's agent gets the same route a server's run gets and the check still sees every request. Before, every request went to the route's placeholder origin and `mcp_tool` failed.

@@ -199,16 +199,22 @@ test("every provider's descriptor declares network beside mounts: the network fo
 	}
 	// Which provider takes this server's allowlist, read from the descriptors alone: Docker and Local Chrome, each through
 	// its egress proxy, and the hosted computers whose init starts one (Daytona, Modal, E2B, Agent37, Morph, Cloudflare,
-	// Fly Machines, smol cloud, Groundbox); Orgo's adapter starts none, so Orgo declares none alone.
-	assert.deepEqual(lists, ["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "local-chrome", "smolcloud", "groundbox"]);
+	// Fly Machines, Render, smol cloud, Groundbox); Orgo's adapter starts none, so Orgo declares none alone.
+	assert.deepEqual(lists, ["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "local-chrome", "smolcloud", "groundbox"]);
 	assert.deepEqual(index.descriptorOf("orgo").network, ["none"]);
+});
+
+test("at most one provider's descriptor sets defaultBox, the box a new agent that names no place is given, and only as true: a second would leave which box that is to the registry's order", () => {
+	const defaults = index.DESCRIPTORS.filter((descriptor) => "defaultBox" in descriptor);
+	assert.ok(defaults.length <= 1, `one default box at most: ${defaults.map((descriptor) => descriptor.id).join(", ")}`);
+	for (const descriptor of defaults) assert.equal(descriptor.defaultBox, true, `${descriptor.id}'s defaultBox is true or absent`);
 });
 
 test("whether a provider's machines dial the server is its descriptor's connect, read by connectOf without building one, and is what its built host's facts.connect says", async () => {
 	const { connectOf, descriptorOf } = index;
-	// Read from the descriptors alone: Fly and Cloudflare always dial; E2B, Daytona and Modal dial where their connect
-	// option (a server setting) says dial, and reach their machines through the vendor's exec otherwise.
-	assert.deepEqual(providerIds.filter((id) => connectOf(descriptorOf(id)) === "dial"), ["cloudflare", "fly"]);
+	// Read from the descriptors alone: Fly, Cloudflare and Render always dial; E2B, Daytona and Modal dial where their
+	// connect option (a server setting) says dial, and reach their machines through the vendor's exec otherwise.
+	assert.deepEqual(providerIds.filter((id) => connectOf(descriptorOf(id)) === "dial"), ["cloudflare", "fly", "render"]);
 	assert.deepEqual(providerIds.filter((id) => connectOf(descriptorOf(id), { connect: "dial" }) === "dial" && connectOf(descriptorOf(id)) === "exec"), ["daytona", "modal", "e2b"]);
 	for (const id of providerIds) {
 		const either = descriptorOf(id).connect === "either";
@@ -220,6 +226,7 @@ test("whether a provider's machines dial the server is its descriptor's connect,
 	const built = [
 		["fly", { apiToken: "fake-test-key", app: "fake-app" }],
 		["cloudflare", { relayUrl: "https://relay.example.com", relayToken: "fake-test-key" }],
+		["render", { apiKey: "fake-test-key", ownerId: "tea-abcdefghij0123456789" }],
 		["daytona", { apiKey: "fake-test-key" }],
 		["daytona", { apiKey: "fake-test-key", connect: "dial" }],
 	];

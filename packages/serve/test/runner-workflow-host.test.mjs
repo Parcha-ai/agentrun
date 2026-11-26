@@ -12,6 +12,7 @@ import { storeOn } from "./store-helpers.mjs";
 import { answerFlow, FAUX } from "./support.mjs";
 
 const { createWorkflowLoop } = await import("../dist/runner/workflow-loop.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { workflowHost } = await import("../dist/runner/workflow-host.js");
 const { runModels, FAUX_ENV } = await import("../dist/model.js");
 
@@ -38,7 +39,7 @@ test("the host runs a model node on the run's models through the loop, to the ru
       log: (line) => log.push(line),
     }),
   });
-  const loop = createWorkflowLoop(specOf)({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const loop = createWorkflowLoop(specOf)({ redact: heldRedactor((text) => text), journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
 
   assert.deepEqual(await loop.start(claim), { state: "ended" });
   const run = await store.runs.get("run-1");

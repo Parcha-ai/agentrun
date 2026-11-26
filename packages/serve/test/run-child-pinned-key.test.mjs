@@ -22,6 +22,7 @@ const { MODEL_KEY_NAMES } = await import("../dist/runner/claim-secrets.js");
 const { FAUX_ENV } = await import("../dist/model.js");
 const { saveGateway } = await import("../dist/model-gateway.js");
 const { startRunner } = await import("../dist/runner/runner.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
@@ -53,7 +54,7 @@ async function handed(t, { revision, model, saved, env = {}, gateway }) {
   const out = join(data, "handed.bin");
   const deps = { store, data, sealKey: SEAL_KEY, env, computerForClaim: async () => { throw new Error("no computer here"); } };
   const loop = childLoops({ deps, isolation: { kind: "process", why: "a test's runner" }, log: () => {}, argv: [process.execPath, "-e", DUMP, out] })({
-    signal: new AbortController().signal, journal: (claim) => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(),
+    signal: new AbortController().signal, journal: (claim) => store.journal(claim), flush: async () => {}, delivered: Promise.resolve(), redact: heldRedactor((text) => text),
   });
   const claim = await store.claim("run", "fixture", { leaseMs: 60_000 });
   await assert.rejects(loop.start(claim), /ended with its run/);

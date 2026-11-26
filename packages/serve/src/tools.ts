@@ -17,7 +17,7 @@ import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { defineExtension, defineTool, type Extension, type Harness, ROOT_CONVERSATION_ID, type ToolRegistration, type Tx } from "@earendil-works/pi-durable";
 import type { Revision } from "./agent-rows.js";
-import { registerTurnEnding } from "./timeline/index.js";
+import { registerTurnEnding, webCut } from "./timeline/index.js";
 import { BACKGROUND_LOG_BYTES, BACKGROUND_MAX, BACKGROUND_PAGE_BYTES } from "./background.js";
 import { isWorkspaceError, localWorkspace, type Workspace } from "./workspace/index.js";
 import type { ClaimBrowser } from "./workspace/resolve-computer.js";
@@ -46,11 +46,11 @@ import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
 import { keyNeeded } from "./key-words.js";
 import { unattachable } from "./attach-images.js";
 import { handedSignIn } from "./secrets.js";
-import { redactedAnswer } from "./key-refusal.js";
+import { redactedAnswer, withheldWhole } from "./key-refusal.js";
 import { SIGN_IN_KEY, vendorsOver } from "./sign-ins.js";
 import { answerIn, answerOnce } from "./runner/hand-back.js";
 import { waitingAsk } from "./browser-commands.js";
-import { runnerSecrets } from "./runner/redact.js";
+import { type Redact, runnerSecrets } from "./runner/redact.js";
 import { HANDOVER_WAITING, type HandoverAnswered } from "./runner/journal-kinds.js";
 import type { LiveHandover, LiveViewerStore } from "./browser-live.js";
 import { provenFor, type RunnerLive } from "./live-reach.js";
@@ -152,8 +152,8 @@ export type ToolHost = {
    *  (adapter-run-spec.ts browserListed). */
   ledger?: { paid: PaidBooking; pause?: (refusal: Refusal) => Promise<void>; flush: () => Promise<void> };
   /** The run's one redactor (the runner's: every secret value the runner and the claim hold, in every form): what the
-   *  browser's answers pass through before pi stores them or the model reads them. Absent on the old per-run process. */
-  redact?: (text: string) => string;
+   *  browser's answers pass through before pi stores them or the model reads them. */
+  redact: (text: string) => string;
   /** The run's own Workspace (on the runner: the run's local folder in Mode 1, its folder on the run's disk in Mode 2),
    *  where a tool files what the run's read finds later (monid's whole answer past the model's cut). Absent, the local
    *  folder at `where.work`. */
@@ -253,7 +253,7 @@ const emailTool = (name: string): ToolEntry => ({
 
 /** web_fetch, bound under `name`. */
 const webFetchEntry = (name: string): ToolEntry => ({
-  summary: `Read one public web page from a public host through Firecrawl's keyless fetch where the server holds no Parallel key (each URL sent to Firecrawl, never a private or local one; the guarded direct fetch when Firecrawl answers no page or its free limit is spent), else through the guarded direct fetch, or through Parallel's extract where Parallel is picked (falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error? }; html_chars, the page's whole length, when its HTML was cut at ${HTML_READ_CHARS.toLocaleString("en-US")} characters before it was read, so its text is only the start of the page; converted: "text" when the text is plain text, its conversion to markdown having run out of time; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.`,
+  summary: `Read one public web page from a public host through Firecrawl's keyless fetch where the server holds no Parallel key (each URL sent to Firecrawl, never a private or local one; the guarded direct fetch when Firecrawl answers no page or its free limit is spent), else through Parallel's extract (the default) or the guarded direct fetch where it is picked (Parallel's falling back to the direct fetch, saying why, when Parallel answers no page), a part at a time (offset, max_chars; the page fetched once a run): { ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error? }; html_chars, the page's whole length, when its HTML was cut at ${HTML_READ_CHARS.toLocaleString("en-US")} characters before it was read, so its text is only the start of the page; converted: "text" when the text is plain text, its conversion to markdown having run out of time; a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, never sent to Parallel.`,
   needs: [],
   nodes: true,
   bind: async (host) => {
@@ -371,14 +371,49 @@ export function cutAnswer<T>(value: T, cut: (text: string) => string): T {
   return value;
 }
 
+/** One call's web answer cut by `cut` (timeline/web-calls.ts webCut): each of its JSON's strings cut once, and the whole
+ *  "[redacted]" when its strings, read joined, hold a held value no cut in place takes (a value split across two of
+ *  them). The join is read against the values `cut` holds (key-refusal.ts withheldWhole), or through `cut` itself when
+ *  it does not know them (joinCut). Undefined for an answer that is not a web call's JSON. Make one per call. */
+export function webAnswerCut(cut: Redact): (tool: string, text: string) => string | undefined {
+  const seen = new Map<string, string>();
+  const once = (text: string): string => {
+    let out = seen.get(text);
+    if (out === undefined) seen.set(text, (out = cut(text)));
+    return out;
+  };
+  const holds = (joined: string, parts: readonly string[]): boolean => {
+    const values = cut.heldValues?.();
+    return values ? withheldWhole(joined, values) : joinCut(joined, parts, once);
+  };
+  return (tool, text) => webCut(tool, text, once, holds);
+}
+
+/** Whether `cut`, a redactor that does not know its values, takes from `joined` (`parts` joined by line breaks) what it
+ *  does not take from the parts each read alone: a held value split across two parts. Its cut of the join whole being
+ *  "[redacted]" is not enough: it reads a text longer than a piece in pieces of 8,192 characters (key-refusal.ts
+ *  redactedAnswer), and a value split inside one piece withholds only that piece, the rest of the join served. It misses
+ *  nothing: no value split across parts is in a part to cut, so the join's cut and the parts' differ wherever the join
+ *  holds one; where nothing spans two parts they are the same, as every piece ends at whitespace or inside a run longer
+ *  than a piece, and a line break ends each part. */
+function joinCut(joined: string, parts: readonly string[], cut: (text: string) => string): boolean {
+  const whole = cut(joined);
+  return whole === "[redacted]" || whole !== parts.map(cut).join("\n");
+}
+
 /** `tool` whose answer, and a throw's message, pass `cut` inside its execute: before pi stores the result or the model
- *  reads it. */
-function answersCutInside(tool: ToolRegistration, cut: (text: string) => string): ToolRegistration {
+ *  reads it. A web call's JSON is cut as the agentic specs' answersCut cuts it (webAnswerCut), so it still parses and
+ *  keeps its links, and a held value split across its strings withholds it whole. */
+export function answersCutInside(tool: ToolRegistration, cut: Redact): ToolRegistration {
+  // Fail closed and loud: a host with no redactor would only throw inside each call, an error a model may read past.
+  if (typeof cut !== "function") throw new TypeError(`${tool.name}: the run's redactor (host.redact) is required to cut its answers`);
   return {
     ...tool,
     execute: (async (...args: Parameters<ToolRegistration["execute"]>) => {
       try {
-        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), cut);
+        const web = webAnswerCut(cut);
+        const textCut = (text: string) => web(tool.name, text) ?? cut(text);
+        return cutAnswer(await (tool.execute as (...a: unknown[]) => Promise<unknown>)(...args), textCut);
       } catch (error) {
         if (error instanceof Error) {
           error.message = cut(error.message);
@@ -520,7 +555,7 @@ const browserTool: ToolEntry = {
       // The model's words for the person, with every value this run holds cut, whole, before they are cut to their bound:
       // the run's own cut on the runner (host.redact: the claim's keys too, every tool's, in every form), and the secrets
       // its env holds (runnerSecrets: hostSecrets and every launcher name's value) with its sign-in's pointer.
-      redact: (text) => redactedAnswer(host.redact ? host.redact(text) : text, [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
+      redact: (text) => redactedAnswer(host.redact(text), [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])]),
       // The Screen tab's ended state, one settings row the server reads per poll (browser-wait-ended.ts); cleared as a
       // session opens (onSessions, below).
       waitEnded: (at, why) => {
@@ -624,7 +659,7 @@ const browserTool: ToolEntry = {
     const browser = createBrowserExtension({ provider, driver: parts.driver as never, evidence: evidenceIn(work) as never, ...files, gates, handoff: hands.handoff, onSession: onSessions as never, signIns: kept !== undefined, beforeCreate: spend.opening, redact: { values: () => [...runnerSecrets(host.env), ...(kept ? [kept.ref] : [])] }, prices: { sessionUsdPerHour: price.usdPerHour, sessionMinimumS: price.minimumS }, onCharge: spend.onCharge });
     // On the runner, every answer the browser's tools give passes the run's one redactor inside the call, so what pi stores
     // (its result record) and what the model reads hold no value the runner or the claim holds.
-    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => (host.redact ? answersCutInside(tool, host.redact) : tool));
+    const tools = (browser.tools as unknown as ToolRegistration[]).map(spend.capped).map((tool) => answersCutInside(tool, host.redact));
     const extension = { ...(browser.extension as unknown as Extension), tools } as Extension;
     host.install(extension);
     host.onConversation(async (tx, conversationId) => {

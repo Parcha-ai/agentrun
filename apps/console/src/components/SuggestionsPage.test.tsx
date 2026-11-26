@@ -7,6 +7,7 @@ import { route } from "@/App";
 import { createClient } from "@/lib/client";
 import { agentFixture } from "@/fixtures";
 import { keepReturn, permissionLabel, RETURN_KEY, scanLine, takeReturn } from "@/lib/suggestions";
+import { expectPinnedBar } from "@/test/pageFrame";
 
 // Suggested agents over /v2/suggestions: not connected, the page explains itself and connects GitHub with the write
 // permission the pull requests need (opt-out); connected, it lists each scanned repository's suggestions with the lines
@@ -245,6 +246,15 @@ describe("Suggested agents", () => {
 });
 
 describe("Suggested agents' repositories", () => {
+  // A long list scrolls under the bar, which keeps its title and Refresh in view.
+  it("keeps the bar with Refresh outside the one box that scrolls the repositories", async () => {
+    const { v2 } = server({ connected: true, suggestions: [structuredClone(SUGGESTION)], readiness: READY });
+    const { host, button } = await page(v2);
+    const scroll = expectPinnedBar(host);
+    expect(host.querySelector("header")!.contains(button(/^Read the suggestions and repositories again$/)!)).toBe(true);
+    expect(scroll.querySelector("article[aria-label='Triage support tickets']")).toBeTruthy();
+  });
+
   it("says what the app is across the whole width the suggestions take, both columns, not a reading column's", async () => {
     const { v2 } = server({ connected: true, suggestions: [structuredClone(SUGGESTION)], readiness: READY });
     const { host } = await page(v2);

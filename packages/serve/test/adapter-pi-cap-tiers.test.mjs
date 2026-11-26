@@ -11,6 +11,7 @@ import { capRun, quiet, specCap } from "./adapter-pi-cap-support.mjs";
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { capModelOf } = await import("../dist/runner/adapter-run-spec.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 after(closeOpenSessions);
 
 const KEY = `not-a-secret-${"tier"}`;
@@ -18,7 +19,7 @@ const provider = { api: "anthropic-messages", origin: "https://faux.invalid", cr
 
 /** A pi spec on `fetch` with `input` as the person's first message (its UTF-8 bytes bound the cap's input). */
 const specWith = (fetch, input) => (_claim, run) => ({
-  adapter: piAdapter({ run, model: MODEL, provider, fetch, price: () => 0 }),
+  adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider, fetch, price: () => 0 }),
   session: { key: "root", label: "root", system: ["Answer."], tools: hostTools({}), context: "fresh" },
   input,
   hooks: quiet,

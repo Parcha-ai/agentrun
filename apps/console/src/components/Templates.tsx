@@ -9,7 +9,7 @@ import { ListSkeleton } from "@/components/Skeleton";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { formColumnsClass, Input } from "@/components/ui/field";
-import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { pageBodyClass, pageClass, pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { ListFilter } from "@/components/ListFilter";
 import { matchesFilter } from "@/lib/filter";
@@ -20,6 +20,7 @@ import { runTemplatePrompt } from "@/lib/codingAgentPrompts";
 import { allPages, type Client, ClientError, type FieldIssue } from "@/lib/client";
 import { keeper } from "@/lib/idempotency";
 import { cn } from "@/lib/utils";
+import { modelLabel } from "@/lib/models";
 import { hookUrlOf, isScheduleTrigger, type Schedule, scheduleLine, TRIGGER_KINDS } from "@/lib/schedules";
 import { type Problem, problem } from "@/lib/problem";
 import { type McpServer, SOURCE_LABEL } from "@/lib/mcp";
@@ -43,7 +44,8 @@ function cardNeeds(t: TemplateView): [string, ReactNode][] {
 const catalogHash = (playground: boolean) => playground ? "#/playground?operation=apply-template" : "#/templates";
 
 /** The server's templates: review and install a GitHub package, run with a coding agent, or apply through the API playground. */
-export function TemplatesPage({ v2, name, install, go, playground = false, draft }: Props & { name?: string; install?: string }) {
+/** `model`: the agent's model, sent as apply's `overrides.model` (the Free shelf's "Use free" opens a template with it). */
+export function TemplatesPage({ v2, name, install, go, playground = false, draft, model }: Props & { name?: string; install?: string; model?: string }) {
   const [templates, setTemplates] = useState<TemplateView[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
@@ -63,20 +65,20 @@ export function TemplatesPage({ v2, name, install, go, playground = false, draft
     : error && !templates ? <ProblemCard problem={error} onRetry={retry} className="" />
     : !templates ? <ListSkeleton label="Loading the templates" rows={3} />
     : name === undefined ? <TemplateList v2={v2} templates={templates} go={go} playground={playground} onRemoved={retry} />
-    : shown ? <ApplyTemplate key={`${shown.id}:${draft ?? ""}`} v2={v2} template={shown} go={go} playground={playground} draft={draft} />
+    : shown ? <ApplyTemplate key={`${shown.id}:${draft ?? ""}:${model ?? ""}`} v2={v2} template={shown} go={go} playground={playground} draft={draft} model={model} />
     : <p className="border px-4 py-12 text-center font-mono text-body text-muted-foreground" role="alert">This server offers no template named {name}. <a href={catalogHash(playground)} className="underline">See its templates</a>.</p>;
   // In the API playground the page sits under the playground's own bar, with its own way back.
   if (playground) return <div className="p-5 md:p-8">{body}</div>;
   // Its own page has the sections' top bar: the list names the section; a template, or a package being read, leads back to it.
   const listing = install === undefined && name === undefined;
   return (
-    <section className="flex min-h-full flex-col">
+    <section className={pageClass}>
       <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 md:px-6")}>
         {listing
           ? <h1 className={pageTitleClass}><LayoutTemplate className="size-4" aria-hidden />Templates</h1>
           : <nav aria-label="Breadcrumb"><a href="#/templates" className={cn(pageTitleClass, "text-muted-foreground hover:text-foreground")}><ArrowLeft className="size-4" aria-hidden />Templates</a></nav>}
       </header>
-      <div className="p-5 md:p-6">{body}</div>
+      <div data-page-body className={cn(pageBodyClass, "p-5 md:p-6")}>{body}</div>
     </section>
   );
 }
@@ -338,10 +340,12 @@ function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 }
 
-function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props & { template: TemplateView }) {
+function ApplyTemplate({ v2, template: t, go, playground = false, draft, model: linked }: Props & { template: TemplateView; model?: string }) {
   const Heading = playground ? "h2" : "h1";
   const form = { fields: schemaFields(t.parameters) ?? [], contentRequired: false };
   const prepared = readTemplateDraft(draft, t);
+  // The agent's model as the link set it, or as a prepared request carries it (the playground opened from Use free).
+  const model = linked ?? prepared.body?.overrides?.model;
   // Shared compiled fields supply defaults; an explicit prepared false, zero or list stays the reviewed choice.
   const [values, setValues] = useState<ParameterText>(() => ({ ...Object.fromEntries(form.fields.filter(([, field]) => field.type === "boolean" && !field.array).map(([key]) => [key, "false"])), ...fieldStartText(form), ...Object.fromEntries(Object.entries(prepared.body?.parameters ?? {}).map(([key, value]) => [key, Array.isArray(value) ? value.map(String).join("\n") : String(value)])) }));
   const [ticked, setTicked] = useState<Set<string>>(() => new Set(prepared.body?.grants ?? []));
@@ -429,7 +433,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
     window.addEventListener("focus", again);
     return () => window.removeEventListener("focus", again);
   }, [someWaiting]);
-  const body = { parameters: fieldValues(form, values), ...(grants.length ? { grants } : {}), ...(Object.keys(chosen).length ? { servers: chosen } : {}), overrides: { approvals, ...(choice ? { choice } : {}) } };
+  const body = { parameters: fieldValues(form, values), ...(grants.length ? { grants } : {}), ...(Object.keys(chosen).length ? { servers: chosen } : {}), overrides: { approvals, ...(model ? { model } : choice ? { choice } : {}) } };
   const at = (field: string) => issuesAt(issues, field);
   // A parameter's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
   const setParam = (key: string, p: FieldSpec, value: string) => {
@@ -476,7 +480,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   // A choice's keys beyond the package's own: shown under that choice when it is the one picked.
   const choiceKeys = (secrets: readonly string[]) => secrets.filter((s) => !t.secrets.includes(s));
   const picked = t.model?.choices?.find((c) => c.id === choice);
-  const placed = (i: FieldIssue) => /^(parameters|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field) || (i.field === "overrides.choice" && !!t.model?.choices?.length)
+  const placed = (i: FieldIssue) => /^(parameters|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field) || (i.field === "overrides.choice" && !!t.model?.choices?.length) || (i.field === "overrides.model" && !!model)
     || (i.field.startsWith("secrets.") && [...t.secrets, ...choiceKeys(picked?.secrets ?? [])].includes(i.field.slice("secrets.".length)));
   if (made) {
     const change = CHANGE_WORDS[made.agent_change];
@@ -616,7 +620,15 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
         </Section>
       )}
 
-      {t.model?.choices?.length ? (
+      {model ? (
+        // The agent's model is set (the Free shelf's Use free): apply takes it in place of the package's, and no choice
+        // goes with it (the two together are 422).
+        <section aria-label="Model" className="mt-6">
+          <h2 className="caps text-small font-semibold">Model</h2>
+          <p className="mt-2 border px-4 py-3 font-mono text-body" data-model-override title={model}>{modelLabel(model, null).text}</p>
+          <Issues issues={at("overrides.model")} />
+        </section>
+      ) : t.model?.choices?.length ? (
         // The package's default model first, then each choice by its label. A choice's warning and note show under it
         // whether it is picked or not, word for word: the owner reads them before choosing.
         <fieldset aria-label="Model" className="mt-6">

@@ -12,6 +12,7 @@ import { timelineOf } from "../dist/timeline/index.js";
 import { personHands } from "../dist/browser-person.js";
 import { waitingAsk } from "../dist/browser-commands.js";
 import { handBackOf } from "../dist/runner/hand-back.js";
+import { secretRedactor } from "../dist/runner/redact.js";
 
 const MAIN = JSON.parse(readFileSync(new URL("./fixtures/hand-back-main-rows.json", import.meta.url), "utf8"));
 const ASK = { requestId: "00000000-0000-4000-8000-000000000001", sessionTag: MAIN.session, instruction: MAIN.instruction, completionCondition: "the portal shows the account" };
@@ -24,6 +25,8 @@ function runnerPath() {
   const append = (kind, data) => entries.push({ kind, id: id++, conversationId: 1, data });
   const hands = () => personHands({
     gates: () => ({ give: () => false }), pollMs: 60_000,
+    // The run's redactor, as tools.ts hands the person's process one: a test's run holds no secrets.
+    redact: secretRedactor([]),
     personTime: async () => ({ drop() {} }),
     note: async (kind, data) => void append(kind, data),
     asks: async () => entries.flatMap((entry) => (entry.kind === "agent.handover" && waitingAsk(entry.data)) || []),
