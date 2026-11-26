@@ -761,18 +761,14 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
   assert.deepEqual(missed, [], "each row's credentials are on both held lists and each is cut alone to [redacted] by the [otel] cut and the runner's redactor; its unheld values (a hostname, a key with the raw comma after it) are on neither list, and the ordinary words are left");
 });
 
-// A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
-// read split at & alone keeps the whole value, a %2C in it too, and read split at an & or a space written %26 or %20 too,
-// it keeps that value as written before one, and read split at a %26 alone, one with a %20 in it; a value read on past
-// a %20 is also kept up to each %20 in it that a name= follows, at 8 characters or more, so a key with a %20 in it
-// before a %20 pair is kept; a value in quotes written %22 or %27 is kept out of them as written too, and a piece of it
-// that opens with a quote and has no closing one (cut at a %2C) is kept without that quote too; read split at & and
-// %2C, it keeps the value of a pair in a list joined by %2C, and read split at & and %3B, the value of a pair in a list
-// joined by %3B, a %20, quotes or a %26 in it too; read split at ; too, it keeps each pair after a ;. Every reading is
-// held. A value whose part
-// before its first ; is empty is held after it, whole and as its first piece of 8 characters or more, unless that is a
-// pair named like no credential; a value of only ;, =, quotes, commas or spaces, as written or decoded, is not held and
-// not cut.
+// A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value, or with separators
+// in it between pairs joined by others. A query read split at & alone keeps the whole value. Inside a header value, a
+// credential pair's value is held at every boundary: up to each &, ;, comma or space after its =, raw or written %26,
+// %3B, %2C or %20, and whole to the end, so whichever separators a key holds and whichever join the pairs around it,
+// one of those is the key alone; each as written and decoded, out of a matching pair of quotes, and without a lone
+// opening or closing quote at 8 characters or more (a quoted key cut at its %2C). A value whose part before its first ;
+// is empty is held after it, whole and as its first piece of 8 characters or more, unless that is a pair named like no
+// credential; a value of only ;, =, &, quotes, commas or spaces, as written or decoded, is not held and not cut.
 // Each row: [what, the env, the credentials held and cut alone, what is on no held list, a line quoting the variable and
 // its cut].
 const SEMI_PREFIX = `prefix-${"dummy"}`;
@@ -1022,6 +1018,20 @@ const SEMI_ROWS = [
     ["us-east-1"],
     [`401 from relay: key ${SEMI_PREFIX} tail-${"dummy"};suffix-${"dummy"} refused`, "401 from relay: key [redacted] refused"],
   ],
+  [
+    "a header value's credential pair holding only an &",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=region=us&api_key=&" },
+    [],
+    ["&"],
+    ["parse error at & near region", "parse error at & near region"],
+  ],
+  [
+    "a header value's credential pair whose value opens with a space, then one character",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: "X-Relay=sentry_key= @" },
+    [],
+    ["@", " @"],
+    ["contact ops @ team", "contact ops @ team"],
+  ],
 ];
 
 test("an OTLP endpoint's or header value's credential with a raw ; in it is held whole and as each pair after a ;, and a line quoting it is cut to [redacted] with no piece after the ; left", () => {
@@ -1086,15 +1096,18 @@ test("OTLP values that overlap or touch in a line are cut as one by every redact
   assert.deepEqual(missed, [], "every overlapping or touching held value is cut as one [redacted]");
 });
 
-test("a 16 KB OTLP header value of 900 pairs joined by %20 holds a credential pair's value up to a %20 within 4,096 characters, never a head before every pair", () => {
-  // The read that keeps a %20 in a value reads this one whole, a pair before each of its 1,800 %20; a head before each
-  // would hold 1,800 values of up to 16 KB.
+test("a 16 KB OTLP header value of 900 pairs joined by %20, or of 1,000 credential pairs, holds a credential pair's value up to each separator within 4,096 characters in all, never a prefix before every pair", () => {
+  // A credential pair's value runs to the header value's end: held up to each of its 1,800 %20, it would hold 1,800
+  // values of up to 16 KB; and 1,000 credential pairs, each held up to each separator after it, 1,000 times that.
   const key = `key-${"dummy"}-1`;
-  const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${`${key}%20b=1%20`.repeat(900)}` };
-  for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
-    const size = values.reduce((sum, value) => sum + value.length, 0);
-    assert.ok(size < 128 * 1024, `${list} holds ${size} characters, under 128 KB`);
-    assert.ok(values.includes(key), `${list} holds the key before the first %20`);
+  const many = `key-${"dummy"}-2`;
+  for (const [what, header, first] of [["900 pairs", `X-Relay=api_key=${`${key}%20b=1%20`.repeat(900)}`, key], ["1,000 credential pairs", `X-Relay=${`api_key=${many}%20v%3B`.repeat(1000)}`, many]]) {
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: header };
+    for (const [list, values] of [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]]) {
+      const size = values.reduce((sum, value) => sum + value.length, 0);
+      assert.ok(size < 128 * 1024, `${what}: ${list} holds ${size} characters, under 128 KB`);
+      assert.ok(values.includes(first), `${what}: ${list} holds the key before the first separator`);
+    }
   }
 });
 
