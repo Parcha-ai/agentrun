@@ -371,16 +371,43 @@ async function confirmed(io, values, question, offTerminal) {
   }
 }
 
-/** The plan's lines, as the deploy prints them before it applies anything. */
-function planLines(base, template, sha, plan, grants) {
+/** What a deploy target that sets up triggers itself (a backend in front of an install that does not make them, as an
+ *  API-only install does not make a Composio trigger) says it did with each, by name: `triggers_set_up` on its apply's
+ *  answer, and on its plan's (beside `plan` or in it), each `{name, made, enabled?, reason?, message?}`. Its word stands
+ *  over the install's: a trigger it made is never said skipped, whatever the install's plan or warning says, and one it
+ *  did not make is said skipped in its words. A trigger it says nothing of keeps the install's word. */
+function setUpBy(answer) {
+  const listed = Array.isArray(answer?.triggers_set_up) ? answer.triggers_set_up : Array.isArray(answer?.plan?.triggers_set_up) ? answer.plan.triggers_set_up : [];
+  const said = new Map();
+  for (const one of listed) {
+    if (one === null || typeof one !== "object" || typeof one.name !== "string" || typeof one.made !== "boolean") continue;
+    const name = one.name.trim();
+    if (name && !said.has(name)) said.set(name, one);
+  }
+  return said;
+}
+
+const textOf = (value) => (typeof value === "string" && value.trim() ? value.trim() : undefined);
+
+/** Why the target says it did not make `trigger` (setUpBy): its message, else its reason in a sentence of the CLI's. */
+const unmadeWhy = (base, trigger, said) => textOf(said.message) ?? `${base} did not set up the trigger ${trigger.name} (${trigger.kind})${textOf(said.reason) ? `: ${textOf(said.reason)}` : ""}.`;
+
+/** The plan's lines, as the deploy prints them before it applies anything. A trigger the target says it sets up
+ *  (setUpBy) is planned made where the install's plan skips it; one it says it does not is skipped in its words. */
+function planLines(base, template, sha, plan, grants, setUp = new Map()) {
   const rows = [];
   rows.push([plan.action === "revise" ? "~" : "+", "agent", template.name, plan.action === "revise" ? `revise ${plan.agent_id}` : "new"]);
   for (const name of plan.missing_secrets) rows.push(["!", "key", name, "missing: add it on the target"]);
   for (const need of plan.unmatched_mcp) rows.push([need.required ? "!" : "?", "tools", `${need.toolkit} (${need.source})`, need.required ? "missing: save a server of it on the target" : "missing: the agent runs without them"]);
   for (const tool of grants) rows.push(["+", "grant", tool, "allowed"]);
   for (const trigger of plan.triggers) {
-    const mark = { create: "+", update: "~", remove: "-", skip: "!" }[trigger.action] ?? "?";
-    rows.push([mark, "trigger", trigger.name, `${trigger.kind}${trigger.action === "skip" ? ` skipped: ${trigger.reason ?? ""}` : trigger.reason ? ` (${trigger.reason})` : ""}`]);
+    const said = trigger.action === "remove" ? undefined : setUp.get(trigger.name);
+    if (said?.made === false) rows.push(["!", "trigger", trigger.name, `${trigger.kind} skipped: ${unmadeWhy(base, trigger, said)}`]);
+    else if (said?.made && trigger.action === "skip") rows.push(["+", "trigger", trigger.name, `${trigger.kind} (the target sets it up)`]);
+    else {
+      const mark = { create: "+", update: "~", remove: "-", skip: "!" }[trigger.action] ?? "?";
+      rows.push([mark, "trigger", trigger.name, `${trigger.kind}${trigger.action === "skip" ? ` skipped: ${trigger.reason ?? ""}` : trigger.reason ? ` (${trigger.reason})` : ""}`]);
+    }
   }
   if (plan.computer) rows.push([" ", "computer", plan.computer.kind, plan.computer.provider ?? ""]);
   const width = Math.max(...rows.map(([, , name]) => name.length));
@@ -534,7 +561,7 @@ async function deploy(ctx) {
   const body = { grants, sha: template.sha, ...(parameters ? { parameters } : {}), ...(onto ?? {}) };
   const { value: planned } = await to.call("POST", `/templates/${enc(template.id)}/apply`, { ...body, dry_run: true });
   const plan = planned.plan;
-  for (const line of planLines(to.base, template, sha, plan, grants)) say(io, line);
+  for (const line of planLines(to.base, template, sha, plan, grants, setUpBy(planned))) say(io, line);
   // An agent this package already made there with these parameters (the plan's twins), which no lock here names (it is
   // gone, or this CLI never wrote it): another would run beside it, its schedules firing twice. --agent says which.
   const twins = !onto && picked !== "new" && Array.isArray(plan.twins) ? plan.twins : [];
@@ -556,16 +583,44 @@ async function deploy(ctx) {
   // A trigger the apply could not make yet (a connection or a feed the target lacks; a warning says which) is not in its
   // answer. The lock then names no package, so the next deploy of the same files applies again and makes it once it can.
   // One the target never makes (its plan's skip code not_an_option: a webhook on an API-only install) is no reason to:
-  // the plan above said it is skipped, and the same files stay up to date.
+  // the plan above said it is skipped, and the same files stay up to date. Where the target says what it set up itself
+  // (setUpBy), its word is the one taken: a trigger it made is made, one it did not make is not made yet unless its reason
+  // is not_an_option.
   const there = new Set((applied.triggers ?? []).map((one) => one.name));
-  const unmade = plan.triggers.filter((one) => one.action !== "remove" && one.code !== "not_an_option" && !there.has(one.name)).map((one) => one.name);
+  const setUp = setUpBy(applied);
+  const unmade = plan.triggers
+    .filter((one) => {
+      if (one.action === "remove") return false;
+      const said = setUp.get(one.name);
+      if (said) return !said.made && said.reason !== "not_an_option";
+      return one.code !== "not_an_option" && !there.has(one.name);
+    })
+    .map((one) => one.name);
   const written = { target: to.base, agent_id: applied.agent_id, revision_id: applied.revision_id, package_sha256: unmade.length ? null : sha, deployed_at: new Date().toISOString() };
   from.lock.write(written);
-  for (const warning of applied.warnings ?? []) say(io, `Warning (${warning.field}): ${warning.message}`);
+  // The install's warning on a trigger (triggers.<i>, the package's i-th: the plan's triggers in order, its removals
+  // after them) gives way to the target's word on it: none for one the target made that the install did not, the
+  // target's own warning for one it did not make.
+  const order = plan.triggers.filter((one) => one.action !== "remove");
+  const kindOf = new Map(order.map((one) => [one.name, one.kind]));
+  const replaced = (name) => {
+    const said = name === undefined ? undefined : setUp.get(name);
+    return said !== undefined && (!said.made || !there.has(name));
+  };
+  const warnings = (applied.warnings ?? []).filter((warning) => {
+    const index = /^triggers\.(\d+)(?:\.|$)/.exec(String(warning.field))?.[1];
+    return !replaced(index === undefined ? undefined : order[Number(index)]?.name);
+  });
+  for (const [i, one] of order.entries()) {
+    const said = setUp.get(one.name);
+    if (said?.made === false) warnings.push({ field: `triggers.${i}`, ...(textOf(said.reason) ? { reason: textOf(said.reason) } : {}), message: unmadeWhy(to.base, one, said) });
+  }
+  for (const warning of warnings) say(io, `Warning (${warning.field}): ${warning.message}`);
+  for (const [name, said] of setUp) if (said.made && !there.has(name) && kindOf.has(name)) say(io, `Trigger ${name} (${kindOf.get(name)}) set up by ${to.base}${said.enabled === false ? ", off" : ""}.`);
   if (unmade.length) say(io, `Not made on ${to.base} yet: ${unmade.join(", ")}. Until they are, the lock names no package, so the next deploy applies again (keeping the revision when nothing else changed).`);
   say(io, `Deployed ${template.name} to ${to.base}: the agent ${applied.agent_id}, revision ${applied.revision_version} (${applied.agent_change}). Lock: ${from.lock.file}.`);
   const code = from.kind === "agent" ? await sourceSchedules(io, from, values) : 0;
-  io.stdout.write(`${JSON.stringify({ status: "deployed", ...written, revision_version: applied.revision_version, agent_change: applied.agent_change, template: template.id, warnings: applied.warnings ?? [] })}\n`);
+  io.stdout.write(`${JSON.stringify({ status: "deployed", ...written, revision_version: applied.revision_version, agent_change: applied.agent_change, template: template.id, warnings, ...(setUp.size ? { triggers_set_up: [...setUp.values()] } : {}) })}\n`);
   return code;
 }
 

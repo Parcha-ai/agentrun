@@ -1039,6 +1039,11 @@ __all__ = [
     "RunError",
     "RunErrorCode",
     "RunErrorDetails",
+    "RunFactory",
+    "RunFactoryChildrenItem",
+    "RunFactoryControls",
+    "RunFactoryGithub",
+    "RunFactoryObservation",
     "RunFile",
     "RunFileList",
     "RunImportedFrom",
@@ -1070,6 +1075,13 @@ __all__ = [
     "RunSummary",
     "RunSummaryCliLearning",
     "RunSummaryCliLearningUsage",
+    "RunSummaryComputer",
+    "RunSummaryComputerHeld",
+    "RunSummaryFactory",
+    "RunSummaryFactoryChildrenItem",
+    "RunSummaryFactoryControls",
+    "RunSummaryFactoryGithub",
+    "RunSummaryFactoryObservation",
     "RunSummaryImportedFrom",
     "RunSummaryLearning",
     "RunSummaryLearningWorkflowsItem",
@@ -3425,9 +3437,14 @@ class ReviewSourceProjectResponseToolConnectionsItemCandidatesItem(TypedDict):
 ListRunsResponse: TypeAlias = "RunList"
 
 
-class RunList(TypedDict):
+class _RunListRequired(TypedDict):
     runs: list[RunSummary]
     next_cursor: str | None
+
+
+class RunList(_RunListRequired, total=False):
+    scope: Literal["active", "review"]
+    observed_at: str
 
 
 class _RunSummaryRequired(TypedDict):
@@ -3447,9 +3464,11 @@ class _RunSummaryRequired(TypedDict):
 
 
 class RunSummary(_RunSummaryRequired, total=False):
+    computer: RunSummaryComputer
     sdk: RunSummarySdk | RunSummarySdk2
     cli_learning: RunSummaryCliLearning
     native: RunSummaryNative
+    factory: RunSummaryFactory
     console_url: str
     labels: dict[str, str]
     stopped_for: Literal["budget"] | None
@@ -3514,6 +3533,27 @@ class CostPlan(TypedDict):
     requests: int
     tokens: int
     on: Literal["chatgpt", "claude_code"]
+
+
+class _RunSummaryComputerRequired(TypedDict):
+    kind: Literal["sandbox", "desktop", "phone", "browser"]
+    provider: str
+    state: Literal["starting", "ready", "taken_over", "released", "ended", "failed"]
+
+
+class RunSummaryComputer(_RunSummaryComputerRequired, total=False):
+    why: str
+    held: RunSummaryComputerHeld
+
+
+class _RunSummaryComputerHeldRequired(TypedDict):
+    state: Literal["starting", "waiting", "started", "ended", "released"]
+    minutes: int
+
+
+class RunSummaryComputerHeld(_RunSummaryComputerHeldRequired, total=False):
+    until: str
+    why: Literal["timeout", "lost"]
 
 
 class RunSummarySdk(TypedDict):
@@ -3609,6 +3649,46 @@ class RunSummaryNativeUsageReflectionItem(TypedDict):
     cache_read_tokens: int | None
     cache_write_tokens: int | None
     cost_usd: float | None
+
+
+class RunSummaryFactory(TypedDict):
+    lifecycle_version: str
+    source: Literal["managed", "native", "sdk", "cli"]
+    runtime: str
+    control: Literal["managed", "observed"]
+    controls: RunSummaryFactoryControls
+    observation: RunSummaryFactoryObservation
+    last_activity_at: str | None
+    github: None | RunSummaryFactoryGithub
+    children: list[RunSummaryFactoryChildrenItem]
+
+
+class RunSummaryFactoryControls(TypedDict):
+    stop: bool
+    cancel: bool
+    approve: bool
+
+
+class RunSummaryFactoryObservation(TypedDict):
+    basis: Literal["runner", "connector", "unreported"]
+    status: Literal["current", "offline", "revoked", "unreported"]
+    last_seen_at: str | None
+
+
+class RunSummaryFactoryGithub(TypedDict):
+    repository: str
+    issue: int | None
+    pull_request: int | None
+    head_sha: str | None
+    provenance: Literal["launch", "github_trigger"]
+
+
+class RunSummaryFactoryChildrenItem(TypedDict):
+    id: str
+    conversation_id: int
+    parent_call_id: str
+    status: Literal["active", "completed"]
+    label: str | None
 
 
 Effort: TypeAlias = "Literal[\"low\", \"medium\", \"high\"]"
@@ -5067,6 +5147,7 @@ class DeleteModelGatewayResponseSecret(TypedDict):
 
 class _DeleteWorkspaceArchilResponseRequired(TypedDict):
     on: bool
+    regions: dict[str, str]
     secret: DeleteWorkspaceArchilResponseSecret
 
 
@@ -5074,6 +5155,7 @@ class DeleteWorkspaceArchilResponse(_DeleteWorkspaceArchilResponseRequired, tota
     source: Literal["env", "console"]
     region: str
     s3Url: str
+    s3UrlFrom: Literal["region", "given"]
     image: str
 
 
@@ -5427,6 +5509,7 @@ class GetSuggestionResponseGithub(TypedDict):
 
 class _GetWorkspaceArchilResponseRequired(TypedDict):
     on: bool
+    regions: dict[str, str]
     secret: GetWorkspaceArchilResponseSecret
 
 
@@ -5434,6 +5517,7 @@ class GetWorkspaceArchilResponse(_GetWorkspaceArchilResponseRequired, total=Fals
     source: Literal["env", "console"]
     region: str
     s3Url: str
+    s3UrlFrom: Literal["region", "given"]
     image: str
 
 
@@ -5751,6 +5835,7 @@ class Run(_RunRequired, total=False):
     sdk: RunSdk | RunSdk2
     cli_learning: RunCliLearning
     native: RunNative
+    factory: RunFactory
     console_url: str
     labels: dict[str, str]
     stopped_for: Literal["budget"] | None
@@ -5876,6 +5961,46 @@ class RunNativeUsageReflectionItem(TypedDict):
     cache_read_tokens: int | None
     cache_write_tokens: int | None
     cost_usd: float | None
+
+
+class RunFactory(TypedDict):
+    lifecycle_version: str
+    source: Literal["managed", "native", "sdk", "cli"]
+    runtime: str
+    control: Literal["managed", "observed"]
+    controls: RunFactoryControls
+    observation: RunFactoryObservation
+    last_activity_at: str | None
+    github: None | RunFactoryGithub
+    children: list[RunFactoryChildrenItem]
+
+
+class RunFactoryControls(TypedDict):
+    stop: bool
+    cancel: bool
+    approve: bool
+
+
+class RunFactoryObservation(TypedDict):
+    basis: Literal["runner", "connector", "unreported"]
+    status: Literal["current", "offline", "revoked", "unreported"]
+    last_seen_at: str | None
+
+
+class RunFactoryGithub(TypedDict):
+    repository: str
+    issue: int | None
+    pull_request: int | None
+    head_sha: str | None
+    provenance: Literal["launch", "github_trigger"]
+
+
+class RunFactoryChildrenItem(TypedDict):
+    id: str
+    conversation_id: int
+    parent_call_id: str
+    status: Literal["active", "completed"]
+    label: str | None
 
 
 class RunRecordingsItem(TypedDict):
@@ -6163,10 +6288,10 @@ class ListSuggestionsResponseSuggestionsItemCreatedPullRequest(TypedDict):
 
 class _PutWorkspaceArchilBodyRequired(TypedDict):
     region: str
-    s3Url: str
 
 
 class PutWorkspaceArchilBody(_PutWorkspaceArchilBodyRequired, total=False):
+    s3Url: str
     image: str
     keys: PutWorkspaceArchilBodyKeys
 
@@ -6177,6 +6302,7 @@ class PutWorkspaceArchilBodyKeys(TypedDict, total=False):
 
 class _PutWorkspaceArchilResponseRequired(TypedDict):
     on: bool
+    regions: dict[str, str]
     secret: PutWorkspaceArchilResponseSecret
 
 
@@ -6184,6 +6310,7 @@ class PutWorkspaceArchilResponse(_PutWorkspaceArchilResponseRequired, total=Fals
     source: Literal["env", "console"]
     region: str
     s3Url: str
+    s3UrlFrom: Literal["region", "given"]
     image: str
 
 
@@ -8683,7 +8810,6 @@ class FeaturesHarnessKeys(TypedDict):
     routes: bool
     at_rest: Literal["sealed"]
     harnesses: list[str]
-    kept: list[str]
 
 
 class FeaturesMcpClient(TypedDict):
@@ -11974,7 +12100,7 @@ OPERATIONS: dict[str, Operation] = {
     "getAgentPackage": Operation(method="GET", path="/agents/{agent_id}/package", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "resolveSourceSync": Operation(method="POST", path="/agents/{agent_id}/source/resolve", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "reviewSourceProject": Operation(method="POST", path="/agents/{agent_id}/source/project-review", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
-    "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listRuns": Operation(method="GET", path="/agents/{agent_id}/runs", path_params=("agent_id",), multi_segment=(), query=("limit", "cursor", "status", "scope", "label"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "setSourceSync": Operation(method="PATCH", path="/agents/{agent_id}/source", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveAgent": Operation(method="POST", path="/agents/{agent_id}/unarchive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "updateDefinition": Operation(method="PUT", path="/agents/{agent_id}/definition", path_params=("agent_id",), multi_segment=(), query=(), headers=("If-Match",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=True),
@@ -12106,7 +12232,7 @@ OPERATIONS: dict[str, Operation] = {
     "handBackRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/hand-back", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearning": Operation(method="GET", path="/runs/{run_id}/learning", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRunLearningDiff": Operation(method="GET", path="/runs/{run_id}/learning/diff", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
-    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "archived", "label", "source", "from", "to", "model"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "listAllRuns": Operation(method="GET", path="/runs", path_params=(), multi_segment=(), query=("limit", "cursor", "agent", "revision", "status", "scope", "archived", "label", "source", "from", "to", "model"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "sendMessage": Operation(method="POST", path="/runs/{run_id}/messages", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "pauseRun": Operation(method="POST", path="/runs/{run_id}/pause", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "raiseRunCap": Operation(method="PATCH", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -12254,9 +12380,9 @@ class AgentsResource(Group):
         """Acknowledge exact unresolved run receipts and allow later runs to use the saved project (POST /agents/{agent_id}/source/project-review)."""
         return self._call("reviewSourceProject", (agent_id,), body, None, timeout=timeout)
 
-    def runs(self, agent_id: str, *, limit: int | None = None, cursor: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, label: str | None = None, timeout: float | None = None) -> ListRunsResponse:
+    def runs(self, agent_id: str, *, limit: int | None = None, cursor: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, scope: Literal["active", "review"] | None = None, label: str | None = None, timeout: float | None = None) -> ListRunsResponse:
         """The agent's runs index (GET /agents/{agent_id}/runs)."""
-        return self._call("listRuns", (agent_id,), None, {"limit": limit, "cursor": cursor, "status": status, "label": label}, timeout=timeout)
+        return self._call("listRuns", (agent_id,), None, {"limit": limit, "cursor": cursor, "status": status, "scope": scope, "label": label}, timeout=timeout)
 
     def set_source_sync(self, agent_id: str, body: SetSourceSyncBody, *, timeout: float | None = None) -> SetSourceSyncResponse:
         """Enable or pause this agent’s source sync (PATCH /agents/{agent_id}/source)."""
@@ -12822,9 +12948,9 @@ class RunsResource(Group):
         """What the run proposed, file by file (GET /runs/{run_id}/learning/diff)."""
         return self._call("getRunLearningDiff", (run_id,), None, None, timeout=timeout)
 
-    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, archived: bool | None = None, label: str | None = None, source: str | None = None, from_: str | None = None, to: str | None = None, model: str | None = None, timeout: float | None = None) -> ListAllRunsResponse:
+    def list(self, *, limit: int | None = None, cursor: str | None = None, agent: str | None = None, revision: str | None = None, status: Literal["queued", "working", "paused", "input_required", "completed", "failed", "cancelled"] | None = None, scope: Literal["active", "review"] | None = None, archived: bool | None = None, label: str | None = None, source: str | None = None, from_: str | None = None, to: str | None = None, model: str | None = None, timeout: float | None = None) -> ListAllRunsResponse:
         """Every agent's runs, newest first (GET /runs)."""
-        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "archived": archived, "label": label, "source": source, "from": from_, "to": to, "model": model}, timeout=timeout)
+        return self._call("listAllRuns", (), None, {"limit": limit, "cursor": cursor, "agent": agent, "revision": revision, "status": status, "scope": scope, "archived": archived, "label": label, "source": source, "from": from_, "to": to, "model": model}, timeout=timeout)
 
     def message(self, run_id: str, body: SendMessageBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> SendMessageResponse:
         """Send the run a message (POST /runs/{run_id}/messages)."""

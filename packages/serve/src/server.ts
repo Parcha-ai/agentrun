@@ -99,7 +99,7 @@ import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runner/presence.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { builtOfNow, factsOverStore, listedItem, lookingBackEnd, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
 import { reconcileProjectCheckpoints } from "./source-sync/checkpoints.js";
 import { acknowledgeProjects } from "./source-sync/checkpoint-gate.js";
@@ -121,6 +121,8 @@ import { type CutScrub, ExportFailed, restoreIdsOf, runExport } from "./run-expo
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
+import { observationOf } from "./factory-activity.js";
+import { factoryRunsPage } from "./factory-runs.js";
 import { runEntries } from "./store-reads/journal.js";
 import { metersOverStore, spendOverStore } from "./store-reads/cap.js";
 import { watchRun } from "./live/stream.js";
@@ -1179,10 +1181,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  (tool-keys-store.ts), never in the clear. */
       tool_keys: { routes: true, at_rest: "sealed" },
       /** GET /settings/harness-keys and PUT/DELETE of one key: a plan-billed recipe's keys, saved for that harness alone
-       *  (harness-keys.ts); `harnesses` its ids here, and `kept` each id with keys saved whose recipe it no longer names
-       *  (a running server's, from its store: HarnessKeysOverStore.unnamed), so the console offers the page only where
-       *  there is one or a key to remove. */
-      harness_keys: { routes: true, at_rest: "sealed", harnesses: planRecipesOf(env).map((recipe) => recipe.id), kept: [] as string[] },
+       *  (harness-keys.ts); `harnesses` its ids here. The page's own GET lists the ids with keys kept whose recipe the
+       *  server no longer names, so the console offers the page on `routes`, as it does tool keys'. */
+      harness_keys: { routes: true, at_rest: "sealed", harnesses: planRecipesOf(env).map((recipe) => recipe.id) },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
        *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. Every harness of the table runs a
        *  grant (runnable.ts takes one on any), a module's among them. `composio_per_run`: a per-run Composio server takes
@@ -1340,8 +1341,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   dockerLimitsOf(process.env);
   // The Docker host's addresses an operator names (workspace/computer-deps.ts): a bad entry stops the start, in words.
   dockerHostAddressesOf(process.env);
-  // The Archil settings an operator sets (archil-settings.ts ARCHIL_SETTINGS_ENV): one of the region and S3 URL without the
-  // other, or a value the PUT would refuse, stops the start, in words naming each variable.
+  // The Archil settings an operator sets (archil-settings.ts ARCHIL_SETTINGS_ENV): one set without the region, or a value
+  // the PUT would refuse (no S3 URL for a region serve doesn't know), stops the start, in words naming each variable.
   archilSettingsFromEnv(process.env);
   const boxAllow = boxAllowOf(process.env);
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
@@ -1705,11 +1706,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // The start-time switches as this server was started: its options, else the CLI's variables. mcpLoopback is the
   // option alone, as everywhere it is read here (localInstall): the CLI sets it from AGENTRUN_MCP_ALLOW_LOOPBACK.
   const switched: SwitchedOn = { mcpLoopback: options.mcpLoopback === true, webhookPrivateTargets: switchedOnBy(process.env, options).webhookPrivateTargets, apiOnlyMcpOrigins };
-  // harness_keys.kept from the store's snapshot, made again at each key's save or removal (harnessKeysChanged's probe).
-  const compose = (runnerShell?: ReadonlySet<string>) => {
-    const made = askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
-    return { ...made, features: { ...made.features, harness_keys: { ...made.features.harness_keys, kept: harnessKeys.unnamed() } } };
-  };
+  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
   const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
@@ -4580,6 +4577,37 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   async function runsPage(url: URL, filter: { agent?: string; revision?: string }, origin: string, only: Pick<ListedFilter, "source" | "startedFrom" | "startedBefore" | "model"> = {}) {
+    const vd = viewDepsFor(origin);
+    // The Agent Factory's page, from the rows too: each run's list item and what its listing keeps for the factory
+    // (store-view.ts KeptFactory), built once per change of the run as the list below builds them, so a refresh builds no
+    // view of a run that has not moved, however many runs the board holds and however long they ran. Two reads for the
+    // page (the listings, the runners' ticks), then per run only what is read as it stands now: who observes it
+    // (observationOf) and its computer (runComputerRead, which reads a journal only for a desktop or phone that is up,
+    // or a computer held for its owner). A listing behind, cut of other secrets, or built before listings kept the
+    // factory's part is built first, once: the page shows that build whether or not its write landed (a run that moved
+    // again meanwhile stays behind, for the lister or the next page), so a busy run costs one build a page, never the
+    // several a status filter makes below (listNow), which this page has no need of.
+    if (url.searchParams.has("scope")) return factoryRunsPage(store, url, filter, async (rows) => {
+      const secrets = serverSecrets();
+      const now = vd.now ?? Date.now;
+      const ids = rows.map((row) => row.id);
+      const kept = new Map((await store.runs.listings(ids)).map((read) => [read.id, read]));
+      const ticks = new Map((await store.live.read(ids)).map((tick) => [tick.runId, tick.updatedAt]));
+      const runs: Record<string, unknown>[] = [];
+      for (const row of rows) {
+        const read = kept.get(row.id);
+        // A run purged since the page's rows were read has no listing to show (Runs.listings).
+        if (!read) continue;
+        const held = read.listing !== null && !read.behind && builtOfNow(read.listing, secrets) && keptFactory(read.listing, secrets) ? read.listing : undefined;
+        const listing = held ?? (await lister.build(row.id, read.listMark, vd)).listing;
+        const factory = listing && keptFactory(listing, secrets);
+        if (!listing || !factory) continue;
+        const observation = await observationOf(store, factory.observed, liveOf(row, now()), ticks.get(row.id), now);
+        const summary = { ...listedItem(listing, origin, row.archivedAt ?? read.agentArchivedAt, secrets), factory: { ...factory.activity, observation } };
+        runs.push({ ...summary, ...(await runComputerRead(store, row.id, summary, { context: ctx })) });
+      }
+      return runs;
+    });
     const limit = limitOf(url.searchParams.get("limit"));
     const offset = cursorOf(url.searchParams.get("cursor"));
     const status = url.searchParams.get("status");
@@ -4588,7 +4616,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const archived = archivedParam(url);
     // `label=<key>:<value>`, once: only the runs holding it (run-labels.ts), filtered in the store.
     const labels = labelFilter(url.searchParams.getAll("label"));
-    const vd = viewDepsFor(origin);
     // The page from the runs' rows alone (store/schema.ts RUN_LISTING_COLUMNS): filtered (`status` on the listing's status),
     // ordered and cut to the page in one query, so a list costs the same at ten runs and at thousands, however long their
     // journals. An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served
@@ -5066,15 +5093,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // skew check; left out when the store cannot say (a read that failed).
       const state = await store.schemaState?.().catch(() => undefined);
       const storeSchema = state ? { store_schema: { version: state.version, runner_floor: state.runnerFloor, known: state.known } } : {};
-      // features.harness_keys.kept names which harness ids still have keys stored: the owner's session or a holder of
-      // the server's token reads it; a caller with neither (this route answers before any bearer check) reads none. A
-      // bearer this server does not take still gets the answer, and the auth_failed line any other route writes for it.
-      const keptShown = byOwnerSession(req) || bearer(req.headers.authorization, req);
-      if (!keptShown && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "wrong_token");
-      const keptCap = { ...answer.features.harness_keys, kept: keptShown ? answer.features.harness_keys.kept : [] };
+      // This route answers before any bearer check, the same to every caller. A bearer this server does not take still
+      // gets the answer, and the auth_failed line any other route writes for it.
+      if (req.headers.authorization !== undefined && !byOwnerSession(req) && !bearer(req.headers.authorization, req)) authFailed(`/v2${path}`, "wrong_token");
       // tools[].held: the server's keyless holds on each web tool now (web-run.ts withHeld), never cached.
       // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
-      return send(res, 200, { ...answer, tools: withHeld(answer.tools), ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, harness_keys: keptCap, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
+      return send(res, 200, { ...answer, tools: withHeld(answer.tools), ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'

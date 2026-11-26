@@ -636,7 +636,6 @@ export interface components {
       routes: boolean;
       at_rest: "sealed";
       harnesses: string[];
-      kept: string[];
     };
     mcp_client?: {
       transports: "streamable-http"[];
@@ -953,6 +952,37 @@ export interface components {
       };
       model_requests: null;
     };
+    factory?: {
+      lifecycle_version: string;
+      source: "managed" | "native" | "sdk" | "cli";
+      runtime: string;
+      control: "managed" | "observed";
+      controls: {
+        stop: boolean;
+        cancel: boolean;
+        approve: boolean;
+      };
+      observation: {
+        basis: "runner" | "connector" | "unreported";
+        status: "current" | "offline" | "revoked" | "unreported";
+        last_seen_at: string | null;
+      };
+      last_activity_at: string | null;
+      github: null | {
+        repository: string;
+        issue: number | null;
+        pull_request: number | null;
+        head_sha: string | null;
+        provenance: "launch" | "github_trigger";
+      };
+      children: {
+        id: string;
+        conversation_id: number;
+        parent_call_id: string;
+        status: "active" | "completed";
+        label: string | null;
+      }[];
+    };
     console_url?: string;
     revision: string;
     kind: "agentic" | "workflow";
@@ -1154,6 +1184,8 @@ export interface components {
   RunList: {
     runs: components["RunSummary"][];
     next_cursor: string | null;
+    scope?: "active" | "review";
+    observed_at?: string;
   };
   RunResult: {
     output: unknown;
@@ -1173,6 +1205,18 @@ export interface components {
     created_at: components["Timestamp"];
     ended_at: components["Timestamp"] | null;
     cost: components["Cost"];
+    computer?: {
+      kind: "sandbox" | "desktop" | "phone" | "browser";
+      provider: string;
+      state: "starting" | "ready" | "taken_over" | "released" | "ended" | "failed";
+      why?: string;
+      held?: {
+        state: "starting" | "waiting" | "started" | "ended" | "released";
+        minutes: number;
+        until?: string;
+        why?: "timeout" | "lost";
+      };
+    };
     sdk?: {
       runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
       model: string | null;
@@ -1245,6 +1289,37 @@ export interface components {
         }[];
       };
       model_requests: null;
+    };
+    factory?: {
+      lifecycle_version: string;
+      source: "managed" | "native" | "sdk" | "cli";
+      runtime: string;
+      control: "managed" | "observed";
+      controls: {
+        stop: boolean;
+        cancel: boolean;
+        approve: boolean;
+      };
+      observation: {
+        basis: "runner" | "connector" | "unreported";
+        status: "current" | "offline" | "revoked" | "unreported";
+        last_seen_at: string | null;
+      };
+      last_activity_at: string | null;
+      github: null | {
+        repository: string;
+        issue: number | null;
+        pull_request: number | null;
+        head_sha: string | null;
+        provenance: "launch" | "github_trigger";
+      };
+      children: {
+        id: string;
+        conversation_id: number;
+        parent_call_id: string;
+        status: "active" | "completed";
+        label: string | null;
+      }[];
     };
     console_url?: string;
     revision: string;
@@ -2391,6 +2466,7 @@ export interface operations {
     body: never;
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -2400,6 +2476,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };
@@ -4261,6 +4338,7 @@ export interface operations {
     body: never;
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -4270,6 +4348,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };
@@ -6083,7 +6162,7 @@ export interface operations {
   putWorkspaceArchil: {
     body: {
       region: string;
-      s3Url: string;
+      s3Url?: string;
       image?: string;
       keys?: {
         ARCHIL_API_KEY?: string | null;
@@ -6091,6 +6170,7 @@ export interface operations {
     };
     answer: {
       on: boolean;
+      regions: Record<string, string>;
       secret: {
         name: string;
         set: boolean;
@@ -6100,6 +6180,7 @@ export interface operations {
       source?: "env" | "console";
       region?: string;
       s3Url?: string;
+      s3UrlFrom?: "region" | "given";
       image?: string;
     };
   };

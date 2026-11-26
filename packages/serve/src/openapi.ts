@@ -79,6 +79,7 @@ import { MAX_SHOW_PATHS, MAX_SHOW_SEGMENTS, SHOWN_CHARS } from "./filed-tool.js"
 // (secret-writes.ts registerSecretWrite), so every operation the document marks has its predicate wherever it is read.
 import "./computers.js";
 import { ARCHIL_KEY_NAMES } from "./archil-routes.js";
+import { ARCHIL_S3_URLS } from "./archil-settings.js";
 import { RUN_FILE_CUT_MAX } from "./run-files.js";
 import { ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_SUBPROTOCOL, MAX_LINE_BYTES, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION } from "@parcha/agentrun-computer";
 import { DAEMON_FETCHES_PER_MINUTE, PAIR_TRIES_PER_MINUTE, PAIRED_NAME_MAX } from "./computer-attach.js";
@@ -1343,14 +1344,17 @@ const RUNNING_COMPUTERS = closed({
     description: "The runs still going whose agent has a computer, newest first, each as GET /runs/{run_id} answers it, so each carries its `computer`. A run with no computer, and one that has ended, is not here.",
   },
 });
-/** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). */
+/** archil/1: GET, PUT and DELETE /workspace/archil's answer (archil-routes.ts view). archil/2: `regions` and `s3UrlFrom`,
+ *  which a client that validates against archil/1 refuses, so they are a mark of their own. */
 const ARCHIL_VIEW = closedWith({
   on: { type: "boolean", description: "Whether Mode 2 is on: run folders on Archil disks, each agent's own (made on its first run that needs one) unless a run's launch names another. Off, they are on this server's own disk (Mode 1)." },
+  regions: { type: "object", additionalProperties: { type: "string", format: "uri" }, description: `Each Archil region this server knows, with its S3 endpoint (its control plane's host with \`control.\` made \`s3.\`, as Archil's SDK derives it): ${Object.keys(ARCHIL_S3_URLS).join(", ")}. A PUT naming one of them may leave \`s3Url\` out.`, "x-agentrun-serve": "archil/2" },
   secret: { ...SECRET_ITEM("\"workspace:archil\": the Archil account key, which PUT /workspace/archil takes as keys.ARCHIL_API_KEY and the environment variable ARCHIL_API_KEY sets."), description: "The account key as its SecretMeta: never a value." },
 }, {
   source: { enum: ["env", "console"], description: "While on, where the settings come from: `env`, the server's environment (AGENTRUN_ARCHIL_REGION, AGENTRUN_ARCHIL_S3_URL and AGENTRUN_ARCHIL_IMAGE), which wins over saved ones and is changed where the server is started; `console`, saved with PUT /workspace/archil." },
   region: { type: "string", description: "The account key's region: every disk is made, read and minted on its control plane." },
-  s3Url: { type: "string", format: "uri", description: "The region's S3 endpoint (the disks' file API)." },
+  s3Url: { type: "string", format: "uri", description: "The S3 endpoint in force (the disks' file API): the one given, else the region's (`regions`)." },
+  s3UrlFrom: { enum: ["region", "given"], description: "While on, where `s3Url` comes from: `region`, the region's own (`regions`), as saved when the PUT, or the environment, gave none; `given`, another one given.", "x-agentrun-serve": "archil/2" },
   image: { type: "string", description: "The exec image, pinned by digest (`<name>@sha256:<64 hex>`); absent, serve's default (`buildpack-deps:trixie-scm` pinned by digest, git 2.47)." },
 });
 /** archil/1: GET and DELETE /agents/{agent_id}/archil's answer (archil-routes.ts agentView). */
@@ -2425,6 +2429,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
         { name: "agent", in: "query", required: false, description: "Only this agent's runs.", schema: ref("schemas/Id") },
         { name: "revision", in: "query", required: false, description: "Only runs of this revision.", schema: { type: "string" } },
         { name: "status", in: "query", required: false, description: "Only runs with this status.", schema: ref("schemas/RunStatus") },
+        { name: "scope", in: "query", required: false, description: "Factory scope: active includes every nonterminal execution and continuable stopped turn, including archived runs; review selects unarchived terminal escalations and failures separately. Both exclude imported history and use keyset cursors bound to scope, agent and revision. Cannot combine with status or archived. Page limit defaults to 50 (maximum 100). No scope preserves the ordinary history listing.", schema: { enum: ["active", "review"] } },
         { name: "archived", in: "query", required: false, description: "true lists only archived runs; false, the default, the others.", schema: { type: "boolean" } },
         LABEL_PARAMETER,
         SOURCE_PARAMETER,
@@ -2845,10 +2850,11 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "putWorkspaceArchil", tags: ["local"], summary: "Turn Mode 2 on: run folders on Archil disks, one per agent",
-      description: "Replaces the Archil settings (the account key's region and its S3 URL, and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. While the server's environment sets the settings (GET's `source` is `env`), it is 409 key_set_by_server naming its variables, and nothing is saved. The answer never holds a key.",
+      description: "Replaces the Archil settings (the account key's region; its S3 URL, which for a region this server knows (GET's `regions`) may be left out and is then that region's, and a region it doesn't know needs; and an exec image pinned by digest when given) and seals the account key (ARCHIL_API_KEY) under the server's seal key when given; null removes it, and a key not given is kept. There is no server-wide disk: each agent gets its own, made in this region on its first run that uses it (`agentrun-<server id>-i-<agent id>`), and a run may name another (`archil_disk` on its start), so `diskId` is refused. No disk token is kept: a computer's mount credential is minted per run from the account key, so ARCHIL_DISK_TOKEN is refused like any field Archil does not take. Any PUT here is a secret write, whatever its body: it takes the owner's signed-in session, and the API token is 403, since the region and S3 URL say where every run's files go. A field that is not right, or an image not pinned by digest, is 422 input_invalid with its fields, and nothing is saved. While the server's environment sets the settings (GET's `source` is `env`), it is 409 key_set_by_server naming its variables, and nothing is saved. The answer never holds a key.",
       requestBody: {
         required: true,
-        content: { "application/json": { schema: closedWith({ region: { type: "string", minLength: 1 }, s3Url: { type: "string", format: "uri", pattern: "^https://" } }, {
+        content: { "application/json": { schema: closedWith({ region: { type: "string", minLength: 1 } }, {
+          s3Url: { type: "string", format: "uri", pattern: "^https://", description: "The region's S3 endpoint. Left out for a region this server knows (GET's `regions`), that region's." },
           image: { type: "string", pattern: "^[^\\s@]+@sha256:[0-9a-f]{64}$" },
           keys: { type: "object", additionalProperties: false, properties: Object.fromEntries(ARCHIL_KEY_NAMES.map((name) => [name, { type: ["string", "null"], minLength: 1, "x-agentrun-secret": true }])) },
         }) } },
@@ -3894,7 +3900,27 @@ export const DEFINITION_INPUT_OPTIONAL = ["instructions", "version", "skills", "
 /** Definition's own: only instructions ever misses from an answer (a workflow revision keeps none); version, skills
  *  and tools are always sent (agents-store.ts definitionOf), so they stay required there. */
 export const DEFINITION_OPTIONAL = ["instructions"];
+const FACTORY_ACTIVITY: Json = {
+  ...closed({
+    lifecycle_version: { type: "string", pattern: "^[0-9]+$", description: "Committed lifecycle watermark captured in the same store snapshot as this run's projection. The projection is built once per change of the run and kept until the next, so a run that has not changed keeps its watermark from one read to the next. Compare as an integer when reconciling scoped pages; a later watermark supersedes an earlier projection of the same run." },
+    source: { enum: ["managed", "native", "sdk", "cli"], description: "What runs the session: `managed` and `native`, AgentRun's own runner (a native run through the harness on its machine); `sdk`, a backend's SDK wrapper; `cli`, an existing CLI session connected for learning. An `sdk` or `cli` session is run by its own application, which reports it here." }, runtime: { type: "string", description: "The runtime the session recorded (`codex-sdk`, `codex-cli`, `claude-code-cli`, a native harness), else the run's harness." }, control: { enum: ["managed", "observed"], description: "`observed` for an `sdk` or `cli` session: AgentRun refuses to stop or cancel it, so every one of its `controls` is false." },
+    controls: closed({ stop: { type: "boolean" }, cancel: { type: "boolean" }, approve: { type: "boolean" } }),
+    observation: closed({
+      basis: { enum: ["runner", "connector", "unreported"] }, status: { enum: ["current", "offline", "revoked", "unreported"] },
+      last_seen_at: { type: ["string", "null"], format: "date-time" },
+    }),
+    last_activity_at: { type: ["string", "null"], format: "date-time" },
+    github: { oneOf: [{ type: "null" }, closed({
+      repository: { type: "string" }, issue: { type: ["integer", "null"], minimum: 1 }, pull_request: { type: ["integer", "null"], minimum: 1 },
+      head_sha: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$" }, provenance: { enum: ["launch", "github_trigger"] },
+    })] },
+    children: { type: "array", items: closed({ id: { type: "string" }, conversation_id: { type: "integer", minimum: 0 }, parent_call_id: { type: "string" }, status: { enum: ["active", "completed"] }, label: { type: ["string", "null"], maxLength: 160 } }) },
+  }),
+  description: "Present on scoped factory lists. Source reporting and supported controls, not an execution authorization. Connector health does not prove session liveness; an SDK's or a connected CLI session's heartbeat is unreported. GitHub links come only from explicit launch binding or a trusted GitHub trigger, never prose. Children are active durable subagent conversations with recorded ownership, not standalone runs; an empty list makes no claim about unreported native/SDK children.",
+  "x-agentrun-serve": "factory/1",
+};
 const RUN_FIELDS: Record<string, Json> = {
+  factory: FACTORY_ACTIVITY,
   console_url: CONSOLE_URL("run"),
   revision: { type: "string", description: "The id of the agent revision the run runs.", "x-agentrun-serve": "serve/1" },
   kind: { enum: ["agentic", "workflow"], description: "The revision's kind: an agentic run, or a workflow run.", "x-agentrun-serve": "serve/1" },
@@ -4059,6 +4085,10 @@ const RUN_TOOL_KEYS: Json = {
 };
 
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
+  RunList: {
+    scope: { enum: ["active", "review"], description: "Present only for a scoped factory list.", "x-agentrun-serve": "factory/1" },
+    observed_at: { type: "string", format: "date-time", description: "When this scoped read began. Each run is a consistent snapshot; pages are not one frozen snapshot. Re-read from the first page to discover newer admissions.", "x-agentrun-serve": "factory/1" },
+  },
   Limits: {
     free_model_requests: { type: "integer", minimum: 1, description: "The most requests on free models a run makes: a free model's catalog price is all zeros, so a dollar cap cannot stop it. AGENTRUN_FREE_MODEL_REQUESTS, else 60. The request after that many is not sent, and the run ends `failed`, its error `spend_cap_reached`: \"Not sent: this run reached its 60-request limit for free models.\" (the number is this one). Every free model's request counts, the run's own, its subagents', its side calls and any cut by a crash, capped or not; a paid request, a paid tool call and a workflow decision never do. ChatGPT-plan requests don't count.", "x-agentrun-serve": "freerequests/1" },
   },
@@ -4225,6 +4255,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     example: { description: "A value the field accepts, said in `message` too: the operation's documented request body's value there, else the schema's example, const or option, else one made from its type; each is suggested only once the route's own check of the body takes it in place (else the schema, for a value the document gives), so this server never suggests a value it refuses. Absent when there is none. For a field the body does not keep that an object inside it does, the body with the field where it belongs, as `fix` shows it: `{\"definition\": {\"name\": \"Due diligence\"}}`.", "x-agentrun-serve": "explain/1" },
   },
   RunSummary: {
+    computer: RUN_COMPUTER,
     sdk: SDK_RUN,
     cli_learning: CLI_LEARNING_RUN,
     native: NATIVE_RUN,
@@ -4668,9 +4699,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "toolkeys/1",
     },
     harness_keys: {
-      type: "object", additionalProperties: false, required: ["routes", "at_rest", "harnesses", "kept"],
-      properties: { routes: { type: "boolean" }, at_rest: { const: "sealed" }, harnesses: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN }, description: "The plan-billed harness recipes this server is started with (--harness-recipe), whose keys GET /settings/harness-keys lists. Empty when it names none." }, kept: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN }, description: "Each harness id with keys saved whose recipe this server is no longer started with: kept sealed, run by nothing, listed by GET /settings/harness-keys until a DELETE removes them. Empty to a caller with neither the owner's session nor a token." } },
-      description: "GET /settings/harness-keys and PUT/DELETE /settings/harness-keys/{harness_id}/{key}: the keys a plan-billed harness recipe runs on, each kept `sealed` for that harness alone, opened at the claim of a run on it and never handed to another harness or to any run's tools.",
+      type: "object", additionalProperties: false, required: ["routes", "at_rest", "harnesses"],
+      properties: { routes: { type: "boolean" }, at_rest: { const: "sealed" }, harnesses: { type: "array", items: { type: "string", pattern: HARNESS_ID_PATTERN }, description: "The plan-billed harness recipes this server is started with (--harness-recipe), whose keys GET /settings/harness-keys lists. Empty when it names none." } },
+      description: "GET /settings/harness-keys and PUT/DELETE /settings/harness-keys/{harness_id}/{key}: the keys a plan-billed harness recipe runs on, each kept `sealed` for that harness alone, opened at the claim of a run on it and never handed to another harness or to any run's tools. The same to every caller: the GET (the owner's session) also lists each id with keys kept whose recipe this server no longer names, so a console offers the page on `routes`.",
       "x-agentrun-serve": "harnesskeys/1",
     },
     mcp_client: {
@@ -4992,10 +5023,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   listAgents.parameters = [...listAgents.parameters, { name: "archived", in: "query", required: false, description: "true lists only archived agents; false, the default, the others.", schema: { type: "boolean" } }];
   listAgents["x-agentrun-serve-changed"] = { archived: "archivedparam/1" };
   changed.push("GET /agents");
-  // GET /agents/{agent_id}/runs takes GET /runs' `label` filter too (server.ts runsPage, shared by both routes).
+  // GET /agents/{agent_id}/runs takes GET /runs' `scope` and `label` filters too (server.ts runsPage, shared by both routes).
   const listAgentRuns = (doc.paths["/agents/{agent_id}/runs"] as Json).get as Json & { parameters: Json[] };
-  listAgentRuns.parameters = [...listAgentRuns.parameters, LABEL_PARAMETER];
-  listAgentRuns["x-agentrun-serve-changed"] = { ...(listAgentRuns["x-agentrun-serve-changed"] as Json | undefined), label: "runlabels/1" };
+  listAgentRuns.parameters = [...listAgentRuns.parameters, { name: "scope", in: "query", required: false, description: "Factory active executions (including archived) or unarchived terminal escalations and failures for this agent, excluding imports. Uses keyset cursors bound to filters; incompatible with status and archived. Default scoped page size 50, maximum 100.", schema: { enum: ["active", "review"] } }, LABEL_PARAMETER];
+  listAgentRuns["x-agentrun-serve-changed"] = { ...(listAgentRuns["x-agentrun-serve-changed"] as Json | undefined), scope: "factory/1", label: "runlabels/1" };
   changed.push("GET /agents/{agent_id}/runs");
   // GET /agents/{agent_id} always sends the agent's `tools` (server.ts getAgent; [] before it has a revision), which the
   // agent in a list, a create or a save does not: its 200 is the contract's Agent with `tools` required.

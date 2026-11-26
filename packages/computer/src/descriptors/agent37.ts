@@ -12,9 +12,12 @@ export const AGENT37 = defineProvider({
 	label: "Agent37",
 	keys: [
 		{ name: "AGENT37_API_KEY", option: "apiKey", required: true },
-		// The private half of the SSH key registered on the workspace: every command reaches the machine over SSH.
-		{ name: "AGENT37_SSH_KEY", option: "sshKey", required: true },
+		// Every command reaches the machine over SSH. Optional: the private half of a key already on the workspace, used as
+		// given; unset, the provider makes its own and registers it with the API key (agent37.ts, kept in `secrets`).
+		{ name: "AGENT37_SSH_KEY", option: "sshKey", required: false },
 	],
+	// The SSH key the provider makes for itself, kept in the server's sealed store: one per server.
+	secrets: { option: "secrets" },
 	metered: true,
 	mounts: ["archil"],
 	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the instance is made

@@ -47,6 +47,7 @@ import { comparedIds } from "@/lib/traceCompare";
 import { MissionControl } from "@/components/MissionControl";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { queryObservedSessionPrompt, queryRunsPrompt } from "@/lib/codingAgentPrompts";
+import { AgentFactoryPage } from "@/components/AgentFactoryPage";
 import { NeedsYouStrip } from "@/components/NeedsYouStrip";
 import { ConnectExistingAgents, NativeConnections } from "@/components/NativeConnections";
 import { StartHere } from "@/components/StartHere";
@@ -100,6 +101,7 @@ export function route(h: string = location.hash): Where & AgentEditorLocation {
   if (wrapped) { const year = new URLSearchParams(wrapped[1] ?? "").get("year"); return { section: "wrapped", ...(year && /^\d{4}$/.test(year) ? { year: Number(year) } : {}) }; }
   const observed = h.match(/^#\/observations\/([^/?]+)$/);
   if (observed) return { section: "agents", observation: decodeURIComponent(observed[1]) };
+  if (h === "#/factory" || h === "#/factory/") return { section: "factory" };
   let m = h.match(/^#\/runs\/([^/?]+)$/);
   if (m) return { section: "runs", run: decodeURIComponent(m[1]) };
   // A race: the runs its race:<label> label groups, watched side by side, under Runs. #/races/new is the form that starts
@@ -548,7 +550,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // since, here or elsewhere (a template's apply makes one with its triggers), is named at once, and again when an import
   // at setup ends while this page watches (`refreshed`). Only the newest read lands.
   useEffect(() => {
-    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && where.section !== "triggers" && namesAfter.current === refreshed) return;
+    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && where.section !== "factory" && where.section !== "triggers" && namesAfter.current === refreshed) return;
     namesAfter.current = refreshed;
     const n = ++namesAsked.current;
     setNamesRead(false);
@@ -586,12 +588,12 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
-  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.harnesses.length || caps?.features?.harness_keys?.kept?.length ? ["harness-keys" as const] : []), ...(caps?.features?.api_keys?.routes ? ["api-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : []), "demo" as const];
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.routes ? ["harness-keys" as const] : []), ...(caps?.features?.api_keys?.routes ? ["api-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : []), "demo" as const];
   // In demo mode Settings is the demo's page alone: the server's own settings are no part of the sample story, and are
   // kept out of what a demo shows.
   const settingsShown: SettingsPage[] = demo ? ["demo"] : settingsOffered;
   const settingsPage: SettingsPage = demo ? "demo" : where.settings ?? "keys";
-  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", triggers: "#/triggers", templates: "#/templates", suggestions: "#/suggestions", wrapped: "#/wrapped", settings: `#/settings/${settingsShown[0] ?? "keys"}` }[s]);
+  const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", factory: "#/factory", triggers: "#/triggers", templates: "#/templates", suggestions: "#/suggestions", wrapped: "#/wrapped", settings: `#/settings/${settingsShown[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
   const templateKeys = useRef(keeper()).current;
@@ -954,6 +956,8 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
         ? <WrappedPage v2={v2} year={where.year} go={go} />
         : where.section === "suggestions"
         ? <SuggestionsPage v2={v2} repo={where.repo} go={go} />
+        : where.section === "factory"
+        ? <AgentFactoryPage v2={v2} agentName={agentName} />
         : where.section === "templates"
         ? <TemplatesPage key={where.install !== undefined ? `install:${where.install}` : where.template ?? ""} v2={v2} name={where.template} install={where.install} go={go} />
         : where.section === "triggers"

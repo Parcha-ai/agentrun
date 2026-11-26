@@ -33,6 +33,7 @@ import templateUnattended from "./template-unattended.mjs";
 import templateUnattendedNavigation from "./template-unattended-navigation.mjs";
 import watchLive from "./watch-live.mjs";
 import screenSteps from "./screen-steps.mjs";
+import agentFactory from "./agent-factory.mjs";
 import screenUnopened from "./screen-unopened.mjs";
 import serverDeny from "./server-deny.mjs";
 import computersKeys from "./computers-keys.mjs";
@@ -57,6 +58,7 @@ import playgroundOperationWidth from "./playground-operation-width.mjs";
 import playgroundAgentWidth from "./playground-agent-width.mjs";
 import devToolsPanelWidth from "./dev-tools-panel-width.mjs";
 import suggestAgents from "./suggest-agents.mjs";
+import pageFrames from "./page-frames.mjs";
 
 export const flows = [
   setupOpen,
@@ -77,6 +79,7 @@ export const flows = [
   reportJson,
   watchLive,
   screenSteps,
+  agentFactory,
   screenUnopened,
   takeOver,
   askDone,
@@ -105,4 +108,5 @@ export const flows = [
   devToolsPanelWidth,
   playgroundPaneLines,
   ...suggestAgents,
+  ...pageFrames,
 ];

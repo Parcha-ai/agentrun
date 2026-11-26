@@ -7,14 +7,10 @@ import { REASON_CHARS, said } from "../dist/errors.js";
 
 const { cases } = JSON.parse(readFileSync(new URL("./reason-cases.json", import.meta.url), "utf8"));
 
-test("a reason keeps one space for each whitespace run and drops every control, zero-width, bidi and BOM character", () => {
-  for (const [message, end] of cases) assert.equal(said({ message }), end, JSON.stringify(message));
-});
-
-test("a reason is cut at REASON_CHARS code points after it is cleaned, the last a …", () => {
-  assert.equal(said({ message: "x".repeat(400) }), `: ${"x".repeat(REASON_CHARS - 1)}…`);
-  assert.equal(said({ message: "\u0000x".repeat(REASON_CHARS) }), `: ${"x".repeat(REASON_CHARS)}`, "dropped characters are not counted");
-  assert.equal(said({ message: "😀".repeat(400) }), `: ${"😀".repeat(REASON_CHARS - 1)}…`, "a code point is one character");
-  assert.equal(said({ code: "x" }), "");
-  assert.equal(said(undefined), "");
+test("a reason keeps one space for each whitespace run, drops every control, zero-width, bidi and BOM character, and is cut at REASON_CHARS code points after", () => {
+  assert.equal(REASON_CHARS, 300, "the cases' length");
+  for (const [message, end] of cases) {
+    if (message === null) for (const error of [{ code: "x" }, undefined]) assert.equal(said(error), end, JSON.stringify(error));
+    else assert.equal(said({ message }), end, JSON.stringify(message).slice(0, 80));
+  }
 });
