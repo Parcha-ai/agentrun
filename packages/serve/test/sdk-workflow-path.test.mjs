@@ -12,6 +12,7 @@ import { createWorkflowMcpBridge } from "@parcha/agentrun-client/workflows";
 import * as workflowEngine from "@parcha/agentrun-dsl";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const tool = "mcp:backend/status";
 const workflow = { v: 2, name: "release", schemas: { In: { type: "object" }, Out: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Out", path: "answer" }, root: { node: "call", label: "status", via: "tool", tool, args: {}, out: "Out", as: "answer", deadline_s: 5 } };
@@ -30,7 +31,7 @@ async function setup(t, runtime = "claude-agent-sdk") {
     const claim = await server.store.claim(id, "sdk-path-proof", { leaseMs: 60_000 });
     const launch = (await server.store.runs.launch(id)).body;
     // A handed-back job may look back; no paid request is sent by this scripted unavailable external route.
-    const loop = createSdkLoop(launch, { store: server.store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => { throw new Error("the test reflection route is unavailable"); })({ journal: () => server.store.journal(claim), flush: () => server.store.flush(), signal: new AbortController().signal });
+    const loop = createSdkLoop(launch, { store: server.store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => { throw new Error("the test reflection route is unavailable"); })({ redact: heldRedactor((text) => text), journal: () => server.store.journal(claim), flush: () => server.store.flush(), signal: new AbortController().signal });
     assert.equal((await loop.start(claim)).state, "ended");
   };
   const start = async () => {

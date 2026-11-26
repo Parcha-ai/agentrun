@@ -19,6 +19,7 @@ import { answerFlow, linkHarnesses } from "./support.mjs";
 import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { OPENCODE_STANDIN_ENV } = await import("../dist/adapters.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
@@ -110,7 +111,7 @@ async function cliSpec(t, harness, { seed = "landed", promoted = true } = {}) {
     env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), log: (line) => log.push(line),
     computerForClaim: async () => ({ release: async () => {} }),
   };
-  built = await cliRunSpecFromLaunch(launch, { harness: harnessRun, registry, setModels: (given) => (models = given), ledger }, deps, claim);
+  built = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness: harnessRun, registry, setModels: (given) => (models = given), ledger }, deps, claim);
   return { spec: built, log };
 }
 
