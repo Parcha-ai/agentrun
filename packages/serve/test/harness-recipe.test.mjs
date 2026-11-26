@@ -1902,3 +1902,10 @@ test("a run's own process, its harness's keys saved and no owner sign-in: a held
     return true;
   });
 });
+
+test("harness-check reads a tool the agent offered its model as ours under `agentrun` or a run's own name (ar and exactly 6 lowercase hex digits), and nothing near either", async () => {
+  const { checkToolOf } = await import("../dist/harness-check.js");
+  assert.equal(checkToolOf("agentrun__check_echo"), "check_echo");
+  assert.equal(checkToolOf("ar3f12ab__check_echo"), "check_echo");
+  for (const other of ["ar3f12a__check_echo", "ar3f12abc__check_echo", "ar3F12AB__check_echo", "xar3f12ab__check_echo", "ar3f12ab_check_echo", "agentrun_check_echo", "github__check_echo", "check_echo"]) assert.equal(checkToolOf(other), undefined, other);
+});
