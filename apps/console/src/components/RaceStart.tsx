@@ -78,9 +78,10 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
     if (!picks.has(key)) picks.set(key, ++counted.current);
     return picks.get(key)!;
   };
-  // Each lane's agent made for a run that has not started (refused): archived when the lane is removed or picked again,
-  // and its pick forgotten, so that pick sent again makes a new agent. Best effort: an agent the archive misses stays in
-  // the Agents list, archivable there.
+  // Each lane's agent made for a run that has not started yet: archived as soon as the server refuses that run (a refusal
+  // started nothing), so a person who leaves the form keeps none of it, and its pick forgotten, so that pick sent again
+  // makes a new agent. One whose run's answer was lost is kept: its run may have started, and Start sends it again. Best
+  // effort: an agent the archive misses stays in the Agents list, archivable there.
   const idle = useRef(new Map<number, { id: string; key: string }>()).current;
   const letGo = (i: number) => {
     const made = idle.get(i);
@@ -120,7 +121,6 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   const left = lanes.map((_, i) => i).filter((i) => !(outcomes[i] && "run" in outcomes[i]));
   // A lane picked again after a refusal drops the refusal's words: they were about the pick it had.
   const pick = (i: number, lane: LaneChoice) => {
-    letGo(i);
     setLanes((all) => all.map((l, j) => (j === i ? lane : l)));
     setOutcomes((all) => Object.fromEntries(Object.entries(all).filter(([j]) => Number(j) !== i)));
   };
@@ -136,7 +136,6 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
   const removable = !last || "error" in last;
   const remove = () => {
     const count = lanes.length - 1;
-    letGo(count);
     const kept = Object.fromEntries(Object.entries(outcomes).filter(([j]) => Number(j) < count));
     setLanes((all) => all.slice(0, count));
     setOutcomes(kept);
@@ -160,7 +159,9 @@ export function RaceStart({ v2, harnesses, tools, places, go, label: given }: { 
         idle.delete(i);
         return [i, { run }];
       } catch (e) {
-        return [i, refused(e) ? { error: e.message } : { unsure: sent }];
+        if (!refused(e)) return [i, { unsure: sent }];
+        letGo(i);
+        return [i, { error: e.message }];
       }
     }));
     const next: Record<number, Outcome> = { ...outcomes, ...Object.fromEntries(done) };

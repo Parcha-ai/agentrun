@@ -8,7 +8,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { defaultPlaceOf, placesOf } from "../dist/place.js";
+import { boxesLine, defaultPlaceOf, placesOf } from "../dist/place.js";
 import { scratch, SECRET_WRITE_PATHS, serve, withEnv } from "./support.mjs";
 
 SECRET_WRITE_PATHS.push({ methods: ["PUT"], path: /^\/workspace\/archil$/ });
@@ -42,6 +42,9 @@ test("placesOf and defaultPlaceOf: Docker's box is the default where the runner 
   assert.deepEqual(mode2.default_place, { mode: "runner" }, "Mode 2: never Docker's box");
   assert.equal("default_reason" in mode2, false);
   for (const tools of [["bash"], ["read", "bash", "bash_background"]]) assert.deepEqual(defaultPlaceOf("agentic", tools, docker, flags, true), { mode: "runner" }, JSON.stringify(tools));
+  // The start's Boxes line says the same.
+  assert.equal(boxesLine(docker, new Set(), "none", true, false), "Boxes: docker (on by default; set AGENTRUN_BOXES to change).");
+  assert.equal(boxesLine(docker, new Set(), "none", true, true), "Boxes: docker (on by default; set AGENTRUN_BOXES to change). New agents run on the runner: Mode 2 keeps workspaces on Archil, which the docker box can't mount.");
 });
 
 test("Mode 2 with Docker answering: default_place is the runner, and a race lane's agent with bash and no place starts its run on the runner, never refused for a Docker sandbox", async (t) => {
@@ -59,7 +62,7 @@ test("Mode 2 with Docker answering: default_place is the runner, and a race lane
   assert.deepEqual(started.body.run?.place ?? started.body.place, { mode: "runner" }, JSON.stringify(started.body));
 });
 
-test("Mode 1 with Docker answering: a lane's agent with bash and no place still runs in Docker's box", async (t) => {
+test("Mode 1 with Docker answering: default_place stays Docker's box", async (t) => {
   const { api } = await dockerServer(t, { archil: false });
   const caps = (await api("GET", "/capabilities")).body;
   assert.deepEqual(caps.places.default_place, { mode: "sandbox", box: "docker" });
