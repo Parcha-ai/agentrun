@@ -590,7 +590,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
-  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.harnesses.length || caps?.features?.harness_keys?.kept?.length ? ["harness-keys" as const] : []), ...(caps?.features?.api_keys?.routes ? ["api-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : []), "demo" as const];
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(caps?.features?.harness_keys?.routes ? ["harness-keys" as const] : []), ...(caps?.features?.api_keys?.routes ? ["api-keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : []), "demo" as const];
   // In demo mode Settings is the demo's page alone: the server's own settings are no part of the sample story, and are
   // kept out of what a demo shows.
   const settingsShown: SettingsPage[] = demo ? ["demo"] : settingsOffered;
@@ -882,7 +882,7 @@ function ConsolePage({ v2, onSignedOut, demo = false }: ConsoleProps) {
   // place (newAgentPlace). So the bar goes only when that place is the runner, where a first agent on Claude Agent runs
   // on the login; on a box, or with the places not read yet, it stays, for every harness. A picked agent's run goes on
   // the login only for a model the login serves (loginServes): one naming an OpenRouter model still needs its key.
-  const noAgentOnRunner = editorCaps.places?.defaultPlace.mode === "runner";
+  const noAgentOnRunner = editorCaps.places?.defaultPlace?.mode === "runner";
   const onClaudeLogin = claudeSignedIn && caps?.models?.needs !== "model" && (!selectedAgent ? noAgentOnRunner : (runDefinition?.harness === LOGIN_HARNESS && loginServes(runDefinition.model) && runPlace?.mode === "runner"));
   const playgroundTarget = where.operation ? where.playgroundAgent : pick ?? where.playgroundAgent;
   // The playground's operation, first on its request row: the page's own row, or Start a run's beside its agent.
