@@ -40,6 +40,8 @@ import { type Approvals, approvalsOf } from "./approvals.js";
 import { settingOfDefinition } from "./computer-setting.js";
 import { BASH_POLICIES, readOnlyReason, readOnlyText } from "./bash-read-only.js";
 import { formatToolName, isCatalogName, mcpNameOf, mcpToolName, monidNameOf } from "./tool-names.js";
+import { filedFolders } from "./filed-tool.js";
+import { posix } from "node:path";
 
 /** What the gate does with a tool's calls. */
 export const PERMISSIONS = ["allow", "ask", "deny"] as const;
@@ -128,6 +130,20 @@ const notGivenWriteText = (writes: string, instead: string, ran: "no" | "unknown
   `${DENIED_OPENING}${writes}, and this agent is not given write, so it can't write one.${instead ? ` ${instead}` : ""} ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
 /** What a screenshot's save_as does, and what to do instead, in a not-given refusal. */
 const SAVED_AS_WRITES = ["computer_screenshot with save_as writes a file into the run's files", "Take the screenshot without save_as."] as const;
+/** The settings keys of the agent's own file tools, and the arguments their calls name a file by (pi's and the kernel's
+ *  `path`, claude-agent's `file_path` and `notebook_path`), which filedRefusal reads. */
+const FILE_KEYS: ReadonlySet<string> = new Set(["read", "write", "edit"]);
+const PATH_ARGS = ["path", "file_path", "notebook_path"] as const;
+/** `given` as a path in the run's folder (`names`: its names, this machine's path and the computer's), relative to it
+ *  ("" for the folder), or undefined outside it. Lexical (posix): no file is read, so a link is not followed. */
+function inRunFolder(names: readonly string[], given: string): string | undefined {
+  const abs = posix.resolve(names[0]!, given);
+  for (const name of names.map((one) => posix.resolve(one))) {
+    if (abs === name) return "";
+    if (abs.startsWith(`${name}/`)) return abs.slice(name.length + 1);
+  }
+  return undefined;
+}
 const STRICTNESS: Readonly<Record<Permission, number>> = { allow: 0, ask: 1, deny: 2 };
 /** A session's `{name -> settings key}` map (nameMapOf). */
 export type NameMap = ReadonlyMap<string, string>;
@@ -534,6 +550,8 @@ export class RunGate {
     if (pinned) return { deny: pinned.text };
     const policed = this.policyRefusal(key, name, args);
     if (policed) return { deny: policed };
+    const filed = this.filedRefusal(key, name, args, ran);
+    if (filed) return { deny: filed };
     // A screenshot saved into the run's files (save_as) is a file written as write writes one: write's setting holds it
     // too, after the kind's deny, and the stricter decides (write's deny refuses it before the computer is asked, write's
     // ask puts it to a person, as the kind's does). An agent whose tools leave write out is refused it first: no setting
@@ -665,6 +683,27 @@ export class RunGate {
     if (!(BASH_POLICIES as readonly string[]).includes(policy)) return `${tool}${CANT_BE_CALLED}this agent's bash policy ${JSON.stringify(policy).slice(0, 60)} is not one this server knows (${BASH_POLICIES.join(", ")}), so no command is let through until its tool_settings name one. ${NOT_RUN}`;
     const reason = readOnlyReason(tool, args, [this.where.work, COMPUTER_ROOT]);
     return reason === undefined ? undefined : readOnlyText(tool, reason, NOT_RUN);
+  }
+
+  /** The folders the revision's own file settings file answers in (filed-tool.ts filedFolders), read at the first file
+   *  call: a run's revision does not change under it. */
+  private filed?: readonly { key: string; folder: string }[];
+  /** Why the call `name` (held to `key`) with `args` is refused for a filed folder, or undefined: a call of the agent's own
+   *  read, write or edit (not read_skill_file, which reads the agent's skill) whose path is at or under a folder the
+   *  revision's own `mcp:` setting files answers in, by its words against the run's folder by both its names (`..` and
+   *  ./ resolved). An ancestor, a sibling and a path outside the run's folder are not refused; bash is not gated by path. */
+  private filedRefusal(key: string, name: string, args: unknown, ran: "no" | "unknown"): string | undefined {
+    if (!FILE_KEYS.has(key) || name === READ_SKILL_FILE || args === null || typeof args !== "object") return undefined;
+    const folders = (this.filed ??= filedFolders(this.overrides));
+    if (!folders.length) return undefined;
+    for (const arg of PATH_ARGS) {
+      const given = (args as Record<string, unknown>)[arg];
+      if (typeof given !== "string") continue;
+      const rel = inRunFolder([this.where.work, COMPUTER_ROOT], given);
+      const hit = rel === undefined ? undefined : folders.find(({ folder }) => rel === folder || rel.startsWith(`${folder}/`));
+      if (hit) return `${key}${CANT_BE_CALLED}${given} is in ${hit.folder}/, the folder this agent's setting for ${hit.key} files that tool's answers in (its file setting), so the agent's own file tools are refused there. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
+    }
+    return undefined;
   }
 
   private lastGood?: PermissionSettings;

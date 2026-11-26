@@ -5,9 +5,10 @@
 // the answer's shape (keys that read as plain names and types to depth 2, array lengths), never another value; for an
 // error, a last line of what its structure gives (errorLine) (mcp-gateway.ts forward). The answer goes through neither the clip nor evidence/mcp/. So a template whose tool answers
 // hold what the model must not read (a customer's descriptions, say) hands its code the whole answer and its model the
-// values it needs to go on (the next page's cursor). What it does not do: keep the model's own file tools (read, grep,
-// ls, bash on a computer) off the folder. A template that must keep the model off the answer grants none of them, or runs
-// its skill's code where the model can't read the output. A show path that names a free-text field shows that text:
+// values it needs to go on (the next page's cursor). The tool gate refuses the agent's own read, write and edit at or
+// under the folder (tool-gate.ts filedRefusal), by the path's words: bash is not gated by path, and a link bash made, or
+// any program the run starts, can open the folder. A template that must keep the model off the answer grants no bash, or
+// runs its skill's code where the model can't read the output. A show path that names a free-text field shows that text:
 // the option holds only as far as its paths do. A stored setting that no longer reads refuses every call of its tool.
 import type { InputIssue } from "./errors.js";
 
@@ -28,6 +29,23 @@ const FOLDER_WORDS = "1 to 3 segments joined by /, each letters, digits, _, - or
 const PATH_WORDS = `a path of 1 to ${MAX_SHOW_SEGMENTS} segments joined by ., each a key (a letter, _ or $ first), an index (0, 1, ...) or -1 (the last item)`;
 
 const isPlain = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+/** Whether `folder` reads as a file setting's folder: FOLDER_WORDS. */
+const folderReads = (folder: unknown): folder is string => {
+  const segments = typeof folder === "string" ? folder.split("/") : [];
+  return segments.length >= 1 && segments.length <= 3 && segments.every((segment) => FOLDER_SEGMENT.test(segment));
+};
+
+/** The folders an agent's own tool settings (its revision's body.toolSettings) file answers in, each with its setting's
+ *  key (`mcp:<server>/<tool>`): what the tool gate keeps the agent's own file tools out of (tool-gate.ts filedRefusal).
+ *  A setting whose folder reads counts whether or not the rest of it does (one that does not refuses its tool's calls,
+ *  but a runner older than the setting may have filed there). */
+export function filedFolders(toolSettings: unknown): { key: string; folder: string }[] {
+  if (!isPlain(toolSettings)) return [];
+  return Object.entries(toolSettings).flatMap(([key, setting]) => {
+    const folder = key.startsWith("mcp:") && isPlain(setting) && isPlain(setting.file) ? setting.file.folder : undefined;
+    return folderReads(folder) ? [{ key, folder }] : [];
+  });
+}
 
 /** The issues of `given` as a file setting, its fields under `at`: none when it is one. */
 export function fileIssues(given: unknown, at: string): InputIssue[] {
@@ -35,9 +53,7 @@ export function fileIssues(given: unknown, at: string): InputIssue[] {
     return [{ field: at, reason: "wrong_type", message: `${at} is {folder, show}: the folder of the run's files each answer of the tool is filed in, whole, and the paths of it the tool's result shows (at most ${MAX_SHOW_PATHS}); the result shows no other value of it` }];
   }
   const issues: InputIssue[] = [];
-  const folder = given.folder;
-  const segments = typeof folder === "string" ? folder.split("/") : [];
-  if (!(segments.length >= 1 && segments.length <= 3 && segments.every((segment) => FOLDER_SEGMENT.test(segment)))) issues.push({ field: `${at}.folder`, reason: "not_an_option", message: `${at}.folder is a folder in the run's files: ${FOLDER_WORDS}` });
+  if (!folderReads(given.folder)) issues.push({ field: `${at}.folder`, reason: "not_an_option", message: `${at}.folder is a folder in the run's files: ${FOLDER_WORDS}` });
   const show = given.show;
   if (!Array.isArray(show) || show.length > MAX_SHOW_PATHS) {
     issues.push({ field: `${at}.show`, reason: "not_an_option", message: `${at}.show is a list of at most ${MAX_SHOW_PATHS} paths, each ${PATH_WORDS}` });
