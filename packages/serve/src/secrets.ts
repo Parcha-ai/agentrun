@@ -453,16 +453,27 @@ const ENCODED_SEMI_SEEN = /%3B/i;
 const QUOTED = /^(["']|%22|%27)(.*)\1$/;
 const OPEN_QUOTE = /^(?:["']|%22|%27)/;
 
-/** What a credential's value whose part before its first `;` is empty (`;<key>`) holds after that `;`, whole and up to
- *  its next `;`, as a reader that skips an empty part reads it; nothing for any other value. */
+/** Whether `text` reaches the held lists' floor: MIN_SECRET characters or more, decoded and whitespace aside. */
+const atFloor = (text: string): boolean => (decoded(text) ?? text).replace(/\s+/g, "").length >= MIN_SECRET;
+
+/** Whether `text`, decoded, is itself a `name=value` pair named like no credential (`theme=dark-mode`): a word, `=`,
+ *  then a value that starts with no other `=` (a base64 credential's padding, `<b64>=`, makes no pair). */
+const PAIR_SHAPE = /^([A-Za-z][\w.-]*)=[^=]/;
+const plainPair = (text: string): boolean => {
+  const pair = PAIR_SHAPE.exec(decoded(text) ?? text);
+  return pair !== null && !credentialNamed(pair[1]);
+};
+
+/** What a credential's value whose part before its first `;` is empty (`;<key>`) holds after that `;`: the rest whole,
+ *  as a reader that skips an empty part reads it, and its first piece up to a `;` at the floor or longer (atFloor), so
+ *  `;a;<key>` gives `<key>`, never an `a` the tracer's cut would take from every word; neither when it is a pair named
+ *  like no credential (plainPair, `;theme=dark-mode`). Nothing for any other value. */
 const afterEmpty = (value: string): string[] => {
   if (!value.startsWith(";")) return [];
   const after = value.replace(/^;+/, "");
-  return [after, after.split(";")[0]];
+  const piece = after.split(";").find(atFloor);
+  return [after, ...(piece === undefined ? [] : [piece])].filter((taken) => !plainPair(taken));
 };
-
-/** Whether `text` reaches the held lists' floor: MIN_SECRET characters or more, decoded and whitespace aside. */
-const atFloor = (text: string): boolean => (decoded(text) ?? text).replace(/\s+/g, "").length >= MIN_SECRET;
 
 /** A value up to each `%20` in it, each at the floor or longer (atFloor): a read that keeps a `%20` in a key also runs
  *  on past a `%20` that splits pairs (`api_key=<p>%20<n>;<s>%20region=us`), a read that splits at `%20` cuts the key at
@@ -478,9 +489,10 @@ const spacedHeads = (value: string): string[] =>
  *  name is what follows the last `/`, `?`, `#` or `:` before its `=` (a URL's query or fragment,
  *  `https://relay/v1?region=us`, names `region`). A value is taken up to each `%20` in it too (spacedHeads). A value
  *  whose part before its first `;` is empty, as written or decoded (`token=;<key>` read whole, `token=%3B<key>`), is
- *  taken after that `;` too (afterEmpty). A value of only `=`, `;` and quotes, as written or decoded (a base64 credential's padding read as a
- *  pair, `token=;` before a space, a lone `'` or its `%27`), is not taken: otlpHeaderCut has no length floor, and it
- *  would cut that character everywhere in the tracer's lines. */
+ *  taken after that `;` too (afterEmpty). A value whose decoded form is only `=`, `;`, quotes, commas and spaces (a
+ *  base64 credential's padding read as a pair, `token=;` before a space, a lone `'` or its `%27`, `api_key=%2C`) is not
+ *  taken, as written or decoded: otlpHeaderCut has no length floor, and it would cut those characters everywhere in the
+ *  tracer's lines. */
 const pairValues = (text: string, breaks: RegExp): string[] =>
   text.split(breaks).flatMap((pair) => {
     const at = pair.indexOf("=");
@@ -494,7 +506,7 @@ const pairValues = (text: string, breaks: RegExp): string[] =>
       .flatMap((value) => [value, ...afterEmpty(value), ...spacedHeads(value)])
       .flatMap((value) => [value, decoded(value) ?? value])
       .concat(afterEmpty(decoded(inner) ?? inner))
-      .filter((value) => /[^=;"']/.test(value));
+      .filter((value) => /[^=;"',\s]/.test(decoded(value) ?? value));
   });
 
 /** The credentials a header value carries inside it, the union of two reads over the whole value as written: the value
