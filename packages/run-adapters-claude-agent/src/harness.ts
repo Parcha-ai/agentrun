@@ -221,6 +221,9 @@ export interface ClaudeCodeHarnessOptions {
   model?: string;
   /** The model of the CLI's small background calls (`nativeModelId` too). Default `model`. */
   smallModel?: string;
+  /** How long the CLI waits on a silent streamed answer before it gives the stream up (durableEnv's `streamIdleMs`).
+   *  Default the CLI's own, 5 minutes. */
+  streamIdleMs?: number;
   /** Appended to Claude Code's own system prompt (the `claude_code` preset). */
   instructions?: string;
   /** The provider credential, read per model request, in the Function. Default `gatewayCredential`. */
@@ -769,6 +772,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           model,
           ...(smallModel ? { smallModel } : {}),
           ...(sandbox.commandTimeoutMs ? { bashTimeoutMs: sandbox.commandTimeoutMs } : {}),
+          ...(options.streamIdleMs !== undefined ? { streamIdleMs: options.streamIdleMs } : {}),
           ...(sandbox.env ? { extra: sandbox.env } : {}),
           toolDescriptionMax: Math.max(0, ...bridge.tools.map((t) => t.description.length)),
           // A host tool's result within the host's bound reaches the model whole (each tool is listed with it, too).

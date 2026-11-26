@@ -17,6 +17,7 @@ import { sleep, STEADY_LEASE, until } from "./runner-support.mjs";
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { suiteTools, MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 const { reserveFor, stepAndAnswerFor, WRAP_UP_TEXT, wrappingUp, wrapUpText } = await import("../dist/wrap-up.js");
@@ -116,7 +117,7 @@ async function wrapRun(t, { capUsd, hold, billed, fetch, tools, onLedger, model,
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
   const judged = [];
   const loop = createAdapterLoop((_claim, run) => (onLedger?.(run.ledger), {
-    adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch, price: price ?? (() => billed), extensions: [delegate] }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch, price: price ?? (() => billed), extensions: [delegate] }),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
     runCap: { capUsd: () => (typeof capUsd === "function" ? capUsd() : capUsd), modelOf: () => model ?? priced(hold), judged: (request, answer) => void judged.push(answer) },
@@ -389,7 +390,7 @@ test("the wrap-up holds across a claim moved to another runner: it is read from 
   const script = [{ call: "read" }, { call: "slow" }, { call: "read" }, { say: "answered under the cap" }];
   const judged = [];
   const loop = createAdapterLoop((_claim, run) => ({
-    adapter: piAdapter({ run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => USD }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider: { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin(script, requests), price: () => USD }),
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
     runCap: { capUsd: () => CAP, modelOf: () => priced(USD), judged: (_request, answer) => void judged.push(answer) },

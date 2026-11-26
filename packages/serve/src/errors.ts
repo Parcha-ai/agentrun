@@ -111,6 +111,8 @@ export const ERROR_STATUS = {
   runner_refused: 503,
   // POST /settings/api-keys (api-keys.ts) while the server keeps as many API keys as it takes: one is revoked first.
   api_keys_full: 409,
+  // POST /settings/local-model/pull while a pull is under way here (local-model.ts): one at a time.
+  local_model_pulling: 409,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

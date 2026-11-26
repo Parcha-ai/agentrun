@@ -137,7 +137,7 @@ export function createNativeLoop(launch:RunLaunch,host:AdapterSpecDeps):LoopFact
      const read=async()=>{
       const entries=await journalEntries(journal,ctx);const spend=bookedSpend(entries as never,'model');
       // Its path by the one writer every harness's end calls: a native task never calls a learned workflow, so `agent`.
-      const path=await runPathMetricsOverStore(host.store,claim.runId,launch);
+      const path=await runPathMetricsOverStore(host.store,claim.runId,launch,{redact});
       return {costUsd:spend.usd,metrics:{...nativeMetrics(entries,spend,model,turn,path,runtime),native_session_id:nativeSessionId,...(usage?{native_usage:usage}:{})}};
      };
      endPatch=await Promise.race([read(),late]);

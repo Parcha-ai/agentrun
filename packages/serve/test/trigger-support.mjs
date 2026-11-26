@@ -118,3 +118,20 @@ export async function hookServer(t, answer = (res) => res.writeHead(202, { "cont
   }));
   return { url: `http://127.0.0.1:${server.address().port}${HOOK_PATH}`, got };
 }
+
+/** A launch hook that drops the connection: a listener on 127.0.0.1 this test owns until its end, which reads each request
+ *  whole and then closes its socket unanswered, so a POST to `url` is sent and never answered, the same every time (the
+ *  fetch's UND_ERR_SOCKET). Never a port that was closed: another process could bind it. */
+export async function droppingServer(t) {
+  const server = createServer((req) => {
+    req.resume();
+    req.on("end", () => req.socket.destroy());
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => {
+    server.closeAllConnections();
+    server.close(() => resolve());
+  }));
+  const { port } = server.address();
+  return { url: `http://127.0.0.1:${port}${HOOK_PATH}`, port };
+}

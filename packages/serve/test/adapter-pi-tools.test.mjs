@@ -7,6 +7,7 @@ import { closeOpenSessions, hostTools, MODEL, scriptedOrigin } from "./conforman
 import { capRun, quiet } from "./adapter-pi-cap-support.mjs";
 
 const { piAdapter, piPolicy } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 after(closeOpenSessions);
 
 const provider = { api: "anthropic-messages", origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` };
@@ -19,7 +20,7 @@ test("pi's tool definitions reach the provider: the request the provider gets of
   const sent = [];
   const { row } = await capRun(t, {
     specOf: () => (_claim, run) => ({
-      adapter: piAdapter({ run, model: MODEL, provider, fetch: scriptedOrigin([{ call: "note" }, { say: "done" }], sent), price: () => 0 }),
+      adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: MODEL, provider, fetch: scriptedOrigin([{ call: "note" }, { say: "done" }], sent), price: () => 0 }),
       session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
       input: "Follow the script.",
       hooks: quiet,

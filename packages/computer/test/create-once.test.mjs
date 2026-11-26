@@ -211,6 +211,8 @@ test("orgo: two provider instances whose creates of one request start together a
 const CLOUD_BROWSERS = {
 	browserbase: {
 		post: "/v1/sessions",
+		/** A vendor whose sessions' CDP URL is on another host, one no driver is handed. */
+		unusable: () => fakeBrowserbase({ connectUrl: () => "wss://elsewhere.test/cdp" }),
 		/** Every session the fake made, in the order it made them. */
 		ids: (fake) => [...fake.sessions.keys()],
 		live: (fake, id) => fake.sessions.get(id).status === "RUNNING",
@@ -221,6 +223,7 @@ const CLOUD_BROWSERS = {
 	},
 	kernel: {
 		post: "/browsers",
+		unusable: () => fakeKernel({ cdpUrl: () => "wss://elsewhere.test/cdp" }),
 		ids: (fake) => [...fake.browsers.keys()],
 		live: (fake, id) => fake.browsers.get(id).deletedAt === undefined,
 		expire: (fake, id) => {
@@ -302,6 +305,56 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		assert.equal(kept.id, mine);
 		assert.equal(cloud.live(fake, mine), true, "the browser A answered still runs");
 		assert.equal(cloud.live(fake, theirs), false, "the browser B's lost create made is released");
+		okOf(await one.release(kept, "delete"), "release");
+	});
+
+	test(`${id}: a create whose reply is lost leaves the browser its POST made when it is the request's older one, which another instance's converge answered`, async () => {
+		const fake = vendor.vendor();
+		const requestId = requestOf(`${id}-lost-older`);
+		const gate = () => {
+			let open;
+			const opened = new Promise((resolve) => (open = resolve));
+			return { open, opened };
+		};
+		// A looks for the request's browser first (none), then B's POST makes the older browser, then A's POST the newer;
+		// B's reply is lost, and its recovery runs once A's converge has answered B's browser.
+		const looked = gate();
+		const madeB = gate();
+		const answered = gate();
+		const isPost = (input, init) => (init.method ?? "GET") === "POST" && new URL(String(input)).pathname === cloud.post;
+		const isList = (input, init) => (init.method ?? "GET") === "GET" && new URL(String(input)).pathname === cloud.post;
+		let listsA = 0;
+		const fetchA = async (input, init = {}) => {
+			if (isPost(input, init)) await madeB.opened;
+			const answer = await fake.fetch(input, init);
+			if (isList(input, init) && ++listsA === 1) looked.open();
+			return answer;
+		};
+		const fetchB = async (input, init = {}) => {
+			if (isPost(input, init)) {
+				await looked.opened;
+				await fake.fetch(input, init);
+				madeB.open();
+				await answered.opened;
+				// The vendor made B's browser, and its reply never comes.
+				throw new TypeError("fetch failed");
+			}
+			return fake.fetch(input, init);
+		};
+		const one = await vendor.make({ ...fake, fetch: fetchA });
+		const two = await vendor.make({ ...fake, fetch: fetchB });
+		const first = one.create(vendor.spec(), { requestId }).then((result) => {
+			answered.open();
+			return result;
+		});
+		const [a, b] = await Promise.all([first, two.create(vendor.spec(), { requestId })]);
+		const kept = okOf(a, "A's create");
+		assert.equal(b.ok, false, "B's create, its reply lost");
+		const [older, newer] = cloud.ids(fake);
+		assert.equal(kept.id, older, "A's converge answers B's browser, the older");
+		assert.equal(cloud.live(fake, newer), false, "A's own browser, the newer, is released");
+		assert.equal(cloud.live(fake, older), true, "the browser A answered still runs after B's recovery");
+		assert.match(b.error.message, /left running/);
 		okOf(await one.release(kept, "delete"), "release");
 	});
 
@@ -516,6 +569,24 @@ for (const [id, cloud] of Object.entries(CLOUD_BROWSERS)) {
 		assert.ok(retry.ms < CLEANUP_MARGIN_MS, `the retry answered in ${retry.ms} ms`);
 	});
 
+	test(`${id}: a create whose browser has no usable CDP URL and whose release never answers fails within its cleanup's bound, and a retry is refused`, { timeout: 15_000 }, async () => {
+		const fake = cloud.unusable();
+		const fetch = stallingRelease(fake.fetch);
+		const provider = await vendor.make({ ...fake, fetch }, BOUNDED);
+		const requestId = requestOf(`${id}-stalled-unusable`);
+		const { result, ms } = await timed(() => provider.create(vendor.spec(), { requestId }));
+		assert.equal(result.ok, false, "a create with no CDP URL to hand over");
+		assert.match(result.error.message, /no CDP URL to hand over/);
+		assert.match(result.error.message, /may still be running/);
+		assert.ok(ms < CLEANUP_MS + CLEANUP_MARGIN_MS, `answered in ${ms} ms`);
+		assert.ok(fetch.asked > 0, "its release was asked");
+		const retry = await timed(() => provider.create(vendor.spec(), { requestId }));
+		assert.equal(retry.result.ok, false, "the retry");
+		assert.equal(retry.result.error.code, "exists", retry.result.error.message);
+		assert.ok(retry.ms < CLEANUP_MARGIN_MS, `the retry answered in ${retry.ms} ms`);
+		assert.equal(vendor.made(fake), 1, "no second browser");
+	});
+
 	test(`${id}: a create whose reply is lost and whose release never answers fails within its cleanup's bound, and a retry is refused`, { timeout: 15_000 }, async () => {
 		const fake = vendor.vendor();
 		const stalled = stallingRelease(fake.fetch);
@@ -567,6 +638,111 @@ test("orgo: a create aborted after Orgo's answer whose delete never answers is a
 	assert.equal(retry.result.error.code, "exists", retry.result.error.message);
 	assert.ok(retry.ms < CLEANUP_MARGIN_MS, `the retry answered in ${retry.ms} ms`);
 	assert.equal(VENDORS.orgo.made({ api }), 1, "no second computer");
+});
+
+test("a lost create's browser is left to another create of its request only when it is the oldest that runs and a newer one was made", async () => {
+	const { leftToConverge } = await import("../dist/browser.js");
+	const at = (id, minute, live = true) => ({ id, createdAt: `2026-01-01T00:0${minute}:00.000Z`, labels: {}, live });
+	assert.equal(leftToConverge("b", [at("b", 1)]), false, "the request's only browser is released");
+	assert.equal(leftToConverge("b", [at("b", 1), at("a", 2, false)]), true, "the oldest that runs, a newer one released by its converge: left");
+	assert.equal(leftToConverge("b", [at("b", 1), at("a", 2)]), true, "the oldest that runs, a newer one still running: left");
+	assert.equal(leftToConverge("b", [at("a", 1), at("b", 2)]), false, "an older one runs: released");
+	assert.equal(leftToConverge("b", [at("a", 1), at("b", 2), at("c", 3)]), false, "an older one runs, though a newer was made: released");
+	assert.equal(leftToConverge("b", [at("a", 1, false), at("b", 2), at("c", 3, false)]), true, "the older ended, a newer made: left");
+	assert.equal(leftToConverge("b", [at("b", 1, false), at("a", 2)]), false, "already ended: released");
+	assert.equal(leftToConverge("b", [at("a", 2)]), false, "not listed: released");
+});
+
+test("browserbase: a lost create's recovery that reads the request's sessions while another instance's converge releases its newer one still finds it, and leaves the older", async () => {
+	const vendor = VENDORS.browserbase;
+	const fake = vendor.vendor();
+	const requestId = requestOf("browserbase-lost-moving");
+	const gate = () => {
+		let open;
+		const opened = new Promise((resolve) => (open = resolve));
+		return { open, opened };
+	};
+	// A looks first (none); B's POST makes the older session, A's the newer; B's reply is lost once A's POST is answered.
+	// B's recovery reads the request's sessions by status while A's converge releases A's own (RUNNING to COMPLETED): its
+	// RUNNING query is answered only after that release, so a read that asks COMPLETED before (or beside) RUNNING misses
+	// A's session in both.
+	const looked = gate();
+	const madeB = gate();
+	const madeA = gate();
+	const reading = gate();
+	const releasedA = gate();
+	const path = (input) => new URL(String(input)).pathname;
+	const isPost = (input, init) => (init.method ?? "GET") === "POST" && path(input) === "/v1/sessions";
+	const isList = (input, init) => (init.method ?? "GET") === "GET" && path(input) === "/v1/sessions";
+	const isRelease = (input, init) => (init.method ?? "GET") === "POST" && /^\/v1\/sessions\/[^/]+$/.test(path(input));
+	let postedA = false;
+	let listsA = 0;
+	const fetchA = async (input, init = {}) => {
+		if (isPost(input, init)) {
+			await madeB.opened;
+			const answer = await fake.fetch(input, init);
+			postedA = true;
+			madeA.open();
+			return answer;
+		}
+		if (isList(input, init) && postedA) await reading.opened;
+		const answer = await fake.fetch(input, init);
+		if (isList(input, init) && ++listsA === 1) looked.open();
+		if (isRelease(input, init)) releasedA.open();
+		return answer;
+	};
+	let postedB = false;
+	const fetchB = async (input, init = {}) => {
+		if (isPost(input, init)) {
+			await looked.opened;
+			await fake.fetch(input, init);
+			postedB = true;
+			madeB.open();
+			await madeA.opened;
+			// The vendor made B's session, and its reply never comes.
+			throw new TypeError("fetch failed");
+		}
+		const url = new URL(String(input));
+		if (postedB && isList(input, init) && (url.searchParams.get("q") ?? "").includes("agentrun_create")) {
+			reading.open();
+			if (url.searchParams.get("status") === "RUNNING") await releasedA.opened;
+		}
+		return fake.fetch(input, init);
+	};
+	const one = await vendor.make({ ...fake, fetch: fetchA });
+	const two = await vendor.make({ ...fake, fetch: fetchB });
+	const [a, b] = await Promise.all([one.create(vendor.spec(), { requestId }), two.create(vendor.spec(), { requestId })]);
+	const kept = okOf(a, "A's create");
+	assert.equal(b.ok, false, "B's create, its reply lost");
+	const [older, newer] = CLOUD_BROWSERS.browserbase.ids(fake);
+	assert.equal(kept.id, older, "A's converge answers B's session, the older");
+	assert.equal(CLOUD_BROWSERS.browserbase.live(fake, newer), false, "A's own session, the newer, is released");
+	assert.equal(CLOUD_BROWSERS.browserbase.live(fake, older), true, "the session A answered still runs after B's recovery");
+	assert.match(b.error.message, /left running/);
+	okOf(await one.release(kept, "delete"), "release");
+});
+
+test("browserbase: a create whose lookup reads the request's session as it goes from PENDING to RUNNING answers it, never makes a second", async () => {
+	const vendor = VENDORS.browserbase;
+	const fake = vendor.vendor();
+	const requestId = requestOf("browserbase-lookup-moving");
+	const one = await vendor.make(fake);
+	const made = okOf(await one.create(vendor.spec(), { requestId }), "A's create");
+	const session = fake.sessions.get(made.id);
+	session.status = "PENDING";
+	// The session starts running once the lookup's first query is answered: a lookup that asks RUNNING before PENDING
+	// finds it in neither.
+	let answered = 0;
+	const fetch = async (input, init = {}) => {
+		const answer = await fake.fetch(input, init);
+		if ((init.method ?? "GET") === "GET" && new URL(String(input)).pathname === "/v1/sessions" && ++answered === 1) session.status = "RUNNING";
+		return answer;
+	};
+	const two = await vendor.make({ ...fake, fetch });
+	const found = okOf(await two.create(vendor.spec(), { requestId }), "B's create");
+	assert.equal(found.id, made.id, "B answers the request's session");
+	assert.equal(vendor.made(fake), 1, "no second session");
+	okOf(await one.release(made, "delete"), "release");
 });
 
 test("a create with no request id is refused invalid on each, before any vendor call", async () => {

@@ -12,6 +12,7 @@ import type { Guard, GuardOptions } from "./guard.js";
 import { askedUrl, type Page, type Part, partProblem } from "./page.js";
 import { holdingWords, type NativeSearch, type ProviderRun, readerOf, type WebClient } from "./provider.js";
 import type { Words } from "./providers/mcp.js";
+import { kindOf } from "./providers/keyed.js";
 import { type FetchProvider, type KeyedProvider, type ProviderId, providerOf, type ProviderSettings, type SearchProvider, settingsProblemsOf } from "./providers/registry.js";
 import { type Breaker, breakers, fitSearch, type Holding, type Limit, withKeyBreaker, type Search, type SearchBounds, searchArgs, searchInTurn, searchText, type Try } from "./search.js";
 
@@ -146,7 +147,7 @@ export function createWeb(config: WebConfig): Web {
   for (const op of ["search", "fetch"] as const) for (const id of config.order[op]) if (!providerOf(id).ops.includes(op)) throw new Error(`web: ${id} gives no ${op}`);
   const now = config.now ?? Date.now;
   const policy = policyOf(config.policy);
-  if (config.pageGuard !== undefined && typeof config.pageGuard !== "boolean") throw new TypeError(`pageGuard must be true or false (it was ${JSON.stringify(config.pageGuard)})`);
+  if (config.pageGuard !== undefined && typeof config.pageGuard !== "boolean") throw new TypeError(`pageGuard must be true or false (it was ${kindOf(config.pageGuard)})`);
   if (config.pageGuard && !config.decider) throw new TypeError("pageGuard needs a decider: the page guard asks the run's decider about each page");
   // The decider as this Web asks it: held for the Web's life once it refuses its key or its account.
   const held = config.decider ? heldOnRefusal(config.decider) : undefined;

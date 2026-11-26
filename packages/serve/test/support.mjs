@@ -86,6 +86,9 @@ export const SECRET_WRITE_PATHS = [
   // The model gateway saved in the console (model-gateway.ts): its save, removal and test.
   { methods: ["PUT", "DELETE"], path: /^\/settings\/model-gateway$/ },
   { methods: ["POST"], path: /^\/settings\/model-gateway\/test$/ },
+  // A free local model (local-model.ts): the owner's machine read, and a pull into their Ollama.
+  { methods: ["GET"], path: /^\/settings\/local-model$/ },
+  { methods: ["POST"], path: /^\/settings\/local-model\/pull$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });

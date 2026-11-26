@@ -9,6 +9,7 @@ import { specFor } from "./runner-spec-support.mjs";
 import { storeOn } from "./store-helpers.mjs";
 
 const signIns = await import("../dist/sign-ins-store.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { UNREADABLE_SIGN_IN } = await import("../dist/run-view.js");
 const contract = await import("../dist/runner/loop-contract.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -58,7 +59,7 @@ test("the loop ends a run whose claim is refused failed, in the refusal's words,
   await store.agents.create({ id: "agent-a", name: "a" }, { id: "rev-a", kind: "agentic", body: { instructions: "Browse." } });
   await store.runs.create({ id: "run-1", agentId: "agent-a", revisionId: "rev-a" });
   const claim = await store.claim("run-1", "runner-1", { leaseMs: 60_000 });
-  const loop = createAdapterLoop(() => { throw new contract.ClaimRefused(UNREADABLE_SIGN_IN); })({ journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
+  const loop = createAdapterLoop(() => { throw new contract.ClaimRefused(UNREADABLE_SIGN_IN); })({ redact: heldRedactor((text) => text), journal: (c) => store.journal(c), flush: () => store.flush(), signal: new AbortController().signal });
   const end = await loop.start(claim);
   assert.equal(end.state, "failed", JSON.stringify(end));
   assert.equal(end.error?.message, UNREADABLE_SIGN_IN);

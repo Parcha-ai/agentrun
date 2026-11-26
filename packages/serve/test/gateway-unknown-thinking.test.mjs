@@ -9,6 +9,7 @@ import { capRun, quiet } from "./adapter-pi-cap-support.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 
 const { piAdapter } = await import("../dist/runner/adapters/pi.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { routeOf } = await import("../dist/runner/model-route.js");
 const { PI_WIRES } = await import("../dist/runner/adapter-run-spec.js");
 const { catalogPrices, catalogThinking } = await import("../dist/model.js");
@@ -23,7 +24,7 @@ async function firstBody(t, model, thinking) {
   const route = await routeOf(undefined, env(gateway.url, model), "default", PI_WIRES);
   assert.equal(route.provider.api, "openai-responses");
   const specOf = () => (_claim, run) => ({
-    adapter: piAdapter({ run, model: route.model, provider: route.provider, ...(route.like ? { like: route.like } : {}), price: route.price }),
+    adapter: piAdapter({ redact: heldRedactor((text) => text), run, model: route.model, provider: route.provider, ...(route.like ? { like: route.like } : {}), price: route.price }),
     session: { key: "root", label: "root", system: ["Answer."], tools: hostTools({}), context: "fresh", ...(thinking ? { thinking } : {}) },
     input: "Answer.",
     hooks: quiet,
