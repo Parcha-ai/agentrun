@@ -257,9 +257,11 @@ jobs:
           include-hidden-files: true
 
   # A pypi job no runner picks up stays queued and holds the release open until it times out. The watchdog starts with it,
-  # reads this run's jobs every 30 seconds, and is done as soon as pypi has started. A pypi job queued for 15 minutes in a
-  # row while it watched cancels the run, and release-retry.yml re-runs its failed and cancelled jobs once. A pypi job
-  # waiting for the npm-release approval is not queued, so a slow approval cancels nothing. No job waits for this one.
+  # reads this run's jobs every 30 seconds, and is done as soon as pypi has started. It cancels the run only when pypi has
+  # been queued for 15 minutes in a row while it watched AND every job that writes to npm (NPM_JOBS) has completed with
+  # success: a cancel while npm publishes would leave half a release. release-retry.yml then re-runs the cancelled jobs
+  # once. In any other state it cancels nothing and keeps reading until its time is up, then says so and exits 0. A pypi
+  # job waiting for the npm-release approval is not queued, so a slow approval cancels nothing. No job waits for this one.
   pypi-watchdog:
     needs: gate
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
@@ -268,29 +270,39 @@ jobs:
     permissions:
       actions: write
     steps:
-      - name: Cancel the run if pypi stays queued
+      - name: Cancel the run if pypi stays queued after npm has published
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          NPM_JOBS: publish
+          POLL_SECONDS: 30
+          QUEUED_LIMIT_SECONDS: 900
+          WATCH_SECONDS: 1380
         run: |
           start=$(date +%s); queued_since=
-          while [ $(( $(date +%s) - start )) -lt 1380 ]; do
-            status=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100" --jq '.jobs[] | select(.name == "pypi") | .status' || true)
-            echo "pypi: ${status:-not listed yet}"
+          while [ $(( $(date +%s) - start )) -lt "$WATCH_SECONDS" ]; do
+            jobs=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs?per_page=100") || jobs='{}'
+            status=$(jq -r '[.jobs[]? | select(.name == "pypi") | .status][0] // ""' <<<"$jobs") || status=
+            npm=$(jq -r --arg names "$NPM_JOBS" '($names | split(" ")) as $n | [.jobs[]? | select(.name | IN($n[]))] | "\(length == ($n | length) and all(.status == "completed" and .conclusion == "success")) \(map("\(.name)=\(.status)/\(.conclusion // "none")") | join(","))"' <<<"$jobs") || npm='false unreadable'
+            npm_done=${npm%% *}
+            echo "pypi: ${status:-not listed yet}; npm jobs: ${npm#* }"
             case "$status" in
               in_progress|completed) exit 0 ;;
-              queued) queued_since=${queued_since:-$(date +%s)}
-                if [ $(( $(date +%s) - queued_since )) -ge 900 ]; then
-                  echo "::warning::pypi has been queued for 15 minutes; cancelling the run so release-retry re-runs it"
-                  gh run cancel "$RUN_ID"; exit 0
-                fi ;;
+              queued) queued_since=${queued_since:-$(date +%s)} ;;
               *) queued_since= ;;
             esac
-            sleep 30
+            if [ -n "$queued_since" ] && [ $(( $(date +%s) - queued_since )) -ge "$QUEUED_LIMIT_SECONDS" ]; then
+              if [ "$npm_done" = true ]; then
+                echo "::warning::pypi has been queued for 15 minutes and npm has published; cancelling the run so release-retry re-runs it"
+                gh run cancel "$RUN_ID"; exit 0
+              fi
+              echo "pypi has been queued for 15 minutes, but not every npm job has completed with success; no cancel while npm may publish"
+            fi
+            sleep "$POLL_SECONDS"
           done
-          echo "pypi did not start while the watchdog watched (status: ${status:-not listed}); nothing cancelled"
+          echo "::notice::pypi-watchdog cancelled nothing: pypi did not start while it watched (last status: ${status:-not listed}; npm jobs: ${npm#* })"
 
   # AgentRun Server's container image, built from the same reviewed tag (packages/serve/docker/Dockerfile) for linux/amd64 and
   # linux/arm64, each on its own native runner: under QEMU the arm64 build took over half an hour. The image builds from the
