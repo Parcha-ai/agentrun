@@ -29,7 +29,7 @@ const template = (over: Partial<TemplateView>): TemplateView => ({
   id: "t", bundled: false, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "t", display_name: null, version: "0.1.0", description: "Does a thing.", license: null, author: null, repository: null, output: null,
   input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null, computer: null, needs: null,
-  computer_here: null, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [],
+  computer_here: null, model_tiers_here: { harness: "pi", fast: null, strong: null, note: null }, checkout: null, secrets: [], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: [],
   evals: [], mcp: [], parameters: { type: "object", additionalProperties: false, properties: { topic: { type: "string", description: "Topic" } } }, ...over,
 } as TemplateView);
 const FIELD = template({ id: "field-monitor", name: "field-monitor", display_name: "Field monitor (free to run)", tags: ["free", "research"], model: { tier: "fast", prefer: "openrouter/nvidia/some-free:free" } });

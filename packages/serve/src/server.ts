@@ -2182,6 +2182,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (exec) return { none: `no sandbox answers here: Archil's serverless exec is no sandbox, and the docker box is unavailable here (${why})` };
     return { none: `this server has no shell to give an agent now: Archil is off (Settings → Workspace), and the docker box is unavailable here (${why})` };
   };
+  /** The harness an apply here with no choice makes a package's agent on: the first of its harnesses this server offers
+   *  now, else its first; undefined where it names none, the agent then on the server's default harness. */
+  const packageHarness = (pkg: Package): string | undefined => pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
+  /** Each package's subagent tiers read against this server now, as a listing shows them (`model_tiers_here`): the
+   *  harness an apply here would make its agent on (packageHarness), and the model of each tier it would keep there
+   *  (packageTiers), null where the package names none or this server would not use it, the tier then on this server's
+   *  own model for it; `note`, the warning that apply would give. */
+  const tiersHere = async (packages: readonly Package[]) => {
+    const read = new Map(await Promise.all(packages.map(async (pkg) => {
+      const harness = packageHarness(pkg) ?? DEFAULT_HARNESS;
+      const { modelTiers, warning } = await packageTiers(env, pkg.model, harness);
+      return [pkg, { harness, fast: modelTiers?.fast ?? null, strong: modelTiers?.strong ?? null, note: warning ?? null }] as const;
+    })));
+    return (pkg: Package) => read.get(pkg)!;
+  };
   /** Each package's computer list read against this server now, as a listing shows it (`computer_here`): what an apply
    *  here would pick (pickComputer), the shell asked for once for them all. */
   const computerHere = async (packages: readonly Package[]) => {
@@ -4052,7 +4067,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const message = `The ${pkg.name} template's choice ${choice.label} runs ${choice.model} on ${choice.harness}, which this server can't run: ${unrunnable.replace(/\.$/, "")}. Nothing was created.`;
       throw new ApiError("agent_not_runnable", message, { fields: [{ field: "overrides.choice", reason: NOT_SET_UP, message, fix: "Apply with the default or another choice, or, where the model only wants a key, add it in Settings → Model keys." }] });
     }
-    const harness = choice ? choice.harness : pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
+    const harness = choice ? choice.harness : packageHarness(pkg);
     const picked = choice ? { model: choice.model } : override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
     if ("refused" in picked && picked.refused && !lacking) {
       const message = `The ${pkg.name} template prefers ${pkg.model?.prefer}, which this server can't run on ${harness ?? DEFAULT_HARNESS}: ${picked.refused.why}. Nothing was created.`;
@@ -6836,9 +6851,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listTemplates": {
         // Each package's computer list read against this server now: what an apply here would pick (pickComputer).
+        // Its subagents' tiers likewise: what an apply here would keep of the package's (packageTiers).
         const listed = registry.list();
-        const pickView = await computerHere(listed);
-        return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg) })) });
+        const [pickView, tiersView] = await Promise.all([computerHere(listed), tiersHere(listed)]);
+        return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg), model_tiers_here: tiersView(pkg) })) });
       }
       case "listMarketplaceTemplates": {
         // The marketplace's list as read (or kept), each entry with the package here that it is, when one is.
@@ -6856,14 +6872,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         res.once("close", () => done.abort());
         const imported = await importTemplate(importDeps, body, done.signal);
         const uploaded = imported.pkg.id.startsWith(UPLOAD_PREFIX);
-        return send(res, imported.status, { ...packageDetail(imported.pkg, await computerHere([imported.pkg])), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : uploaded ? templatesLink(linkOrigin(req)) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
+        return send(res, imported.status, { ...packageDetail(imported.pkg, await computerHere([imported.pkg]), await tiersHere([imported.pkg])), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : uploaded ? templatesLink(linkOrigin(req)) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
       }
       case "getTemplate": {
         // One package whole, a bundled one's too: as the list shows it, with the files an import's answer shows, for a
         // person (or a coding agent) to read before they apply it.
         const pkg = registry.get(id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
-        return send(res, 200, { ...packageDetail(pkg, await computerHere([pkg])), console_url: templateLink(linkOrigin(req), pkg.id) });
+        return send(res, 200, { ...packageDetail(pkg, await computerHere([pkg]), await tiersHere([pkg])), console_url: templateLink(linkOrigin(req), pkg.id) });
       }
       case "deleteTemplate":
         await deleteTemplate(importDeps, id);
