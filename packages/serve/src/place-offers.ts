@@ -15,7 +15,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { userInfo } from "node:os";
-import { containerSigns, PROVIDERS, type ProviderEntry } from "@parcha/agentrun-computer";
+import { containerSigns, dockerEnv, PROVIDERS, type ProviderEntry } from "@parcha/agentrun-computer";
 import { BOX_ALLOW_ENV } from "./box-settings.js";
 import { withoutSecrets } from "./secrets.js";
 
@@ -195,11 +195,11 @@ export type DockerDaemon = { readonly up: true } | { readonly up: false; readonl
 /** Asks this machine's Docker daemon its version (`docker version`), as the Docker computer's check (docker-daemon.ts)
  *  does: the CLI is on PATH and its daemon answers this user. `signal` bounds it. */
 export async function askDockerDaemon(env: NodeJS.ProcessEnv, signal: AbortSignal, groups: { file: string; user: string; ids: readonly number[] } = ownGroups(), container: ContainerFacts = containerOf(env)): Promise<DockerDaemon> {
-  // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
-  // name shaped like a key.
-  const dockerEnv = withoutSecrets(env);
+  // Its environment is the names the docker CLI reads (@parcha/agentrun-computer's dockerEnv), as every docker call of
+  // the Docker computer has, of the server's through the cut a run's takes (withoutSecrets): no secret, no other name.
+  const probeEnv = dockerEnv(withoutSecrets(env));
   const answer = await new Promise<{ failed?: string; denied?: true; endpoint?: string; out: string }>((resolve) =>
-    execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: dockerEnv, signal, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
+    execFile("docker", ["version", "--format", "{{.Server.Version}}"], { env: probeEnv, signal, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
       const code = (error as { code?: unknown } | null)?.code;
       resolve({ ...(error ? { failed: typeof code === "number" ? `exit ${code}` : errorName(error), ...(SOCKET_DENIED.test(String(stderr)) ? { denied: true as const } : {}), ...endpointIn(stderr) } : {}), out: String(stdout) });
     }),
@@ -226,11 +226,11 @@ export async function askDockerDaemon(env: NodeJS.ProcessEnv, signal: AbortSigna
  *  The same call names the daemon's architecture, told to `arch` when it does. Bounded by `timeoutMs`; never rejects. */
 async function probeDocker(env: NodeJS.ProcessEnv, timeoutMs: number, groups: { file: string; user: string; ids: readonly number[] }, container: ContainerFacts, arch?: (arch: string) => void): Promise<BoxOffer> {
   const no = (reason: string): BoxOffer => ({ id: "docker", available: false, reason: inOtherContainer(container, reason) });
-  // Its environment is the server's through the cut a run's takes (withoutSecrets): no box key, no other secret, no
-  // name shaped like a key.
-  const dockerEnv = withoutSecrets(env);
+  // Its environment is the names the docker CLI reads (@parcha/agentrun-computer's dockerEnv), as every docker call of
+  // the Docker computer has, of the server's through the cut a run's takes (withoutSecrets): no secret, no other name.
+  const probeEnv = dockerEnv(withoutSecrets(env));
   const answer = await new Promise<{ failed?: string; denied?: true; late?: true; endpoint?: string; out: string }>((resolve) =>
-    execFile("docker", ["version", "--format", "{{.Server.Version}} {{.Server.Arch}}"], { env: dockerEnv, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
+    execFile("docker", ["version", "--format", "{{.Server.Version}} {{.Server.Arch}}"], { env: probeEnv, timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
       const failed = error as (NodeJS.ErrnoException & { killed?: boolean }) | null;
       const code = failed?.code;
       resolve({ ...(failed ? { failed: typeof code === "number" ? `exit ${code}` : errorName(failed), ...(failed.killed ? { late: true as const } : {}), ...(SOCKET_DENIED.test(String(stderr)) ? { denied: true as const } : {}), ...endpointIn(stderr) } : {}), out: String(stdout) });

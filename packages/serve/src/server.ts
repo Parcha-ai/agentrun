@@ -53,7 +53,7 @@ import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
 import { agentPackage } from "./agent-package.js";
 import { uuidv7 } from "./ids.js";
-import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, definitionOf, editOn, etagOf, externalKey, getAgent, listAgents, makeRevision, ownedElsewhere, refuseExternal, revisionView, type SaveCheck, type SavePrepare, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_EXA_ENV, FAUX_FIRECRAWL_ENV, FAUX_WEB_ENV, withHeld } from "./web-run.js";
@@ -157,7 +157,7 @@ import { type Blocker, blockersOf, CODE_NODES_ENV, deniedComputer, issueOf, NOT_
 import { computerDeniedWords } from "./refusal-words.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
-import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
+import { ChatGPTPlan, planOf, PlanSignInRefused, RENEWAL_DRAIN_MS, SIGN_OUT_UNCONFIRMED, stopRenewals, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
 import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
@@ -250,6 +250,7 @@ import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, noExecRegionOf, noExecWords, runDiskKept, runDiskKey } from "./archil-settings.js";
+import { learningWorkKey } from "./learning-work.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { runningComputers } from "./computers-running.js";
@@ -298,6 +299,11 @@ const planClosed = (plan: ChatGPTPlan, ms: number): Promise<void> => {
   let timer: NodeJS.Timeout | undefined;
   return Promise.race([plan.close(), new Promise<void>((done) => (timer = setTimeout(done, ms)))]).finally(() => clearTimeout(timer));
 };
+/** How far past its runs' bound a signed-in server's stop may run before the CLI stops it at once (Serve.stopping): the
+ *  sign-in's close and a renewal's drain (stopRenewals), so the 15 s margin (stop-signals.ts) never cuts a drain short.
+ *  Every shipped deploy's stop grace is at least this (test/runner-beside-flags.test.mjs, which finds each one by a scan):
+ *  a platform that kills sooner loses it. */
+export const PLAN_STOP_BOUND_MS = PLAN_CLOSE_MS + RENEWAL_DRAIN_MS;
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
@@ -1665,7 +1671,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // no restart and no request opening the file. The offers are probed once saved keys are read (below), at the start.
   // The ChatGPT sign-in, sealed in the store: on every reading of env (chatgpt-plan.ts withPlan), so a plan model runs
   // where it is signed in. A sign-in, a sign-out or an expiry it sees makes the reading again, as a key's save does.
-  const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
+  const planLog = (fields: Record<string, string>) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`));
+  const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: planLog, changed: () => keysChanged() });
   await plan.load();
   stops.push(() => planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS));
   // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
@@ -2165,12 +2172,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  is no shell), whose shell runs the shell tools; else none, and why. A package that needs programs (`sandbox`) asks
    *  for a sandbox alone, whose box a run checks for them: Archil's exec is none, so in Mode 2 it is told why no sandbox
    *  answers (the Docker box can't mount Archil's workspaces), never given the exec. In Mode 2 on a region with no
-   *  serverless exec there is neither: none, saying why and the fix. */
+   *  serverless exec there is no exec: the first sandbox of the registry that answers here now and mounts the run's
+   *  folder (a vendor's, on Archil), so a template's agent has its shell and its checkout; else none, saying why and the fix. */
   const shellHere = async (wants: { sandbox?: boolean } = {}): Promise<ShellHere> => {
     const exec = (await shellOf({ kind: "none" })) === "local";
     if (exec && !wants.sandbox) return { computer: { kind: "none" }, tools: [...shellTools("local")], words: "Archil's serverless exec" };
     const noExec = exec ? undefined : await noExecNow();
-    if (noExec !== undefined) return { none: `this server has no shell to give an agent now: ${noExecWords(noExec)}, and the docker box can't mount Archil`, fix: "Give the agent a sandbox computer (a box) to run bash, or leave bash out of its tools." };
+    if (noExec !== undefined) {
+      for (const entry of claimRegistry().PROVIDERS) {
+        const computer = { kind: "sandbox", provider: entry.id };
+        if ((await shellOf(computer)) === "computer" && "ok" in (await computerReady(computer))) return { computer, tools: [...shellTools("computer")], words: `the ${entry.id} sandbox` };
+      }
+      return { none: `this server has no shell to give an agent now: ${noExecWords(noExec)}, the docker box can't mount Archil, and no sandbox that mounts it is set up`, fix: "Give the agent a sandbox computer (a box) to run bash, or leave bash out of its tools." };
+    }
     const fresh = newAgentPlace(boxOffers);
     let why = "why" in fresh ? fresh.why : "it is not set up";
     if ("place" in fresh && fresh.place.mode === "sandbox") {
@@ -2181,6 +2195,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     if (exec) return { none: `no sandbox answers here: Archil's serverless exec is no sandbox, and the docker box is unavailable here (${why})` };
     return { none: `this server has no shell to give an agent now: Archil is off (Settings → Workspace), and the docker box is unavailable here (${why})` };
+  };
+  /** The harness an apply here with no choice makes a package's agent on: the first of its harnesses this server offers
+   *  now, else its first; undefined where it names none, the agent then on the server's default harness. */
+  const packageHarness = (pkg: Package): string | undefined => pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
+  /** Each package's subagent tiers read against this server now, as a listing shows them (`model_tiers_here`): the
+   *  harness an apply here would make its agent on (packageHarness), and the model of each tier it would keep there
+   *  (packageTiers), the agent's own tier on the model an apply with no override gives the agent (packageModel), as apply
+   *  saves it; null where the package names none or this server would not use it, the tier then on this server's own
+   *  model for it; `note`, the warning that apply would give. */
+  const tiersHere = async (packages: readonly Package[]) => {
+    const read = new Map(await Promise.all(packages.map(async (pkg) => {
+      const harness = packageHarness(pkg) ?? DEFAULT_HARNESS;
+      const { modelTiers, warning } = await packageTiers(env, pkg.model, harness, (await packageModel(env, pkg.model, harness)).model);
+      return [pkg, { harness, fast: modelTiers?.fast ?? null, strong: modelTiers?.strong ?? null, note: warning ?? null }] as const;
+    })));
+    return (pkg: Package) => read.get(pkg)!;
   };
   /** Each package's computer list read against this server now, as a listing shows it (`computer_here`): what an apply
    *  here would pick (pickComputer), the shell asked for once for them all. */
@@ -2207,7 +2237,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The run read's costs (A8, store-reads/learning.ts runAllInOverStore): `cost.usd` its own spend, the
    *  job's (its compile turn is learning's), null while unknown; what learning spent for it
    *  (`learning_usd`) and the two (`all_in_usd`), with what makes up `learning_usd` (`compile_usd`, `followup_usd`,
-   *  `shadow_usd`, `share_usd`): the figures the agent's cost page gives the run (learn/ledger.ts figuresOf, one formula).
+   *  `shadow_usd`, `check_usd`, `share_usd`): the figures the agent's cost page gives the run (learn/ledger.ts figuresOf, one formula).
    *  A cost known only as a bound keeps its bound, and all-in is unknown.
    *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore). */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -2217,8 +2247,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (its ledger row's, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
-    const { learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, share_usd } = all;
-    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd: await toolsUsdOverStore(store, runId), learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, share_usd } };
+    const { learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } = all;
+    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd: await toolsUsdOverStore(store, runId), learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } };
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
@@ -3365,13 +3395,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
       for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
-      // Its settings: an SDK run's row, its browser wait's end and take, the Archil disk it resolved to. Its kept computer's row
-      // (workspace/computer-kept.ts) is left to the janitor, which deletes the computer of a run no longer there and then
-      // the row: removed here, the computer would have nothing left to reach it.
+      // Its settings: an SDK run's row, its browser wait's end and take, the Archil disk it resolved to, the learning work it
+      // started (learning-work.ts: child run ids; each child keeps its own row, one still going cancelled with its sealed
+      // key copy erased before this, agent-delete.ts endLearningWork).
+      // Its kept computer's row (workspace/computer-kept.ts) is left to the janitor, which deletes the computer of a run no
+      // longer there and then the row: removed here, the computer would have nothing left to reach it.
       await store.settings.remove(sdkRunKey(runId));
       await store.settings.remove(waitEndedKey(runId));
       await store.settings.remove(browserHoldKey(runId));
       await store.settings.remove(runDiskKey(runId));
+      await store.settings.remove(learningWorkKey(runId));
       await forgetKept("run", runId);
     },
     forgetAgent: async (agentId) => {
@@ -3928,13 +3961,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  skipped for a connection this server lacks), and the computer it picks. Any other refusal is the apply's own. */
   async function planTemplate(template: Package, body: Json) {
     const p = await prepareApply(template, body, { plan: true });
-    // A fresh apply refused for want of a place (createAgentOf's save) is refused here, in the same words: no plan of a
-    // create the apply would refuse.
-    if (!p.onto) {
-      const { definition, skills } = checkDefinitionBody(p.made.agent, { harnesses });
-      const refused = await noPlaceOf(makeRevision(definition, skills ?? {}, undefined), p.toolsUnnamed);
-      if (refused) throw invalid([refused]);
-    }
     // A monid grant is pinned to monid's listing when the agent is saved (saveable: monidPinOf), read with the monid key:
     // with none here the apply is refused, so the plan lists the key. A grant the agent's current pin carries reads
     // nothing (pinMonid with no key answers before any request).
@@ -3943,6 +3969,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const was = p.onto?.revision?.kind === "agentic" ? p.onto.revision : undefined;
     const unread = !env[MONID_KEY_ENV]?.trim() && (await pinMonid(tools, { key: undefined, ...(was ? { previous: { grants: (was.body as AgenticBody).tools ?? [], pin: was.monidPin ?? null } } : {}) }));
     const missing = unread && "refused" in unread && !p.missing.includes(MONID_KEY_ENV) ? [...p.missing, MONID_KEY_ENV] : p.missing;
+    // An apply refused for want of a place (its save: createAgentOf's, or an update's reviseAgentOf) is refused here, in
+    // the same words: no plan of a create or a revise the apply would refuse. An update's revision is built as its commit
+    // builds it (updateDefinition, then editOn over the agent's current revision, whose place and computer it carries), and
+    // checked with its tools as named, as its save checks it. Only once the plan lists nothing the apply refuses first:
+    // the keys and required MCP servers this server lacks (409, before anything is built) and monid's key (its save's pin,
+    // before the place), which the plan lists, as the apply names them first.
+    if (!missing.length && !p.unsaved.some((need) => need.required)) {
+      let revision: NewRevision;
+      if (p.onto) {
+        const edit = checkDefinitionBody({ ...p.made.agent, definition: updateDefinition(p.onto, p.made.agent.definition as Json) }, { creating: false, harnesses });
+        revision = editOn(p.onto, edit.definition, edit.skills, edit.note, true);
+      } else {
+        const { definition: made, skills } = checkDefinitionBody(p.made.agent, { harnesses });
+        revision = makeRevision(made, skills ?? {}, undefined);
+      }
+      const refused = await noPlaceOf(revision, p.onto ? false : p.toolsUnnamed);
+      if (refused) throw invalid([refused]);
+    }
     // A skip's `code` is the apply's warning's for it: not_set_up_here for one this server makes once it is set up (a
     // connection, a feed's URLs, a launch hook), not_an_option for one it never makes.
     const planned: { name: string; kind: string; action: "create" | "update" | "remove" | "skip"; code?: string; reason?: string }[] = [];
@@ -4052,7 +4096,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const message = `The ${pkg.name} template's choice ${choice.label} runs ${choice.model} on ${choice.harness}, which this server can't run: ${unrunnable.replace(/\.$/, "")}. Nothing was created.`;
       throw new ApiError("agent_not_runnable", message, { fields: [{ field: "overrides.choice", reason: NOT_SET_UP, message, fix: "Apply with the default or another choice, or, where the model only wants a key, add it in Settings → Model keys." }] });
     }
-    const harness = choice ? choice.harness : pkg.harness && (pkg.harness.find((id) => offers.some((offer) => offer.id === id && offer.available)) ?? pkg.harness[0]);
+    const harness = choice ? choice.harness : packageHarness(pkg);
     const picked = choice ? { model: choice.model } : override ? { model: override } : await packageModel(env, pkg.model, harness ?? DEFAULT_HARNESS);
     if ("refused" in picked && picked.refused && !lacking) {
       const message = `The ${pkg.name} template prefers ${pkg.model?.prefer}, which this server can't run on ${harness ?? DEFAULT_HARNESS}: ${picked.refused.why}. Nothing was created.`;
@@ -6254,7 +6298,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         });
         if (!read) throw new ApiError("unavailable", `This machine's session history for ${year} is still being read: ask again in a few seconds.`, { retry_after_ms: 5_000 });
         const analytics = await analyticsOverStore(store, { from: new Date(year, 0, 1).toISOString(), to: new Date(year + 1, 0, 1).toISOString() });
-        return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread, analytics.cache));
+        return send(res, 200, wrappedView(read.wrapped, analytics.bySource.filter((g) => g.source !== "live").map((g) => ({ source: g.source, runs: g.runs })), read.unread, analytics.cache, analytics.secrets));
       }
       case "getStats": {
         const filter = analyticsFilter(url);
@@ -6836,9 +6880,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "listTemplates": {
         // Each package's computer list read against this server now: what an apply here would pick (pickComputer).
+        // Its subagents' tiers likewise: what an apply here would keep of the package's (packageTiers).
         const listed = registry.list();
-        const pickView = await computerHere(listed);
-        return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg) })) });
+        const [pickView, tiersView] = await Promise.all([computerHere(listed), tiersHere(listed)]);
+        return send(res, 200, { templates: listed.map((pkg) => ({ ...packageView(pkg), computer_here: pickView(pkg), model_tiers_here: tiersView(pkg) })) });
       }
       case "listMarketplaceTemplates": {
         // The marketplace's list as read (or kept), each entry with the package here that it is, when one is.
@@ -6856,14 +6901,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         res.once("close", () => done.abort());
         const imported = await importTemplate(importDeps, body, done.signal);
         const uploaded = imported.pkg.id.startsWith(UPLOAD_PREFIX);
-        return send(res, imported.status, { ...packageDetail(imported.pkg, await computerHere([imported.pkg])), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : uploaded ? templatesLink(linkOrigin(req)) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
+        return send(res, imported.status, { ...packageDetail(imported.pkg, await computerHere([imported.pkg]), await tiersHere([imported.pkg])), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : uploaded ? templatesLink(linkOrigin(req)) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
       }
       case "getTemplate": {
         // One package whole, a bundled one's too: as the list shows it, with the files an import's answer shows, for a
         // person (or a coding agent) to read before they apply it.
         const pkg = registry.get(id);
         if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
-        return send(res, 200, { ...packageDetail(pkg, await computerHere([pkg])), console_url: templateLink(linkOrigin(req), pkg.id) });
+        return send(res, 200, { ...packageDetail(pkg, await computerHere([pkg]), await tiersHere([pkg])), console_url: templateLink(linkOrigin(req), pkg.id) });
       }
       case "deleteTemplate":
         await deleteTemplate(importDeps, id);
@@ -7457,6 +7502,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Cancel a pending ChatGPT callback without signing out or changing the saved credential. One past its code's
     // exchange is waited for a short while (planClosed), so its row lands before the store closes.
     const planStopped = planClosed(plan, options.planCloseMs ?? PLAN_CLOSE_MS);
+    // From here no ChatGPT renewal starts on this store; one OpenAI is answering saves its new pair before the store
+    // closes (awaited last, bounded by RENEWAL_DRAIN_MS from now, beside the rest of the stop).
+    const renewalsStopped = stopRenewals(store, RENEWAL_DRAIN_MS, planLog);
     // The CLI's sign-in still waiting for its browser ends with the server, which forgets it: left running, its CLI would
     // keep the browser's callback port from the next server's sign-in. Awaited until its process is gone.
     const signInStopped = claudeSignIns.close();
@@ -7511,6 +7559,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(refusedTimer);
     await refusedSweep;
     await refusedBeside?.close();
+    // A ChatGPT renewal OpenAI is answering saves its new pair first (renewalsStopped, above): none started since.
+    await renewalsStopped;
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
     dataLock.release();
@@ -7540,8 +7590,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Once: a second call, at any time, is the first one's promise, so a close repeated after the next server started
     // never writes this data root's record again (the next server's, by then).
     close: () => (stopped ??= stop()),
-    // No per-run process drains here: the runner owns a run's turn, so a stop waits on none.
-    stopping: () => ({ runs: 0, boundMs: 0 }),
+    // No per-run process drains here: the runner owns a run's turn, so a stop waits on none. A signed-in plan's renewal
+    // may be out, which the stop drains before its store closes: its bound holds it (PLAN_STOP_BOUND_MS).
+    stopping: () => ({ runs: 0, boundMs: plan.state === "signed_in" ? PLAN_STOP_BOUND_MS : 0 }),
     listingSettled: () => lister.settled(),
     refuseRuns: (words) => {
       if (refusedBeside || refusedStopped) return;

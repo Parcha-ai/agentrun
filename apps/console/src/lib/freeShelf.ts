@@ -3,7 +3,8 @@ import type { TemplateView } from "./v2";
 
 // The Free shelf (components/FreeShelf.tsx): what runs for $0 on this server, read from what the console already reads.
 // The free models are capabilities' `harnesses[].free_models`; the web tools are capabilities' `tools[]` web_search and
-// web_fetch, their `resolves` and `why`; the agents are GET /v2/templates. Nothing here is a second copy of the server's.
+// web_fetch, their `resolves` and `why`; the agents are GET /v2/templates, with the harness and subagent tiers an apply
+// here would keep (`model_tiers_here`). Nothing here is a second copy of the server's.
 
 /** A free model as the shelf lists it: its id, its words (`qwen3:8b · local (Ollama)`), whether it runs on this machine's
  *  Ollama, and its context window. */
@@ -65,34 +66,31 @@ export function asksNothingPaid(t: TemplateView): boolean {
 
 /** Whether a template runs free here: it asks for nothing paid besides its model (asksNothingPaid), a `subagent` it grants
  *  runs on free models only, and its package marks it free (its `free` tag) or prefers or offers as a choice one of this
- *  server's free models, a choice that needs no key. A subagent call runs on the package's model for its tier (`fast`,
- *  `strong`), which "Use free" keeps, else the host's for the tier, which the console can't read. Apply keeps a tier's
- *  model only where the harness it makes the agent on runs it (the server's packageTiers): both must be named, and free
- *  on that harness (applyHarness). */
+ *  server's free models, a choice that needs no key. A subagent call runs on the model the server keeps for its tier
+ *  (`model_tiers_here`: the package's `fast` and `strong` where this server runs them on the harness apply picks, never
+ *  through a gateway), which "Use free" keeps, else the host's for the tier, which the console can't read: both must be
+ *  kept, and free on that harness. */
 export function runsFree(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): boolean {
   if (!asksNothingPaid(t)) return false;
   const free = new Set(freeModels(harnesses).map((m) => m.id));
   if ((t.tools ?? []).includes("subagent")) {
-    const on = applyHarness(t, harnesses);
-    const freeOn = new Set((harnesses?.find((h) => h.id === on)?.free_models ?? []).map((m) => m.id));
-    if (![t.model?.fast, t.model?.strong].every((id) => !!id && freeOn.has(id))) return false;
+    const { harness, fast, strong } = t.model_tiers_here;
+    const freeOn = new Set((harnesses?.find((h) => h.id === harness)?.free_models ?? []).map((m) => m.id));
+    if (![fast, strong].every((id) => !!id && freeOn.has(id))) return false;
   }
   if (t.tags.includes("free")) return true;
   return [t.model?.prefer, ...(t.model?.choices ?? []).filter((c) => !c.secrets.length).map((c) => c.model)].some((id) => !!id && free.has(id));
 }
 
-/** The harness apply makes a template's agent on, as the server picks it (server.ts, apply): the first of its harnesses
- *  available here, else its first; with none named, the server's default harness (pi). */
-export function applyHarness(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): string {
-  if (!t.harness?.length) return "pi";
-  return t.harness.find((id) => harnesses?.some((h) => h.id === id && h.available)) ?? t.harness[0]!;
-}
+/** The harness apply makes a template's agent on with no choice, as the server says (`model_tiers_here.harness`): the
+ *  first of its harnesses available here, else its first; with none named, the server's default. */
+export const applyHarness = (t: TemplateView): string => t.model_tiers_here.harness;
 
 /** The free model "Use free" applies a template on: the free default of the harness apply will make its agent on
  *  (applyHarness), so the agent runs what it is given. Null where that harness has none: another harness's free model
  *  would make an agent that can't run it. */
 export function freeModelFor(t: TemplateView, harnesses: readonly HarnessInfo[] | undefined): string | null {
-  return freeDefault(harnesses, applyHarness(t, harnesses));
+  return freeDefault(harnesses, applyHarness(t));
 }
 
 /** A template's Apply screen with the agent's model set (apply's `overrides.model`). */

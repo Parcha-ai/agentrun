@@ -834,6 +834,7 @@ test("a sandbox parked and resumed within 10 minutes is the same sandbox: no cre
   const said = [];
   const first = await one.claim(3);
   assert.equal(first.keeps, "sandbox", "the claim's sandbox is one a park keeps");
+  assert.equal(first.fresh, true, "one this claim started (pr-checkout.ts may hand it a token)");
   // What the run left in the sandbox outside its folder before the park (/tmp/outside-1), as the vendor's machine holds it.
   one.account.computers.get("c1").outside = "/tmp/outside-1";
   assert.equal(await first.park("approval"), true, "kept");
@@ -846,6 +847,7 @@ test("a sandbox parked and resumed within 10 minutes is the same sandbox: no cre
   assert.deepEqual(creates(one.account), ["c1"], "no create");
   assert.equal(resumed.computer.kind, "sandbox");
   assert.deepEqual([resumed.replaced, resumed.keeps], [undefined, "sandbox"], "not replaced (no replaced line, no note); kept again at a later park");
+  assert.equal(resumed.fresh, undefined, "not one this claim started: what an earlier claim left in it may still run, so no checkout is made in it");
   assert.equal(one.account.computers.get("c1").outside, "/tmp/outside-1", "the file outside the run folder is still there");
   assert.equal(said.length, 1);
   assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. It's the same sandbox, as the wait left it.");
@@ -862,6 +864,7 @@ test("a sandbox resumed after 10 minutes is a new one: the kept one let go, said
   assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
   assert.deepEqual(deletes(one.account), ["c1"], "the kept one let go before it");
   assert.deepEqual(resumed.replaced, { kind: "sandbox", folderKept: false, lapsed: true });
+  assert.equal(resumed.fresh, true, "a new one, this claim's own start");
   assert.equal(said.length, 1, "said once");
   assert.equal(computerReadyWords(said[0]), "The sandbox is ready: Linux (amd64), from Docker. The sandbox wasn't kept: 10 minutes passed. It's a new sandbox: the one before is gone, with what was on it.");
   assert.equal(computerReplacedNote(resumed.replaced), "AgentRun server note: your computer was replaced. The earlier one is gone, with its files and processes. Check its files again before relying on them.");

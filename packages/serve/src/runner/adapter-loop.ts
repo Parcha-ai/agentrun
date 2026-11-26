@@ -333,6 +333,9 @@ type TurnEnd = Awaited<ReturnType<AdapterSession["turnEnd"]>>;
 /** What a CLI's request held at a cut turn (TurnCut) is refused with: the turn ended at the person's question. */
 const TURN_CUT_AT_QUESTION = "the turn ended at its question to the person";
 
+/** What a learning child's request after its deadline (LoopDeps.pastDeadline) is refused with, once its cancel stopped it. */
+const PAST_LEARNING_DEADLINE = "this learning run reached its deadline: nothing more is sent";
+
 /** What a run that waits on no one (AdapterRunSpec.neverWaits) would have waited on, by its park's cause: its end says so. */
 const WAITS_ON: Readonly<Record<ParkCause, string>> = {
   approval: "a person's approval of a tool call",
@@ -453,6 +456,9 @@ export type AdapterRun = PiRun & {
   /** The runner's presence incarnation (LoopDeps.incarnation): with the claim's runner, who keeps a computer a park pins
    *  to its runner (computer-for-claim.ts ClaimLaunch.holder). Absent where no loop gave one. */
   readonly incarnation?: string;
+  /** LoopDeps.handBack: a request the run needs refused because the runner is closing hands the run back to resume
+   *  (claim-secrets.ts: the plan's renewal). Absent where no loop gave one. */
+  readonly handBack?: () => void;
   /** Stages the run row's `summary` on the next commit of this pass that writes a root entry of `kind` whose data `test`
    *  takes, in that commit (a tool host's wait on the person, its claim held: the server tells run.needs_input by the
    *  summary). Absent where no loop gave one. */
@@ -787,8 +793,12 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   let text = "";
   /** A model message was written at a request's start (flushSaid) and no other flush has come since. */
   let flushedAtRequest = false;
-  /** The end-of-run turn's answer while that turn runs (answering), else undefined. */
+  /** The end-of-run turn's answer while that turn runs (answering), else undefined: its last message, as pi's answer is,
+   *  the text since the turn's last message boundary. */
   let answer: string | undefined;
+  /** A message boundary (text_end, a call) came in the end-of-run turn: its next text starts the answer anew. A partial
+   *  stream the CLI asked again for whole is never read with the whole answer after it. */
+  let answerCut = false;
   // One write at a time, in the order they were asked for, a failed one never stopping the next.
   let chain: Promise<void> = Promise.resolve();
   const inTurn = (work: () => Promise<void>): Promise<void> => (chain = chain.then(work, work));
@@ -812,8 +822,15 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     onEvent(event) {
       if (event.type === "text") {
         if (answer === undefined) text += event.delta;
-        else answer += event.delta;
-      } else if (event.type === "tool_start" || event.type === "text_end") void flushText().catch(() => undefined);
+        else {
+          if (answerCut) answer = "";
+          answerCut = false;
+          answer += event.delta;
+        }
+      } else if (event.type === "tool_start" || event.type === "text_end") {
+        if (answer !== undefined) answerCut = true;
+        void flushText().catch(() => undefined);
+      }
       else if (event.type === "turn_end") void flushText(event).catch(() => undefined);
       else if (event.type === "notice") {
         // The adapter's own words (the ACP mirror past its budget): a phase row after what the model said before it.
@@ -940,6 +957,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       }),
     answering: async (requestId, prompt, keep) => {
       answer = "";
+      answerCut = false;
       await inTurn(async () => {
         if (askedAt.has(requestId)) return;
         await harness.commit(async (tx) => {
@@ -1967,7 +1985,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           if (passGate.sealed) return;
           passGate.expect(writesEntry(kind, test), { run: { summary } }).catch(() => undefined);
         };
-        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, redact: deps.redact, signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn, ...(deps.incarnation ? { incarnation: deps.incarnation } : {}) };
+        const runOf: AdapterRun = { harness, registry, setModels: (given) => (models = given), ledger, redact: deps.redact, signal: deps.signal, stopped: AbortSignal.any([deps.signal, stopAbort.signal]), phase, rowSummaryOn, ...(deps.incarnation ? { incarnation: deps.incarnation } : {}), ...(deps.handBack ? { handBack: deps.handBack } : {}) };
         // The spec, its MCP claim step among it (mcpForClaim, before the session opens). A refusal there ends the run in its
         // words with nothing sent; a claim lost during its refresh ends the loop with nothing more written. A claim the spec
         // refuses (ClaimRefused: a handed sign-in that won't read back) ends the run in its words too.
@@ -2114,6 +2132,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           return { ...pending, refuse: text, figures };
         };
         const beforeRequest: BeforeRequest = async (request) => {
+          // A learning child past its deadline (LoopDeps.pastDeadline) sends nothing more on its run's key: the request
+          // waits here, unsent, for the cancel its runner hands the loop at that deadline, and leaves refused at that stop.
+          if (deps.pastDeadline?.aborted) {
+            const stop = AbortSignal.any([deps.signal, stopAbort.signal]);
+            if (!stop.aborted) await new Promise<void>((resolve) => stop.addEventListener("abort", () => resolve(), { once: true }));
+            return { refuse: PAST_LEARNING_DEADLINE, forGood: true };
+          }
           // A run whose booked spend passed its cap sends nothing more: it ends in the cap's words (overCap), never paused,
           // whatever else would pause it (a paid call's refusal, pendingPause). One a paid call stopped for good
           // (paid-calls.ts stopRun) ends in that call's words, which say why, past its cap too.

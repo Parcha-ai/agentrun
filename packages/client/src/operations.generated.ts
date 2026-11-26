@@ -605,6 +605,7 @@ export type Cost = {
   compile_usd?: number | null;
   followup_usd?: number | null;
   shadow_usd?: number | null;
+  check_usd?: number | null;
   share_usd?: number | null;
   plan?: {
     requests: number;
@@ -902,6 +903,12 @@ export type Run = {
     firing_key: string;
   } | null;
   audit_of?: string | null;
+  learning_work: {
+    state: "none" | "running" | "ended";
+    runs: Array<string>;
+    ended_at: string | null;
+    deadline_at: string | null;
+  };
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
   workflow?: {
     name: string | null;
@@ -2942,6 +2949,7 @@ export type GetLearningCostResponse = {
     compile_usd?: number | null;
     followup_usd?: number | null;
     shadow_usd?: number | null;
+    check_usd?: number | null;
     share_usd?: number | null;
     not_served?: "cost_stop" | "cut" | null;
   }>;
@@ -6025,6 +6033,12 @@ export type GetTemplateResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{
@@ -6131,6 +6145,12 @@ export type ImportTemplateResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{
@@ -6230,6 +6250,12 @@ export type ListTemplatesResponse = {
       dropped: Array<string>;
       note: string | null;
     } | null;
+    model_tiers_here: {
+      harness: string;
+      fast: string | null;
+      strong: string | null;
+      note: string | null;
+    };
     category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
     tags: Array<string>;
     mcp: Array<{
@@ -7693,6 +7719,11 @@ export type GetWrappedResponse = {
       unknown: number;
     };
     unpriced_breaks: number;
+  } | null;
+  secrets: {
+    runs: number;
+    runs_holding: number;
+    removed: number;
   } | null;
 };
 

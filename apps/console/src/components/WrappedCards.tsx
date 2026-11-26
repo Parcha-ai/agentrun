@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Button } from "@/components/ui";
 import { type CardBody, type CardImage, renderCard, toPng } from "@/lib/cardImage";
-import { drawnBody } from "@/lib/wrappedCardBodies";
-import type { CardRenderer } from "@/lib/wrappedCards";
+import { drawnBody, SATISFIED_WAITS } from "@/lib/wrappedCardBodies";
+import type { CardRenderer, CardWait } from "@/lib/wrappedCards";
 
 /** Saves `image` as the PNG toPng draws of it, under `file`: a download of a blob URL, revoked once clicked. */
 async function savePng(image: CardImage, file: string): Promise<void> {
@@ -34,9 +34,12 @@ export function CardPicture({ body, download }: { body: CardBody; download?: { f
   );
 }
 
-/** The Wrapped page's cards: each one whose waits are met and that the year has a body for, as its picture with its PNG
- *  download (`wrapped-<year>-<card>.png`); null else. */
-export const wrappedCards: CardRenderer = (card, data) => {
-  const body = drawnBody(card, data);
+/** The waits met once the person turns the opt-in cards on. */
+const WITH_OPT_IN: ReadonlySet<CardWait> = new Set<CardWait>([...SATISFIED_WAITS, "opt-in"]);
+
+/** The Wrapped page's cards: each one whose waits are met (an opt-in card's only once the person turned it on) and that
+ *  the year has a body for, as its picture with its PNG download (`wrapped-<year>-<card>.png`); null else. */
+export const wrappedCards: CardRenderer = (card, data, optIn) => {
+  const body = drawnBody(card, data, optIn ? WITH_OPT_IN : SATISFIED_WAITS);
   return body ? <CardPicture body={body} download={{ file: `wrapped-${data.year}-${card.id}.png`, name: card.name }} /> : null;
 };

@@ -292,13 +292,29 @@ its first word is held too when that word is a known auth scheme (`Bearer`, `Bas
 `x-api-key`); any other header's value is held whole, never its tail alone. So are an OTLP endpoint's user, password
 and any query parameter named like a credential, and, inside any header's value, the value of each `name=value` pair
 named like a credential, read over the whole value as written, a URL's query and fragment included (a cookie's
-`session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`; pairs split at `;`, `&`, a
-comma or its `%2C`, and spaces, again at `?`, `#` and `/` too, and three times keeping a `;`: at all but `;`, so
-`api_key=<key;rest>%2Cregion=us` holds the key; at `&` and spaces alone, so `api_key=<key;rest%2Cmore>` holds the
-whole key; and at those or their `%26` and `%20`, so that key is held as written before an encoded `&` or space too,
-and at those or `%26` alone, so a key with a `%20` in it is held before a `%26` (all are held, since a redactor matches each held value exactly and the longer reading never covers the
-key alone); a value whose part before its first `;` is empty, `token=;<key>` or `token=%3B<key>`, is
-held after that `;` too; a value in quotes, raw or written `%22` or `%27`, is held without them; `theme=dark` is not held), and the user, password and
+`session=<token>`, `https://relay/v1?region=us;session=<token>`, `#access_token=<token>`). Such a pair's value is held
+at every boundary: a key may hold a `&`, `;`, comma or space, raw or written `%26`, `%3B`, `%2C` or `%20`, and the
+pairs around it may be joined by any other of them, so no one split finds it. So its value runs from the `=` to the
+end of the header value, and each prefix of it that ends just before one of those separators is held, the whole rest
+too, so `region=us%3Bapi_key=<key%20rest>%26theme=dark` holds `<key%20rest>` (all are held, since a redactor matches
+each held value exactly and a longer reading never covers the key alone). Each prefix is held as written and decoded,
+out of a matching pair of quotes (raw, `%22` or `%27`), and without a lone opening or closing quote when what is left
+is 8 characters or more. A value whose part before its first `;` is empty, `token=;<key>` or `token=%3B<key>`, is held
+after that `;` too, whole and as its first piece of 8 characters or more, but not when that is a pair named like no
+credential (`token=;theme=dark`). The prefixes past a pair's first separator take 4,096 characters of one header value
+at most, but the last such pair's whole rest. Past that budget a pair still holds its value as any reader that splits
+pairs at some kinds of separator reads it (a raw `&` and a `%26` are two kinds, every whitespace one): up to the next
+separator of each kind, until it has passed one of each kind of separator since the last `=` before its name, since a
+reader that splits at any of those finds the pair (`; session=` by one that splits at `;` and one that splits at
+spaces, `&flag;api_key=` by one that splits at `&`), and its whole rest when one of those kinds never comes again, as
+a reader of that kind reads it to the end (`&token=<a>;<b>;secret=<c>`). So a key of any length is held alone, and
+these take a fixed multiple of the header value's length at most, never its square. A prefix past the first that opens
+or ends with a raw `&` or space is held only at 8 characters or more. Not covered: a `+` read as a space, spaces
+around a pair's `=`, a URL inside a pair's value whose query holds `%3B` or `%26` (the key decoded is held, not as
+written), and a raw comma inside a quoted value, which splits the variable itself (write it `%2C`).
+`theme=dark` is not held, nor is a value of only `=`, `;`, `&`, quotes, commas or spaces, as written or decoded, so
+`api_key=%2C` cuts no comma from the `[otel]` lines. Inside a URL that is a pair's value, a pair after a `?`, `#` or
+`/` is read up to the next of those, a `;`, `&`, comma, space or `%2C`. Also held are the user, password and
 credential-named query parameters of every URL in it, one inside another's query or path too, scheme-relative
 (`//<key>@host`) or with its slashes escaped (`https:\/\/`). A URL's query, an endpoint's too, is read split at `&`
 alone and again at `&` and `;`, so `?api_key=<key;rest>` holds the whole key and `?region=us;session=<token>` the
@@ -435,8 +451,10 @@ come. `GET /v2/computers` lists the runner the hold is on (`held_on`), and the s
 (`hold_note`), each shown on the computer's row in Settings → Computers.
 
 The token is in the log of the start that made it. A `docker stop` reaches both processes. The runner gives a busy run
-6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s
-grace, and Compose's `stop_grace_period` is 15 s; a turn cut off resumes at the next start. Compose publishes the port
+6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s; a turn cut off resumes at
+the next start. Signed in with ChatGPT, a stop also waits up to 25 s for a renewal OpenAI is answering to save its new
+pair, so Compose's `stop_grace_period` is 35 s, and a plain `docker stop` needs `-t 35`: Docker's default 10 s can cut
+that wait short and lose the sign-in. Compose publishes the port
 on this machine's loopback only (port 7340, or `AGENTRUN_PORT`; set `AGENTRUN_PUBLIC_URL` with it, so the printed link names that port), and
 the volume `agentrun-data` keeps `/data` across `down` and `up`. In the container the server listens on `0.0.0.0`, so
 setup takes the code the start prints (`Set up this server: <url>/setup#code=<code>`), and every route but `GET /v2/capabilities` and `GET /v2/health` still needs the token. Compose's `healthcheck` and
@@ -1038,8 +1056,10 @@ keeps no file from an agent that has the shell, paired machines included: on a d
 `computer.shell.run` reads and writes any file the desktop's user can, held to `bash`'s setting alone, which allows by
 default. To keep files from such an agent, set `bash` to deny or turn the desktop's exec off. Input ops on a desktop
 with a terminal app or a GUI file manager, and `apps.open` with a URL or a path, can do what a shell or the file ops
-do, whatever `bash`'s, `read`'s or `write`'s setting: to deny that, don't grant input ops or apps on that desktop, or
-use an image with neither a terminal nor a file manager. A script's call of a computer tool answers the
+do, whatever `bash`'s, `read`'s or `write`'s setting. Where `write` is granted, `apps.open` can do what a shell does
+even with no URL or path: an app reads its config from the user's home (computerd's `HOME`, which `write` reaches), so
+the agent can write the config of an app it then opens. To deny all of that, don't grant input ops or apps on that
+desktop; to deny only the input ops' reach, use an image with neither a terminal nor a file manager. A script's call of a computer tool answers the
 tool's value. Codex's code mode takes no binding of ours, so a Codex run is offered
 `computer_op` beside the computer's tools and its scripts call them as nested calls, each answering the tool's value as
 JSON. A run whose `codemode` is set to deny lists them the same way, so its computer stays in reach. `computerMcp` (`src/workspace/computer-mcp.ts`) serves the same tools to an MCP
@@ -1575,7 +1595,7 @@ curl -s http://127.0.0.1:7340/v2/agents/support/runs -H "Authorization: Bearer $
 curl -s http://127.0.0.1:7340/v2/runs/$RUN_ID/messages -H "Authorization: Bearer $AGENTRUN_TOKEN" \
   -H 'content-type: application/json' -d "{\"content\": \"And the refund?\", \"model_key\": \"$NEXT_KEY\"}"
 
-# When the run's turn has ended (run.ended), revoke it.
+# When the run is terminal and GET /v2/runs/$RUN_ID reads learning_work.state other than "running", revoke it.
 curl -s https://litellm.example.com/key/delete -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H 'content-type: application/json' -d "{\"keys\": [\"$KEY\"]}"
 ```
@@ -1595,15 +1615,32 @@ Custody, as for a per_run MCP server's `mcp_auth`:
   keeps failing, the message waits untaken and is delivered again, never run on the key held before it or the
   server's. A stop or cancel sent after it still reaches the run. A message without one keeps the key the run holds.
 
-**The revoke-at-turn-end contract.** The write that ends a run's turn erases its key from the store, and the run
-reports the turn ended (`run.ended`, the run's `completed`, `failed` or `stopped` status) only after that write. Every model request
-tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run compile
-turn. So a caller may revoke the key as soon as it sees the turn end, and no request of that run will
-answer 401 for it. Model spend that would run after the turn ends is never sent on the run's key or the server's:
+**The revoke contract: `learning_work`.** The write that ends a run's turn erases its key from the store. Every model
+request tied to the turn finishes before then: the job, its subagents, its learned workflows' nodes, its end-of-run
+compile turn. A run that learns also starts learning work on its key at its end: a learned workflow's check (replay
+runs) and its audit (a shadow run). Each of those runs takes a copy of the key sealed for it alone, and the write that
+ends that run (or its purge) erases the copy. They are capped at their share of what the run's cap leaves at its end;
+with too little left they are dropped and spend nothing. GET `/v2/runs/{run_id}` says where that work stands in
+`learning_work`:
+
+- `state`: `none` (the run started none), `running` (its compile turn, or a run in `runs`, is still going) or `ended`
+  (all of it finished or dropped, at `ended_at`). It only moves forward once the run is terminal; a lost or cancelled
+  child counts as ended.
+- Revoke the key once the run is terminal and `learning_work.state` is not `running`. No request of the run or its
+  children answers 401 for it then.
+- `deadline_at`, while `running`: the latest instant that work may still spend on the key. It is the later of the
+  compile turn's start plus its 10 minute timeout and each child's start plus 30 minutes, and it only moves later. The
+  server cancels a child still at work at its 30 minutes, as a person's cancel is, and it then counts as ended. Set
+  the key's expiry no earlier than `deadline_at` as a backstop for a missed read; `state` stays the signal to revoke on.
+- A purge of the run (`DELETE /v2/runs/{run_id}`) while its check's replays still run cancels them and erases their
+  copies first, and answers only once they have ended: after a 204 nothing spends on the key. A live shadow audit
+  refuses the purge (409 `run_not_final`), as any run made from it does.
+- What those runs spend is the run's own learning: its `cost.learning_usd`, with the replays as `cost.check_usd` and
+  the shadow as `cost.shadow_usd`, never a workflow revision's spend.
 
 | Spend | With the run's key | Server holds no key, run brought none |
 | --- | --- | --- |
-| A shadow audit, a learned workflow's replay check | Skipped, logged | Skipped, logged |
+| A shadow audit, a learned workflow's replay check | On a sealed copy of the run's key, at its end, within its cap's room (listed in `learning_work`) | Skipped, logged |
 | A grade's feedback round (`PUT /runs/{id}/grade`) | A new turn with no key: the server's, else not opened | Not opened; the grade is kept |
 | An owner's replay, an SDK run's compile turn | Tied to no run's key | 409 or skipped, in words |
 | A trigger's firing | Starts a run with no key | 422 `model_key_required` for the firing |
@@ -2813,8 +2850,9 @@ written: no run, no new binding, and a firing stays as it was. The owner's users
 owner connects after a token's run started is refused from then on. The seal marks each binding with who handed it
 (the token or the owner's session), and each claim reads the owner's users again: a token's binding of a user the owner
 has connected since has its calls answered, unsent, that the user is the owner's, until a message hands `mcp_auth`
-again or a new run starts. The owner's session binds any user, the owner's own included. On an [API-only](#api-only)
-server every caller is the token: the same users are refused, at the request and at each claim whoever handed the
+again or a new run starts. The owner's session binds any user, the owner's own included, but `agentrun`: no caller
+binds a run to the preset's shared default user (`422 not_allowed`), so a run that forgot its own never lands there. On
+an [API-only](#api-only) server every caller is the token: the same users are refused, at the request and at each claim whoever handed the
 binding, and a named account must be one Composio lists under the run's user.
 
 What this leaves open: a per-run server lends the install's Composio key to whoever starts a run, and a token can still

@@ -91,7 +91,8 @@ services:
       retries: 3
       start_period: 15s
     restart: unless-stopped
-    stop_grace_period: 15s
+    # As the runners': at least a signed-in server's stop bound (27 s: a ChatGPT plan renewal saves its new pair).
+    stop_grace_period: 35s
 
   # Each runner names the host the server reaches its live viewers at (its own, on this stack's network), and its
   # viewers listen there, taking only the server's signed requests (live-reach.ts). The hop is this stack's own network.

@@ -29,8 +29,9 @@ import type { AcpProxy } from "../adapter.js";
  *  reads skill files only. */
 export const GOOSE_OWN_TOOLS: readonly string[] = Object.freeze(["load_skill"]);
 
-/** A host tool's name as Goose offers it to its model: the MCP server's name, two underscores, the tool's. */
-export const gooseToolName = (name: string): string => `${MCP_SERVER}__${name}`;
+/** A host tool's name as Goose offers it to its model: the MCP server's name at this start (`agentrun` under Goose's own
+ *  recipe; a start's own under a recipe with the title tie: mcpServerName), two underscores, the tool's. */
+export const gooseToolName = (name: string, server: string = MCP_SERVER): string => `${server}__${name}`;
 
 /** The `anthropic-beta` value Goose 1.59.2 sends with each Messages request, recorded behind a fake origin (the package's
  *  Goose test records it again on every run with the binary). */
@@ -65,6 +66,8 @@ export interface GoosePolicyOptions {
   model: string;
   /** The session's host tools, by their names (`spec.tools`). */
   tools: readonly string[];
+  /** Our MCP server's name at this start (AcpProxySession.server). Default `agentrun`. */
+  server?: string;
   /** The most output tokens one request may ask for. Default 128 000, what Goose asks for. */
   maxOutputTokens?: number;
   /** How the provider takes its credential. Default `x-api-key` (Anthropic's API). */
@@ -111,7 +114,7 @@ export function applyGoose(body: unknown, options: GoosePolicyOptions): Record<s
     blocks((message as Record<string, unknown>).content, "a message's content");
   }
   blocks(body.system, "system");
-  const allowed = new Set([...options.tools.map(gooseToolName), ...GOOSE_OWN_TOOLS]);
+  const allowed = new Set([...options.tools.map((name) => gooseToolName(name, options.server)), ...GOOSE_OWN_TOOLS]);
   if (body.tools !== undefined) {
     if (!Array.isArray(body.tools)) refuse(400, "tools is not a list");
     for (const tool of body.tools as unknown[]) {
@@ -338,7 +341,7 @@ export interface GooseProxyOptions {
 export function gooseProxy(options: GooseProxyOptions): AcpProxy {
   return async (session) => {
     const proxy = await startModelProxy({
-      policy: goosePolicy({ model: options.model, tools: session.tools, ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(options.provider.auth ? { auth: options.provider.auth } : {}) }),
+      policy: goosePolicy({ model: options.model, tools: session.tools, ...(session.server ? { server: session.server } : {}), ...(options.maxOutputTokens ? { maxOutputTokens: options.maxOutputTokens } : {}), ...(options.provider.auth ? { auth: options.provider.auth } : {}) }),
       hooks: session.models,
       ...(session.turn ? { turn: session.turn } : {}),
       model: options.model,
