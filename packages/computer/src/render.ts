@@ -11,7 +11,9 @@
 //
 // Render's sandboxes carry no labels: a sandbox's name (computer-<12 hex>) gives the adapter's own two, and create writes
 // every label to a file in the sandbox, root's alone, which get and list read back through runs/sync where a label asked
-// is not the name's, and keep: a computer's labels never change (Render moves no timeout, so there is no extend).
+// is not the name's, and keep: a computer's labels never change (Render moves no timeout, so there is no extend). That
+// read needs a healthy guest, so one that fails, or has no answer within the call's own bound, gives the name's two:
+// enough for release to find and terminate a wedged sandbox, never a reason it is left to bill to its timeout.
 //
 // Every vendor fact below is from @renderinc/sdk 1.11.0's OpenAPI schema (dist/generated/schema.d.ts, S) or its client
 // (dist/sandboxes/index.js, C), a live probe (11-25: root, HOME=/root, a Render kernel, egress https, and a command
@@ -23,7 +25,7 @@ import { boxImageRef, boxRecipeHash } from "./box-image.js";
 import { RENDER } from "./descriptors/render.js";
 import { COMPUTER_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineRequest } from "./host.js";
-import { codeOfError, orThrow, pause, seconds, until } from "./hosted/process.js";
+import { codeOfError, orThrow, pause, seconds, until, untilAborted } from "./hosted/process.js";
 import { HostedProvider, type HostedOptions, type HostedTimeouts, mayHaveMade, NAME_LABEL, timeoutsOf } from "./hosted/provider.js";
 import { allPages, jsonOf, type Rest, type RestInit, rest } from "./hosted/rest.js";
 import { dialLaunch } from "./hosted/scripts.js";
@@ -47,6 +49,13 @@ interface RenderBuild {
 	status?: string;
 	failureReason?: string | null;
 	failureCode?: string | null;
+}
+
+/** The box build's find-or-import: its name or its error once settled, whether it imports, and the callers to tell when it does. */
+interface BuildFlight {
+	answer: Promise<{ name: string } | { error: unknown }>;
+	importing: boolean;
+	toTell: Set<() => void>;
 }
 
 /** What runs/sync answers once its command has ended (the live probe; C reads the stream's exit event's exit_code). */
@@ -75,8 +84,6 @@ const API_URL = "https://api.render.com";
  * every query: whether it names a workspace the key reaches is Render's answer to the first call.
  */
 const OWNER_ID = /^[A-Za-z0-9_-]{1,64}$/;
-/** S: sandboxId, "sbx-1cd4gcph1rs3idesc73a2b2mg"; held to that form before it reaches a path. */
-const SANDBOX_ID = /^sbx-[a-z0-9]{10,40}$/;
 /** S: sandboxBuildId, sbb-…; a build's name may not start with sbb- (S, sandbox-groups/{id}/builds), so this reads as an id. */
 const BUILD_ID = /^sbb-[a-z0-9]{10,40}$/;
 /** A build's name, 1 to 255 characters (S); held to letters, digits, dots, underscores and hyphens, so an OCI path is not one. */
@@ -97,6 +104,10 @@ const MAX_LIFETIME_MS = 24 * 60 * 60_000;
 /** One page of a listing (S, limitParam: 1 to 100). */
 const PAGE = 100;
 const MAX_PAGES = 100;
+/** How many labels files a listing reads at once: each is a run token and a runs/sync call, and a workspace's runs are rate limited (S, 429RateLimit). */
+const LABEL_READS = 4;
+/** S, sandboxBuildStatus: a build of these has, or will have, the box image; failed is imported again. */
+const BUILD_LIVE = ["succeeded", "pending", "running"] as const;
 /** How long the box image's import may take (C's own wait for an image is 10 minutes; the box image is about 400 MB). */
 const BUILD_MS = 30 * 60_000;
 /** How long a failed create's terminate of the sandbox it made may take: create's own bound may be spent by then. */
@@ -181,10 +192,31 @@ function machineOf(found: RenderSandbox, labels: Record<string, string>): Machin
 	};
 }
 
-/** An id held to Render's form before it reaches a path: not_found else. */
-function sandboxId(id: string): string {
-	if (!SANDBOX_ID.test(id)) throw new HostError("not_found", `${JSON.stringify(id)} is not a Render sandbox id`);
-	return id;
+/** Whether an id Render answered can be one path segment: any string but none, `.` and `..` (which a URL resolves away). */
+const segmentable = (id: unknown): id is string => typeof id === "string" && id !== "" && id !== "." && id !== "..";
+
+/**
+ * A sandbox id as one path segment, encoded: Render's ids read sbx-… (S, sandboxId), but one of another form is still
+ * read and terminated by it, never left running because this host did not know the form. One that can't be a segment
+ * is no sandbox: not_found.
+ */
+function sandboxPath(id: string): string {
+	if (!segmentable(id)) throw new HostError("not_found", `${JSON.stringify(id)} is not a Render sandbox id`);
+	return encodeURIComponent(id);
+}
+
+/** Each of items through `each`, at most `most` at once, the answers in the items' order. */
+async function eachAtMost<T, R>(items: readonly T[], most: number, each: (item: T) => Promise<R>): Promise<R[]> {
+	const answers: R[] = new Array(items.length);
+	let next = 0;
+	const worker = async () => {
+		while (next < items.length) {
+			const at = next++;
+			answers[at] = await each(items[at] as T);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(most, items.length) }, worker));
+	return answers;
 }
 
 /** Render's error body (S, error): { id?, message?, code? }. */
@@ -221,10 +253,20 @@ class RenderHost implements MachineHost {
 	readonly #owner: string;
 	readonly #fetch: typeof fetch;
 	readonly #pollMs: number;
-	/** Each computer's labels once known, by sandbox id: written by create, or read from the labels file once. */
+	/**
+	 * Each computer's labels once known, by sandbox id: written by create, or read from the labels file once. Let go when
+	 * get reads the sandbox terminated or not found, or a whole listing no longer shows it (Render ended it at its timeout).
+	 */
 	readonly #labels = new Map<string, Record<string, string>>();
+	/**
+	 * The sandboxes this host terminated, until Render reads them gone (let go as #labels is): Render may read one running
+	 * for a while after its terminate, and its guest, ending, is never read for labels.
+	 */
+	readonly #ending = new Set<string>();
 	/** The box build's name once Render read it succeeded: prepareImage asks no more. */
 	#built: string | undefined;
+	/** The box build's one find-or-import while it runs: every prepareImage in this process waits on it. */
+	#flight: BuildFlight | undefined;
 
 	constructor(options: { apiKey: string; ownerId: string; fetch: typeof fetch; pollMs: number }) {
 		this.#apiKey = options.apiKey;
@@ -256,7 +298,7 @@ class RenderHost implements MachineHost {
 	 */
 	async #run(id: string, command: string, ctx: HostCall, once = false): Promise<RunAnswer> {
 		const end = Date.now() + ctx.timeoutMs;
-		const minted = (await this.#call("POST", this.#owned(`/v1/sandboxes/${sandboxId(id)}/runs/sync/token`), { retry: true }, ctx)) as { uri?: unknown; token?: unknown; method?: unknown } | null;
+		const minted = (await this.#call("POST", this.#owned(`/v1/sandboxes/${sandboxPath(id)}/runs/sync/token`), { retry: true }, ctx)) as { uri?: unknown; token?: unknown; method?: unknown } | null;
 		const { uri, token } = minted ?? {};
 		if (typeof uri !== "string" || !uri.startsWith("https://") || typeof token !== "string" || token === "") throw new HostError("vendor", `Render answered no https run URL and token for the sandbox ${id}`);
 		const plane = this.#client(new URL(uri).origin, () => token);
@@ -269,26 +311,49 @@ class RenderHost implements MachineHost {
 	/**
 	 * A sandbox's labels: the ones this host knows, else its name's, else its labels file's, read once through runs/sync
 	 * and kept. `need`: a listing's labels; when the name's hold every one asked, no file is read. A sandbox not named as a
-	 * computer carries none; one not running, or with no file yet, its name's. A read that fails throws, so a listing
-	 * never answers as though the sandbox were not there.
+	 * computer carries none; one not running, one this host terminated, or one with no file yet, its name's. The read is
+	 * held to `end` (epoch ms, the call's own bound): one that fails or has no answer by then gives the name's, kept for
+	 * nothing, so the next read tries again. Only the caller's own abort throws.
 	 */
-	async #labelsOf(found: RenderSandbox, ctx: HostCall, need?: Record<string, string>): Promise<Record<string, string>> {
+	async #labelsOf(found: RenderSandbox, ctx: HostCall, end: number, need?: Record<string, string>): Promise<Record<string, string>> {
 		const name = found.name;
 		if (typeof name !== "string" || !COMPUTER_NAME.test(name)) return {};
 		const known = this.#labels.get(found.id);
 		if (known !== undefined) return known;
 		const own = { [COMPUTER_LABEL]: "1", [NAME_LABEL]: name };
-		if ((need !== undefined && Object.keys(need).every((key) => key in own)) || found.status !== "running") return own;
-		const read = await this.#run(found.id, readFile(LABELS_FILE), ctx);
-		if (read.exit === MISSING) return own;
-		if (read.exit !== 0) throw new HostError("vendor", `reading the labels file of ${found.id} exited ${read.exit}: ${lastWords(read)}`);
-		const parsed = jsonOf(new TextEncoder().encode(read.stdout));
-		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || !Object.values(parsed).every((value) => typeof value === "string")) {
-			throw new HostError("vendor", `the labels file of ${found.id} is not a JSON map of strings`);
+		if ((need !== undefined && Object.keys(need).every((key) => key in own)) || found.status !== "running" || this.#ending.has(found.id)) return own;
+		const left = end - Date.now();
+		if (left <= 0) return own;
+		const bound = AbortSignal.timeout(left);
+		let file: Record<string, string> | undefined;
+		try {
+			file = await this.#labelsFile(found.id, { timeoutMs: left, signal: ctx.signal ? AbortSignal.any([ctx.signal, bound]) : bound });
+		} catch (error) {
+			if (ctx.signal?.aborted) throw error;
+			return own;
 		}
-		const labels = { ...(parsed as Record<string, string>), ...own };
+		if (file === undefined) return own;
+		const labels = { ...file, ...own };
 		this.#labels.set(found.id, labels);
 		return labels;
+	}
+
+	/** The labels file read through runs/sync: undefined when it is not there yet; a read that fails throws in words. */
+	async #labelsFile(id: string, ctx: HostCall): Promise<Record<string, string> | undefined> {
+		const read = await this.#run(id, readFile(LABELS_FILE), ctx);
+		if (read.exit === MISSING) return undefined;
+		if (read.exit !== 0) throw new HostError("vendor", `reading the labels file of ${id} exited ${read.exit}: ${lastWords(read)}`);
+		const parsed = jsonOf(new TextEncoder().encode(read.stdout));
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed) || !Object.values(parsed).every((value) => typeof value === "string")) {
+			throw new HostError("vendor", `the labels file of ${id} is not a JSON map of strings`);
+		}
+		return parsed as Record<string, string>;
+	}
+
+	/** A sandbox Render reads gone: its labels and its terminate are let go. */
+	#forget(id: string): void {
+		this.#labels.delete(id);
+		this.#ending.delete(id);
 	}
 
 	/**
@@ -344,7 +409,7 @@ class RenderHost implements MachineHost {
 			ctx,
 		)) as RenderSandbox | null;
 		const id = made?.id;
-		if (typeof id !== "string" || !SANDBOX_ID.test(id)) throw new HostError("vendor", `POST /v1/sandboxes answered no sandbox id: ${show(id)}`);
+		if (!segmentable(id)) throw new HostError("vendor", `POST /v1/sandboxes answered no sandbox id: ${show(id)}`);
 		this.#labels.set(id, { ...req.labels });
 		try {
 			await this.#untilRunning(made as RenderSandbox, end, ctx);
@@ -379,26 +444,44 @@ class RenderHost implements MachineHost {
 			if (Date.now() + this.#pollMs >= end) throw new HostError("timeout", `the sandbox ${found.id} did not read running within ${seconds(ctx.timeoutMs)} (it reads ${found.status}), so agentrun-dial was not started`);
 			await pause(this.#pollMs, ctx.signal);
 			if (ctx.signal?.aborted) throw new HostError("aborted", `the wait for the sandbox ${found.id} to run was aborted`);
-			found = (await this.#call("GET", this.#owned(`/v1/sandboxes/${found.id}`), { retry: true }, { ...ctx, timeoutMs: Math.max(1, end - Date.now()) })) as RenderSandbox;
+			found = (await this.#call("GET", this.#owned(`/v1/sandboxes/${sandboxPath(found.id)}`), { retry: true }, { ...ctx, timeoutMs: Math.max(1, end - Date.now()) })) as RenderSandbox;
 		}
 	}
 
-	/** GET /v1/sandboxes/{id}; 404 is not_found, which the adapter reads as none, and a terminated sandbox is none. */
+	/**
+	 * GET /v1/sandboxes/{id}; 404 is not_found, which the adapter reads as none, and a terminated sandbox is none: either
+	 * lets go of what this host kept of it. Its labels are read within this call's own bound (#labelsOf).
+	 */
 	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
-		const found = (await this.#call("GET", this.#owned(`/v1/sandboxes/${sandboxId(id)}`), { retry: true }, ctx)) as RenderSandbox | null;
+		const end = Date.now() + ctx.timeoutMs;
+		let found: RenderSandbox | null;
+		try {
+			found = (await this.#call("GET", this.#owned(`/v1/sandboxes/${sandboxPath(id)}`), { retry: true }, ctx)) as RenderSandbox | null;
+		} catch (error) {
+			if (error instanceof HostError && error.code === "not_found") this.#forget(id);
+			throw error;
+		}
 		if (typeof found?.status !== "string") throw new HostError("vendor", `GET /v1/sandboxes/${id} answered no status`);
-		if (found.status === "terminated") return undefined;
-		return machineOf(found, await this.#labelsOf(found, ctx));
+		if (found.status === "terminated") {
+			this.#forget(id);
+			return undefined;
+		}
+		return machineOf(found, await this.#labelsOf(found, ctx, end));
 	}
 
 	/**
 	 * GET /v1/sandboxes?ownerId (S, list-sandboxes: terminated ones left out unless asked), by name where the name is
 	 * asked ("exactly this name"), every page by its last item's cursor while a page is full. Only sandboxes named as
-	 * computers; a label asked that is not the name's is read from each running one's labels file (#labelsOf), and only
-	 * those that carry every label asked are answered. A file that can't be read fails the listing in words: a listing
-	 * that left the sandbox out would read as no such computer.
+	 * computers; a label asked that is not the name's is read from each running one's labels file (#labelsOf), LABEL_READS
+	 * at once, all within this call's own bound, and only those that carry every label asked are answered. A file that
+	 * can't be read fails nothing: that sandbox carries its name's labels, so a listing by its name still finds it. What
+	 * this host kept of a sandbox the listing no longer shows (one of the name asked, or any for a listing by no name) is
+	 * let go: Render ended it, at its timeout or by another's hand.
 	 */
 	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
+		const end = Date.now() + ctx.timeoutMs;
+		// Only what was kept before the listing began is let go: a sandbox made while it ran may not be on its pages.
+		const kept = [...new Set([...this.#labels.keys(), ...this.#ending])];
 		const name = labels[NAME_LABEL];
 		const listed = orThrow(
 			await allPages<RenderSandbox>(
@@ -415,20 +498,29 @@ class RenderHost implements MachineHost {
 				{ vendor: RENDER.id, what: "Render's sandbox listing" },
 			),
 		);
-		const ours = listed.filter((found) => found.status !== "terminated" && typeof found.name === "string" && COMPUTER_NAME.test(found.name));
-		const read = await Promise.all(
-			ours.map(async (found) => {
-				const carried = await this.#labelsOf(found, ctx, labels);
-				return Object.entries(labels).every(([key, value]) => carried[key] === value) ? machineOf(found, carried) : undefined;
-			}),
-		);
+		const live = listed.filter((found) => found.status !== "terminated");
+		const shown = new Set(live.map(({ id }) => id));
+		for (const id of kept) if (!shown.has(id) && (name === undefined || this.#labels.get(id)?.[NAME_LABEL] === name)) this.#forget(id);
+		const ours = live.filter((found) => typeof found.name === "string" && COMPUTER_NAME.test(found.name));
+		const read = await eachAtMost(ours, LABEL_READS, async (found) => {
+			const carried = await this.#labelsOf(found, ctx, end, labels);
+			return Object.entries(labels).every(([key, value]) => carried[key] === value) ? machineOf(found, carried) : undefined;
+		});
 		return read.flatMap((machine) => machine ?? []);
 	}
 
-	/** POST /v1/sandboxes/{id}/terminate (S: 204, also for one already terminated); a 404 is done to the adapter. */
+	/**
+	 * POST /v1/sandboxes/{id}/terminate (S: 204, also for one already terminated); a 404 is done to the adapter. What this
+	 * host kept of it stays until get reads it gone: Render may read it running a while yet, and its labels still answer.
+	 */
 	async delete(id: string, ctx: HostCall): Promise<void> {
-		await this.#call("POST", this.#owned(`/v1/sandboxes/${sandboxId(id)}/terminate`), { retry: true }, ctx);
-		this.#labels.delete(id);
+		try {
+			await this.#call("POST", this.#owned(`/v1/sandboxes/${sandboxPath(id)}/terminate`), { retry: true }, ctx);
+		} catch (error) {
+			if (error instanceof HostError && error.code === "not_found") this.#forget(id);
+			throw error;
+		}
+		this.#ending.add(id);
 	}
 
 	/** The end of what agentrun-dial wrote, through runs/sync; undefined where it was never started. */
@@ -478,31 +570,81 @@ class RenderHost implements MachineHost {
 
 	/**
 	 * The box image as a build of the workspace's default sandbox group (the group a create that names none uses, S),
-	 * named agentrun-box-<recipe hash>, so a new recipe is a new build: a succeeded one of that name is kept (GET
-	 * …/builds?name&status=succeeded), else POST …/builds { name, sourceImage } imports the box image's public tag (S: "converts
-	 * a container image into an image that sandboxes can use"), and Render's answer is read until it succeeded or failed.
-	 * `building` is told before the import. Render pulls the public ghcr.io image with no credential (the live Core run's
-	 * import took 104 s); a tag the release has not published yet is Render's 400, "source image unavailable".
+	 * named agentrun-box-<recipe hash>, so a new recipe is a new build. Concurrent callers in this process share one
+	 * find-or-import (#flight), forgotten once it settles. `building` is told once, before the wait on an import, its own
+	 * or one under way when it joined; a caller's signal ends its own wait alone: the import's wait goes on, within
+	 * BUILD_MS, for the next caller.
 	 */
 	async boxBuild(building: () => void, signal: AbortSignal | undefined): Promise<string> {
 		if (this.#built !== undefined) return this.#built;
+		if (signal?.aborted) throw new HostError("aborted", "the wait for the box build was aborted before it began");
+		const flight = (this.#flight ??= this.#fly());
+		const tell = () => {
+			try {
+				building();
+			} catch {
+				// The caller's listener is its own: a throw changes nothing here.
+			}
+		};
+		if (flight.importing) tell();
+		else flight.toTell.add(tell);
+		try {
+			const settled = await untilAborted(flight.answer, [signal]);
+			if (settled === undefined) throw new HostError("aborted", "the wait for the box build was aborted; its import goes on for the next caller");
+			if ("error" in settled) throw settled.error;
+			return settled.name;
+		} finally {
+			flight.toTell.delete(tell);
+		}
+	}
+
+	/** The one find-or-import every boxBuild waits on: never rejects (its error is its answer), and forgotten once settled. */
+	#fly(): BuildFlight {
+		const flight: BuildFlight = { answer: Promise.resolve({ error: undefined }), importing: false, toTell: new Set() };
+		const importing = () => {
+			flight.importing = true;
+			for (const tell of flight.toTell) tell();
+		};
+		flight.answer = this.#findOrImport(importing).then(
+			(name) => ({ name: (this.#built = name) }),
+			(error: unknown) => ({ error }),
+		);
+		void flight.answer.then(() => {
+			if (this.#flight === flight) this.#flight = undefined;
+		});
+		return flight;
+	}
+
+	/**
+	 * The box build found or imported, held to no caller: a build of its name that succeeded is the answer; one pending
+	 * or running (an import another call or process started, or a POST whose answer was lost) is waited for (GET
+	 * …/builds?name&status=succeeded&status=pending&status=running, newest first; an array is one key per status, as C's
+	 * openapi-fetch sends it). Else POST …/builds { name, sourceImage } imports the box image's public tag (S: "converts a
+	 * container image into an image that sandboxes can use"), and Render's answer is read until it succeeded or failed.
+	 * `importing` is told before either wait. Render pulls the public ghcr.io image with no credential (the live Core
+	 * run's import took 104 s); a tag the release has not published yet is Render's 400, "source image unavailable".
+	 */
+	async #findOrImport(importing: () => void): Promise<string> {
 		const name = boxBuildName();
-		const ctx = { timeoutMs: 30_000, ...(signal ? { signal } : {}) };
+		const ctx = { timeoutMs: 30_000 };
 		const group = await this.#defaultGroup(ctx);
 		const builds = `/v1/sandbox-groups/${group}/builds`;
-		const found = await this.#call("GET", `${builds}?${new URLSearchParams({ name, status: "succeeded", limit: "1" })}`, { retry: true }, ctx);
-		if (Array.isArray(found) && found.length > 0) return (this.#built = name);
-		building();
-		let build = (await this.#call("POST", builds, { json: { name, sourceImage: boxImageRef() }, retry: (status) => status === 429 }, ctx)) as RenderBuild | null;
+		const query = new URLSearchParams([["name", name], ...BUILD_LIVE.map((status) => ["status", status]), ["limit", String(PAGE)]]);
+		const listed = await this.#call("GET", `${builds}?${query}`, { retry: true }, ctx);
+		const found = (Array.isArray(listed) ? (listed as Array<{ build?: RenderBuild } | null>) : []).flatMap((row) => (row?.build ? [row.build] : []));
+		if (found.some(({ status }) => status === "succeeded")) return name;
+		importing();
+		let build: RenderBuild | null | undefined = found.find(({ id, status }) => (status === "pending" || status === "running") && typeof id === "string" && BUILD_ID.test(id));
+		build ??= (await this.#call("POST", builds, { json: { name, sourceImage: boxImageRef() }, retry: (status) => status === 429 }, ctx)) as RenderBuild | null;
 		const id = build?.id;
 		if (typeof id !== "string" || !BUILD_ID.test(id)) throw new HostError("vendor", `POST ${builds} answered no build id: ${show(id)}`);
-		const settled = (one: RenderBuild | null) => {
+		const settled = (one: RenderBuild | null | undefined) => {
 			if (one?.status === "succeeded") return true;
 			if (one?.status === "failed") throw new HostError("vendor", `Render's build ${id} failed: ${one.failureReason || one.failureCode || "no reason given"}`);
 			return undefined;
 		};
-		if (!settled(build)) await until(`Render's build ${id}`, { end: Date.now() + BUILD_MS, pollMs: this.#pollMs, signal }, async () => settled((build = (await this.#call("GET", `${builds}/${id}`, { retry: true }, ctx)) as RenderBuild | null)));
-		return (this.#built = name);
+		if (!settled(build)) await until(`Render's build ${id}`, { end: Date.now() + BUILD_MS, pollMs: this.#pollMs }, async () => settled((build = (await this.#call("GET", `${builds}/${id}`, { retry: true }, ctx)) as RenderBuild | null)));
+		return name;
 	}
 }
 
