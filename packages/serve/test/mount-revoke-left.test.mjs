@@ -44,6 +44,25 @@ test("a pass over left removes whose Archil never answers ends at one bound, not
   assert.equal(settings.rows.size, 5, "every row left for the next pass");
 });
 
+test("passes whose first row's Archil never answers go on past it: the next pass starts after the row its bound cut, so a later row's remove is asked and its row removed, and the hanging one is asked again", { timeout: 10_000 }, async () => {
+  const settings = memorySettings();
+  for (const run of ["run-1", "run-2", "run-3"]) await settings.put(mountRevokeKeyOf(run), row(3));
+  const asked = [];
+  // run-1's disk never answers: its call waits until its signal is aborted. The others' answer at once.
+  const revoke = async (runId, _left, signal) => {
+    asked.push(runId);
+    if (runId === "run-1") await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  };
+  // One start kept across the passes, as the janitor keeps one.
+  const start = {};
+  const passes = [];
+  for (let pass = 0; pass < 3; pass += 1) passes.push((await sweepMountRevokes({ settings, revoke, deleteMs: 50, start })).failed);
+  assert.deepEqual(asked, ["run-1", "run-2", "run-3", "run-1", "run-1"], "pass 1 is cut at run-1; pass 2 starts at run-2 and comes back round to run-1; pass 3 asks run-1 again");
+  assert.deepEqual([...settings.rows.keys()], [mountRevokeKeyOf("run-1")], "run-2's and run-3's rows removed by the second pass; run-1's stays for the next");
+  assert.match(passes[0].join("\n"), /2 more left Archil mount credential removes were not asked/);
+  for (const failed of passes) assert.match(failed[0], /run run-1: .*did not answer within 0\.05 s/);
+});
+
 /** `settings` whose first putIfAbsent of `key` finds `value` written there by another between the leave's read and its
  *  write, as a claim of the run ending at the same time does. */
 function racing(settings, key, value) {
