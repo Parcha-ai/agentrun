@@ -43,6 +43,7 @@ const { routeOf } = await import("../dist/runner/model-route.js");
 const { heldRefusedRoute } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { claimSecrets, MODEL_KEY_NAMES, subagentTierKeys, tierModelKeys } = await import("../dist/runner/claim-secrets.js");
+const { sdkCompileEnv } = await import("../dist/runner/harness-loops.js");
 const { childLoops, heldFor } = await import("../dist/runner/run-child-host.js");
 const { launchBody, readLaunchBody } = await import("../dist/run-launch.js");
 const { heldRoute } = await import("../dist/computer-held-routes.js");
@@ -597,6 +598,19 @@ test("tier keys (tierModelKeys, subagentTierKeys) on a runner holding the seal k
   }
   assert.deepEqual(off, { tierModelKeys: true, subagentTierKeys: true }, "off faux, a tier's model's saved key is read");
   assert.deepEqual(faux, { tierModelKeys: [], subagentTierKeys: [] }, "on a --faux runner no saved key is read for a tier");
+});
+
+test("an SDK run's compile turn (sdkCompileEnv) on a --faux runner, whose model is the faux model, opens no saved key and is not skipped for want of a gateway key; off faux it opens the saved model keys, and with none it is skipped", async () => {
+  const reads = [];
+  const depsOn = (env) => ({ store: { sealedKeys: { get: async (name) => (reads.push(name), undefined) }, settings: { get: async () => undefined } }, sealKey: Buffer.alloc(32, 7), env });
+  const claim = { runId: "run-1", turn: 1, attempt: 1 };
+  const gateway = { AGENT_MODEL_BASE_URL: "https://gateway.invalid/v1" };
+  const off = await sdkCompileEnv(depsOn(gateway), claim);
+  assert.ok(reads.includes(GATEWAY_KEY_ENV), `off faux, the compile turn reads the saved gateway key: ${JSON.stringify(reads)}`);
+  assert.match(off.off ?? "", /compile turn is skipped/, "off faux, with no gateway key held, the compile turn is skipped in words");
+  reads.length = 0;
+  const faux = await sdkCompileEnv(depsOn({ ...gateway, [FAUX_ENV]: "1" }), claim);
+  assert.deepEqual({ reads, off: faux.off }, { reads: [], off: undefined }, "on a --faux runner no saved key is read and the turn goes on, on the faux model");
 });
 
 /** A gateway's key saved in the console (model-gateway.ts saveGateway), a test's: never a real one. */
