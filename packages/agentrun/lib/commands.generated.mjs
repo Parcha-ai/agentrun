@@ -3575,6 +3575,12 @@ export const COMMANDS = [
         "description": "At most `limits.max_message_chars`. Not only whitespace."
       },
       {
+        "name": "said",
+        "type": "string",
+        "required": false,
+        "description": "The person's own words, when `content` is a host's text around them (a preamble, an earlier report, turn instructions): what the run's learning keeps of this message (a correction appended to the agent's corrections.md, and a follow-up in its compile turn's traces), in place of `content`. The model gets `content` only, never `said`. Absent, learning keeps `content`, as before. At most `limits.max_message_chars`, not only whitespace: else 422 `input_invalid` at `said` (reason `wrong_type` or `too_long`), nothing written. Cut of the run's held secrets as `content` is."
+      },
+      {
         "name": "model_key",
         "type": "string",
         "required": false,

@@ -5862,17 +5862,23 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
           const secrets = await handed();
           const seal = await messageSeal(run, secrets);
-          const extra = unknownFields(body, ["content"]);
+          const extra = unknownFields(body, ["content", "said"]);
           if (extra.length) throw invalid(extra);
           const given = body.content;
           if (typeof given !== "string" || !/\S/.test(given)) throw invalid([{ field: "content", reason: given === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (given.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
+          // The person's own words, when `content` is a host's text around them: what the run's learning keeps of the
+          // message (runner/learning-end.ts ownerWords); the model gets `content`. Checked as content is.
+          const words = body.said;
+          if (words !== undefined && (typeof words !== "string" || !/\S/.test(words))) throw invalid([{ field: "said", reason: "wrong_type", message: "said is a non-empty string when sent: the person's own words" }]);
+          if (typeof words === "string" && words.length > MAX_MESSAGE) throw invalid([{ field: "said", reason: "too_long", message: `said is at most ${MAX_MESSAGE} characters` }]);
           // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
           // In its agent's delete turn (runWrite): a message that may open the run again never lands under its purge.
           // Its text is cut of what it hands and of what the run holds, read in that turn (cutHeld).
           const { mode, messageId } = await runWrite(run.agentId, run.id, async () => {
             const content = await cutHeld(run.id, given, handedSecretValues(secrets));
-            return message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
+            const said = typeof words === "string" ? await cutHeld(run.id, words, handedSecretValues(secrets)) : undefined;
+            return message(store, run, content, { ...(said !== undefined ? { said } : {}), ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
           });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);

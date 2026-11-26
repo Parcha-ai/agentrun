@@ -792,6 +792,7 @@ export interface components {
   };
   MessageCreate: {
     content: string;
+    said?: string;
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;

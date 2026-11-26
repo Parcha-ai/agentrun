@@ -8216,6 +8216,7 @@ class _MessageCreateRequired(TypedDict):
 
 
 class MessageCreate(_MessageCreateRequired, total=False):
+    said: str
     model_key: str
     mcp_auth: dict[str, MessageCreateMcpAuthValue | ComposioRunBinding]
     keys: dict[str, str]

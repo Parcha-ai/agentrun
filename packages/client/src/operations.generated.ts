@@ -994,6 +994,7 @@ export type RunFile = {
 
 export type MessageCreate = {
   content: string;
+  said?: string;
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
