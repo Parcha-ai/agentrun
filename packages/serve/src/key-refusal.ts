@@ -369,9 +369,10 @@ const opensSequence = (char: string | undefined): boolean => char === "\u001b" |
 /** Where the terminal sequence `intro` opens, read on from text[at], ends, read by the matcher's sequence rules
  *  (match.ts sequenceAt), each unit as charAt or percentAt decodes it; or `at` where it opens none (the views then read on from
  *  there). It counts as nothing, and a backspace inside it, which still moves back, as one would outside it: `found`
- *  comes back with it taken off (counted). It is read twice, as it stands and with what the join views drop passed over
- *  (match.ts joinDrops: a ":" or a blank they drop can make a whole escape of the rest), and the read that ends
- *  further is taken. Read no further than a piece of text.
+ *  comes back with it taken off (counted). A unit that decodes to nothing (an escaped quote, which the view that reads
+ *  a string written in a string drops) is passed over. It is read twice, as it stands and with what the join views
+ *  drop passed over too (match.ts joinDrops: a ":" or a blank they drop can make a whole escape of the rest), and the
+ *  read that ends further is taken. Read no further than a piece of text.
  *
  *  The invariant every count here keeps is one-sided: this read may count fewer characters than the views show
  *  (it then reads further), never more, so no padding the views read past pushes a held value's other half out of
@@ -390,7 +391,10 @@ function sequenceEnd(text: string, at: number, to: number, intro: string, found:
     next: (k) => unit(k).end,
   };
   const code = intro.charCodeAt(0);
-  const reads = [sequenceAt(units, code, at), sequenceAt(units, code, at, joinDrops)];
+  // A unit decoded to nothing (an escaped quote: jsonEscapeAt) has no code; the view it comes from records nothing
+  // there, so both reads pass over it.
+  const empty = (unit: number): boolean => Number.isNaN(unit);
+  const reads = [sequenceAt(units, code, at, empty), sequenceAt(units, code, at, (unit) => empty(unit) || joinDrops(unit))];
   const sequence = reads.reduce((far, one) => (one && (!far || one.end > far.end) ? one : far), undefined);
   if (!sequence) return [at, found];
   let count = found;
