@@ -157,6 +157,10 @@ export interface LoopDeps {
    *  command poll away), and resolves once each call returned: a turn that ends asks it before the run may end, so a
    *  message sent while the turn worked is answered, never refused by the run's end. Absent: nothing to hand on. */
   deliverNow?: () => Promise<void>;
+  /** Writes command row `commandId` refused in `reason`'s words, under this claim, as the runner writes a refusal its loop
+   *  answered: for a row the loop said it took for now and refused later (the dispatch's buffered rows, replayed once its
+   *  inner loop is chosen). Throws as the store does (a fenced claim). Absent: such a refusal is not written. */
+  refuse?: (commandId: number, reason: string) => Promise<void>;
   /** Where the loop reports what its run shows before it is stored (a running tool, a partial answer), as it changes: a
    *  reader of the newest held state (`undefined` once there is nothing held), called once per tick by the runner's live
    *  ticker (runner/live-ticker.ts), never on every change, so a change costs the same however long the answer has grown.

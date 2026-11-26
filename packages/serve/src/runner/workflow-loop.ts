@@ -324,6 +324,12 @@ function workflowLoop(specOf: (claim: Claim, run: WorkflowSpecRun) => WorkflowRu
     await takeRaises(deps.journal(claim), BACKGROUND_CONTEXT);
     // A paused run (or one a pause row woke) parks again here, before any step runs; a resume goes on.
     if (await takePauses(claim, deps.journal(claim), BACKGROUND_CONTEXT)) return { state: "parked" };
+    // Parked at its cap, and no raise of this claim resumed it (each refused, or a retry of one before): its pause stands,
+    // its budget entry unanswered, so it parks again on that entry with nothing written, before any step runs. Run, the
+    // held step would meet the same cap and write a second budget entry at it. A person's stop goes on to end the run.
+    if (claim.from === "parked" && !raising.resumes && stopReason === undefined && (await raiseStateOf(deps.journal(claim), BACKGROUND_CONTEXT)).pause !== undefined) {
+      return { state: "parked", again: true };
+    }
 
     const hooks: WorkflowHostHooks = {
       park: (refusal) => { heldRefusal ??= refusal; parkController.abort(); },
