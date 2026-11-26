@@ -294,13 +294,10 @@ function capIssues(adapters: readonly TriggerAdapter[], source: Source, target: 
 /** The longest secret a sender's own may be: Stream's are 47 characters; anything near this is not a signing secret. */
 const MAX_GIVEN_SECRET_CHARS = 512;
 
-/** What is wrong with the secret a rotation gives for a trigger of `source`: one whose sender makes its secret (Stream's)
- *  needs it, a string of the sender's form (the sealed store checks its length and that it has no blank space); any other
- *  takes none, it is minted here. A create never takes one: the trigger starts with none and refuses every request until
- *  it is given. */
-function givenSecretIssues(adapter: TriggerAdapter, source: Source, secret: unknown): InputIssue[] {
-  const given = adapter.givenSecret?.(source);
-  if (!given) return secret === undefined ? [] : [{ field: "secret", reason: "not_allowed", message: "This trigger's secret is made by this server, never given: POST /v2/triggers/{id}/secret, with no body, makes a new one and shows it once." }];
+/** What is wrong with the secret given for a trigger whose sender makes its secret (`given`, Stream's): it is a string of
+ *  the sender's form (the sealed store checks its length and that it has no blank space). A create never takes one: the
+ *  trigger starts with none and refuses every request until it is given. */
+function givenSecretIssues(given: GivenSecret, secret: unknown): InputIssue[] {
   const form = `the whole signing secret ${given.sender} shows, starting ${given.prefix}`;
   if (secret === undefined) return [{ field: "secret", reason: "missing", message: `This trigger's secret is the one ${given.sender} made: send it as secret, ${form}.` }];
   if (typeof secret !== "string") return [{ field: "secret", reason: "wrong_type", message: `secret is a string: ${form}` }];
@@ -505,22 +502,29 @@ export class Triggers {
     return { ...(await this.view(asTrigger(row))), ...(minted as { secret?: string }) };
   }
 
-  /** A trigger's new signing secret, shown this once; the old one signs nothing from now on. One whose sender makes its
-   *  secret (Stream's) takes it as `given` and shows nothing: none is made for it. */
-  async rotate(id: string, given?: unknown): Promise<Record<string, string>> {
+  /** A trigger's new signing secret (POST .../secret), shown this once; the old one signs nothing from now on. A trigger
+   *  whose sender makes its secret (Stream's) has none made here: refused, its secret as it was, naming PUT. */
+  async rotate(id: string): Promise<Record<string, string>> {
     const trigger = await this.need(id);
     const adapter = this.adapter(trigger.source);
     if (!mints(adapter)) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "Only a webhook trigger has a secret." }]);
-    const issues = givenSecretIssues(adapter, trigger.source, given);
-    if (issues.length) throw invalid(issues);
-    return this.mint(trigger.source, id, given as string | undefined);
+    const given = adapter.givenSecret?.(trigger.source);
+    if (given) throw invalid([{ field: "source.signature", reason: "not_allowed", message: `${given.sender} makes this trigger's secret, so none is made here: give it with PUT /v2/triggers/${id}/secret and {"secret": "${given.prefix}..."}, the console's Set secret.` }]);
+    return this.mint(trigger.source, id);
   }
 
-  /** When trigger `id` keeps a secret its sender made (a stream webhook's), who that sender is; undefined when its secret
-   *  is minted here or it keeps none. */
-  async givenSecret(id: string): Promise<GivenSecret | undefined> {
+  /** Gives trigger `id` the secret its sender made (PUT .../secret, Stream's), sealed and never shown. Every refusal comes
+   *  before anything is written, so the trigger keeps the secret it had: a trigger that has no secret, one whose secret is
+   *  made here (POST mints it), and a secret missing or not in the sender's form. */
+  async give(id: string, secret: unknown): Promise<Record<string, string>> {
     const trigger = await this.need(id);
-    return this.adapter(trigger.source).givenSecret?.(trigger.source);
+    const adapter = this.adapter(trigger.source);
+    if (!mints(adapter)) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "Only a webhook trigger has a secret." }]);
+    const given = adapter.givenSecret?.(trigger.source);
+    if (!given) throw invalid([{ field: "secret", reason: "not_allowed", message: `This trigger's secret is made by this server, never given: POST /v2/triggers/${id}/secret, with no body, makes a new one and shows it once.` }]);
+    const issues = givenSecretIssues(given, secret);
+    if (issues.length) throw invalid(issues);
+    return this.mint(trigger.source, id, secret as string);
   }
 
   /** Whether `id` is a trigger of the pushed source `kind` that is on: the one a request delivered for `kind` may fire. */

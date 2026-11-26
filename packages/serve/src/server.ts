@@ -6760,19 +6760,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"] ?? 0) !== 0) {
           throw invalid([{ field: "body", reason: "not_allowed", message: "Rotating a trigger's secret takes no body: send none, and the new secret is made here." }]);
         }
-        // A trigger whose sender makes its secret (Stream's) has none made here: PUT gives it.
-        const given = await triggers.givenSecret(id);
-        if (given) throw invalid([{ field: "source.signature", reason: "not_allowed", message: `${given.sender} makes this trigger's secret, so none is made here: give it with PUT /v2/triggers/${id}/secret and {"secret": "${given.prefix}..."}, the console's Set secret.` }]);
+        // A trigger whose sender makes its secret (Stream's) has none made here: rotate refuses it, naming PUT.
         return send(res, 200, triggerRotated(id, (await triggers.rotate(id)).secret, new Date().toISOString()));
       }
       case "setTriggerSecret": {
         // A secret write, as a rotation is (trigger-secrets-shown.ts): the owner's session alone. A trigger whose sender
         // makes its secret (Stream's) takes that secret as the body's `secret`, alone; it is sealed and never answered.
-        // One whose secret is made here takes none (triggers.ts givenSecretIssues): POST makes a new one.
+        // One whose secret is made here takes none (triggers.ts give): POST makes a new one. Every refusal comes before
+        // anything is written, so an empty or wrong body never touches the secret the trigger has.
         const body = await bodyOf(req);
         const extra = unknownFields(body, ["secret"]);
         if (extra.length) throw invalid(extra);
-        await triggers.rotate(id, body.secret);
+        await triggers.give(id, body.secret);
         return send(res, 200, triggerRotated(id, undefined, new Date().toISOString()));
       }
       case "getTrigger":

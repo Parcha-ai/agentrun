@@ -101,7 +101,8 @@ test("a stream trigger starts with no secret and refuses every request; once the
 
   // More than one v1 (Stream rotating): any one that matches passes, and fields it may add are skipped.
   const third = note("Arun, a third note.");
-  const v1 = streamSignature(secret, third).split(",")[1];
+  // Signed at the header's own t: a second that passes between them would sign another message.
+  const v1 = streamSignature(secret, third, now).split(",")[1];
   const rotating = await post(baseUrl, id, third, { "x-stream-signature": `t=${now},v1=${"0".repeat(64)},${v1},v2=later` });
   assert.equal(rotating.status, 202, JSON.stringify(rotating.body));
 });
@@ -126,7 +127,7 @@ test("a stream trigger's accept reads what was said: only a note that starts wit
 });
 
 test("a trigger whose secret is made here still takes no body on rotate and no secret of the sender's, and no PATCH moves a trigger between a secret made here and Stream's", { timeout: 120_000 }, async (t) => {
-  const { api } = await serve(t);
+  const { api, baseUrl } = await serve(t);
   await made(api, "arun");
   const standard = await api("POST", "/triggers", { ...streamTrigger("arun"), name: "deploys", source: { kind: "webhook" } });
   assert.equal(standard.status, 201, JSON.stringify(standard.body));
@@ -136,9 +137,18 @@ test("a trigger whose secret is made here still takes no body on rotate and no s
     assert.equal(refused.status, 422, JSON.stringify(refused.body));
     assert.equal(refused.body.error.fields[0].field, "body");
   }
-  const put = await api("PUT", `/triggers/${standard.body.id}/secret`, { secret: streamSecret() });
-  assert.equal(put.status, 422, JSON.stringify(put.body));
-  assert.deepEqual([put.body.error.fields[0].field, put.body.error.fields[0].reason], ["secret", "not_allowed"]);
+  // PUT gives a sender's secret, and this trigger's is made here: an empty body, or a secret of the sender's, is refused
+  // before anything is written, so the secret it was made with still signs.
+  for (const body of [{}, { secret: streamSecret() }]) {
+    const put = await api("PUT", `/triggers/${standard.body.id}/secret`, body);
+    assert.equal(put.status, 422, JSON.stringify(put.body));
+    assert.deepEqual([put.body.error.fields[0].field, put.body.error.fields[0].reason], ["secret", "not_allowed"]);
+  }
+  const payload = JSON.stringify({ type: "deploy.finished" });
+  const msg = `msg_${randomBytes(8).toString("hex")}`;
+  const at = new Date();
+  const still = await post(baseUrl, standard.body.id, payload, { "webhook-id": msg, "webhook-timestamp": String(Math.floor(at.getTime() / 1000)), "webhook-signature": new Webhook(minted).sign(msg, at, payload) });
+  assert.equal(still.status, 202, JSON.stringify(still.body));
   const rotated = await api("POST", `/triggers/${standard.body.id}/secret`);
   assert.equal(rotated.status, 200, JSON.stringify(rotated.body));
   assert.match(rotated.body.signing_secret, /^whsec_/);
