@@ -81,9 +81,14 @@ export interface HostToolCtx {
 }
 
 /** How a tool with no host row (tool-list.ts `replay`) runs as a host tool, given by its own binding: the browser on a
- *  harness other than pi (runner/adapter-run-spec.ts browserHostTools). A call a crash cut off is never run again (its
- *  session's custody is the binding's reconcile's), so each call runs once, and its api's `memo` is the call's own: pi's is
- *  a tool task's, durable across that task's invocations, and a call that runs once has one invocation. */
+ *  harness other than pi (runner/adapter-run-spec.ts browserHostTools). It is never replay-safe, so its call's intent is
+ *  flushed before it acts (runner/side-effects.ts) and a crash at any point leaves the call's start on the record. Each
+ *  call runs once, and its api's `memo` is the call's own, empty at its start and gone at its end: no other call, before,
+ *  after or beside it, reads it. pi's memo is a tool task's, durable across that task's invocations, which lets pi run a
+ *  cut call again from what it kept; a call that runs once has one invocation. So a run that resumes with such a call in
+ *  flight (its runner stopped or crashed) has that call ended interrupted by the record's open ("may or may not have
+ *  taken effect", runner/adapter-loop.ts openCliRecord), never runs it again, and the model goes on from that answer; the
+ *  session it drove is the binding's reconcile's to take back on the next claim. */
 export const RUNS_ONCE = { replay: "never", memo: "call" } as const;
 
 /** One call's memo, as pi's tool task's reads: `memo(name, context)` reads it, `memo(name, candidate, context)` stores the

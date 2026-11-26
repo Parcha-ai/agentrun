@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer, connect } from "node:net";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
@@ -150,10 +151,11 @@ test("pi: an agent whose computer is a Browserbase browser runs: its snapshot an
   assert.deepEqual(record.released, [["bb-1", "delete"]], "the session was released once, when the tool let it go at the run's end");
 });
 
-/** A claude-agent run of an agent whose computer is the browser `computerDepsOver` gives, its tools `tools`, on run-adapters'
- *  faux harness (fauxTable) whose model is a faux gateway, through the runner's dispatch; the tools its harness was handed
- *  and its row once it rests, its timeline. */
-async function claudeAgentRun(t, page, record, tools) {
+/** A claude-agent claim of an agent whose computer is the browser `computerDepsOver` gives over `cdpUrl`, its tools `tools`,
+ *  on run-adapters' faux harness (fauxTable) whose model is a faux gateway: `start(name)` starts a runner on it through the
+ *  runner's dispatch, `rested()` waits for the run's row to rest and reads its timeline and the tool lists its harness was
+ *  handed. */
+async function claudeAgentClaim(t, cdpUrl, record, tools) {
   const gw = await startFauxGateway();
   t.after(() => gw.close());
   const opened = await storeWith(t, { harness: "claude-agent", instructions: "Snapshot the browser and click its Add button.", tools, computer: BROWSER_COMPUTER }, { ...PI_LAUNCH, harness: "claude-agent", model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } });
@@ -162,22 +164,58 @@ async function claudeAgentRun(t, page, record, tools) {
   const prior = process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED;
   process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED = handed;
   t.after(() => (prior === undefined ? delete process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED : (process.env.AGENTRUN_TEST_FAUX_HARNESS_OPENED = prior)));
-  const deps = { env, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim, computerDeps: computerDepsOver(`${page.url}?${SIGNED}`, record) };
-  const runner = startRunner({
-    store: opened.store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
-    createLoop: createDispatchLoop({ launchOf: (runId) => opened.store.runs.launch(runId), resolve: (name, given) => (name === "claude-agent" ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
+  const deps = { env, data: opened.dir, journal: (claim) => opened.store.journal(claim), store: opened.store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim, computerDeps: computerDepsOver(cdpUrl, record) };
+  const start = (name) => {
+    const runner = startRunner({
+      store: opened.store, name, ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
+      createLoop: createDispatchLoop({ launchOf: (runId) => opened.store.runs.launch(runId), resolve: (harness, given) => (harness === "claude-agent" ? createAdapterLoop((claim, run) => cliRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
+    });
+    t.after(() => runner.close().catch(() => {}));
+    return runner;
+  };
+  const rested = async (page) => {
+    let last;
+    const row = await until(async () => {
+      const now = (last = await opened.server.runs.get(RUN));
+      return ["ended", "failed", "stopped", "parked"].includes(now.state) && now.runner === null && now;
+    }, "the run is released").catch((error) => {
+      throw new Error(`${error.message}: ${JSON.stringify({ row: last, created: record.created, released: record.released, cdp: page.calls.map((call) => call.method) })}`);
+    });
+    const timeline = await runTimeline(opened.server, RUN, ctx);
+    const lists = existsSync(handed) ? readFileSync(handed, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.tools).map((line) => line.tools) : [];
+    return { row, timeline, lists };
+  };
+  return { opened, start, rested };
+}
+
+/** A claude-agent run of `claudeAgentClaim` on one runner, to its rest. */
+async function claudeAgentRun(t, page, record, tools) {
+  const claim = await claudeAgentClaim(t, `${page.url}?${SIGNED}`, record, tools);
+  claim.start("runner-a");
+  return claim.rested(page);
+}
+
+/** A TCP relay in front of the fake page: `hold()` stops every connection open now from hearing the page again (its
+ *  replies kept, never sent), as a runner's process that died mid-call hears nothing more; a connection opened after
+ *  is relayed as usual. */
+async function holdingRelay(target) {
+  const port = Number(new URL(target).port);
+  const open = new Set();
+  const server = createServer((client) => {
+    const up = connect(port, "127.0.0.1");
+    const pair = { held: false, client, up };
+    open.add(pair);
+    client.on("data", (bytes) => up.write(bytes));
+    up.on("data", (bytes) => { if (!pair.held) client.write(bytes); });
+    const end = () => { open.delete(pair); client.destroy(); up.destroy(); };
+    for (const socket of [client, up]) { socket.on("close", end); socket.on("error", () => {}); }
   });
-  t.after(() => runner.close().catch(() => {}));
-  let last;
-  const row = await until(async () => {
-    const now = (last = await opened.server.runs.get(RUN));
-    return ["ended", "failed", "stopped", "parked"].includes(now.state) && now.runner === null && now;
-  }, "the run is released").catch((error) => {
-    throw new Error(`${error.message}: ${JSON.stringify({ row: last, created: record.created, released: record.released, cdp: page.calls.map((call) => call.method) })}`);
-  });
-  const timeline = await runTimeline(opened.server, RUN, ctx);
-  const lists = existsSync(handed) ? readFileSync(handed, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((line) => line.tools).map((line) => line.tools) : [];
-  return { row, timeline, lists };
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return {
+    url: target.replace(`:${port}/`, `:${server.address().port}/`),
+    hold() { for (const pair of open) pair.held = true; },
+    async close() { for (const pair of open) { pair.client.destroy(); pair.up.destroy(); } await new Promise((resolve) => server.close(resolve)); },
+  };
 }
 
 for (const [how, tools] of [["granted the browser", ["read", "browser"]], ["with no grant of the browser", ["read"]]]) {
@@ -209,4 +247,67 @@ for (const [how, tools] of [["granted the browser", ["read", "browser"]], ["with
 test("claude-agent: an agent granted the browser, whose computer is a browser, is runnable: nothing refuses the grant as pi's only", async () => {
   const blockers = await blockersOf({ ANTHROPIC_API_KEY: "not-a-secret" }, { kind: "agentic", instructions: "Browse.", harness: "claude-agent", tools: ["browser"], computer: BROWSER_COMPUTER, model: "anthropic/claude-sonnet-5-5" }, {}, { computerReady: async () => ({ ok: true }) });
   assert.deepEqual(blockers.filter((one) => one.tool === "browser"), [], JSON.stringify(blockers));
+});
+
+// A browser call is a host tool its binding runs once (host-tools.ts RUNS_ONCE): pi's tool task would keep a durable memo
+// and could run the call again on resume, but a CLI harness's call runs in no task, and its memo is the call's own. So a
+// claude-agent run that resumes on another runner with a browser call in flight has that call ended interrupted ("may or
+// may not have taken effect") when the record opens again, never sends it to the browser again, and the model goes on
+// from that answer. The session the cut call drove is
+// not lost: the next claim's reconcile takes it back (connected again, never created again), and it is released once,
+// when the run ends.
+test("claude-agent: a run whose runner stops while a browser call is in flight resumes on the next runner: the cut call is answered interrupted and never sent to the browser again, the session is taken back, not made again, and released once at the run's end", { timeout: 120_000 }, async (t) => {
+  const page = await fakeAxPage();
+  t.after(() => page.close());
+  const relay = await holdingRelay(page.url);
+  t.after(() => relay.close());
+  const record = { created: [], released: [], connects: 0 };
+  // The click's press reaches the page, and from then on the first runner hears nothing from it: its call is in flight.
+  let cut = false;
+  const push = page.calls.push.bind(page.calls);
+  page.calls.push = (call) => {
+    if (!cut && call.method === "Input.dispatchMouseEvent" && call.params.type === "mousePressed") {
+      cut = true;
+      relay.hold();
+    }
+    return push(call);
+  };
+  const claim = await claudeAgentClaim(t, `${relay.url}?${SIGNED}`, record, ["read", "browser"]);
+  const first = claim.start("runner-a");
+  await until(() => cut, "the click is in flight on the first runner");
+  await first.close();
+  assert.deepEqual(record.released, [], "the first runner's stop releases no session: the run resumes on it");
+  claim.start("runner-b");
+  const { row, timeline, lists } = await claim.rested(page);
+
+  assert.equal(row.state, "ended", JSON.stringify({ state: row.state, summary: row.summary }));
+  assert.equal(lists.length, 2, `each claim's harness is handed the browser's tools: ${JSON.stringify(lists)}`);
+  for (const list of lists) assert.ok(list.includes("snapshot") && list.includes("run"), JSON.stringify(list));
+  const uses = timeline.filter((one) => one.kind === "tool_use").map((one) => one.tool_name);
+  assert.deepEqual(uses, ["snapshot", "run"], "the cut call is issued once, never again on the next claim");
+  const results = timeline.filter((one) => one.kind === "tool_result");
+  const answered = (name) => results.find((one) => one.tool_use_id === timeline.find((use) => use.kind === "tool_use" && use.tool_name === name)?.tool_use_id);
+  assert.equal(answered("snapshot")?.tool_status, "success");
+  assert.equal(answered("run")?.tool_status, "failed");
+  assert.match(String(answered("run")?.tool_result_preview ?? ""), /^interrupted: .*may or may not have taken effect/, `the cut call's answer: ${JSON.stringify(results)}`);
+  const mouse = page.calls.filter((call) => call.method === "Input.dispatchMouseEvent").map((call) => call.params.type);
+  assert.deepEqual(mouse, ["mouseMoved", "mousePressed"], "the cut click is never sent to the browser again");
+  assert.equal(record.created.length, 1, "the next claim takes the session back: none is made again");
+  assert.ok(record.connects >= 2, `the next claim connects to it again: ${record.connects}`);
+  await until(() => record.released.length > 0, "the session is released");
+  assert.deepEqual(record.released, [["bb-1", "delete"]], "released once, at the run's end");
+});
+
+test("claude-agent: the browser is the one table tool past the host tools a CLI harness binds: subagent, pdf_pages and llm are still refused on it", async () => {
+  const { adapterBinds } = await import("../dist/tool-list.js");
+  assert.equal(adapterBinds("browser"), true);
+  for (const tool of ["subagent", "pdf_pages", "llm"]) {
+    assert.equal(adapterBinds(tool), false, `${tool} is no tool a CLI harness binds`);
+    const blockers = await blockersOf({ ANTHROPIC_API_KEY: "not-a-secret" }, { kind: "agentic", instructions: "Work.", harness: "claude-agent", tools: [tool], model: "anthropic/claude-sonnet-5-5" }, {}, {});
+    assert.ok(blockers.some((one) => one.field === "definition.tools[0]"), `${tool} is refused on claude-agent: ${JSON.stringify(blockers)}`);
+  }
+  // subagent is an agent's to name: on claude-agent it is refused as pi's. pdf_pages and llm run in a workflow's nodes,
+  // which on claude-agent are refused whole.
+  const subagent = await blockersOf({ ANTHROPIC_API_KEY: "not-a-secret" }, { kind: "agentic", instructions: "Work.", harness: "claude-agent", tools: ["subagent"], model: "anthropic/claude-sonnet-5-5" }, {}, {});
+  assert.ok(subagent.some((one) => one.tool === "subagent" && one.message === "subagent runs on pi here; on claude-agent it is not bound yet."), JSON.stringify(subagent));
 });
