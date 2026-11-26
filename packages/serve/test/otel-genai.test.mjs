@@ -764,7 +764,8 @@ test("an OTLP header value's credential pair is read anywhere in the value, a UR
 // A credential with a raw ; in it, as an OTLP endpoint's query parameter or inside a header value. A query or a pair list
 // read split at & alone keeps the whole value, a %2C in it too, and read split at an & or a space written %26 or %20 too,
 // it keeps that value as written before one, and read split at a %26 alone, one with a %20 in it; a value in quotes
-// written %22 or %27 is kept out of them as written too; read split at & and %2C, it keeps the value of a pair in
+// written %22 or %27 is kept out of them as written too, and a piece of it that opens with a quote and has no closing one
+// (cut at a %2C) is kept without that quote too; read split at & and %2C, it keeps the value of a pair in
 // a list joined by %2C, and read split at & and %3B, the value of a pair in a list joined by %3B, a %20, quotes or a
 // %26 in it too; read split at ; too, it keeps each pair after a ;. Every reading is held. A value whose part
 // before its first ; is empty is held after it; a value of only ; is not held.
@@ -945,6 +946,20 @@ const SEMI_ROWS = [
     ["AbCdEf12%26GhIj34", "AbCdEf12&GhIj34"],
     [],
     ["401 from relay: key AbCdEf12&GhIj34 refused", "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair in quotes written %22 with a %2C in its value, before an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key=${QUOTE_22}${SEMI_PREFIX}%2Cmid-${"dummy"}${QUOTE_22}&region=us-east-1` },
+    [SEMI_PREFIX, `${SEMI_PREFIX}%2Cmid-${"dummy"}`, `${SEMI_PREFIX},mid-${"dummy"}`],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} refused`, "401 from relay: key [redacted] refused"],
+  ],
+  [
+    "a header value's credential pair in raw quotes with a %2C in its value, before an & pair",
+    { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=api_key="${SEMI_PREFIX}%2Cmid-${"dummy"}"&region=us-east-1` },
+    [SEMI_PREFIX, `${SEMI_PREFIX}%2Cmid-${"dummy"}`, `${SEMI_PREFIX},mid-${"dummy"}`],
+    ["us-east-1"],
+    [`401 from relay: key ${SEMI_PREFIX} refused`, "401 from relay: key [redacted] refused"],
   ],
 ];
 
