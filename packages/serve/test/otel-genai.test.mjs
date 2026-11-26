@@ -1118,7 +1118,7 @@ test("OTLP values that overlap or touch in a line are cut as one by every redact
   assert.deepEqual(missed, [], "every overlapping or touching held value is cut as one [redacted]");
 });
 
-test("a 16 KB OTLP header value of 900 pairs joined by %20, or a 30 KB one of 1,000 credential pairs with their own keys, holds a credential pair's value up to each separator within 4,096 characters in all, never a prefix before every pair", () => {
+test("a 16 KB OTLP header value of 900 pairs joined by %20, a 30 KB one of 1,000 credential pairs with their own keys, or a 16 KB one rotating every separator kind holds a credential pair's value up to each separator within 4,096 characters in all, never a prefix before every pair", () => {
   // A credential pair's value runs to the header value's end: held up to each of its 1,800 %20, it would hold 1,800
   // values of up to 16 KB; and 1,000 credential pairs, each held up to each separator after it, 1,000 times that.
   // Each of the 1,000 pairs has its own key, so a budget of 4,096 characters per pair, not per value, shows as the
@@ -1153,6 +1153,26 @@ test("a 16 KB OTLP header value of 900 pairs joined by %20, or a 30 KB one of 1,
   const line = `401 from relay: key prefix-${"dummy"} tail-${"dummy"} refused`;
   assert.equal(otlpHeaderCut(spent)(line), "401 from relay: key [redacted] refused", "the last pair after a spent budget: the [otel] cut takes its key whole");
   assert.equal(secretRedactor(runnerSecrets(spent))(line), "401 from relay: key [redacted] refused", "the last pair after a spent budget: the runner's redactor takes its key whole");
+  // Credential pairs whose separators rotate through every kind, so past the budget each pair's value is held up to one
+  // separator of each: the pair read's largest held list per character. A raw comma also splits the variable into
+  // headers, so the seven kinds without it hold more. Each has its own bound, about a third over what it holds.
+  const KINDS = ["&", ";", ",", " ", "%26", "%3B", "%2C", "%20"];
+  for (const [what, kinds, bound] of [["all eight kinds", KINDS, 512], ["the seven kinds but a raw comma", KINDS.filter((kind) => kind !== ","), 1024]]) {
+    let value = "";
+    for (let at = 0; value.length < 16 * 1024; at++) value += `api_key=k${String(at).padStart(4, "0")}xxxxxxxx${kinds[at % kinds.length]}`;
+    const env = { ...ON, OTEL_EXPORTER_OTLP_TRACES_HEADERS: `X-Relay=${value}` };
+    const started = performance.now();
+    const lists = [["runnerSecrets", runnerSecrets(env)], ["hostSecrets", hostSecrets(env)]];
+    const cut = otlpHeaderCut(env)("401 from relay: key k0500xxxxxxxx refused");
+    const ms = performance.now() - started;
+    for (const [list, values] of lists) {
+      const size = values.reduce((sum, held) => sum + held.length, 0);
+      assert.ok(size < bound * 1024, `a 16 KB value rotating ${what}: ${list} holds ${size} characters, under ${bound} KB`);
+      assert.ok(values.includes("k0000xxxxxxxx") && values.includes("k0500xxxxxxxx"), `a 16 KB value rotating ${what}: ${list} holds the first and the 501st key alone`);
+    }
+    assert.equal(cut, "401 from relay: key [redacted] refused", `a 16 KB value rotating ${what}: the [otel] cut takes the 501st key`);
+    assert.ok(ms < 2000, `a 16 KB value rotating ${what}: both held lists and the [otel] cut took ${Math.round(ms)} ms, under 2 s`);
+  }
 });
 
 // Keys longer than the 4,096 characters the prefixes past a pair's first separator take in all, each holding one
