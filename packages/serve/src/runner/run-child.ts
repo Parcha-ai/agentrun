@@ -249,6 +249,8 @@ channel.expose("loop", async (method, args) => {
         signal: init.signal,
         delivered: (channel.call("runner", "delivered", []) as Promise<void>).catch(() => undefined),
         deliverNow: () => channel.call("runner", "deliverNow", []) as Promise<void>,
+        // A row this process's dispatch took for now and its loop then refused: written refused by the runner, under its claim.
+        refuse: (commandId, reason) => channel.call("runner", "refuse", [commandId, reason]) as Promise<void>,
         live: (reader) => void (read = reader),
         redact: heldRedactor(processSecretRedactor()),
       };
