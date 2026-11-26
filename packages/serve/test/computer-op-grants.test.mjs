@@ -120,6 +120,8 @@ const OFFERS = [
   { toolSettings: { desktop: { permission: "allow" }, bash: { permission: "ask" } }, approvers: false },
   { toolSettings: { read: { permission: "ask" }, write: { permission: "ask" } }, approvers: true },
   { toolSettings: { desktop: { permission: "allow" }, read: { permission: "ask" } }, approvers: false, approvals: "never" },
+  { toolSettings: { bash: { policy: "read-only" } } },
+  { toolSettings: { bash: { policy: "not-a-policy" } } },
 ];
 
 test("computer_op offers exactly the ops the gate would not refuse whatever their arguments: not given, held to a tool set to deny, or to one set to ask where no one can approve; its op list and its words leave the others out", async () => {
@@ -144,6 +146,19 @@ test("computer_op offers exactly the ops the gate would not refuse whatever thei
     assert.ok(opTool.description.includes(GUI_REACH), `computer_op says what input ops reach: ${opTool.description}`);
   }
   for (const name of [...READS, "files.write", "shell.run", "processes.start"]) assert.ok(refusedSome.has(name), `some agent above is refused ${name}`);
+});
+
+test("bash's read-only policy refuses processes.start whatever its command, so the offer leaves it out, while shell.run stays, its command read at each call; a policy the server does not know leaves out both", async () => {
+  const offeredBy = async (gate) => (await boundFor(gate)).tools.find((tool) => tool.name === COMPUTER_OP_TOOL).inputSchema.properties.op.enum;
+  const readOnly = await gateOf({ toolSettings: { bash: { policy: "read-only" } } });
+  for (const command of ["id", "sleep 1", "ls"]) assert.match((await readOnly(op("processes.start", { command }))).deny ?? "", /read-only|not offered/, `processes.start ${command}`);
+  assert.deepEqual([...readOnly.opsRefused()], ["processes.start"], "only the op the policy refuses whatever its arguments");
+  const offered = await offeredBy(readOnly);
+  assert.ok(!offered.includes("processes.start"), `processes.start left out: ${JSON.stringify(offered)}`);
+  assert.ok(offered.includes("shell.run"), `shell.run stays, decided per command: ${JSON.stringify(offered)}`);
+  assert.equal(await readOnly(op("shell.run", { command: "ls" })), "allow", "a read-only command still runs");
+  const unknown = await gateOf({ toolSettings: { bash: { policy: "not-a-policy" } } });
+  assert.deepEqual([...unknown.opsRefused()].sort(), ["processes.start", "shell.run"], "a policy this server does not know refuses every shell call");
 });
 
 test("every op the kernel puts in the files group needs a grant: an agent naming no tools is refused each before any setting is read, and the gate leaves each out of its offer", async () => {
