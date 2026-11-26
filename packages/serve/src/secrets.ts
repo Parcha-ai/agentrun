@@ -461,14 +461,24 @@ const afterEmpty = (value: string): string[] => {
   return [after, after.split(";")[0]];
 };
 
+/** Whether `text` reaches the held lists' floor: MIN_SECRET characters or more, decoded and whitespace aside. */
+const atFloor = (text: string): boolean => (decoded(text) ?? text).replace(/\s+/g, "").length >= MIN_SECRET;
+
+/** A value up to each `%20` in it, each at the floor or longer (atFloor): a read that keeps a `%20` in a key also runs
+ *  on past a `%20` that splits pairs (`api_key=<p>%20<n>;<s>%20region=us`), a read that splits at `%20` cuts the key at
+ *  its own, and only a head of the long value is the key alone. A later pair never starts a head, so it is not held
+ *  alone (`region=us` above), and a short head, which would cut ordinary words from the tracer's lines, is not taken. */
+const spacedHeads = (value: string): string[] =>
+  [...value.matchAll(/%20/g)].map((space) => value.slice(0, space.index)).filter(atFloor);
+
 /** The value of each `name=value` pair of `text` split at `breaks` whose name says it is a credential (credentialNamed),
  *  out of any quotes around it, raw or written `%22` or `%27`, as written and decoded. A value that opens with a quote
  *  and has no closing one is taken without that quote too: a read that ends a quoted key at a comma or `%2C` in it
  *  (`api_key=%22<head>%2C<rest>%22`) gives its head with the quote alone, and a line may quote the head without it. A
  *  name is what follows the last `/`, `?`, `#` or `:` before its `=` (a URL's query or fragment,
- *  `https://relay/v1?region=us`, names `region`). A
- *  value whose part before its first `;` is empty, as written or decoded (`token=;<key>` read whole, `token=%3B<key>`),
- *  is taken after that `;` too (afterEmpty). A value of only `=`, `;` and quotes, as written or decoded (a base64 credential's padding read as a
+ *  `https://relay/v1?region=us`, names `region`). A value is taken up to each `%20` in it too (spacedHeads). A value
+ *  whose part before its first `;` is empty, as written or decoded (`token=;<key>` read whole, `token=%3B<key>`), is
+ *  taken after that `;` too (afterEmpty). A value of only `=`, `;` and quotes, as written or decoded (a base64 credential's padding read as a
  *  pair, `token=;` before a space, a lone `'` or its `%27`), is not taken: otlpHeaderCut has no length floor, and it
  *  would cut that character everywhere in the tracer's lines. */
 const pairValues = (text: string, breaks: RegExp): string[] =>
@@ -481,7 +491,7 @@ const pairValues = (text: string, breaks: RegExp): string[] =>
     const inner = written.replace(QUOTED, "$2");
     const unclosed = inner === written ? written.replace(OPEN_QUOTE, "") : inner;
     return [...new Set([inner, unclosed])]
-      .flatMap((value) => [value, ...afterEmpty(value)])
+      .flatMap((value) => [value, ...afterEmpty(value), ...spacedHeads(value)])
       .flatMap((value) => [value, decoded(value) ?? value])
       .concat(afterEmpty(decoded(inner) ?? inner))
       .filter((value) => /[^=;"']/.test(value));
