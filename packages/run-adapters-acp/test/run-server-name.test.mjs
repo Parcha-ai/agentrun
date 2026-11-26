@@ -88,6 +88,28 @@ for (const [where, path, file] of [
   });
 }
 
+// A config the adapter can't read through cannot be told to declare nothing: one past MCP_CONFIG_MAX (valid JSON can
+// cross it with whitespace alone), or one that does not parse as JSON but names the kept name (an agent that reads
+// comments or trailing commas could take a server from it). Either has the kept name refused, as a declaration does.
+for (const [what, text, said] of [
+  ['larger than MCP_CONFIG_MAX (padded with whitespace)', (name) => declaring(name).replace('{', `{${' '.repeat(1024 * 1024)}`), /could not be read/],
+  ['that does not parse as JSON but names it (a comment, JSONC)', (name) => `// ours\n${declaring(name).slice(0, -1)},}`, /does not parse/],
+]) {
+  test(`a config ${what} has the run's name refused at the next start, and says why`, async (t) => {
+    const cwd = scratch();
+    const recipe = cursorLike(scratch(), [{ say: 'one' }, { call: 'look_up', args: { q: 'x' } }, { sayLastResult: true }], { mcpConfigs: ['.cursor/mcp.json'] });
+    const { kept, second, asked } = await twoStarts(t, recipe, { cwd, between: (name) => write(join(cwd, '.cursor/mcp.json'), text(name)) });
+    const [, fresh] = given(recipe);
+    assert.match(fresh ?? '', START);
+    assert.notEqual(fresh, kept, 'the kept name is refused for this start');
+    const notes = notices(second.events);
+    assert.equal(notes.length, 1, JSON.stringify(notes));
+    assert.match(notes[0], said);
+    assert.match(notes[0], new RegExp(kept));
+    assert.deepEqual(asked[1].map((c) => [c.tool, c.args.server]), [['acp_other', kept]], "a call under the old name is another server's");
+  });
+}
+
 test("a config that does not parse is no refusal: the run keeps its name, and nothing is said", async (t) => {
   const cwd = scratch();
   const recipe = cursorLike(scratch(), [{ say: 'one' }, { call: 'look_up', args: { q: 'x' } }, { sayLastResult: true }], { mcpConfigs: ['.cursor/mcp.json'] });
