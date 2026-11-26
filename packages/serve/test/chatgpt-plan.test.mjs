@@ -2295,3 +2295,55 @@ test("a run a runner's stop drains renews the plan's token when it needs to: its
     await server.stop();
   }
 });
+
+// A runner serves renewals RUNNER_RENEWALS_SERVED_MS into its stop (so a renewal ends inside every shipped grace). A run
+// its drain lets go on that needs one later is handed back to resume on the next start, never failed: its refresh token
+// is unspent and the sign-in stays saved.
+test("a run a runner's stop drains that needs the plan's token renewed after the runner stops serving renewals is handed back, never failed, and the next start resumes it to completed, beside the server or in a process of its own", { timeout: 240_000 }, async (t) => {
+  withEnv(t, {}, MODEL_VARS);
+  const openai = fakeOpenAI(t);
+  const { runnerBeside } = await import("../dist/runner/beside.js");
+  const { startRunnerProcess } = await import("../dist/runner/main.js");
+  const { RUNNER_RENEWALS_SERVED_MS } = await import("../dist/runner/runner.js");
+  const starts = [["beside", (data) => runnerBeside(data, { drainMs: 30_000 })], ["own-process", (data) => startRunnerProcess({ dataDir: data, drainMs: 30_000, warn: () => {} })]];
+  for (const [where, start] of starts) {
+    const server = await serve(t, { faux: undefined, runner: false, harnesses: false });
+    await signedIn(server.api);
+    const runner = await start(server.data);
+    let closing;
+    const close = () => (closing ??= runner.close());
+    t.after(close);
+    let release;
+    openai.holdResponse = new Promise((resolve) => (release = resolve));
+    t.after(() => release());
+    openai.callOnce = "no_such_tool";
+    const sent = openai.responses.length;
+    assert.equal((await server.api("POST", "/agents", agent(`late-${where}`))).status, 201);
+    const started = await server.api("POST", `/agents/late-${where}/runs`, { input: { content: "What is six times seven?" } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    await until(() => openai.responses.length > sent, `${where}: the run's first request is out`);
+    openai.expiresIn = 200;
+    await signedIn(server.api);
+    openai.expiresIn = 3600;
+    const refreshes = openai.refreshes;
+    // The run's next request comes once the runner has stopped serving renewals.
+    const startedAt = Date.now();
+    const stopped = close();
+    await new Promise((resolve) => setTimeout(resolve, RUNNER_RENEWALS_SERVED_MS + 500));
+    openai.holdResponse = undefined;
+    release();
+    await stopped;
+    assert.ok(Date.now() - startedAt < 20_000, `${where}: handed back at once, not at the drain's end: ${Date.now() - startedAt} ms`);
+    assert.equal(openai.refreshes, refreshes, `${where}: nothing renewed after the runner stopped serving renewals`);
+    const after = await server.api("GET", `/runs/${started.body.run_id}`);
+    assert.ok(!["failed", "completed"].includes(after.body.status), `${where}: the run was handed back, not ended: ${JSON.stringify({ status: after.body.status, error: after.body.error })}`);
+    // The next start resumes it: its request renews the token and the run ends completed.
+    const again = await start(server.data);
+    t.after(() => again.close());
+    const { last } = await follow(server.api, started.body.run_id, ["completed", "failed"], { deadlineMs: 90_000 });
+    assert.equal(last.status, "completed", `${where}: resumed to its end: ${JSON.stringify(last)}`);
+    assert.equal(openai.refreshes, refreshes + 1, `${where}: the resume renewed the token once`);
+    await again.close();
+    await server.stop();
+  }
+});
