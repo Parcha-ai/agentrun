@@ -61,7 +61,28 @@ test("a close's read of the stop rows and its loops' stop share one window, the 
   assert.ok(took >= 4_900 && took < 7_000, `the close took the one window: ${took} ms`);
 });
 
-test("a close tells its caller its loops are stopping as its window after the drain begins, with that window's end: a stalled read of the stop rows never pushes what the caller stops there (a ChatGPT renewal's drain) past the close's bound", async (t) => {
+// What a runner's caller stops when told (loopsStopping: a ChatGPT renewal) is served at most RUNNER_RENEWALS_SERVED_MS
+// from the close's start, or to the drain's end if that comes first, and what it then waits for ends by the `by` it is
+// handed: so a renewal sent near the end of a long drain (the CLI's 30 s) is never in flight past a shipped grace.
+test("a close with a drain longer than RUNNER_RENEWALS_SERVED_MS tells its caller that long after it begins, not at the drain's end, with an end at most the close's window from then", async (t) => {
+  const { RUNNER_RENEWALS_SERVED_MS } = await import("../dist/runner/runner.js");
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  // A run that goes on through the whole drain.
+  const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
+  t.after(() => faux.loops.forEach((loop) => (loop.halted = true)));
+  const runner = startRunner({ store, createLoop: faux.createLoop, name: "runner-a", ...TIMING, drainMs: 10_000 });
+  t.after(() => runner.close());
+  await queue(server, "run-1");
+  await until(() => faux.loops.length === 1, "the run claimed");
+  const told = [];
+  const startedAt = Date.now();
+  await runner.close((by) => told.push({ at: Date.now() - startedAt, by }));
+  assert.equal(told.length, 1, `told once: ${JSON.stringify(told)}`);
+  assert.ok(told[0].at >= 3_900 && told[0].at < 5_000, `told RUNNER_RENEWALS_SERVED_MS (${RUNNER_RENEWALS_SERVED_MS} ms) in, not at the drain's end (10 s): ${told[0].at} ms`);
+  assert.ok(told[0].by - (startedAt + told[0].at) <= TIMING.leaseMs - TIMING.stopMarginMs + 50, `handed the window from then: ${told[0].by - startedAt} ms`);
+});
+
+test("a close with no drain tells its caller once its loops are told to stop, after its read of the stop rows, with that window's end: a stalled read shortens what the caller waits for, never pushes it past the close's bound", async (t) => {
   const { server, runners: [store] } = await stores({ runners: 1 });
   const faux = fauxLoops({ turns: 1_000, turnMs: 20 });
   t.after(() => faux.loops.forEach((loop) => (loop.halted = true)));
@@ -81,11 +102,11 @@ test("a close tells its caller its loops are stopping as its window after the dr
   stall = true;
   const told = [];
   const startedAt = Date.now();
-  await runner.close((by) => told.push({ at: Date.now() - startedAt, by }));
+  await runner.close((by) => told.push({ at: Date.now() - startedAt, by, stops: faux.loops[0].stopCalls.map((call) => call.kind) }));
   assert.equal(told.length, 1, `told once: ${JSON.stringify(told)}`);
-  // Told before the read (stalled 3 s here), not after it, and handed the window's end: no drain, so 5 s from the start.
-  assert.ok(told[0].at < 1_000, `told as the window began: ${told[0].at} ms`);
-  assert.equal(typeof told[0].by, "number", "handed the window's end");
+  // After the loops are told to stop: a live loop's renewal is served while the read waits.
+  assert.deepEqual(told[0].stops, ["shutdown"], "told once the loop was told to stop");
+  // Handed the window's end, which began as the (empty) drain ended: 5 s from the start, the read's stall inside it.
   assert.ok(told[0].by - startedAt <= window.leaseMs - window.stopMarginMs + 50, `the end is the close's own: ${told[0].by - startedAt} ms`);
   // What the wrappers drain renewals for from there: the window's rest, never past it, never over RENEWAL_DRAIN_MS.
   const now = Date.now();
