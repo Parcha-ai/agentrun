@@ -1,9 +1,11 @@
 // An MCP tool whose answers the agent's tool setting files (`mcp:<server>/<tool>: {file: {folder, show}}`): the gateway
 // writes the answer's text, scrubbed and whole, at <folder>/<tool>-<time>-<id>.json in the run's files before it answers,
 // and the model reads only a summary: the bytes, where it is filed, the values of the paths the setting shows, and the
-// answer's shape (keys and types to depth 2, the keys that read as names, array lengths), never another value. The file
-// is for the skill's code, and the summary says so. An answer that is an error is filed the same way and answers an
-// error. A write that fails shows nothing and is an error. A stored setting that no longer reads refuses every call of
+// answer's shape (keys and types to depth 2, the keys that read as plain names, array lengths), never another value. The
+// file is for the skill's code, and the summary says so. An answer that is an error, and a server's protocol error, is
+// filed the same way and answers an error, with a last line of what its structure says (an HTTP status, a JSON-RPC code,
+// a retry time from a known field or the Retry-After header), never its words. A write that fails shows nothing and is an
+// error. A stored setting that no longer reads refuses every call of
 // its tool. A tool with no setting is answered as before, a long one spilled at the clip. Never through the clip: an
 // answer past it is filed whole and none of it is shown.
 import assert from "node:assert/strict";
@@ -36,10 +38,14 @@ const keysOf = (value) => (Array.isArray(value) ? value.flatMap(keysOf) : value 
 /** A card_error as a payments server passes it on: its payment intent, a customer's description included. */
 const DECLINED = { error: { type: "card_error", code: "card_declined", decline_code: "insufficient_funds", message: "Your card was declined.", payment_intent: { id: "pi_3Q0001", amount: 4900, currency: "usd", description: description(7), metadata: { order_ref: "ord_x41" } } } };
 /** An answer keyed by data: emails (and a person's name, and a long key) as keys, a few short names beside them. */
+/** An answer keyed by ids: Stripe-style ids, a key with digits, an all-capitals key, beside plain names. */
+const BY_ID = { data: { cus_NffrFeUfNV2Hib: { total: 1 }, txn_1Q0001: { total: 2 }, pi_3Qabc: 1, has_more: false, pageInfo: {}, _id: "x" }, acct2: 1, ID: 2 };
+/** A JSON error answer that names a retry time in a known field, a customer's words beside it. */
+const BUSY = { error: { type: "rate_limit_error", message: `Too many requests for ${description(3)}`, retry_after: 3 } };
 const BY_EMAIL = { results: { "jane@acme.com": { orders: 2 }, "raj@acme.com": { orders: 1 }, total_orders: 3 }, owners: { "lee@acme.com": "admin" }, count: 2, "Jane Doe": "vip", a_key_name_that_runs_well_past_32_chars: 1 };
 
-async function setup(t, { filed, work: workOf } = {}) {
-  const fake = await startFakeMcp({ token: TOKEN });
+async function setup(t, { filed, work: workOf, gate } = {}) {
+  const fake = await startFakeMcp({ token: TOKEN, ...(gate ? { gate } : {}) });
   t.after(() => fake.close());
   const answers = {
     page: () => ({ content: [{ type: "text", text: PAGE }] }),
@@ -49,6 +55,8 @@ async function setup(t, { filed, work: workOf } = {}) {
     refused: () => ({ content: [{ type: "text", text: "Stripe refused: rate limited, try again in 2 s" }], isError: true }),
     declined: () => ({ content: [{ type: "text", text: JSON.stringify(DECLINED) }], isError: true }),
     by_email: () => ({ content: [{ type: "text", text: JSON.stringify(BY_EMAIL) }] }),
+    by_id: () => ({ content: [{ type: "text", text: JSON.stringify(BY_ID) }] }),
+    busy: () => ({ content: [{ type: "text", text: JSON.stringify(BUSY) }], isError: true }),
     echo: () => ({ content: [{ type: "text", text: JSON.stringify({ seen: `Bearer ${TOKEN}` }) }] }),
   };
   for (const [name, run] of Object.entries(answers)) fake.tools[name] = { description: name, input: { type: "object", properties: {} }, run };
@@ -154,6 +162,7 @@ test("with a setting, an answer that is an error is filed the same way and answe
     `declined answered ${bytes} bytes, filed whole at stripe/${name} for the skill's code; its values are not shown here (the agent's setting files this tool's answers); only these are:`,
     '{"error.type": "card_error", "error.code": "card_declined", "error.decline_code": "insufficient_funds"}',
     'Shape: {"error": {"type": string, "code": string, "decline_code": string, "message": string, "payment_intent": object}}',
+    "Error: no status or retry time given.",
   ].join("\n"));
   const shown = stringsOf(DECLINED).filter((value) => textOf(result).includes(value));
   assert.deepEqual(shown, ["card_error", "card_declined", "insufficient_funds"], "no string of the error but the shown ones");
@@ -172,6 +181,72 @@ test("the shape names a key only when it reads as a short name; the rest are cou
   const named = [...stringsOf(BY_EMAIL), ...keysOf(BY_EMAIL)].filter((value) => !/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(value) && textOf(result).includes(value));
   assert.deepEqual(named, [], `no key or value that is not a short name: ${textOf(result)}`);
   assert.ok(!/@|Jane|runs_well_past/.test(textOf(result)), textOf(result));
+});
+
+test("the shape never names an id-like key (digits, capitals after a prefix, all capitals): only plain lowercase or camelCase names", async (t) => {
+  const { call } = await setup(t, { filed: () => ({ folder: "ids", show: [] }) });
+  const result = await call("by_id");
+  const [, , shape] = textOf(result).split("\n");
+  assert.equal(shape, 'Shape: {"data": {"has_more": boolean, "pageInfo": object, "_id": string, … 3 more keys}, … 2 more keys}');
+  assert.ok(!/cus_|txn_|pi_3|acct2|"ID"/.test(textOf(result)), textOf(result));
+});
+
+test("a plain-text error answer is filed and answers an error with no word of it shown; its last line says no retry time is known", async (t) => {
+  const { call, work } = await setup(t, { filed: (_server, tool) => (tool === "refused" ? { folder: "stripe", show: ["error"] } : undefined) });
+  const result = await call("refused");
+  assert.equal(result.isError, true);
+  const [name] = await filedIn(work, "stripe");
+  assert.equal(await readFile(join(work, "stripe", name), "utf8"), "Stripe refused: rate limited, try again in 2 s");
+  const lines = textOf(result).split("\n");
+  assert.deepEqual(lines.slice(1), ['{"error": null}', "Shape: text, not JSON", "Error: no status or retry time given."]);
+  assert.ok(!/rate limited|2 s|Stripe refused/.test(textOf(result)), textOf(result));
+});
+
+test("a JSON error answer with a retry time in a known field: the last line gives the wait, no word of the error", async (t) => {
+  const { call, work } = await setup(t, { filed: (_server, tool) => (tool === "busy" ? { folder: "stripe", show: ["error.type"] } : undefined) });
+  const result = await call("busy");
+  assert.equal(result.isError, true);
+  const [name] = await filedIn(work, "stripe");
+  assert.equal(await readFile(join(work, "stripe", name), "utf8"), JSON.stringify(BUSY));
+  const lines = textOf(result).split("\n");
+  assert.deepEqual(lines.slice(1), ['{"error.type": "rate_limit_error"}', 'Shape: {"error": {"type": string, "message": string, "retry_after": number}}', "Error: retry after 3 s."]);
+  assert.ok(!/Marisol|Too many/.test(textOf(result)), textOf(result));
+});
+
+test("a protocol error (a JSON-RPC error) of a filed tool is filed too and answers an error: its JSON-RPC code, never its words", async (t) => {
+  const gate = (_url, message) => (message?.method === "tools/call" ? { status: 200, body: { jsonrpc: "2.0", id: message.id, error: { code: -32603, message: `Internal error for ${description(5)}` } } } : undefined);
+  const { call, work, fake } = await setup(t, { filed: (_server, tool) => (tool === "page" ? SETTING : undefined), gate });
+  const result = await call("page");
+  assert.equal(result.isError, true, textOf(result));
+  assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 1, "the call went once");
+  const [name, ...more] = await filedIn(work, "stripe");
+  assert.deepEqual(more, []);
+  const filed = JSON.parse(await readFile(join(work, "stripe", name), "utf8"));
+  assert.equal(filed.error.code, -32603);
+  assert.match(filed.error.message, /Marisol Quintero, order 5/, "the error's words, filed whole");
+  assert.match(textOf(result), new RegExp(`^page answered [\\d,]+ bytes, filed whole at stripe/${name.replace(/\./g, "\\.")} for the skill's code; `));
+  assert.match(textOf(result), /\nShape: \{"error": \{"code": number, "message": string\}\}\nError: JSON-RPC error -32603\.$/);
+  assert.ok(!/Marisol|Internal error/.test(textOf(result)), textOf(result));
+});
+
+test("a protocol error with HTTP 429 and Retry-After: filed, an error, the status and the wait from the header, no word of the body", async (t) => {
+  const gate = (_url, message) => (message?.method === "tools/call" ? { status: 429, headers: { "retry-after": "2" }, body: { error: { message: `rate limited while listing ${description(9)}` } } } : undefined);
+  const { call, work } = await setup(t, { filed: (_server, tool) => (tool === "page" ? SETTING : undefined), gate });
+  const result = await call("page");
+  assert.equal(result.isError, true, textOf(result));
+  const [name] = await filedIn(work, "stripe");
+  assert.match(await readFile(join(work, "stripe", name), "utf8"), /Marisol Quintero, order 9/, "the error's words, filed");
+  assert.match(textOf(result), /\nError: HTTP 429, retry after 2 s\.$/);
+  assert.ok(!/Marisol|rate limited/.test(textOf(result)), textOf(result));
+});
+
+test("with no setting, a protocol error is shown as before: the server's words, cut at 300", async (t) => {
+  const gate = (_url, message) => (message?.method === "tools/call" ? { status: 200, body: { jsonrpc: "2.0", id: message.id, error: { code: -32603, message: "Internal error: try again" } } } : undefined);
+  const { call, work } = await setup(t, { gate });
+  const result = await call("page");
+  assert.equal(result.isError, true);
+  assert.match(textOf(result), /^The MCP server fake failed: .*Internal error: try again/);
+  assert.deepEqual(await readdir(work), [], "nothing filed");
 });
 
 test("a stored file setting that no longer reads refuses every call of its tool in words naming the setting: nothing is sent, filed or shown", async (t) => {
