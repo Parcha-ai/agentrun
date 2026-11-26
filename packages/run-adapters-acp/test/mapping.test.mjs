@@ -263,6 +263,40 @@ test("a recipe's instructions reach the agent on their own, and after the sessio
   assert.equal(prompt[1], 'go');
 });
 
+test("a loaded conversation the agent was never given the recipe's instructions in gets them, once, ahead of its next prompt", async (t) => {
+  const told = 'Write files with a shell command.';
+  // Begun before the recipe had instructions (an upgrade), on an agent with no system prompt: session/load carries none
+  // for it, so before, a loaded conversation never got them.
+  const store = memorySessionStore();
+  const before = fakeRecipe(scratch(), { script: [{ say: 'one' }, { say: 'two' }, { say: 'three' }] });
+  const after = { ...before, instructions: told };
+  for (const [recipe, words] of [[before, 'go'], [after, 'again'], [after, 'more']]) {
+    const { session } = await openSession(t, recipe, { store, system: ['Be brief.'] });
+    await session.send(words);
+    assert.equal((await session.turnEnd()).status, 'completed');
+    await session.close();
+  }
+  assert.equal(fakeEvents(before).filter((e) => e.type === 'load').length, 2, 'both later runs loaded the session');
+  const prompts = fakeEvents(before).filter((e) => e.type === 'prompt').map((e) => e.text);
+  assert.equal(prompts[1].length, 2);
+  assert.match(prompts[1][0], /Write files with a shell command\./);
+  assert.doesNotMatch(prompts[1][0], /Be brief/, "the recipe's alone: the session's own are in its history already");
+  assert.equal(prompts[1][1], 'again');
+  assert.deepEqual(prompts[2], ['more'], 'once: the next load does not repeat them');
+  // Given them on a new session (ahead of its first prompt): a load never repeats them.
+  const fresh = memorySessionStore();
+  const plain = fakeRecipe(scratch(), { script: [{ say: 'one' }, { say: 'two' }] }, { instructions: told });
+  for (const words of ['go', 'again']) {
+    const { session } = await openSession(t, plain, { store: fresh });
+    await session.send(words);
+    assert.equal((await session.turnEnd()).status, 'completed');
+    await session.close();
+  }
+  const given = fakeEvents(plain).filter((e) => e.type === 'prompt').map((e) => e.text);
+  assert.equal(given[0].length, 2);
+  assert.deepEqual(given[1], ['again']);
+});
+
 test('the agent runs in a private HOME with the environment allowlist, in a process group of its own', async (t) => {
   const recipe = fakeRecipe(scratch(), { script: [{ say: 'ok' }] }, { env: { FAKE_SETTING: '1' } });
   const sessionsDir = join(scratch(), 'sessions');

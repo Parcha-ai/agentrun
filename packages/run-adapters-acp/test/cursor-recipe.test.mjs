@@ -73,7 +73,7 @@ test("a run's recipe adds the binary, the run's model and the owner's limits, an
   for (const name of Object.keys(recipe.env ?? {})) assert.equal(RESERVED_ENV.has(name), false, name);
 });
 
-test("its instructions tell the model its own Write is refused, so a file is written with a shell command, never left unwritten", () => {
+test("its instructions tell the model its own Write is refused, so a file is written with a shell command, never left unwritten, and a shell command the person denies is not asked again", () => {
   // The config above refuses every Write without asking (Cursor asks for none), and a model that tries its Write tool
   // first can stop at the refusal and answer nothing (a race lane did on Cursor 2026.11.13). The recipe says so up front.
   const file = recipeFile('cursor');
@@ -82,6 +82,10 @@ test("its instructions tell the model its own Write is refused, so a file is wri
   assert.match(file.instructions, /refused/);
   assert.match(file.instructions, /shell command/);
   assert.match(file.instructions, /never stop/i);
+  // Only Write's own refusal is worked around: a shell command the person denies is their answer, never asked again.
+  assert.match(file.instructions, /When the person denies a shell command/);
+  assert.match(file.instructions, /do not ask again/);
+  assert.doesNotMatch(file.instructions, /If a write is refused/, 'no rule that reads as covering the person too');
   assert.equal(cursorRecipe({ command: BINARY }).instructions, file.instructions, 'the run carries them');
 });
 
