@@ -2352,6 +2352,9 @@ test("a run a runner's stop drains that needs the plan's token renewed after the
     const started = await server.api("POST", `/agents/late-${where}/runs`, { input: { content: "What is six times seven?" } });
     assert.equal(started.status, 202, JSON.stringify(started.body));
     await until(() => openai.responses.length > sent, `${where}: the run's first request is out`);
+    // Signed in again with 200 s from OpenAI, sealed as 20 s (pi-ai takes 3 minutes off expires_in): at the run's next
+    // request, 4.5 s into the stop, it would not outlive the drain plus RENEWAL_DRAIN_MS, so it needs a renewal (asItIs).
+    // Sent as it is instead, the run would end completed in the drain, which the hand-back asserts below refuse.
     openai.expiresIn = 200;
     await signedIn(server.api);
     openai.expiresIn = 3600;
@@ -2376,6 +2379,33 @@ test("a run a runner's stop drains that needs the plan's token renewed after the
     await again.close();
     await server.stop();
   }
+});
+
+// A learned node's or a subagent's tier on the plan reads the sign-in through a reader of its own (claim-secrets.ts
+// tierModelKeys, subagentTierKeys), beside the claim's: a stop refusal there hands the run back too, never fails its node.
+test("a learned or subagent tier's plan reader (tierModelKeys, subagentTierKeys) hands its run back on a stop refusal, as the claim's reader does, and OpenAI is sent nothing", async (t) => {
+  const openai = fakeOpenAI(t);
+  const { planOf, stopRenewals } = await import("../dist/chatgpt-plan.js");
+  const { subagentTierKeys, tierModelKeys } = await import("../dist/runner/claim-secrets.js");
+  const store = mapStore();
+  const sealKey = randomBytes(32);
+  await seatRow(store, sealKey, -1_000);
+  await stopRenewals(store);
+  const env = { AGENT_MODEL_FAST: "chatgpt/gpt-6-luna" };
+  const readers = [
+    ["tierModelKeys", (back) => tierModelKeys({ store, sealKey, env, ...back }, ["fast"])],
+    ["subagentTierKeys", (back) => subagentTierKeys({ store, sealKey, env, ...back }, ["fast"], {})],
+  ];
+  for (const [name, read] of readers) {
+    let handed = 0;
+    const abort = new AbortController();
+    const reason = new Error("the runner is closing");
+    const plan = planOf(await read({ handBack: () => (handed++, abort.abort(reason)), signal: abort.signal }));
+    assert.ok(plan, `${name}: the fast tier's model is on the plan, so its keys carry the sign-in`);
+    await assert.rejects(plan.token(), (error) => error === reason, `${name}: a stop refusal ends the node with the run's abort, handed back`);
+    assert.equal(handed, 1, `${name}: the run is handed back once`);
+  }
+  assert.equal(openai.refreshes, 0);
 });
 
 // A runner's close tail (runner/main.ts, runner/beside.ts): whatever its steps throw, the renewals' drain and the store's
