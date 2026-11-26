@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
-import { Button } from "@/components/ui";
+import { Button, Checkbox } from "@/components/ui";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { wrappedCards } from "@/components/WrappedCards";
 import { harnessLabel } from "@/lib/agentForm";
@@ -100,10 +100,9 @@ export function WrappedPage({ v2, year, go, cards = wrappedCards }: { v2: Client
     <section className={card} aria-labelledby="w-cards" data-cards>
       <h2 id="w-cards" className={heading}>Cards</h2>
       {offersLeak && (
-        <label className="mt-2 flex items-center gap-2 font-sans text-small" data-leak-opt-in>
-          <input type="checkbox" checked={leakShown} onChange={(e) => setLeakShown(e.target.checked)} />
-          Show the leak receipt: how many keys and tokens the import cut (counts only)
-        </label>
+        <div className="mt-2" data-leak-opt-in>
+          <Checkbox checked={leakShown} onChange={(e) => setLeakShown(e.target.checked)} label="Show the leak receipt" note="How many keys and tokens the import cut: counts only." />
+        </div>
       )}
       <div className="mt-3 grid gap-4 md:grid-cols-2">{drawn.map(({ card: c, node }) => <div key={c.id}>{node}</div>)}</div>
     </section>
