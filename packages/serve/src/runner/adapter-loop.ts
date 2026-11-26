@@ -675,8 +675,9 @@ interface CliRecord {
   nestedIn(callId: string, parent: string): void;
   /** The calls parked at their gate and never sent, still with no end: what a stop withdraws on the record. */
   unsentParked(): string[];
-  /** Whether the call's start is on the record from an attempt its gate let go (a start, never a park its gate still
-   *  holds): asked before its gate answers, true only of a call issued again under its id after a crash cut it. */
+  /** Whether the call's start is on the record (a start, never a park its gate still holds): asked before its gate
+   *  answers, true only of a call issued again under its id after a crash cut it, whether its gate let it go or refused
+   *  it (the refusal's own start). */
   begun(callId: string): boolean;
   /** The calls started with no end, an unsent park aside (the stop refuses those): what a run's end closes, interrupted,
    *  a call that only nests calls (its start marked `nests`: Codex's `exec`) after the rows of the calls it made. None on
@@ -2719,22 +2720,27 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // never reaches the tool, which keeps every other call's record: its record is kept here, as serveFirst keeps the
         // platform's (learned-nodes.ts refusedRecord), so the run's workflow_calls name it, refused, on pi and on every
         // CLI alike. A name the run has no workflow of keeps none, as the tool keeps none for it. A call issued again after
-        // a crash cut it mid-call (`again`) may have run nodes and spent on its first attempt: its refusal is no proof it
-        // ran nothing, so it is kept `failed`, never `refused`, and priced from what its call id booked (failedRecord).
-        const keepRefusedLearned = async (call: Parameters<typeof gateOf>[0], again: boolean): Promise<void> => {
+        // a crash cut it mid-call may have run nodes and spent on an earlier attempt: its refusal is then no proof it ran
+        // nothing, so it is kept `failed`, never `refused`, and priced from what its call id booked (failedRecord). Whether
+        // an earlier attempt ran: the newest record the call kept says so (one refused ran nothing; any other may have
+        // run); with none, `begun`, read before the gate answered: an earlier attempt on the record, which may have spent
+        // before a crash cut it ahead of its record.
+        const keepRefusedLearned = async (call: Parameters<typeof gateOf>[0], begun: boolean): Promise<void> => {
           const named = call.tool === LEARNED_WORKFLOW_TOOL ? spec.gate?.learnedOf?.(call.args) : undefined;
-          const [journalOf, rootOf] = [harness, root];
+          const [journalOf, rootOf, journal] = [harness, root, gate?.journal];
           if (!named || !journalOf || !rootOf || gate?.sealed) return;
-          const kept = (again ? failedRecord : refusedRecord)(call.callId, named.workflow, named.digest, "agent");
+          const earlier = journal ? (await entriesOf(journal, rootOf.id, context)).findLast((entry) => entry.kind === LEARNED_NODES && (entry.data as { call?: unknown } | undefined)?.call === call.callId) : undefined;
+          const ran = earlier ? (earlier.data as { refused?: unknown }).refused !== true : begun;
+          const kept = (ran ? failedRecord : refusedRecord)(call.callId, named.workflow, named.digest, "agent");
           await journalOf.commit((tx) => tx.appendEntry(rootOf.id, { kind: LEARNED_NODES, data: kept as unknown as JsonValue }), context).catch(unlessSealed);
         };
         const sessionGate: typeof gateOf = async (call, hookContext) => {
-          // Issued again: the bridge said so (`replayed`), or, for a tool that nests (learned_workflow's host tool, whose
-          // bridge asks every attempt alike: process/tools.ts runNesting), the record holds its start from an attempt the
-          // gate let go. Read before the gate answers, as a refusal writes the call's start.
-          const again = call.replayed === true || record?.begun(call.callId) === true;
+          // An earlier attempt: the bridge said so (`replayed`), or, for a tool that nests (learned_workflow's host tool,
+          // whose bridge asks every attempt alike: process/tools.ts runNesting), the record holds its start from one
+          // (CliRecord.begun). Read before the gate answers, as a refusal writes the call's start and end.
+          const begun = call.replayed === true || record?.begun(call.callId) === true;
           const answer = await bridgeGate(call, hookContext);
-          if (answer !== "allow" && "deny" in answer) await keepRefusedLearned(call, again);
+          if (answer !== "allow" && "deny" in answer) await keepRefusedLearned(call, begun);
           return answer;
         };
         // A tool no call of which reaches the gate before it runs (Codex's live search, inside its model requests): its
