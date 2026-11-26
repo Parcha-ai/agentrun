@@ -1,7 +1,9 @@
 // The classifier step is off unless a decider is given: a web with none answers, writes for the model, and receipts
 // byte for byte what createWeb did before the step existed. web-runs.golden.json was written by createWeb at e937809c71
 // (PR-B's head, before decide/) running the same steps on the same fakes, and rewritten once for web_search's objective
-// (fixtures/decide-runs.mjs says what changed).
+// (fixtures/decide-runs.mjs says what changed). It moved once more at step 3, a page Parallel read as markdown, whose
+// part no longer lists the two links its text writes: its links, its text and the receipt's out size (50 fewer
+// characters) moved, and nothing else.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
