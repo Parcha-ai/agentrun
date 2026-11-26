@@ -94,9 +94,13 @@ test("gaps, as AgentRun behaves today: a prefix rule has no word boundary, no ru
   assert.deepEqual(found, { prefix_without_boundary: 202, blank_text: 202, paused_trigger: 401 });
 });
 
-test("setup.mjs makes the router and its trigger, and run again with nothing changed keeps both", { timeout: 120_000 }, async (t) => {
+test("setup.mjs makes the router and its trigger, leaves another agent's trigger of the same name, and run again with nothing changed keeps both", { timeout: 120_000 }, async (t) => {
   withEnv(t, { TYPESAFE_API_KEY: "fake-test-key" });
   const server = await serve(t, { fauxJev: FAUX_JEV });
+  // A trigger is named once per agent: another agent may hold a "Stream ring" of its own, with its own URL and secret.
+  assert.equal((await server.api("POST", "/agents", agent("notes", { max_cost_usd: 1 }))).status, 201);
+  const theirs = await server.api("POST", "/triggers", { name: "Stream ring", source: { kind: "webhook", signature: "stream" }, target: { kind: "start_run", agent_id: "notes", input: { content: "A note." }, max_cost_usd: 1 } });
+  assert.equal(theirs.status, 201, JSON.stringify(theirs.body));
   const setup = () => new Promise((done) => {
     const child = spawn(process.execPath, [SETUP], { env: { ...process.env, AGENTRUN_BASE_URL: server.baseUrl, AGENTRUN_API_KEY: server.token }, stdio: ["ignore", "pipe", "pipe"] });
     let out = "";
@@ -110,7 +114,9 @@ test("setup.mjs makes the router and its trigger, and run again with nothing cha
   const again = await setup();
   assert.equal(again.code, 0, again.out);
   assert.match(again.out, /^Revised the agent stream-router\.\nPointed the trigger "Stream ring" at stream-router\./);
-  const agent = (await server.api("GET", "/agents/stream-router")).body;
-  assert.equal(agent.definition.version, 1, "the same definition again is no new revision");
-  assert.equal((await server.api("GET", "/triggers")).body.triggers.filter((one) => one.name === "Stream ring").length, 1);
+  const router = (await server.api("GET", "/agents/stream-router")).body;
+  assert.equal(router.definition.version, 1, "the same definition again is no new revision");
+  const rings = (await server.api("GET", "/triggers")).body.triggers.filter((one) => one.name === "Stream ring");
+  assert.deepEqual(rings.map((one) => one.target.agent_id).sort(), ["notes", "stream-router"], "one each: the router's, and the other agent's left where it was");
+  assert.equal(rings.find((one) => one.target.agent_id === "notes").id, theirs.body.id);
 });
