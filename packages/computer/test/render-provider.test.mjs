@@ -584,6 +584,18 @@ test("prepareImage imports the box image once: calls side by side share one impo
 	assert.deepEqual(both, [{ ok: true, value: BUILD }, { ok: true, value: BUILD }]);
 	assert.equal(fresh.calls.filter(({ method, url }) => method === "POST" && url.pathname.endsWith("/builds")).length, 1, "one import");
 	assert.deepEqual(waits.sort(), [["a", "build", BUILD], ["b", "build", BUILD]], "each caller told once");
+	// serve makes a provider per claim: two claims of one workspace, starting together, still share the import.
+	const workspace = fakeRender();
+	const claimsTold = [];
+	const claims = await Promise.all([provider(workspace).prepareImage({ onWait: (...said) => claimsTold.push(["a", ...said]) }), provider(workspace).prepareImage({ onWait: (...said) => claimsTold.push(["b", ...said]) })]);
+	assert.deepEqual(claims, [{ ok: true, value: BUILD }, { ok: true, value: BUILD }]);
+	assert.equal(workspace.calls.filter(({ method, url }) => method === "POST" && url.pathname.endsWith("/builds")).length, 1, "one import for the workspace, not one per provider");
+	assert.deepEqual(claimsTold.sort(), [["a", "build", BUILD], ["b", "build", BUILD]], "each claim told once");
+	// Another workspace's import is its own.
+	const elsewhere = fakeRender();
+	const workspaces = await Promise.all([provider(elsewhere).prepareImage(), provider(elsewhere, { ownerId: "tea-otherworkspace0123" }).prepareImage()]);
+	assert.deepEqual(workspaces, [{ ok: true, value: BUILD }, { ok: true, value: BUILD }]);
+	assert.equal(elsewhere.calls.filter(({ method, url }) => method === "POST" && url.pathname.endsWith("/builds")).length, 2, "one import per workspace");
 	for (const status of ["pending", "running"]) {
 		const under = fakeRender({ builds: [{ id: "sbb-00000000000000000007", sandboxGroupId: GROUP, name: BUILD, status: "failed" }, { id: "sbb-00000000000000000008", sandboxGroupId: GROUP, name: BUILD, status, walk: ["running", "succeeded"] }] });
 		const told = [];
