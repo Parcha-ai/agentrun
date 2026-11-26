@@ -85,7 +85,7 @@ test("placesOf, defaultPlaceOf and noBoxRefusal in Mode 2 with no exec: never Do
     const places = place.placesOf(boxes, "none", noExec);
     assert.equal(places.default_place, null, `${label}: ${JSON.stringify(places)}`);
     assert.match(places.default_reason ?? "", /sandbox computer/, label);
-    assert.match(places.default_reason ?? "", /gcp-us-central1 has no serverless exec/, label);
+    assert.match(places.default_reason ?? "", /^bash needs a box \(a sandbox computer\): this server's Archil region gcp-us-central1 has no serverless exec/, label);
     for (const tools of [["bash"], ["read", "write", "bash"], ["read", "bash", "bash_background"]]) {
       assert.deepEqual(place.defaultPlaceOf("agentic", tools, boxes, flags, noExec), { mode: "runner" }, `${label}: never Docker's box for ${JSON.stringify(tools)}`);
       const refused = place.noBoxRefusal(tools, boxes, flags, noExec);
@@ -130,7 +130,8 @@ test("a run's check on a no-exec region: an agent saved with several shell tools
     const blockers = await blockersOf({}, shape, {}, { boxes, offers: [{ id: "pi", available: true }], shellOf: async () => "none", noExec: GCP });
     const computer = blockers.filter((one) => one.field === "definition.computer");
     assert.equal(computer.length, 1, JSON.stringify(computer));
-    assert.match(computer[0].message, /gcp-us-central1 has no serverless exec/);
+    // The refusal leads with the rule: bash needs a box here.
+    assert.match(computer[0].message, /^bash needs a box \(a sandbox computer\): this server's Archil region gcp-us-central1 has no serverless exec/);
     assert.deepEqual(blockers.filter((one) => one.field.startsWith("definition.tools")), [], "no tool refused on its own beside it");
   }
 });
