@@ -219,14 +219,22 @@ function Asked({ run, agentName, at, onAnswer }: { run: Run; agentName: string; 
       {sent ? (
         <p className="mt-3 font-mono text-body text-success-text">Answered: {sent} · <a href={runHref(run.run_id)} className="underline-offset-4 hover:underline">open the run</a></p>
       ) : (
-        <form onSubmit={(e) => void send(e)} className="mt-3 flex flex-wrap items-center gap-2">
-          {choices.map((c) => (
-            <button key={c} type="button" onClick={() => setText(c)} className={cn("border px-3 py-1.5 text-body hover:border-border-strong", text === c ? "border-warning text-warning-text" : "border-border")}>{c}</button>
-          ))}
-          <Input value={text} onChange={(e) => setText(e.target.value)} aria-label={`Answer ${agentName}`} placeholder={choices.length ? "Or type an answer…" : "Type an answer…"}
-            className="h-9 min-w-[9rem] flex-1 font-sans text-lead" />
-          <Button type="submit" variant="solid" size="sm" disabled={busy || !text.trim()}>{busy ? "Sending…" : "Send"}</Button>
-          {problem && <p className="w-full font-mono text-small text-destructive-text" role="alert">{problem}</p>}
+        // The choices on a row of their own, and under them the answer box with Send: a box beside the choices took what
+        // width they left, and pushed Send to a line of its own.
+        <form onSubmit={(e) => void send(e)} className="mt-3 space-y-2">
+          {choices.length > 0 && (
+            <div className="flex flex-wrap gap-2" data-choices>
+              {choices.map((c) => (
+                <button key={c} type="button" onClick={() => setText(c)} className={cn("border px-3 py-1.5 text-body hover:border-border-strong", text === c ? "border-warning text-warning-text" : "border-border")}>{c}</button>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <Input value={text} onChange={(e) => setText(e.target.value)} aria-label={`Answer ${agentName}`} placeholder={choices.length ? "Or type an answer…" : "Type an answer…"}
+              fieldSize="sm" className="min-w-0 flex-1 font-sans text-lead" />
+            <Button type="submit" variant="solid" size="sm" className="shrink-0" disabled={busy || !text.trim()}>{busy ? "Sending…" : "Send"}</Button>
+          </div>
+          {problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>}
         </form>
       )}
     </li>

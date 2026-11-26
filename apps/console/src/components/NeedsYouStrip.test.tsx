@@ -54,6 +54,19 @@ describe("NeedsYouStrip, the runs waiting on a person", () => {
     expect(h).toContain("Which product or plan was charged twice?");
     expect(h).toContain("asked 30 s ago");
   });
+  it("puts a question's choices on a row of their own, and the answer box with Send on the row under them", () => {
+    const host = mount();
+    const card = host.querySelector('[data-run="q1"]')!;
+    const choices = card.querySelector("[data-choices]")!;
+    expect([...choices.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["$5,000 standard", "$25,000 preferred tier"]);
+    expect(choices.querySelector("input")).toBeNull();
+    // The box and Send share their row, and no choice is in it.
+    const answer = card.querySelector("input")!.parentElement!;
+    expect([...answer.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Send"]);
+    expect(choices.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // An open question has no row of choices, only the box and Send.
+    expect(host.querySelector('[data-run="q2"] [data-choices]')).toBeNull();
+  });
   it("answers in place: a choice fills the box, Send sends it to that run, and the card says it went", async () => {
     const sent: string[] = [];
     const host = mount({ onAnswer: async (id, text) => { sent.push(`${id}: ${text}`); return null; } });
