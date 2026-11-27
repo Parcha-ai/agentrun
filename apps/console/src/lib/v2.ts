@@ -21,8 +21,8 @@ export type ApiError = Omit<components["ErrorBody"], "code"> & { code: component
 export type Permission = AgentTool["permission"];
 /** One tool's setting, read by any settings key: a provider where the tool has a choice (web_search, web_fetch, browser),
  *  and a permission; on an MCP server's wildcard in the server's settings, `allow_reads` (its read-only tools run with no
- *  one asked). */
-export type ToolSetting = { provider?: NonNullable<Body<"putToolSettings">["web_search" | "web_fetch" | "browser"]>["provider"]; permission?: Permission; pin?: ToolPin; pin_broken?: true; allow_reads?: true };
+ *  one asked); on web_search or web_fetch in an agent's own, `jev: "off"` (Jev off for both its web tools). */
+export type ToolSetting = { provider?: NonNullable<Body<"putToolSettings">["web_search" | "web_fetch" | "browser"]>["provider"]; permission?: Permission; pin?: ToolPin; pin_broken?: true; allow_reads?: true; jev?: "off" };
 /** A tool setting that can carry a pin (an MCP tool's): the server's read gives `pin_broken` for one that doesn't read. */
 type PinnedSetting = Extract<NonNullable<Body<"putToolSettings">[string]>, { pin?: unknown }>;
 /** A tool's pin: each argument fixed to one value, or one of a list (null: left out). A call outside it is refused. */

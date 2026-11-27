@@ -326,7 +326,8 @@ export default async function reply(context, faux) {
   // The message lands while the first process's slot is still reaped: the run is open again, its first claim not let go.
   const sent = await server.api("POST", `/runs/${runId}/messages`, { content: "And again." });
   assert.ok(sent.status < 300, JSON.stringify(sent.body));
-  // Its state and its answer read together, from one read of the run: never an answer from before the state.
+  // The answer and the status from one read: two reads let the run end between them, and a status read after its end
+  // beside an answer read before it is no answer at all.
   let run;
   for (const end = Date.now() + 60_000; (run = (await server.api("GET", `/runs/${runId}`)).body).status !== "completed" || run.result?.final_answer === "First."; await sleep(100)) {
     assert.ok(Date.now() < end, `the reopened run never completed: ${JSON.stringify(run)}\n${lines.join("\n")}`);

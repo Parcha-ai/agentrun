@@ -32,8 +32,8 @@ export const SECRET_NAMES: readonly string[] = (() => {
  *  (mcp-gateway.ts McpCredentials). A run that grants none gets no entry. */
 export const MCP_AUTH = "AGENTRUN_MCP_AUTH";
 
-/** The decision keys among them: a run's process gets them only on its decision descriptor (decisions.ts), never with
- *  the secrets on its pipe, which are its tools' environment. */
+/** The decision keys among them: never among a run's secrets (run-secrets.ts RUN_SECRETS); the runner's claim lays them
+ *  on the claim's own environment (claim-secrets.ts) for its decision providers and web tools. */
 export const DECISION_KEYS: readonly string[] = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
 
 const held = new Map<string, string>();
