@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { JOURNAL_FIRST_ID, RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, STORE_META_LEDGER_BACKFILLED, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, diskUpgrade, HAND_BACKS, HAND_BACKS_AT, HAND_BACKS_KEPT_MS, HAND_BACKS_RUN, IMPORTED_TEMPLATES, LEARNING_LEDGER, LEARNING_LEDGER_ADDED, LEARNING_LEDGER_AGENT, LEARNING_LEDGER_BY_HAND, LEARNING_ROWS, LEARNING_SPEND, LEARNING_SPEND_AGENT, LEARNING_SPEND_OF_RUN, ledgerUpgrade, learningRowsUpgrade, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUN_ATTEMPTS, RUNNERS, RUNNERS_ADDED, RUN_LAUNCH_CENSUS, RUN_LAUNCH_CENSUS_ERASED, RUN_LAUNCH_CENSUS_ERASED_MADE, RUN_LAUNCH_CENSUS_SETTLE, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, splitUpgrade, STORE_META_LEDGER_BACKFILLED, STORE_META_LEDGER_RERECORDED, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   ActiveRuns, AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, FiringMoved, RunFinal, RunPurged, RunnerBelowFloor, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, UPLOAD_PREFIX, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -488,9 +488,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // purgeUpgrade). Version 14 keeps no disk on a run: the server adds it and writes each run's from its launch (schema.ts
     // diskUpgrade). Version 15 keeps each ledger row's epoch: the server repairs the rows that release could leave wrong
     // and drops it (the ledger's step below, then ledgerUpgrade). Version 16 keeps no learning as rows: the server adds
-    // them (schema.ts learningRowsUpgrade), last. A runner refuses each version of SQLITE_UPGRADES until that server has,
+    // them (schema.ts learningRowsUpgrade). Version 17 has its reopened runs' ledger rows under the split before: the
+    // server adds the mark (STORE_META_LEDGER_RERECORDED, unset) and writes 18 (schema.ts splitUpgrade), last, and the
+    // open's backfill records those rows again. A runner refuses each version of SQLITE_UPGRADES until that server has,
     // and a runner of 15, whose end writes the epoch, refuses 16 and later (SchemaVersionUnknown), or stops at its next
-    // floor read. A later version is refused too, a runner in words that name its floor (a SQLite runner opens only its
+    // floor read; a runner of 17, whose end writes the split before, refuses 18 the same way. A later version is refused too, a runner in words that name its floor (a SQLite runner opens only its
     // own version, so the floor is the version): RunnerBelowFloor.
     const upgrading = found !== null && SQLITE_UPGRADES.has(found);
     if (upgrading && role === "runner") throw new StoreAwaitsServer(`bring this store from version ${found} to ${SCHEMA_VERSION}`);
@@ -613,8 +615,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: RUN_ATTEMPTS },
         // Nor any learning ledger (schema.ts LEARNING_LEDGER, LEARNING_SPEND; version 15's, with each row's `epoch`, is
         // repaired and its epoch dropped by ledgerUpgrade below). Nor the mark that every ended run has its row
-        // (STORE_META_LEDGER_BACKFILLED), nor the by-hand index (LEARNING_LEDGER_BY_HAND).
+        // (STORE_META_LEDGER_BACKFILLED), nor the by-hand index (LEARNING_LEDGER_BY_HAND). Nor, before 18, the mark that
+        // every reopened run's row is under this build's split (STORE_META_LEDGER_RERECORDED): unset, so the open's
+        // backfill records them again.
         ...(metaColumns.has("ledger_backfilled") ? [] : [{ sql: STORE_META_LEDGER_BACKFILLED }]),
+        ...(metaColumns.has("ledger_rerecorded") ? [] : [{ sql: STORE_META_LEDGER_RERECORDED }]),
         { sql: LEARNING_LEDGER },
         { sql: LEARNING_LEDGER_AGENT },
         { sql: LEARNING_LEDGER_BY_HAND },
@@ -657,10 +662,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         if (found <= 13) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
         if (found <= 14) await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
         if (found <= 15) await connection.write(ledgerUpgrade(await named("learning_ledger")).map((sql) => ({ sql })), { full: true });
-        // Last: ledgerUpgrade writes 16, and the rows step writes 17 after it.
-        await connection.write(learningRowsUpgrade().map((sql) => ({ sql })), { full: true });
+        // ledgerUpgrade writes 16, the rows step 17 after it, and the split's step 18, last.
+        if (found <= 16) await connection.write(learningRowsUpgrade().map((sql) => ({ sql })), { full: true });
+        await connection.write(splitUpgrade().map((sql) => ({ sql })), { full: true });
       }
-      // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads.
+      // Every run an earlier build ended gets its ledger row once, here, on the schema this build reads, and every run a
+      // follow-up opened again has its row recorded again under this build's split, once.
       await backfillLedger(connection, options.now ?? Date.now);
     }
   } catch (error) {

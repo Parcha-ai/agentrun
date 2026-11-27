@@ -101,7 +101,8 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
       refuseBelowFloor(schema, state, known);
     }
     if(role==="server")await backfillNativeCommandOwners(connection);
-    // Every run an earlier build ended gets its ledger row once, here, as on SQLite (run-patch.ts backfillLedger).
+    // Every run an earlier build ended gets its ledger row once, here, and every run a follow-up opened again its row
+    // recorded again under this build's split, once, as on SQLite (run-patch.ts backfillLedger).
     if (role === "server") await backfillLedger(connection, now);
     if (role === "runner" && options.warn) {
       const gap = now() - (await connection.clock());

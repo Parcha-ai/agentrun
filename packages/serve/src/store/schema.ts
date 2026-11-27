@@ -44,10 +44,13 @@
 // (learning_ledger; 15 kept one, which a runner of 15 writes at each end and this build's end does not). Version 17 keeps
 // each agent's learning as rows (LEARNING_ROWS) in place of a git folder and settings keys: a runner of an earlier build
 // would still write learning where this server neither reads nor purges it, so it must not open the store (it opens only
-// its own version). The server upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12,
-// purgeUpgrade from 13, diskUpgrade from 14, ledgerUpgrade from 15, then learningRowsUpgrade from 16); a runner of this
+// its own version). Version 18 keeps whether the server has recorded again each ledger row a build before the follow-up
+// split wrote (store_meta.ledger_rerecorded, run-patch.ts backfillLedger): a runner of 17 still writes a reopened run's
+// row with its job at the first round's figure, after the pass that records it again, so it must not open the store.
+// The server upgrades these in place at its open (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13,
+// diskUpgrade from 14, ledgerUpgrade from 15, learningRowsUpgrade from 16, then splitUpgrade from 17); a runner of this
 // build waits for it.
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -93,6 +96,13 @@ export function diskUpgrade(runColumns: ReadonlySet<string>): readonly string[] 
  *  16 or before) opens the store again. */
 export function learningRowsUpgrade(): readonly string[] {
   return [...LEARNING_ROWS, "UPDATE store_meta SET schema_version = 17 WHERE singleton = 1"];
+}
+/** Version 17 → 18 on SQLite (the server's open, sqlite/store.ts, last): the version alone, its mark
+ *  (STORE_META_LEDGER_RERECORDED) added at the same open, so no runner of 17, whose end writes a reopened run's ledger row
+ *  under the split before (its job the first round's figure), opens the store again once the open's backfill has recorded
+ *  those rows again. */
+export function splitUpgrade(): readonly string[] {
+  return ["UPDATE store_meta SET schema_version = 18 WHERE singleton = 1"];
 }
 /** A trigger's package mark (TriggerRow.templateId): the id of the template package whose apply made or last kept it, null
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
@@ -385,6 +395,13 @@ export function ledgerUpgrade(ledgerColumns: ReadonlySet<string>): readonly stri
  *  open to a store an earlier build of this version made. */
 const LEDGER_BACKFILLED = "ledger_backfilled INTEGER NOT NULL DEFAULT 0 CHECK (ledger_backfilled IN (0, 1))";
 export const STORE_META_LEDGER_BACKFILLED = `ALTER TABLE store_meta ADD COLUMN ${LEDGER_BACKFILLED}`;
+/** Whether every final run not purged whose learning kept more than one round (a follow-up opened it again) has had its
+ *  ledger row recorded again under this build's split (learn/ledger.ts roundsLooked: its job the row less every round's
+ *  look-back), which backfillLedger writes once it has recorded the last: a build before wrote such a row with its job
+ *  at its first round's figure, and the row is the journal's, so it is recorded again once, never read two ways. 0 on a
+ *  store no server of this build opened yet. In STORE_DDL, and added at the server open that brings a store to 18. */
+const LEDGER_RERECORDED = "ledger_rerecorded INTEGER NOT NULL DEFAULT 0 CHECK (ledger_rerecorded IN (0, 1))";
+export const STORE_META_LEDGER_RERECORDED = `ALTER TABLE store_meta ADD COLUMN ${LEDGER_RERECORDED}`;
 /** Each learning cost, by the revision it is for (learn/ledger.ts SpendRow): a compile turn (`round`, the round that asked
  *  it), a check's replay run or an audit's shadow run (round 0, `of_run` the run it audits or whose key paid it), with its
  *  $ (null: unknown). Written with its run's ledger row, replaced whole each time; gone with its run's delete, and with
@@ -522,7 +539,8 @@ export const STORE_DDL: readonly string[] = [
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     schema_version INTEGER NOT NULL,
     flushes INTEGER NOT NULL DEFAULT 0,
-    ${LEDGER_BACKFILLED}
+    ${LEDGER_BACKFILLED},
+    ${LEDGER_RERECORDED}
   ) STRICT`,
 
   // Agents and their revisions. A revision made from a template keeps its package: {name, version (SemVer), source

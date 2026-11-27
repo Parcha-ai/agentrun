@@ -11,7 +11,10 @@
 //     its end would have written, a page at a time; an open after a stop partway records the rest, and once the ledger
 //     is marked whole (store_meta.ledger_backfilled) no open reads the runs again; no read records one; each run is
 //     locked before it is read again, so a heal another server commits meanwhile stands;
-//   - a store the ledger's first release left (version 15, which a runner refuses until the server brings it to 17) has
+//   - a run a follow-up opened again whose row a build before #4050's split wrote (its job the first round's figure) is
+//     recorded again once, at the server's open, a page at a time, then marked (store_meta.ledger_rerecorded); Postgres
+//     0033 adds the mark, breaking for runners, as SQLite's version 18;
+//   - a store the ledger's first release left (version 15, which a runner refuses until the server brings it to 18) has
 //     its wrong rows recorded again at the open that drops their epoch (a shadow with no path or audit spend, a stale
 //     row, an unknown cost its run now has, a run by hand with no path), by the ledger step alone (no earlier step runs
 //     again), its mark set back so even a ledger marked whole is recorded again; Postgres 0030 runs again unharmed;
@@ -355,20 +358,22 @@ test("a store the ledger's first release left: its wrong rows are recorded again
   await db.run("UPDATE learning_ledger SET cost = 'unknown', job_usd = NULL WHERE run_id = 'h2'");
   await db.run("UPDATE learning_ledger SET job_usd = 9, epoch = epoch - 1 WHERE run_id = 's2'");
   await db.run("UPDATE learning_ledger SET path = 'agent' WHERE run_id = 'audit.s2'");
-  // At that release's version, 15: a runner of this build refuses it until the server brings it to 17 (the ledger step
-  // writes 16, the learning rows step 17), and a runner of 15 (whose end writes the epoch) refuses a version it does not know.
+  // At that release's version, 15: a runner of this build refuses it until the server brings it to 18 (the ledger step
+  // writes 16, the learning rows step 17, the split's step 18), and a runner of 15 (whose end writes the epoch) refuses a
+  // version it does not know.
+  await db.run("ALTER TABLE store_meta DROP COLUMN ledger_rerecorded");
   await db.run("UPDATE store_meta SET schema_version = 15 WHERE singleton = 1");
   await db.close();
-  assert.equal(SCHEMA_VERSION, 17);
-  await assert.rejects(storeOn(t, { file, clock, role: "runner" }), (error) => error instanceof StoreAwaitsServer && /bring this store from version 15 to 17/.test(error.message));
+  assert.equal(SCHEMA_VERSION, 18);
+  await assert.rejects(storeOn(t, { file, clock, role: "runner" }), (error) => error instanceof StoreAwaitsServer && /bring this store from version 15 to 18/.test(error.message));
   const { store: reopened } = await storeOn(t, { file, clock });
   assert.deepEqual(await figures(reopened), now, "every wrong row recorded again from its run, as its end writes it");
   const after = await raw(file);
-  assert.deepEqual([(await after.get("SELECT schema_version AS v FROM store_meta")).v, (await after.all("SELECT name FROM pragma_table_info('learning_ledger') WHERE name = 'epoch'")).length], [17, 0], "17, the epoch gone (the ledger step) and the learning rows made after it");
+  assert.deepEqual([(await after.get("SELECT schema_version AS v FROM store_meta")).v, (await after.all("SELECT name FROM pragma_table_info('learning_ledger') WHERE name = 'epoch'")).length], [18, 0], "18, the epoch gone (the ledger step), the learning rows and the split's mark after it");
   await after.close();
 });
 
-test("a store at 15 comes to this version by the ledger step and then the learning rows step alone: no earlier step runs again (a stop at that step leaves 15; a purged run's tombstone keeps its disk), and with the epoch there the mark is set back, so a ledger marked whole has its wrong rows recorded again", sqliteOnly("SQLite's upgrade chain; Postgres has migrations"), async (t) => {
+test("a store at 15 comes to this version by the ledger step and then the learning rows and split steps alone: no earlier step runs again (a stop at that step leaves 15; a purged run's tombstone keeps its disk), and with the epoch there the mark is set back, so a ledger marked whole has its wrong rows recorded again", sqliteOnly("SQLite's upgrade chain; Postgres has migrations"), async (t) => {
   const { Connection } = await import("../dist/store/sqlite/connection.js");
   const { store, file, clock, end } = await ledgerStore(t);
   await end("h1", 1);
@@ -407,7 +412,7 @@ test("a store at 15 comes to this version by the ledger step and then the learni
   }
   assert.equal(await version(), 15, "still 15: neither the purge step nor the disk step ran");
   const { store: reopened } = await storeOn(t, { file, clock });
-  assert.equal(await version(), 17, "the ledger step's 16, then the learning rows step's 17");
+  assert.equal(await version(), 18, "the ledger step's 16, then the learning rows step's 17, then the split's 18");
   assert.equal((await reopened.runs.get("p1")).disk, "disk-p", "the tombstone keeps its disk: the disk step did not run again");
   assert.deepEqual((await reopened.learning.ledger("agent-1")).rows, rows, "h1's row recorded again at its run's figures: the mark set back to 0 with the epoch, so the open's backfill ran");
   db = await raw(file);
@@ -515,10 +520,7 @@ test("the server's open records the runs with no row a page at a time and marks 
  *  of this build has opened it yet (store_meta.ledger_rerecorded 0). */
 async function oldSplit(db, runId, firstJob, rowUsd) {
   await db.run("UPDATE learning_ledger SET job_usd = ?, look_back_usd = ? WHERE run_id = ?", firstJob, Math.round((rowUsd - firstJob) * 1e9) / 1e9, runId);
-  const columns = db.kind === "postgres"
-    ? await db.all("SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'store_meta'")
-    : await db.all("SELECT name FROM pragma_table_info('store_meta')");
-  if (columns.some((column) => column.name === "ledger_rerecorded")) await db.run("UPDATE store_meta SET ledger_rerecorded = 0 WHERE singleton = 1");
+  await db.run("UPDATE store_meta SET ledger_rerecorded = 0 WHERE singleton = 1");
 }
 
 test("a run a follow-up opened again whose row an earlier build wrote (its job the first round's figure, the follow-up its look-back) is recorded again under this build's split, once, at the server's open, a page at a time: its usd is its row less every round's look-back and its learning leaves the follow-up out; a run of one round and a purged run are left as they are, and once marked no open reads the runs again", async (t) => {
@@ -552,4 +554,16 @@ test("a run a follow-up opened again whose row an earlier build wrote (its job t
   await db.close();
   ({ store: again } = await storeOn(t, { file, clock }));
   assert.deepEqual((await again.learning.ledger("agent-1", ["R"])).rows.map((row) => [row.jobUsd, row.lookBackUsd]), [[0.9, 5.7]], "marked: no open reads the runs again");
+});
+
+test("Postgres migration 0033 adds the same mark only where missing, unset, and is breaking for runners (an earlier runner writes a reopened run's row under the split before)", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { STORE_META_LEDGER_RERECORDED } = await import("../dist/store/schema.js");
+  const { marksBreaking } = await import("../dist/store/postgres/migrate.js");
+  const sql = await readFile(new URL("../dist/store/postgres/migrations/0033_learning_ledger_rerecorded.sql", import.meta.url), "utf8");
+  assert.ok(marksBreaking(sql), "-- runners: breaking in its leading comment");
+  const text = sql.replace(/--[^\n]*/g, "").replace(/\s+/g, " ").trim();
+  assert.ok(text.includes("ALTER TABLE store_meta ADD COLUMN IF NOT EXISTS ledger_rerecorded BIGINT NOT NULL DEFAULT 0 CHECK (ledger_rerecorded IN (0, 1));"), text);
+  assert.match(STORE_META_LEDGER_RERECORDED, /ledger_rerecorded INTEGER NOT NULL DEFAULT 0 CHECK \(ledger_rerecorded IN \(0, 1\)\)/);
+  assert.ok(text.endsWith("UPDATE store_meta SET schema_version = 33 WHERE singleton = 1;"), text);
 });

@@ -150,13 +150,13 @@ test("a learning run a follow-up opened again whose ledger row an earlier build 
   assert.equal(now.cost.tools_usd, 0.006, `both rounds' monid calls: ${JSON.stringify(now.cost)}`);
   await first.stop();
   // The row as a build before this split wrote it: the job its first round's figure, the follow-up and every end-of-run
-  // turn its look-back; and no server of this build has opened the store.
+  // turn its look-back; and the store at that build's version, 17, with no mark that its rows were recorded again.
   const db = await raw(join(first.data, "store.sqlite"), { timeout: 15_000 });
   const firstJob = JSON.parse((await db.get("SELECT proposal FROM learning_proposals WHERE run_id = ? AND round = 1", runId)).proposal).job_cost_usd;
   const rowUsd = (await db.get("SELECT cost_usd FROM runs WHERE id = ?", runId)).cost_usd;
   assert.ok(firstJob > 0 && firstJob < rowUsd, JSON.stringify({ firstJob, rowUsd }));
   await db.run("UPDATE learning_ledger SET job_usd = ?, look_back_usd = ? WHERE run_id = ?", firstJob, Math.round((rowUsd - firstJob) * 1e9) / 1e9, runId);
-  if ((await db.all("SELECT name FROM pragma_table_info('store_meta')")).some((column) => column.name === "ledger_rerecorded")) await db.run("ALTER TABLE store_meta DROP COLUMN ledger_rerecorded");
+  await db.run("ALTER TABLE store_meta DROP COLUMN ledger_rerecorded");
   await db.run("UPDATE store_meta SET schema_version = 17 WHERE singleton = 1");
   await db.close();
 
