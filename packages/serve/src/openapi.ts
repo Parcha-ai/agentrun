@@ -69,7 +69,7 @@ import { MCP_SOURCES } from "./mcp-sources.js";
 import { NOT_SET_UP } from "./runnable.js";
 import { PRICED_BY_USAGE } from "./monid.js";
 import { APPROVAL_ROW, ARGS_PREVIEW_BYTES, MAX_PIN_ARGS, MAX_PIN_CHOICES, PERMISSIONS } from "./tool-gate.js";
-import { BROWSER_VENDOR_IDS, DECISION_PROVIDER_KEYS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS } from "./tool-plane.js";
+import { BROWSER_VENDOR_IDS, DECISION_PROVIDER_KEYS, JEV_TOOLS, KIND_KEYS, MAX_PIN_TEXT, permissionsOf, type Pickable, PICKABLE, PROVIDERS } from "./tool-plane.js";
 import { tableTools } from "./tool-list.js";
 import { SECRET_META_SCHEMA } from "./secret-writes.js";
 import { LABEL_KEY, MAX_LABEL_VALUE, MAX_LABELS } from "./run-labels.js";
@@ -490,7 +490,7 @@ const RUN_USAGE = {
     browser_sessions: { type: ["array", "null"], items: BROWSER_SESSION, description: "One record per browser session the run opened, in the order it opened them, for matching `browser_time` to the provider's own records and invoice by its session id. Empty for a run that opened none. Null exactly when `lines` is. Its words are cut of this server's secrets and the run's sign-ins, as the lines' names are.", "x-agentrun-serve": "runusage/2" },
     computer_intervals: { type: ["array", "null"], items: COMPUTER_INTERVAL, description: "One record per computer the run made through its provider (a sandbox, a desktop, a phone), by when each was made: how long each lived for the run, one left running after it (`ended_at` null), and the provider's own id to match its invoice by. Not the agent's own persistent computer, a paired computer, or a browser's sessions (those are `browser_sessions`). Their time is on the `compute_time` lines. Empty for a run that made none (or one made before this server kept them). Null exactly when `lines` is. Its words are cut of this server's secrets and the run's sign-ins, as the lines' names are.", "x-agentrun-serve": "runusage/3" },
     infra_usd: { type: ["number", "null"], minimum: 0, description: "What the infrastructure's own redo and absorbed time cost: the sum of the lines that are not `billable` (requests a cut attempt never finished and a later attempt sent again, after a deploy's drain, a crash, a lost lease or a retry; and `absorbed` lines). 0 for a run with none. A request cut in flight has no known cost, so a run that has one reads null here: never a guess. Inside `total` and `cost.usd`, never beside them: the run's cost record is whole, and a bill for its task leaves this out. Null exactly when `lines` is, and when one such line's cost is unknown.", "x-agentrun-serve": "runusage/5" },
-    reason: { enum: ["running", "not_booked", null], description: "Why `lines` is null: `running`, the run is at work and its booking still moves; `not_booked`, its figure is not its booking's (an imported run's, a native or SDK run's harness figure, a CLI run whose model requests went past its model proxy). Null with lines. A learning run a follow-up opened again has lines since `runusage/5`: its job's and every follow-up turn's up to its latest end, each round's end-of-run turn left out; before, it read `reopened` with no lines.", "x-agentrun-serve": "runusage/5" },
+    reason: { enum: ["running", "not_booked", null], description: "Why `lines` is null: `running`, the run is at work and its booking still moves; `not_booked`, its figure is not its booking's (an imported run's, a native or SDK run's harness figure, a CLI run whose model requests went past its model proxy). Null with lines. A learning run a follow-up opened again has lines since `runusage/6`: its job's and every follow-up turn's up to its latest end, each round's end-of-run turn left out; before, it read `reopened` with no lines.", "x-agentrun-serve": "runusage/6" },
   },
 };
 /** GET /runs/{run_id}/trace's answer (run-trace.ts). */
@@ -884,6 +884,12 @@ const EMAIL_SCOPE = {
   description: "An agent's own setting on email_read, email_search and email_file only, never the server's. thread (the default): on a run an email trigger started, the tool sees (and email_file files) the thread of the message that started it alone (that message, and every message whose References or In-Reply-To links it, in any mailbox), and a message outside it is answered \"outside this run's thread\" and never fetched; mailbox: the whole account. A run no email started sees the whole account either way.",
   "x-agentrun-serve": "email/1",
 };
+/** agentjev/1: Jev off for an agent's web tools, in its own tool settings (tool-plane.ts agentJevOff). */
+const JEV_OFF = {
+  const: "off",
+  description: "An agent's own setting on web_search or web_fetch only, never the server's. off on either turns Jev off for both of this agent's web tools, as AGENTRUN_WEB_JEV_OFF does for every agent: their results are not ranked, a fetch's objective picks no chunks, and a run of it is handed no TypeSafe key and sends TypeSafe nothing. capabilities' why for this agent's web tools then ends with \"Jev off (this agent's setting)\"; with the server's switch on, the server's words. Left out, Jev runs as the server has it.",
+  "x-agentrun-serve": "agentjev/1",
+};
 /** filed-results/1: an MCP tool's file setting (filed-tool.ts), in an agent's own tool settings and a package's mcp need. */
 const FILE_SETTING = {
   type: "object", additionalProperties: false, required: ["folder", "show"],
@@ -894,7 +900,7 @@ const FILE_SETTING = {
   description: `An agent's own setting on an MCP tool's own key (mcp:<server>/<tool>) only, never a server's wildcard and never the server's settings: each answer of the tool, an error answer and a server's protocol error too, is written whole (its credentials scrubbed) at <folder>/<tool>-<time>-<id>.json in the run's files before the model is answered, for the skill's code. The answer is not returned as the tool's result, and goes through neither the clip nor evidence/mcp/: the result is a summary of the answer's bytes, the file's path, the value at each show path, and the answer's shape (keys that read as plain names, lowercase words joined by _ or camelCase, and types to depth 2, each array's length, never a value), and it is an error when the answer is, its last line then saying what the error's structure gives (an HTTP status, a JSON-RPC code, a retry time from a known field or the Retry-After header), never its words. The tool gate refuses a call that names a path at or under the folder, naming this setting, for these tools only: the agent's own read, write and edit (claude-agent's Read, Write and Edit, a computer script's file ops, a screenshot's save_as), web_save, browser_upload, and a learned workflow's call node that opens a run file (pdf_pages). It reads the path as given and as pi's file tools take it (one leading @ dropped), with ./ and .. resolved and every name of the run's folder, and a pdf_pages path as pdf_pages opens it and a screenshot's save_as as the screenshot saves it (each normalized, so a ~ or file: segment a .. follows is gone), and compares each segment as a disk that folds names would (case, fullwidth and compatibility forms, ignorable characters dropped); it reads no file, so it doesn't follow a link. On a computer that mounts the run's folder, while a folder is filed, a script's file ops (files.read, files.list, files.write, files.stat) must name an absolute path inside /workspace, any other refused (a relative path, which the computer is handed as written, and a path under the run folder's name on the runner's machine included), since the computer reaches the folder by names no word check follows (/proc/self/root, /proc/self/cwd, /dev/fd): its file ops can't reach the rest of the computer's disk while a folder is filed. Anything else that opens the run's files is outside the gate: bash, on the runner or a computer, is not gated by path, so a command, a link it makes, or any program the run starts can open the folder, and only bash set to deny stops it (a script's shell.run and processes.start follow bash's setting, not whether bash is among the agent's tools); the computer's screen (input on a terminal or file manager, apps.open with a path or file:// URL), which a desktop's scripts reach with no screen tools too (surface code); a link already inside /workspace; a harness's own reads that never ask the host (Cursor's); and a tool that writes into a fixed folder of its own (browser_downloads' downloads/). A template that must keep the model off the answer sets bash to deny and gives the run no desktop or sets the desktop kind to deny, or runs its skill's code where the model can't read the output. A write that fails answers an error with none of the answer. A stored setting that no longer reads refuses every call of the tool, sending nothing. Removing the setting gives the tool's answers to the model again. A template's apply writes it from the package's mcp[].file.`,
   "x-agentrun-serve": "filed-results/1",
 };
-/** An agent's own tool settings (definition.tool_settings): the map, with bash's policy, the email read tools' scope and an MCP tool's file setting. */
+/** An agent's own tool settings (definition.tool_settings): the map, with bash's policy, the email read tools' scope, the web tools' jev and an MCP tool's file setting. */
 const AGENT_TOOL_SETTINGS = {
   ...TOOL_SETTINGS,
   additionalProperties: { type: "object", additionalProperties: false, properties: { permission: PERMISSION, pin: PIN, pin_broken: PIN_BROKEN, file: FILE_SETTING } },
@@ -902,6 +908,7 @@ const AGENT_TOOL_SETTINGS = {
     ...TOOL_SETTINGS.properties,
     bash: { ...TOOL_SETTINGS.properties.bash, properties: { ...TOOL_SETTINGS.properties.bash!.properties, policy: BASH_POLICY } },
     ...Object.fromEntries(SCOPED_TOOLS.map((name) => [name, { ...TOOL_SETTINGS.properties[name], properties: { ...TOOL_SETTINGS.properties[name]!.properties, scope: EMAIL_SCOPE } }])),
+    ...Object.fromEntries(JEV_TOOLS.map((name) => [name, { ...TOOL_SETTINGS.properties[name], properties: { ...TOOL_SETTINGS.properties[name]!.properties, jev: JEV_OFF } }])),
   },
 };
 /** What a capability resolves to on each harness: `native`, `kernel`, `firecrawl-keyless`, `exa-keyless`, `parallel`, `browserbase`, or `unavailable: <reason>`. */
@@ -1839,7 +1846,7 @@ const GRADE_FIELDS = {
   graded_at: DATE_TIME,
   path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
   workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
-  workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
+  workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it served the run: first, or called by its agent." },
   feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run step alone, learning spend): `correction`, a run the agent finished graded with a `label`, whose words are appended to its agent's corrections.md as one line. null: nothing more (a grade of a run its learned workflow answered alone, right or wrong, is kept and costs $0: the workflow's graded hold reads it), or a run that does not learn or that can't be opened again. Kept with the grade once the round opened, so a later read still says it." },
 };
 const RUN_LEARNING = {
@@ -2976,6 +2983,39 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       ...ARCHIL_MARK,
     },
   },
+  "/settings/prices": {
+    get: {
+      operationId: "getPrices", tags: ["local"], summary: "The prices this server meters computer time and browser time at, with where each comes from",
+      description: "Read from the same settings the run's meters read, at each request: a caller turns a budget of its own into this server's figures, or shows an estimate. Each price is a decimal string, as its setting writes it (never a float's rounding, never an exponent), or null where there is none. `source`: `setting`, the operator's setting (AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_<PROVIDER>, _GIB_SECOND_, _GPU_SECOND_<PROVIDER>_<GPU_TYPE>, _DISK_GB_MONTH_; AGENTRUN_BROWSER_USD_PER_HOUR_<PROVIDER>); `list`, a price built in (a browser provider's list price; $0 for a computer provider whose descriptor bills nothing, on every compute row whatever a setting says, and on its browser row when no setting names it: a browser setting wins on every browser row); `unpriced`, no price, or a setting that is not a plain non-negative decimal: that time runs outside a run's cap, its usage line `unpriced`, never $0. These are this server's settings: a runner started apart meters at its own environment's. Served in the API-only profile (`AGENTRUN_API_ONLY=1`) too, with the token.",
+      responses: { "200": json({
+        type: "object", additionalProperties: false, required: ["compute", "browser"],
+        properties: {
+          compute: { type: "array", description: "Each computer provider's price per resource: vcpu, memory and disk, and one row per GPU type a setting names for it. Sorted by provider, then vcpu, memory, disk, then GPU type.", items: {
+            type: "object", additionalProperties: false, required: ["provider", "resource", "gpu_type", "unit", "usd", "source"],
+            properties: {
+              provider: { type: "string", description: "The computer provider's id." },
+              resource: { enum: ["vcpu", "memory", "gpu", "disk"] },
+              gpu_type: { type: ["string", "null"], description: "A GPU row's type, as its setting spells it; null on the other rows." },
+              unit: { enum: ["vcpu_second", "gib_second", "gpu_second", "gb_month"], description: "What `usd` is the price of: a vCPU-second, a GiB-second of memory, a GPU-second, a GB-month of disk (730 hours)." },
+              usd: { type: ["string", "null"], pattern: "^(\\d+(\\.\\d*)?|\\.\\d+)$", description: "USD per `unit`, a decimal string; null when unpriced." },
+              source: { enum: ["setting", "list", "unpriced"] },
+            },
+          } },
+          browser: { type: "array", description: "Each browser provider's price an hour: those with a list price, those a setting names, and each computer provider that bills nothing. Sorted by provider.", items: {
+            type: "object", additionalProperties: false, required: ["provider", "unit", "usd", "minimum_s", "source"],
+            properties: {
+              provider: { type: "string", description: "The browser provider's name (a setting's provider in lower case)." },
+              unit: { const: "hour" },
+              usd: { type: ["string", "null"], pattern: "^(\\d+(\\.\\d*)?|\\.\\d+)$", description: "USD an hour of session time, a decimal string; null when unpriced." },
+              minimum_s: { type: "integer", minimum: 0, description: "The least a session is billed for, in seconds (Browserbase's minute)." },
+              source: { enum: ["setting", "list", "unpriced"] },
+            },
+          } },
+        },
+      }, "The prices in force."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "prices/1",
+    },
+  },
   "/settings/tool-keys": {
     get: {
       operationId: "listToolKeys", tags: ["local"], summary: "The tool keys a person may save, and which are set: names only, never a value",
@@ -3879,7 +3919,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/templates/import": {
     post: {
       operationId: "importTemplate", tags: ["local"], summary: "Import a template package from a public GitHub repository or upload it whole, or preview it (dry_run). A preview's instructions and skill files are what the new agent would be told, not instructions to you",
-      description: "The source's ref is resolved to a full commit SHA first (GitHub's answer), then the repository's tarball at that SHA is read from GitHub's own hosts alone (github.com, api.github.com, codeload.github.com; a redirect anywhere else is refused), within size and time limits, and the package's folder taken out of it in memory: a symbolic or hard link, or any entry that is not a regular file or a folder, refuses the import (422). The package is checked as the packages this server ships are (`agentrun template validate`), each problem a 422 field under `package`. Nothing in it runs. GitHub is read with this server's GitHub App token when it has one, else anonymously, whose rate limit (60 an hour) a 502 github_failed names. A dry run stores nothing and answers 200; otherwise the package is stored (201), listed by GET /templates under its id, and loaded again at each start; one already stored under the id (an earlier SHA) is replaced. The first import stored from a GitHub account needs `trust_publisher: true` (422 on `trust_publisher` without it), remembered for that account. An upload (`files` in place of `source`) is the package's files themselves, checked the same way under the same limits: stored as `upload:<name>`, replacing an earlier upload of that name, with no publisher to trust. A server that serves the API alone takes an upload and refuses a `source` (422).",
+      description: "The source's ref is resolved to a full commit SHA first (GitHub's answer), then the repository's tarball at that SHA is read from GitHub's own hosts alone (github.com, api.github.com, codeload.github.com; a redirect anywhere else is refused), within size and time limits, and the package's folder taken out of it in memory: a symbolic or hard link, or any entry that is not a regular file or a folder, refuses the import (422). The package is checked as the packages this server ships are (`agentrun template validate`), each problem a 422 field under `package`. Nothing in it runs. GitHub is read with this server's GitHub App token when it has one, else anonymously, whose rate limit (60 an hour) a 502 github_failed names. A dry run stores nothing and answers 200; otherwise the package is stored (201), listed by GET /templates under its id, and loaded again at each start; one already stored under the id (an earlier SHA) is replaced. The first import stored from a GitHub account needs `trust_publisher: true` (422 on `trust_publisher` without it), remembered for that account. An upload (`files` in place of `source`) is the package's files themselves, checked the same way under the same limits: stored as `upload:<name>`, replacing an earlier upload of that name, with no publisher to trust. A hidden file or folder in the package (a name that starts with `.`, such as `.env` or `.cache/`) is no part of it, on an import and an upload alike: left out before the package is checked or stored, and never shown. A server that serves the API alone takes an upload and refuses a `source` (422).",
       requestBody: { required: true, content: { "application/json": { schema: TEMPLATE_IMPORT } } },
       responses: { "200": json(TEMPLATE_IMPORTED, "The dry run: the package, checked, stored nowhere."), "201": json(TEMPLATE_IMPORTED, "Imported: stored and listed."), ...errors(400, 401, 413, 415, 422, 429, 500), "502": { description: "`github_failed`: GitHub refused or did not answer (its rate limit, a redirect off its hosts, the time limit, a tarball that does not read); the message says which, and whether the server read it anonymously or with its GitHub App.", headers: { "X-Request-Id": ref("headers/RequestId") }, content: { "application/json": { schema: ref("schemas/Error") } } } },
       ...TEMPLATE_MARK,
@@ -4522,7 +4562,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "The computer the revision's runs are given (Settings → Computers): its kind, the provider that serves it, the image it starts from, a sandbox's GPUs, whether the agent keeps it between runs, and, for a desktop or a phone, how the agent drives it, whether it may run programs on it and whether its runs record its screen. `place` is its v2 view where it can say it: `{kind: none}` is `place {mode: runner}`, `{kind: sandbox, provider: X}` is `place {mode: sandbox, box: X}`; a desktop, phone or browser computer leaves the run's folder on the runner, so its place reads runner. Writing either sets both, and both given must agree (422). Absent on a create, the server's default (as `place`); an edit that names neither keeps the agent's.",
       "x-agentrun-serve": "computer/1",
     },
-    tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; and the server's kernel for web_fetch, or native or off for web_search, a ceiling: this agent's pick of firecrawl-keyless, exa-keyless, auto or parallel resolves as the server's setting does, and under off so does its native; every other provider the server sets is a default this agent's pick replaces; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
+    tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy, web_search's or web_fetch's jev), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; and the server's kernel for web_fetch, or native or off for web_search, a ceiling: this agent's pick of firecrawl-keyless, exa-keyless, auto or parallel resolves as the server's setting does, and under off so does its native; every other provider the server sets is a default this agent's pick replaces; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     approvals: { enum: ["ask", "never"], default: "ask", description: "Whether the agent's runs ask a person or run unattended. `ask`, the default: a tool set to ask parks the run for an approval, as its tool settings say. `never`: the agent runs unattended, and each tool that would ask is allowed instead, decided by the tool gate at each call, so a tool granted later and an MCP tool (`mcp:<server>/<tool>`, which asks by default) are covered on every harness. It never lifts a deny, whether set on this server or in the agent's own tool_settings, nor a pin, nor anything else the gate refuses before it decides between running and asking. A workflow's call node on a tool set to ask runs under `never`. Absent on a request: ask. An edit that leaves it out asks, so no edit makes an agent unattended by saying nothing. Every answer names it.", "x-agentrun-serve": "unattended/1" },
     learning: { oneOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: {
       compile_after: { type: "integer", minimum: 1, maximum: 200, default: 20, description: "The job compiles into a learned workflow once the agent has this many completed runs of its own." },
@@ -4831,6 +4871,17 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "/settings/webhook: one URL each of `events` is POSTed to, signed by the Standard Webhooks spec; its secret kept `sealed` under the seal key the server was handed, `unavailable` with none, when no webhook is set.",
       "x-agentrun-serve": "webhook/1",
     },
+    workspaces: {
+      type: "object", additionalProperties: false, required: ["header", "enforced", "required_for_tokens", "routes"],
+      properties: {
+        header: { const: "AgentRun-Workspace", description: "The request header that names a request's workspace: an opaque name, 1 to 128 letters, digits, `:`, `.`, `_` or `-`, sent with a server token." },
+        enforced: { type: "boolean", description: "Whether this server keeps workspaces apart: true on an API-only server (AGENTRUN_API_ONLY=1), where a request that names a workspace reaches that workspace's agents, runs, imported template packages and files alone, another workspace's reading as missing (404), and is refused any operation outside `routes` (403 not_scoped). False on any other server, which refuses the header (400). A proxy that forwards one tenant's requests checks this first, on each instance it sends to: a server of an earlier build ignores the header." },
+        required_for_tokens: { type: "boolean", description: "Whether a request without the header is refused (403) for some token: true when the server names the tokens that must send it (AGENTRUN_WORKSPACE_TOKENS). False when every token may leave it out, and a request without it is served every workspace's rows." },
+        routes: { type: "array", items: { type: "string" }, description: "The operationIds a request in a workspace is served, sorted." },
+      },
+      description: "Workspaces: how a backend in front of this server keeps each of its tenants to its own rows.",
+      "x-agentrun-serve": "workspaces/1",
+    },
     api_keys: {
       type: "object", additionalProperties: false, required: ["routes", "limit", "at_rest"],
       properties: { routes: { type: "boolean", description: "Whether this server serves the keys' routes: false on an API-only server, which has no owner to make one and takes no key." }, limit: { type: "integer", minimum: 1, description: "The most keys the server keeps at once." }, at_rest: { const: "hashed" } },
@@ -5033,6 +5084,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   }
   // email/1: the email read tools' scope, inside an agent's own tool settings (AGENT_TOOL_SETTINGS).
   fields.push(...SCOPED_TOOLS.map((name) => `DefinitionInput.tool_settings.${name}.scope`));
+  // agentjev/1: an agent's own Jev off on its web tools, inside its tool settings (AGENT_TOOL_SETTINGS).
+  fields.push(...JEV_TOOLS.map((name) => `DefinitionInput.tool_settings.${name}.jev`));
   // inlineagent/1: POST /runs' body, the run fields of POST /agents/{agent_id}/runs (RunCreate, as extended above) but a
   // pinned revision and a trigger firing (an inline agent has no trigger), with the agent given inline as POST /agents takes
   // one and its reference in the system that owns it.

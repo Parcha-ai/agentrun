@@ -4,7 +4,7 @@
 import { lookup as dnsLookup } from "node:dns";
 import type { LookupFunction } from "node:net";
 import type { Agent } from "undici";
-import { clip, TITLE_CAP } from "../page.js";
+import { clip, cutAt, TITLE_CAP } from "../page.js";
 import { defineProvider, type ProviderRun } from "../provider.js";
 import { bare, type Failure, type FailureClass, type Hit, type Limit, type Search, type SearchAsk, snippetOf } from "../search.js";
 import { type Called, callTool, RATE_LIMITED, sleep, textBlocks, type Words } from "./mcp.js";
@@ -23,7 +23,7 @@ const SAID_MAX = 120;
 function exaSaid(text: string): string {
   const line = text.split("\n").map((part) => part.trim()).find(Boolean) ?? "";
   const sentence = /^.*?[.!?](?=\s|$)/.exec(line)?.[0] ?? line;
-  const short = sentence.length <= SAID_MAX ? sentence : `${sentence.slice(0, SAID_MAX - 1).replace(/\s+\S*$/, "")}…`;
+  const short = sentence.length <= SAID_MAX ? sentence : `${cutAt(sentence, SAID_MAX - 1).replace(/\s+\S*$/, "")}…`;
   return short ? `Free web search failed. Exa said: "${short}"` : "Free web search failed: Exa gave no answer";
 }
 /** The `_meta` key Exa's MCP server marks a tool result reporting its free limit with (isError as well). */
@@ -85,6 +85,8 @@ function searchOf(called: Called, { objective, queries, n }: SearchAsk, rateLimi
   const said = textBlocks(result);
   if (!Array.isArray(result?.content) || result.isError === true) return typed("error", "FAILED", { error: exaSaid(said) });
   const hits = said.split(/\n-{3,}\n/).flatMap((section) => hitOf(section) ?? []);
+  // Text that names no result this server reads is a failure, never an answer of no results: the call goes on.
+  if (!hits.length && said.trim()) return typed("error", "UNREADABLE", { error: "Exa's search answered no results this server reads" });
   return { provider: "exa-keyless", objective, queries, results: hits.slice(0, n) };
 }
 
@@ -132,6 +134,7 @@ export const exaKeyless = defineProvider({ id: "exa-keyless", label: "Exa", keyl
     const found = await searchTyped(ask, { ...(send ? { send } : {}), ...(words ? { words } : {}), signal: deadline });
     if (!("failure" in found)) return { answer: found };
     const limit = "limit" in found ? exaLimitOf(found) : undefined;
-    return { answer: { error: found.error }, failure: found.failure, ...(limit ? { limit } : {}) };
+    // Its limit's words (RATE_LIMITED, or the caller's) are the model's: the breaker passes them on (Searched.worded).
+    return { answer: { error: found.error }, failure: found.failure, ...(limit ? { limit, worded: true as const } : {}) };
   },
 }));

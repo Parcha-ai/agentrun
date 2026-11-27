@@ -308,6 +308,21 @@ test("the learning rows' migration (0032) is breaking for runners: a schema migr
   assert.equal(runnerOn(state, ROWS), "opens", "this build's runner opens it");
 });
 
+// The ledger's re-record mark (0034) is breaking for runners, the workspace columns (0033) before it additive: the floor
+// this build's Postgres store holds is 0034, and a runner that knows only 0033 is refused.
+test("the reopened-run ledger mark (0034) is breaking, the workspace columns (0033) before it additive: this build's floor is 34", () => {
+  const all = migrationsIn();
+  const byName = (name) => all.find((m) => m.name === name);
+  assert.deepEqual([byName("workspace")?.version, byName("workspace")?.breaking], [33, false], "0033_workspace.sql, additive");
+  assert.deepEqual([byName("learning_ledger_rerecorded")?.version, byName("learning_ledger_rerecorded")?.breaking], [34, true], "0034_learning_ledger_rerecorded.sql, -- runners: breaking");
+  const latest = Math.max(...all.map((m) => m.version));
+  assert.equal(latest, 34);
+  const state = { version: latest, runnerFloor: floorAt(latest) };
+  assert.equal(state.runnerFloor, 34);
+  assert.equal(runnerOn(state, 33), "refused", "a runner that knows the workspace columns only");
+  assert.equal(runnerOn(state, 34), "opens", "this build's runner opens it");
+});
+
 test("on SQLite, this build's store is past the release before learning rows: its runner is refused, a later store's runner gets RunnerBelowFloor naming the floor, and an earlier store waits for its server", async (t) => {
   assert.ok(SCHEMA_VERSION > SQLITE_BEFORE_ROWS, `SCHEMA_VERSION (${SCHEMA_VERSION}) is past ${SQLITE_BEFORE_ROWS}, the version a runner before learning rows opens`);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-skew-sqlite-"));
@@ -340,7 +355,8 @@ test("a Postgres schema this build's server migrated through the learning rows r
   await migrate(sql, schema, Date.now(), migrationsIn().filter((m) => m.version < ROWS));
   const before = await runnerFloorOf(sql, schema);
   assert.equal(runnerOn(before, ROWS - 1), "opens", "the release before learning rows runs on its own schema");
-  await migrateTo(sql, schema, []);
+  // Through the learning rows only: a later breaking migration raises the floor past them.
+  await migrate(sql, schema, Date.now(), migrationsIn().filter((m) => m.version <= ROWS));
   const state = await runnerFloorOf(sql, schema);
   assert.equal(state.runnerFloor, ROWS, "the floor rose to the learning rows' migration");
   assert.throws(() => refuseBelowFloor(schema, state, ROWS - 1), (error) => error instanceof RunnerBelowFloor && error.floor === ROWS && error.message.includes(`must know version ${ROWS} or later`));

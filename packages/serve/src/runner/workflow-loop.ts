@@ -129,7 +129,7 @@ export interface WorkflowSpecRun {
   /** The claim's signal and LoopDeps.handBack: a renewal of the plan refused because the runner is closing hands the
    *  run back to resume (claim-secrets.ts). */
   readonly signal?: AbortSignal;
-  readonly handBack?: () => void;
+  readonly handBack?: () => Promise<void>;
 }
 
 /** Loops for workflow runs: `spec(claim)` gives each claim's run what it runs (its workflow, input, models and host). */

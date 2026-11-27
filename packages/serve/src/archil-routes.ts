@@ -37,7 +37,7 @@ import { archilWorkspace, spillFolderOf } from "./workspace/archil.js";
 import { agentDirName } from "./workspace/paths.js";
 import { WorkspaceError } from "./workspace/workspace.js";
 import { ARCHIL_API_KEY_ENV, archilApiKey } from "./workspace/archil-key.js";
-import { launchDiskProblem } from "./workspace/run-disk.js";
+import { launchDiskProblem, noDiskWords } from "./workspace/run-disk.js";
 
 /** The routes, by their operation names. */
 export const ARCHIL_ROUTES: ReadonlySet<string> = new Set(["getWorkspaceArchil", "putWorkspaceArchil", "deleteWorkspaceArchil", "testWorkspaceArchil", "getAgentArchil", "deleteAgentArchil"]);
@@ -256,16 +256,20 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
    *  not there, or not in the key's region, is 422 at `archil_disk.disk_id` in words naming the region; Mode 1, or no key,
    *  is 422 at `archil_disk`; Archil not reached (or refusing the key) is 503. The claim reads it again, for a disk
    *  removed in between. */
-  async function checkLaunchDisk(diskId: string, signal?: AbortSignal): Promise<void> {
+  async function checkLaunchDisk(diskId: string, signal?: AbortSignal, unseen = false): Promise<void> {
     const settings = await loadArchilSettings(store, env);
     if (settings === undefined) throw invalid([{ field: "archil_disk", reason: "not_allowed", message: "This server keeps run folders on its own disk (Mode 1): a run names an Archil disk only in Archil mode (PUT /v2/workspace/archil).", fix: "Remove archil_disk." }]);
     const key = await keyOr("input_invalid", "This server's Archil key can't be read to check the run's disk");
+    const on = control(settings, key);
     let problem: string | undefined;
     try {
-      problem = await launchDiskProblem(control(settings, key), diskId, signal ? { signal } : {});
+      problem = await launchDiskProblem(on, diskId, signal ? { signal } : {});
     } catch (error) {
       throw new ApiError("unavailable", `Archil could not be asked about the disk ${diskId}: ${describe(error).split(key).join("[the key]")}`);
     }
+    // A disk the caller may not name reads as one Archil does not have, asked all the same, so neither the words nor the
+    // wait tell it from a missing one.
+    if (unseen) problem = noDiskWords(diskId, on.region);
     if (problem !== undefined) throw invalid([{ field: "archil_disk.disk_id", reason: "not_an_option", message: problem }]);
   }
 

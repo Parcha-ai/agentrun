@@ -10,7 +10,11 @@
 //     release: the runner claims it once and holds that claim, starts its loop only once the first claim settled, and
 //     its first claim's end still says released;
 // (e) that reopened run's claim lost while it waits (its renews never land): its loop is never started, so no process
-//     takes the run's folders back from under the runner that holds it now.
+//     takes the run's folders back from under the runner that holds it now;
+// (f) that reopened run's rows reach its loop only once its loop started, and its first delivery hands them on: no poll
+//     or written-row delivery reaches the loop while the first claim settles (a run process's host answers { later }
+//     then, which moved the cursor past the reopen's row, and the adapter loop holds a steer until it opens, which let
+//     the first delivery answer at once with the row still on its way), so deps.delivered resolves with the row there.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -176,4 +180,60 @@ test("(e) a reopened run whose claim is lost while it waits for the first claim 
   await until(() => events.some((event) => event.type === "released" && event.epoch === first), "the first claim's end settles");
   await sleep(300);
   assert.equal(control.started, false, "a claim lost while it waited starts no loop");
+});
+
+test("(f) a reopened run's rows reach its loop only once it started, and its first delivery hands them on before deps.delivered", async (t) => {
+  const { server, runners: [store] } = await stores({ runners: 1 });
+  const record = recorder();
+  const loops = [];
+  // Claim 1 runs until `end()` commits the run's end. Claim 2 answers a row it gets before its start { later } (as a run
+  // process's host does before its process is up) and takes one it gets after; its start waits for deps.delivered.
+  const createLoop = (deps) => {
+    const loop = { started: false, before: [], after: [] };
+    loops.push(loop);
+    return {
+      start: (claim) => {
+        loop.started = true;
+        if (loops.length === 1) return new Promise((resolve) => (loop.end = async () => {
+          const journal = deps.journal(claim);
+          const end = await journal.mintId();
+          journal.stage({ run: { state: "ended" }, effect: end });
+          await commitWrites(journal, [{ type: "conversation", value: { id: 1 } }, { type: "entry", value: { id: end, conversationId: 1, kind: "message" } }], BACKGROUND_CONTEXT);
+          resolve({ state: "ended" });
+        }));
+        return deps.delivered.then(() => {
+          loop.atDelivered = [...loop.after];
+          return { state: "parked" };
+        });
+      },
+      command: async (row) => {
+        if (!loop.started) return (loop.before.push(row.id), { later: "the run's loop has not started" });
+        loop.after.push(row.id);
+        return { taken: true };
+      },
+      stop: async () => {},
+    };
+  };
+  const runner = startRunner({ store: observed(store, record), createLoop, name: "runner-a", ...TIMING });
+  t.after(() => runner.close());
+  await queue(server, "run-1");
+  await until(() => loops[0]?.started, "the loop runs");
+  let letRelease;
+  record.holdRelease = new Promise((resolve) => (letRelease = resolve));
+  t.after(() => letRelease());
+  await loops[0].end();
+  await until(() => releasedAt(record) !== undefined, "the first claim's release asked");
+
+  const reopened = await server.runs.reopen("run-1", { kind: "steer", body: { text: "go on" } });
+  await until(() => record.claims.length === 2, "the reopened run claimed");
+  // Polls (commandPollMs 20) and the reopen's written row both come due while the first claim is still letting go.
+  await sleep(300);
+  assert.equal(loops.length, 2, "the reopen's loop made");
+  assert.deepEqual(loops[1].before, [], "no row reaches a loop before its start");
+
+  letRelease();
+  await until(() => loops[1].atDelivered !== undefined, "the reopened run's loop past deps.delivered");
+  const rows = (await server.commands("run-1", 0)).filter((row) => row.kind === "steer").map((row) => row.id);
+  assert.ok(rows.length === 1, `the reopen wrote its steer: ${JSON.stringify(rows)} (${JSON.stringify(reopened)})`);
+  assert.deepEqual(loops[1].atDelivered, rows, "the reopen's steer had reached the loop when deps.delivered resolved");
 });

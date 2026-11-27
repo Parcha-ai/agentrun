@@ -275,6 +275,8 @@ interface Held {
   stopping: boolean;
   /** The first stop asked of the loop: a shutdown's release says the run was drained (run_attempts cut). */
   stoppedFor?: StopReason["kind"];
+  /** A hand-back under way (LoopDeps.handBack): its read of the run's untaken stop rows, then its stop. */
+  handingBack?: Promise<void>;
   /** start() has returned: the run's end (its sweep, flush and release) is under way. A Fenced answer now is no lost claim. */
   ending: boolean;
   /** The write that ends the run has landed (the loop's own end commit, or the runner's end of it): the claim is spent,
@@ -283,6 +285,12 @@ interface Held {
   /** No more of the claim is written: set once the end stops waiting for an in-flight delivery, before its sweep. */
   sealed: boolean;
   renewing: boolean;
+  /** The claim's first delivery has begun (hold): no delivery before it. A reopened run's claim waits for its earlier hold
+   *  to settle before its loop starts, while polls and written rows come due: a loop not started yet cannot take a row
+   *  (a run process's host answers { later }, which moves the cursor past it for the whole claim; the adapter loop holds a
+   *  steer until it opens, so the first delivery, finding one under way, answered at once and deps.delivered resolved with
+   *  a reopen's follow-up still on its way: the claim read it unsent, and a grade's words ran as a plain turn). */
+  opened: boolean;
   delivering: boolean;
   /** A command was written while a delivery was in flight: one more delivery follows its end. */
   deliverAgain: boolean;
@@ -596,7 +604,7 @@ export function startRunner(options: RunnerOptions): Runner {
    *  once the end has sealed the claim, an answer still to come is dropped: nothing written, nothing said. `given`: the
    *  rows the runner's one read of every run found for it (deliverAll), else it reads its own. */
   const deliver = (held: Held, given?: readonly Command[]): Promise<void> => {
-    if (held.delivering || held.stopping || held.ending || held.fence.lost || killed) return Promise.resolve();
+    if (!held.opened || held.delivering || held.stopping || held.ending || held.fence.lost || killed) return Promise.resolve();
     held.delivering = true;
     // Declared before it is assigned: its own finally reads it.
     let delivery: Promise<void> | undefined;
@@ -688,7 +696,7 @@ export function startRunner(options: RunnerOptions): Runner {
   const deliverAll = () => {
     if (!delivering()) return;
     void (async () => {
-      const due = [...runs.values()].filter((held) => !(held.delivering || held.stopping || held.ending || held.fence.lost));
+      const due = [...runs.values()].filter((held) => held.opened && !(held.delivering || held.stopping || held.ending || held.fence.lost));
       if (due.length === 0) return;
       try {
         const rows = await store.commandsOf(due.map((held) => ({ runId: held.claim.runId, after: held.cursor })));
@@ -1070,16 +1078,29 @@ export function startRunner(options: RunnerOptions): Runner {
         emit({ type: "refused", runId: held.claim.runId, commandId, reason });
       },
       redact,
-      // Only in a close, and once: the loop is stopped for a shutdown and its signal aborted, as at the drain's end, so
-      // the run is handed back (cut "drain") and its turn resumes on the next claim.
+      // Only in a close, and once (every reader that asks meanwhile waits on the one answer): a stop or cancel a person
+      // sent that no delivery has handed on yet is the run's end, read as the close reads it (closingEnds), since a loop
+      // stopping is handed no more rows and the close reads none for it. Else, or past it (a stop that keeps the run's
+      // computer), the loop is stopped for a shutdown and its signal aborted, as at the drain's end, so the run is handed
+      // back (cut "drain") and its turn resumes on the next claim.
       handBack: () => {
         const now = heldNow;
-        if (!closed || !now || now.ending || now.stopping || now.fence.lost) return;
-        stopLoop(now, { kind: "shutdown" });
-        now.abort.abort(new Error("the runner is closing"));
+        if (!closed || !now || now.ending || now.stopping || now.fence.lost) return now?.handingBack ?? Promise.resolve();
+        now.handingBack ??= (async () => {
+          const end = (await closingEnds([now])).get(now.claim.runId);
+          if (now.ending || now.stopping || now.fence.lost) return;
+          if (end) {
+            now.cursor = Math.max(now.cursor, end.id);
+            stopLoop(now, { kind: "command", commandId: end.id, ...(end.kind === "cancel" ? { cancel: true as const } : {}) });
+            if (now.stopping) return;
+          }
+          stopLoop(now, { kind: "shutdown" });
+          now.abort.abort(new Error("the runner is closing"));
+        })();
+        return now.handingBack;
       },
     });
-    const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, delivering: false, deliverAgain: false, mib, ...(learningDeadline !== undefined && pastDeadline ? { learningDeadline, pastDeadline } : {}) };
+    const held: Held = { passed: new Set(), claim, loop, fence, abort, cursor: 0, stopping: false, ending: false, landed: false, sealed: false, renewing: false, opened: false, delivering: false, deliverAgain: false, mib, ...(learningDeadline !== undefined && pastDeadline ? { learningDeadline, pastDeadline } : {}) };
     heldNow = held;
     // The loop's own end landed: the run is ending from here, its teardown included (no renew, no lost claim).
     ending = () => {
@@ -1113,8 +1134,13 @@ export function startRunner(options: RunnerOptions): Runner {
       await finish(held, end, threw);
     })();
     // The claim's first delivery, after its loop started: deps.delivered resolves once it has handed on every untaken row
-    // it read.
-    void (settled ? settled.then(() => deliver(held)) : deliver(held)).finally(firstDelivered);
+    // it read. It opens the claim to deliveries (deliver): none reaches the loop before, so the first is the only one
+    // under way and reads every row written until then itself, a reopen's included.
+    const first = () => {
+      held.opened = true;
+      return deliver(held);
+    };
+    void (settled ? settled.then(first) : first()).finally(firstDelivered);
   };
 
   /** The claims this runner holds in the store, read back after a commit was answered Unanswered (it may have landed):

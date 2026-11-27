@@ -84,9 +84,9 @@ async function fakeGitHub(t) {
 
 /** The runner's answers for claim run-own (agent-own, rev-own) of `revision` and `launch`, over `store`; `login` the
  *  login its claim read (staysInRunner), `cut` the runner's redactor for the run. */
-function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } }, login, cut = heldRedactor((text) => text) } = {}, lines = []) {
+function heldOf(store, { env = {}, githubApi, data = "/nonexistent-data", revision = { kind: "agentic", body: {} }, launch = { input: { content: "Hello." } }, login, claimed = {}, back, cut = heldRedactor((text) => text) } = {}, lines = []) {
   const deps = { store, sealKey: KEY, env, data, ...(githubApi ? { githubApi } : {}) };
-  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision, claimed: {}, ...(login ? { login } : {}) };
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch, revision, claimed, ...(login ? { login } : {}), ...(back ?? {}) };
   return host.heldFor(deps, reads, cut, (line) => void lines.push(line)).held;
 }
 
@@ -208,6 +208,41 @@ test("a run that sends no model key (a --faux runner's, a faux-pinned one, a hel
       assert.deepEqual([tiers, learned], [{}, {}], `${where}: no key at all for its tiers`);
     }
   }
+});
+
+// The shipped default runs each run in a process of its own: every plan reader that process is handed (the claim's, a
+// learned workflow tier's) is wrapped with the run's hand-back as it crosses (handed), since the readers the host reads
+// with carry none of their own.
+test("in a run's own process, the claim's plan reader and a learned workflow tier's hand the run back on a stop refusal, and OpenAI is sent nothing", async (t) => {
+  const { store } = await storeOn(t);
+  const { PlanStopping, stopRenewals, withPlan } = await import("../dist/chatgpt-plan.js");
+  // A sign-in whose token has ended, under a store whose stop began: any renewal is refused with PlanStopping.
+  const credential = { type: "oauth", access: "plan-access-ended", refresh: "plan-refresh-ended", expires: Date.now() - 1_000 };
+  await putSealedKey(store, KEY, "chatgpt:plan", JSON.stringify({ v: 1, state: "signed_in", credential, models: ["gpt-6-luna"] }));
+  await stopRenewals(store);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-child-held-handback-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const sha = await landWorkflows(store, "agent-own", [{ name: "on-strong", description: "Answers a question", workflow: strongFlow }]);
+  await promoteChecked(store, "agent-own", [{ name: "on-strong", workflow: strongFlow }]);
+  const refusing = { state: "signed_in", models: ["gpt-6-luna"], token: async () => { throw new PlanStopping("try again in a moment"); }, refused: async () => undefined, watch: () => () => undefined };
+  const backed = () => {
+    const abort = new AbortController();
+    const reason = new Error("the runner is closing");
+    const out = { handed: 0, reason };
+    out.back = { handBack: () => (out.handed++, abort.abort(reason)), signal: abort.signal };
+    return out;
+  };
+  const claim = backed();
+  const own = await heldOf(store, { claimed: withPlan({}, refusing), back: claim.back }).plan();
+  await assert.rejects(own.token(), (error) => error === claim.reason, "the claim's reader: the node ends with the run's abort");
+  assert.equal(claim.handed, 1, "the claim's reader hands the run back once");
+  const tier = backed();
+  const learner = heldOf(store, { env: { AGENT_MODEL_STRONG: "chatgpt/gpt-6-luna" }, data, launch: { input: { content: "Hello." }, learning: startAt(sha) }, back: tier.back });
+  assert.deepEqual((await learner.learnedFirst({ laid: true })).workflows.map(({ name }) => name), ["on-strong"]);
+  const { plan } = await learner.tierModelKeys(["strong"]);
+  assert.ok(plan, "the strong tier's model is on the plan, so its answer carries the sign-in");
+  await assert.rejects(plan.token(), (error) => error === tier.reason, "a learned tier's reader: the node ends with the run's abort");
+  assert.equal(tier.handed, 1, "a learned tier's reader hands the run back once");
 });
 
 test("a run's process gets no decision or tier key its claim's learned workflows do not name: none before the runner chose them, and of those only the named", async (t) => {

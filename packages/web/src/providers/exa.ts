@@ -2,10 +2,9 @@
 // (fees.ts exaFeeOf) through the run's Pay, on the x-api-key header. Its settings are typed, each with a default
 // (EXA_DEFAULTS); a setting it does not take is refused when the Web is made. A 401 or 403 refuses the key for the run.
 import { EXA_SEARCH_TYPE_USD, type ExaSearchType, exaFeeOf, type Pay } from "../fees.js";
-import { clip, linksWithin, MAX_CHARS_MIN, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, textOf, URL_MAX, withoutCredentials } from "../page.js";
+import { clip, MAX_CHARS_MIN, PAGE_READ_MAX_CHARS, type Read, TITLE_CAP, URL_MAX, withoutCredentials, writtenRead } from "../page.js";
 import { failed, failure, type Hit, type Searched, SNIPPET_MAX, searchArgs, searchFailed, snippetOf } from "../search.js";
 import { defineProvider, type ProviderRun, settingsOf } from "../provider.js";
-import { linksOf } from "../text-urls.js";
 import { type Check, codeOf, domains, type Keyed, keyedCall, keyedClient, type KeyedFailed, oneOf, settingsProblems, wholeIn, yesNo } from "./keyed.js";
 
 export const EXA_API_URL = "https://api.exa.ai";
@@ -121,7 +120,7 @@ export async function exaRead(url: string, client: Keyed | null, settings: ExaSe
   if (!row) return failed("not_text", "NO_TEXT", "Exa's fetch answered no page text");
   const asked = PAGE_READ_MAX_CHARS + 1;
   // The page's url names no user name or password: cleared first, then cut, as every client's page url is.
-  return { ok: true, url: clip(withoutCredentials(typeof row.url === "string" && URL.canParse(row.url) ? row.url : url), URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...textOf(row.text, row.text.length < asked), ...linksWithin(linksOf(row.text)) };
+  return { ok: true, url: clip(withoutCredentials(typeof row.url === "string" && URL.canParse(row.url) ? row.url : url), URL_MAX), status: 200, title: clip(typeof row.title === "string" ? row.title : "", TITLE_CAP), ...writtenRead(row.text, row.text.length < asked) };
 }
 
 /** Exa on the run's key, both tools on one client. Its search keeps the caller's signal and its own bound (a paid request
@@ -135,7 +134,7 @@ export const exa = defineProvider(
     return {
       search: (ask, _deadline, signal) => exaSearched(ask, client, asked, signal),
       read: (url, { signal }) => exaRead(url as string, client, asked, signal),
-      unready: () => (client && !client.live() ? failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run") : undefined),
+      unready: () => (!client ? failure("refused", "NO_KEY", "not tried: this run holds no Exa key") : client.live() ? undefined : failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run")),
     };
   },
 );

@@ -57,7 +57,7 @@ import { booksDecisions, decisionsOverStore, parallelChargedDecisions } from "./
 import { type BookedSpend, bookedDecisionsOf, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, endCostOf, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, pathViewOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
+import { laidOf, pathViewOf, type RunAllIn, runAllInOf, runLearningEnd, runOwnOverStore, usedOnly } from "./store-reads/learning.js";
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { correctionCount } from "./learn/corrections.js";
 import { forgetServedAnswers, isCliRecord, rowCutsOnce, servedSince, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
@@ -364,7 +364,7 @@ const waitingMessage = (command: Command): boolean => command.kind === "steer" &
  *  end: completed (or as its job ended), its answer, its end time, its learning reflecting, while its runner still holds
  *  it. A person's message waiting (not taken yet) makes it a run going on again, as a completed run a message opens again
  *  reads: its end is the message's turn's to write. */
-async function lookingBackOf(stored: RunRow, entries: Awaited<ReturnType<typeof journalRecords>>["entries"], commands: () => Promise<readonly Command[]>): Promise<KeptEnd | undefined> {
+export async function lookingBackOf(stored: RunRow, entries: Awaited<ReturnType<typeof journalRecords>>["entries"], commands: () => Promise<readonly Command[]>): Promise<KeptEnd | undefined> {
   if (stored.state !== "running") return undefined;
   const rows = await commands();
   const kept = keptEndOf(entries, rows);
@@ -692,6 +692,21 @@ export async function toolsUsdOverStore(store: Store, runId: string): Promise<nu
   const parallel = booksDecisions(entries) ? parallelChargedDecisions(await decisionsOverStore(store, runId, BACKGROUND_CONTEXT)) : new Set<string>();
   const words = costWordsOf([bookedSpend(entries, "paid"), ...(parallel.size ? [bookedDecisionsOf(entries, parallel)] : [])]);
   return words.upper_bound ? null : words.usd;
+}
+
+/** Run `runId`'s costs as GET /runs/{id} reads them (server.ts allInViewOf): its path and figures (`all`,
+ *  store-reads/learning.ts runAllInOverStore; undefined for an unknown run) with `own`, the cost its view read, and its
+ *  `tools_usd` (toolsUsdOverStore). The run's own reads (runOwnOverStore: its row, its ledger row) and its journal are in
+ *  one snapshot of the store: a follow-up that opens the run again between the two reads never puts its paid calls
+ *  beside the previous end's `usd` (run-usage.ts reads a run's lines the same way). A served run's share of its
+ *  revision's spend is read after, over the agent's ledger (runAllInOf), so the snapshot, which holds SQLite's one
+ *  connection, never grows with the agent's runs. */
+export async function runCostOverStore(store: Store, runId: string, own: number | null): Promise<{ all: RunAllIn | undefined; tools_usd: number | null }> {
+  const read = await store.snapshot(async (snapshot) => {
+    const mine = await runOwnOverStore(snapshot, runId, own);
+    return { mine, tools_usd: mine ? await toolsUsdOverStore(snapshot, runId) : null };
+  });
+  return { all: read.mine && (await runAllInOf(store, read.mine)), tools_usd: read.tools_usd };
 }
 
 /** How a run's cost was reached (metrics.ts CostBasis): by how its model requests were priced, as its booking says, while

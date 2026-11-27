@@ -429,10 +429,12 @@ export interface components {
       web_fetch?: {
         provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       };
       web_search?: {
         provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       };
       web_save?: {
         permission?: "allow" | "ask" | "deny";
@@ -506,9 +508,11 @@ export interface components {
       } | {
         provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       } | {
         provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       } | {
         permission?: "allow" | "ask" | "deny";
         scope?: "thread" | "mailbox";
@@ -652,6 +656,12 @@ export interface components {
       events: ("run.needs_input" | "run.ended" | "trigger.failed")[];
       signing: "standard-webhooks/v1";
       at_rest: "sealed";
+    };
+    workspaces?: {
+      header: "AgentRun-Workspace";
+      enforced: boolean;
+      required_for_tokens: boolean;
+      routes: string[];
     };
     api_keys?: {
       routes: boolean;
@@ -3404,6 +3414,26 @@ export interface operations {
   getOpenapi: {
     body: never;
     answer: Record<string, unknown>;
+  };
+  getPrices: {
+    body: never;
+    answer: {
+      compute: {
+        provider: string;
+        resource: "vcpu" | "memory" | "gpu" | "disk";
+        gpu_type: string | null;
+        unit: "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
+        usd: string | null;
+        source: "setting" | "list" | "unpriced";
+      }[];
+      browser: {
+        provider: string;
+        unit: "hour";
+        usd: string | null;
+        minimum_s: number;
+        source: "setting" | "list" | "unpriced";
+      }[];
+    };
   };
   getRevisionSkills: {
     body: never;

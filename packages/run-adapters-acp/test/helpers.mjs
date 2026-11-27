@@ -84,8 +84,9 @@ export function tool(name, run, replay = 'never') {
 }
 
 /** A session of `recipe` on `store` (default a new in-memory one) under key s1, its events collected. `adapter`: one
- *  already made (Cursor's own, on its real binary), in place of an ACP adapter of `recipe`. */
-export async function openSession(t, recipe, { store = memorySessionStore(), tools = [], gate, sessionsDir, system = [], options = {}, signal, adapter: made } = {}) {
+ *  already made (Cursor's own, on its real binary), in place of an ACP adapter of `recipe`. `cwd`: the
+ *  session's work directory (the drive's), in place of one in its own folder. */
+export async function openSession(t, recipe, { store = memorySessionStore(), tools = [], gate, sessionsDir, system = [], options = {}, signal, adapter: made, cwd } = {}) {
   const { countFile: _, ...plain } = recipe ?? {};
   const adapter = made ?? acpAdapter({ recipe: plain, sessionsDir: sessionsDir ?? join(scratch(), 'sessions'), ...options });
   const events = [];
@@ -96,6 +97,7 @@ export async function openSession(t, recipe, { store = memorySessionStore(), too
     signal: signal ?? controller.signal,
     onEvent: (event) => events.push(event),
     ...(gate ? { gate } : {}),
+    ...(cwd ? { cwd } : {}),
   };
   const session = await adapter.open({ key: 's1', label: 'root', system, tools, context: 'fresh' }, io);
   t.after(() => session.close());

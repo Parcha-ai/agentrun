@@ -218,10 +218,12 @@ export type DefinitionInput = {
     web_fetch?: {
       provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
       permission?: "allow" | "ask" | "deny";
+      jev?: "off";
     };
     web_search?: {
       provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
       permission?: "allow" | "ask" | "deny";
+      jev?: "off";
     };
     web_save?: {
       permission?: "allow" | "ask" | "deny";
@@ -1400,6 +1402,12 @@ export type Features = {
     events: Array<"run.needs_input" | "run.ended" | "trigger.failed">;
     signing: "standard-webhooks/v1";
     at_rest: "sealed";
+  };
+  workspaces?: {
+    header: "AgentRun-Workspace";
+    enforced: boolean;
+    required_for_tokens: boolean;
+    routes: Array<string>;
   };
   api_keys?: {
     routes: boolean;
@@ -3576,6 +3584,25 @@ export type GetModelGatewayResponse = {
     changed_at: string | null;
   };
   problem: string | null;
+};
+
+/** The prices this server meters computer time and browser time at, with where each comes from (GET /settings/prices). */
+export type GetPricesResponse = {
+  compute: Array<{
+    provider: string;
+    resource: "vcpu" | "memory" | "gpu" | "disk";
+    gpu_type: string | null;
+    unit: "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
+    usd: string | null;
+    source: "setting" | "list" | "unpriced";
+  }>;
+  browser: Array<{
+    provider: string;
+    unit: "hour";
+    usd: string | null;
+    minimum_s: number;
+    source: "setting" | "list" | "unpriced";
+  }>;
 };
 
 /** One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id}). */
@@ -7824,6 +7851,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getGitHubConnection: {"method":"GET","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getLocalModel: {"method":"GET","path":"/settings/local-model","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getModelGateway: {"method":"GET","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getPrices: {"method":"GET","path":"/settings/prices","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getSuggestion: {"method":"GET","path":"/suggestions/{suggestion_id}","pathParams":["suggestion_id"],"multiSegment":[],"query":["name"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getWorkspaceArchil: {"method":"GET","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gitHubCallback: {"method":"GET","path":"/integrations/github/callback","pathParams":[],"multiSegment":[],"query":["code","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -8147,6 +8175,8 @@ export function resources(call: Call) {
       getLocalModel: (options?: RequestOptions): Promise<GetLocalModelResponse> => call("getLocalModel", [], undefined, undefined, options),
       /** The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway). */
       getModelGateway: (options?: RequestOptions): Promise<GetModelGatewayResponse> => call("getModelGateway", [], undefined, undefined, options),
+      /** The prices this server meters computer time and browser time at, with where each comes from (GET /settings/prices). */
+      getPrices: (options?: RequestOptions): Promise<GetPricesResponse> => call("getPrices", [], undefined, undefined, options),
       /** One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id}). */
       getSuggestion: (suggestionId: string, params?: GetSuggestionParams, options?: RequestOptions): Promise<GetSuggestionResponse> => call("getSuggestion", [suggestionId], undefined, params, options),
       /** Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil). */
