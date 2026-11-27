@@ -798,6 +798,149 @@ const CASES = [
       exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text])),
     }));
   })(),
+  // A terminal sequence shows as nothing where a terminal or a log viewer renders it: a held value split by one reads
+  // whole there, so it withholds the text, whether the sequence is a CSI (ESC "[", parameters, intermediates, a final
+  // byte: a colour, a cursor move, a private mode), an OSC (ESC "]" to a BEL or ESC and a backslash: a title, a hyperlink), the
+  // 8-bit CSI and OSC (U+009B, U+009D, to U+009C), or a two-character escape (ESC "7", ESC "(" "B"), as it stands, in a
+  // JSON string (once, and twice), as JSON's \u escape in prose, as Python's \x escape in a single-quoted dict,
+  // percent-encoded, as an HTML character reference, and before each of the value's characters. So does a backspace
+  // that strikes a character out: the terminal shows what comes after it in its place.
+  ...(() => {
+    const [H, R] = P24;
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const E = "\u001b";
+    return [
+      ["a CSI colour reset as it stands", `x ${H}${E}[0m${R} y`],
+      ["a CSI colour with parameters as it stands", `x ${H}${E}[1;38;5;196m${R} y`],
+      ["a CSI private mode as it stands", `x ${H}${E}[?25l${R} y`],
+      ["a CSI with an intermediate byte as it stands", `x ${H}${E}[2 q${R} y`],
+      ["an OSC title ended by a BEL", `x ${H}${E}]0;build log \u0007${R} y`],
+      ["an OSC hyperlink ended by ESC and a backslash", `x ${H}${E}]8;;https://example.test/a${E}\\${R} y`],
+      ["an 8-bit CSI", `x ${H}\u009b31m${R} y`],
+      ["an 8-bit OSC ended by U+009C", `x ${H}\u009d0;title\u009c${R} y`],
+      ["a two-character escape", `x ${H}${E}7${R} y`],
+      ["a character set designation", `x ${H}${E}(B${R} y`],
+      ["a CSI colour in a JSON string", JSON.stringify({ note: `see ${H}${E}[31m${R} more` })],
+      ["a CSI colour in JSON written in a JSON string", JSON.stringify({ out: JSON.stringify({ note: `see ${H}${E}[31m${R} more` }) })],
+      ["a CSI colour as JSON's \\u escape in prose", `x ${H}\\u001b[0m${R} y`],
+      ["a CSI colour as Python's \\x escape in a single-quoted dict", `{'a': 'see ${H}\\x1b[0m${R} more'}`],
+      ["a CSI colour percent-encoded", `x ${H}%1B%5B0m${R} y`],
+      ["a CSI colour with its ESC as an HTML character reference", `x ${H}&#x1b;[0m${R} y`],
+      ["a CSI colour before each of its characters", `v=${[...H, ...R].map((char, i) => `${E}[3${i % 8}m${char}`).join("")}${E}[0m ok`],
+      ["a backspace striking out a character", `x ${H}Z\b${R} y`],
+      ["two backspaces striking out two characters", `x ${H}__\b\b${R} y`],
+    ].map(([what, text]) => ({ name: `a held value split by a terminal sequence, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
+  // A terminal ignores a NUL or a DEL inside a sequence and runs any other C0 control there (a backspace moves back)
+  // without ending the sequence; CAN (U+0018) or SUB (U+001A) aborts it, and it shows as nothing. A control a view
+  // drops, as it stands or as a view decodes it, takes no place on screen either: a backspace after it strikes out the
+  // character before it. A held value split by any of these withholds the text.
+  ...(() => {
+    const [H, R] = P24;
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const E = "\u001b";
+    return [
+      ["a NUL inside a CSI colour as it stands", `x ${H}${E}[0\u0000m${R} y`],
+      ["a NUL inside a CSI colour in a JSON string", JSON.stringify({ note: `see ${H}${E}[0\u0000m${R} more` })],
+      ["a NUL inside a CSI colour, percent-encoded", `x ${H}%1B%5B0%00m${R} y`],
+      ["a NUL inside a CSI colour as Python's \\x escape in a single-quoted dict", `{'a': 'see ${H}\\x1b[0\\x00m${R} more'}`],
+      ["a U+0001 inside a CSI colour", `x ${H}${E}[0\u0001m${R} y`],
+      ["a DEL inside a CSI colour", `x ${H}${E}[0\u007fm${R} y`],
+      ["a NUL inside an OSC title ended by a BEL", `x ${H}${E}]0;build\u0000 log\u0007${R} y`],
+      ["a CSI aborted by a CAN", `x ${H}${E}[0\u0018${R} y`],
+      ["a CSI aborted by a SUB", `x ${H}${E}[1;3\u001a${R} y`],
+      ["a backspace inside a CSI, striking out the character before it", `x ${H}Z${E}[0\bm${R} y`],
+      ["a backspace after a NUL, striking out the character before the NUL", `x ${H}Z\u0000\b${R} y`],
+      ["a backspace after a zero-width space, striking out the character before it", `x ${H}Z\u200b\b${R} y`],
+      // A character that shows as a blank or a box takes a cell, though the views drop it: two backspaces strike out it
+      // and the character before it.
+      ["two backspaces after a braille blank", `x ${H}Z\u2800\b\b${R} y`],
+      ["two backspaces after a space", `x ${H}Z \b\b${R} y`],
+      ["two backspaces after a no-break space", `x ${H}Z\u00a0\b\b${R} y`],
+      ["two backspaces after a private use character", `x ${H}Z\ue000\b\b${R} y`],
+      ["two backspaces after U+FFFE", `x ${H}Z\ufffe\b\b${R} y`],
+      // A printable character past ASCII inside a CSI does not end it: the terminal ignores the rest to its final byte.
+      ["a CSI colour with a character past ASCII inside", `x ${H}${E}[0\u00e9m${R} y`],
+      ["a CSI colour with a braille blank inside", `x ${H}${E}[0\u2800m${R} y`],
+    ].map(([what, text]) => ({ name: `a held value split by a terminal sequence, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
+  // Normalization reads past a terminal control as a reader does: a held value with a precomposed Hangul syllable, its
+  // conjoining jamo split by a BEL (dropped, as any control is) or by a CSI colour (gone on screen), withholds the text.
+  // A backspace strikes out a whole character: one past U+FFFF (a surrogate pair) goes with both halves. Jamo split by a
+  // backspace read whole where it is dropped, as before terminal readings.
+  ...(() => {
+    const [H, R] = P24;
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const syllable = `${H}가${R}`;
+    return [
+      { what: "conjoining jamo split by a BEL, the value precomposed", text: `x ${H}ᄀ\u0007ᅡ${R} y`, value: syllable },
+      { what: "conjoining jamo split by a CSI colour, the value precomposed", text: `x ${H}ᄀ\u001b[0mᅡ${R} y`, value: syllable },
+      { what: "a backspace striking out a character past U+FFFF", text: `x ${H}\u{10400}\b${R} y`, value: P24.join("") },
+      { what: "two backspaces striking out a character past U+FFFF and the one before it", text: `x ${H}Z\u{10400}\b\b${R} y`, value: P24.join("") },
+      // On screen the backspace strikes out the first jamo; with it dropped as a control, the jamo compose.
+      { what: "conjoining jamo split by a backspace, the value precomposed", text: `x ${H}\u1100\b\u1161${R} y`, value: syllable },
+    ].map(({ what, text, value }) => ({ name: `a held value read across a terminal control, ${what}, withholds the text`, text, values: [value], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+  })(),
+  // Controls: coloured output with no held value shows as it came; a held value coloured whole is cut in place, its
+  // colours kept; a backspace that strikes out a held value's own character leaves no held value on screen and shows as
+  // it came; and a held value split by an ESC and a letter it would read as no sequence's (as the views read any lone
+  // control) still withholds the text.
+  ...(() => {
+    const [H, R] = P24;
+    const V = P24.join("");
+    const E = "\u001b";
+    const ls = `${E}[0m${E}[01;34mbin${E}[0m  ${E}[01;32mrun.sh${E}[0m  ${E}[01;31mdata.tar.gz${E}[0m \n`;
+    const same = (text) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text]));
+    const coloured = `${E}[31m${V}${E}[0m done`;
+    const cut = `${E}[31m[redacted]${E}[0m done`;
+    return [
+      { name: "coloured output with no held value shows as it came (control)", text: ls, values: [V], hides: [], exact: same(ls) },
+      { name: "a held value coloured whole is cut in place, its colours kept (control)", text: coloured, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: { redacted: cut, redactedAnswer: cut, redactSecrets: cut, runFile: cut } },
+      { name: "a backspace striking out the last character of a held value's head, its rest after, shows as it came (control)", text: `x ${H}\b${R.slice(0, 4)}zzzz y`, values: [V], hides: [], exact: same(`x ${H}\b${R.slice(0, 4)}zzzz y`) },
+      { name: "a held value split by an ESC and its rest's first letter withholds the text (control)", text: `x ${H}${E}${R} y`, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])) },
+    ];
+  })(),
+  // More characters that show as a box, a blank or nothing: U+FFFE, the interlinear annotation characters
+  // (U+FFF9-FFFB), the noncharacters U+FDD0-FDEF, private use (U+E000-F8FF), the braille blank (U+2800, which shows as
+  // a space and is no whitespace), and a lone surrogate. Between a held value's halves each hides it from no view: as it
+  // stands, in a JSON string as JSON.stringify writes it (a lone surrogate as its \u escape), as JSON's \u escape in
+  // prose, percent-encoded and as an HTML character reference where it has those forms, and between each of the value's
+  // characters, it withholds the text.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const all = Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"]));
+    const hex4 = (code) => code.toString(16).padStart(4, "0");
+    return [0xfffe, 0xfff9, 0xfffa, 0xfffb, 0xfdd0, 0xfdef, 0xe000, 0xf8ff, 0x2800, 0xd800, 0xdbff, 0xdc00, 0xdfff].flatMap((code) => {
+      const char = String.fromCharCode(code);
+      const at = `U+${hex4(code).toUpperCase()}`;
+      const lone = code >= 0xd800 && code <= 0xdfff;
+      return [
+        [`${at} as it stands`, `x ${H}${char}${R} y`],
+        [`${at} in a JSON string as JSON.stringify writes it`, JSON.stringify({ note: `see ${H}${char}${R} more` })],
+        [`${at} as JSON's \\u escape in prose`, `x ${H}${B}u${hex4(code)}${R} y`],
+        [`${at} between each of its characters`, `v=${[...H, ...R].join(char)} ok`],
+        // A lone surrogate has no UTF-8 bytes, and a browser reads its reference as U+FFFD, which shows.
+        ...(lone ? [] : [[`${at} percent-encoded`, `x ${H}${encodeURIComponent(char)}${R} y`], [`${at} as an HTML character reference`, `x ${H}&#x${hex4(code)};${R} y`]]),
+      ].map(([what, text]) => ({ name: `a held value split by a character that shows as a box or a blank, ${what}, withholds the text`, text, values: [P24.join("")], hides: [H.slice(0, 8), R.slice(0, 8)], exact: all }));
+    });
+  })(),
+  // Controls: a character past U+FFFF (two surrogates, as they stand or as two \u escapes) is no lone surrogate: a
+  // held value holding one is cut in place whole, and a text of such characters, private use characters and braille
+  // with no held value shows as it came.
+  ...(() => {
+    const [H, R] = P24;
+    const B = String.fromCharCode(92);
+    const V = `${H}\u{1F600}${R}`;
+    const same = (text) => Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, text]));
+    const plain = `x ${V} y`;
+    const words = `see \u{1F600} and \uE000\uF8FF in \u2801\u2803\u2800\u2809 done`;
+    return [
+      { name: "a held value holding a character past U+FFFF is cut in place whole (control)", text: plain, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: { redacted: "x [redacted] y", redactedAnswer: "x [redacted] y", redactSecrets: "x [redacted] y", runFile: "x [redacted] y" } },
+      { name: "a held value holding a character past U+FFFF, written as two \\u escapes in prose, withholds the text (control)", text: `x ${H}${B}ud83d${B}ude00${R} y`, values: [V], hides: [H.slice(0, 8), R.slice(0, 8)], exact: Object.fromEntries(Object.keys(ENTRIES).map((name) => [name, "[redacted]"])) },
+      { name: "a text of characters past U+FFFF, private use characters and braille, with no held value, shows as it came (control)", text: words, values: [P24.join("")], hides: [], exact: same(words) },
+    ];
+  })(),
   // U+FFFF, a noncharacter, shows as a box at most, so a reader still reads a held value split by one: as it stands, in
   // a JSON string (JSON.stringify keeps it as it is; once, and twice: JSON in JSON), as JSON's \uffff escape in prose
   // and in a JSON string, percent-encoded (its UTF-8 bytes), as an HTML character reference, and between each of the
@@ -1373,6 +1516,10 @@ const adversarial = (size) => {
     f("\u0000"), f("a\u0001"), f("\u007f\u0085"), f(`${B}u0000`), f(`${B}${B}u001f`), f(`'a${B}x01`), f("%00%C2%85"), f("&#1;&#x7f;"), f('"a\u0000",'),
     // U+FFFF, which the views drop in the text and keep only as a join's separator: as it stands, between letters and
     // inside JSON strings, escaped, percent-encoded, as a reference.
+    // Terminal sequences: CSIs back to back, opened and never closed, OSCs never ended, ESCs alone, backspaces.
+    f("\u001b[0m"), f("a\u001b[1;31m"), f("\u001b["), f("\u001b[1;"), f("\u001b]0;t"), f("\u001b]0;t\u0007"), f("\u001b"), f("a\b"), f("\b"), f("\u009b1"), f("\u009d0;"), f(`${B}u001b[0m`), f("%1B[0m"), f("&#27;[0m"),
+    // Characters that show as a box or a blank, as they stand, escaped (a lone surrogate too), and a pair whole.
+    f("\ufffe"), f("a\ufff9"), f("\ufdd0\ue000"), f("\u2800"), f("\ud800"), f("a\udc00"), f(`${B}ud800`), f("\u{1F600}"),
     f("\uffff"), f("a\uffff"), f('"a\uffff",'), f(`${B}uffff`), f("%EF%BF%BF"), f("&#xffff;"),
   ];
   return [
@@ -1406,6 +1553,9 @@ const adversarial = (size) => {
     // finds glued together, each still cut in place.
     { text: f(`${DENSE}\u0000`), values: [DENSE] },
     { text: f(`${DENSE}\uffff`), values: [DENSE] },
+    { text: f(`${DENSE}\ud800`), values: [DENSE] },
+    { text: f(`${DENSE}\u001b[0m`), values: [DENSE] },
+    { text: f(`${DENSE}Z\b`), values: [DENSE] },
     { text: f(`"${DENSE}\uffff",`), values: [DENSE] },
     { text: f(`${TWO_LINES.join("\n")}\n`), values: [TWO_LINES.join("\n")] },
     { text: f(`${RSA_PEM}\n`), values: [RSA_PEM] },
@@ -1596,6 +1746,20 @@ test("adversarial texts: the characters the whole pipeline visits are at most WO
   }
   t.diagnostic(`the most a text read whole grew per character from 32 KiB to 512 KiB: ${growth.rise.toFixed(2)}, ${growth.where}`);
   assert.deepEqual({ over, grown }, { over: [], grown: [] });
+});
+
+// Malformed JSON nested as deep as the text, past a call's stop: every name opens another object or array, so the text
+// holds names and no value, and two of the views the read past the stop walks show none of a piece of it. That read
+// gives up there and the call's result is withheld whole; before the read counted what each view shows, it showed the
+// first CALL_RESULT_CHARS. It fails closed whatever the read's budget (with none, a view still shows fewer characters
+// than the read needs in a piece): withheld, not shown, pinned as it is now, so a change either way is seen.
+test("malformed JSON nested as deep as the text, past a call's stop, is withheld whole: '{\"a\":' and '[{\"a\":[' at 128 KiB and 512 KiB", () => {
+  const shown = [];
+  for (const unit of ['{"a":', '[{"a":[']) for (const size of [128 * 1024, 512 * 1024]) {
+    const out = ENTRIES.redactedCall(fill(unit, size), [CUT_KEY]);
+    if (out !== "[redacted]") shown.push(`${unit} at ${size}: ${out.length} characters`);
+  }
+  assert.deepEqual(shown, []);
 });
 
 // A text of very many shape finds, read whole (no byte bound, as learning's compile reads a previous answer): its finds

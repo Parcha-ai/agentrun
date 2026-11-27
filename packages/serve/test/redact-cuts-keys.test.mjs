@@ -169,14 +169,15 @@ test("texts and held values that differ only in a lone surrogate are kept apart:
     assert.equal(cutPasses.count - before, 0, `kept text ${i} is read from what was kept`);
   }
   // The held set's key is the values' JSON, where a lone surrogate is escaped as written: two sets that differ only in
-  // one miss each other.
+  // one miss each other. A lone surrogate shows as a box at most, so each set's value reads as KEY and both copies in
+  // the text are cut in place, each lone surrogate left as written: each set still cuts in its own slot.
   const cutOf = (values) => {
     const before = cutPasses.count;
     const out = rowCutsOnce(store, "run-1", { values }, servedSince(store)).redact(`said ${KEY}\ud800 and ${KEY}\ud801`);
     return { out, passes: cutPasses.count - before };
   };
-  assert.deepEqual(cutOf([`${KEY}\ud800`]), { out: `said [redacted] and ${KEY}\ud801`, passes: 1 });
-  assert.deepEqual(cutOf([`${KEY}\ud801`]), { out: `said ${KEY}\ud800 and [redacted]`, passes: 1 }, "a set that differs only in a lone surrogate is its own set");
+  assert.deepEqual(cutOf([`${KEY}\ud800`]), { out: `said [redacted] and [redacted]\ud801`, passes: 1 });
+  assert.deepEqual(cutOf([`${KEY}\ud801`]), { out: `said [redacted]\ud800 and [redacted]`, passes: 1 }, "a set that differs only in a lone surrogate is its own set");
 });
 
 test("what is kept costs the heap what is counted: no kept cut holds the raw text it was cut of, or the values it was cut by", { timeout: 120_000 }, async () => {

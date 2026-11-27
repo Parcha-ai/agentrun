@@ -742,7 +742,11 @@ export function cutAt(text: string, spans: readonly Span[]): string {
 
 /** A view of a text, and the stretches of it (in its own offsets, in order, apart) whose every character comes from
  *  text a cut covers. */
-type View = { readonly text: string; readonly covered: readonly Span[] };
+/** `marked`, where a terminal control is in the text: its units (the characters viewOf's decoders and its copy handed
+ *  on, in order) as they came. */
+type View = { readonly text: string; readonly covered: readonly Span[]; readonly marked?: string };
+/** Which of a text's units a terminal shows (`shown`), and how many it hides before each unit (`hiddenBefore`). */
+type Screen = { readonly shown: Uint8Array; readonly hiddenBefore: Int32Array; readonly struckBefore: boolean };
 
 const HEX = only("0123456789abcdefABCDEF");
 const BLANKS = /[\t-\r ]+/y;
@@ -750,6 +754,10 @@ const BLANKS = /[\t-\r ]+/y;
  *  an escape, a delete, a C1 control). It renders as nothing, so the views drop it as they drop whitespace. Tab, line
  *  feed, vertical tab, form feed and carriage return (U+0009-000D) are whitespace (isSpace) and read as such. */
 const isControl = (code: number): boolean => code <= 0x08 || (code >= 0x0e && code <= 0x1f) || (code >= 0x7f && code <= 0x9f);
+/** The control characters a terminal acts on as it renders: ESC, BEL, a backspace, and the 8-bit CSI, ST and OSC.
+ *  viewOf drops each as any control and marks the view, and each marked view is read twice (readingsOf): with them
+ *  dropped, and as a terminal shows it. */
+const isTerminal = (code: number): boolean => code === 0x1b || code === 0x07 || code === 0x08 || code === 0x9b || code === 0x9c || code === 0x9d;
 /** What ends each pass of a join (joinOf). Every view keeps it, and no needle holds it, so no held value reads across
  *  it. It cannot be a NUL, as the views drop control characters wherever they come from (the text, or an escape or an
  *  encoding that decodes to one), and a separator they dropped would join the passes. It is U+FFFF, a noncharacter:
@@ -760,8 +768,11 @@ const isControl = (code: number): boolean => code <= 0x08 || (code >= 0x0e && co
  *  caller that marks places in a text with its own (secret-cut.ts) asks holds for `separated`. */
 export const SEPARATOR = "\uffff";
 /** A character that renders as nothing (a zero-width space, a soft hyphen, a byte order mark, a variation selector, a
- *  control character that is no whitespace: isControl), and SEPARATOR. */
-const IGNORABLE = /[\p{Default_Ignorable_Code_Point}\u0000-\u0008\u000e-\u001f\u007f-\u009f\uffff]+/gu;
+ *  control character that is no whitespace: isControl), and SEPARATOR; and one that renders as a box or a blank, which
+ *  a reader reads a value through: U+FFFE, the interlinear annotation characters (U+FFF9-FFFB), the noncharacters
+ *  U+FDD0-FDEF, a private use character (U+E000-F8FF), the braille blank (U+2800, no whitespace) and a lone surrogate
+ *  (with the u flag a surrogate pair is one character, and stays). */
+const IGNORABLE = /[\p{Default_Ignorable_Code_Point}\u0000-\u0008\u000e-\u001f\u007f-\u009f\u2800\ud800-\udfff\ue000-\uf8ff\ufdd0-\ufdef\ufff9-\ufffb\ufffe\uffff]+/gu;
 const GONE = /[\s\p{Default_Ignorable_Code_Point}]+/gu;
 
 /** Combining marks: an accent, a cedilla, an enclosing circle. */
@@ -778,12 +789,17 @@ const MARKS = /\p{M}+/gu;
 export const squeeze = (text: string): string => text.replace(IGNORABLE, "").normalize("NFKD").replace(MARKS, "").normalize("NFKC").replace(GONE, "");
 
 /** What a view decodes where its trigger character stands: given the text and that place, the end of what it decoded,
- *  each character it decodes to handed to `unit` with the text it came from; or -1 where nothing there decodes. */
-type Decoder = { readonly trigger: string; readonly decode: (text: string, at: number, unit: Sink) => number };
+ *  each character it decodes to handed to `unit` with the text it came from; or -1 where nothing there decodes. `name`
+ *  says which. */
+type Decoder = { readonly name: DecoderName; readonly trigger: string; readonly decode: (text: string, at: number, unit: Sink) => number };
+/** Each decoder the views read through: percent-encoded UTF-8, "+" as a space, JSON's escapes twice (an escaped quote
+ *  as nothing, or as a quote) or once, HTML's character references, and Python's escapes at one level or two. */
+type DecoderName = "percent" | "plus" | "json" | "json-quoted" | "json-once" | "entity" | "python" | "python-twice";
 type Sink = (char: string, from: number, to: number) => void;
 
 /** A run of percent-encoded bytes, decoded as UTF-8 (decoded). */
 const PERCENT: Decoder = {
+  name: "percent",
   trigger: "%",
   decode(text, at, unit) {
     let end = at;
@@ -796,7 +812,7 @@ const PERCENT: Decoder = {
   },
 };
 /** "+" as a space, as a form's encoding writes one. */
-const PLUS: Decoder = { trigger: "+", decode: (_text, at, unit) => (scanned.chars++, unit(" ", at, at + 1), at + 1) };
+const PLUS: Decoder = { name: "plus", trigger: "+", decode: (_text, at, unit) => (scanned.chars++, unit(" ", at, at + 1), at + 1) };
 /** What JSON's one-character escapes stand for. */
 const ESCAPED: Readonly<Record<string, string>> = {
   n: "\n", r: "\r", t: "\t", '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f",
@@ -826,6 +842,7 @@ function unescaped(text: string, at: number): Char | undefined {
  *  JSON's escapes alone read it (a held value with a quote of its own, written escaped). With `levels` 1, the first level
  *  alone: a "\\" is a backslash, read no further. */
 const jsonEscape = (dropQuote: boolean, levels: 1 | 2 = 2): Decoder => ({
+  name: levels === 1 ? "json-once" : dropQuote ? "json" : "json-quoted",
   trigger: "\\",
   decode(text, at, unit) {
     const put = (char: string, end: number) => {
@@ -865,10 +882,8 @@ const JSON_ESCAPE_ONCE = jsonEscape(false, 1);
 /** One of Python's own escapes at `at`, as its repr writes a str: an escaped apostrophe ("\'", in a string that holds
  *  both quotes) is an apostrophe, "\x" and two hex digits the character they number; with `levels` 2, either written
  *  once more as a JSON string's text too ("\\'", "\\x41": a dict a model wrote in a call's arguments, read one level
- *  down). The character and where it ends; undefined where none starts. It reads at most five characters. key-refusal.ts's
- *  peek counts an escape by it (both levels), so the read past a call's stop counts "\x20" as the views that read
- *  Python's escapes do: a space. */
-export function pythonEscapeAt(text: string, at: number, levels: 1 | 2 = 2): { char: string; end: number } | undefined {
+ *  down). The character and where it ends; undefined where none starts. It reads at most five characters. */
+function pythonEscapeAt(text: string, at: number, levels: 1 | 2 = 2): { char: string; end: number } | undefined {
   if (text[at] !== "\\") return undefined;
   scanned.chars += Math.min(5, text.length - at);
   const from = levels === 2 && text[at + 1] === "\\" ? at + 2 : at + 1;
@@ -880,6 +895,7 @@ export function pythonEscapeAt(text: string, at: number, levels: 1 | 2 = 2): { c
  *  its repr wrote them, with one level of JSON's escapes ("\\", "\n", "\u" and four hex digits); and, written in a
  *  JSON string, both levels of each ("\\'" and "\\x41", "\\\\" and "\\n"). */
 const pythonEscape = (levels: 1 | 2, json: Decoder): Decoder => ({
+  name: levels === 1 ? "python" : "python-twice",
   trigger: "\\",
   decode(text, at, unit) {
     const found = pythonEscapeAt(text, at, levels);
@@ -890,18 +906,6 @@ const pythonEscape = (levels: 1 | 2, json: Decoder): Decoder => ({
 });
 const PYTHON_ESCAPE = pythonEscape(1, JSON_ESCAPE_ONCE);
 const PYTHON_ESCAPE_TWICE = pythonEscape(2, JSON_ESCAPE_QUOTED);
-/** What JSON_ESCAPE reads at `at`: the character the escape there decodes to, through both levels ("" for an escaped
- *  quote, which decodes to nothing), and where it ends; undefined where no escape starts (the "\" is then itself).
- *  key-refusal.ts's peek counts an escape by it, so the read past a call's stop and the JSON view see the same
- *  characters. */
-export function jsonEscapeAt(text: string, at: number): { char: string; end: number } | undefined {
-  let char = "";
-  const end = JSON_ESCAPE.decode(text, at, (decoded) => {
-    char = decoded;
-  });
-  return end < 0 ? undefined : { char, end };
-}
-
 const DECIMAL = only(DIGIT);
 /** The named references a writer's HTML escape emits (and a no-break space), each with its ";". */
 const NAMED: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0", AMP: "&", LT: "<", GT: ">", QUOT: '"' };
@@ -912,9 +916,8 @@ const NAMED: Readonly<Record<string, string>> = { amp: "&", lt: "<", gt: ">", qu
  *    as "A" too). It reads its zeros and one digit past the most, each once and counted: a run of zeros is read again
  *    only by the view that copies it where no reference stands.
  *  Undefined where none starts, or it stands for no character (zero, a surrogate, past U+10FFFF, or more digits than
- *  that). key-refusal.ts's peek counts a reference by it, so the read past a call's stop and the views see the same
- *  characters. */
-export function entityAt(text: string, at: number): { char: string; end: number } | undefined {
+ *  that). */
+function entityAt(text: string, at: number): { char: string; end: number } | undefined {
   if (text[at] !== "&") {
     scanned.chars++;
     return undefined;
@@ -944,6 +947,7 @@ export function entityAt(text: string, at: number): { char: string; end: number 
 /** An HTML character reference (entityAt), as the character it stands for (a character past U+FFFF as its two UTF-16
  *  units, each from the whole reference). */
 const ENTITY: Decoder = {
+  name: "entity",
   trigger: "&",
   decode(text, at, unit) {
     const found = entityAt(text, at);
@@ -1039,6 +1043,9 @@ const VIEWS: readonly ViewSpec[] = [
   viewSpec((has) => has.apostrophe && has.python, [PYTHON_ESCAPE], "quoted"),
   viewSpec((has) => has.apostrophe && has.quote, [PYTHON_ESCAPE_TWICE], "again"),
 ];
+/** How many views the matcher reads a text through. key-refusal.ts's read past a call's stop reads every one of them
+ *  (shownIn), which a test checks against this (shownIn's `walked`). */
+export const VIEW_COUNT = VIEWS.length;
 
 // ---- The join view: a JSON text's strings read joined, so a held value split across two of them reads whole.
 
@@ -1279,13 +1286,20 @@ function bothOf(first: Join, second: Join): Join {
  *  ASCII character is a starter nothing composes onto), and each character it makes comes from that whole stretch. A
  *  control character (isControl) is dropped, as it stands or as a decoder made it, and so is SEPARATOR, unless
  *  `separates` and it stands in the text as it is (a join's own, or a caller's: holds), where it is copied, never
- *  squeezed. With `cuts` (merged spans of `text`), the view's
- *  covered stretches: where every character comes from inside one cut. */
-function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates = false): View {
+ *  squeezed. A terminal control (isTerminal) is dropped as any control is, and the view is then `marked` with the
+ *  units it read, for readingsOf; with `screen`, each unit it does not show is dropped too. With `cuts` (merged spans of `text`), the view's
+ *  covered stretches: where every character comes from inside one cut. With `ends`, the place in `text` after what each
+ *  character of the view comes from, in order (shownEnds). */
+function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates = false, screen?: Screen, ends?: number[], limit = Number.POSITIVE_INFINITY): View {
   const out: string[] = [];
   const covered: Span[] = [];
   let length = 0;
   let cut = 0;
+  let marked = false;
+  // The characters the decoders and the copy hand on (units), counted and kept as they come (record), for readingsOf
+  // where a terminal control is among them. With `screen`, a unit it does not show is skipped as a control is.
+  let units = 0;
+  const record: string[] = [];
   const cover = (from: number, to: number) => {
     const last = covered.at(-1);
     if (last && last[1] === from) last[1] = to;
@@ -1295,6 +1309,7 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
   const emitSlice = (from: number, to: number) => {
     if (to <= from) return;
     out.push(text.slice(from, to));
+    if (ends) for (let k = from + 1; k <= to; k++) ends.push(k);
     if (cuts) {
       // The cover's cursor only goes forward: each cut is passed once in the whole view.
       while (cut < cuts.length && cuts[cut]![1] <= from) {
@@ -1314,6 +1329,7 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
   const emit = (chars: string, from: number, to: number) => {
     if (!chars) return;
     out.push(chars);
+    if (ends) for (let i = 0; i < chars.length; i++) ends.push(to);
     if (cuts) {
       while (cut < cuts.length && cuts[cut]![1] <= from) {
         cut++;
@@ -1351,8 +1367,16 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
   };
   const unit = (char: string, from: number, to: number) => {
     const code = char.charCodeAt(0);
+    const index = units++;
+    if (screen) {
+      if (!screen.shown[index]) return;
+    } else {
+      if (isTerminal(code)) marked = true;
+      record.push(char);
+    }
     // A control character, or SEPARATOR, as it stands or decoded, is nothing: dropped before anything is flushed, so
-    // the characters either side of it compose as they would with it gone (as squeeze drops it before NFKD).
+    // the characters either side of it compose as they would with it gone (as squeeze drops it before NFKD). A
+    // terminal control is one too.
     if (isControl(code) || char === SEPARATOR) return;
     if (code >= 128) {
       if (group) {
@@ -1370,17 +1394,31 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
   };
   const special = new RegExp(spec.special.source, "g");
   let at = 0;
-  while (at < text.length) {
+  while (at < text.length && !(ends && ends.length >= limit)) {
     special.lastIndex = at;
     const hit = special.exec(text);
     const stop = hit ? hit.index : text.length;
     // The characters copied as they are, and the special one that stopped the search.
     scanned.chars += (hit ? stop + 1 : stop) - at;
     if (stop > at) {
-      flushGroup();
-      flushHeld();
-      emitSlice(at, stop - 1);
-      held = { char: text[stop - 1]!, from: stop - 1, to: stop };
+      const index = units;
+      units += stop - at;
+      if (!screen) record.push(text.slice(at, stop));
+      if (screen && screen.hiddenBefore[units] !== screen.hiddenBefore[index]) {
+        // Some of the run a terminal does not show: each character of it read alone, the ones it hides skipped.
+        scanned.chars += stop - at;
+        for (let k = at; k < stop; k++) {
+          if (!screen.shown[index + k - at]) continue;
+          flushGroup();
+          flushHeld();
+          held = { char: text[k]!, from: k, to: k + 1 };
+        }
+      } else {
+        flushGroup();
+        flushHeld();
+        emitSlice(at, stop - 1);
+        held = { char: text[stop - 1]!, from: stop - 1, to: stop };
+      }
     }
     if (!hit) break;
     const char = text[stop]!;
@@ -1390,12 +1428,20 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
     else if (char.charCodeAt(0) < 128 && isSpace(char.charCodeAt(0))) {
       // A run of ASCII whitespace is gone from the view: only its last character is held, as the one a non-ASCII
       // character after it could compose onto.
+      // Each of its characters is a unit (a space takes a terminal cell a backspace can strike out); one the screen
+      // hides whole is skipped as a control is.
       BLANKS.lastIndex = stop;
       BLANKS.test(text);
-      scanned.chars += BLANKS.lastIndex - stop;
-      flushGroup();
-      flushHeld();
-      held = { char: text[BLANKS.lastIndex - 1]!, from: BLANKS.lastIndex - 1, to: BLANKS.lastIndex };
+      const run = BLANKS.lastIndex - stop;
+      scanned.chars += run;
+      const index = units;
+      units += run;
+      if (!screen) record.push(text.slice(stop, BLANKS.lastIndex));
+      if (!screen || screen.hiddenBefore[units]! - screen.hiddenBefore[index]! < run) {
+        flushGroup();
+        flushHeld();
+        held = { char: text[BLANKS.lastIndex - 1]!, from: BLANKS.lastIndex - 1, to: BLANKS.lastIndex };
+      }
       at = BLANKS.lastIndex;
     } else if (separates && char === SEPARATOR) {
       // A separator as it stands is copied, never squeezed, and nothing composes across it.
@@ -1410,7 +1456,630 @@ function viewOf(text: string, spec: ViewSpec, cuts?: readonly Span[], separates 
   }
   flushGroup();
   flushHeld();
-  return { text: out.join(""), covered };
+  if (!marked) return { text: out.join(""), covered };
+  const recorded = record.join("");
+  scanned.chars += recorded.length;
+  return { text: out.join(""), covered, marked: recorded };
+}
+
+const isHigh = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
+const isLow = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
+/** A character of zero width on a terminal: a default-ignorable one (a zero-width space or joiner, a word joiner, a
+ *  byte order mark, a variation selector, a soft hyphen) or a combining mark; not a Hangul filler, which shows as a
+ *  blank cell. */
+const ZERO_WIDTH = /^(?![\u115f\u3164\uffa0])[\p{Default_Ignorable_Code_Point}\p{Mn}\p{Me}]$/u;
+/** Whether a unit takes no cell on a terminal, so a backspace after it strikes out the character before it: a control
+ *  character (C0, tab to carriage return, DEL, C1) or a character of zero width. "The views drop it" is not this: a
+ *  space, a no-break space, the braille blank, a private use character and a noncharacter each take a cell (a blank,
+ *  a box or a glyph), as does half of a surrogate pair. */
+const placeless = (code: number, char: string): boolean =>
+  (isControl(code) && !isTerminal(code)) || (code >= 0x09 && code <= 0x0d) || (code >= 0xa0 && !isHigh(code) && !isLow(code) && ZERO_WIDTH.test(char));
+/** Whether a terminal passes over a unit inside a sequence without ending it: a NUL or a DEL (ignored), any other C0
+ *  control but ESC, CAN and SUB (run: a backspace moves back), a BEL but where it ends an OSC, a C1 control but the
+ *  8-bit CSI, ST and OSC, and a character of zero width (placeless). */
+const passedIn = (code: number, char: string, osc: boolean): boolean =>
+  code === 0x18 || code === 0x1a || code === 0x1b || code === 0x9b || code === 0x9c || code === 0x9d || code === 0x20 || (osc && code === 0x07)
+    ? false
+    : code < 0x20 || placeless(code, char);
+
+/** Units a terminal sequence is read over, at places up to `end`: each unit's code and text, and the place after it
+ *  (screenOf reads a view's units, one place each). */
+type SequenceUnits = {
+  readonly end: number;
+  readonly code: (at: number) => number;
+  readonly char: (at: number) => string;
+  readonly next: (at: number) => number;
+};
+
+/** The terminal sequence that `intro` (ESC, U+009B or U+009D) opens, read from place `from` on as a terminal reads it:
+ *  where it ends (the place after its last unit) and the backspaces inside it; undefined where it opens none; "open"
+ *  where the units end before it does (all of them it read could still be its own). A CSI (ESC "[" or U+009B):
+ *  parameter bytes (0x30-0x3F), intermediate bytes (0x20-0x2F), then a final byte (0x40-0x7E); a printable character
+ *  past ASCII inside it neither ends nor aborts it (a DEC parser reads a GR code as its GL one and goes to csi_ignore
+ *  for a byte out of place), so the rest is read to the final byte. An OSC (ESC "]" or U+009D): to a BEL, a U+009C, or
+ *  ESC and a backslash; an 8-bit CSI or OSC, or an ESC and anything else, first means none. Any other escape: ESC,
+ *  intermediate bytes, a final byte (0x30-0x7E). Inside any of them CAN or SUB aborts the sequence (it ends there,
+ *  shown as nothing), and the units a terminal passes over (passedIn) are passed over. Each unit is read once. */
+function sequenceAt(units: SequenceUnits, intro: number, from: number): { end: number; backspaces: number } | "open" | undefined {
+  let k = from;
+  let backspaces = 0;
+  let read = 0;
+  let ranOut = false;
+  const byte = (osc: boolean): number => {
+    for (; k < units.end; k = units.next(k)) {
+      read++;
+      const code = units.code(k);
+      if (!passedIn(code, units.char(k), osc)) return code;
+      if (code === 0x08) backspaces++;
+    }
+    ranOut = true;
+    return -1;
+  };
+  const step = () => {
+    k = units.next(k);
+  };
+  const aborts = (code: number): boolean => code === 0x18 || code === 0x1a;
+  const csi = (): boolean => {
+    let code = byte(false);
+    while (code >= 0x30 && code <= 0x3f) (step(), (code = byte(false)));
+    while (code >= 0x20 && code <= 0x2f) (step(), (code = byte(false)));
+    if (code >= 0xa0) while (code >= 0xa0 || (code >= 0x20 && code <= 0x3f)) (step(), (code = byte(false)));
+    return (code >= 0x40 && code <= 0x7e) || aborts(code);
+  };
+  const osc = (): boolean => {
+    for (let code = byte(true); code >= 0; code = byte(true)) {
+      if (code === 0x07 || code === 0x9c || aborts(code)) return true;
+      if (code === 0x9b || code === 0x9d) return false;
+      step();
+      if (code === 0x1b) return byte(true) === 0x5c;
+    }
+    return false;
+  };
+  let ended: boolean;
+  if (intro === 0x9b) ended = csi();
+  else if (intro === 0x9d) ended = osc();
+  else {
+    let code = byte(false);
+    if (code === 0x5b) (step(), (ended = csi()));
+    else if (code === 0x5d) (step(), (ended = osc()));
+    else {
+      while (code >= 0x20 && code <= 0x2f) (step(), (code = byte(false)));
+      ended = (code >= 0x30 && code <= 0x7e) || aborts(code);
+    }
+  }
+  scanned.chars += read + 1;
+  return ended ? { end: units.next(k), backspaces } : ranOut ? "open" : undefined;
+}
+
+/** The readings of a text through `spec`: its view, or, where a terminal control is in it (`marked`), that view (the
+ *  terminal controls dropped, as any control is: an ESC and the letter after it read as text) and the view of the text
+ *  as a terminal shows it: each CSI (ESC "[" or U+009B, its parameters, intermediates and final byte), each OSC (ESC
+ *  "]" or U+009D to a BEL, ESC and a backslash, or U+009C) and each other escape (ESC, any intermediate bytes, and a
+ *  final byte from 0x30 to 0x7E) gone whole; a backspace gone with the character before it (a whole character: both
+ *  halves of one past U+FFFF; the next one takes its place on screen); and an ESC that opens none of them, a BEL and a
+ *  U+009C gone alone. Inside a sequence a terminal ignores a NUL or a DEL and runs any other C0 control without ending
+ *  it (a backspace there still strikes out the character before the sequence), and CAN or SUB aborts it (gone whole);
+ *  each control or character the views drop is passed over there, and takes no place a backspace strikes out
+ *  (placeless). That view is built again from the text with the units a terminal hides skipped, so the squeeze
+ *  reads the characters either side of what it hides as one stretch, as a reader does. A held value either reading
+ *  shows is held. Each read is linear: a sequence read (sequenceAt) stops at the first unit it cannot hold, and one not
+ *  ended is read again once, from the unit after its opener. */
+function readingsOf(text: string, spec: ViewSpec, cuts: readonly Span[] | undefined, separates: boolean): View[] {
+  const view = viewOf(text, spec, cuts, separates);
+  if (!view.marked) return [view];
+  return [view, viewOf(text, spec, cuts, separates, screenOf(view.marked))];
+}
+
+/** Which of `recorded`'s units (a view's, as viewOf hands them on) a terminal shows, as readingsOf says. With `cut`,
+ *  `recorded` is a stretch cut from a longer text (shownIn): a sequence that runs to its end hides every unit from its
+ *  opener on, as it could be ended past the stretch, where a terminal would hide all of it. `struckBefore`: a backspace
+ *  found nothing left to strike out, so it strikes out what stands before `recorded`. */
+function screenOf(recorded: string, cut = false): Screen {
+  const units = recorded.length;
+  const shown = new Uint8Array(units);
+  // The shown units a backspace can strike out, in order.
+  const stack: number[] = [];
+  let struckBefore = false;
+  // A backspace strikes out a whole character: one past U+FFFF goes with both its halves.
+  const strike = () => {
+    const last = stack.pop();
+    if (last === undefined) {
+      struckBefore = true;
+      return;
+    }
+    shown[last] = 0;
+    if (isLow(recorded.charCodeAt(last)) && stack.at(-1) === last - 1 && isHigh(recorded.charCodeAt(last - 1))) shown[stack.pop()!] = 0;
+  };
+  const read: SequenceUnits = { end: units, code: (at) => recorded.charCodeAt(at), char: (at) => recorded[at]!, next: (at) => at + 1 };
+  for (let i = 0; i < units; ) {
+    const code = recorded.charCodeAt(i);
+    if (!isTerminal(code)) {
+      shown[i] = 1;
+      if (!placeless(code, recorded[i]!)) stack.push(i);
+      i++;
+      continue;
+    }
+    if (code === 0x08) strike();
+    else if (code === 0x1b || code === 0x9b || code === 0x9d) {
+      const sequence = sequenceAt(read, code, i + 1);
+      if (sequence === "open" && cut) break;
+      if (sequence && sequence !== "open") {
+        // A backspace inside the sequence still moves back: the character before the sequence is struck out.
+        for (let n = 0; n < sequence.backspaces; n++) strike();
+        i = sequence.end;
+        continue;
+      }
+    }
+    // A sequence not ended, a BEL or a U+009C: gone alone, and the reading goes on from the next unit.
+    i++;
+  }
+  const hiddenBefore = new Int32Array(units + 1);
+  for (let k = 0; k < units; k++) hiddenBefore[k + 1] = hiddenBefore[k]! + (shown[k] ? 0 : 1);
+  scanned.chars += 2 * units;
+  return { shown, hiddenBefore, struckBefore };
+}
+
+// ---- What the views show of a stretch cut from a longer text: key-refusal.ts's read past a call's stop.
+
+/** Where a join can stand where a stretch cut from a longer text starts, as text written before the stretch: outside
+ *  any string (""), in a string (`"`; with `quoted`, `'` too), or in a string written in one (`"\"`; with `again`,
+ *  `"'` too). The again join starts outside any string too: a stretch that starts there, on a string's opening quote
+ *  or before it, pairs the quotes after it otherwise than one that starts in a string. */
+const STARTS: Readonly<Record<Exclude<JoinKind, "both">, readonly string[]>> = {
+  nested: ["", '"', '"\\"'],
+  strings: ["", '"'],
+  quoted: ["", '"', "'"],
+  again: ["", '"', '"\\"', "\"'"],
+};
+
+/** `text`'s parts as the join of `kind` reads them (partsOf), read as main's reading reads them with `main`, and how
+ *  main's reading reads them otherwise (partsOf's OPERATES, PAIRS). With `again`, each value written in quotes is read
+ *  one level down, as joinOf's again join reads it, and each other part of the quoted join as it stands, where the
+ *  again join reads none: a stretch that leaves a value written in quotes counts what follows as the quoted join does. */
+function partsFor(text: string, kind: Exclude<JoinKind, "both">, main = false): { parts: Part[]; differs: number } {
+  const parts: Part[] = [];
+  if (kind !== "again") return { parts, differs: partsOf(text, 0, text.length, 0, parts, kind, undefined, main) };
+  const outer: Part[] = [];
+  const written: Span[] = [];
+  let differs = partsOf(text, 0, text.length, 0, outer, "quoted", written, main);
+  let next = 0;
+  for (const part of outer) {
+    if (written[next]?.[0] === part.from && written[next]?.[1] === part.to) {
+      differs |= partsOf(text, part.from, part.to, 1, parts, "quoted", undefined, main);
+      next++;
+    } else parts.push(part);
+  }
+  return { parts, differs };
+}
+
+/** One pass of the join of `parts` of `text`, written as joinOf writes each (each part followed by a space, SEPARATOR
+ *  last): of each part `keep` keeps; and the place in `text` after what each of its characters comes from (a part's
+ *  space: the part's end). */
+function passOf(text: string, parts: readonly Part[], keep: (part: Part) => boolean): { text: string; ends: number[] } {
+  const pieces: string[] = [];
+  const ends: number[] = [];
+  for (const part of parts) {
+    if (!keep(part)) continue;
+    pieces.push(text.slice(part.from, part.to), " ");
+    for (let k = part.from + 1; k <= part.to; k++) ends.push(k);
+    ends.push(part.to);
+  }
+  pieces.push(SEPARATOR);
+  ends.push(ends.at(-1) ?? 0);
+  // The pass written, and where each of its characters comes from.
+  scanned.chars += 2 * ends.length;
+  return { text: pieces.join(""), ends };
+}
+
+/** `decoders` as they read a text whose families are `has` (or fewer: a join of it), `quotes` where a quote or a "\u"
+ *  stands in it: each that decodes nothing there left out, and each that decodes it as another does read as that one,
+ *  so two views that read it alike are read once. Python's escapes, where it holds none, are JSON's they fall back to;
+ *  JSON's two levels, where no escape decodes to a backslash, are one; JSON's escapes that drop a quote, with no quote
+ *  and no "\u" in it, decode none to drop. A decoder kept that decodes nothing reads as if it were left out. */
+function effective(decoders: readonly Decoder[], has: Families, quotes: boolean): Decoder[] {
+  const out: Decoder[] = [];
+  for (let decoder of decoders) {
+    if (decoder === PYTHON_ESCAPE && !has.python) decoder = JSON_ESCAPE_ONCE;
+    if (decoder === PYTHON_ESCAPE_TWICE && !has.python) decoder = JSON_ESCAPE_QUOTED;
+    if (decoder === JSON_ESCAPE && !quotes) decoder = JSON_ESCAPE_QUOTED;
+    if (decoder === JSON_ESCAPE_ONCE && !has.deep) decoder = JSON_ESCAPE_QUOTED;
+    const none =
+      decoder === JSON_ESCAPE || decoder === JSON_ESCAPE_QUOTED || decoder === JSON_ESCAPE_ONCE
+        ? !has.escape
+        : decoder === PERCENT
+          ? !has.percent
+          : decoder === PLUS
+            ? !has.plus
+            : decoder === ENTITY && !has.entity;
+    if (!none && !out.includes(decoder)) out.push(decoder);
+  }
+  return out;
+}
+
+/** Terminal sequences a stretch cut from a longer text may start inside (shownIn's `open`), each as the opener that
+ *  starts one: an OSC (ended by a BEL, a U+009C or ESC and a backslash), a CSI (ended by its final byte), or another
+ *  escape with intermediate bytes (ended by its final byte). */
+export const OPEN_OSC = 1;
+export const OPEN_CSI = 2;
+export const OPEN_ESCAPE = 4;
+const OPENERS: readonly (readonly [number, string])[] = [
+  [OPEN_OSC, "\u001b]"],
+  [OPEN_CSI, "\u001b["],
+  [OPEN_ESCAPE, "\u001b "],
+];
+
+/** Each reading the views of a longer text can make of `text`, a stretch cut from it, for key-refusal.ts's read past a
+ *  call's stop: the place in `text` after what each character the reading keeps comes from, in order. A character kept
+ *  is one a needle is read against: never a join's SEPARATOR, nor, with `fold`, a separator the fold view drops
+ *  (flatOf). Every view of VIEWS is read, whether or not the text holds what its `when` asks for: a view the matcher
+ *  would not read only adds a reading another view makes too. A join view reads the stretch's join (partsFor) from each
+ *  place it can start at (STARTS), of all its parts, and, where the stretch holds a property name or an operator that
+ *  joins two strings ("+"), of its values alone, those operators left out (joinOf's passes); and where main's reading
+ *  pairs the stretch's quotes otherwise, main's join of it too (holds reads both); a `both` view reads its quoted join
+ *  and then its again join, each built where its first reading is read. A reading with a terminal
+ *  control in it is read as readingsOf reads it, twice, as a terminal shows it first, where a sequence the stretch ends
+ *  inside hides all that follows (screenOf's `cut`): it could end past the stretch. Where the stretch may start inside
+ *  a terminal sequence (`open`, OPEN_OSC and the rest), each view also reads it as a terminal shows it after that
+ *  sequence's opener, so what the sequence would hide counts as nothing (the opener's own characters never count).
+ *  Undefined in place of a reading in which a terminal's backspace strikes out what stands before the stretch
+ *  (screenOf's `struckBefore`): what that reading shows is not the stretch's to count. Two readings that decode and
+ *  join alike are read once. `walked` gets the index in VIEWS of each view whose readings were read (or, alike, for
+ *  another view); `hidden`, from each reading of the text from its start (no join's start or opener written before
+ *  it), the place after each character its terminal reading hides that its reading with controls dropped keeps. */
+export function* shownIn(
+  text: string,
+  fold: boolean,
+  walked?: Set<number>,
+  enough = Number.POSITIVE_INFINITY,
+  open = 0,
+  hidden?: Set<number>,
+): Generator<number[] | undefined> {
+  const limit = fold ? Number.POSITIVE_INFINITY : enough;
+  // `skip`: characters written before the stretch (a join's start, an opener), whose places come out as 0; `hide`:
+  // where an opener is written there, those characters, which are never kept, and the input is read as a terminal
+  // shows it only.
+  type Input = { readonly id: number; readonly text: string; readonly ends?: readonly number[]; readonly skip: number; readonly hide: number };
+  // Each text read, by its text: one written twice (two starts a join reads alike) is read once where its characters
+  // come from the same places.
+  const inputs = new Map<string, Input[]>();
+  let ids = 0;
+  const inputOf = (read: string, ends?: readonly number[], skip = 0, hide = 0): Input => {
+    scanned.chars += read.length;
+    const same = inputs.get(read) ?? [];
+    for (const one of same) {
+      scanned.chars += read.length;
+      let alike = one.skip === skip && one.hide === hide;
+      for (let k = 0; ends && one.ends && k < ends.length && alike; k++) alike = ends[k] === one.ends[k];
+      if (alike) return one;
+    }
+    const one = { id: ids++, text: read, ...(ends ? { ends } : {}), skip, hide };
+    inputs.set(read, [...same, one]);
+    return one;
+  };
+  const openers = OPENERS.filter(([bit]) => (open & bit) !== 0).map(([, opener]) => opener);
+  // What the stretch holds that a view decodes, read once: a join's text is parts of it.
+  const has = familiesOf(text);
+  const quotes = text.includes('"') || text.includes("\\u");
+  scanned.chars += 2 * text.length;
+  const plain = [inputOf(text), ...openers.map((opener) => inputOf(opener + text, undefined, opener.length, opener.length))];
+  // What the joins read: a U+FFFF the stretch brought as a NUL, as holds reads it (SEPARATOR).
+  const source = text.includes(SEPARATOR) ? text.replaceAll(SEPARATOR, "\u0000") : text;
+  scanned.chars += text.length;
+  const joins = new Map<Exclude<JoinKind, "both">, Input[]>();
+  const joinsOf = (kind: Exclude<JoinKind, "both">): Input[] => {
+    let found = joins.get(kind);
+    if (!found) {
+      found = [];
+      for (const start of STARTS[kind]) {
+        for (const opener of ["", ...openers]) {
+          const written = start + opener + source;
+          const ours = partsFor(written, kind);
+          // Where main's reading pairs the stretch's quotes otherwise (PAIRS), its parts too, as holds reads that join.
+          for (const { parts } of ours.differs & PAIRS ? [ours, partsFor(written, kind, true)] : [ours]) {
+            // joinOf's passes of every part and of the values, the operators that join two strings left out. Its other
+            // passes read a part of these, so they show no fewer characters: the read reaches as far for them.
+            const passes: ((part: Part) => boolean)[] = [() => true];
+            if (parts.some((part) => part.name || part.joins)) passes.push((part) => !part.name && !part.joins);
+            for (const keep of passes) {
+              const pass = passOf(written, parts, keep);
+              found.push(inputOf(pass.text, pass.ends, start.length + opener.length, opener ? start.length + opener.length : 0));
+            }
+          }
+        }
+      }
+      joins.set(kind, found);
+    }
+    return found;
+  };
+  // What a view reads: the stretch, or its join; a `both` view its quoted join, then its again join, each built where
+  // its first reading is read, so no one reading builds both.
+  function* inputsOf(join: JoinKind | undefined): Generator<Input> {
+    if (join === undefined) yield* plain;
+    else if (join === "both") for (const kind of ["quoted", "again"] as const) yield* joinsOf(kind);
+    else yield* joinsOf(join);
+  }
+  const kept = (view: string, ends: readonly number[], input: Input): number[] => {
+    const out: number[] = [];
+    for (let i = 0; i < view.length; i++) {
+      const code = view.charCodeAt(i);
+      if (code === 0xffff || (fold && isSeparator(code))) continue;
+      const end = input.ends ? input.ends[ends[i]! - 1]! : ends[i]!;
+      if (end <= input.hide) continue;
+      out.push(Math.max(0, end - input.skip));
+    }
+    scanned.chars += view.length;
+    return out;
+  };
+  const read = new Set<string>();
+  for (const [index, spec] of VIEWS.entries()) {
+    for (const input of inputsOf(spec.join)) {
+      const decoders = effective(spec.decoders, has, quotes);
+      const key = `${input.id} ${decoders.map((decoder) => decoder.name).join(" ")}`;
+      walked?.add(index);
+      if (read.has(key)) continue;
+      read.add(key);
+      const view = viewSpec(() => true, decoders);
+      const separates = spec.join !== undefined;
+      let ends: number[] = [];
+      let dropped = viewOf(input.text, view, undefined, separates, undefined, ends, limit);
+      if (dropped.marked && ends.length >= limit) {
+        ends = [];
+        dropped = viewOf(input.text, view, undefined, separates, undefined, ends);
+      }
+      if (dropped.marked) {
+        const shown: number[] = [];
+        const terminal = screenOf(dropped.marked, true);
+        const screen = viewOf(input.text, view, undefined, separates, terminal, shown, limit);
+        const reading = kept(screen.text, shown, input);
+        if (hidden && input.skip === 0) {
+          const on = new Set(reading);
+          for (const end of kept(dropped.text, ends, input)) if (!on.has(end)) hidden.add(end);
+        }
+        yield terminal.struckBefore ? undefined : reading;
+      }
+      // An opener's reading counts only as a terminal shows it: dropped, its controls are no sequence's.
+      if (input.hide === 0) yield kept(dropped.text, ends, input);
+    }
+  }
+}
+
+/** A run of whitespace, written short as key-refusal.ts's reads write it: what every view reads of it alike, in a
+ *  terminal sequence or out of one. Characters a terminal passes over inside a sequence and that take no cell (tab to
+ *  carriage return, a byte order mark: placeless) are left out, unless the run is all of them (its first is written).
+ *  Each of the rest takes a cell: a space (an intermediate byte in a CSI or an escape) or a space past U+00A0 (in a
+ *  CSI, it reads the rest of the run as the CSI's own to the final byte; it ends an escape as none). Written: the
+ *  first; after a first space, the first past U+00A0 there is; then spaces, as many cells as the run's, up to one more
+ *  than `backspaces` (the most that can strike any of them out). */
+export function shortRun(run: string, backspaces: number): string {
+  scanned.chars += 2 * run.length;
+  const cells = run.replace(PLACELESS_SPACES, "");
+  if (cells.length === 0) return run[0]!;
+  // Every cell is a space or one past U+00A0: after a first space, the first that is not one.
+  const wide = cells[0] === " " ? (/[^ ]/.exec(cells)?.[0] ?? "") : "";
+  const head = cells[0]! + wide;
+  return head + " ".repeat(Math.max(0, Math.min(cells.length, backspaces + 1) - head.length));
+}
+/** The whitespace characters that take no cell (placeless): tab to carriage return, and a byte order mark. */
+const PLACELESS_SPACES = /[\t-\r\ufeff]/g;
+
+/** What key-refusal.ts's reads cut from `text` need to know of what stands outside them (marksOf). `openAt`: the
+ *  terminal sequences (OPEN_OSC and the rest, shownIn's `open`) a read that starts at a place may start inside. A
+ *  whitespace run at a place where none may be open reads alike in every view written as one character.
+ *  `backspacesFrom`: how many backspaces, as any view decodes them, stand from a place on: at most that many
+ *  characters before it can a terminal strike out. */
+export type Marks = { readonly openAt: (at: number) => number; readonly backspacesFrom: (at: number) => number };
+
+/** JSON's punctuation, whitespace and a line's ending backslash (OPERATORS): a join drops it between strings (and
+ *  writes a space), so a sequence a join reads may run on over it, where one that reads the text as it stands ends
+ *  there. The other operator, "+", is an intermediate byte: it ends no sequence, and after an ESC it opens the escape
+ *  the join's space opens. */
+const DROPPED = new Set(['"', "'", ",", ":", "{", "}", "[", "]", "\\"]);
+const dropped = (unit: string): boolean => DROPPED.has(unit) || isSpace(unit.charCodeAt(0));
+/** The decoders a view reads a character of a terminal sequence through, each read alone (marksOf). JSON_ESCAPE is
+ *  JSON_ESCAPE_QUOTED with its escaped quotes gone, as a quote may be gone (DROPPED) in any; "+" decodes to a space,
+ *  which ends no sequence a "+" does not. */
+const STREAMS: readonly Decoder[] = [PERCENT, JSON_ESCAPE_QUOTED, JSON_ESCAPE_ONCE, PYTHON_ESCAPE, PYTHON_ESCAPE_TWICE, ENTITY];
+/** As much as any decoder of a family could read at a character that starts one of its escapes: the backslash
+ *  family's (any backslashes, then "u" and up to four hex digits, "x" and up to two, or any one character but one
+ *  another family's escape, a terminal sequence or a backspace starts at, which no backslash decoder reads as another
+ *  character, so each stream reads it on its own), a run of percent-encoded bytes, an HTML character reference. */
+const FOREIGN: Readonly<Record<string, RegExp>> = {
+  "\\": /\\+(?:u[0-9a-fA-F]{0,4}|x[0-9a-fA-F]{0,2}|[^%&\u001b\u009b\u009d\b])?/y,
+  "%": /(?:%[0-9a-fA-F]{2})+/y,
+  "&": /&(?:#[xX]?[0-9a-fA-F]{1,8};?|[A-Za-z]{2,4};)/y,
+};
+/** An escape of any family for a backslash, at the end of what FOREIGN read. */
+const BACKSLASH_LAST = /(?:u005[cC]|x5[cC]|%5[cC]|&#0*92;?|&#[xX]0*5[cC];?)$/;
+/** A character each stream reads on its own: a family's escape, a terminal sequence or a backspace starts at it. */
+const OWN_UNIT = /[\\%&\u001b\u009b\u009d\b]/;
+/** Where each stream can decode an ESC, a U+009B, a U+009D or a backspace: a stream with none of these to read is not
+ *  read (a sequence it could read on in, another stream opens). */
+const STREAM_NEEDS: Readonly<Record<string, RegExp>> = {
+  percent: /%(?:1[bB]|08|[cC]2%9[bBdD])/,
+  entity: /&#/,
+  backslash: /\\[\\ubxU]/,
+};
+const RAW_TERMINAL = /[\u001b\u009b\u009d\b]/;
+/** The characters a stream with nothing open reads (marksOf): each decoder's trigger (another family's escape is read
+ *  whole too) and each terminal control a sequence or a backspace starts at. */
+const MARKED = new Set(["\\", "%", "&", "\u001b", "\u009b", "\u009d", "\b"]);
+/** The escapes after a backslash each backslash decoder reads as JSON's one-character escape, whatever follows. */
+const SHORT_ESCAPES = 'nrtfb"/';
+
+/** `text`'s Marks, read in one walk for all its streams where it holds anything they mark. The text is read as it
+ *  stands, then through each decoder of STREAMS alone; in each, a terminal sequence is followed as sequenceAt reads
+ *  one, but that a character another decoder could read otherwise (one of another family's escapes, read whole) or a
+ *  join could drop (DROPPED) never ends one, and after an ESC it opens any of the three kinds. Each sequence counts
+ *  from its opener's first character to the end of the character that ends it (or the text's end): a place inside
+ *  that, past its first character, is one a read may start inside it at. So a sequence any view reads, through any
+ *  mix of encodings, is counted, and maybe more. Backspaces: those as the text stands, and those each family decodes
+ *  (the most of the backslash family's streams), added up. */
+export function marksOf(text: string): Marks {
+  const spans: [number, number, number][] = [];
+  const raw: number[] = [];
+  const decoded: Record<string, number[]> = { percent: [], entity: [] };
+  const backslash = new Set<number>();
+  const familyOf = (decoder: Decoder | undefined): string | undefined =>
+    decoder === undefined ? undefined : decoder === PERCENT ? "percent" : decoder === ENTITY ? "entity" : "backslash";
+  // One stream: the text as it stands (no decoder) or through one decoder, its state carried along the one walk below.
+  const streamOf = (decoder: Decoder | undefined) => {
+    const family = familyOf(decoder);
+    const backspaces: number[] = [];
+    let pending = -1;
+    let open: { kind: number; start: number }[] = [];
+    // Where a decoder of another family could read an escape of its own, the furthest it could read; -1 where none can.
+    const foreignEnd = (at: number): number => {
+      const char = text[at]!;
+      if (decoder?.trigger === char) return -1;
+      const found = FOREIGN[char]!;
+      found.lastIndex = at;
+      if (!found.test(text)) return -1;
+      let end = found.lastIndex;
+      // An escape that decodes to a backslash: a view that reads its text again reads it with the character after it.
+      if (BACKSLASH_LAST.test(text.slice(Math.max(at, end - 8), end)) && end < text.length && !OWN_UNIT.test(text[end]!)) end++;
+      scanned.chars += end - at;
+      return end;
+    };
+    const ends = (kind: number, code: number, char: string): "after" | "at" | undefined => {
+      if (passedIn(code, char, kind === OPEN_OSC)) return undefined;
+      if (kind === OPEN_OSC) return code === 0x07 || code === 0x9c || code === 0x18 || code === 0x1a ? "after" : code === 0x1b || code === 0x9b || code === 0x9d ? "at" : undefined;
+      if (kind === OPEN_CSI && (code <= 0x3f && code >= 0x20 || code >= 0xa0)) return undefined;
+      if (kind === OPEN_ESCAPE && code >= 0x20 && code <= 0x2f) return undefined;
+      return code >= (kind === OPEN_CSI ? 0x40 : 0x30) && code <= 0x7e ? "after" : code === 0x18 || code === 0x1a ? "after" : "at";
+    };
+    // `foreign`: a character another family's decoder could read as any other (an escape of its own, read whole);
+    // `dropped`: one a join could drop and write a space for.
+    const step = (code: number, char: string, from: number, to: number, foreign: boolean, dropped: boolean): void => {
+      if (code === 0x08 && !foreign) (decoder === undefined ? raw : to - from > 1 ? backspaces : []).push(from);
+      if (pending >= 0) {
+        if (!foreign && passedIn(code, char, false)) return;
+        const start = pending;
+        // A character a join may drop: the ESC may be read before it (a space: an escape's intermediate byte), or
+        // before what comes after it.
+        if (!dropped) pending = -1;
+        let kinds = foreign ? OPEN_OSC | OPEN_CSI | OPEN_ESCAPE : dropped ? OPEN_ESCAPE : 0;
+        if (!foreign) kinds |= code === 0x5b ? OPEN_CSI : code === 0x5d ? OPEN_OSC : code >= 0x20 && code <= 0x2f ? OPEN_ESCAPE : 0;
+        for (const kind of [OPEN_OSC, OPEN_CSI, OPEN_ESCAPE]) if (kinds & kind && !open.some((sequence) => sequence.kind === kind && sequence.start === start)) open.push({ kind, start });
+        // An ESC and a final byte: an escape of two characters, which hides the final byte as one with intermediate
+        // bytes hides it (OPEN_ESCAPE).
+        if (!kinds && !foreign && code >= 0x30 && code <= 0x7e) spans.push([OPEN_ESCAPE, start, to]);
+        if (kinds || foreign || (code >= 0x30 && code <= 0x7e) || code === 0x18 || code === 0x1a) return;
+      }
+      if (foreign || dropped) return;
+      if (open.length > 0)
+        open = open.filter((sequence) => {
+          const end = ends(sequence.kind, code, char);
+          if (end) spans.push([sequence.kind, sequence.start, end === "after" ? to : from]);
+          return end === undefined;
+        });
+      if (code === 0x1b) pending = from;
+      else if (code === 0x9b) open.push({ kind: OPEN_CSI, start: from });
+      else if (code === 0x9d) open.push({ kind: OPEN_OSC, start: from });
+    };
+    // The unit at `at` (a short escape, what the decoder reads there, another family's escape whole, or a character):
+    // where the stream reads on from.
+    const read = (at: number): number => {
+      const char = text[at]!;
+      // A one-character escape every backslash decoder reads alike (and, one level down, an escaped backslash): read
+      // here, as the decoder would.
+      const short = family === "backslash" && char === "\\" ? text[at + 1] : undefined;
+      if (short !== undefined && (SHORT_ESCAPES.includes(short) || (short === "\\" && (decoder === JSON_ESCAPE_ONCE || decoder === PYTHON_ESCAPE)))) {
+        const unit = ESCAPED[short]!;
+        scanned.chars += 2;
+        step(unit.charCodeAt(0), unit, at, at + 2, false, dropped(unit));
+        return at + 2;
+      }
+      if (decoder && char === decoder.trigger) {
+        const units: [string, number, number][] = [];
+        const end = decoder.decode(text, at, (unit, from, to) => units.push([unit, from, to]));
+        if (end >= 0) {
+          for (const [unit, from, to] of units) step(unit.charCodeAt(0), unit, from, to, false, dropped(unit));
+          return end;
+        }
+        // A backslash that starts no escape of the decoder's: a join reads a string's backslash with what follows it,
+        // so a view may read the two as anything.
+        if (family === "backslash") {
+          const end = at + 1 < text.length && !OWN_UNIT.test(text[at + 1]!) ? at + 2 : at + 1;
+          step(0, "", at, end, true, false);
+          return end;
+        }
+      }
+      const other = char === "\\" || char === "%" || char === "&" ? foreignEnd(at) : -1;
+      if (other > at) {
+        step(0, "", at, other, true, false);
+        return other;
+      }
+      step(char.charCodeAt(0), char, at, at + 1, false, dropped(char));
+      return at + 1;
+    };
+    return {
+      next: 0,
+      // With no sequence open and no ESC pending, a character that is no escape's first and no terminal control does
+      // nothing in the stream (step): it is passed without a read.
+      idle: () => pending < 0 && open.length === 0,
+      read,
+      finish: (): void => {
+        for (const sequence of open) spans.push([sequence.kind, sequence.start, Number.POSITIVE_INFINITY]);
+        if (family === "backslash") for (const at of backspaces) backslash.add(at);
+        else if (family) decoded[family] = backspaces;
+      },
+    };
+  };
+  scanned.chars += 4 * text.length;
+  const streams = [
+    ...(RAW_TERMINAL.test(text) ? [streamOf(undefined)] : []),
+    ...STREAMS.filter((decoder) => STREAM_NEEDS[familyOf(decoder)!]!.test(text)).map(streamOf),
+  ];
+  // One walk for every stream: each reads a unit where the walk reaches the place it reads on from, and passes it where
+  // it is idle and the character starts nothing it reads (MARKED).
+  if (streams.length > 0)
+    for (let at = 0; at < text.length; at++) {
+      scanned.chars++;
+      const marked = MARKED.has(text[at]!);
+      for (const stream of streams) if (stream.next === at) stream.next = !marked && stream.idle() ? at + 1 : stream.read(at);
+    }
+  for (const stream of streams) stream.finish();
+  // Each kind's spans, sorted by start, as [start, end] pairs merged where they overlap.
+  const merged = [OPEN_OSC, OPEN_CSI, OPEN_ESCAPE].map((kind) => {
+    const own = spans.filter((span) => span[0] === kind).sort((a, b) => a[1] - b[1]);
+    const out: [number, number][] = [];
+    for (const [, start, end] of own) {
+      const last = out.at(-1);
+      if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+      else out.push([start, end]);
+    }
+    return [kind, out] as const;
+  });
+  // How many of the sorted places `at` and after.
+  const from = (places: readonly number[], at: number): number => {
+    let [low, high] = [0, places.length];
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (places[middle]! < at) low = middle + 1;
+      else high = middle;
+    }
+    scanned.chars += 2 * Math.log2(places.length + 1);
+    return places.length - low;
+  };
+  const backslashes = [...backslash].sort((a, b) => a - b);
+  return {
+    openAt(at) {
+      let mask = 0;
+      for (const [kind, out] of merged) {
+        // The last span starting before `at`: `at` is inside it when it ends after `at`.
+        let [low, high] = [0, out.length];
+        while (low < high) {
+          const middle = (low + high) >> 1;
+          if (out[middle]![0] < at) low = middle + 1;
+          else high = middle;
+        }
+        if (low > 0 && out[low - 1]![1] > at) mask |= kind;
+        scanned.chars += 2 * Math.log2(out.length + 1);
+      }
+      return mask;
+    },
+    backspacesFrom: (at) => from(raw, at) + from(backslashes, at) + from(decoded.percent!, at) + from(decoded.entity!, at),
+  };
 }
 
 /** The characters a run of percent-encoded bytes text[from, to) decodes to (as UTF-8, invalid bytes as U+FFFD, as
@@ -1546,7 +2215,7 @@ export function holds(text: string, needles: Needles, { fold = true, cuts, separ
     // in an operator, the join's fourth pass is main's (joinOf).
     const join = spec.join ? joinFor(spec.join) : undefined;
     const reads = !join ? [undefined] : [join, ...(spec.join === "both" ? (["quoted", "again"] as const) : [spec.join!]).filter((kind) => joinFor(kind).differs & PAIRS).map((kind) => joinFor(kind, true))];
-    for (const read of reads) if (holdsView(read ? viewOf(read.text, spec, read.cuts, true) : viewOf(text, spec, cuts, separated), spec)) return true;
+    for (const read of reads) for (const view of read ? readingsOf(read.text, spec, read.cuts, true) : readingsOf(text, spec, cuts, separated)) if (holdsView(view, spec)) return true;
   }
   return false;
   function holdsView(view: View, spec: ViewSpec): boolean {
