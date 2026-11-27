@@ -64,7 +64,7 @@ test("a fetch is one paid request to Firecrawl's /v2/scrape: markdown, main cont
   const first = await w.fetch(PUBLIC);
   assert.equal(fc.got[0].headers.authorization, `Bearer ${FIRECRAWL_CANARY}`);
   assert.deepEqual(fc.got[0].body, { url: PUBLIC, formats: ["markdown"], onlyMainContent: true });
-  assert.deepEqual([first.answer.ok, first.answer.via, first.answer.title, first.answer.text, first.answer.links], [true, "firecrawl", "Read by Firecrawl", markdown, ["https://registry.example/1"]]);
+  assert.deepEqual([first.answer.ok, first.answer.via, first.answer.title, first.answer.text, first.answer.links], [true, "firecrawl", "Read by Firecrawl", markdown, []], "the link its text writes is not listed again");
   assert.deepEqual([first.receipt.provider, first.receipt.tries.map((one) => [one.provider, one.outcome])], ["firecrawl", [["firecrawl", "ok"]]]);
   assert.deepEqual(fees.map((fee) => [fee.name, fee.usd]), [["Firecrawl's scrape", CREDIT]]);
   await w.fetch(PUBLIC, { offset: 5 });

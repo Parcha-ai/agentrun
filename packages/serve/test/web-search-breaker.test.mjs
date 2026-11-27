@@ -3,7 +3,9 @@
 // unavailable for the rest of the run, without asking the provider again. Once it answers that the run is rate-limited
 // (Exa's free limit, a 429, a rate-limit error), every call answers that search is busy for the seconds left of the wait
 // the provider named (Retry-After, in seconds or as an HTTP date), or 60 s when it named none; past it, the next call
-// asks the provider again. A keyed provider's breaker is the run's own: each run's binding (TOOLS' bind, as a run binds
+// asks the provider again. The call that met the limit answers the same words, where the provider's own say no more than
+// its status or error (Parallel's 429, a hosted search's failure); keyless Exa's limit keeps its words, ours or the
+// server's (RATE_LIMITED). A keyed provider's breaker is the run's own: each run's binding (TOOLS' bind, as a run binds
 // its tools) starts closed, so another run on the same server asks it as before. A keyless provider's limit is the
 // server's (web-holds.ts): another run starts held, until the limit lifts or the server restarts. Each provider is the
 // tests' fake: keyless Exa, Parallel, and
@@ -124,10 +126,10 @@ test("a keyless limit is the server's: another run starts held and leaves Exa un
 
   const keyed = await parallel(t, "429");
   const first = await bindRun(keyed.env);
-  assert.match(said(await first("widgets")).error, /^Parallel's search answered 429$/);
+  busy(await first("widgets"), 59, 60);
   busy(await first("widgets"), 59, 60);
   const other = await bindRun({ ...keyed.env });
-  assert.match(said(await other("widgets")).error, /^Parallel's search answered 429$/, "another run asks Parallel");
+  busy(await other("widgets"), 59, 60);
   assert.equal(await keyed.searches(), 2, "a keyed hold stays the run's");
 });
 
@@ -136,9 +138,8 @@ test("a keyed provider's quota answer stops the run's search for good, and its r
     await t.test(`Parallel ${status}`, async (t) => {
       const { env, searches } = await parallel(t, status);
       const search = await bindRun(env);
-      assert.match(said(await search("widgets")).error, new RegExp(`^Parallel's search answered ${status}$`));
-      // Parallel named no wait: 60 s.
-      for (const query of ["widgets", "gadgets"]) off ? assert.deepEqual(said(await search(query)), { error: UNAVAILABLE }, query) : busy(await search(query), 59, 60);
+      // Parallel named no wait: 60 s. The call that met it answers the breaker's words too, never Parallel's status.
+      for (const query of ["widgets", "widgets", "gadgets"]) off ? assert.deepEqual(said(await search(query)), { error: UNAVAILABLE }, query) : busy(await search(query), 59, 60);
       assert.equal(await searches(), 1, "Parallel was asked once");
     });
   }
@@ -146,9 +147,8 @@ test("a keyed provider's quota answer stops the run's search for good, and its r
     await t.test(`${model} ${mode}`, async (t) => {
       const { env, search: models, searches } = await hosted(t, model, mode);
       const search = await bindRun(env, models);
-      assert.match(said(await search("widgets")).error, /^the provider's search failed: /);
-      // The wait the provider named where it reaches here, else 60 s: never more.
-      for (const query of ["widgets", "gadgets"]) off ? assert.deepEqual(said(await search(query)), { error: UNAVAILABLE }, query) : busy(await search(query), 1, 60);
+      // The wait the provider named where it reaches here, else 60 s: never more. The call that met it says so too.
+      for (const query of ["widgets", "widgets", "gadgets"]) off ? assert.deepEqual(said(await search(query)), { error: UNAVAILABLE }, query) : busy(await search(query), 1, 60);
       assert.equal(await searches(), 1, "the provider was asked once");
     });
   }
@@ -179,7 +179,7 @@ test("Anthropic's hosted search whose later search is rate-limited in the same r
 test("the lead's case: a 429 with Retry-After 2 holds search for 2 s, a call within it answers busy unsent, and a call 3 s later reaches the provider", async (t) => {
   const { env, searches } = await parallel(t, "429@2;ok");
   const search = await bindRun(env);
-  assert.match(said(await search("widgets")).error, /^Parallel's search answered 429$/);
+  busy(await search("widgets"), 1, 2);
   busy(await search("widgets"), 1, 2);
   assert.equal(await searches(), 1, "the call within the wait was not sent");
   await pause(3_000);
@@ -195,10 +195,10 @@ test("past a wait, a fresh 429 opens a new one; a 429 that names none holds 60 s
   await t.test("a fresh 429 after the wait", async (t) => {
     const { env, searches } = await parallel(t, "429@1;429@1;ok");
     const search = await bindRun(env);
-    assert.match(said(await search("widgets")).error, /answered 429$/);
+    busy(await search("widgets"), 1, 1);
     busy(await search("widgets"), 1, 1);
     await pause(1_500);
-    assert.match(said(await search("widgets")).error, /answered 429$/, "past the wait the provider is asked, and limits again");
+    busy(await search("widgets"), 1, 1);
     busy(await search("widgets"), 1, 1);
     assert.equal(await searches(), 2);
     await pause(1_500);
