@@ -1903,8 +1903,9 @@ export interface ImportedTemplates {
   put(row: Omit<ImportedTemplateRow, "importedAt">, workspace?: string): Promise<boolean>;
   /** Every imported package's workspace by id (null: none), with none of its files read. */
   workspaces(): Promise<ReadonlyMap<string, string | null>>;
-  /** Removes the package: false when none had that id. */
-  remove(id: string): Promise<boolean>;
+  /** Removes the package: false when none had that id. `workspace`: removes it only while it is in that workspace, in
+   *  the one write, so a package of that id another workspace (or none) holds is kept and the answer is false. */
+  remove(id: string, workspace?: string): Promise<boolean>;
 }
 
 /** A trigger source's sealed setting as a row (store schema `trigger_settings`): its adapter, scope ("server" for the one

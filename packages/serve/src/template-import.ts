@@ -269,11 +269,15 @@ export async function applyImported<T>(
 }
 
 /** DELETE /v2/templates/{id}: an imported package removed from the store and the registry. A bundled one is 403; none of
- *  that id, 404. Agents applied from it stay. */
+ *  that id, 404. Agents applied from it stay. In a workspace the store's delete is of that workspace's row alone, so a
+ *  delete whose ownership read went stale (another workspace imported the freed name since) is 404 and removes nothing;
+ *  the registry's copy goes only while it is still the package read here. */
 export async function deleteTemplate(deps: Pick<TemplateImportDeps, "registry" | "store">, id: string): Promise<void> {
   const pkg = deps.registry.get(id);
   if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
   if (pkg.origin === null) throw new ApiError("forbidden", `${id} ships with this server, so it can't be removed.`);
-  await deps.store.importedTemplates.remove(id);
-  deps.registry.remove(id);
+  const workspace = workspaceNow();
+  const removed = await deps.store.importedTemplates.remove(id, workspace);
+  if (workspace !== undefined && !removed) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+  if (deps.registry.get(id) === pkg) deps.registry.remove(id);
 }

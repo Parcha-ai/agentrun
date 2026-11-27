@@ -27,7 +27,7 @@ const { workspaceTokensFrom } = await import("../dist/workspace-scope.js");
 const { backfillMapOf, backfillWorkspaces, workspaceBackfillMain } = await import("../dist/workspace-backfill.js");
 const { deleteTemplate, importTemplate } = await import("../dist/template-import.js");
 const { TemplateRegistry } = await import("../dist/templates.js");
-const { inWorkspace, workspaceNow } = await import("../dist/workspace-scope.js");
+const { inWorkspace, outsideWorkspace, workspaceNow } = await import("../dist/workspace-scope.js");
 const { Triggers } = await import("../dist/triggers.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 
@@ -254,6 +254,43 @@ test("with no header, the operator archives, unarchives and deletes any agent as
     assert.match(refused.body.error.message, /serves the run API only/);
   }
   assert.equal((await inW1(server, "GET", `/v2/templates/${encodeURIComponent(template)}`)).status, 200, "W1's package stands");
+});
+
+test("a workspace's template delete whose ownership read went stale removes nothing of the package another workspace imported since", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
+  const signal = AbortSignal.timeout(30_000);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal))).status, 201);
+  await inWorkspace(W1, () => deleteTemplate(deps, "upload:notes"));
+  const theirs = await inWorkspace(W2, () => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "W2's.")), signal));
+  assert.equal(theirs.status, 201);
+  // W1's second delete read W1's ownership before the first one landed; it reaches the store only now.
+  await assert.rejects(inWorkspace(W1, () => deleteTemplate(deps, "upload:notes")), (error) => error.code === "not_found");
+  assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), W2, "W2's row stands");
+  assert.equal(registry.get("upload:notes").origin.sha, theirs.pkg.origin.sha, "and is the one served");
+});
+
+test("a template delete takes the registry's copy only while it is the package the delete read: the operator's import landed between the store's delete and the registry's stands", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
+  const signal = AbortSignal.timeout(30_000);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal))).status, 201);
+  let theirs;
+  const racing = { ...deps, store: { importedTemplates: { ...store.importedTemplates, remove: async (id, workspace) => {
+    const removed = await store.importedTemplates.remove(id, workspace);
+    // Another workspace's import of the name is refused here (the registry still serves W1's package); the operator's,
+    // with no header, is not.
+    theirs = await outsideWorkspace(() => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "The operator's.")), signal));
+    return removed;
+  } }, settings: store.settings } };
+  await inWorkspace(W1, () => deleteTemplate(racing, "upload:notes"));
+  assert.equal(theirs.status, 201);
+  assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), null, "the operator's row");
+  assert.equal(registry.get("upload:notes")?.origin.sha, theirs.pkg.origin.sha, "the operator's package is still served");
 });
 
 test("an Idempotency-Key used in one workspace starts afresh in another, and replays in its own", { timeout: 120_000 }, async (t) => {
