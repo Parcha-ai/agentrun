@@ -406,11 +406,19 @@ const CASES = [
       exact: { redactedAnswer: "[redacted]", redactedCall: "[redacted]", runFile: "[redacted]" },
     },
     {
-      name: `a run too long to read ending in ${what}, with no held value in the text, shows with the run as "[redacted]" (control)`,
+      name:
+        what === "%E2%80%8B"
+          ? `a run too long to read ending in ${what}, with no held value in the text, is withheld whole: its tail read passes its budget`
+          : `a run too long to read ending in ${what}, with no held value in the text, shows with the run as "[redacted]" (control)`,
       text: `the key: ${"z".repeat(9000)}${CUT_KEY.slice(0, 16)}${pad}\n${CUT_KEY.slice(16)} end`,
       values: [SPLIT],
       hides: [],
-      exact: { redactedAnswer: `the key: [redacted]\n${CUT_KEY.slice(16)} end`, redactedCall: `the key: [redacted]\n${CUT_KEY.slice(16)} end` },
+      // Percent-encoded zero-width spaces: the tail read visits 850,788 characters, more than its budget (key-refusal.ts
+      // READ_BUDGET, 92 pieces: 753,664), so it gives up and the text is withheld whole. Pinned as it is now.
+      exact:
+        what === "%E2%80%8B"
+          ? { redactedAnswer: "[redacted]", redactedCall: "[redacted]" }
+          : { redactedAnswer: `the key: [redacted]\n${CUT_KEY.slice(16)} end`, redactedCall: `the key: [redacted]\n${CUT_KEY.slice(16)} end` },
     },
   ]),
   {
@@ -1460,6 +1468,19 @@ test("adversarial texts: the characters the whole pipeline visits are at most WO
     t.diagnostic(`${size / 1024} KiB: the most characters visited per character of a text: ${most.toFixed(1)}, ${where}`);
   }
   assert.deepEqual(over, []);
+});
+
+// Malformed JSON nested as deep as the text, past a call's stop: every name opens another object or array, so the text
+// holds names and no value, and two of the views the read past the stop walks show none of a piece of it. That read
+// gives up there and the call's result is withheld whole; before the read counted what each view shows, it showed the
+// first CALL_RESULT_CHARS. Withheld, not shown: pinned as it is now, so a change either way is seen.
+test("malformed JSON nested as deep as the text, past a call's stop, is withheld whole: '{\"a\":' and '[{\"a\":[' at 128 KiB and 512 KiB", () => {
+  const shown = [];
+  for (const unit of ['{"a":', '[{"a":[']) for (const size of [128 * 1024, 512 * 1024]) {
+    const out = ENTRIES.redactedCall(fill(unit, size), [CUT_KEY]);
+    if (out !== "[redacted]") shown.push(`${unit} at ${size}: ${out.length} characters`);
+  }
+  assert.deepEqual(shown, []);
 });
 
 // A text of very many shape finds, read whole (no byte bound, as learning's compile reads a previous answer): its finds
