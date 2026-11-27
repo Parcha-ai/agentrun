@@ -340,7 +340,8 @@ test("a Postgres schema this build's server migrated through the learning rows r
   await migrate(sql, schema, Date.now(), migrationsIn().filter((m) => m.version < ROWS));
   const before = await runnerFloorOf(sql, schema);
   assert.equal(runnerOn(before, ROWS - 1), "opens", "the release before learning rows runs on its own schema");
-  await migrateTo(sql, schema, []);
+  // Through the learning rows only: a later breaking migration raises the floor past them.
+  await migrate(sql, schema, Date.now(), migrationsIn().filter((m) => m.version <= ROWS));
   const state = await runnerFloorOf(sql, schema);
   assert.equal(state.runnerFloor, ROWS, "the floor rose to the learning rows' migration");
   assert.throws(() => refuseBelowFloor(schema, state, ROWS - 1), (error) => error instanceof RunnerBelowFloor && error.floor === ROWS && error.message.includes(`must know version ${ROWS} or later`));
