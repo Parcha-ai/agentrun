@@ -34,7 +34,7 @@ import { DEFAULT_PORT, maxRunsOf } from "../host.js";
 import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
 import { durationMs, runLine } from "../print.js";
 import { bootSealKey } from "../seal-key.js";
-import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
+import { handedSecret, SECRET_NAMES, secret, withSecrets } from "../secrets.js";
 import { migrationsIn, openStore, RunnerBelowFloor, SchemaVersionUnknown, type Store, StoreAwaitsServer, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyIn } from "../tool-keys.js";
@@ -61,6 +61,7 @@ import { RUN_PROCESS_MIB, runnerMemory } from "./memory-claim.js";
 import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, runIsolationOf } from "./run-child-host.js";
 import { sweepEndedScratch } from "./scratch-sweep.js";
 import { runCensus } from "../run-census.js";
+import type { ServerRunWorkspaceOptions } from "../workspace/server-run-workspace.js";
 import { RUNNER_LOOPS, RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 import { keepPresence, type Presence } from "./presence.js";
 import { diskFreeGate } from "./disk-free.js";
@@ -292,6 +293,14 @@ export function checkRunner(options: { dataDir: string; name: string; now?: () =
   return { ok: false, why: `${name}'s heartbeat is ${Math.round(age / 1000)} s old, past ${(2 * RUNNER_RENEW_EVERY_MS) / 1000} s: its loop has stopped` };
 }
 
+/** A runner's census of each run it ends (run-census.ts runCensus), reading the run's files as the server's file routes
+ *  read them: with the secrets this process was started with readable by name (secrets.ts withSecrets, "own"), as the
+ *  server reads its own. The launcher holds them off `env`, and the Archil account key is one: a Mode 2 run's disk opens
+ *  with it, so a census given `env` alone fails every Mode 2 end, and each writes "unscanned". `makeDisk`: a test's
+ *  Archil disk. */
+export const runnerCensus = (store: Store, dataDir: string, sealKey: Buffer, env: NodeJS.ProcessEnv, makeDisk?: ServerRunWorkspaceOptions["makeDisk"]): ReturnType<typeof runCensus> =>
+  runCensus(store, { data: dataDir, sealKey, env: withSecrets(env, "own"), ...(makeDisk ? { makeDisk } : {}) });
+
 /** Opens the store as a runner and starts claiming runs. */
 export async function startRunnerProcess(options: RunnerProcessOptions): Promise<RunnerProcess> {
   const warn = options.warn ?? ((message: string) => void process.stderr.write(`agentrun-serve runner: ${message}\n`));
@@ -344,7 +353,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       name,
       presence,
       // Each end counts where in the run's files what its caller handed it sits, as the server reads them.
-      census: runCensus(store, { data: options.dataDir, sealKey: seal.key, env }),
+      census: runnerCensus(store, options.dataDir, seal.key, env),
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
