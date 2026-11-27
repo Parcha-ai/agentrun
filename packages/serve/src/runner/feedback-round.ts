@@ -4,11 +4,12 @@
 //   - a run its learned workflow answered alone (path `workflow`), graded right or wrong: the grade is kept and nothing else happens: no round, no turn, $0. One wrong answer is one sample;
 //   - a run the agent finished (path `agent` or `handed_back`) graded with words (`label`): a correction round on them.
 //     The run opens again on it: the grade's words are on its record, the agent is asked no turn of the job's, and the
-//     run goes straight to its end-of-run step, which appends the words to corrections.md as one line (and compiles, when
-//     a compile is due). Its spend is learning spend.
+//     run goes straight to its end-of-run step, which appends the words to corrections.md as one line and, when a compile
+//     is due, tells that compile the line on every attempt, beside the owner's other corrections (reflect-hook.ts `taken`;
+//     a line the checks refuse is told never). Its spend is learning spend.
 // A grade with neither asks for nothing more. The server writes the round's steer (server.ts gradeRun, runs.reopen); the
 // adapter loop takes it (adapter-loop.ts steer: a FEEDBACK entry, no turn), and the end-of-run step reads it
-// (learning-end.ts: heard, never "nothing new"; adapter-loop.ts askEndOfRun: feedbackAsk before the prompt).
+// (learning-end.ts: heard, never "nothing new"; ownerWords: the grade's words, one line of corrections.md).
 import { type Grade, markGradeRound, putGrade } from "../learn/promote.js";
 import type { RunPath } from "../learning-cost.js";
 import { readLaunchBody, type RunLaunch } from "../run-launch.js";
@@ -103,11 +104,6 @@ export function pendingFeedbackOf(entries: readonly { readonly kind: string; rea
   const at = entries.findLastIndex((entry) => entry.kind === KINDS.feedback);
   if (at < 0 || entries.slice(at + 1).some((entry) => entry.kind === KINDS.end)) return undefined;
   return roundOf(entries[at]!.data, (entries[at]!.data as { text?: unknown } | undefined)?.text);
-}
-
-/** What the end-of-run turn of a feedback round is told before its prompt: the grade and its words. */
-export function feedbackAsk(feedback: FeedbackData): string {
-  return [`A reviewer graded this run's answer ${feedback.correct ? "right" : "wrong"}. What they said:`, "", feedback.text].join("\n\n").replace(/\n{3,}/g, "\n\n");
 }
 
 /** How a feedback round stands (GET /runs/{id}/learning `graded.feedback_status`): `running` until it settles; `ended`,

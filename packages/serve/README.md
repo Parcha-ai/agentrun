@@ -5031,7 +5031,9 @@ round on the agent's learning, whatever its harness:
   the fixed request id `learn-reflect-<run id>` and the origin `reflect`, so a server that restarts mid-turn asks again
   and the run takes it once. The turn (`compilePrompt`, in `src/learn/compile.ts`) gives the agent's last runs (each
   input, its tool calls, its answer and what the person said after it), the workflow language and one worked example,
-  and asks for the whole job as one workflow draft. The draft is checked in code and dry-run; what the checks refuse
+  and asks for the whole job as one workflow draft. When the same round takes its owner's words (a grade's, say), the
+  compile is told that line too, on every attempt, beside the owner's other corrections; a line refused above is
+  never told. The draft is checked in code and dry-run; what the checks refuse
   goes back to the model, as data, up to 3 times. A draft that passes is saved directly, with no grader: its
   promotion check (below) decides whether it serves. A compile whose drafts all failed is recorded as the compile's
   attempt (compile once), and its errors are on the run's learning (`draft_errors`), never silent.
