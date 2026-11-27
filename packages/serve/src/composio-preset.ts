@@ -45,8 +45,10 @@ const accountOf = (user: string) => (one: unknown): one is Json => isObject(one)
 /** Whether Composio lists the connected account `account` as an ACTIVE one under `user` for `toolkit`: `listed`,
  *  `unlisted` (none, or one started, expired or turned off: only an ACTIVE account calls as its user), or `unbounded`
  *  when it lists more ACTIVE ones than the lookup's bound (MAX_PAGES of ACCOUNT_PAGE, as the save's), so it can't be
- *  checked. Any failure to read throws (asking): the caller refuses, never assumes. */
+ *  checked. Any failure to read throws (asking): the caller refuses, never assumes. `unlisted`, unasked, for a user that
+ *  is no Composio user id (COMPOSIO_USER_ID): a blank one Composio may read as every user. */
 export async function composioListsAccount(ask: Ask, user: string, toolkit: string, account: string): Promise<"listed" | "unlisted" | "unbounded"> {
+  if (!COMPOSIO_USER_ID.test(user)) return "unlisted";
   let cursor: string | undefined;
   for (let page = 0; page < MAX_PAGES; page++) {
     const listed = await ask("checking the run's connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&statuses=ACTIVE&limit=${ACCOUNT_PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);

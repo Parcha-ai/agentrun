@@ -493,13 +493,22 @@ test("browserbase: behind a gateway that fronts the sessions' sockets (BROWSERBA
 	assert.equal(throughGateway("wss://connect.browserbase.com/?x=1", "not a url"), "wss://connect.browserbase.com/?x=1", "a gateway that is no URL moves none");
 });
 
-test("browserbase: a sessions' gateway (BROWSERBASE_CONNECT_BASE_URL) is wss or https, as the session's signed URL rides it: another, loopback included, is refused in words, and one that is no URL is refused without echoing it", async () => {
+test("browserbase: a sessions' gateway (BROWSERBASE_CONNECT_BASE_URL) takes the rule of a URL a key goes to over wss or https (keyBase), as the session's signed URL rides it: another scheme, loopback included, a user or password, a query or a fragment is refused in its words, naming the origin at most, and one that is no URL is refused without echoing it", async () => {
 	const fake = fakeBrowserbase();
 	const wss = await VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: "wss://proxy.example/ws" } });
 	const ref = value(await wss.create(spec(), newRequest()), "create");
 	assert.equal(value(await wss.connect(ref), "connect").cdp.url, `wss://proxy.example/ws/${ref.id}?signingKey=SECRET-${ref.id}`);
 	for (const [base, scheme] of [["ws://proxy.example/ws", "ws:"], ["http://proxy.example/ws", "http:"], ["http://127.0.0.1:9/ws", "http:"]]) {
-		await assert.rejects(VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: base } }), { message: `BROWSERBASE_CONNECT_BASE_URL must be wss or https, so a session's signed URL never crosses in the clear: ${scheme}` }, base);
+		await assert.rejects(VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: base } }), { message: `BROWSERBASE_CONNECT_BASE_URL must be wss or https, so the key never crosses in the clear: ${scheme}` }, base);
+	}
+	// The credentialed URL is made at run time, so no source line holds a URL with a password in it.
+	const credentialed = "https://agent:" + "not-a-secret" + "@proxy.example/ws";
+	for (const [base, message] of [
+		[credentialed, "BROWSERBASE_CONNECT_BASE_URL takes no user or password, since the key goes to it: https://proxy.example"],
+		["wss://proxy.example/ws?key=not-a-secret", "BROWSERBASE_CONNECT_BASE_URL takes no query or fragment: wss://proxy.example"],
+		["https://proxy.example/ws#not-a-secret", "BROWSERBASE_CONNECT_BASE_URL takes no query or fragment: https://proxy.example"],
+	]) {
+		await assert.rejects(VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: base } }), { message }, message);
 	}
 	await assert.rejects(VENDORS.browserbase.make(fake, { env: { BROWSERBASE_CONNECT_BASE_URL: "proxy.internal/ws?token=gw-secret" } }), { message: "BROWSERBASE_CONNECT_BASE_URL is not a URL" });
 });

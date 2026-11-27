@@ -10,6 +10,7 @@ import { after, test } from "node:test";
 const { RUNNER_HARNESSES, resolveHarness } = await import("../dist/runner/adapters/index.js");
 // The one table-run runner: a harness module's entry's, and Goose's and Cursor's.
 const { ON_TABLE } = await import("../dist/harness-table.js");
+const { heldRedactor, secretRedactor } = await import("../dist/runner/redact.js");
 
 const dir = mkdtempSync(join(tmpdir(), "runner-harnesses-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -42,7 +43,12 @@ test("runner harnesses: the shared runner of a table-run entry refuses to build 
 });
 
 test("runner harnesses: each builds its adapter from the launch", async () => {
-  assert.equal((await resolveHarness("pi").adapter(launch())).id, "pi");
+  // pi's redactor is the launch's (HarnessLaunch.redact), as the run's spec gives it (adapter-run-spec.ts: run.redact, the
+  // runner's held one); one among the harness's own options is not read.
+  const held = heldRedactor(secretRedactor([]));
+  assert.equal((await resolveHarness("pi").adapter(launch({ redact: held }))).id, "pi");
+  await assert.rejects(async () => resolveHarness("pi").adapter(launch()), /was given no redactor that holds keys/, "pi given no redactor builds no adapter");
+  await assert.rejects(async () => resolveHarness("pi").adapter(launch(), { redact: held }), /was given no redactor that holds keys/, "pi reads its redactor off the launch alone");
   process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = "1";
   try {
     // A stand-in CLI and a scripted SDK are a test's own options, passed on as given.
@@ -69,4 +75,26 @@ test("runner harnesses: OpenCode's facts say it never reruns a call it started, 
   assert.equal(facts.rerunsStarted, false);
   assert.equal(facts.steer, false);
   assert.equal(facts.recoversCutAnswers, 0, "an answer cut at the output limit ends OpenCode's turn, as pi's does");
+});
+
+test("runner harnesses: claude-agent on a local model (the route's `local`) has its CLI wait out a silent stream; on any other route, a translated paid one too, the CLI keeps its own limit", { timeout: 60_000 }, async (t) => {
+  const { createHarnessRunner } = await import("@parcha/agentrun-kernel");
+  const { memorySessionStore } = await import("@parcha/agentrun-kernel/testing");
+  const { fakeAnthropic, fakeSdk } = await import("@parcha/agentrun-harness-claude/testing");
+  const provider = await fakeAnthropic({ reply: () => ({ text: "ok" }) });
+  t.after(() => provider.close());
+  const Out = { type: "object", required: ["answer"], properties: { answer: { type: "string" } }, additionalProperties: false };
+  process.env.AGENTRUN_CLAUDE_AGENT_STANDIN = "1";
+  t.after(() => delete process.env.AGENTRUN_CLAUDE_AGENT_STANDIN);
+  const idleOf = async (fields) => {
+    const seen = [];
+    const sdk = fakeSdk({ remoteModel: true, mirrorLagMs: 10, script: ['call submit {"value":{"answer":"ok"}}'], onQuery: (options) => seen.push(options) });
+    const sessionsDir = mkdtempSync(join(dir, "idle-"));
+    const adapter = await resolveHarness("claude-agent").adapter(launch({ provider: { origin: provider.url, credential: () => `not-a-secret-${"x"}` }, sessionsDir, fetch: (url, init) => fetch(url, init), ...fields }), { standIn: { command: process.execPath }, sdk });
+    const runNode = createHarnessRunner(adapter, { store: memorySessionStore(), tools: [] });
+    assert.deepEqual(await runNode({ kind: "agent", label: "q", system: ["Be brief."], user: "Go.", schema: Out, tools: [] }), { answer: "ok" });
+    return seen[0].env.CLAUDE_STREAM_IDLE_TIMEOUT_MS;
+  };
+  assert.equal(await idleOf({ local: true }), "1800000", "a local model: 30 minutes");
+  assert.equal(await idleOf({}), undefined, "a translated route not local: the CLI's own");
 });

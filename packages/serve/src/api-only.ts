@@ -20,8 +20,14 @@ import { LAUNCH_HOOK_SECRET_ENV, LAUNCH_HOOK_URL_ENV } from "./trigger-launch-ho
  *  - a backend reads what its agents learned (loop, promotions, audits, cost per run, a run's learning), cut as the
  *    console's, and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
  *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is;
+ *  - a backend shares a run it ran (getRunExport, run-export.ts): an ended run's agentrun.share/1 bundle, every string
+ *    cut by the scrubber as on the full server, its ?restore= a stateless re-export of cuts a preview may restore. A
+ *    workflow run's bundle carries its graph, cut, though getRunGraph stays refused here; the share page (/share/{run})
+ *    is the console's, refused with the rest of it;
  *  - an operator or a scaler reads the runners' capacity (getCapacity, capacity.ts) from the server whose runners run apart;
  *  - a backend reads the saved MCP servers' names (listMcpServerNames), never a URL or a credential;
+ *  - a backend reads the prices this server meters computer and browser time at (getPrices, prices.ts), to bound a run's
+ *    budget in this server's figures before its launch: decimal prices and their source, never a key or an address;
  *  - a backend uploads an agent's package (importTemplate, as {files} alone: a GitHub source is refused in this profile's
  *    words, template-import.ts), which an apply then makes into its agent;
  *  - a backend that deploys agents here applies their template, reads the agent and its revisions, moves its current
@@ -55,9 +61,9 @@ export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "getLearningLoop", "listLearningPromotions", "listLearningAudits", "getLearningCost", "getRunLearning",
   "getRun", "getRunUsage", "listRuns", "listAllRuns", "getTimeline",
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
-  "listRunFiles", "readRunFile",
+  "listRunFiles", "readRunFile", "getRunExport",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
-  "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames",
+  "getCapabilities", "getHealth", "getUsage", "getCapacity", "listMcpServerNames", "getPrices",
   "importTemplate", "applyTemplate", "getAgent", "listRevisions", "setCurrent", "archiveAgent", "unarchiveAgent",
   "saveComposioServer", "deleteMcpServer", "releaseTriggerFiring",
   "listTriggers", "getTrigger", "listTriggerFirings", "updateTrigger",
@@ -145,3 +151,26 @@ export function servedApiOnly(routes: readonly Route[], method: string | undefin
 
 /** The refusal's words for `raw` on an API-only server. */
 export const apiOnlyRefusal = (raw: string): string => `this server serves the run API only (${API_ONLY_ENV}=1): ${raw} is not served here`;
+
+/** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs
+ *  and imported template packages, and the server's description. Every other is refused with 403 not_scoped, whatever
+ *  API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent, updateDefinition, getTemplate, listTemplates and
+ *  getOpenapi are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone. */
+export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
+  "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
+  "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
+  "importTemplate", "applyTemplate", "getTemplate", "listTemplates",
+  "createRun", "sendMessage", "stopRun", "cancelRun",
+  "getCapabilities", "getHealth", "getOpenapi",
+]);
+
+/** How a scoped request for `method` on `raw` is served: "served" for a /v2 path one of WORKSPACE_ROUTES matches,
+ *  "not_scoped" for one only another operation matches, "none" for a path no operation has. */
+export function servedScoped(routes: readonly Route[], method: string | undefined, raw: string): "served" | "not_scoped" | "none" {
+  if (!raw.startsWith("/v2/")) return "none";
+  const path = raw.slice(3);
+  const asked = method === "HEAD" ? "GET" : method;
+  const matched = routes.filter((route) => route.method === asked && route.pattern.test(path));
+  if (matched.some((route) => WORKSPACE_ROUTES.has(route.name))) return "served";
+  return matched.length || COMPUTER_LIVE.test(raw) ? "not_scoped" : "none";
+}

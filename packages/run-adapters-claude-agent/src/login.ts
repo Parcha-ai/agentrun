@@ -18,6 +18,7 @@ import { type FileHandle, lstat, mkdir, open, readdir, readFile, rm, writeFile }
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import type { ModelPort, ModelUsage } from "@parcha/agentrun-kernel";
+import type { TurnBudget, TurnSpan } from "@parcha/agentrun-kernel/process";
 import { parentWatched, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { loginUser } from "./login-user.js";
 
@@ -355,39 +356,86 @@ export const personHome = (login: ClaudeAgentLogin): string => login.userHome ??
 /** How long the delete of an "unknown" item may take before it is killed (SIGKILL, which a `security` or a wrapper on
  *  PATH cannot ignore, as it can SIGTERM) and left (dropUnknownItem): the sign-in's end and the status check wait on it. */
 const DROP_MS = 5_000;
+/** After a delete of an "unknown" item is killed at its limit or fails, how long a status check leaves that item before
+ *  it asks again (dropUnknownItem): a `security` that keeps hanging (a login keychain locked, its prompt unanswered)
+ *  would otherwise cost every signed-in status check DROP_MS. */
+const DROP_BACKOFF_MS = 10 * 60_000;
 /** The items dropUnknownItem has dealt with in this process, by home and service: deleted, or found gone. */
 const dropped = new Set<string>();
+/** The delete running now for each item, by the same key: a call while it runs waits on it and starts none. */
+const dropping = new Map<string, Promise<void>>();
+/** For each item whose last delete was killed or failed, by the same key: when a status check may ask again, on the
+ *  clock of the call that started that delete. */
+const dropAfter = new Map<string, number>();
+
+/** The service of `login`'s Keychain items on macOS, as the CLI names it from the login's credentials dir there
+ *  (loginEnv): `Claude Code-credentials-<first 8 hex of the folder's sha256>`, or undefined where that dir is empty (the
+ *  item with no suffix, the person's own CLI's on its default folder). The CLI hashes the folder in Unicode's composed
+ *  form (`.normalize("NFC")`), so a path with a decomposed character (as a folder name from macOS's Finder may have)
+ *  names the same item as its composed form; hashed as written it would name a service no item has. A hash of the
+ *  folder, so it holds no path and no secret, and words for a person may name it. */
+export function keychainService(login: ClaudeAgentLogin): string | undefined {
+  const folder = loginEnv(login, "darwin").CLAUDE_SECURESTORAGE_CONFIG_DIR;
+  return folder ? `Claude Code-credentials-${createHash("sha256").update(folder.normalize("NFC")).digest("hex").slice(0, 8)}` : undefined;
+}
 
 /** On macOS, at AgentRun's own folder (`own`) alone, delete the login's Keychain item under the account "unknown", which
  *  a sign-in left there when the CLI was started with no USER (loginUser), and which nothing reads now: `security
- *  delete-generic-password -a unknown -s <the item's service>`, the service the CLI names from the folder (`Claude
- *  Code-credentials-<first 8 hex of the folder's sha256>`), in the person's home (personHome), whose login keychain holds
- *  it. Called once the item under the person's account is there (the sign-in exited 0, a status check read signed in).
+ *  delete-generic-password -a unknown -s <the item's service>`, the service the CLI names from the folder
+ *  (keychainService), in the person's home (personHome), whose login keychain holds
+ *  it. Called once the item under the person's account is there (the sign-in exited 0, a status check read signed in),
+ *  and at the CLI's own sign-out (claudeLogout), after which no status check reads signed in to call it.
  *  Never at the person's own CLI's places, whose "unknown" item may be theirs, never the item with no suffix, never an
  *  item of any other account, and never where the user this server runs as is named "unknown" itself. Nothing is thrown.
- *  An item deleted, or found gone ("not found", exit 44), is not asked again in this process; one whose delete was killed
- *  at its limit, failed or never started is still there, so the next call asks again. */
-export async function dropUnknownItem(login: ClaudeAgentLogin, options: { path: string; platform?: NodeJS.Platform }): Promise<void> {
-  if ((options.platform ?? process.platform) !== "darwin" || login.own !== true) return;
-  const folder = loginEnv(login, "darwin").CLAUDE_SECURESTORAGE_CONFIG_DIR;
+ *  An item deleted, or found gone ("not found", exit 44), is not asked again in this process. One delete runs per item at
+ *  a time: a call while it runs waits on that one and starts none of its own beside it. One whose delete was killed at its
+ *  limit, failed or never started is still there: a call that a person made (`asked`: a sign-in that exited 0, a
+ *  sign-out) asks again at once, and so does one that waited on a delete that left it, once (a status check's, say, that
+ *  a sign-out arrived during); a status check only DROP_BACKOFF_MS after that delete ended, measured on `now` (Date.now
+ *  by default), and never after one it waited on.
+ *  Answers whether no such item is left: true once it was deleted or found gone, in this call or before in this process,
+ *  and where there is none for it to drop (another platform or place, the user named "unknown" or not named); false
+ *  where it may remain (its delete was killed, failed or never started, or a status check left it to the back-off). */
+export async function dropUnknownItem(login: ClaudeAgentLogin, options: { path: string; platform?: NodeJS.Platform; asked?: boolean; now?: () => number }): Promise<boolean> {
+  if ((options.platform ?? process.platform) !== "darwin" || login.own !== true) return true;
+  const service = keychainService(login);
   const user = loginUser();
-  if (!folder || user.USER === undefined || user.USER === "unknown") return;
-  const service = `Claude Code-credentials-${createHash("sha256").update(folder).digest("hex").slice(0, 8)}`;
+  if (service === undefined || user.USER === undefined || user.USER === "unknown") return true;
   const HOME = personHome(login);
   const key = JSON.stringify([HOME, service]);
-  if (dropped.has(key)) return;
-  await new Promise<void>((resolve) => {
-    try {
-      const child = spawn("security", ["delete-generic-password", "-a", "unknown", "-s", service], { env: { PATH: options.path, HOME, ...user }, stdio: "ignore", timeout: DROP_MS, killSignal: "SIGKILL" });
-      child.once("error", () => resolve());
-      child.once("close", (code) => {
-        if (code === 0 || code === 44) dropped.add(key);
+  if (dropped.has(key)) return true;
+  const now = options.now ?? Date.now;
+  const start = (): Promise<void> => {
+    const deleting = new Promise<void>((resolve) => {
+      const left = () => {
+        dropAfter.set(key, now() + DROP_BACKOFF_MS);
         resolve();
-      });
-    } catch {
-      resolve();
-    }
-  });
+      };
+      try {
+        const child = spawn("security", ["delete-generic-password", "-a", "unknown", "-s", service], { env: { PATH: options.path, HOME, ...user }, stdio: "ignore", timeout: DROP_MS, killSignal: "SIGKILL" });
+        child.once("error", left);
+        child.once("close", (code) => {
+          if (code !== 0 && code !== 44) return left();
+          dropped.add(key);
+          dropAfter.delete(key);
+          resolve();
+        });
+      } catch {
+        left();
+      }
+    }).finally(() => dropping.delete(key));
+    dropping.set(key, deleting);
+    return deleting;
+  };
+  const running = dropping.get(key);
+  if (running) {
+    await running;
+    // A status check only waits. A call a person made, whose wait left the item (that delete was killed or failed), asks
+    // once more: after a sign-out no status check reads signed in to ask again. Once, joining a delete another such call
+    // started meanwhile rather than starting a second.
+    if (options.asked === true && !dropped.has(key)) await (dropping.get(key) ?? start());
+  } else if (options.asked === true || now() >= (dropAfter.get(key) ?? -Infinity)) await start();
+  return dropped.has(key);
 }
 
 /** Ask the CLI at `cli` whether it is signed in at `login`: `auth status --json`, with only PATH, the user (loginUser)
@@ -406,8 +454,9 @@ export async function dropUnknownItem(login: ClaudeAgentLogin, options: { path: 
  *  once it has exited or was killed, the check waits STATUS_DRAIN_MS more at most for its output, which a process it
  *  started may hold open, and then one more pass of the event loop's reads. So a check settles within its limit, 2 s and
  *  that pass, whatever the CLI does. A `timeoutMs` that is no whole number of ms from 1 to 2^31 - 1 throws a RangeError
- *  before anything starts. */
-export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<ClaudeLoginStatus> {
+ *  before anything starts. Signed in, it drops an item left under "unknown" (dropUnknownItem), up to DROP_MS more, and
+ *  not within the back-off after a delete of it was killed or failed, measured on `now` (Date.now by default). */
+export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform; now?: () => number } = {}): Promise<ClaudeLoginStatus> {
   const limitMs = options.timeoutMs ?? LOGIN_STATUS_MS;
   // The limit is the check's timer and, with 2 s more, the end it writes for the sweep, which reads only a whole number
   // of ms: a fractional one would leave a live check's folder to the sweep's mtime rule. setTimeout fires at once past
@@ -471,7 +520,7 @@ export async function claudeLoginStatus(cli: string, login: ClaudeAgentLogin, op
     if (!status) throw timedOut ? new ClaudeLoginTimedOut(limitMs) : new ClaudeLoginNoStatus();
     // Signed in: the item under the person's account is there, so one a sign-in left under "unknown" goes (AgentRun's
     // own folder alone).
-    if (status.signedIn) await dropUnknownItem(login, { path: options.path ?? process.env.PATH ?? "/usr/bin:/bin", ...(options.platform ? { platform: options.platform } : {}) });
+    if (status.signedIn) await dropUnknownItem(login, { path: options.path ?? process.env.PATH ?? "/usr/bin:/bin", ...(options.platform ? { platform: options.platform } : {}), ...(options.now ? { now: options.now } : {}) });
     return status;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
@@ -588,7 +637,8 @@ function startable(cli: string, path: string): void {
  *  waiting on the browser's port. It is not detached: it stays in this process's group, so a terminal's Ctrl-C ends it
  *  with the server as before, and nothing here kills a group, which would take a browser the CLI started with it.
  *  A sign-in that exits 0 at AgentRun's own folder has the item a sign-in left there under "unknown" deleted before
- *  `ended` settles (dropUnknownItem). `platform`: the one the CLI runs on, this host's. */
+ *  `ended` settles (dropUnknownItem), at once, whatever back-off a status check's killed delete left: a person is at the
+ *  machine. `platform`: the one the CLI runs on, this host's. */
 export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; display?: Readonly<Record<string, string | undefined>>; watch?: ParentWatch; platform?: NodeJS.Platform } = {}): ClaudeSignIn {
   // What a browser needs to open on this desktop, when the server has it.
   const display = Object.fromEntries(["DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "BROWSER"].flatMap((name) => {
@@ -637,7 +687,7 @@ export function startClaudeLogin(cli: string, login: ClaudeAgentLogin, options: 
     // (AgentRun's own folder alone). The end settles however the drop ends: it throws nothing of its own, and should it
     // throw all the same, the sign-in still ended as the CLI exited (a `finally` here would leave that throw unhandled).
     const finished = () => finish(result);
-    if (result.end === "exited" && code === 0) void dropUnknownItem(login, { path, ...(options.platform ? { platform: options.platform } : {}) }).then(finished, finished);
+    if (result.end === "exited" && code === 0) void dropUnknownItem(login, { path, asked: true, ...(options.platform ? { platform: options.platform } : {}) }).then(finished, finished);
     else finish(result);
   });
   return { ended, stop: () => end("stopped") };
@@ -650,15 +700,35 @@ export const LOGOUT_MS = LOGIN_STATUS_MS;
  *  the person's home (personHome), so it removes what that sign-in kept where it kept it: the credentials file in the
  *  login's credentials dir or, on macOS, the Keychain item named from it under that user's account, and the account in
  *  the config dir's `.claude.json`. Nothing of it
- *  is read but how it ended: true when it exited 0 within `timeoutMs` (LOGOUT_MS by default), false when it exited
- *  otherwise, never started, or was ended at the limit (SIGTERM, then SIGKILL a second later). Never throws.
- *  `platform`: as signInEnv's. */
-export function claudeLogout(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<boolean> {
+ *  is read but how it ended: `signedOut` true when it exited 0 within `timeoutMs` (LOGOUT_MS by default), false when it
+ *  exited otherwise, never started, or was ended at the limit (SIGTERM, then SIGKILL a second later). Never throws.
+ *  Then, at AgentRun's own folder on macOS, the item a sign-in left there under "unknown", which holds a refresh token,
+ *  is deleted too (dropUnknownItem, with its refusals), whatever the CLI said and whatever back-off a status check's
+ *  killed delete left, since a person asked and no status check reads signed in after a sign-out to drop it; where a
+ *  status check's delete of it runs, the sign-out waits on that one and asks once more should it leave the item.
+ *  `leftoverGone` says whether no such item is left (dropUnknownItem's answer: true where there is none to drop, false
+ *  where its delete was killed or failed, or threw), so the caller can tell the person to delete it by hand. Values
+ *  only: no name or token. The answer waits on that delete DROP_MS at most, twice that where it waited on a status
+ *  check's first. `platform`: as signInEnv's. */
+export async function claudeLogout(cli: string, login: ClaudeAgentLogin, options: { timeoutMs?: number; path?: string; platform?: NodeJS.Platform } = {}): Promise<ClaudeLogout> {
+  const path = options.path ?? process.env.PATH ?? "/usr/bin:/bin";
+  // After the CLI's own sign-out, not beside it: both delete in the one login keychain.
+  const signedOut = await cliLogout(cli, login, path, options);
+  const leftoverGone = await dropUnknownItem(login, { path, asked: true, ...(options.platform ? { platform: options.platform } : {}) }).catch(() => false);
+  return { signedOut, leftoverGone };
+}
+
+/** claudeLogout's answer: the CLI confirmed its own sign-out (`signedOut`), and no Keychain item a sign-in left under
+ *  "unknown" at AgentRun's own folder is left (`leftoverGone`). */
+export type ClaudeLogout = { signedOut: boolean; leftoverGone: boolean };
+
+/** The CLI's own `auth logout` of claudeLogout: true when it exited 0 within its limit. Never throws. */
+function cliLogout(cli: string, login: ClaudeAgentLogin, path: string, options: { timeoutMs?: number; platform?: NodeJS.Platform }): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn(cli, ["auth", "logout"], {
-        env: { PATH: options.path ?? process.env.PATH ?? "/usr/bin:/bin", HOME: personHome(login), ...loginUser(), ...signInEnv(login, options.platform), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
+        env: { PATH: path, HOME: personHome(login), ...loginUser(), ...signInEnv(login, options.platform), DISABLE_AUTOUPDATER: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" },
         stdio: "ignore",
       });
     } catch {
@@ -691,10 +761,14 @@ const count = (value: unknown): number | undefined => (typeof value === "number"
  *  whose results the CLI sends straight back. A refusal there (a turn limit, say) halts the drive while the CLI has yet to
  *  send. A response with no admission ahead of it (one the CLI sent on its own) is admitted at its `message_start`. Each
  *  is booked at its `message_stop`; one the turn's end leaves open is booked as it stands, and an admission no request
- *  took is closed as never sent when the drive ends (`settle(true)`). */
-export function loginBooking(models: Pick<ModelPort, "beforeRequest" | "afterRequest">, model: string, halt: (error: Error) => void) {
+ *  took is closed as never sent when the drive ends (`settle(true)`).
+ *
+ *  With `turn`, each response is the kernel's turn too, as a model proxy reports it: begun at its `message_start` (a
+ *  tool call waits for it), and opened at its end with the input its request held (cached input included), its output
+ *  and the client tool calls it made (its `tool_use` blocks). */
+export function loginBooking(models: Pick<ModelPort, "beforeRequest" | "afterRequest">, model: string, halt: (error: Error) => void, turn?: TurnBudget) {
   type Ticket = Parameters<ModelPort["afterRequest"]>[1];
-  let open: { ticket: Promise<unknown>; usage: Omit<ModelUsage, "usd">; tools: boolean } | undefined;
+  let open: { ticket: Promise<unknown>; usage: Omit<ModelUsage, "usd">; tools: boolean; span?: TurnSpan; calls: number } | undefined;
   let ahead: Promise<unknown> | undefined;
   let booked: Promise<void> = Promise.resolve();
   const refused = Symbol("refused");
@@ -719,6 +793,8 @@ export function loginBooking(models: Pick<ModelPort, "beforeRequest" | "afterReq
     const entry = open;
     open = undefined;
     if (!entry) return;
+    const { usage } = entry;
+    entry.span?.open({ inputTokens: usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0), outputTokens: usage.output, calls: entry.calls });
     after(entry.ticket, { ...entry.usage, usd: null, billing: "plan" }, { end: "answered", usd: null });
     if (entry.tools) admitAhead();
   };
@@ -738,14 +814,17 @@ export function loginBooking(models: Pick<ModelPort, "beforeRequest" | "afterReq
     },
     /** One message of the SDK's stream. */
     observe(message: unknown): void {
-      const m = message as { type?: string; event?: { type?: string; message?: { usage?: StreamUsage }; usage?: StreamUsage; delta?: { stop_reason?: unknown } } };
+      const m = message as { type?: string; event?: { type?: string; message?: { usage?: StreamUsage }; usage?: StreamUsage; delta?: { stop_reason?: unknown }; content_block?: { type?: unknown } } };
       if (m?.type !== "stream_event" || !m.event) return;
       const event = m.event;
       if (event.type === "message_start") {
         book();
         const ticket = ahead ?? admit();
         ahead = undefined;
-        open = { ticket, usage: take({ input: 0, output: 0, billing: "plan" }, event.message?.usage), tools: false };
+        const span = turn?.begin();
+        open = { ticket, usage: take({ input: 0, output: 0, billing: "plan" }, event.message?.usage), tools: false, calls: 0, ...(span ? { span } : {}) };
+      } else if (event.type === "content_block_start" && open) {
+        if (event.content_block?.type === "tool_use") open.calls += 1;
       } else if (event.type === "message_delta" && open) {
         open.usage = take(open.usage, event.usage);
         if (event.delta?.stop_reason === "tool_use") open.tools = true;

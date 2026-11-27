@@ -5,10 +5,11 @@
 // sleeps: the fake loop signals when its start() is called, so the ordering is read from that, not from the clock.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createDispatchLoop } from "../dist/runner/dispatch.js";
+import { createDispatchLoop, REPLAY_RETRY_FIRST_MS, REPLAY_RETRY_MAX_MS, REPLAY_TRIES } from "../dist/runner/dispatch.js";
+const { heldRedactor } = await import("../dist/runner/redact.js");
 
 const CLAIM = { runId: "run-1", runner: "runner-a", epoch: 1, until: 0, from: "queued" };
-const deps = { journal: () => ({}), flush: async () => {}, signal: new AbortController().signal };
+const deps = { redact: heldRedactor((text) => text), journal: () => ({}), flush: async () => {}, signal: new AbortController().signal };
 const piBody = { place: { mode: "runner" }, harness: "pi" };
 const defer = () => {
   let resolve;
@@ -193,6 +194,78 @@ test("a stop buffered before the inner loop is chosen, whose inner stop throws, 
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepEqual(rejections.map(String), [], "the inner stop's throw is not left unhandled");
   } finally {
+    process.off("unhandledRejection", onRejection);
+  }
+});
+
+test("a buffered command its inner loop refuses is refused in the runner's store, before the inner loop's delivered resolves: never left untaken to wake its run again", async () => {
+  const inner = fakeLoop();
+  const refusing = (d) => {
+    const made = inner.factory(d);
+    return { ...made, command: async (command) => (made.command(command), { refused: "A cap is only raised: name more than the run's $0.12." }) };
+  };
+  const refusedRows = [];
+  const gate = defer();
+  const dispatch = createDispatchLoop({ launchOf: async () => (await gate.promise, { body: piBody }), resolve: () => refusing })({
+    ...deps,
+    refuse: async (commandId, reason) => void refusedRows.push([commandId, reason]),
+  });
+  const run = dispatch.start(CLAIM);
+  // Taken for now: the runner moves past the row, so its answer is the dispatch's to keep.
+  assert.deepEqual(await dispatch.command({ id: 7, kind: "raise", body: { capUsd: 0.12 } }), { taken: true });
+  gate.resolve();
+  await inner.whenStarted;
+  await inner.depsOf().delivered;
+  assert.deepEqual(refusedRows, [[7, "A cap is only raised: name more than the run's $0.12."]], "refused in the inner loop's words, once the loop's delivered resolves");
+  inner.finish();
+  await run;
+});
+
+test("a buffered command whose refusal fails to be written is handed to its inner loop once, and the write once: the failure is said, delivered still resolves, and nothing escapes", async (t) => {
+  // The replay's clock, moved by the test: past every retry the replay would make of a delivery that failed.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const inner = fakeLoop();
+  let commands = 0;
+  const refusing = (d) => {
+    const made = inner.factory(d);
+    return { ...made, command: async (command) => (commands++, made.command(command), { refused: "A cap is only raised: name more than the run's $0.12." }) };
+  };
+  let writes = 0;
+  const gate = defer();
+  const said = [];
+  const warn = console.warn;
+  console.warn = (line) => void said.push(String(line));
+  const rejections = [];
+  const onRejection = (error) => void rejections.push(error);
+  process.on("unhandledRejection", onRejection);
+  try {
+    const dispatch = createDispatchLoop({ launchOf: async () => (await gate.promise, { body: piBody }), resolve: () => refusing })({
+      ...deps,
+      refuse: async () => {
+        writes++;
+        throw new Error("the store is away");
+      },
+    });
+    const run = dispatch.start(CLAIM);
+    assert.deepEqual(await dispatch.command({ id: 7, kind: "raise", body: { capUsd: 0.12 } }), { taken: true });
+    gate.resolve();
+    await inner.whenStarted;
+    await inner.depsOf().delivered;
+    await new Promise((resolve) => setImmediate(resolve));
+    // Past the replay's retries: a failed write is no failed delivery, so the command is never handed over again.
+    for (let wait = REPLAY_RETRY_FIRST_MS; wait <= REPLAY_RETRY_MAX_MS * REPLAY_TRIES; wait *= 2) {
+      t.mock.timers.tick(wait);
+      for (let turn = 0; turn < 5; turn++) await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(commands, 1, "the loop is handed the command once: a failed write is no failed delivery");
+    assert.equal(writes, 1, "the refusal is written once");
+    assert.ok(said.some((line) => line.includes("was not written refused") && line.includes("the store is away")), `the failure is said: ${JSON.stringify(said)}`);
+    inner.finish();
+    await run;
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(rejections.map(String), [], "no rejection escapes");
+  } finally {
+    console.warn = warn;
     process.off("unhandledRejection", onRejection);
   }
 });

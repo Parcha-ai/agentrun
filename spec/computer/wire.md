@@ -161,7 +161,8 @@ batch with nothing run. A batch that fails partway answers how many actions ran.
 that window. A launch that only asks the OS to open the app and answers at once races every caller. An app that shows
 no window within `launchWindowMs` (10 s) fails the launch with kind `timeout`, in words naming the app. An app already
 running with a window answers at once. The core case `apps.launch-window` observes the app right after its launch
-answers.
+answers. A Linux computerd answers `denied`, naming the file, for an app whose desktop file its own user could change,
+and `apps.list` leaves such an app out.
 
 ## The ui group
 

@@ -212,8 +212,9 @@ function packageOf(revision: RevisionRow | null, revisions: readonly RevisionRow
   return null;
 }
 
-/** Every agent here, newest first (its creation, then its id). Archived agents are left out by default. */
-export async function listAgents(store: AgentsStore, options: { archived?: boolean } = {}): Promise<AgentEntry[]> {
+/** Every agent here, newest first (its creation, then its id). Archived agents are left out by default; `workspace`
+ *  keeps that workspace's alone. */
+export async function listAgents(store: AgentsStore, options: { archived?: boolean; workspace?: string } = {}): Promise<AgentEntry[]> {
   const agents = await store.agents.list(options);
   const entries = await Promise.all(agents.map((agent) => getAgent(store, agent.id)));
   return (entries.filter((entry): entry is AgentEntry => entry !== null))
@@ -226,7 +227,7 @@ export async function listAgents(store: AgentsStore, options: { archived?: boole
 export async function createAgent(
   store: AgentsStore,
   { definition, skills = {}, note }: DefinitionBody,
-  options: { check?: SaveCheck; fresh?: { place: RevisionPlace; tools: readonly string[] }; template?: TemplatePackage } = {},
+  options: { check?: SaveCheck; fresh?: { place: RevisionPlace; tools: readonly string[] }; template?: TemplatePackage; workspace?: string } = {},
 ): Promise<AgentEntry> {
   const given = typeof definition.id === "string" ? definition.id : undefined;
   if (given !== undefined && !ID_PATTERN.test(given)) throw invalid([{ field: "definition.id", reason: "invalid", message: `definition.id does not match ${ID_PATTERN.source}` }]);
@@ -243,7 +244,7 @@ export async function createAgent(
   const id = given ?? uuidv7();
   const name = definition.name as string;
   try {
-    await store.agents.create({ id, name, ...(typeof definition.description === "string" ? { description: definition.description } : {}) }, revision);
+    await store.agents.create({ id, name, ...(typeof definition.description === "string" ? { description: definition.description } : {}), ...(options.workspace !== undefined ? { workspace: options.workspace } : {}) }, revision);
   } catch (error) {
     if (error instanceof StoreConstraint && given !== undefined) throw new ApiError("agent_exists", `an agent ${given} exists here`);
     storeError(error);
@@ -350,8 +351,9 @@ export async function commitAgent(
 }
 
 /** The revision an edit makes on `entry`'s current one: what the edit leaves out keeps the current revision's, its skill
- *  files, harness, place, learning switch and default cap. Absent here is unchanged, not the default. */
-function editOn(entry: AgentEntry, definition: Json, skills: Record<string, string> | undefined, note: string | undefined, fromPackage = false): NewRevision & { note?: string } {
+ *  files, harness, place, learning switch and default cap. Absent here is unchanged, not the default. An apply's plan
+ *  builds an update's revision with it too (server.ts planTemplate), as the update's commit does. */
+export function editOn(entry: AgentEntry, definition: Json, skills: Record<string, string> | undefined, note: string | undefined, fromPackage = false): NewRevision & { note?: string } {
   const current = entry.revision;
   const currentBody = (current?.body ?? {}) as Partial<AgenticBody & WorkflowBody>;
   let files = skills;

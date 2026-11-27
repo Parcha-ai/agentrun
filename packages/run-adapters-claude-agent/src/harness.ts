@@ -7,6 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
 import { defersCatalog, type GateAnswer, type GateCall } from '@parcha/agentrun-kernel';
+import type { ResultBudget } from '@parcha/agentrun-kernel/process';
 import { type DriveContext, type Harness, type HostTool, type ReplayPolicy, Restart, type SessionState, type Submission, Unavailable } from './host/kernel.js';
 import {
   askGate,
@@ -17,6 +18,7 @@ import {
   gatewayHandler,
   gatewayUrl,
   isBrandedMachine,
+  journalTurn,
   NativeJournal,
   openTurn,
   placeSubmissions,
@@ -180,6 +182,9 @@ export interface ClaudeCodeHarnessOptions {
   /** The host's verdict on whether the catalog tools are deferred (SessionSpec.deferCatalog), which turns the CLI's own
    *  tool search on or off; absent, the tools' names decide (claudeToolSearch). */
   deferCatalog?: boolean;
+  /** What the session's model can take of one tool result (its context window): the tool bridge holds every result to
+   *  it (boundResult's budget). Absent: the host's bound alone (HOST_RESULT_MAX_CHARS). */
+  resultBudget?: ResultBudget;
   /**
    * Claude Code's own tools, in the VM, on `/workspace`. Default false
    * (tool-less: `tools` are the CLI's only tools). `true`: the pinned
@@ -221,6 +226,9 @@ export interface ClaudeCodeHarnessOptions {
   model?: string;
   /** The model of the CLI's small background calls (`nativeModelId` too). Default `model`. */
   smallModel?: string;
+  /** How long the CLI waits on a silent streamed answer before it gives the stream up (durableEnv's `streamIdleMs`).
+   *  Default the CLI's own, 5 minutes. */
+  streamIdleMs?: number;
   /** Appended to Claude Code's own system prompt (the `claude_code` preset). */
   instructions?: string;
   /** The provider credential, read per model request, in the Function. Default `gatewayCredential`. */
@@ -506,6 +514,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       if (!sandbox) throw sandboxRequired();
       const { query } = await loadSdk();
       const journal = new NativeJournal(ctx);
+      // The turn's budget kept on this drive's journal: a resume answers the calls it left on its answer's facts.
+      journalTurn(options.resultBudget?.turn, journal);
       const records = await journal.read();
       const store = new JournalSessionStore(journal, { records, coalesceMs: options.coalesceMs ?? 150, ...(options.barrierTimers ? { timers: options.barrierTimers } : {}) });
       // The handler reads the credential per request, in the drive's async
@@ -516,9 +526,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
       if (ctx.deadline === undefined) log('claude-agent: the kernel gave no deadline; assuming a 300 s invocation', {});
       const deadline = ctx.deadline ?? Date.now() + ASSUMED_INVOCATION_MS;
       // On a person's login there is no model route: the CLI calls Anthropic itself, and its responses are booked from
-      // its stream (loginBooking).
+      // its stream (loginBooking), which also reports each answer to the turn budget, as a model proxy does.
       const login = options.login;
-      const booking = login ? loginBooking(login.models, model, (error) => ctx.halt?.(error)) : undefined;
+      const booking = login ? loginBooking(login.models, model, (error) => ctx.halt?.(error), options.resultBudget?.turn) : undefined;
       const handler = login ? undefined : gatewayHandler({
         routes: CLAUDE_ROUTES,
         models: { model, ...(smallModel ? { smallModel } : {}) },
@@ -596,6 +606,8 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         const released: { callId: string; key: string }[] = [];
         const bridge = toolBridge(ctx, tools, {
           ...(gated ? { gate: gated } : {}),
+          // Each result held to the session model's share of its window, when the adapter passed it.
+          ...(options.resultBudget ? { budget: options.resultBudget } : {}),
           // A `never` tool runs only once the assistant entry that asked for it is in the log.
           beforeNever: ({ callId }) => logged(callId),
         });
@@ -769,6 +781,7 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
           model,
           ...(smallModel ? { smallModel } : {}),
           ...(sandbox.commandTimeoutMs ? { bashTimeoutMs: sandbox.commandTimeoutMs } : {}),
+          ...(options.streamIdleMs !== undefined ? { streamIdleMs: options.streamIdleMs } : {}),
           ...(sandbox.env ? { extra: sandbox.env } : {}),
           toolDescriptionMax: Math.max(0, ...bridge.tools.map((t) => t.description.length)),
           // A host tool's result within the host's bound reaches the model whole (each tool is listed with it, too).

@@ -35,7 +35,11 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
   every URL `guard.fetch` would refuse: a check that passes everything sends private and internal URLs to a provider.
   A guard is the Web's alone; one passed with a `fetch` call is ignored.
 - `keys.parallel` is Parallel's key. `pay(fee, send)` is the run's cap: it sends the request when the fee fits, or
-  throws a `PaidRefused`. Without it, a request is unmetered.
+  throws a `PaidRefused`. Without it, a request is unmetered. A request on a call already stopped is never handed to
+  `pay`. One whose send failed before it left (stopped as the send began, or a fetch that failed connecting: a name
+  not resolved, a connection refused or not made, a TLS certificate or handshake refused) gives `pay` a 400 to settle at
+  $0, its receipt line says `not billed (not sent: <code>)`, and the call then fails as it would have. A cap books a 4xx
+  at nothing; any other failure stays at the fee.
 - `words.rateLimited` is what a keyless provider's rate limit says to the model.
 - `native` is the model's own hosted search, as a function. `send` and `endpoints` replace a provider's fetch or
   address (a test's fakes). `now` is the breakers' clock. `bounds` sets the searches' deadlines. `log` receives what a
@@ -65,7 +69,8 @@ const page = await web.fetch("https://example.org/", { offset: 0, maxChars: 20_0
 Each call returns its `answer` and a `receipt`, `{ op, asked, queries?, provider, tries, classifier, wall, injection, out, cost,
 cache?, unsifted? }`. `asked` is a search's objective (the words given, when it has none) or a fetch's URL, and
 `queries` a search's queries. `tries` lists the providers asked before the call returned, in the order asked, with each outcome,
-and a provider its breaker holds as `held`. A fetch also lists Parallel where it was passed over (no key, refused
+a search's provider that answered no results as `empty` (the call goes on to the next, and that answer returns only when
+none after it has results), and a provider its breaker holds as `held`. A fetch also lists Parallel where it was passed over (no key, refused
 earlier in the run, or a URL it may not be sent), with why; a part from the run's pages lists none. `cost` holds the fees
 of the requests sent before the call returned. A fetch stopped at its signal returns at once, but its read is the run's
 and goes on: a provider asked after the stop is in neither; one whose request was already sent has its fee in `cost` but

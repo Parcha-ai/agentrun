@@ -1,5 +1,5 @@
 import { Globe, Monitor, Smartphone, Terminal } from "lucide-react";
-import type { Place } from "./place";
+import { type Place, shellToolsOf } from "./place";
 import type { Computer, ComputerHold, ComputerKindView, ComputerProvider, RunMachine } from "./v2";
 
 /** Each kind's name and what it gives a run, in the console's words. A kind the console doesn't know yet reads as its id. */
@@ -96,15 +96,31 @@ export function recorded(computer: Computer, on: boolean): Computer {
  *  leaves the run's folder on the runner. */
 export const placeOfComputer = (computer: Computer): Place => (computer.kind === "sandbox" && computer.provider ? { mode: "sandbox", box: computer.provider } : { mode: "runner" });
 
+/** The box-only tools an agent on `computer` (none where it names none) keeps on a runner place: those its run's shell
+ *  runs where that shell is the runner's own, the server's own test (runnable.ts: runShellOf "local"). Read off the
+ *  choice's served `shell` in `kinds` (GET /v2/computers): the no-computer choice's own (Archil's exec in Mode 2, so
+ *  bash; none in Mode 1), another kind's provider's (none where it mounts the run's folder: its shell is its own, which
+ *  the server lets on a runner place with no shell tool). A computer set to run no programs of its own (`exec: false`)
+ *  has no shell anywhere, not its computer's and not Archil's exec, whatever its provider's shell (serve's runShellOf).
+ *  A list not read yet, or one that lists no such choice, keeps none: what the server answers in Mode 1. */
+export function runnerShellOf(computer: Computer | null | undefined, kinds: readonly ComputerKindView[] | null | undefined): ReadonlySet<string> {
+  const chosen = computer ?? { kind: "none" };
+  if ("exec" in chosen && chosen.exec === false) return shellToolsOf("none");
+  const kind = kinds?.find((one) => one.kind === chosen.kind);
+  return shellToolsOf(chosen.kind === "none" ? kind?.shell : kind?.providers.find((provider) => provider.id === chosen.provider)?.shell);
+}
+
 /** What an edit sets to put an agent on `computer`: the computer, the place it is, and, on the runner, the agent's `tools`
- *  without those that run only in a box (`sandbox_only` in the server's `offered` tools: bash and its background tools).
- *  The agent's Computer step and the Playground's move to the runner both make this edit. With no tools offered (the
- *  capabilities not read yet, or their read failed) which tools run only in a box is unknown, so an edit to the runner
- *  of an agent with tools is null: the caller changes nothing and says why. */
-export function computerFields(computer: Computer, tools: readonly string[], offered: readonly { name: string; sandbox_only?: true }[]): { computer: Computer; place: Place; tools?: string[] } | null {
+ *  without those that run only in a box (`sandbox_only` in the server's `offered` tools: bash and its background tools),
+ *  save those the computer's run shell runs there (runnerShellOf, by the served computers list `kinds`). The agent's
+ *  Computer step and the Playground's move to the runner both make this edit. With no tools offered (the capabilities
+ *  not read yet, or their read failed) which tools run only in a box is unknown, so an edit to the runner of an agent
+ *  with tools is null: the caller changes nothing and says why. */
+export function computerFields(computer: Computer, tools: readonly string[], offered: readonly { name: string; sandbox_only?: true }[], kinds: readonly ComputerKindView[] | null | undefined): { computer: Computer; place: Place; tools?: string[] } | null {
   const place = placeOfComputer(computer);
   if (place.mode === "runner" && tools.length && !offered.length) return null;
-  const sandboxOnly = new Set(offered.filter((tool) => tool.sandbox_only).map((tool) => tool.name));
+  const shell = runnerShellOf(computer, kinds);
+  const sandboxOnly = new Set(offered.filter((tool) => tool.sandbox_only && !shell.has(tool.name)).map((tool) => tool.name));
   return { computer, place, ...(place.mode === "runner" ? { tools: tools.filter((tool) => !sandboxOnly.has(tool)) } : {}) };
 }
 

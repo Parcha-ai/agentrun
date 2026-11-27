@@ -244,16 +244,17 @@ test("the path compares the workflow's answer as it produced it and as the agent
   assert.equal(runPathOverStore.length >= 3, true);
 });
 
-test("a run with rounds: its impact and its cost per run read the same split: the job is its first round's, every later turn its learning", async () => {
+test("a run with rounds: its impact and its cost per run read the same split: the job and its follow-up turns are the job's, every round's look-back its learning", async () => {
   const { impactLearningOf } = await import("../dist/store-reads/learning.js");
   const { roundsLooked } = await import("../dist/learn/ledger.js");
   const rounds = { answered_at: "2026-11-13T00:00:00.000Z", job_cost_usd: 0.6, look_back_usd: 0.1 };
-  // Round 1's job $0.60, a follow-up turn $0.30, two compile turns $0.10: the row holds $1.00.
-  assert.deepEqual(roundsLooked(rounds, 1.0), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: 0.4 });
-  assert.deepEqual(roundsLooked(rounds, null), { answered_at: rounds.answered_at, job_cost_usd: 0.6, look_back_usd: null }, "an unknown row cost with the job known: the spend after the job is unknown, never the rounds' turns added up as settled");
+  // Round 1's job $0.60, a follow-up turn $0.30, two compile turns $0.10: the row holds $1.00. A grade's feedback round
+  // asks no job turn (feedback-round.ts): its spend is all in its look-back, learning's either way.
+  assert.deepEqual(roundsLooked(rounds, 1.0), { answered_at: rounds.answered_at, job_cost_usd: 0.9, look_back_usd: 0.1 });
+  assert.deepEqual(roundsLooked(rounds, null), { answered_at: rounds.answered_at, job_cost_usd: null, look_back_usd: 0.1 }, "an unknown row cost: the job, which holds the follow-up, is unknown, never round 1's figure");
   const impact = impactLearningOf({ state: "merged", reason: null, at: "2026-11-13T00:01:00.000Z" }, { seed: "a".repeat(40), section: "" }, undefined, rounds, 1.0);
-  assert.equal(impact.job_cost_usd, 0.6, "the job is round 1's");
-  assert.equal(impact.look_back_usd, 0.4, "the follow-up turn is learning, as the cost per run counts it");
+  assert.equal(impact.job_cost_usd, 0.9, "the job and its follow-up turn");
+  assert.equal(impact.look_back_usd, 0.1, "the look-backs alone are learning, as the cost per run counts them");
 });
 
 test("a run whose agent called learned_workflow itself, graded wrong, label and all: the grade is kept and opens no round; the path stays workflow (#2648 review)", { timeout: 120_000 }, async (t) => {
@@ -270,6 +271,28 @@ test("a run whose agent called learned_workflow itself, graded wrong, label and 
   assert.deepEqual([read?.graded?.correct, read?.graded?.feedback, read?.graded?.path, read?.graded?.workflow], [false, null, "workflow", "answer"], `the learning read keeps the grade, naming no round: ${JSON.stringify(read?.graded)}`);
   assert.deepEqual([row.metrics?.path, row.metrics?.workflow], ["workflow", "answer"], JSON.stringify(row.metrics));
   assert.equal(await server.learning.proposal("run-called", 2), undefined, "no second round");
+});
+
+test("a run whose agent called its learned workflow, the answer the workflow's, is served by that revision as a platform-served one is: its record, its view and its ledger row name the call's digest, and the revision's spend is shared over it", { timeout: 180_000 }, async (t) => {
+  const { summarize } = await import("../dist/learn/ledger.js");
+  const { server, start } = await world(t, { calls: new Set([5]), reads: new Set([1]) });
+  const digest = workflowDigest({ workflow: JSON.stringify(answerFlow) });
+  await start("run-hand", 1, { byHand: true });
+  const platform = await start("run-served", 6);
+  assert.deepEqual([platform.metrics?.path, platform.metrics?.workflow_digest], ["workflow", digest], `the platform served it first: ${JSON.stringify(platform.metrics)}`);
+  const called = await start("run-called", 5, { byHand: true, offered: true });
+  const calls = called.metrics?.workflow_calls ?? [];
+  assert.deepEqual(calls.map((call) => [call.caller, call.digest]), [["agent", digest]], `the agent's own call, at the revision: ${JSON.stringify(called.metrics)}`);
+  assert.deepEqual([called.metrics?.path, called.metrics?.workflow, called.metrics?.workflow_digest], ["workflow", "answer", digest], `its record names the call's digest: ${JSON.stringify(called.metrics)}`);
+  assert.equal((await viewOverStore(server, "run-called", VIEW_DEPS)).workflow?.digest, digest, "the run view names the revision that ran");
+  const { rows } = await server.learning.ledger("agent-1");
+  assert.equal(rows.find((one) => one.runId === "run-called")?.digest, digest, "its ledger row names the revision");
+  // The revision's $0.40 compile (kept on the run by hand) spread over its first two served runs: the platform's and the
+  // agent's, $0.20 each.
+  const spend = [{ runId: "run-hand", agentId: "agent-1", round: 1, kind: "compile", ofRun: null, workflow: "answer", digest, usd: 0.4 }];
+  const out = summarize({ rows, spend, shadows: new Map(), revisions: [{ workflow: "answer", digest, k: 2, state: "serving" }], compileAfter: 2 });
+  assert.deepEqual(["run-served", "run-called"].map((id) => out.figures.get(id)?.share_usd), [0.2, 0.2], "each served run carries its share");
+  assert.deepEqual(out.bill.revisions.map((one) => [one.served, one.attributed_usd, one.unattributed_usd]), [[2, 0.4, 0]], JSON.stringify(out.bill.revisions));
 });
 
 test("a graded run keeps its answer: its feedback round's words are no message of the job's, so result.final_answer and result.output stand after the round (#2648 review)", { timeout: 120_000 }, async (t) => {

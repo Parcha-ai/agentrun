@@ -12,6 +12,7 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 
 const { openSqliteStore } = await import("../../dist/store/sqlite/store.js");
+const { heldRedactor } = await import("../../dist/runner/redact.js");
 const { runKey } = await import("../../dist/workspace/paths.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../../dist/archil-settings.js");
 const { ARCHIL_API_KEY_ROW } = await import("../../dist/workspace/index.js");
@@ -22,7 +23,9 @@ const { putSealedKey } = await import("../../dist/server-keys.js");
 const { FakeArchilDisk } = await import("./archil-fake.mjs");
 const { readBackOf } = await import("./archil-readback.mjs");
 const { fakeComputer } = await import("../workspace-fake-computer.mjs");
+const { realProcesses } = await import("../workspace-fake-processes.mjs");
 const { KINDS } = await import("../workspace-kinds-fixture.mjs");
+const { regionS3Url } = await import("../../dist/archil-settings.js");
 const { archilControlFetch } = await import("../archil-control-fake.mjs");
 
 process.env.AGENTRUN_OPENCODE_STANDIN = "1";
@@ -41,9 +44,8 @@ const stubRoute = async () => ({ model: "faux-1", provider: { api: "anthropic-me
  *  disk's write delegation for the run's folder until the computer is released. The computer is fakeComputer over a
  *  local folder (`scratch`), so the attached Workspace's own writes (its .agentrun/tmp) go through the computer, as they
  *  do in a real one. `mounts` records where in the disk's calls each mount came (`at`) and where its release let the
- *  delegation go (`releasedAt`). */
-function sandboxOverArchil(disk, scratch, mounts) {
-  const computer = fakeComputer(scratch);
+ *  delegation go (`releasedAt`). `computer` is that fake, made by the caller, its every call recorded. */
+function sandboxOverArchil(disk, scratch, mounts, computer) {
   // What the provider reads back as mounted at /workspace: the Archil mount it was made with, under the claim's epoch.
   let mounted;
   let epoch;
@@ -80,12 +82,15 @@ function sandboxOverArchil(disk, scratch, mounts) {
  *  the agent's first save in the store). `claimNext(build)` claims it (a claim taken over a lapsed one when there was
  *  one) and builds its spec; `t.after` lets every spec go. `mcp`: the run's MCP, its revision granted `grants` and
  *  pinned `pin`, its own tool settings `toolSettings`, `before(server)` registering the server, `deps` added to the claim's. `computer: false`: a revision with
- *  no computer, so nothing mounts the run's folder. */
-export async function mode2Run(t, { harness, disk, learns = false, mcp, computer = true }) {
+ *  no computer, so nothing mounts the run's folder. `region`: the server's Archil region (aws-us-east-1 by default).
+ *  `body`: more of the revision's body (its `checkout`); `launch`: more of the run's launch (its input, inputOrigin or
+ *  repo); `deps`: more of the claim's deps (githubWeb). `processes`: the computer's process calls run for real in its
+ *  folder (realProcesses), as a sandbox's own exec runs them. */
+export async function mode2Run(t, { harness, disk, learns = false, mcp, computer = true, region = ARCHIL_SETTINGS.region, body = {}, launch: given = {}, deps: more = {}, processes = false }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-mode2-skills-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
-  const control = archilControlFetch();
+  const control = archilControlFetch({ region });
   const opened = [];
   t.after(async () => {
     for (const { spec, harnessRun } of opened.reverse()) {
@@ -98,13 +103,13 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp, computer
   });
   await server.agents.create(
     { id: AGENT, name: "Agent" },
-    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write", ...(mcp?.grants ?? [])], skills: { "cite/SKILL.md": "0".repeat(64) }, ...(computer ? { computer: { kind: "sandbox", provider: "e2b" } } : {}), ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}), ...(mcp?.toolSettings ? { toolSettings: mcp.toolSettings } : {}) }, skills: { "cite/SKILL.md": SKILL }, ...(mcp?.pin ? { mcpPin: mcp.pin } : {}) },
+    { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read", "write", ...(mcp?.grants ?? [])], skills: { "cite/SKILL.md": "0".repeat(64) }, ...(computer ? { computer: { kind: "sandbox", provider: "e2b" } } : {}), ...(harness ? { harness } : {}), ...(learns ? { learning: true } : {}), ...(mcp?.toolSettings ? { toolSettings: mcp.toolSettings } : {}), ...body }, skills: { "cite/SKILL.md": SKILL }, ...(mcp?.pin ? { mcpPin: mcp.pin } : {}) },
   );
   await mcp?.before?.(server);
   const learning = learns ? { seed: (await server.learning.seed(AGENT)).save.id, section: "" } : undefined;
-  const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }), ...(learning ? { learning } : {}) };
+  const launch = { input: { content: "Do the thing." }, title: "t", place: { mode: "runner" }, ...(harness ? { harness, model: { provider: "openai", modelId: "gpt-5" } } : { model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } }), ...(learning ? { learning } : {}), ...given };
   await server.runs.create({ id: RUN, agentId: AGENT, revisionId: "rev-1" }, { body: launch });
-  await saveArchilSettings(server, ARCHIL_SETTINGS);
+  await saveArchilSettings(server, region === ARCHIL_SETTINGS.region ? ARCHIL_SETTINGS : { ...ARCHIL_SETTINGS, region, s3Url: regionS3Url(region) });
   await storeAgentDisk(server, AGENT, { diskId: ARCHIL_SETTINGS.diskId });
   await server.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(SEAL_KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
   await putSealedKey(server, SEAL_KEY, "E2B_API_KEY", "fake-test-key-e2b-0001");
@@ -113,15 +118,22 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp, computer
   mkdirSync(scratch);
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }) };
   const mounts = [];
+  const said = [];
+  const fake =processes ? realProcesses(fakeComputer(scratch), scratch) : fakeComputer(scratch);
   const deps = {
     env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: stubRoute,
     makeArchilDisk: () => disk,
     mountControl: { baseUrl: control.baseUrl, fetch: control.fetch },
-    computerForClaim: sandboxOverArchil(disk, scratch, mounts),
+    computerForClaim: sandboxOverArchil(disk, scratch, mounts, fake),
     ...mcp?.deps,
+    ...more,
   };
   return {
     mounts,
+    /** The fake computer, its every call recorded (`calls`, `methods()`). */
+    computer: fake,
+    /** What each claim said on the run's timeline (AdapterRun.phase), in order. */
+    said,
     /** The runner's data folder, where a Mode 1 run's local folder would be. */
     data: dir,
     /** The computer's folder: the fake computer's /workspace, a local folder that stands in for the mounted run's folder. */
@@ -137,7 +149,7 @@ export async function mode2Run(t, { harness, disk, learns = false, mcp, computer
       const harnessRun = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
       const entry = { harnessRun };
       opened.push(entry);
-      entry.spec = await build(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
+      entry.spec = await build(launch, { redact: heldRedactor((text) => text), harness: harnessRun, registry, setModels: (given) => (models = given), phase: (words) => void said.push(words) }, deps, claim);
       return { claim, spec: entry.spec };
     },
   };

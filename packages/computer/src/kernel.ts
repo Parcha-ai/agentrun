@@ -49,6 +49,7 @@ import {
 	type ReleaseConfirm,
 	RECOVER_MS,
 	recoverCreate,
+	type MadeBrowser,
 	releaseConfirmed,
 	boundedRelease,
 	restCall,
@@ -117,6 +118,8 @@ interface KernelRow {
 	id: string;
 	tags: Record<string, string>;
 	createdAt?: string;
+	/** Deleted: listed only when #browsers is asked for the deleted ones too. */
+	deleted?: true;
 }
 
 /** A browser as its create label finds it. */
@@ -280,7 +283,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 			// The browser may have been made though its answer never came: found by this POST's attempt label and deleted,
 			// and the request is ended, so it is never made again.
 			this.#requests.end(request);
-			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(attempt)}`, causeOf(failed), "kernel");
+			return causedFail(failed.error.code, `${failed.error.message}; ${await this.#recover(attempt, request)}`, causeOf(failed), "kernel");
 		}
 		const browser = (made.json ?? {}) as KernelBrowser;
 		const id = text(browser.session_id);
@@ -290,7 +293,7 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 			const failed = vendorFailure("kernel", NAME, "POST /browsers", new BrowserVendorError(NAME, "POST /browsers", made.status, "no_session"));
 			if (failed.ok) return failed;
 			this.#requests.end(request);
-			return fail(failed.error.code, `${failed.error.message}; ${await this.#recover(attempt)}`);
+			return fail(failed.error.code, `${failed.error.message}; ${await this.#recover(attempt, request)}`);
 		}
 		this.#requests.made(request);
 		// Another process's create of this request may have made one too (#converge): the older is answered.
@@ -299,9 +302,9 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 		this.#requestOf.set(id, request);
 		const unusable = cdpUrlProblem(url, NAME, CDP_DOMAIN);
 		if (unusable !== undefined) {
-			// The browser is made and billed until its idle timeout: deleted here, not left to a later sweep.
-			const released = await this.release(refOf(id), "delete");
-			return vendorFail("kernel",`Kernel POST /browsers made a browser with no CDP URL to hand over: ${unusable}; ${released.ok ? "the browser was released" : `the browser was not released (${released.error.code}), and its tags let a sweep find it`}`);
+			// The browser is made and billed until its idle timeout: deleted here, under the cleanup's own bound.
+			const released = await boundedRelease("browser", id, this.#cleanupMs, (bound) => this.release(refOf(id), "delete", { signal: bound }));
+			return vendorFail("kernel",`Kernel POST /browsers made a browser with no CDP URL to hand over: ${unusable}; ${released.ok ? "the browser was released" : `the browser was not released (${released.error.message}), and its tags let a sweep find it`}`);
 		}
 		this.#urls.set(id, url);
 		const live = text(browser.browser_live_view_url);
@@ -410,12 +413,19 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	 * another, carries an attempt label of its own and is left alone, even one another instance has answered. #browsers
 	 * reads every state not deleted, so a browser still starting is found and released too.
 	 */
-	#recover(labels: Record<string, string>): Promise<string> {
+	#recover(labels: Record<string, string>, request: string): Promise<string> {
 		const find = async (signal: AbortSignal): Promise<Result<string[]>> => {
 			const found = await this.#browsers(labels, signal);
 			return found.ok ? ok(found.value.map((b) => b.id)) : found;
 		};
-		return recoverCreate("browser", find, (id, signal) => this.release(refOf(id), "delete", { signal }), this.#sleep, this.#cleanupMs);
+		const made = (signal: AbortSignal) => this.#requestBrowsers(request, signal);
+		return recoverCreate("browser", find, (id, signal) => this.release(refOf(id), "delete", { signal }), this.#sleep, this.#cleanupMs, made);
+	}
+
+	/** The request's browsers, deleted ones included, for a lost create's recovery (recoverCreate, leftToConverge). */
+	async #requestBrowsers(request: string, signal: AbortSignal): Promise<Result<MadeBrowser[]>> {
+		const made = await this.#browsers({ [CREATE_LABEL]: request }, signal, true);
+		return made.ok ? ok(made.value.map((row) => ({ ...heldOf(row), live: row.deleted === undefined }))) : made;
 	}
 
 	/**
@@ -488,15 +498,14 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 	 * browser still starting, which bills), and a row with deleted_at is dropped here; so list and attach show a starting
 	 * browser, as Browserbase lists a PENDING session, and a lost create's recovery misses none. The match is the
 	 * provider's own, so a lane that drops the filter never hands back another's. A page that cannot be read fails the
-	 * whole list: a release trusts it.
+	 * whole list: a release trusts it. `withDeleted` keeps the deleted rows too, marked deleted (#requestBrowsers).
 	 */
-	async #browsers(labels: Record<string, string>, signal?: AbortSignal): Promise<Result<KernelRow[]>> {
+	async #browsers(labels: Record<string, string>, signal?: AbortSignal, withDeleted = false): Promise<Result<KernelRow[]>> {
 		const problem = labelsProblem(labels);
 		if (problem) return fail("invalid", problem);
 		if (Object.keys(labels).length === 0) return fail("invalid", "list and attach take at least one label: a Kernel organization holds browsers this provider did not make");
 		const first = Object.entries(labels).find(queryable);
-		const found: KernelRow[] = [];
-		const seen = new Set<string>();
+		const found = new Map<string, KernelRow>();
 		const call = "GET /browsers";
 		for (let offset = 0, pages = 0; pages < MAX_PAGES; pages++) {
 			const query = new URLSearchParams({ status: "all", ...(first === undefined ? {} : { [`tags[${first[0]}]`]: first[1] }), limit: "100", offset: String(offset) });
@@ -511,13 +520,18 @@ export class KernelProvider implements ComputerProvider, BrowserComputerProvider
 			if (!Array.isArray(page.json)) return vendorFailure("kernel", NAME, call, new BrowserVendorError(NAME, call, page.status, "not_a_list"));
 			for (const row of page.json as KernelBrowser[]) {
 				const id = text(row?.session_id);
-				if (id !== "" && !row.deleted_at && carries(row.tags, labels) && !seen.has(id)) {
-					seen.add(id);
-					const createdAt = text(row.created_at);
-					found.push({ id, tags: withoutCreateLabel(labelsOf(row.tags)), ...(createdAt === "" ? {} : { createdAt }) });
+				if (id === "" || (!withDeleted && row.deleted_at) || !carries(row.tags, labels)) continue;
+				const before = found.get(id);
+				// A browser listed twice (pages shifted under the read) reads as deleted once either row says so: a delete is
+				// never undone.
+				if (before !== undefined) {
+					if (row.deleted_at && before.deleted === undefined) found.set(id, { ...before, deleted: true });
+					continue;
 				}
+				const createdAt = text(row.created_at);
+				found.set(id, { id, tags: withoutCreateLabel(labelsOf(row.tags)), ...(createdAt === "" ? {} : { createdAt }), ...(row.deleted_at ? { deleted: true as const } : {}) });
 			}
-			if (page.headers.get("x-has-more") !== "true") return ok(found);
+			if (page.headers.get("x-has-more") !== "true") return ok([...found.values()]);
 			const next = Number(page.headers.get("x-next-offset"));
 			if (!Number.isInteger(next) || next <= offset) return vendorFail("kernel","Kernel reported more browsers without the next page's offset");
 			offset = next;

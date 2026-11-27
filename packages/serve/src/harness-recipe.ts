@@ -105,6 +105,10 @@ export interface Recipe {
    *  another tool is the agent's own; absent, calls are matched to MCP calls by their arguments alone (AcpAnnounces). */
   readonly announces?: { readonly tool: string; readonly server?: string; readonly prefix?: string; readonly args?: string; readonly extras?: readonly string[] };
   readonly state: readonly string[];
+  /** MCP config files the agent reads, each JSON with an `mcpServers` object: `~/<path>` or `$HOME/<path>` in the
+   *  private HOME, any other a path in the work directory. Under a per-start name for ours, listing one has the run keep
+   *  one name, and one that declares a server under it has it refused at a start (the adapter's mcpConfigs). */
+  readonly mcpConfigs?: readonly string[];
   readonly declares: { readonly load: boolean; readonly mcp: "http" | "stdio" };
   /** `permissionTie: "title"`: the adapter answers the agent's permission request for one of our announced calls
    *  allow_once (Cursor's way); absent, every request goes to the server's gate. */
@@ -121,7 +125,7 @@ export class RecipeRefused extends Error {
 }
 
 /** The fields a recipe has. */
-const FIELDS = new Set(["id", "label", "release", "args", "keys", "keyMethod", "env", "model", "files", "allowFile", "announces", "state", "declares", "quirks", "signIn", "description", "$schema"]);
+const FIELDS = new Set(["id", "label", "release", "args", "keys", "keyMethod", "env", "model", "files", "allowFile", "announces", "state", "mcpConfigs", "declares", "quirks", "signIn", "description", "$schema"]);
 /** Fields that would run something of the recipe's own at install or start (rule 4). */
 const INSTALL_FIELDS = new Set(["install", "installCommand", "postinstall", "preinstall", "setup", "script", "scripts", "run", "hooks", "update"]);
 /** Fields that would name a binary other than the release's archive (rule 2). */
@@ -332,6 +336,8 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
   }
   if (r.state !== undefined && !strings(r.state)) say(RECIPE_CODES.paths, "state is a list of folders in the private HOME");
   else for (const path of (r.state as string[] | undefined) ?? []) if (!insideHome(path)) say(RECIPE_CODES.paths, `the state folder ${JSON.stringify(path)} must be inside the session's private HOME`);
+  if (r.mcpConfigs !== undefined && !strings(r.mcpConfigs)) say(RECIPE_CODES.paths, "mcpConfigs is a list of MCP config files the agent reads");
+  else for (const path of (r.mcpConfigs as string[] | undefined) ?? []) if (!insideHome(path.startsWith("~/") ? path.slice(2) : path)) say(RECIPE_CODES.paths, `the mcpConfigs file ${JSON.stringify(path)} must be ~/<a path inside the session's private HOME> or a path inside its work directory`);
 
   const declares = r.declares;
   if (!isPlain(declares) || typeof declares.load !== "boolean" || (declares.mcp !== "http" && declares.mcp !== "stdio")) say(RECIPE_CODES.invalid, 'declares is { "load": true or false, "mcp": "http" or "stdio" }');
@@ -369,30 +375,57 @@ export function parseRecipe(text: string): Recipe {
     ...(r.allowFile ? { allowFile: Object.freeze({ path: insideHome(r.allowFile.path)!, form: r.allowFile.form }) } : {}),
     ...(r.announces ? { announces: Object.freeze({ tool: r.announces.tool, ...(r.announces.server !== undefined ? { server: r.announces.server } : {}), ...(r.announces.prefix !== undefined ? { prefix: r.announces.prefix } : {}), ...(r.announces.args !== undefined ? { args: r.announces.args } : {}), ...(r.announces.extras !== undefined ? { extras: Object.freeze([...r.announces.extras]) } : {}) }) } : {}),
     state: (r.state ?? []).map((path) => insideHome(path)!),
+    ...(r.mcpConfigs?.length ? { mcpConfigs: Object.freeze([...r.mcpConfigs]) } : {}),
     declares: r.declares,
     quirks: r.quirks ?? {},
     ...(r.signIn ? { signIn: Object.freeze({ args: Object.freeze([...r.signIn.args]), homeArg: r.signIn.homeArg, ...(r.signIn.terms ? { terms: r.signIn.terms } : {}) }) } : {}),
   });
 }
 
-/** The recipe file at `path`, read and loaded. */
-export function loadRecipe(path: string): { recipe: Recipe; file: string; sha256: string } {
-  const file = resolve(path);
+/** The file `given` names, from `cwd`: the recipe the ACP package ships (bundledRecipePath: Google Antigravity's) when
+ *  `given` is its name, else the file at that path. A name a file in `cwd` also holds is refused, saying both, so the
+ *  owner's own file is never passed over silently (`./<name>` names the file). A bundled name is never a built-in
+ *  harness's id: the recipe's own id is that name, and a built-in id is refused as a recipe's (parseRecipe). */
+export function resolveRecipe(given: string, cwd: string = process.cwd()): { file: string; bundled: boolean } {
+  const local = resolve(cwd, given);
+  const shipped = acpPackage()?.bundledRecipePath?.(given);
+  // The shipped file named by its path is the shipped recipe too.
+  if (!shipped) return { file: local, bundled: bundledName(local) !== undefined };
+  if (existsSync(local)) throw new RecipeRefused(RECIPE_CODES.invalid, [{ code: RECIPE_CODES.invalid, words: `${given} names both the recipe AgentRun ships (${shipped}) and the file ${local} in this directory: write ./${given} for your file, or name the shipped one from another directory` }]);
+  return { file: shipped, bundled: true };
+}
+
+/** The name of the recipe at `file` when the ACP package ships it, else undefined. */
+const bundledName = (file: string): string | undefined => {
+  const acp = acpPackage();
+  return acp?.BUNDLED_RECIPES?.find((each) => acp.bundledRecipePath?.(each) === resolve(file));
+};
+
+/** The word a printed command names the recipe at `file` by: its bundled name, else the file. */
+const recipeWord = (file: string): string => bundledName(file) ?? shellWord(file);
+
+/** Which recipe resolved, as a command says it before anything else: the one AgentRun ships, or the owner's file. */
+export const recipeSaid = (label: string, file: string, bundled: boolean): string =>
+  `${label}: ${bundled ? `the recipe AgentRun ships (${file})` : `the recipe file ${file}`}`;
+
+/** The recipe at `path` (a file, or the name of a recipe AgentRun ships: resolveRecipe), read and loaded. */
+export function loadRecipe(path: string): { recipe: Recipe; file: string; sha256: string; bundled: boolean } {
+  const { file, bundled } = resolveRecipe(path);
   let text: string;
   try {
     text = readFileSync(file, "utf8");
   } catch (error) {
     throw new RecipeRefused(RECIPE_CODES.invalid, [{ code: RECIPE_CODES.invalid, words: `the recipe file ${file} cannot be read (${(error as NodeJS.ErrnoException).code ?? (error as Error).message})` }]);
   }
-  return { recipe: parseRecipe(text), file, sha256: createHash("sha256").update(text).digest("hex") };
+  return { recipe: parseRecipe(text), file, sha256: createHash("sha256").update(text).digest("hex"), bundled };
 }
 
 /** The recipe's release for `platform` (this host's by default), or undefined where it lists none. */
 export const releaseFor = (recipe: Recipe, platform: string | undefined = archivePlatform()): RecipeArchive | undefined => (platform ? recipe.release.archives[platform] : undefined);
 
-/** The owner's command that installs the recipe at `file` into `data`. */
+/** The owner's command that installs the recipe at `file` into `data` (one AgentRun ships by its name, as goose's is). */
 export const recipeInstallLine = (file: string, data: string, env: NodeJS.ProcessEnv = process.env): string =>
-  `agentrun harness install --recipe ${shellWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
+  `agentrun harness install ${bundledName(file) ?? `--recipe ${shellWord(file)}`}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
 
 /** Where the recipe's binary is once installed: `<data>/harnesses/<id>/<cmd>`. */
 export const recipeBinaryOf = (data: string, recipe: Recipe, release: RecipeArchive): string => join(installDirOf(data, recipe.id), insideHome(release.cmd)!);
@@ -468,7 +501,7 @@ export const signedInNoteOf = (data: string, id: string): string => join(harness
 
 /** The owner's command that signs the recipe at `file` in, on `data`. */
 export const recipeSignInLine = (file: string, data: string, env: NodeJS.ProcessEnv = process.env): string =>
-  `agentrun harness sign-in --recipe ${shellWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
+  `agentrun harness sign-in --recipe ${recipeWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
 
 /** Whether the agent's own sign-in ended well on `data` (signedInNoteOf): nothing in its folder is read to say so.
  *  Whether the sign-in still holds is the agent's to say when it runs (an ACP -32000, Authentication required). */
@@ -518,4 +551,4 @@ export async function installRecipe(recipe: Recipe, file: string, data: string, 
 
 /** The owner's command that checks the recipe at `file`, installed into `data`. */
 export const recipeCheckLine = (file: string, data: string, env: NodeJS.ProcessEnv = process.env): string =>
-  `agentrun harness-check --recipe ${shellWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
+  `agentrun harness-check --recipe ${recipeWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;

@@ -7,8 +7,8 @@ export type ParallelSearchMode = "turbo" | "fast" | "basic" | "advanced";
  *  `mode`: `turbo` or `fast` $1 per 1,000 requests, `basic` or `advanced` $5 per 1,000, each with 10 results included,
  *  and each result past those 10 $1 per 1,000. Extract: $1 per 1,000 URLs. */
 export const PARALLEL_SEARCH_MODE_USD: Readonly<Record<ParallelSearchMode, number>> = Object.freeze({ turbo: 0.001, fast: 0.001, basic: 0.005, advanced: 0.005 });
-/** A `fast` search's price: the mode the web tools search in (web-search.ts). */
-export const PARALLEL_SEARCH_USD = 0.001;
+/** A `fast` search's price, the mode the web tools search in by default (parallel.ts PARALLEL_DEFAULTS). */
+export const PARALLEL_SEARCH_USD: number = PARALLEL_SEARCH_MODE_USD.fast;
 export const PARALLEL_SEARCH_RESULT_USD = 0.001;
 export const PARALLEL_SEARCH_INCLUDED = 10;
 export const PARALLEL_EXTRACT_USD = 0.001;
@@ -123,3 +123,14 @@ export class PaidRefused extends Error {
 export type Pay = (fee: Fee, send: () => Promise<Response>, charged?: () => number, settled?: (booked: boolean) => void) => Promise<Response>;
 /** No cap: the request is sent as it is. */
 export const unmetered: Pay = (_fee, send) => send();
+
+/** What a paid request's send gives its Pay when the request never left this process (keyed.ts paidSend): a 400, which
+ *  a cap settles at $0 (a 4xx is booked at nothing), marked with why, so the receipt's line for it says so (unsentOf). */
+const unsentAnswers = new WeakMap<Response, string>();
+export const unsentAnswer = (why: string): Response => {
+  const answer = new Response(null, { status: 400 });
+  unsentAnswers.set(answer, why);
+  return answer;
+};
+/** Why `answer` stands for a request that never left (unsentAnswer); undefined for any answer a provider gave. */
+export const unsentOf = (answer: Response): string | undefined => unsentAnswers.get(answer);

@@ -1,8 +1,9 @@
 // A provider on the run's key over its HTTP API (Exa's, Firecrawl's): each request paid through the injected Pay at its
 // price and never sent without one; a status in `refuseOn` stops the client for its life; a 402 is the key's credit
-// spent (a quota) and a 429 a rate limit for its Retry-After, both for the run's breaker. Nothing is retried. A
+// spent (a quota) and a 429 a rate limit for its Retry-After, both for the run's breaker. A request on a stopped call is
+// never asked of the Pay, and one that failed before it left (paidSend) is settled at $0. Nothing is retried. A
 // provider's own words are never passed on: a failure is said in ours, with its status and, where it gives one, its code.
-import { type Fee, PaidRefused, type Pay, unmetered } from "../fees.js";
+import { type Fee, PaidRefused, type Pay, unmetered, unsentAnswer } from "../fees.js";
 import { type Failed, failed, keyWide, type Limit } from "../search.js";
 
 /** The most bytes of one answer read: past it the answer is not read. */
@@ -26,7 +27,7 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn }: 
     async post(path, body, signal) {
       const fee = feeOf(path, body);
       if (!fee) throw new PaidRefused(`${who}'s ${path} was not sent: it has no price here`);
-      return pay(fee, async () => {
+      return paidSend(pay, fee, signal, async () => {
         const response = await send(`${root}${path}`, {
           method: "POST",
           headers: { ...headers, "content-type": "application/json" },
@@ -40,6 +41,59 @@ export function keyedClient({ who, base, headers, feeOf, timeoutMs, refuseOn }: 
       });
     },
   };
+}
+
+/** The codes of a fetch's failure (the cause of undici's TypeError "fetch failed") from before its request was written:
+ *  the host's name not resolved, the host or its network not reached, the connection refused or not made within
+ *  undici's connect bound, the TLS handshake refusing the host's certificate. A request failing with one never reached
+ *  the provider. */
+const UNSENT_CODES = new Set(["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN"]);
+/** Node's TLS codes (ERR_TLS_*) that can come once a connection is up, after a request may have left: not unsent. */
+const TLS_LATER = new Set(["ERR_TLS_RENEGOTIATION_DISABLED", "ERR_TLS_SESSION_ATTACK"]);
+
+/** Why `error`, thrown by a paid request's send, is one that never left this process, or undefined when it may have
+ *  left (and may be billed): `stoppedFirst`, the call's signal stopped when the send started ("stopped"), or a fetch
+ *  that failed connecting (its cause's code, UNSENT_CODES, a certificate's CERT_* or a handshake's ERR_TLS_*). Anything
+ *  else may have reached the provider: a reset socket (ECONNRESET, UND_ERR_SOCKET), a timeout or a stop after the send
+ *  started, a body that broke. */
+export function unsentWhy(error: unknown, stoppedFirst: boolean): string | undefined {
+  if (stoppedFirst) return "stopped";
+  const thrown = error as { name?: unknown; message?: unknown; cause?: { code?: unknown } } | null | undefined;
+  if (thrown?.name !== "TypeError" || thrown.message !== "fetch failed") return undefined;
+  const code = thrown.cause?.code;
+  if (typeof code !== "string") return undefined;
+  return UNSENT_CODES.has(code) || code.startsWith("CERT_") || (code.startsWith("ERR_TLS_") && !TLS_LATER.has(code)) ? code : undefined;
+}
+
+/** `send`, one paid request at `fee`, through `pay`: on a signal already stopped, never asked of `pay` (nothing held),
+ *  the stop's own reason thrown as fetch throws it; one whose send failed before it left (unsentWhy) answered to `pay`
+ *  as unsentAnswer, a 4xx the cap settles at $0, and then thrown as it was, marked `unsent`. Every other failure is
+ *  thrown inside `pay`, which books it at its fee. */
+export async function paidSend(pay: Pay, fee: Fee, signal: AbortSignal | undefined, send: () => Promise<Response>): Promise<Response> {
+  if (signal?.aborted) throw signal.reason;
+  let unsent: { error: unknown } | undefined;
+  const answer = await pay(fee, async () => {
+    const stoppedFirst = signal?.aborted === true;
+    try {
+      return await send();
+    } catch (error) {
+      const why = unsentWhy(error, stoppedFirst);
+      if (why === undefined) throw error;
+      unsent = { error };
+      return unsentAnswer(why);
+    }
+  });
+  if (unsent) {
+    const { error } = unsent;
+    // Marked where it can be: a frozen or sealed error is thrown as it was, never replaced by the marking's own failure.
+    if (error !== null && typeof error === "object") {
+      try {
+        Object.assign(error, { unsent: true });
+      } catch {}
+    }
+    throw error;
+  }
+  return answer;
 }
 
 /** What a status says of the run's key: its credit spent (402), or a rate limit (429) for its Retry-After. */
@@ -125,8 +179,12 @@ export const yesNo: Check = [(value) => typeof value === "boolean", "true or fal
 export const matching = (pattern: RegExp, must: string): Check => [(value) => typeof value === "string" && pattern.test(value), must];
 export const domains = (max: number): Check => [(value) => Array.isArray(value) && value.length <= max && value.every((one) => typeof one === "string" && one.trim() !== "" && one.length <= 253), `a list of at most ${max} domains`];
 
+/** A refused value's kind in words, for a problem line that names it without echoing it. */
+export const kindOf = (value: unknown): string =>
+  value === null ? "null" : Array.isArray(value) ? "a list" : typeof value === "object" ? "an object" : `a ${typeof value}`;
+
 /** What is wrong with `settings` for `who` by `checks`, one line each: not an object, a setting it does not take, or a
- *  value its check refuses. */
+ *  value its check refuses, named by its kind and never echoed (a key pasted into the wrong setting stays out of it). */
 export function settingsProblems(who: string, settings: unknown, checks: Readonly<Record<string, Check>>): string[] {
   if (typeof settings !== "object" || settings === null || Array.isArray(settings)) return [`${who}'s settings must be an object`];
   return Object.entries(settings).flatMap(([name, value]) => {
@@ -134,6 +192,6 @@ export function settingsProblems(who: string, settings: unknown, checks: Readonl
     const check = Object.hasOwn(checks, name) ? checks[name] : undefined;
     if (!check) return [`${who} takes no setting ${JSON.stringify(name)} (it takes ${Object.keys(checks).join(", ")})`];
     if (value === undefined || check[0](value)) return [];
-    return [`${who}'s ${name} must be ${check[1]} (it was ${String(JSON.stringify(value)).slice(0, 60)})`];
+    return [`${who}'s ${name} must be ${check[1]} (it was ${kindOf(value)})`];
   });
 }

@@ -370,7 +370,9 @@ export type ReadBackNotes = string[];
 
 /**
  * What a computer was given, as its vendor's own answer for it says (its get or create answer): the figures the vendor
- * bills by. Each field is absent where the vendor's answer does not say it, never guessed from what was asked.
+ * bills by. Each field is absent where the vendor's answer does not say it, never guessed from what was asked. One
+ * exception: a provider whose vendor reads no size back and bills a computer by its use, up to limits its create set
+ * (Modal), gives those limits, the most the computer's time can bill.
  */
 export interface ComputerResources {
 	cpus?: number;

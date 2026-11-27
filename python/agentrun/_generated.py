@@ -359,6 +359,7 @@ __all__ = [
     "FeaturesTriggersWebhook",
     "FeaturesUsage",
     "FeaturesWebhooks",
+    "FeaturesWorkspaces",
     "File",
     "FileCreate",
     "FilePathString",
@@ -453,6 +454,14 @@ __all__ = [
     "GetLearningLoopResponse",
     "GetLearningLoopResponseCompilesItem",
     "GetLearningLoopResponseCompilesItemAttemptsItem",
+    "GetLocalModelResponse",
+    "GetLocalModelResponseMachine",
+    "GetLocalModelResponseMachineGpu1",
+    "GetLocalModelResponseMachineGpu2",
+    "GetLocalModelResponseMachineGpu3",
+    "GetLocalModelResponseOllama",
+    "GetLocalModelResponsePull",
+    "GetLocalModelResponseRecommended",
     "GetMcpPrivateHostsResponse",
     "GetMcpServerResponse",
     "GetMcpServerResponseAuth",
@@ -478,6 +487,9 @@ __all__ = [
     "GetObservationsResponseUsageDailyItem",
     "GetObservationsResponseUsageModelsItem",
     "GetOpenapiResponse",
+    "GetPricesResponse",
+    "GetPricesResponseBrowserItem",
+    "GetPricesResponseComputeItem",
     "GetRevisionSkillsResponse",
     "GetRunExportResponse",
     "GetRunExportResponseAgent",
@@ -574,6 +586,7 @@ __all__ = [
     "GetTemplateResponseTemplateMcpItemToolsItemPinValue",
     "GetTemplateResponseTemplateModel",
     "GetTemplateResponseTemplateModelChoicesItem",
+    "GetTemplateResponseTemplateModelTiersHere",
     "GetTemplateResponseTemplateOutput",
     "GetTemplateResponseTemplateToolPolicy",
     "GetTimelineResponse",
@@ -629,10 +642,14 @@ __all__ = [
     "GetWorkspaceArchilResponse",
     "GetWorkspaceArchilResponseSecret",
     "GetWrappedResponse",
+    "GetWrappedResponseCache",
+    "GetWrappedResponseCacheBreaks",
+    "GetWrappedResponseCacheExtraCostUsd",
     "GetWrappedResponseDaysItem",
     "GetWrappedResponseHarnessesItem",
     "GetWrappedResponseImportedItem",
     "GetWrappedResponseModelsItem",
+    "GetWrappedResponseSecrets",
     "GetWrappedResponseSourcesItem",
     "GetWrappedResponseTokens",
     "GradeRunBody",
@@ -674,6 +691,7 @@ __all__ = [
     "ImportTemplateResponseTemplateMcpItemToolsItemPinValue",
     "ImportTemplateResponseTemplateModel",
     "ImportTemplateResponseTemplateModelChoicesItem",
+    "ImportTemplateResponseTemplateModelTiersHere",
     "ImportTemplateResponseTemplateOutput",
     "ImportTemplateResponseTemplateToolPolicy",
     "InputIssue",
@@ -826,6 +844,7 @@ __all__ = [
     "ListTemplatesResponseTemplatesItemMcpItemToolsItemPinValue",
     "ListTemplatesResponseTemplatesItemModel",
     "ListTemplatesResponseTemplatesItemModelChoicesItem",
+    "ListTemplatesResponseTemplatesItemModelTiersHere",
     "ListTemplatesResponseTemplatesItemOutput",
     "ListTemplatesResponseTemplatesItemToolPolicy",
     "ListToolKeysResponse",
@@ -913,6 +932,15 @@ __all__ = [
     "PreviewMcpServerResponseToolsItem",
     "PublishSourceSyncBody",
     "PublishSourceSyncResponse",
+    "PullLocalModelBody",
+    "PullLocalModelResponse",
+    "PullLocalModelResponseMachine",
+    "PullLocalModelResponseMachineGpu1",
+    "PullLocalModelResponseMachineGpu2",
+    "PullLocalModelResponseMachineGpu3",
+    "PullLocalModelResponseOllama",
+    "PullLocalModelResponsePull",
+    "PullLocalModelResponseRecommended",
     "PutLearningCorrectionsBody",
     "PutLearningCorrectionsResponse",
     "PutToolSettingsBody",
@@ -1048,6 +1076,7 @@ __all__ = [
     "RunFileList",
     "RunImportedFrom",
     "RunLearning",
+    "RunLearningWork",
     "RunLearningWorkflowsItem",
     "RunList",
     "RunNative",
@@ -1612,7 +1641,7 @@ class DefinitionPlace1(TypedDict):
 
 class DefinitionPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _DefinitionComputerRequired(TypedDict):
@@ -1685,11 +1714,13 @@ class DefinitionToolSettingsAskPerson(TypedDict, total=False):
 class DefinitionToolSettingsWebFetch(TypedDict, total=False):
     provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionToolSettingsWebSave(TypedDict, total=False):
@@ -1889,6 +1920,7 @@ class AgentToolsItem(_AgentToolsItemRequired, total=False):
     provider_from: Literal["agent", "server", "default"]
     default_provider: str
     resolved: str
+    ceiling: str
 
 
 class AgentLearning(TypedDict):
@@ -2118,7 +2150,7 @@ class DefinitionInputPlace1(TypedDict):
 
 class DefinitionInputPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _DefinitionInputComputerRequired(TypedDict):
@@ -2191,11 +2223,13 @@ class DefinitionInputToolSettingsAskPerson(TypedDict, total=False):
 class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
     provider: Literal["auto", "firecrawl-keyless", "kernel", "parallel"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "firecrawl-keyless", "exa-keyless", "parallel", "off"]
     permission: Literal["allow", "ask", "deny"]
+    jev: Literal["off"]
 
 
 class DefinitionInputToolSettingsWebSave(TypedDict, total=False):
@@ -2526,6 +2560,7 @@ class GetAgentResponseToolsItem(_GetAgentResponseToolsItemRequired, total=False)
     provider_from: Literal["agent", "server", "default"]
     default_provider: str
     resolved: str
+    ceiling: str
 
 
 class GetAgentResponseLearning(TypedDict):
@@ -3512,6 +3547,7 @@ class Cost(_CostRequired, total=False):
     compile_usd: float | None
     followup_usd: float | None
     shadow_usd: float | None
+    check_usd: float | None
     share_usd: float | None
     plan: CostPlan
 
@@ -4651,7 +4687,7 @@ class WriteHomeFileResponse(_WriteHomeFileResponseRequired, total=False):
 class GetLearningCorrectionsResponse(TypedDict):
     text: str
     etag: str
-    cap_bytes: Literal[2048]
+    cap_bytes: Literal[8192]
 
 
 class GetLearningCostResponse(TypedDict):
@@ -4684,6 +4720,7 @@ class GetLearningCostResponseRunsItem(_GetLearningCostResponseRunsItemRequired, 
     compile_usd: float | None
     followup_usd: float | None
     shadow_usd: float | None
+    check_usd: float | None
     share_usd: float | None
     not_served: Literal["cost_stop", "cut"] | None
 
@@ -4992,7 +5029,7 @@ class PutLearningCorrectionsBody(TypedDict):
 class PutLearningCorrectionsResponse(TypedDict):
     text: str
     etag: str
-    cap_bytes: Literal[2048]
+    cap_bytes: Literal[8192]
 
 
 class ConnectGitHubBody(TypedDict, total=False):
@@ -5379,6 +5416,61 @@ class GetGitHubConnectionResponseObject2InstallationsItem(TypedDict):
     account: str
 
 
+class GetLocalModelResponse(TypedDict):
+    machine: GetLocalModelResponseMachine
+    ollama: GetLocalModelResponseOllama
+    recommended: GetLocalModelResponseRecommended
+    pull: None | GetLocalModelResponsePull
+    can_pull: bool
+    refused: str | None
+
+
+class GetLocalModelResponseMachine(TypedDict):
+    platform: str
+    arch: str
+    ram_bytes: int
+    gpu: GetLocalModelResponseMachineGpu1 | GetLocalModelResponseMachineGpu2 | GetLocalModelResponseMachineGpu3
+
+
+class GetLocalModelResponseMachineGpu1(TypedDict):
+    kind: Literal["apple"]
+    unified: Literal[True]
+
+
+class GetLocalModelResponseMachineGpu2(TypedDict):
+    kind: Literal["nvidia"]
+    name: str
+    memory_bytes: int
+
+
+class GetLocalModelResponseMachineGpu3(TypedDict):
+    kind: Literal["unknown"]
+
+
+class GetLocalModelResponseOllama(TypedDict):
+    asked: bool
+    reachable: bool
+    version: str | None
+
+
+class GetLocalModelResponseRecommended(TypedDict):
+    tag: str | None
+    why: str
+    pulled: bool
+
+
+class _GetLocalModelResponsePullRequired(TypedDict):
+    tag: str
+    state: Literal["pulling", "done", "failed"]
+    status: str
+    completed_bytes: int
+    total_bytes: int
+
+
+class GetLocalModelResponsePull(_GetLocalModelResponsePullRequired, total=False):
+    error: str
+
+
 class GetModelGatewayResponse(TypedDict):
     source: Literal["env", "console"] | None
     base_url: str | None
@@ -5400,6 +5492,28 @@ class GetModelGatewayResponseSecret(TypedDict):
     set: bool
     source: Literal["env", "console", "sign-in"] | None
     changed_at: str | None
+
+
+class GetPricesResponse(TypedDict):
+    compute: list[GetPricesResponseComputeItem]
+    browser: list[GetPricesResponseBrowserItem]
+
+
+class GetPricesResponseComputeItem(TypedDict):
+    provider: str
+    resource: Literal["vcpu", "memory", "gpu", "disk"]
+    gpu_type: str | None
+    unit: Literal["vcpu_second", "gib_second", "gpu_second", "gb_month"]
+    usd: str | None
+    source: Literal["setting", "list", "unpriced"]
+
+
+class GetPricesResponseBrowserItem(TypedDict):
+    provider: str
+    unit: Literal["hour"]
+    usd: str | None
+    minimum_s: int
+    source: Literal["setting", "list", "unpriced"]
 
 
 class GetSuggestionResponse(TypedDict):
@@ -5827,6 +5941,7 @@ class _RunRequired(TypedDict):
     kind: Literal["agentic", "workflow"]
     archived_at: str | None
     place: RunPlace1 | RunPlace2
+    learning_work: RunLearningWork
 
 
 class Run(_RunRequired, total=False):
@@ -6022,7 +6137,7 @@ class RunPlace1(TypedDict):
 
 class RunPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _RunComputerRequired(TypedDict):
@@ -6140,6 +6255,13 @@ class RunImportedFrom(TypedDict):
 class RunTrigger(TypedDict):
     id: str
     firing_key: str
+
+
+class RunLearningWork(TypedDict):
+    state: Literal["none", "running", "ended"]
+    runs: list[str]
+    ended_at: str | None
+    deadline_at: str | None
 
 
 class RunWorkflow(TypedDict):
@@ -6283,6 +6405,65 @@ class ListSuggestionsResponseSuggestionsItemCreated(TypedDict):
 class ListSuggestionsResponseSuggestionsItemCreatedPullRequest(TypedDict):
     number: int
     url: str
+
+
+class PullLocalModelBody(TypedDict):
+    tag: Literal["inkling-2-mini", "qwen3:8b", "qwen3:4b"]
+
+
+class PullLocalModelResponse(TypedDict):
+    machine: PullLocalModelResponseMachine
+    ollama: PullLocalModelResponseOllama
+    recommended: PullLocalModelResponseRecommended
+    pull: None | PullLocalModelResponsePull
+    can_pull: bool
+    refused: str | None
+
+
+class PullLocalModelResponseMachine(TypedDict):
+    platform: str
+    arch: str
+    ram_bytes: int
+    gpu: PullLocalModelResponseMachineGpu1 | PullLocalModelResponseMachineGpu2 | PullLocalModelResponseMachineGpu3
+
+
+class PullLocalModelResponseMachineGpu1(TypedDict):
+    kind: Literal["apple"]
+    unified: Literal[True]
+
+
+class PullLocalModelResponseMachineGpu2(TypedDict):
+    kind: Literal["nvidia"]
+    name: str
+    memory_bytes: int
+
+
+class PullLocalModelResponseMachineGpu3(TypedDict):
+    kind: Literal["unknown"]
+
+
+class PullLocalModelResponseOllama(TypedDict):
+    asked: bool
+    reachable: bool
+    version: str | None
+
+
+class PullLocalModelResponseRecommended(TypedDict):
+    tag: str | None
+    why: str
+    pulled: bool
+
+
+class _PullLocalModelResponsePullRequired(TypedDict):
+    tag: str
+    state: Literal["pulling", "done", "failed"]
+    status: str
+    completed_bytes: int
+    total_bytes: int
+
+
+class PullLocalModelResponsePull(_PullLocalModelResponsePullRequired, total=False):
+    error: str
 
 
 class _PutWorkspaceArchilBodyRequired(TypedDict):
@@ -7973,9 +8154,13 @@ class _GetRunLearningResponseObjectRequired(TypedDict):
     detail: str | None
     at: str
     seed: str | None
+    seed_failed: Literal["unreadable", "not_copied", "other_disk"] | None
+    seed_waited: Literal["ended", "timed_out"] | None
+    learned_chars: int
     merged: str | None
     workflows: list[GetRunLearningResponseObjectWorkflowsItem]
     corrections: int
+    dropped_lines: int
     problems: list[GetRunLearningResponseObjectProblemsItem]
     compiled: GetRunLearningResponseObjectCompiled | None
     draft_errors: list[str]
@@ -8065,6 +8250,7 @@ class _MessageCreateRequired(TypedDict):
 
 
 class MessageCreate(_MessageCreateRequired, total=False):
+    said: str
     model_key: str
     mcp_auth: dict[str, MessageCreateMcpAuthValue | ComposioRunBinding]
     keys: dict[str, str]
@@ -8388,7 +8574,7 @@ class GetRunUsageResponse(TypedDict):
     browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
     computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
     infra_usd: float | None
-    reason: Literal["running", "not_booked", "reopened"] | None
+    reason: Literal["running", "not_booked"] | None
 
 
 class _GetRunUsageResponseTotalRequired(TypedDict):
@@ -8726,6 +8912,7 @@ class Features(_FeaturesRequired, total=False):
     mcp_client: FeaturesMcpClient
     tool_permissions: bool
     webhooks: FeaturesWebhooks
+    workspaces: FeaturesWorkspaces
     api_keys: FeaturesApiKeys
     slack: FeaturesSlack
     triggers: FeaturesTriggers
@@ -8751,11 +8938,15 @@ class FeaturesRuns(_FeaturesRunsRequired, _FeaturesRunsOptional):
     pass
 
 
-class FeaturesMessages(TypedDict):
+class _FeaturesMessagesRequired(TypedDict):
     steer: bool
     answer: bool
     follow_up: bool
     steer_workflow_runs: bool
+
+
+class FeaturesMessages(_FeaturesMessagesRequired, total=False):
+    said: bool
 
 
 class _FeaturesTimelineRequired(TypedDict):
@@ -8824,6 +9015,12 @@ class FeaturesWebhooks(TypedDict):
     events: list[Literal["run.needs_input", "run.ended", "trigger.failed"]]
     signing: Literal["standard-webhooks/v1"]
     at_rest: Literal["sealed"]
+
+
+class FeaturesWorkspaces(TypedDict):
+    header: Literal["AgentRun-Workspace"]
+    enforced: bool
+    routes: list[str]
 
 
 class FeaturesApiKeys(TypedDict):
@@ -8935,7 +9132,7 @@ class CapabilitiesPlaces(_CapabilitiesPlacesRequired, total=False):
 
 
 class _CapabilitiesPlacesBoxesItemRequired(TypedDict):
-    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    id: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
     available: bool
     state: Literal["ready", "unavailable"]
 
@@ -8953,7 +9150,7 @@ class CapabilitiesPlacesDefaultPlace1(TypedDict):
 
 class CapabilitiesPlacesDefaultPlace2(TypedDict):
     mode: Literal["sandbox"]
-    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "boxd", "groundbox"]
+    box: Literal["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "render", "boxd", "groundbox"]
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
@@ -9527,6 +9724,7 @@ class GetTemplateResponseTemplate(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: GetTemplateResponseTemplateComputerHere | None
+    model_tiers_here: GetTemplateResponseTemplateModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[GetTemplateResponseTemplateMcpItem]
@@ -9595,6 +9793,13 @@ class _GetTemplateResponseTemplateComputerHereComputerRequired(TypedDict):
 class GetTemplateResponseTemplateComputerHereComputer(_GetTemplateResponseTemplateComputerHereComputerRequired, total=False):
     provider: str
     needs: list[str]
+
+
+class GetTemplateResponseTemplateModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
 
 
 class GetTemplateResponseTemplateMcpItem(TypedDict):
@@ -9679,6 +9884,7 @@ class ImportTemplateResponseTemplate(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: ImportTemplateResponseTemplateComputerHere | None
+    model_tiers_here: ImportTemplateResponseTemplateModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[ImportTemplateResponseTemplateMcpItem]
@@ -9749,6 +9955,13 @@ class ImportTemplateResponseTemplateComputerHereComputer(_ImportTemplateResponse
     needs: list[str]
 
 
+class ImportTemplateResponseTemplateModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
+
+
 class ImportTemplateResponseTemplateMcpItem(TypedDict):
     source: Literal["composio", "github", "url"]
     toolkit: str
@@ -9812,6 +10025,7 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     computer: list[Literal["shell", "none"]] | None
     needs: list[str] | None
     computer_here: ListTemplatesResponseTemplatesItemComputerHere | None
+    model_tiers_here: ListTemplatesResponseTemplatesItemModelTiersHere
     category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
     tags: list[str]
     mcp: list[ListTemplatesResponseTemplatesItemMcpItem]
@@ -9880,6 +10094,13 @@ class _ListTemplatesResponseTemplatesItemComputerHereComputerRequired(TypedDict)
 class ListTemplatesResponseTemplatesItemComputerHereComputer(_ListTemplatesResponseTemplatesItemComputerHereComputerRequired, total=False):
     provider: str
     needs: list[str]
+
+
+class ListTemplatesResponseTemplatesItemModelTiersHere(TypedDict):
+    harness: str
+    fast: str | None
+    strong: str | None
+    note: str | None
 
 
 class ListTemplatesResponseTemplatesItemMcpItem(TypedDict):
@@ -12034,6 +12255,8 @@ class GetWrappedResponse(TypedDict):
     sources: list[GetWrappedResponseSourcesItem]
     imported: list[GetWrappedResponseImportedItem]
     unread_files: int
+    cache: GetWrappedResponseCache | None
+    secrets: GetWrappedResponseSecrets | None
 
 
 class GetWrappedResponseTokens(TypedDict):
@@ -12074,6 +12297,38 @@ class GetWrappedResponseSourcesItem(TypedDict):
 class GetWrappedResponseImportedItem(TypedDict):
     source: str
     runs: int
+
+
+class GetWrappedResponseCache(TypedDict):
+    runs: int
+    hit_rate: float | None
+    breaks: GetWrappedResponseCacheBreaks
+    extra_cost_usd: GetWrappedResponseCacheExtraCostUsd
+    unpriced_breaks: int
+
+
+class GetWrappedResponseCacheBreaks(TypedDict):
+    model: int
+    idle: int
+    compaction: int
+    edited: int
+    sidechain: int
+    unknown: int
+
+
+class GetWrappedResponseCacheExtraCostUsd(TypedDict):
+    model: float
+    idle: float
+    compaction: float
+    edited: float
+    sidechain: float
+    unknown: float
+
+
+class GetWrappedResponseSecrets(TypedDict):
+    runs: int
+    runs_holding: int
+    removed: int
 
 
 # Each operation as the runtime sends it, by operationId.
@@ -12164,7 +12419,9 @@ OPERATIONS: dict[str, Operation] = {
     "getClaudeLogin": Operation(method="GET", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getEmailAccount": Operation(method="GET", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getLocalModel": Operation(method="GET", path="/settings/local-model", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getModelGateway": Operation(method="GET", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getPrices": Operation(method="GET", path="/settings/prices", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getSuggestion": Operation(method="GET", path="/suggestions/{suggestion_id}", path_params=("suggestion_id",), multi_segment=(), query=("name",), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -12180,6 +12437,7 @@ OPERATIONS: dict[str, Operation] = {
     "listMcpServerNames": Operation(method="GET", path="/settings/mcp-server-names", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listRunningComputers": Operation(method="GET", path="/computers/running", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "listSuggestions": Operation(method="GET", path="/suggestions", path_params=(), multi_segment=(), query=("repo", "status"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "pullLocalModel": Operation(method="POST", path="/settings/local-model/pull", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "putWorkspaceArchil": Operation(method="PUT", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "receiveHook_composio": Operation(method="POST", path="/hooks/composio/{hook}", path_params=("hook",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("*/*",)), answer="json", secret=False, public_fields=(), tagged=False),
     "restoreSuggestion": Operation(method="POST", path="/suggestions/{suggestion_id}/restore", path_params=("suggestion_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -12675,9 +12933,17 @@ class LocalResource(Group):
         """Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github)."""
         return self._call("getGitHubConnection", (), None, None, timeout=timeout)
 
+    def get_local_model(self, *, timeout: float | None = None) -> GetLocalModelResponse:
+        """This machine, its Ollama, the free local model recommended for them, and the pull here (GET /settings/local-model)."""
+        return self._call("getLocalModel", (), None, None, timeout=timeout)
+
     def get_model_gateway(self, *, timeout: float | None = None) -> GetModelGatewayResponse:
         """The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway)."""
         return self._call("getModelGateway", (), None, None, timeout=timeout)
+
+    def get_prices(self, *, timeout: float | None = None) -> GetPricesResponse:
+        """The prices this server meters computer time and browser time at, with where each comes from (GET /settings/prices)."""
+        return self._call("getPrices", (), None, None, timeout=timeout)
 
     def get_suggestion(self, suggestion_id: str, *, name: str | None = None, timeout: float | None = None) -> GetSuggestionResponse:
         """One suggested agent whole: its instructions, the files a create adds, and whether GitHub lets it (GET /suggestions/{suggestion_id})."""
@@ -12730,6 +12996,10 @@ class LocalResource(Group):
     def list_suggestions(self, *, repo: str | None = None, status: Literal["open", "created", "discarded", "all"] | None = None, timeout: float | None = None) -> ListSuggestionsResponse:
         """Suggested agents: each repository's scan and the agents it suggests (GET /suggestions)."""
         return self._call("listSuggestions", (), None, {"repo": repo, "status": status}, timeout=timeout)
+
+    def pull_local_model(self, body: PullLocalModelBody, *, timeout: float | None = None) -> PullLocalModelResponse:
+        """Pull a recommended model into the Ollama here (POST /settings/local-model/pull)."""
+        return self._call("pullLocalModel", (), body, None, timeout=timeout)
 
     def put_workspace_archil(self, body: PutWorkspaceArchilBody, *, timeout: float | None = None) -> PutWorkspaceArchilResponse:
         """Turn Mode 2 on: run folders on Archil disks, one per agent (PUT /workspace/archil)."""

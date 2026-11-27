@@ -1,6 +1,6 @@
-// `agentrun harness install goose|cursor` and `agentrun harness install --recipe FILE`: the harness its owner installs,
-// never a run (Goose; Cursor, on the owner's own Cursor API key; or an ACP agent a recipe file names:
-// HARNESS.md#a-recipe). The server installed with this command does it (agentrun-serve install-harness), as it runs
+// `agentrun harness install goose|cursor|antigravity` and `agentrun harness install --recipe FILE`: the harness its owner
+// installs, never a run (Goose; Cursor, on the owner's own Cursor API key; Google Antigravity, by the recipe AgentRun
+// ships; or an ACP agent a recipe file names: HARNESS.md#a-recipe). The server installed with this command does it (agentrun-serve install-harness), as it runs
 // validate-template: the pinned archive downloaded, its sha256 checked, unpacked into DATA/harnesses/<id>, the binary's
 // sha256 checked (for Cursor, every file's too; for a recipe that pins none, the first one recorded), then put in place
 // read-only. DATA is this command's (~/.agentrun unless --data names one), the store `npx @parcha/agentrun` starts the
@@ -15,8 +15,8 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-/** The harnesses this command installs by name. */
-const INSTALLABLE = ["goose", "cursor"];
+/** The harnesses this command installs by name: antigravity by the recipe AgentRun ships (the ACP package's). */
+const INSTALLABLE = ["goose", "cursor", "antigravity"];
 
 /** A variable named like a credential (a KEY, TOKEN, SECRET, PASSWORD or CREDENTIAL(S) segment). */
 const KEY_NAMED = /(?:^|_)(?:KEY|TOKEN|TOKENS|SECRET|PASSWORD|CREDENTIALS?)(?:_|$)/i;
@@ -37,10 +37,10 @@ export const HARNESS_INSTALL = {
   command: ["harness", "install"],
   pathParams: ["harness"],
   argsOptional: true,
-  summary: "Install a harness AgentRun runs only once its owner installs it (goose, cursor, or a recipe file's), then restart AgentRun",
+  summary: "Install a harness AgentRun runs only once its owner installs it (goose, cursor, antigravity, or a recipe file's), then restart AgentRun",
   help: [
     ["HARNESS", `the harness: ${INSTALLABLE.join(", ")}. Its pinned release is downloaded and checked by sha256 into DATA/harnesses/HARNESS; run again, it downloads nothing`],
-    ["--recipe FILE", "in place of HARNESS: a recipe file (HARNESS.md#a-recipe), checked against its five rules before anything is downloaded"],
+    ["--recipe FILE", "in place of HARNESS: a recipe file (HARNESS.md#a-recipe), checked against its five rules before anything is downloaded; a recipe AgentRun ships by its name (antigravity), unless a file of that name is here (./NAME names it)"],
     ["--data DIR", "the data directory of the AgentRun it is for (default ~/.agentrun, where npx @parcha/agentrun keeps it)"],
   ],
   options: { recipe: { type: "string" } },
@@ -51,7 +51,7 @@ export const HARNESS_INSTALL = {
     const launcher = await launcherOf(cli, "installs a harness");
     // No key reaches the install: every variable named like one is left out of its environment.
     const keyless = Object.fromEntries(Object.entries(env).filter(([key]) => !KEY_NAMED.test(key)));
-    const which = values.recipe === undefined ? [name] : ["--recipe", resolve(values.recipe)];
+    const which = values.recipe === undefined ? [name] : ["--recipe", values.recipe];
     return spawnSync(launcher, ["install-harness", ...which, "--data", dataOf(values, env)], { stdio: "inherit", env: keyless }).status ?? 1;
   },
 };
@@ -61,7 +61,7 @@ export const HARNESS_SIGN_IN = {
   pathParams: [],
   summary: "Sign a recipe's agent in to your own account with the agent's own sign-in, in this terminal (Antigravity's agy acp --login); a server you start with --harness-sign-in on your own machine then runs your own runs on it",
   help: [
-    ["--recipe FILE", "the recipe file, whose signIn names the agent's own sign-in flags; its agent installed first with agentrun harness install --recipe FILE"],
+    ["--recipe FILE", "the recipe file, whose signIn names the agent's own sign-in flags, or a recipe AgentRun ships by its name (antigravity); its agent installed first with agentrun harness install"],
     ["--data DIR", "the data directory the recipe's agent was installed into (default ~/.agentrun)"],
   ],
   options: { recipe: { type: "string" } },
@@ -71,7 +71,7 @@ export const HARNESS_SIGN_IN = {
     // The agent prints where to sign in on this terminal itself, and keeps its sign-in in its own folder: no key is
     // needed, so none reaches it.
     const keyless = Object.fromEntries(Object.entries(env).filter(([key]) => !KEY_NAMED.test(key)));
-    return spawnSync(launcher, ["sign-in-harness", "--recipe", resolve(values.recipe), "--data", dataOf(values, env)], { stdio: "inherit", env: keyless }).status ?? 1;
+    return spawnSync(launcher, ["sign-in-harness", "--recipe", values.recipe, "--data", dataOf(values, env)], { stdio: "inherit", env: keyless }).status ?? 1;
   },
 };
 
@@ -109,7 +109,7 @@ export const HARNESS_CHECK = {
   pathParams: [],
   summary: "Run a recipe's installed agent for real and check it (tools off, env allowlist, pins, limits, no side requests, resume, a denied call, an MCP tool): a JSON report and three facts. Real models cost money",
   help: [
-    ["--recipe FILE", "the recipe file (HARNESS.md#a-recipe); its agent installed first with agentrun harness install --recipe FILE"],
+    ["--recipe FILE", "the recipe file (HARNESS.md#a-recipe), or a recipe AgentRun ships by its name (antigravity); its agent installed first with agentrun harness install"],
     ["--model PROVIDER/MODEL", "the run's model, for a recipe billed through the proxy (openrouter/anthropic/claude-haiku-4.5, anthropic/claude-haiku-4-5)"],
     ["--report FILE", "where the JSON report goes (default ./harness-check-ID.json)"],
     ["--cap USD", "the most the check may spend (default 0.25)"],
@@ -119,7 +119,7 @@ export const HARNESS_CHECK = {
   async run({ values, env, cli }) {
     if (values.recipe === undefined) throw cli.fail(2, "agentrun harness-check needs --recipe FILE.");
     const launcher = await launcherOf(cli, "checks a harness");
-    const flags = ["--recipe", resolve(values.recipe), "--data", dataOf(values, env)];
+    const flags = ["--recipe", values.recipe, "--data", dataOf(values, env)];
     if (values.model !== undefined) flags.push("--model", values.model);
     if (values.report !== undefined) flags.push("--report", resolve(values.report));
     if (values.cap !== undefined) flags.push("--cap", values.cap);

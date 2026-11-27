@@ -61,8 +61,8 @@ export const unsavedScreenshot = <T extends { readonly description: string; read
   ({ ...def, description: SCREENSHOT_ALONE, parameters: COMPUTER_TOOL_SCHEMAS.computer_screenshot });
 
 /** `given` as a path in the run's folder a screenshot is saved to (relative, inside it, ending .png), normalized; any
- *  other is refused in words. */
-function savePathOf(given: unknown): string {
+ *  other is refused in words. Exported so a host's gate holds a save_as as it is saved, not by a reading of its own. */
+export function savePathOf(given: unknown): string {
   if (typeof given !== "string" || given === "" || posix.isAbsolute(given) || given.includes("\\")) throw new Error(`save_as is a path relative to the run's folder (shots/home.png): not ${JSON.stringify(given)}`);
   const path = posix.normalize(given);
   if (path === ".." || path.startsWith("../")) throw new Error(`save_as must stay inside the run's folder: ${JSON.stringify(given)} leaves it`);
@@ -70,7 +70,28 @@ function savePathOf(given: unknown): string {
   return path;
 }
 
-const OP = `One of the computer's ops no other tool runs, as a script's \`computer\` calls it: input.act {actions}, apps.list, apps.open {id, url?, background?}, shell.run {command, cwd?, env?, timeoutMs?}, processes.start {command, cwd?, env?}, files.read {path, encoding?}, files.write {path, data, encoding?}, files.list {path}, files.stat {path}. An op this computer does not offer is refused.`;
+/** Each op's arguments, as computer_op's words give them (none: it takes none). */
+const OP_ARGS: Readonly<Record<string, string>> = Object.freeze({
+  "input.act": "{actions}",
+  "apps.open": "{id, url?, background?}",
+  "shell.run": "{command, cwd?, env?, timeoutMs?}",
+  "processes.start": "{command, cwd?, env?}",
+  "files.read": "{path, encoding?}",
+  "files.write": "{path, data, encoding?}",
+  "files.list": "{path}",
+  "files.stat": "{path}",
+});
+
+/** What every offer of a computer's ops says of its screen: leaving bash, read or write out does not keep a script from
+ *  a terminal app, a file manager, or an app opened on a URL or a path; and where write is granted, an app opened on
+ *  neither runs with config the agent can write (an app reads its config from the user's home). */
+export const GUI_REACH = "Input ops on a computer with a terminal app or a GUI file manager, and apps.open with a URL or a path, can do what a shell or the file ops do, whatever bash's, read's or write's setting; where write is granted, apps.open can do what a shell does even with no URL or path, since an app reads its config from the user's home.";
+
+/** computer_op's words for the ops it offers. */
+const opWords = (ops: readonly string[]): string =>
+  `One of the computer's ops no other tool runs, as a script's \`computer\` calls it: ${ops.map((op) => (OP_ARGS[op] ? `${op} ${OP_ARGS[op]}` : op)).join(", ")}. An op this computer does not offer is refused. ${GUI_REACH}`;
+
+const OP = opWords(Object.keys(COMPUTER_OPS));
 
 /** The ops computer_op runs on a computer with `groups`. */
 export function computerOpsFor(groups: readonly string[]): readonly string[] {
@@ -105,15 +126,23 @@ const def = (kind: CapabilityKind, name: (typeof COMPUTER_TOOLS)[number], descri
   replaySafe,
 });
 
-/** computer_op's parameters: the op, and its arguments as a script's `computer` gives them. */
-const OP_PARAMETERS: object = {
+/** computer_op's parameters over `ops`: the op, and its arguments as a script's `computer` gives them. */
+const opParameters = (ops: readonly string[]): object => ({
   type: "object",
   properties: {
-    op: { type: "string", enum: Object.keys(COMPUTER_OPS) },
+    op: { type: "string", enum: [...ops] },
     args: { type: "object", description: "The op's arguments." },
   },
   required: ["op"],
   additionalProperties: false,
+});
+const OP_PARAMETERS = opParameters(Object.keys(COMPUTER_OPS));
+
+/** computer_op's definition `def` for a run whose gate refuses the ops `without` (its agent is not given their tool):
+ *  its words and its op list name only the others. */
+export const withoutOps = <T extends { readonly description: string; readonly parameters: object }>(def: T, without: readonly string[]): T => {
+  const ops = Object.keys(COMPUTER_OPS).filter((op) => !without.includes(op));
+  return { ...def, description: opWords(ops), parameters: opParameters(ops) };
 };
 
 /** The computer's tools in `kind`, under its settings key, for a computer with `groups`. An act or an op changes the

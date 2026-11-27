@@ -73,7 +73,7 @@ import { countTested } from "../test-connection.js";
 import { waitUntil } from "../wait.js";
 import { bounded, CALL_SLACK_MS, hostCall, type Opened, openBridge, pause, rootOf, runToExit, seconds, untilAborted, uploadThroughExec, words } from "./process.js";
 import { downloadingConnection } from "./download.js";
-import { isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
+import { isPackedKey, isWhole, PACKED_NAME, packLabels, unpackLabels } from "./values.js";
 import { EGRESS_POLICY, EGRESS_PROXY_USER, EGRESS_RELAY, HOSTED_ALLOW, NETWORK_LABEL, networkFormOf, networkOfForm, networkRefusal, throughProxy } from "./network.js";
 import { ARCHIL_GATE, closedSocketsOf, type DaemonExpected, daemonDrift, type HostedCommands, hostedCommands, initFlags, installerOf } from "./scripts.js";
 
@@ -709,6 +709,8 @@ export class HostedProvider implements ComputerProvider {
 
 	/** taken: the vendor refused this create's name as one a machine has (exists), so the name's machine is read once more. */
 	async #createOnce(spec: ComputerSpec, name: string, signal?: AbortSignal, taken?: Result<never>): Promise<Result<CreatedComputer>> {
+		// By the request's name alone, never narrowed by this spec's run and epoch (nameAsk): the request's computer made
+		// under another run or epoch is found, and refused as exists by #again, never made twice.
 		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
 		if (!listed.ok) return listed;
 		const found = listed.value.filter((machine) => ours(machine.labels, name));
@@ -770,6 +772,8 @@ export class HostedProvider implements ComputerProvider {
 	 * more than one machine holds the name, the oldest (createdAt, or the lowest id where any has none) is kept, and every
 	 * other is deleted and read back gone, its Archil folder let go first. Every instance picks the same one from the
 	 * same listing. Its value is the machine kept, or undefined when mine holds the name alone (or nothing is listed yet).
+	 * The listing is by the name alone, never narrowed (nameAsk): two creates of one request that ask another run or epoch
+	 * must still see each other's machine, so one is kept and the other answered exists.
 	 */
 	async #converge(name: string, mine: string, signal?: AbortSignal): Promise<Result<Machine | undefined>> {
 		const listed = await foundBy(this.host, "the listing by the request's name", byName(name), this.#timeouts, signal);
@@ -917,7 +921,7 @@ export class HostedProvider implements ComputerProvider {
 		// Never signalled, only raced: an aborted call could leave a machine made whose id never came back. One that lands
 		// after this gave up is deleted by its id; one that fails after it, by its name where it may have made one.
 		const created = await hostCall(this.host, `${this.#label}'s create`, (ctx) => this.host.create(request, { timeoutMs: ctx.timeoutMs }), createMs, signal, (made) =>
-			made.ok ? this.#kill(made.value.id) : mayHaveMade(made.error.code) ? this.#deleteNamed(name) : undefined,
+			made.ok ? this.#kill(made.value.id) : mayHaveMade(made.error.code) ? this.#deleteNamed(name, nameAsk(this.host, spec)) : undefined,
 		);
 		if (!created.ok) {
 			// A machine of this create's that lands after this never dials: its token goes with the create.
@@ -929,7 +933,7 @@ export class HostedProvider implements ComputerProvider {
 			}
 			if (!mayHaveMade(code)) return created;
 			this.#end(name);
-			const swept = await this.#deleteNamed(name);
+			const swept = await this.#deleteNamed(name, nameAsk(this.host, spec));
 			return this.#fail(code, `${this.#label} did not create the machine: ${message}${swept}`);
 		}
 		this.#requests.made(name);
@@ -982,14 +986,15 @@ export class HostedProvider implements ComputerProvider {
 	 * Every machine carrying a name create gave, deleted and read back gone: for a create that may have made one whose
 	 * id never came (mayHaveMade), never after a refusal, where a machine under the name is another's. The
 	 * listing shows a new machine a moment after the vendor makes it, so it is read for the name until one shows or
-	 * listedMs passes, as create's own wait reads it. Best effort, in words.
+	 * listedMs passes, as create's own wait reads it. Best effort, in words. `also`: this create's run and epoch
+	 * (nameAsk), which a machine it made carries in its name.
 	 */
-	async #deleteNamed(name: string): Promise<string> {
+	async #deleteNamed(name: string, also?: Record<string, string>): Promise<string> {
 		const { listedMs, pollMs } = this.#timeouts;
 		const until = Date.now() + listedMs;
 		let found: Machine[];
 		for (let delay = Math.min(LISTED_POLL_MS, pollMs); ; delay = Math.min(delay * 2, pollMs)) {
-			const listed = await foundBy(this.host, "the listing by name", byName(name), this.#timeouts);
+			const listed = await foundBy(this.host, "the listing by name", byName(name), this.#timeouts, undefined, also);
 			if (!listed.ok) return `; a machine named ${name} may be left (${listed.error.message}), which ends at its deadline`;
 			found = listed.value.filter((machine) => ours(machine.labels, name));
 			if (found.length > 0 || Date.now() >= until) break;
@@ -1142,7 +1147,7 @@ export class HostedProvider implements ComputerProvider {
 		} finally {
 			await opened.value.close();
 		}
-		const listed = await this.#waitListed(ref, signal);
+		const listed = await this.#waitListed(ref, signal, nameAsk(this.host, spec));
 		return listed.ok ? ok([...closed, ...dialNotes, ...notes, ...listed.value]) : listed;
 	}
 
@@ -1434,14 +1439,14 @@ export class HostedProvider implements ComputerProvider {
 	 * The polls are 150 ms apart at first, the pause doubling up to pollMs, so a vendor slow to list costs a few calls.
 	 * A listing that has not settled by listedMs is no failure alone (#unlisted): the computer is read by its id.
 	 */
-	async #waitListed(ref: ComputerRef, signal?: AbortSignal): Promise<Result<string[]>> {
+	async #waitListed(ref: ComputerRef, signal?: AbortSignal, also?: Record<string, string>): Promise<Result<string[]>> {
 		const { listedMs, listMs, pollMs, listedStableMs } = this.#timeouts;
 		const began = Date.now();
 		const until = began + listedMs;
 		let since: number | undefined;
 		const seen = { polls: 0, shown: 0 };
 		for (let hits = 0, delay = Math.min(LISTED_POLL_MS, pollMs); ; delay = Math.min(delay * 2, pollMs)) {
-			const listed = await listedBy(this.host, "the listing by name", byName(ref.name), listMs, signal);
+			const listed = await listedBy(this.host, "the listing by name", byName(ref.name), listMs, signal, also);
 			if (!listed.ok) return listed;
 			seen.polls += 1;
 			if (listed.value.some((machine) => machine.id === ref.id)) {
@@ -1807,6 +1812,19 @@ export class HostedProvider implements ComputerProvider {
 /** The labels a listing by one computer's name asks for. */
 const byName = (name: string): Record<string, string> => ({ [COMPUTER_LABEL]: "1", [NAME_LABEL]: name });
 
+/**
+ * What a listing by a create's name asks beside byName on a host whose names carry the run and epoch (facts.labels.named):
+ * the spec's run and epoch, where it has both, so the host can look up the whole name. Only asked, never required: a
+ * machine of the name is kept whatever its get says of them (a sandbox before its labels file, read by its name alone).
+ * Only the sweeps for a machine this create made ask it (#waitListed, #deleteNamed): that machine's name is the whole
+ * name. The first check and #converge look for any machine of the request, whatever run or epoch it was made with.
+ */
+function nameAsk(host: MachineHost, spec: ComputerSpec): Record<string, string> | undefined {
+	const run = spec.labels?.[RUN_LABEL];
+	const epoch = spec.labels?.[EPOCH_LABEL];
+	return host.facts.labels?.named && typeof run === "string" && typeof epoch === "string" ? { [RUN_LABEL]: run, [EPOCH_LABEL]: epoch } : undefined;
+}
+
 /** The room of a host that keeps its labels packed (facts.labels.packed), or undefined. */
 function packedRoom(host: MachineHost): NonNullable<HostFacts["labels"]> | undefined {
 	const room = host.facts.labels;
@@ -1828,12 +1846,14 @@ function unpacked(host: MachineHost, machine: Machine): Machine {
  * may answer more (MachineHost.list). A packed host is asked for PACKED_NAME alone, the name's where one is asked, and
  * its machines' labels unpacked. A listing by name on a host whose machines may also carry their labels as given
  * (facts.labels.packed.unpacked) asks both ways, one after the other within ms together, and answers every machine
- * either finds: across an upgrade one request can make one machine of each form, and convergence must see both.
+ * either finds: across an upgrade one request can make one machine of each form, and convergence must see both. `also`:
+ * labels a host that doesn't pack them is asked beside these, which only narrow its search (nameAsk): never required of
+ * a machine.
  */
-export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal): Promise<Result<Machine[]>> {
+export async function listedBy(host: MachineHost, what: string, labels: Record<string, string>, ms: number, signal?: AbortSignal, also?: Record<string, string>): Promise<Result<Machine[]>> {
 	const name = labels[NAME_LABEL];
 	const room = packedRoom(host);
-	const asks = room === undefined ? [labels] : name === undefined ? [{}] : room.packed?.unpacked ? [{ [PACKED_NAME]: name }, labels] : [{ [PACKED_NAME]: name }];
+	const asks = room === undefined ? [{ ...also, ...labels }] : name === undefined ? [{}] : room.packed?.unpacked ? [{ [PACKED_NAME]: name }, labels] : [{ [PACKED_NAME]: name }];
 	const until = Date.now() + ms;
 	const found = new Map<string, Machine>();
 	for (const asked of asks) {
@@ -1850,10 +1870,10 @@ const carries = (machine: Machine, labels: Record<string, string>) => Object.ent
 /**
  * The listing finds, get answers (MachineHost.list): the machines the host's listing by labels names, each read now by
  * readMachine, within requestMs. One the vendor no longer has (not found) is dropped, and so is one whose get carries
- * not every label. A get that fails fails the whole listing.
+ * not every label. A get that fails fails the whole listing. `also`: as listedBy's.
  */
-export async function foundBy(host: MachineHost, what: string, labels: Record<string, string>, { listMs, requestMs }: Pick<HostedTimeouts, "listMs" | "requestMs">, signal?: AbortSignal): Promise<Result<Machine[]>> {
-	const listed = await listedBy(host, what, labels, listMs, signal);
+export async function foundBy(host: MachineHost, what: string, labels: Record<string, string>, { listMs, requestMs }: Pick<HostedTimeouts, "listMs" | "requestMs">, signal?: AbortSignal, also?: Record<string, string>): Promise<Result<Machine[]>> {
+	const listed = await listedBy(host, what, labels, listMs, signal, also);
 	if (!listed.ok) return listed;
 	const reads = await Promise.all(listed.value.map(({ id }) => readMachine(host, id, requestMs, signal)));
 	const found: Machine[] = [];
@@ -2003,6 +2023,8 @@ function labelProblem(key: string, value: unknown): string | undefined {
 	if (key === "") return "a label name must be non-empty";
 	if (key === COMPUTER_LABEL || key.startsWith(`${COMPUTER_LABEL}.`)) return `the label ${key} is in the provider's own namespace (${COMPUTER_LABEL})`;
 	if (key === MOUNT_LABEL) return `the label ${key} is the provider's own: it records a computer's mount`;
+	// Labels stored as given (an older server's, a host that doesn't pack) under one of these would read back as a packed map.
+	if (isPackedKey(key)) return `the label ${key} is reserved: ${PACKED_NAME} and ${PACKED_NAME}-<n> (${PACKED_NAME}-0, ${PACKED_NAME}-1 and on) hold a computer's packed labels`;
 	return undefined;
 }
 

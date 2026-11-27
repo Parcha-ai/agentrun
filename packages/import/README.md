@@ -45,6 +45,9 @@ const sessions = await parseHome(homedir(), { sources: ["claude-code", "codex"] 
 - `workerOldMb` caps each worker's old generation (default 64, at least 8, refused with a RangeError under it: at 1 or
   2 MB V8 ends the whole process as a worker starts, and at 3 to 7 the workers run out of memory). A line over an eighth of it, or a file that runs a worker
   out of memory, is read on the calling thread instead; past two such losses a thread, the calling thread reads the rest.
+  Each reading thread (each worker, and the calling thread) also holds up to 8 MiB of scanner memory outside its heap:
+  the scanner's stack and tables, and room for the longest line it read. A line that would take it past 8 MiB (one over
+  about 6.7 MiB) is parsed whole instead, with the same totals.
 - A request two sources wrote is counted once. OpenCode's claude-agent provider runs Claude Code, which writes each
   request into its own session file too; OpenCode names that session on the request (`mirrors`). When the same call
   reads that Claude Code session (serve's import: or its store holds it), the request counts there and not in the OpenCode session (tokens, calls and cost),
@@ -84,6 +87,61 @@ and exits 0; a bad argument exits 2. `--threads` and `--read-ahead` set parseHom
 a bundle (`bun build --compile`) carries it, prints the same bytes as under Node, and a build or run without pi-ai
 fails instead of pricing nothing. pi-ai is a dependency of the package, so `npx @parcha/agentrun-import` runs the
 CLI as it is; the library loads it only to price.
+
+## Cache breaks
+
+```js
+import { analyzeCache, cacheHome, readSession } from "@parcha/agentrun-import";
+
+const session = await readSession(file, "claude-code", { chain: true });
+const { hitRate, breaks } = await analyzeCache(session);
+// breaks: [{ turn, at, dropPct, rewritten, extraCost, cause, diverged? }]
+```
+
+- `hitRate` is the cache read over the whole prompt (`input + cacheRead + cacheWrite`, input already uncached), null for a
+  session that sent none.
+- A break is a turn whose cache read dropped more than 80% (`BREAK_DROP`) against the turn before it; the first turn is
+  never one, and a drop of exactly 80% is none. A turn compared is a request with usage that sent a prompt. `turn`
+  counts the session's requests from 1; `at` is ms since the epoch; `dropPct` the share of the turn before's read lost.
+- `rewritten`: of the read lost, the tokens the turn paid for again, as a cache write or as uncached input. `extraCost`:
+  USD, what the turn paid above reading them from the cache, at its model's list prices (pi-ai's catalog, or the
+  `catalog` handed in); null when the model is not listed or `catalog: false`.
+- `cause`, the first of `CACHE_CAUSES` the transcript shows evidence of:
+
+| Cause | Evidence |
+| --- | --- |
+| `model` | the turn ran on another model than the turn before |
+| `idle` | the gap since the turn before is past the cache's life: 5 minutes, or an hour when the latest cache write was a 1h one (`cacheWrite1h`) |
+| `compaction` | a compaction since the turn before: Claude Code's `compact_boundary` or `isCompactSummary` record, Codex's `compacted`. It counts in the file that holds it first; across a session's files it carries to the next file's first turn, and a later file's copy of it is never consulted |
+| `edited` | the prompt leaves the chain of the turn before (its prompt and answer) at an earlier message: `diverged` is that message's index |
+| `sidechain` | the turn opens a sidechain after a main-chain turn (Claude Code's `isSidechain`) |
+| `unknown` | none of the above: the transcript shows no cause for the drop. That names no cause, the provider's included. A cache evicted early, or a request served where its cache was not, reads this way, and so does an edit the analyzer cannot see: across two of a session's files (their chains are not compared), in a Codex rollout, or in a session read without its chain |
+
+`chain: true` keeps the session's `chain` beside its turns: each record's id and its parent's (Claude Code's
+`uuid`/`parentUuid`, pi's `id`/`parentId`), a 16-hex sha256 of its content, never the content, and which record opens
+each request. The analyzer finds an edit by comparing the hashes of the two prompts' message chains from the root. A
+sidechain's prompt is a conversation of its own, never an edit of the main one's. A Codex rollout names no record to
+rewind to, so a Codex break is never `edited`; pi writes no compaction or sidechain record in the sessions seen, so a pi
+break is never `compaction` or `sidechain`. A session read without its chain names `model` and `idle` alone.
+
+`cacheHome(home, options)` analyzes every session `parseHome` totals (the same options but `state`), keyed the same way,
+of the sources that write a chain (`CACHE_SOURCES`: Claude Code, Codex and pi; another source is refused with a
+`RangeError`, since OpenCode's claude-agent requests mirror a Claude Code session's and would count twice),
+one file at a time: `hitRate` over the session's requests and its subagents', and its breaks. A session's files (a Codex
+thread that goes on in a new rollout) are one conversation in the import's order: a file's first turn is compared with
+the last turn of the file before it (its model, time and cache life carried over), and turns count on across them. Two
+sessions are never compared. Each subagent is a conversation of its own, its breaks with its `subagent` number: a
+subagent's thread that goes on in a new rollout is one, its files joined the same way.
+`analyzeCache` hands back the `last` turn it compared, for the next file's `before`. `cacheTotals(sessions)` counts the breaks and sums their priced extra cost by
+cause.
+
+```sh
+node dist/cli.js <home> [--sources claude-code,codex,pi] --cache
+```
+
+A JSONL line per session, sorted by key as `--known-answer`'s: `{key, source, hitRate, breaks: [{turn, at, dropPct,
+rewritten, extraCost, cause}]}`, then one line `{totals: {sessions, breaks, extraCost, unpriced}}`. Numbers and cause
+names only.
 
 ## Usage
 
@@ -163,7 +221,7 @@ read looks up afresh.
 The cursor is the reader's own: hand it back to the same reader for the same locator. A JSONL source builds its reader
 with `lineReader` from a per-record function; its cursor is the file's device and inode, the byte after the last whole
 line read, and the read's state. A file replaced or truncated since is read from its start, as is a cursor whose state
-is of another shape than the reader's (its `stateVersion`: a Codex cursor saved by 0.1.0-beta.58 or before), and a last
+is of another shape than the reader's (its `stateVersion`: a Codex cursor saved by 0.1.0-beta.59 or before), and a last
 line with no newline yet is read but not consumed. A source that keeps many sessions in one file (a SQLite database) implements
 `discover`, `idOf` and `read` itself and returns one locator per session, with its `id`, and `stat`: the session's own size and
 last write, which a caller's size caps and "still being written" check go by (`locatorSize`; without `stat`, the file's).

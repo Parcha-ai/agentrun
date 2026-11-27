@@ -118,7 +118,7 @@ export const DECISION_PROVIDER_KEYS: readonly string[] = ["jev", "parallel", "op
 const isSettingsKey = (name: string): boolean => parseToolName(name) !== undefined && (isTableTool(name) || SERVE_OWN_TOOLS.includes(name) || KIND_KEYS.includes(name) || DECISION_PROVIDER_KEYS.includes(name) || isCatalogName(name));
 /** One tool's settings: its provider (a capability that has a choice), its permission, and an MCP tool's pin (the
  *  arguments its calls must carry, tool-gate.ts pinRefusal). */
-export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** On an MCP server's wildcard (`mcp:<server>/*`) in the server's settings only: the tools its server marks read-only run with no approval (tool-gate.ts readsLift). Kept only when true. */ allow_reads?: true; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** An email read tool's scope, an agent's own only (email/tools.ts): its email run's thread (the default), or the whole account. */ scope?: EmailScope; /** An MCP tool's file setting, an agent's own only, on the tool's own key (filed-tool.ts): its answers filed whole in the run's files, the model reading a summary. */ file?: FileSetting; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
+export type ToolSetting = { provider?: string; permission?: Permission; pin?: Pin; /** On an MCP server's wildcard (`mcp:<server>/*`) in the server's settings only: the tools its server marks read-only run with no approval (tool-gate.ts readsLift). Kept only when true. */ allow_reads?: true; /** bash's policy, an agent's own only (bash-read-only.ts). */ policy?: BashPolicy; /** An email read tool's scope, an agent's own only (email/tools.ts): its email run's thread (the default), or the whole account. */ scope?: EmailScope; /** An MCP tool's file setting, an agent's own only, on the tool's own key (filed-tool.ts): its answers filed whole in the run's files, the model reading a summary. */ file?: FileSetting; /** Jev off for the agent's web tools, an agent's own only, on web_search or web_fetch: either turns it off for both (agentJevOff). */ jev?: "off"; /** Read as a stand-in for a value not offered (checkToolSettings); never shown or written. */ fallback?: true; /** The stand-in's value as written in the file, which a save that keeps the stand-in writes back (ToolSettings.put). Never shown. */ raw?: unknown; /** A pin in the file that does not read (readToolSettings): the gate refuses every call of the tool, and a save keeps it (ToolSettings.put) until the owner sets a valid pin or removes the tool's setting. Served as `pin_broken: true`. */ brokenPin?: true; /** The broken pin as written in the file, which a save that keeps it writes back. Never shown. */ rawPin?: unknown };
 /** The longest pinned string. */
 export const MAX_PIN_TEXT = 1024;
 /** A pinned argument's name: a top-level argument of the tool, as MCP tools name theirs. */
@@ -263,15 +263,55 @@ export const FIRECRAWL_FETCH = "Firecrawl's free keyless fetch, no key, the guar
 const searchesOwn = (resolves: string, facts: AdapterFacts | undefined): boolean => WEB_RUNS.web_search.includes(resolves) && (resolves !== "native" || !facts?.webSearch);
 const ranksOwn = (resolves: Resolution, input: ResolveInput): boolean => searchesOwn(resolves, input.facts);
 
+/** The server's settings that are a ceiling an agent's pick cannot raise: web_fetch `kernel` keeps every URL on the
+ *  server; web_search `native` sends every query to the harness's own search, and `off` sends none (Jev, where it is
+ *  on, still sees a kernel fetch's page or a native pi search's results: web-run.ts jevWebOf). Under one, an
+ *  agent's pick that would send anywhere but the ceiling's own resolves as the server's setting does: a keyless third
+ *  party (Firecrawl, Exa), Parallel even when the agent names it, and under `off` a native search even when the agent
+ *  names it (ceilingOver). An operator who wants Parallel sets it server-wide; that is no ceiling. */
+const CEILINGS: Partial<Record<Pickable, readonly string[]>> = { web_fetch: [DIRECT_FETCH], web_search: ["native", "off"] };
+/** The ceiling a claim holds each capability to where the server's tool settings could not be read: the strictest that
+ *  leaves the run a tool (claimPlane). */
+const UNREAD_CEILINGS: Partial<Record<Pickable, string>> = { web_fetch: DIRECT_FETCH, web_search: "native" };
+/** A capability a claim held to UNREAD_CEILINGS: it runs nothing, and says why without the store's words. */
+export const SETTINGS_NOT_READ: Resolution = "unavailable: the server's tool settings could not be read";
+/** A capability a claim found past a ceiling where today's resolution (planeFor) gives none in its place, as where its
+ *  tool is not granted in today's tooling: it runs nothing, never the value it was kept with (claimPlane). */
+export const CEILING_LEAVES_NONE: Resolution = "unavailable: the server's tool setting keeps it from this run, with nothing it allows in its place";
+const KEYLESS: readonly string[] = ["firecrawl-keyless", "exa-keyless"];
+/** Whether `provider`, as picked or as resolved, goes past ceiling `pick`: a keyless third party or Parallel, under any
+ *  ceiling; a native search, under one that is not native search itself (`off`). */
+const pastCeiling = (pick: string, provider: string | undefined): boolean =>
+  provider !== undefined && (KEYLESS.includes(provider) || provider === "parallel" || (provider === "native" && pick !== "native"));
+/** The ceiling `pick` (the server's setting for `capability`) sets over a run's capability, where it goes past it; else
+ *  undefined. Past it: the agent's `choice` named past it, whatever it resolves to (Parallel with no key, a native
+ *  search the harness lacks), or `resolves`, what it resolves to (the agent's auto, or a kept run's from before the
+ *  setting), past it. One that sends nothing (unavailable, denied, off) from a choice within it, the guarded direct
+ *  fetch and the ceiling's own native search go past none. */
+const ceilingOver = (capability: Pickable, pick: string | undefined, choice: string | undefined, resolves: string | undefined): string | undefined => {
+  if (pick === undefined || !CEILINGS[capability]?.includes(pick)) return undefined;
+  return pastCeiling(pick, choice) || pastCeiling(pick, resolves) ? pick : undefined;
+};
+
 /** What `capability` resolves to on a run of `input`, and why in a plain sentence (capabilities' `why`): one rule, so
  *  the two never disagree. A web_search the run's own tool runs, and a web_fetch its own Web serves (any resolution but
  *  a deny), say what Jev does with it and what it sends TypeSafe, where the server has a Jev key, or that Jev is off
- *  (`jevWhy`, `jevFetchWhy`). */
+ *  (`jevWhy`, `jevFetchWhy`). An agent's pick the server's setting is a ceiling over (CEILINGS) resolves as the server's
+ *  setting does, and the why says so. */
 export function explainCapability(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
-  const said = explained(capability, input);
+  const said = ceilinged(capability, input);
   if (capability === "web_search" && input.jevWhy && ranksOwn(said.resolves, input)) return { ...said, why: `${said.why}; ${input.jevWhy}` };
   if (capability === "web_fetch" && input.jevFetchWhy && WEB_RUNS.web_fetch.includes(said.resolves)) return { ...said, why: `${said.why}; ${input.jevFetchWhy}` };
   return said;
+}
+
+function ceilinged(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
+  const said = explained(capability, input);
+  const ceiling = input.override === undefined ? undefined : ceilingOver(capability, input.pick, input.override, said.resolves);
+  if (ceiling === undefined) return said;
+  const { override, ...server } = input;
+  const kept = explained(capability, server);
+  return { resolves: kept.resolves, why: `the server's setting, ${ceiling}, is a ceiling over this agent's pick of ${override}; ${kept.why}` };
 }
 
 function explained(capability: Pickable, input: ResolveInput): { resolves: Resolution; why: string } {
@@ -392,6 +432,11 @@ function browserBy(chosen: string, picked: string, keys: Record<BrowserVendor, b
   return { resolves: NO_BROWSER_KEY, why: whyUnavailable(NO_BROWSER_KEY) };
 }
 
+/** The web tools an agent's own `jev` is set on (settingsIssues). */
+export const JEV_TOOLS: readonly string[] = ["web_search", "web_fetch"];
+/** Whether an agent's own tool settings turn Jev off for its web tools: `jev: "off"` on web_search or on web_fetch turns
+ *  it off for both. */
+export const agentJevOff = (overrides: ToolSettingsMap | undefined): boolean => JEV_TOOLS.some((name) => overrides?.[name]?.jev === "off");
 /** The server's environment's part of every resolution: its gateway and Parallel's key, and where the key is from. */
 const served = (env: NodeJS.ProcessEnv) => {
   const parallelKey = PARALLEL_KEY_ENV in decisionKeysOf(env);
@@ -425,8 +470,8 @@ const picked = (name: Pickable, settings: ToolSettingsMap, overrides: ToolSettin
 
 /** What a run is told: each pickable capability its revision names, resolved; with web_search native on pi, the model
  *  its search asks (the one the resolution read); and `jev: "off"` where the server had Jev turned off for the web tools
- *  (AGENTRUN_WEB_JEV_OFF) when it created the run, on a plane with a web tool, so the switch reaches a runner on another
- *  host; a runner's re-check (recheckPlane) keeps it. */
+ *  (AGENTRUN_WEB_JEV_OFF) when it created the run, or the agent's own tool settings do (agentJevOff), on a plane with a
+ *  web tool, so the switch reaches a runner on another host; a runner's re-check (recheckPlane) keeps it. */
 export type Plane = Partial<Record<Pickable, Resolution>> & { model?: string; jev?: "off" };
 /** The facts of a pinned revision its run's tools resolve from. */
 /** `approvals`: the revision's, kept only when "never" (the agent runs unattended: an ask is an allow, never over a deny). */
@@ -455,7 +500,8 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   // The model a search through its provider's hosted search asks (hosted-search.ts): pi's own web_search, and on
   // another harness, whose agent searches with its own tool, a learned workflow's call node (learned-workflow.ts).
   if (plane.web_search === "native" && model) plane.model = model;
-  return withJevSwitch(plane, env);
+  // The agent's own Jev off (agentJevOff) holds on a plane with a web tool, as the server's switch does.
+  return withJevSwitch(plane, env, agentJevOff(tooling.overrides) && (plane.web_search !== undefined || plane.web_fetch !== undefined));
 }
 
 /** `plane` with Jev's switch: `jev: "off"` where `keptOff` (the plane was made with it off) or where `env` has the switch
@@ -514,6 +560,37 @@ export function relaunchPlane(kept: Plane | undefined, env: NodeJS.ProcessEnv, t
   return tooling ? recheckPlane(keptFromBefore(fresh), env) : {};
 }
 
+/** The ceiling over capability `name` of `kept` (a launch's Plane) under the server's `settings` now, for a run of
+ *  `tooling` (its agent's own picks): ceilingOver, or, where the settings could not be read (`unread`), the strictest
+ *  (UNREAD_CEILINGS). */
+const claimCeiling = (name: Pickable, kept: Plane, tooling: Tooling, settings: ToolSettingsMap, unread: boolean): string | undefined =>
+  ceilingOver(name, unread ? UNREAD_CEILINGS[name] : settings[name]?.provider, tooling.overrides?.[name]?.provider, kept[name]);
+
+/** Whether a capability of `kept` goes past a ceiling of the server's `settings` now (claimCeiling). */
+export const overCeilings = (kept: Plane, tooling: Tooling, settings: ToolSettingsMap, { unread = false }: { unread?: boolean } = {}): boolean =>
+  PICKABLE.some((name) => kept[name] !== undefined && claimCeiling(name, kept, tooling, settings, unread) !== undefined);
+
+/** The Plane a claim hands its run (runner/harness-loops.ts, before anything binds): `kept`, the launch's (resolved at
+ *  the run's start), under the server's `settings` now. A capability kept past a ceiling the server's setting now sets
+ *  (claimCeiling) takes today's resolution (planeFor in `env` for `tooling`) on `model`, the run's pinned one (its
+ *  launch's), so a resume, a follow-up or a reclaim sends nothing the setting keeps from it, and its native search asks
+ *  the model the run sends. Where the settings could not be read (`unread`), one past the strictest ceiling runs nothing
+ *  (SETTINGS_NOT_READ), and so does one today's resolution leaves without one (CEILING_LEAVES_NONE). Every other value
+ *  stays as kept; the same Plane where nothing is past a ceiling. */
+export function claimPlane(kept: Plane, env: NodeJS.ProcessEnv, tooling: Tooling, settings: ToolSettingsMap, { capped = false, model, unread = false }: { capped?: boolean; model?: string; unread?: boolean } = {}): Plane {
+  const past = PICKABLE.filter((name) => kept[name] !== undefined && claimCeiling(name, kept, tooling, settings, unread) !== undefined);
+  if (!past.length) return kept;
+  const out: Plane = { ...kept };
+  if (unread) {
+    for (const name of past) out[name] = SETTINGS_NOT_READ;
+    return out;
+  }
+  const fresh = planeFor(env, model ? { ...tooling, model } : tooling, settings, { capped, run: true });
+  for (const name of past) out[name] = fresh[name] ?? CEILING_LEAVES_NONE;
+  if (out.web_search === "native" && kept.web_search !== "native" && fresh.model) out.model = fresh.model;
+  return out;
+}
+
 /** The Plane the server handed this run's process; empty when it handed none. */
 export function planeOf(env: NodeJS.ProcessEnv): Plane {
   try {
@@ -549,7 +626,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   return Object.entries(value).flatMap(([name, setting]): InputIssue[] => {
     const pickable = Object.hasOwn(PROVIDERS, name);
     if (!isSettingsKey(name)) return [{ field: field(name), reason: "not_allowed", message: `Tool settings are kept for this server's tools (${[...tableTools(), ...SERVE_OWN_TOOLS, ...KIND_KEYS, ...DECISION_PROVIDER_KEYS].join(", ")}), catalog tools (mcp:<server>/<tool>, monid:<provider>/<endpoint>) and a group's tools (mcp:<server>/*, monid:<provider>/*); ${name} is none of them.` }];
-    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpName(name) ? ", pin" : ""}${layer === "agent" && name === "bash" ? ", policy" : ""}}` }];
+    if (!isPlain(setting)) return [{ field: field(name), reason: "wrong_type", message: `${field(name)} is an object, {${pickable ? "provider, " : ""}permission${isMcpName(name) ? ", pin" : ""}${layer === "agent" && name === "bash" ? ", policy" : ""}${layer === "agent" && JEV_TOOLS.includes(name) ? ", jev" : ""}}` }];
     return Object.entries(setting).flatMap(([key, given]): InputIssue[] => {
       if (key === "pin") return pinIssues(given, field(name, key), name);
       // bash's policy (bash-read-only.ts): an agent's own, on bash's key only, as what its commands may do is the agent's.
@@ -561,6 +638,11 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
       if (key === "scope") {
         if (layer !== "agent" || !SCOPED_TOOLS.includes(name)) return [{ field: field(name, key), reason: "not_allowed", message: `A scope is set on ${SCOPED_WORDS} in an agent's own tool settings (definition.tool_settings.email_read.scope), never ${layer === "agent" ? `on ${name}` : "in the server's"}.` }];
         return (EMAIL_SCOPES as readonly unknown[]).includes(given) ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is one of ${EMAIL_SCOPES.join(", ")}: thread, an email's run reads its thread alone; mailbox, the whole account` }];
+      }
+      // Jev off for the agent's web tools (agentJevOff): an agent's own, on web_search or web_fetch only, set as bash's policy is.
+      if (key === "jev") {
+        if (layer !== "agent" || !JEV_TOOLS.includes(name)) return [{ field: field(name, key), reason: "not_allowed", message: `Jev is turned off on web_search or web_fetch in an agent's own tool settings (definition.tool_settings.web_search.jev), never ${layer === "agent" ? `on ${name}` : "in the server's"}.` }];
+        return given === "off" ? [] : [{ field: field(name, key), reason: "not_an_option", message: `${field(name, key)} is off: Jev ranks neither of the agent's web tools' results; leave it out for Jev on` }];
       }
       // An MCP tool's file setting (filed-tool.ts): an agent's own, on the tool's own key only, set as bash's policy is.
       if (key === "file") {
@@ -590,7 +672,7 @@ export function settingsIssues(value: unknown, at = "", layer: "server" | "agent
   });
 }
 
-/** `map` as a revision body keeps it: each tool's provider, permission, pin, policy, scope and file setting as written (never a stand-in's internal
+/** `map` as a revision body keeps it: each tool's provider, permission, pin, policy, scope, jev and file setting as written (never a stand-in's internal
  *  marks), tools, fields and a pin's arguments sorted, and a tool with none of them gone. The one form, so two
  *  revisions whose settings say the same (a pin's arguments in another order) are the same text, and so one revision
  *  where its id is the body's digest (the store keeps the body as given: store/sqlite/store.ts). */
@@ -598,7 +680,7 @@ export function canonicalToolSettings(map: ToolSettingsMap): ToolSettingsMap {
   const sorted = <T>(record: Readonly<Record<string, T>>): Record<string, T> => Object.fromEntries(Object.keys(record).sort().map((key) => [key, record[key]!]));
   return sorted(Object.fromEntries(Object.entries(map).flatMap(([name, setting]) => {
     if (!setting) return [];
-    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.allow_reads === true ? { allow_reads: true as const } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.policy ? { policy: setting.policy } : {}), ...(setting.scope ? { scope: setting.scope } : {}), ...(setting.file ? { file: { folder: setting.file.folder, show: [...setting.file.show] } } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
+    const kept: ToolSetting = sorted({ ...(setting.permission ? { permission: setting.permission } : {}), ...(setting.allow_reads === true ? { allow_reads: true as const } : {}), ...(setting.pin ? { pin: sortedPin(setting.pin) } : {}), ...(setting.policy ? { policy: setting.policy } : {}), ...(setting.scope ? { scope: setting.scope } : {}), ...(setting.jev ? { jev: setting.jev } : {}), ...(setting.file ? { file: { folder: setting.file.folder, show: [...setting.file.show] } } : {}), ...(setting.provider ? { provider: setting.provider } : {}) });
     return Object.keys(kept).length ? [[name, kept]] : [];
   })));
 }
@@ -740,6 +822,11 @@ export function agentTools(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, ag
     const pick = name as Pickable;
     const own = agent.overrides?.[pick]?.provider;
     const server = settings[pick]?.provider;
-    return { ...shown, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved: plane[pick]! };
+    // The server's setting a ceiling over the agent's own pick (ceilingOver): the pick named past it, or what the pick
+    // would resolve to with no server setting past it. `resolved` is then the server's, and `ceiling` says why. A tool
+    // the server denies says no ceiling: the deny is why nothing runs, not the setting under it.
+    const resolved = plane[pick]!;
+    const ceiling = own === undefined || resolved === DENIED ? undefined : ceilingOver(pick, server, own, planeFor(env, agent, { ...settings, [pick]: { ...settings[pick], provider: undefined } })[pick]);
+    return { ...shown, ...gate, provider: own ?? server ?? PROVIDERS[pick][0], provider_from: own ? "agent" : server ? "server" : "default", default_provider: server ?? PROVIDERS[pick][0], resolved, ...(ceiling ? { ceiling } : {}) };
   });
 }

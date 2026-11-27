@@ -53,7 +53,9 @@ import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { uuidv7 } from "../ids.js";
 import { FINAL_STATES, RunFinal, RunPurged, type RunRow, type Store, StoreConstraint } from "../store/store.js";
-import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
+import { openRunLaunch, sealHandedLaunch } from "../store/seal.js";
+import { type AtRunEnd, LEARNING_CHILD_MS, learningChildrenOf, noteLearningChild, RUN_CAP_MIN_USD } from "../learning-work.js";
+import { roomAtEndOf } from "./learning-end.js";
 import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
 import type { McpPin } from "../mcp-gateway.js";
 import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
@@ -82,9 +84,15 @@ export const REPLAY_LAUNCH_GRACE_MS = 5 * 60 * 1000;
 export interface PromotionDeps {
   readonly store: Store;
   readonly admitAuxiliary?: AuxiliaryAdmitter;
-  /** Why model spend beside the claimed run is skipped (claim-secrets.ts claimSpendOff): a replay check starts runs with
-   *  no caller's key. Absent: it runs. */
+  /** Why model spend beside the claimed run is skipped (claim-secrets.ts claimSpendOff). Absent: it runs. */
   readonly spendOff?: (what: string) => string | undefined;
+  /** Whether the claim holds its run's own model key now (claim-secrets.ts keyedNow): its check's replay runs then spend
+   *  on that key, started at the run's end (`atEnd`) out of what its cap leaves. Absent: never. */
+  readonly keyed?: () => boolean;
+  /** Where the claim queues what starts at its run's end (learning-work.ts atRunEnd). */
+  readonly atEnd?: AtRunEnd;
+  /** Set on a check started from `atEnd`: it is not queued again. */
+  readonly ending?: true;
   readonly agentId: string;
   /** The run being claimed: never one of its own check's inputs. Absent: no run is claimed (a person's replay, and its
    *  read): no run served first to keep, none whose per_run MCP credentials a replay is handed. */
@@ -378,12 +386,13 @@ const checkable = (deps: Pick<PromotionDeps, "runId">, row: RunRow): boolean =>
  *  never push them out of the read. And `audited`: an audit hold's disagreeing shadow runs (auditInputsOf), each ended.
  *  Of those, the ones whose input `workflow` takes (fits), each with its launch read back; one with an uploaded file is
  *  never an input. With how many of the agent's runs it looked at (`looked`) and why each it looked at is no input
- *  (`unfit`, `files`). Every one of them a run on no named disk (one on a named disk learns nothing, learn/learning-of.ts)
- *  since the agent's learning's reset (sinceReset), the named and audited ones included. */
+ *  (`unfit`, `files`). Every one of them a run of the agent's own (the named and audited ones are read by bare id, so a
+ *  record naming another agent's run never makes it an input) on no named disk (one on a named disk learns nothing,
+ *  learn/learning-of.ts) since the agent's learning's reset (sinceReset). */
 async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runId">, workflow: LearnedWorkflow, pick: { readonly of: readonly string[]; readonly n: number }, audited: readonly string[] = []): Promise<{ inputs: ReplayInput[]; looked: number; unfit: number; files: number }> {
   const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
   const since = await sinceReset(deps.store, deps.agentId);
-  const learns = (row: RunRow) => (row.disk ?? null) === null && since(row);
+  const learns = (row: RunRow) => row.agentId === deps.agentId && (row.disk ?? null) === null && since(row);
   const named = (await Promise.all(pick.of.map((id) => deps.store.runs.get(id)))).filter((row): row is RunRow => row !== undefined && checkable(deps, row) && learns(row));
   const last = pick.n ? await lastOwnRuns(deps.store, deps.agentId, pick.n + pick.of.length, deps.runId) : [];
   const own = [...named, ...last.filter((row) => !pick.of.includes(row.id)).slice(0, pick.n)];
@@ -414,10 +423,18 @@ async function startCheck(deps: PromotionDeps, workflow: LearnedWorkflow, digest
     log(`workflow-first: ${PROJECT_REPLAY_REFUSED}`);
     return;
   }
-  // Its replay runs are runs the runner starts, on no caller's key: skipped where the claimed run brought its own key or
-  // the server holds none (claimSpendOff).
+  // Its replay runs are runs the runner starts: on the claimed run's own key while its claim holds it, else on the
+  // server's; skipped where the run's key was erased, or the server holds none (claimSpendOff).
   const off = deps.spendOff?.("A learned workflow's replay check");
   if (off) return void log(`workflow-first: ${off} ${workflow.name} at ${digest} is not checked and does not serve this run`);
+  // On the run's own key it starts at the run's end, out of what the run's cap leaves then (keyedCapOf): never beside
+  // the run's own turn, which it would leave no room. Only where the runner can seal the key for its runs.
+  const keyed = deps.keyed?.() === true;
+  if (keyed && !deps.ending) {
+    if (!deps.atEnd || !deps.sealKey || !deps.runId) return void log(`workflow-first: ${workflow.name} at ${digest} is not checked on this claim: its runs would spend on this run's own key, which this claim cannot hand them; it does not serve this run`);
+    deps.atEnd.later(() => startCheck({ ...deps, ending: true }, workflow, digest));
+    return void log(`workflow-first: ${workflow.name} at ${digest} is new: it is checked at this run's end, on this run's own key, out of what its cap leaves then; it does not serve this run`);
+  }
   // Only the agent's newest revision is checked: a run pinned to an older save lays an older text.
   const newest = deps.newest ? await deps.newest(workflow.name) : undefined;
   if (newest !== undefined && newest !== digest) {
@@ -446,8 +463,15 @@ async function startCheck(deps: PromotionDeps, workflow: LearnedWorkflow, digest
     await stopUnchecked(deps, workflow.name, digest, bar, why, (was) => was === undefined);
     return;
   }
+  // Each keyed replay's share of what the run's cap leaves; too little for each, it drops (`no_budget`), named as the
+  // run's learning work so its learning_work reads ended, and nothing is reserved: a later claim checks it.
+  const capUsd = keyed ? await keyedCapOf(deps, inputs.length) : undefined;
+  if (capUsd === null) {
+    await noteLearningChild(store.settings, deps.runId!, { run: null, kind: "replay", at: (deps.now ?? Date.now)(), keyed: true, dropped: "no_budget" });
+    return void log(`workflow-first: ${workflow.name} at ${digest} is not checked: what this run's cap leaves is too little for ${plural(inputs.length, "replay run")} on its own key, or not known (no_budget); it does not serve this run`);
+  }
   const said = `checking it on ${plural(inputs.length, "input")} of the agent's last ${plural(bar.compile_after, "completed run")} against its own answers`;
-  const reserved = await reserve(deps, workflow, digest, inputs, said, (was) => was === undefined, bar);
+  const reserved = await reserve(deps, workflow, digest, inputs, said, (was) => was === undefined, bar, keyed ? { capUsd } : undefined);
   if (!reserved.won) {
     log(`workflow-first: ${workflow.name} at ${digest}: another claim's decision on it came first; it does not serve this run`);
     return;
@@ -729,14 +753,27 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
  *  now and no other revision of the workflow replays, in the one guarded write. Only the writer that kept it starts them:
  *  a claim of the same digest, or of another revision, or a person's ask, at once, starts none. A claim's (startCheck) and
  *  a person's (askReplay) are this one reservation. */
-async function reserve(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, inputs: readonly ReplayInput[], reason: string, still: (was: PromotionRecord | undefined) => boolean, check: CheckBar) {
+async function reserve(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, inputs: readonly ReplayInput[], reason: string, still: (was: PromotionRecord | undefined) => boolean, check: CheckBar, keyed?: { readonly capUsd: number | undefined }) {
   const now = deps.now ?? Date.now;
   const ids = inputs.map(() => uuidv7());
-  const launch = replayLaunchOf(deps);
+  const launch = replayLaunchOf(deps, keyed);
   const reserved = await recordPromotion(deps.store.learning, deps.agentId, { workflow: workflow.name, digest, at: iso(now()), decided: "replaying", reason, runs: ids, inputs: inputs.map((one) => one.run), replay_id: uuidv7(), launch, ...seedOf(deps), check },
     (was, items) => still(was) && replayingOf(items, workflow.name, digest).length === 0);
-  if (reserved.won) for (const [i, one] of inputs.entries()) await startReplay(deps, workflow, digest, one.run, one.launch, ids[i]!, launch);
+  if (reserved.won) for (const [i, one] of inputs.entries()) await startReplay(deps, workflow, digest, one.run, one.launch, ids[i]!, launch, deps.runId);
   return reserved;
+}
+
+/** The cap of each of `n` replay runs of a check on the claimed run's own key, at that run's end: what its cap leaves
+ *  then (learning-end.ts roomAtEndOf: its turns, its compile turn, and the learning work it started already), shared
+ *  among them to a millionth. Undefined for a run with no cap (its replays have none either). Null where that share is
+ *  under a run's smallest cap, or what it spent is not known: the check drops (`no_budget`). */
+async function keyedCapOf(deps: PromotionDeps, n: number): Promise<number | undefined | null> {
+  const capUsd = deps.launch.maxCostUsd;
+  if (capUsd === undefined || !deps.runId) return undefined;
+  const room = await roomAtEndOf(deps.store, deps.runId, capUsd);
+  if (room === null) return null;
+  const each = Math.floor((room / n) * 1e6 + 1e-6) / 1e6;
+  return each < RUN_CAP_MIN_USD ? null : each;
 }
 
 /** An input a replay runs on: the agent run whose input it is, and that run's launch. */
@@ -917,9 +954,10 @@ async function setAside(deps: DecideDeps, pending: PromotionRecord) {
 /** The launch a replay's runs all run with (PromotionRecord.launch), chosen once by the claim or person reserving it:
  *  `deps.launch` as a replay run takes it (a claim's claimed run's; a person's ask makes one now), the revision it runs,
  *  and the claimed run as the one whose per_run MCP credentials its runs are handed, when the server can seal them. A
- *  person's ask claims no run, so an owner's replay runs are handed none. */
-function replayLaunchOf(deps: PromotionDeps): ReplayLaunch {
-  const { launch } = deps;
+ *  person's ask claims no run, so an owner's replay runs are handed none. `keyed`: its runs spend on the claimed run's own
+ *  model key, each capped at `capUsd` (keyedCapOf; none for a run with no cap), never at the claimed run's whole cap. */
+function replayLaunchOf(deps: PromotionDeps, keyed?: { readonly capUsd: number | undefined }): ReplayLaunch {
+  const launch: RunLaunch = keyed ? { ...deps.launch, maxCostUsd: keyed.capUsd } : deps.launch;
   const base: RunLaunch = {
     input: null,
     title: "",
@@ -936,7 +974,7 @@ function replayLaunchOf(deps: PromotionDeps): ReplayLaunch {
     ...(launch.learning ? { learning: launch.learning } : {}),
     ...(launch.archilDisk ? { archilDisk: launch.archilDisk } : {}),
   };
-  return { revision: deps.revisionId, body: launchBody(base), ...((deps.sealKey || held()) && deps.runId ? { handed_from: deps.runId } : {}) };
+  return { revision: deps.revisionId, body: launchBody(base), ...((deps.sealKey || held()) && deps.runId ? { handed_from: deps.runId } : {}), ...(keyed ? { keyed: true as const } : {}) };
 }
 
 /** Whether `was`, a digest's newest record now, is still the replay `record` reserved: replaying, under the same replay
@@ -969,18 +1007,21 @@ async function cancelUnended(deps: PromotionDeps, record: PromotionRecord): Prom
 }
 
 /** The per_run MCP credentials run `launch.handed_from` was handed (its launch's sealed column, opened under the seal
- *  key), sealed for the replay run `id` alone, as the server's start seals a run's mcp_auth (store/seal.ts
- *  sealRunMcpAuth): the replay's claim reads them where any run's claim does (runner/mcp-claim.ts). None when the replay
- *  names no such run (an owner's), that run was handed none, or they do not open. Never written anywhere else, never
- *  logged. */
+ *  key), and its own model key for a `keyed` replay, sealed for the replay run `id` alone (store/seal.ts
+ *  sealHandedLaunch): the replay's claim reads them where any run's claim does (runner/mcp-claim.ts, claim-secrets.ts
+ *  claimModelKey), and its end erases them as any run's. None when the replay names no such run (an owner's), that run
+ *  was handed none, or they do not open. A keyed replay whose run holds no key now is never started (throws): it would
+ *  spend on the server's key. Never written anywhere else, never logged. */
 async function handedTo(deps: PromotionDeps, launch: ReplayLaunch, id: string): Promise<Uint8Array | undefined> {
   const from = launch.handed_from;
   if (!from) return undefined;
+  const keyed = launch.keyed === true;
   // A run's own process holds no seal key: its runner seals them again, from its own run alone (held.ts handOn).
-  if (!deps.sealKey) return held()?.handOn(from, id);
-  const sealed = await deps.store.runs.launch(from).then((one) => one.sealed ?? null, () => null);
-  const handed = sealed === null ? undefined : openRunMcpAuth(deps.sealKey, from, sealed);
-  return handed && Object.keys(handed).length ? sealRunMcpAuth(deps.sealKey, id, handed) : undefined;
+  const sealed = deps.sealKey
+    ? await deps.store.runs.launch(from).then((one) => (one.sealed === null ? undefined : sealHandedLaunch(deps.sealKey!, from, one.sealed, id, keyed)), () => undefined)
+    : await held()?.handOn(from, id, keyed);
+  if (keyed && (!deps.sealKey || !sealed || !openRunLaunch(deps.sealKey, id, sealed)?.model)) throw new Error(`the replay ${id} is not started: the run whose own model key it would spend on holds none now`);
+  return sealed;
 }
 
 /** Starts the replay of `workflow` at `digest` on agent run `of` (its launch `from`) as run `id` (the id its reserved
@@ -989,14 +1030,22 @@ async function handedTo(deps: PromotionDeps, launch: ReplayLaunch, id: string): 
  *  relaunch and the reserving claim at once), and it is left to that one; false too when run `of` was purged since its
  *  launch was read (the store refuses it, RunPurged, nothing written): the replay never starts, counted so past its
  *  deadline. */
-async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, of: string, from: RunLaunch, id: string, launch: ReplayLaunch): Promise<boolean> {
+async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, of: string, from: RunLaunch, id: string, launch: ReplayLaunch, parent?: string): Promise<boolean> {
   const { store, agentId } = deps;
   const base = readLaunchBody(launch.body);
   if (!base) throw new Error(`the launch of ${workflow.name} at ${digest}'s replay could not be read`);
   const source = sourceSyncOf((await store.agents.revision(launch.revision))?.body);
   if (base.sourceProject || source && !deps.admitAuxiliary) throw new ReplayRefused("conflict", PROJECT_REPLAY_REFUSED);
-  const replay: RunLaunch = { ...base, input: from.input, title: `Replay of ${workflow.name}: ${from.title}`.slice(0, 200), replay: { of, workflow: workflow.name, digest } };
+  // A keyed replay names the run whose own key it spends on: its cost is that run's learning, never its revision's
+  // (learn/ledger.ts record).
+  const paidBy = launch.keyed && launch.handed_from ? { paidBy: launch.handed_from } : {};
+  // Its start, and its deadline from it (learning-work.ts LEARNING_CHILD_MS): its runner cancels it there.
+  const at = (deps.now ?? Date.now)();
+  const replay: RunLaunch = { ...base, input: from.input, title: `Replay of ${workflow.name}: ${from.title}`.slice(0, 200), replay: { of, workflow: workflow.name, digest, ...paidBy, deadlineAt: at + LEARNING_CHILD_MS } };
   const sealed = await handedTo(deps, launch, id);
+  // The reserving claim's run names it as its learning work before it exists (learning-work.ts), so no replay runs that
+  // its run's learning_work does not list; the same write moves that run's learning deadline to this one's.
+  if (parent) await noteLearningChild(store.settings, parent, { run: id, kind: "replay", at, ...(launch.keyed ? { keyed: true as const } : {}) });
   try {
     if (source) return (await deps.admitAuxiliary!({ runId: id, agentId, revisionId: launch.revision, launch: replay, ...(sealed ? { sealed } : {}) })).created;
     await store.runs.create({ id, agentId, revisionId: launch.revision }, { body: launchBody(replay) as Json, ...(sealed ? { sealed } : {}) });
@@ -1019,14 +1068,19 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
  *  this claim created. */
 async function relaunch(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, record: PromotionRecord): Promise<number> {
   const { store } = deps;
-  if (deps.spendOff?.("A replay")) return 0;
+  // Its runs spend on the server's key: a claim on its run's own key starts none of them, and a check on another run's
+  // key (`keyed`) is never created again, that key being erased with its run's claim.
+  if (deps.spendOff?.("A replay") || deps.keyed?.()) return 0;
   const since = (deps.now ?? Date.now)() - Date.parse(record.at);
   const launch = record.launch;
-  if (!launch || since <= REPLAY_LAUNCH_GRACE_MS || since > REPLAY_DEADLINE_MS) return 0;
+  if (!launch || launch.keyed || since <= REPLAY_LAUNCH_GRACE_MS || since > REPLAY_DEADLINE_MS) return 0;
+  // A run the reserving claim named as its learning work and did not create (it crashed between the two) stays missing,
+  // counted as never started: that run's learning_work read it ended, and never reads it running again.
+  const named = launch.handed_from ? new Set((await learningChildrenOf(store.settings, launch.handed_from)).map((one) => one.run)) : new Set<string | null>();
   let made = 0;
   for (const [i, id] of (record.runs ?? []).entries()) {
     const of = record.inputs?.[i];
-    if (!of || (await store.runs.get(id))) continue;
+    if (!of || named.has(id) || (await store.runs.get(id))) continue;
     const from = await store.runs.launch(of).then((one) => readLaunchBody(one.body), () => undefined);
     if (from && (await startReplay(deps, workflow, digest, of, from, id, launch))) made += 1;
   }

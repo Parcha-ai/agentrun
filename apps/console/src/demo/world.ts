@@ -195,7 +195,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     const kept = h.gradeLabel ? `Kept a correction from your grade: ${h.gradeLabel}` : "Kept a correction from your grade.";
     const run: Run = {
       run_id: story.id, agent_id: agent.id, agent_version: versionOf(agent), revision: revisionOf(agent), kind: agent.kind, sha: null,
-      status, state, title: story.title, ...(story.effort ? { effort: story.effort } : {}), input: story.input, file_ids: h.files?.map((f) => f.id) ?? [], place: { mode: "runner" }, claim: null,
+      status, state, title: story.title, ...(story.effort ? { effort: story.effort } : {}), input: story.input, file_ids: h.files?.map((f) => f.id) ?? [], place: { mode: "runner" }, claim: null, learning_work: { state: "none", runs: [], ended_at: null, deadline_at: null },
       created_at: iso(h.start), updated_at: iso(endedAt ?? Math.min(now, h.start + 60 * MIN)), ended_at: ended ? iso(endedAt!) : null,
       result: status === "completed" ? { output: story.output ?? null, final_answer: finalAnswer } : null,
       error: status === "failed" && story.fails && !after.length ? { code: story.fails.code, message: story.fails.message, retryable: false } : null,
@@ -572,7 +572,7 @@ export function createWorld({ opened = Date.now(), clock = () => Date.now() }: {
     if (!run.learning) return null;
     const merged = run.learning.state === "merged";
     const graded = h.grade ? { ...h.grade, feedback_status: h.grade.feedback ? (run.learning.state === "reflecting" ? "running" as const : "ended" as const) : null } : undefined;
-    return { ...(graded ? { graded } : {}), run: run.run_id, state: run.learning.state, reason: run.learning.reason, detail: run.learning.detail, at: run.learning.at, seed: hex("learn:1"), merged: merged ? hex("learn:2") : null, workflows: [], corrections: merged ? 1 : 0, problems: [], compiled: null, draft_errors: [], used: { workflows: h.story.path && h.story.path !== "agent" ? [{ name: LEARNING_WORKFLOW, calls: 1, failed: 0 }] : [] } };
+    return { ...(graded ? { graded } : {}), run: run.run_id, state: run.learning.state, reason: run.learning.reason, detail: run.learning.detail, at: run.learning.at, seed: hex("learn:1"), seed_failed: null, seed_waited: null, learned_chars: 0, merged: merged ? hex("learn:2") : null, workflows: [], corrections: merged ? 1 : 0, dropped_lines: 0, problems: [], compiled: null, draft_errors: [], used: { workflows: h.story.path && h.story.path !== "agent" ? [{ name: LEARNING_WORKFLOW, calls: 1, failed: 0 }] : [] } };
   };
 
   // ---- Files ----

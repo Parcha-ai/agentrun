@@ -108,6 +108,9 @@ const cutId = (runId: string, at: string, rule: string, ordinal: number): string
 /** An RFC 6901 pointer's token for `key`. */
 const token = (key: string | number): string => String(key).replace(/~/g, "~0").replace(/\//g, "~1");
 
+/** What a string is cut knowing: its call's (CallContext), and whether it is lines flattened onto one (the run's title). */
+type CutContext = CallContext & { readonly flattened?: true };
+
 /** The run's allowlisted view: SHARE_RUN_FIELDS (those it has), and `imported_from` with its `source` alone. */
 function runOf(view: Readonly<Record<string, unknown>>): Record<string, unknown> {
   const run: Record<string, unknown> = {};
@@ -186,7 +189,9 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   // before the scrubber reads them: a held value the scrubber's own reading misses (wrapped over line breaks, re-encoded)
   // is withheld there. A census-cut run carries no file at all (filesOf), so no census applies here.
   const listed = await filesOf(input.files, input.filesTruncated, input.filesUncounted === true, caps);
-  const carried = listed.carried.map((file) => ({ path: cutFileText(file.path, input.held), content: cutFileText(file.content, input.held) }));
+  // `source` is the path as the run wrote it, never written into the bundle: the scrubber reads a file's content knowing
+  // it (a `.env.<held value>` file is still an env file, cut whole), and the bundle carries the cut path alone.
+  const carried = listed.carried.map((file) => ({ path: cutFileText(file.path, input.held), source: file.path, content: cutFileText(file.content, input.held) }));
   const omitted = listed.omitted.map((one) => (one.what === "file" ? { ...one, path: cutFileText(one.path, input.held) } : one));
   const kind = String(input.view.kind);
   // What is cut: everything that came from the run. The format and source are this server's own words.
@@ -203,7 +208,7 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   const restored: RestoredRecord[] = [];
   const seen = new Map<string, boolean>(); // every cut's id: whether it is restorable
   // `restoring` false: every cut stays cut, whatever the restore names (the files' choice, below).
-  const cutString = async (text: string, at: string, context?: CallContext, restoring = true): Promise<string> => {
+  const cutString = async (text: string, at: string, context?: CutContext, restoring = true): Promise<string> => {
     // keep() is asked of restorable cuts alone, in the order of the string's cuts; a rule's cuts are all of one kind, so
     // counting a rule's cuts here gives the ordinals the records below are named by.
     const asked = new Map<string, number>();
@@ -214,7 +219,7 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
     };
     let result: ScrubResult;
     try {
-      result = await cutPass(text, { mode: "cut", held: input.held, keep, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.command !== undefined ? { command: context.command } : {}) });
+      result = await cutPass(text, { mode: "cut", held: input.held, keep, ...(context?.path !== undefined ? { path: context.path } : {}), ...(context?.command !== undefined ? { command: context.command } : {}), ...(context?.flattened ? { flattened: true } : {}) });
     } catch {
       throw new ExportFailed("a scrub threw");
     }
@@ -263,8 +268,11 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
     const context = effectContext(effect);
     return context === undefined ? walk(effect, at) : each(effect, at, (item, here, key) => walk(item, here, key === "output" ? context : undefined));
   };
+  // The run's title is its first message flattened onto one line (runs-over-store.ts prepareLaunch): it is cut as such,
+  // so a transcript's env command and its output, one line there, is still a dump (secret-cut.ts ScrubOptions.flattened).
   const walkPart = (key: string, value: unknown, at: string): Promise<unknown> =>
-    key === "rows" ? each(value, at, walkRow)
+    key === "run" ? each(value, at, (item, here, field) => (field === "title" && typeof item === "string" ? cutString(item, here, { flattened: true }) : walk(item, here)))
+      : key === "rows" ? each(value, at, walkRow)
       : key === "graph" ? each(value, at, (item, here, field) => (field === "effects" ? each(item, here, walkEffect) : walk(item, here)))
       : walk(value, at);
   // A file's content is cut knowing its path (a .env* file or one under ~/.ssh is dropped whole); then its bytes and digest
@@ -275,10 +283,10 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   // file in or out, a cut id the owner picked would name another file's value. A restore that then puts a carried file
   // over a cap is refused. Files are cut first so their omissions are cut with the rest of `omitted`; their records still
   // follow every other part's, in the order the body is written in.
-  const cutFile = async (file: { path: string; content: string }, index: number, restoring: boolean) => {
+  const cutFile = async (file: { path: string; source: string; content: string }, index: number, restoring: boolean) => {
     const before = { cuts: cuts.length, restored: restored.length, seen: new Set(seen.keys()) };
     const path = await cutString(file.path, `/files/${index}/path`, undefined, restoring);
-    const content = await cutString(file.content, `/files/${index}/content`, { path: file.path }, restoring);
+    const content = await cutString(file.content, `/files/${index}/content`, { path: file.source }, restoring);
     const undo = () => {
       cuts.splice(before.cuts);
       restored.splice(before.restored);
@@ -288,7 +296,7 @@ export async function exportBundle(input: ExportInput): Promise<{ body: string; 
   };
   const files: Record<string, unknown>[] = [];
   const fileOf = (cut: { path: string; content: string; bytes: number }) => ({ path: cut.path, bytes: cut.bytes, sha256: packageSha256([{ path: cut.path, encoding: "utf8", content: cut.content }]), encoding: "utf8", content: cut.content });
-  const chosen: { path: string; content: string }[] = [];
+  const chosen: { path: string; source: string; content: string }[] = [];
   let total = 0;
   for (const file of carried) {
     const cut = await cutFile(file, chosen.length, false);

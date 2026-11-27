@@ -214,6 +214,15 @@ test("files: a held value wrapped over line breaks in a run's file is not carrie
   }
 });
 
+test("files: a path holding a held value is cut in the bundle, and the file's content is still cut as that path's: .env.<held> is an env file", async () => {
+  const held = `Hp${hex("path-held", 30)}`;
+  const plain = `orchard${hex("plain-env", 12)}`;
+  const { body, doc } = await build({ held: [held], files: [textFile(`.env.${held}`, `APP_REGION=north\nAPP_NOTE=${plain}\n`)] });
+  assert.ok(!body.includes(held), "the held value in the path is carried");
+  assert.ok(!body.includes(plain), "an env file's value with no secret shape is carried");
+  assert.equal(doc.files.length, 1);
+});
+
 test("files: a census-cut run (its end erased a value it was handed, so the cut set no longer holds it) carries no file through runExport, whatever a file holds", async () => {
   const erased = `Er${hex("erased-handed", 30)}`;
   const reads = { ...readsOf({ rows: [] }), files: async () => ({ files: [textFile("out/key.txt", `the key: ${erased}\n`)], truncated: false }), cut: async () => ({ values: [], censusDigest: "d".repeat(64) }) };
@@ -485,6 +494,20 @@ test("LVI: a read of an unrelated file, or a command that is no read or dump, is
     assert.deepEqual(cutsAt(doc, "/rows/1/tool_result_preview"), [], `${name}: ${JSON.stringify(doc.cuts)}`);
     assert.equal(doc.rows[1].tool_result_preview, output, name);
   }
+});
+
+test("LVI (11-26): a title made of a transcript is cut as one: its env command's output is an env-dump cut at /run/title", async () => {
+  // A run's title is its first message flattened onto one line and clipped: the input's multi-line dump reads as
+  // "$ printenv NAME=value NAME=value" there, and the title is cut with that context (flattened), its other fields without.
+  const title = `Say: Here is what I ran. $ printenv HOME=/root SYNTH_UNHELD=${PLANTED.envValue} SHELL=/bin/sh $ ls…`;
+  const { doc, body } = await build({ view: { ...viewOf(), title } });
+  assert.equal(doc.run.title, "Say: Here is what I ran. $ printenv [redacted:env-dump 1 lines] $ ls…");
+  assert.deepEqual(doc.cuts.filter((cut) => cut.at === "/run/title").map((cut) => [cut.rule, cut.kind, cut.restorable]), [["env-dump", "dump", false]]);
+  assert.ok(!body.includes(PLANTED.envValue));
+  // The same words in a row are a message, not a title: no prompt there is read mid-line.
+  const said = `Run $ env SYNTH_MODE=dev node app.js`;
+  const { doc: row } = await build({ rows: [{ id: "row_1", timestamp: "2026-11-23T10:00:01.000Z", created_at: "2026-11-23T10:00:01.000Z", kind: "message", summary: said, text: said }] });
+  assert.equal(row.rows[0].text, said);
 });
 
 test("LVI: the rows read with their calls' arguments name each call's context and nothing else: none of their strings is carried", async () => {

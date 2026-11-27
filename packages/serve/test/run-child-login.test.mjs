@@ -15,6 +15,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { setHeld } = await import("../dist/runner/held.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { MACHINE_ID_FILE, settingFor } = await import("../dist/claude-login.js");
 const { runFolder, recordingsFolder, scratchFolder } = await import("../dist/workspace/paths.js");
@@ -62,7 +63,7 @@ async function childClaim(t, handed, asked) {
   let models = createModels();
   harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const deps = { env: { PATH: process.env.PATH }, data, journal: (c) => store.journal(c), store, sealKey: undefined, routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }), installSettled: async () => "installed" };
-  built = await cliRunSpecFromLaunch(launch, { harness, registry, setModels: (given) => (models = given) }, deps, claim);
+  built = await cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim);
   return built;
 }
 
@@ -85,4 +86,55 @@ test("a run's own process whose runner hands it no login (a claim the runner doe
     return true;
   });
   assert.ok(asked.includes("claudeLogin"), `the runner was asked: ${asked.join(", ")}`);
+});
+
+/** A claim of a claude-agent run in the runner itself (a seal key), with AgentRun's own login folder turned on for this
+ *  machine: `launch` laid over the run's launch, `env` over the runner's. Settles to the claim's outcome (its spec or its
+ *  error); `reads` gets each setting the claim read, by name. */
+async function runnerClaim(t, launchOver, envOver, reads) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "login-runner-store-"));
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "login-runner-data-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  let built;
+  let harness;
+  t.after(async () => {
+    await built?.release?.().catch(() => {});
+    await harness?.close(ctx).catch(() => {});
+    await store.close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(data, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.settings.put("claude_login", settingFor("agentrun", data));
+  await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "claude-agent", model: "anthropic/claude-haiku-5-5", tools: ["read"] } });
+  const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness: "claude-agent", ...launchOver };
+  await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  await server.flush?.();
+  const [claim] = await store.runs.claimMany("runner-a", 1, { leaseMs: 60_000 });
+  const settings = new Proxy(store.settings, { get: (target, key) => (key === "get" ? (name, ...rest) => (reads.push(name), target.get(name, ...rest)) : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  const counted = new Proxy(store, { get: (target, key) => (key === "settings" ? settings : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  const registry = createRegistry();
+  let models = createModels();
+  harness = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
+  const deps = { env: { PATH: process.env.PATH, ...envOver }, data, journal: (c) => store.journal(c), store: counted, sealKey: Buffer.alloc(32, 7), routeOf: async () => assert.fail("a CLI run takes no pi route"), computerForClaim: async () => ({ release: async () => {} }), installSettled: async () => "installed" };
+  return cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness, registry, setModels: (given) => (models = given) }, deps, claim).then((spec) => ((built = spec), { spec }), (error) => ({ error }));
+}
+
+test("a claude-agent run in the runner that sends no model key (held, on a --faux runner, faux-pinned) never reads the Claude login's setting at its claim, with the login turned on; the same run off those reads it", async (t) => {
+  const control = [];
+  await runnerClaim(t, {}, {}, control);
+  assert.ok(control.includes("claude_login"), `control: a run in the runner off those reads the login's setting at its claim: ${JSON.stringify(control)}`);
+  const runs = [
+    ["held, its model kept from running", { hold: { minutes: 5, refused: { message: "This run's model can't run here.", fields: [], details: {} } } }, {}],
+    ["on a --faux runner", {}, { AGENTRUN_SERVE_FAUX: "1" }],
+    ["faux-pinned", { model: { provider: "faux", modelId: "faux-1" } }, {}],
+  ];
+  const read = {};
+  for (const [what, launch, env] of runs) {
+    const reads = [];
+    await runnerClaim(t, launch, env, reads);
+    read[what] = reads.filter((name) => name === "claude_login");
+  }
+  assert.deepEqual(read, { "held, its model kept from running": [], "on a --faux runner": [], "faux-pinned": [] }, "a run that sends no model key never reads the login's setting");
 });

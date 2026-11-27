@@ -67,6 +67,9 @@ export type ReadOptions = {
    *  decoded. The read pool's workers set it to an eighth of their heap (pool.ts), so that no one line can end the
    *  process; parseHome then reads the file on its own thread, with no such bound. Default: none. */
   maxLine?: number;
+  /** true keeps the session's chain (SessionOf.chain) for analyzeCache, its turns with it: each record's id, its
+   *  parent's and a hash of its content, never the content. A cursor read with it is resumed with it. Default false. */
+  chain?: boolean;
   /** What a reader looks up once for a whole import, shared across its files: one map per import, each reader keying
    *  its own entries. Without one, each read looks up afresh. */
   lookups?: Map<string, unknown>;

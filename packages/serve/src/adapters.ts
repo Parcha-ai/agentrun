@@ -16,6 +16,7 @@ import { commandData } from "./harness-owned.js";
 import { DATA_ENV, defaultData } from "./files.js";
 import { type HarnessEntry, harnessOf, onAdapter } from "./harness-table.js";
 import type { ModelRef } from "./model.js";
+import { OLLAMA_PROVIDER } from "./ollama-provider.js";
 import { HarnessUnavailable, heldRefusedProvider, type InstallFix, type Provider, providerFor } from "./provider.js";
 import { keyShaped } from "./secret-cut.js";
 import { servedSkills } from "./learn/workflow-draft.js";
@@ -377,7 +378,7 @@ const loadClaude = (): Promise<unknown> => import(CLAUDE_PACKAGE);
 
 /** What serve reads of the claude-agent package: the adapter, the SDK version it pins and the SDK's install line it
  *  names, and this platform's suffix for the SDK's CLI package. */
-type ClaudePackage = { claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; verifyClaudeAgentCliAsync(path: string | undefined): Promise<unknown>; CLAUDE_AGENT_SDK_VERSION: string; CLAUDE_AGENT_SDK_INSTALL: string; claudeAgentPlatform(): string };
+type ClaudePackage = { LOCAL_STREAM_IDLE_MS: number; claudeAgentAdapter(options: Record<string, unknown>): AgentAdapter; verifyClaudeAgentCliAsync(path: string | undefined): Promise<unknown>; CLAUDE_AGENT_SDK_VERSION: string; CLAUDE_AGENT_SDK_INSTALL: string; claudeAgentPlatform(): string };
 
 /** This server's data, as `env` names it (the server sets it for itself and its runs). */
 const dataOf = (env: NodeJS.ProcessEnv): string => env[DATA_ENV] || defaultData(env);
@@ -456,8 +457,9 @@ export async function claudeOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds, load
     // whoever bills it (its priceModel).
     const endpoint = provider ? { origin: provider.origin, credential: provider.credential, auth: provider.auth, ...(provider.headers ? { headers: provider.headers } : {}) } : { origin: "", credential: () => "" };
     // A model the route translates onto the wire (an Ollama model): its proxy forwards with the route's own fetch, and the
-    // provider's own web search (nativeOptions), which the translation cannot run, is not offered.
-    const forward = provider?.fetch ? { fetch: provider.fetch } : {};
+    // provider's own web search (nativeOptions), which the translation cannot run, is not offered. One on this machine says
+    // nothing while it loads, reads its prompt or thinks, so the CLI waits it out (the runner's route.local reads the same).
+    const forward = provider?.fetch ? { fetch: provider.fetch, ...(provider.priceModel.provider === OLLAMA_PROVIDER ? { streamIdleMs: claude.LOCAL_STREAM_IDLE_MS } : {}) } : {};
     const priced = provider ? { ...needs, model: provider.priceModel } : native;
     // Its CLI checked off the event loop first (hashed and run as a child), so the server goes on answering: a pass is
     // kept, and the adapter's own check answers from it. A CLI that fails its pins is the adapter's to report, in its

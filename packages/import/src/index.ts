@@ -1,5 +1,5 @@
 // @parcha/agentrun-import: the coding-agent sessions under a person's home (Claude Code, Codex, pi, OpenCode, Copilot CLI), read as one shape.
-export type { Answer, Ended, Mirror, ToolCall, Turn, Usage } from "./types.js";
+export type { Answer, ChainRecord, Ended, Mirror, ToolCall, Turn, Usage } from "./types.js";
 export { ACTIVE_GAP_MS } from "./types.js";
 export { mostEffortOf, personsWords } from "./text.js";
 export { addTokens, noTokens, normalizeUsage, type OtelUsage, otelUsage, type Tokens, type UsageFormat, type UsageOptions } from "./usage.js";
@@ -13,3 +13,4 @@ export { builtinCatalog, type CalculateCost, type Catalog, catalogOf, type Liste
 export { mirroredIn, ownRequests, sessionKey } from "./mirror.js";
 export { type HomeState, type ParseOptions, parseHome, type ReadFailure, ReadFailures, type SessionRequest, type SessionTotals, withSubagentCosts } from "./home.js";
 export { type Wrapped, wrappedHome } from "./wrapped.js";
+export { analyzeCache, BREAK_DROP, CACHE_SOURCES, cacheHome, cacheTotals, conversationOf, fileCache, type FileCache, type JoinedFile, sessionBreaks, type SessionCache, type CacheBreak, type CacheCause, CACHE_CAUSES, type CacheOptions, type CacheReport, CACHE_TTL_LONG_MS, CACHE_TTL_MS } from "./cache.js";

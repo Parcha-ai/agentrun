@@ -66,6 +66,7 @@ export interface components {
       provider_from?: "agent" | "server" | "default";
       default_provider?: string;
       resolved?: string;
+      ceiling?: string;
       permission: "allow" | "ask" | "deny";
       permission_from: "agent" | "server" | "default" | "unattended";
       default_permission: "allow" | "ask" | "deny";
@@ -167,7 +168,7 @@ export interface components {
     places: {
       modes: ("runner" | "sandbox")[];
       boxes: {
-        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+        id: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
         available: boolean;
         state: "ready" | "unavailable";
         reason?: string;
@@ -179,7 +180,7 @@ export interface components {
         mode: "runner";
       } | {
         mode: "sandbox";
-        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+        box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
       } | null;
       default_reason?: string;
       allow: string[];
@@ -316,6 +317,7 @@ export interface components {
     compile_usd?: number | null;
     followup_usd?: number | null;
     shadow_usd?: number | null;
+    check_usd?: number | null;
     share_usd?: number | null;
     plan?: {
       requests: number;
@@ -391,7 +393,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
     };
     computer?: {
       kind: "none" | "sandbox" | "desktop" | "phone" | "browser";
@@ -427,10 +429,12 @@ export interface components {
       web_fetch?: {
         provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       };
       web_search?: {
         provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       };
       web_save?: {
         permission?: "allow" | "ask" | "deny";
@@ -504,9 +508,11 @@ export interface components {
       } | {
         provider?: "auto" | "firecrawl-keyless" | "kernel" | "parallel";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       } | {
         provider?: "auto" | "native" | "firecrawl-keyless" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
+        jev?: "off";
       } | {
         permission?: "allow" | "ask" | "deny";
         scope?: "thread" | "mailbox";
@@ -554,7 +560,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "export_too_large" | "purged" | "model_key_required" | "runner_refused" | "api_keys_full";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "github_not_installed" | "github_permission_missing" | "github_file_exists" | "suggestion_decided" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "not_exportable" | "export_too_large" | "purged" | "model_key_required" | "runner_refused" | "api_keys_full" | "local_model_pulling";
   ExternalRef: {
     source: string;
     kind: string;
@@ -587,6 +593,7 @@ export interface components {
       answer: boolean;
       follow_up: boolean;
       steer_workflow_runs: boolean;
+      said?: boolean;
     };
     timeline: {
       long_poll: boolean;
@@ -649,6 +656,11 @@ export interface components {
       events: ("run.needs_input" | "run.ended" | "trigger.failed")[];
       signing: "standard-webhooks/v1";
       at_rest: "sealed";
+    };
+    workspaces?: {
+      header: "AgentRun-Workspace";
+      enforced: boolean;
+      routes: string[];
     };
     api_keys?: {
       routes: boolean;
@@ -790,6 +802,7 @@ export interface components {
   };
   MessageCreate: {
     content: string;
+    said?: string;
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
@@ -1009,7 +1022,7 @@ export interface components {
       mode: "runner";
     } | {
       mode: "sandbox";
-      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "boxd" | "groundbox";
+      box: "docker" | "daytona" | "modal" | "e2b" | "agent37" | "morph" | "cloudflare" | "fly" | "render" | "boxd" | "groundbox";
     };
     computer?: {
       kind: "sandbox" | "desktop" | "phone" | "browser";
@@ -1091,6 +1104,12 @@ export interface components {
       firing_key: string;
     } | null;
     audit_of?: string | null;
+    learning_work: {
+      state: "none" | "running" | "ended";
+      runs: string[];
+      ended_at: string | null;
+      deadline_at: string | null;
+    };
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
     workflow?: {
       name: string | null;
@@ -2719,6 +2738,7 @@ export interface operations {
         provider_from?: "agent" | "server" | "default";
         default_provider?: string;
         resolved?: string;
+        ceiling?: string;
         permission: "allow" | "ask" | "deny";
         permission_from: "agent" | "server" | "default" | "unattended";
         default_permission: "allow" | "ask" | "deny";
@@ -3011,7 +3031,7 @@ export interface operations {
     answer: {
       text: string;
       etag: string;
-      cap_bytes: 2048;
+      cap_bytes: 8192;
     };
   };
   getLearningCost: {
@@ -3034,6 +3054,7 @@ export interface operations {
         compile_usd?: number | null;
         followup_usd?: number | null;
         shadow_usd?: number | null;
+        check_usd?: number | null;
         share_usd?: number | null;
         not_served?: "cost_stop" | "cut" | null;
       }[];
@@ -3146,6 +3167,46 @@ export interface operations {
         draft_errors: string[];
         withheld: boolean;
       }[];
+    };
+  };
+  getLocalModel: {
+    body: never;
+    answer: {
+      machine: {
+        platform: string;
+        arch: string;
+        ram_bytes: number;
+        gpu: {
+          kind: "apple";
+          unified: true;
+        } | {
+          kind: "nvidia";
+          name: string;
+          memory_bytes: number;
+        } | {
+          kind: "unknown";
+        };
+      };
+      ollama: {
+        asked: boolean;
+        reachable: boolean;
+        version: string | null;
+      };
+      recommended: {
+        tag: string | null;
+        why: string;
+        pulled: boolean;
+      };
+      pull: null | {
+        tag: string;
+        state: "pulling" | "done" | "failed";
+        status: string;
+        completed_bytes: number;
+        total_bytes: number;
+        error?: string;
+      };
+      can_pull: boolean;
+      refused: string | null;
     };
   };
   getMcpPrivateHosts: {
@@ -3353,6 +3414,26 @@ export interface operations {
     body: never;
     answer: Record<string, unknown>;
   };
+  getPrices: {
+    body: never;
+    answer: {
+      compute: {
+        provider: string;
+        resource: "vcpu" | "memory" | "gpu" | "disk";
+        gpu_type: string | null;
+        unit: "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
+        usd: string | null;
+        source: "setting" | "list" | "unpriced";
+      }[];
+      browser: {
+        provider: string;
+        unit: "hour";
+        usd: string | null;
+        minimum_s: number;
+        source: "setting" | "list" | "unpriced";
+      }[];
+    };
+  };
   getRevisionSkills: {
     body: never;
     answer: {
@@ -3539,6 +3620,9 @@ export interface operations {
       detail: string | null;
       at: string;
       seed: string | null;
+      seed_failed: "unreadable" | "not_copied" | "other_disk" | null;
+      seed_waited: "ended" | "timed_out" | null;
+      learned_chars: number;
       merged: string | null;
       workflows: {
         file: string;
@@ -3546,6 +3630,7 @@ export interface operations {
         pending?: true;
       }[];
       corrections: number;
+      dropped_lines: number;
       problems: {
         rule: string;
         path?: string;
@@ -3705,7 +3790,7 @@ export interface operations {
         billable: boolean;
       }[] | null;
       infra_usd: number | null;
-      reason: "running" | "not_booked" | "reopened" | null;
+      reason: "running" | "not_booked" | null;
     };
   };
   getSdkRun: {
@@ -4053,6 +4138,12 @@ export interface operations {
           dropped: string[];
           note: string | null;
         } | null;
+        model_tiers_here: {
+          harness: string;
+          fast: string | null;
+          strong: string | null;
+          note: string | null;
+        };
         category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
         tags: string[];
         mcp: {
@@ -4398,6 +4489,32 @@ export interface operations {
         runs: number;
       }[];
       unread_files: number;
+      cache: {
+        runs: number;
+        hit_rate: number | null;
+        breaks: {
+          model: number;
+          idle: number;
+          compaction: number;
+          edited: number;
+          sidechain: number;
+          unknown: number;
+        };
+        extra_cost_usd: {
+          model: number;
+          idle: number;
+          compaction: number;
+          edited: number;
+          sidechain: number;
+          unknown: number;
+        };
+        unpriced_breaks: number;
+      } | null;
+      secrets: {
+        runs: number;
+        runs_holding: number;
+        removed: number;
+      } | null;
     };
   };
   gitHubCallback: {
@@ -4612,6 +4729,12 @@ export interface operations {
           dropped: string[];
           note: string | null;
         } | null;
+        model_tiers_here: {
+          harness: string;
+          fast: string | null;
+          strong: string | null;
+          note: string | null;
+        };
         category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
         tags: string[];
         mcp: {
@@ -5578,6 +5701,12 @@ export interface operations {
           dropped: string[];
           note: string | null;
         } | null;
+        model_tiers_here: {
+          harness: string;
+          fast: string | null;
+          strong: string | null;
+          note: string | null;
+        };
         category: "engineering" | "security" | "sales" | "marketing" | "research" | "finance" | "operations" | "compliance" | "personal" | null;
         tags: string[];
         mcp: {
@@ -6012,6 +6141,48 @@ export interface operations {
     };
     answer: Record<string, unknown>;
   };
+  pullLocalModel: {
+    body: {
+      tag: "inkling-2-mini" | "qwen3:8b" | "qwen3:4b";
+    };
+    answer: {
+      machine: {
+        platform: string;
+        arch: string;
+        ram_bytes: number;
+        gpu: {
+          kind: "apple";
+          unified: true;
+        } | {
+          kind: "nvidia";
+          name: string;
+          memory_bytes: number;
+        } | {
+          kind: "unknown";
+        };
+      };
+      ollama: {
+        asked: boolean;
+        reachable: boolean;
+        version: string | null;
+      };
+      recommended: {
+        tag: string | null;
+        why: string;
+        pulled: boolean;
+      };
+      pull: null | {
+        tag: string;
+        state: "pulling" | "done" | "failed";
+        status: string;
+        completed_bytes: number;
+        total_bytes: number;
+        error?: string;
+      };
+      can_pull: boolean;
+      refused: string | null;
+    };
+  };
   putLearningCorrections: {
     body: {
       text: string;
@@ -6019,7 +6190,7 @@ export interface operations {
     answer: {
       text: string;
       etag: string;
-      cap_bytes: 2048;
+      cap_bytes: 8192;
     };
   };
   putMcpPrivateHosts: {

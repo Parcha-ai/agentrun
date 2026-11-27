@@ -180,7 +180,7 @@ test("get reads an instance back as a machine; an unknown id is none; list answe
 	const value = await host.create(request({ "agentrun.conformance": "run-1" }), CTX);
 	await host.create(request({ "agentrun.conformance": "run-2" }), CTX);
 	const machine = await host.get(value.id, CTX);
-	assert.deepEqual(Object.keys(machine).sort(), ["createdAt", "id", "labels", "state"], "a machine is its id, labels, state and start: nothing the adapter does not read");
+	assert.deepEqual(Object.keys(machine).sort(), ["createdAt", "id", "labels", "resources", "state"], "a machine is its id, labels, state, start and size: nothing the adapter does not read");
 	assert.equal(machine.id, value.id);
 	assert.equal(machine.state, "running");
 	assert.deepEqual(machine.createdAt, new Date(1_800_000_000_000));
@@ -207,6 +207,23 @@ test("get reads an instance back as a machine; an unknown id is none; list answe
 	assert.equal(rest.instances.has(value.id), false);
 	rest.fail("GET", /^\/v1\/instances$/, new Response(JSON.stringify({ data: [], has_more: true }), { status: 200 }));
 	await assert.rejects(host.list({}, CTX), /would miss machines/);
+});
+
+test("get and list read Agent37's own figures for an instance (vCPUs, memory and disk in GB): the size a create answers, so its time can be priced", async () => {
+	const { rest, host } = restOnly();
+	const asked = await host.create({ ...request(), cpus: 4, memoryMb: 16384 }, CTX);
+	const plain = await host.create(request(), CTX);
+	// The answer's own figures, never the request's: Agent37 reads 4 vCPUs, 16 GB of memory and 4 GB of disk.
+	assert.deepEqual(rest.instances.get(asked.id).resources, { cpu: 4, memory: 16, disk: 4 });
+	assert.deepEqual((await host.get(asked.id, CTX)).resources, { cpus: 4, memoryMb: 16_384, diskGb: 4 });
+	assert.deepEqual((await host.get(plain.id, CTX)).resources, { cpus: 2, memoryMb: 4096, diskGb: 4 }, "no size asked: Agent37's default shape, as it answers it");
+	const listed = new Map((await host.list({}, CTX)).map((machine) => [machine.id, machine.resources]));
+	assert.deepEqual(listed.get(asked.id), { cpus: 4, memoryMb: 16_384, diskGb: 4 }, "listed, the same figures");
+	// A figure the answer leaves out, or one that is no positive number, is left out: never guessed.
+	rest.instances.get(plain.id).resources = { cpu: 2, memory: 0, disk: "4" };
+	assert.deepEqual((await host.get(plain.id, CTX)).resources, { cpus: 2 });
+	delete rest.instances.get(plain.id).resources;
+	assert.equal(Object.hasOwn(await host.get(plain.id, CTX), "resources"), false, "an answer with no size says none");
 });
 
 test("the status mapping: every Agent37 status is one of the adapter's states, and one it does not know is gone with why", async () => {

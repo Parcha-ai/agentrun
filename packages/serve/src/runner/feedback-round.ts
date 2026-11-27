@@ -70,7 +70,9 @@ export function jobEndOpen(entries: readonly { readonly kind: string }[]): boole
  *  - the job's end kept for it (KINDS.jobEnd, with its time), newer than the run's last end: by its claim before the
  *    end-of-run step, or for a grade's round by the steer's taking;
  *  - else from the round's steer the grade wrote, not taken yet (the run opened again, no runner on it yet).
- *  A follow-up's own turn keeps none until its job's end is kept: its run reads as going on, as main's does. */
+ *  A follow-up's own turn keeps none until its job's end is kept: its run reads as going on, as main's does.
+ *  Of `entries` it reads only the newest that is a job's end kept or a run's end, so a reader may hand it that one alone
+ *  (learning-rounds.ts roundOpen, journal-reader.ts newestRootEntryOf). */
 export function keptEndOf(entries: readonly { readonly kind: string; readonly data?: unknown }[], commands: readonly Pick<Command, "kind" | "body" | "takenAt" | "refused">[]): KeptEnd | undefined {
   if (jobEndOpen(entries)) {
     const { end, endedAt } = entries.findLast((entry) => entry.kind === KINDS.jobEnd)!.data as JobEndData;

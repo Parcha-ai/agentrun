@@ -77,8 +77,10 @@ export type LoopEnd =
   | { readonly state: "interrupted" }
   | { readonly state: "failed"; readonly error: { readonly code: string; readonly message: string } }
   /** Parked on a person (an approval, a raise): the runner flushes and releases; a command row (or `wakeAt`, ms since
-   *  the epoch) makes the run claimable again, and the next claim's start() resumes it from the journal. */
-  | { readonly state: "parked"; readonly wakeAt?: number };
+   *  the epoch) makes the run claimable again, and the next claim's start() resumes it from the journal. `again`: parked
+   *  where it stood with nothing written (a run woken at its cap by raises that were all refused), so the release itself
+   *  parks the row again; else the loop's last commit parked it. */
+  | { readonly state: "parked"; readonly wakeAt?: number; readonly again?: true };
 
 export type StopReason =
   /** A stop or cancel row: the loop stages that row's take in the commit that ends the run as stopped (`cancel`: a cancel
@@ -147,6 +149,10 @@ export interface LoopDeps {
   flush(): Promise<void>;
   /** Aborted on claim loss, self-stop or shutdown: in-flight model and tool calls are cut at once. */
   signal: AbortSignal;
+  /** A learning child's (a check's replay run, an audit's shadow run): aborted at its deadline (runner.ts
+   *  cancelOverdue), after which its loop sends no model request; the runner's cancel then stops it. Absent for any other
+   *  run. */
+  pastDeadline?: AbortSignal;
   /** Resolves once the claim's first delivery has handed every untaken row it read to command() (each call returned),
    *  or at once when there were none: a resumed ask with no answer row waits for it before it parks again, so an
    *  approve already on its way is never raced. Never rejects. */
@@ -155,6 +161,10 @@ export interface LoopDeps {
    *  command poll away), and resolves once each call returned: a turn that ends asks it before the run may end, so a
    *  message sent while the turn worked is answered, never refused by the run's end. Absent: nothing to hand on. */
   deliverNow?: () => Promise<void>;
+  /** Writes command row `commandId` refused in `reason`'s words, under this claim, as the runner writes a refusal its loop
+   *  answered: for a row the loop said it took for now and refused later (the dispatch's buffered rows, replayed once its
+   *  inner loop is chosen). Throws as the store does (a fenced claim). Absent: such a refusal is not written. */
+  refuse?: (commandId: number, reason: string) => Promise<void>;
   /** Where the loop reports what its run shows before it is stored (a running tool, a partial answer), as it changes: a
    *  reader of the newest held state (`undefined` once there is nothing held), called once per tick by the runner's live
    *  ticker (runner/live-ticker.ts), never on every change, so a change costs the same however long the answer has grown.
@@ -165,6 +175,11 @@ export interface LoopDeps {
    *  end goes through it, so no secret the runner holds is stored, its values cut the run's live view (live-ticker.ts),
    *  and a claim carries the run's own tool keys into it (claim-secrets.ts). */
   redact: HeldRedact;
+  /** Hands the run back to resume on the next start, never failed: told when a request the run needs can't be served
+   *  because the runner is closing (a ChatGPT renewal refused as PlanStopping, after RUNNER_RENEWALS_SERVED_MS). A closing
+   *  runner stops the loop for a shutdown and aborts `signal`, as the drain's end does; else it does nothing. Absent:
+   *  the request fails as it would. */
+  handBack?: () => Promise<void>;
   /** The incarnation of the runner's word in the store (runner/presence.ts), the claim's runner being the claim's own
    *  `runner`: a park that keeps a computer only this runner can reach again pins it to both (workspace/computer-kept.ts
    *  pinnedOf), so the claim rule gives the run back to this runner while it is there. Absent: nothing is pinned. */

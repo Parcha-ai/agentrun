@@ -12,7 +12,7 @@ const template: TemplateView = {
   id: "review/kit", bundled: true, source: null, sha: null, publisher: null, category: null, tags: [],
   name: "review/kit", display_name: "Review kit", version: "2.4.0", description: "Review a pull request.",
   license: null, author: null, repository: null, output: null, input_schema: null, harness: ["pi"], model: null, effort: null, tools: null, tool_policy: null,
-  computer: null, needs: null, computer_here: null, checkout: null, secrets: ["REVIEW_KEY"], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: ["review"], evals: [],
+  computer: null, needs: null, computer_here: null, model_tiers_here: { harness: "pi", fast: null, strong: null, note: null }, checkout: null, secrets: ["REVIEW_KEY"], budget: null, learning: false, approvals_default: "ask", triggers: [], skills: ["review"], evals: [],
   mcp: [{ source: "github", toolkit: "github", required: true, reason: null, tools: [{ name: "read", tool: "mcp:github/read", asks: "allow" }, { name: "write", tool: "mcp:github/write", asks: "ask" }] }],
   parameters: { type: "object", additionalProperties: false, required: ["repo"], properties: { repo: { type: "string", description: "Repository" }, max_files: { type: "integer", description: "Maximum files" } } },
 };
@@ -59,6 +59,52 @@ describe("running a served template", () => {
     expect(applyTemplate).not.toHaveBeenCalled();
     await click(button("Apply"));
     expect(applyTemplate.mock.calls[0]).toEqual([withChoice.id, selected, expect.any(String)]);
+  });
+
+  it("keeps the agent's model from Use free through the prepared playground link to Apply", async () => {
+    localStorage.setItem(CODING_AGENT_PREFERENCE, "other");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copied } });
+    const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+    await act(async () => root!.render(createElement(TemplatesPage, { v2: v2 as never, name: template.id, model: "ollama/qwen3:8b", go: () => {} })));
+    type(host, "repo", "acme/web");
+    await click(host.querySelector('[aria-label="Choose coding agent for Run"]')!);
+    const routed = route(document.querySelector<HTMLAnchorElement>('[role="menu"] a')!.getAttribute("href")!);
+    unmount();
+    const target = document.body.appendChild(document.createElement("div")); root = createRoot(target);
+    await act(async () => root!.render(createElement(TemplatesPage, { v2: v2 as never, name: template.id, playground: true, draft: routed.draft, go: () => {} })));
+    expect(target.querySelector('[role="alert"]')).toBeNull();
+    expect(target.querySelector("[data-model-override]")?.getAttribute("title")).toBe("ollama/qwen3:8b");
+    await click(button("Apply"));
+    expect(applyTemplate.mock.calls[0]).toEqual([template.id, { parameters: { repo: "acme/web" }, overrides: { approvals: "ask", model: "ollama/qwen3:8b" } }, expect.any(String)]);
+  });
+
+  // `?model=` is any link's: the Free shelf's Use free sends one of this server's free models, a crafted link anything.
+  it("says so on Apply when a linked model is not one of this server's free models; a free one, or before they are read, says nothing", async () => {
+    const shown = async (model: string, freeIds?: readonly string[]) => {
+      const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+      await act(async () => root!.render(createElement(TemplatesPage, { v2: v2 as never, name: template.id, model, freeIds, go: () => {} })));
+      const said = host.querySelector("[data-model-unfree]")?.textContent ?? null;
+      unmount();
+      return said;
+    };
+    expect(await shown("anthropic/claude-x", ["ollama/qwen3:8b"])).toMatch(/not one of this server's free models/);
+    expect(await shown("ollama/qwen3:8b", ["ollama/qwen3:8b"])).toBeNull();
+    expect(await shown("anthropic/claude-x")).toBeNull();
+  });
+
+  it("still says so on the prepared playground link a linked model is carried to, where the model is the request's", async () => {
+    localStorage.setItem(CODING_AGENT_PREFERENCE, "other");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copied } });
+    const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+    await act(async () => root!.render(createElement(TemplatesPage, { v2: v2 as never, name: template.id, model: "anthropic/claude-x", freeIds: ["ollama/qwen3:8b"], go: () => {} })));
+    type(host, "repo", "acme/web");
+    await click(host.querySelector('[aria-label="Choose coding agent for Run"]')!);
+    const routed = route(document.querySelector<HTMLAnchorElement>('[role="menu"] a')!.getAttribute("href")!);
+    unmount();
+    const target = document.body.appendChild(document.createElement("div")); root = createRoot(target);
+    await act(async () => root!.render(createElement(TemplatesPage, { v2: v2 as never, name: template.id, playground: true, draft: routed.draft, freeIds: ["ollama/qwen3:8b"], go: () => {} })));
+    expect(target.querySelector("[data-model-override]")?.getAttribute("title")).toBe("anthropic/claude-x");
+    expect(target.querySelector("[data-model-unfree]")?.textContent).toMatch(/not one of this server's free models/);
   });
 
   it("hydrates prepared array choices as individual lines and applies the same typed values", async () => {

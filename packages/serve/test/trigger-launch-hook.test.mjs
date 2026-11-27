@@ -8,16 +8,18 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { follow, scratch, serve, withEnv } from "./support.mjs";
-import { fakeClock, firings, hookServer, made, schedule, until } from "./trigger-support.mjs";
+import { droppingServer, fakeClock, firings, hookServer, made, schedule, until } from "./trigger-support.mjs";
+
+/** A firing's reason when its hook drops the connection unanswered: unreachable, with the code the fetch gave. */
+const UNREACHED = /^hook_failed \(unreachable\): the launch hook was not reached \(UND_ERR_SOCKET\)/;
 
 const { mintSecret, signatureOf, verify } = await import("../dist/standard-webhooks.js");
-const { LAUNCH_HOOK_LATE_START_MS, LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
+const { handToHost, HookFailed, LAUNCH_HOOK_LATE_START_MS, LAUNCH_HOOK_TIMEOUT_MS, launchHookFrom } = await import("../dist/trigger-launch-hook.js");
 const { previousResultWords } = await import("../dist/trigger-targets.js");
 const { uuidv7 } = await import("../dist/ids.js");
 const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
@@ -608,11 +610,9 @@ test("a failed hook's firing, its trigger and its trigger.failed name the failur
   shownNone(JSON.stringify((await api("GET", `/triggers/${created.body.id}`)).body), url, "the trigger");
   shownNone(JSON.stringify(failed), url, "trigger.failed");
 
-  // A hook that is not reached: the firing's reason names the errno, never where it went.
-  const closed = createServer();
-  await new Promise((resolve) => closed.listen(0, "127.0.0.1", resolve));
-  const gone = `http://127.0.0.1:${closed.address().port}/agentrun/firings?token=${token}`;
-  await new Promise((resolve) => closed.close(resolve));
+  // A hook that drops the connection: the firing's reason names the code, never where it went.
+  const dropping = await droppingServer(t);
+  const gone = `${dropping.url}?token=${token}`;
   const laterClock = fakeClock("2026-06-01T00:00:00Z");
   const unreached = await serve(t, { triggerClock: laterClock, launchHook: { url: gone, secret } });
   await made(unreached.api, "nightly");
@@ -620,7 +620,7 @@ test("a failed hook's firing, its trigger and its trigger.failed name the failur
   assert.equal(later.status, 201, JSON.stringify(later.body));
   laterClock.to("2026-06-01T00:10:00Z");
   const waiting = await tried(unreached.api, later.body.id, 1);
-  assert.match(waiting.reason ?? "", /^hook_failed \(unreachable\): the launch hook was not reached \(ECONNREFUSED\)/, JSON.stringify(waiting));
+  assert.match(waiting.reason ?? "", UNREACHED, JSON.stringify(waiting));
   shownNone(JSON.stringify(waiting), gone, "the unreached firing");
   shownNone(waiting.reason, `127.0.0.1:${new URL(gone).port}`, "its reason");
 });
@@ -1183,11 +1183,8 @@ test("a hook that answers another non-2xx (a 4xx, a redirect) fails the firing a
 
 test("a hook that is not reached is a failed try too: hook_failed (unreachable) with its code, due with retry_at", { timeout: 60_000 }, async (t) => {
   const clock = fakeClock("2026-06-01T00:00:00Z");
-  // A port nothing listens on: the hook's server, closed.
-  const closed = createServer();
-  await new Promise((resolve) => closed.listen(0, "127.0.0.1", resolve));
-  const url = `http://127.0.0.1:${closed.address().port}/agentrun/firings`;
-  await new Promise((resolve) => closed.close(resolve));
+  // A host that drops every connection as it opens, held until the test ends.
+  const { url } = await droppingServer(t);
   const { api } = await serve(t, { triggerClock: clock, launchHook: { url, secret: mintSecret() } });
   await made(api, "nightly");
   const created = await api("POST", "/triggers", schedule("nightly", { every_s: 3600, start_at: "2026-06-01T00:10:00Z" }));
@@ -1195,7 +1192,33 @@ test("a hook that is not reached is a failed try too: hook_failed (unreachable) 
   clock.to("2026-06-01T00:10:00Z");
   const firing = await tried(api, created.body.id, 1);
   assert.deepEqual([firing.status, firing.attempts, firing.error?.code], ["due", 1, "hook_failed"], JSON.stringify(firing));
-  assert.match(firing.reason, /^hook_failed \(unreachable\): the launch hook was not reached \(ECONNREFUSED\)/);
+  assert.match(firing.reason, UNREACHED, JSON.stringify(firing));
+});
+
+test("a caller's bound never raises the hook's 10 s: a POST handed a bound that never ends is still cut at LAUNCH_HOOK_TIMEOUT_MS, a timeout", { timeout: 30_000 }, async (t) => {
+  // The 10 s timer is a signal this test holds (AbortSignal.timeout stood in for), cut by hand once the silent host has
+  // the POST: no wait on the wall clock.
+  const timers = [];
+  const real = AbortSignal.timeout;
+  AbortSignal.timeout = (ms) => {
+    const cut = new AbortController();
+    timers.push({ ms, cut });
+    return cut.signal;
+  };
+  t.after(() => {
+    AbortSignal.timeout = real;
+  });
+  const hook = await hookServer(t, () => new Promise(() => undefined));
+  const stop = new AbortController();
+  t.after(() => stop.abort());
+  const firing = { firing_id: uuidv7(), trigger_id: "trg_bound", agent_id: "agent-bound", revision_id: null, input: { content: "x" }, fired_at: new Date().toISOString() };
+  // A library caller's bound that would hold the POST open for good.
+  const handed = handToHost({ url: hook.url, secret: mintSecret(), bound: () => new AbortController().signal }, firing, stop.signal);
+  handed.catch(() => undefined);
+  await until(() => hook.got.length === 1, 10_000, "the host has the POST");
+  assert.deepEqual(timers.map((one) => one.ms), [LAUNCH_HOOK_TIMEOUT_MS], "the 10 s timer is set however the caller bounds it");
+  timers[0].cut.abort(new DOMException("timed out", "TimeoutError"));
+  await assert.rejects(handed, (error) => error instanceof HookFailed && /did not answer in 10 s/.test(error.message));
 });
 
 test("the hook setting: off unless both are set, refused in words when half set or malformed, and a 10 s bound", () => {

@@ -17,6 +17,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { stranger } from "./fixtures/stranger.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
+const { heldRedactor } = await import("../dist/runner/redact.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -184,7 +185,7 @@ async function specOn(t, harness, { archil, env: more = {}, model = { provider: 
   harnessRun = await Harness.open(store.journal(claim), { models: () => models, registry, onReport: () => {} }, ctx);
   const env = { AGENT_MODEL_BASE_URL: "http://127.0.0.1:9", AGENT_MODEL_API_KEY: `not-a-secret-${"gateway"}`, [OPENCODE_STANDIN_ENV]: JSON.stringify({ command: process.execPath, args: [STAND_IN] }), ...more };
   const deps = { env, data: dir, journal: (c) => store.journal(c), store, sealKey: SEAL_KEY, routeOf: async () => assert.fail("no pi route"), computerForClaim: noComputer().forClaim, ...(archil ? { makeArchilDisk: () => archil, mountControl: { baseUrl: control.baseUrl, fetch: control.fetch } } : {}), ...given };
-  built = await spec.cliRunSpecFromLaunch(launch, { harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
+  built = await spec.cliRunSpecFromLaunch(launch, { redact: heldRedactor((text) => text), harness: harnessRun, registry, setModels: (given) => (models = given) }, deps, claim);
   return { spec: built, dir, cwd: scratchFolder(dir, "agent-1", RUN), control, outbound, claim, dead };
 }
 
@@ -214,6 +215,16 @@ for (const harness of ["claude-agent", "codex", "opencode"]) {
     assert.equal(built.session.system[0], environmentLine(), "the date line first");
     assert.match(built.session.system[0], /^Today is [A-Z][a-z]+ \d{1,2} [A-Z][a-z]+ \d{4} \([A-Za-z_\/]+\)\./);
     assert.equal(built.session.system[1], "Answer.", "then the revision's instructions");
+  });
+}
+
+// The session carries its model's context window from the catalog that prices the run (cli-run-spec.ts modelsOf), so the
+// kernel's tool bridge holds each result to that model's share of it (boundResult's budget), not to the host's bound alone.
+for (const harness of ["claude-agent", "codex", "opencode"]) {
+  test(`the ${harness} session carries its model's context window`, async (t) => {
+    const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : undefined;
+    const { spec: built } = await specOn(t, harness, { prepare: (data) => linkHarnesses(data), ...(model ? { model, env: { ANTHROPIC_API_KEY: `not-a-secret-${"anthropic"}` } } : {}) });
+    assert.ok(Number.isInteger(built.session.contextWindow) && built.session.contextWindow > 0, `a window: ${built.session.contextWindow}`);
   });
 }
 

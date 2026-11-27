@@ -41,7 +41,6 @@ import { KINDS } from "./runner/journal-kinds.js";
 import { type BookedSpend, bookedSpend, type CostBasis, costBasisOf, costWordsOf, type CostWords } from "./runner/metrics.js";
 import { unbookedCli } from "./store-reads/cap.js";
 import { booksDecisions, chargedByParallel, decisionsOverStore, PARALLEL_CHARGER, receiptIdOf } from "./store-reads/decisions.js";
-import { roundsOf } from "./store-reads/learning.js";
 import { MODEL_PROVIDER } from "./model.js";
 import type { RunLaunch } from "./run-launch.js";
 import { ApiError } from "./errors.js";
@@ -94,10 +93,9 @@ export type RunUsageLine = {
 } & CostWords;
 
 /** Why a run has no lines: `running`, it is at work and its booking still moves; `not_booked`, its figure is not its
- *  booking's (an imported run's, a native or SDK run's harness's own, a CLI run whose model requests went past its proxy);
- *  `reopened`, a learning run a follow-up opened again, whose `cost.usd` is its first round's and whose booking can't be
- *  split by round. */
-export type UsageReason = "running" | "not_booked" | "reopened";
+ *  booking's (an imported run's, a native or SDK run's harness's own, a CLI run whose model requests went past its proxy).
+ *  A learning run a follow-up opened again has lines: its job's and its follow-ups' together, up to its latest end. */
+export type UsageReason = "running" | "not_booked";
 
 export type RunUsage = {
   run_id: string;
@@ -436,7 +434,8 @@ const micro = (value: number) => Math.round(value * 1e6) / 1e6;
 
 /** The run's `compute_time` lines: one per provider and resource of the computers it made (`rows`), each second of each at
  *  its figure, an open one's up to `at` (the read), and the part no claim held (its life less its booked time) apart in
- *  `unheld_quantity`. Its money is what the run's ledger booked for it (`booked`, by computeKey): `estimate` when any was;
+ *  `unheld_quantity` (0 for a provider that bills nothing: none of its time costs anything, booked or not, so none is
+ *  outside the run's cost). Its money is what the run's ledger booked for it (`booked`, by computeKey): `estimate` when any was;
  *  $0 for a provider that bills nothing; else `unpriced`, its usd null. A figure no one said makes its quantity null. */
 function computeLinesOf(rows: readonly ComputerIntervalRow[], at: number, booked: ReadonlyMap<string, { booked: ReturnType<typeof joined>; at: AttemptTag }>, spans: (from: number, to: number) => { at: AttemptTag; ms: number }[]): RunUsageLine[] {
   type Sum = { provider: string; resource: ComputeResource; gpuType: string | null; quantity: number | null; unheld: number | null; open: number; at: AttemptTag };
@@ -479,7 +478,7 @@ function computeLinesOf(rows: readonly ComputerIntervalRow[], at: number, booked
     return {
       meter: "compute_time", model: null, provider: sum.provider, charged_by: sum.provider,
       quantity: sum.quantity === null ? null : micro(sum.quantity), unit: COMPUTE_UNITS[sum.resource], basis: charged || free ? "estimate" : "unpriced", ...sum.at, ...words,
-      resource: sum.resource, gpu_type: sum.gpuType, unheld_quantity: sum.unheld === null ? null : micro(sum.unheld), open_computers: sum.open,
+      resource: sum.resource, gpu_type: sum.gpuType, unheld_quantity: unmetered(sum.provider) ? 0 : sum.unheld === null ? null : micro(sum.unheld), open_computers: sum.open,
       ...(sum.open > 0 ? { measured_to: new Date(at).toISOString() } : {}),
     };
   });
@@ -523,8 +522,9 @@ export function infraUsdOf(lines: readonly RunUsageLine[]): number | null {
 }
 
 /** Run `runId`'s usage lines (GET /runs/{run_id}/usage); undefined for an unknown run. No lines (`reason`) while it is at
- *  work, for a run whose figure is not its booking's, and for a learning run a follow-up opened again: the cases where
- *  `cost.tools_usd` is null for the same reasons. Its state, launch, learning rounds and journal are read in one snapshot
+ *  work and for a run whose figure is not its booking's: the cases where `cost.tools_usd` is null for the same reasons. A
+ *  learning run a follow-up opened again reads every round's job and follow-up turns, each round's end-of-run turn left
+ *  out (reflectRanges), so each end's lines hold the last end's and what the follow-up added. Its state, launch, learning rounds and journal are read in one snapshot
  *  of the store (one moment): a follow-up that reopens the run between two reads can't put its requests under its end. */
 export async function runUsageOverStore(store: Store, runId: string): Promise<RunUsage | undefined> {
   return store.snapshot(async (snapshot) => {
@@ -535,7 +535,6 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
     if (!FINAL_STATES.includes(run.state)) return none("running");
     const launch = await launchOf(snapshot, runId);
     if (run.importedFrom || launch?.native || launch?.sdk) return none("not_booked");
-    if ((await roundsOf(snapshot, runId)).length > 1) return none("reopened");
     const records = await journalRecords(snapshot.readJournal(runId), BACKGROUND_CONTEXT);
     if (unbookedCli(records.entries as never)) return none("not_booked");
     const turns = reflectRanges(records.submissions ?? [], records.entries);

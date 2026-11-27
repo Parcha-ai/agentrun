@@ -198,7 +198,7 @@ async function withDockerBox(t, vars = {}) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, "bin"));
   mkdirSync(join(dir, "state"));
-  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
+  writeFileSync(join(dir, "bin", "docker"), `#!/bin/sh\nexport FAKE_DOCKER_STATE='${join(dir, "state")}'\nexec '${process.execPath}' '${FAKE_DOCKER}' "$@"\n`, { mode: 0o755 });
   const fake = await fakeCli(t);
   withEnv(t, { PATH: [dirname(fake.cli), join(dir, "bin"), process.env.PATH].join(delimiter), FAKE_DOCKER_STATE: join(dir, "state"), AGENTRUN_BOXES: "docker", ...vars }, [...MODEL_VARS, "AGENTRUN_DOCKER_IMAGE", "AGENTRUN_BOX_ALLOW"]);
   const { api } = await serve(t, { faux: undefined, harnesses: false });
@@ -917,7 +917,7 @@ async function loginRig(t) {
       const ended = new Promise((resolve) => { end = resolve; });
       return { ended, stop: () => { one.stopped = true; end({ end: "stopped" }); } };
     },
-    claudeLogout: async () => true,
+    claudeLogout: async () => ({ signedOut: true, leftoverGone: true }),
   };
   const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
   const stale = (keeps) => started.filter((one) => !one.stopped && one.dir !== keeps);

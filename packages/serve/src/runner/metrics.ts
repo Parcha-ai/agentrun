@@ -179,21 +179,30 @@ export function bookedDecisionsOf(entries: readonly EntryLike[], ids: ReadonlySe
 
 /** What one call of a tool booked, over `entries` (every conversation of the run's journal, in log order), by the run's
  *  one rule (runCostOf): each request whose record names the call or one nested in it (`call`: `callId`, or
- *  `callId/...`), and each request of host work (a side or host call, a paid tool call, a decision) admitted after the
- *  call's start (`from`, an index in `entries`) and at or before its end (`to`). The caller holds the window to the one
+ *  `callId/...`), and each request of host work (a host call, a paid tool call, a decision) admitted after the call's
+ *  start (`from`, an index in `entries`) and at or before its end (`to`). The caller holds the window to the one
  *  call (runner/workflow-calls.ts). $0 for none; null once one has no known cost, or one a crash cut is counted at its
  *  hold (`atMost`: the most it can cost, never what it cost). */
 export function callCostOf(entries: readonly EntryLike[], callId: string, from: number, to: number): number | null {
+  const kept = callTurnsOf(entries, callId, from, to);
+  const cost = runCostOf(entries.filter((e) => !(e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn) || kept.has(turnOf(e))));
+  return cost.atMost > 0 ? null : cost.usd;
+}
+
+/** The turns of the requests call `callId` booked, by callCostOf's rule: each request whose record names it or one nested
+ *  in it, and each of host work admitted in its window (`from` < at <= `to`; -1 for both: no window, those named alone).
+ *  None: nothing was booked under the call. A harness's own side request (`side` with no host label: a CLI's request on
+ *  another model, its title or summary helper, proxy.ts) is never the call's: no proof it spent (workflow-calls.ts
+ *  bookedUnder), and no part of its price. */
+export function callTurnsOf(entries: readonly EntryLike[], callId: string, from: number, to: number): Set<unknown> {
   const keyed = sessionConversations(entries);
   const hosted = new Set([keyed.get(TOOL_SESSION), keyed.get(DECISION_SESSION)].filter((one) => one !== undefined));
   const ours = (e: EntryLike, at: number) => {
-    const d = (e.data ?? {}) as { call?: unknown; host?: unknown; side?: unknown };
+    const d = (e.data ?? {}) as { call?: unknown; host?: unknown };
     if (typeof d.call === "string" && (d.call === callId || d.call.startsWith(`${callId}/`))) return true;
-    return at > from && at <= to && (typeof d.host === "string" || d.side === true || hosted.has(Number(e.conversationId)));
+    return at > from && at <= to && (typeof d.host === "string" || hosted.has(Number(e.conversationId)));
   };
-  const kept = new Set(entries.flatMap((e, at) => (e.kind === RUNNER_RECORDS.request && ours(e, at) ? [turnOf(e)] : [])));
-  const cost = runCostOf(entries.filter((e) => !(e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn) || kept.has(turnOf(e))));
-  return cost.atMost > 0 ? null : cost.usd;
+  return new Set(entries.flatMap((e, at) => (e.kind === RUNNER_RECORDS.request && ours(e, at) ? [turnOf(e)] : [])));
 }
 
 /** A sum of charges with its float noise rounded off, nothing more (as the decisions row rounds, decision-rows.ts): a
