@@ -4,15 +4,13 @@
 // prose before single-quoted code, the operator cases) and the second review's rows (a string prefix before a quote, a
 // needle holding a "+" across two values). "withheld": main answered "[redacted]"; "cut": main cut it in place. A change
 // to the join view that turns one of them back to shown fails here, with main's verdict as the expected value, so no
-// checkout of main is needed. Substrings a secret scanner would flag are written in the fixture with a JSON escape, and a
-// URL's login as a placeholder its loader puts it back for (fixtures/redact-main-rows.mjs).
+// checkout of main is needed. Substrings a secret scanner would flag are written in the fixture with a JSON escape.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { redactSecrets } from "../dist/learn/secrets.js";
-import { fixtureRows, storedText } from "./fixtures/redact-main-rows.mjs";
 
-const rows = fixtureRows("redact-main-verdicts.json");
+const rows = JSON.parse(readFileSync(new URL("./fixtures/redact-main-verdicts.json", import.meta.url), "utf8"));
 
 const count = (source, main) => rows.filter((row) => row.sources.includes(source) && row.main === main).length;
 
@@ -29,17 +27,13 @@ test("no text main withheld is shown or only cut now", () => {
   assert.deepEqual(regressed.map((row) => ({ sources: row.sources, text: row.text })), []);
 });
 
-// The contract's credential URL is a row of both fixtures, its login stored as a placeholder: neither file holds a URL
-// with a login as written (the source export blocks on one), so a regeneration that writes one plainly fails here.
+// The contract's credential URL is a row of both fixtures: its colons are written as JSON escapes, so neither file holds
+// a URL with a login as written (the source export blocks on one), and a regeneration that writes it plainly fails here.
 test("neither fixture holds a URL with a login as written", () => {
-  const plain = [];
-  for (const name of ["redact-main-verdicts.json", "redact-main-glued.json"]) {
-    const written = readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
-    if (/https?:\/\/[^\s/:]+:[^\s/@]+@/.test(written)) plain.push(`${name}: a URL with a login`);
-    for (const { text } of JSON.parse(written)) if (storedText(text) !== text) plain.push(`${name}: ${text.slice(0, 60)}`);
-  }
+  const plain = ["redact-main-verdicts.json", "redact-main-glued.json"].filter((name) =>
+    /https?:\/\/[^\s/:]+:[^\s/@]+@/.test(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8")),
+  );
   assert.deepEqual(plain, []);
-  assert.equal(rows.filter((row) => row.text === `https://${["deploy", "P@ss#word123456"].join(":")}@git.example.com/repo.git`).length, 1, "the URL's login is put back");
 });
 
 test("no text main cut in place shows as it came now", () => {

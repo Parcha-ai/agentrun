@@ -3,15 +3,14 @@
 // main differential reads (and of those main showed as they came): "W" withheld, "C" cut in place, "S" shown, one
 // letter per variant in its order. A text none of whose variants main withheld or cut is left out. A string prefix, a
 // word or a line of prose glued to a quote can turn which quotes the join view pairs; a variant main withheld or cut
-// must still be, so no checkout of main is needed. Substrings a secret scanner would flag are written with a JSON escape,
-// and a URL's login as a placeholder its loader puts it back for (fixtures/redact-main-rows.mjs).
+// must still be, so no checkout of main is needed. Substrings a secret scanner would flag are written with a JSON escape.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { redactSecrets } from "../dist/learn/secrets.js";
-import { fixtureRows } from "./fixtures/redact-main-rows.mjs";
 import { gluedVariants } from "./fixtures/redact-glued-variants.mjs";
 
-const rows = fixtureRows("redact-main-glued.json");
+const rows = JSON.parse(readFileSync(new URL("./fixtures/redact-main-glued.json", import.meta.url), "utf8"));
 
 test("main's verdicts are pinned, one for each glued variant", () => {
   assert.ok(rows.length >= 300, `rows: ${rows.length}`);
