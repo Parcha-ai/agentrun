@@ -7,6 +7,7 @@ import type { Agent } from "undici";
 import { clip, cutAt, TITLE_CAP } from "../page.js";
 import { defineProvider, type ProviderRun } from "../provider.js";
 import { bare, type Failure, type FailureClass, type Hit, type Limit, type Search, type SearchAsk, snippetOf } from "../search.js";
+import { thrownFailure } from "./keyed.js";
 import { type Called, callTool, RATE_LIMITED, sleep, textBlocks, type Words } from "./mcp.js";
 
 export const EXA_MCP_URL = "https://mcp.exa.ai/mcp";
@@ -111,9 +112,7 @@ async function searchTyped(ask: SearchAsk, { send, signal, pause = sleep, words 
     await pause(retryPause(first.retryAfterS), deadline);
     return await once();
   } catch (error) {
-    const name = (error as Error)?.name;
-    if (name === "TimeoutError") return typed("infra", "TIMEOUT", { error: "Exa's search did not answer within 60 s" });
-    return name === "AbortError" ? typed("infra", "STOPPED", { error: "the search was stopped" }) : typed("infra", "CONNECT", { error: `Exa's search failed: ${String((error as Error)?.message ?? error).slice(0, 300)}` });
+    return thrownFailure(error, { who: "Exa", what: "search", signal, timeout: "Exa's search did not answer within 60 s", stopped: "the search was stopped", failedWith: (said) => `Exa's search failed: ${said}` });
   } finally {
     await own?.close().catch(() => undefined);
   }

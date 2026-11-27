@@ -38,7 +38,8 @@ picks, ranks or summarizes it: the cap keeps it short, oldest lines out first.
 
 - An owner's feedback on a run (a grade's words, or a message they sent after the job's first) appends one line, at
   the run's end, in the same commit as anything the run compiled (`LearningChange.correction`). The run is a feedback
-  round, `correction`.
+  round, `correction`. A compile the same round asks is told that line, on every attempt, after the corrections it
+  already knows; a line the checks refuse is never told.
 - A person replaces the file whole over v2 (`PUT /v2/agents/{id}/learning/corrections`, under the ETag its GET
   gave); an empty body empties it.
 - `CORRECTIONS_CAP` is 8192 bytes. A run's correction that would take the file past it drops the file's oldest lines
@@ -158,7 +159,7 @@ path must resolve in both answers' values (bare JSON, a whole fence, or the last
 a path that resolves in neither or in only one (a key missing, a segment through an array, text or null) disagrees.
 Without it, two answers equal as JSON or as trimmed text agree with no model call, and two that differ are read by the
 grader (`learn/promote.ts` gradeAnswers, `runner/compare-end.ts`): the agent's fast model (its `model_tiers.fast`, else
-AGENT_MODEL_FAST), asked once by the replay run itself at its end whether its answer and the known one (the agent's, or
+AGENT_MODEL_FAST), else, with neither set, the agent's own model (`runner/adapter-run-spec.ts` graderRouteOf), asked once by the replay run itself at its end whether its answer and the known one (the agent's, or
 for a graded run the known answer above) reach the same decision, its system text GRADER_PROMPT and its reply `{"same": boolean, "differs_on": string | null}`. Its request goes
 through the run's own session on a tier proxy of its own (route `grader`), judged by the run's cap before it leaves and
 booked as the run's spend, so it is the check's cost (`check_usd`); a cap refusal never parks the run. It is asked once
@@ -174,15 +175,14 @@ pair is not the two answers read at the check (the agent's run answered again af
 follow-up) is stale, and that input differs ("the comparison read an earlier answer: ..."), as one with no verdict
 does: no claim asks the grader again. The record keeps `check.grader` (the
 model) and each disagreement's `differs_on` (cut to CHECK_TEXT_MAX), its reason says "compared by the fast model
-(<model>)", and a hold says "its answers reached a different decision from the agent's on k of n (for example:
-<differs_on>)". With no fast model the whole answer decides, and a hold that answered some inputs alone and agreed on
-none says "its answers never matched the agent's word for word, and no fast model compared their decisions (...); name
-the fields that carry the decision (learning.agree_on)". No field is read off the `output_schema`: its enum can be an echo of the owner's setting (kyb's
+(<model>)", or "compared by the agent's own model (<model>; no fast model is set)", and a hold says "its answers reached a different decision from the agent's on k of n (for example:
+<differs_on>)". When no grader's verdict was kept (no route to it could be made) the whole answer decides, and a hold that answered
+some inputs alone and agreed on none says "its answers never matched the agent's word for word, and no model compared
+their decisions (...); name the fields that carry the decision (learning.agree_on)". No field is read off the `output_schema`: its enum can be an echo of the owner's setting (kyb's
 `risk_appetite`) while the decision sits deeper (`verdict.decision`), and a default that promotes on the wrong field is
 worse than one that never promotes. A shipped template whose answer carries a decision declares it (kyb, inbound-lead),
 each path a required property of its output schema at every level (`templates.ts` readPackage refuses one an answer may
-leave out); one whose answer is generated text (market-monitor, release-notes) goes to the grader, or the whole answer
-with no fast model. The record keeps `check.agree_on` when it compared paths, and its reason says "said what the agent
+leave out); one whose answer is generated text (market-monitor, release-notes) goes to the grader. The record keeps `check.agree_on` when it compared paths, and its reason says "said what the agent
 said on mcc and riskTier": agree_on asks no model, free and exact where the definition can name the fields. Of the
 inputs it ran on, `alone` is the share
 it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no

@@ -6,6 +6,7 @@
 // is served only the operations of WORKSPACE_ROUTES. A run made unscoped reads as its agent's workspace's. A request with
 // no header is served as before.
 import assert from "node:assert/strict";
+import { AsyncResource } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -14,7 +15,9 @@ import { test } from "node:test";
 import { atTestEnd, client, dropSchema, freshSchema, onPostgres, PG_URL, postgresOnly, sqliteOnly } from "./store-target.mjs";
 import { storeOn } from "./store-helpers.mjs";
 import { schemaProblems } from "./schema-support.mjs";
-import { scratch, serve } from "./support.mjs";
+import { scratch, serve, withEnv } from "./support.mjs";
+import { archilControlFetch } from "./archil-control-fake.mjs";
+import { fakeClock, until } from "./trigger-support.mjs";
 
 const { WORKSPACE_ROUTES, servedScoped } = await import("../dist/api-only.js");
 const { ROUTES } = await import("../dist/server.js");
@@ -22,9 +25,11 @@ const { migrate, openPostgresStore, openSqliteStore, migrationsIn, runnerOn } = 
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 const { workspaceTokensFrom } = await import("../dist/workspace-scope.js");
 const { backfillMapOf, backfillWorkspaces, workspaceBackfillMain } = await import("../dist/workspace-backfill.js");
-const { importTemplate } = await import("../dist/template-import.js");
+const { deleteTemplate, importTemplate } = await import("../dist/template-import.js");
 const { TemplateRegistry } = await import("../dist/templates.js");
-const { inWorkspace } = await import("../dist/workspace-scope.js");
+const { inWorkspace, workspaceNow } = await import("../dist/workspace-scope.js");
+const { Triggers } = await import("../dist/triggers.js");
+const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
 
 const SCOPED = randomBytes(24).toString("hex");
 const OPERATOR = randomBytes(24).toString("hex");
@@ -87,6 +92,22 @@ async function seedW1(server) {
   return { agent: agent.body.agent_id, run: run.body.run_id, template: imported.body.template.id };
 }
 
+/** A file `request` reserves (POST /v2/files, 5 bytes at `path`): its id. */
+async function reserved(request, server, path) {
+  const answer = await request(server, "POST", "/v2/files", { body: { path, size_bytes: 5 } });
+  assert.equal(answer.status, 201, answer.text);
+  assert.equal(answer.body.file.workspace, undefined, "no answer names a workspace");
+  return answer.body.file.file_id;
+}
+
+/** A file's bytes sent raw, in `workspace` (unscoped, with the operator's token, when undefined): POST /v2/files?path=
+ *  (one call, `id` undefined) or PUT /v2/files/{id}. Its status and parsed body. */
+async function bytes(server, workspace, { path, id, body = "hello" }) {
+  const headers = { authorization: `Bearer ${workspace === undefined ? OPERATOR : SCOPED}`, "content-type": "text/plain", ...(workspace === undefined ? {} : { "agentrun-workspace": workspace }) };
+  const res = await fetch(id === undefined ? `${server.url}/v2/files?path=${encodeURIComponent(path)}` : `${server.url}/v2/files/${id}`, { method: id === undefined ? "POST" : "PUT", headers, body });
+  return { status: res.status, body: await res.json() };
+}
+
 /** Every operation of WORKSPACE_ROUTES: how a scoped request reaches it, and what a row of another workspace reads as.
  *  `row`: the operation names W1's row by id (agent, run or template), and W2 gets the 404 a missing id gets. `list`: W2's
  *  list holds none of W1's rows. `made`: a write W2 makes lands in W2 alone. `served`: answered to any workspace. */
@@ -107,11 +128,16 @@ const TABLE = {
   setCurrent: { method: "POST", path: "/v2/agents/{agent}/current", row: "agent", body: { revision_id: "rev_none" } },
   getTemplate: { method: "GET", path: "/v2/templates/{template}", row: "template" },
   applyTemplate: { method: "POST", path: "/v2/templates/{template}/apply", row: "template", body: { parameters: {} } },
+  getFile: { method: "GET", path: "/v2/files/{file}", row: "file" },
+  uploadFile: { method: "PUT", path: "/v2/files/{file}", row: "file", body: "hello" },
+  deleteFile: { method: "DELETE", path: "/v2/files/{file}", row: "file" },
   listAllRuns: { method: "GET", path: "/v2/runs", list: (body) => body.runs.map((one) => one.id ?? one.run_id) , of: "run" },
   listAgents: { method: "GET", path: "/v2/agents", list: (body) => body.agents.map((one) => one.agent_id), of: "agent" },
   listTemplates: { method: "GET", path: "/v2/templates", list: (body) => body.templates.map((one) => one.id), of: "template" },
+  listFiles: { method: "GET", path: "/v2/files", list: (body) => body.files.map((one) => one.file_id), of: "file" },
   createAgent: { made: true },
   importTemplate: { made: true },
+  createFile: { made: true },
   getCapabilities: { method: "GET", path: "/v2/capabilities", served: true },
   getHealth: { method: "GET", path: "/v2/health", served: true },
   getOpenapi: { method: "GET", path: "/v2/openapi.json", served: true },
@@ -132,7 +158,7 @@ test("every operation of WORKSPACE_ROUTES is a route of the server, and the tabl
 
 test("a scoped request reads another workspace's row as a missing one, the same 404 to the byte, its lists hold its own rows alone, and its writes are its own", { timeout: 120_000 }, async (t) => {
   const server = await scopedServer(t);
-  const w1 = await seedW1(server);
+  const w1 = { ...(await seedW1(server)), file: await reserved(inW1, server, "notes.md") };
   for (const [name, op] of Object.entries(TABLE)) {
     if (op.row) {
       const id = w1[op.row];
@@ -141,7 +167,7 @@ test("a scoped request reads another workspace's row as a missing one, the same 
       const missing = await inW2(server, op.method, op.path.replace(`{${op.row}}`, encodeURIComponent(missingLike(id))), op.body === undefined ? {} : { body: op.body });
       assert.equal(theirs.status, 404, `${name}: ${theirs.text}`);
       assert.equal(shape(theirs, id), shape(missing, missingLike(id)), `${name}: W1's ${op.row} reads as a missing one`);
-      const own = { run: `/v2/runs/${id}`, agent: `/v2/agents/${id}`, template: `/v2/templates/${encodeURIComponent(id)}` }[op.row];
+      const own = { run: `/v2/runs/${id}`, agent: `/v2/agents/${id}`, template: `/v2/templates/${encodeURIComponent(id)}`, file: `/v2/files/${id}` }[op.row];
       assert.equal((await inW1(server, "GET", own)).status, 200, `${name}: W1 reads its own ${op.row}`);
     } else if (op.list) {
       const mine = await inW1(server, op.method, op.path);
@@ -211,7 +237,7 @@ test("a listed token without the header is 403; the header off an API-only serve
     assert.deepEqual([answer.status, answer.body.error?.code], [400, "bad_request"], `${JSON.stringify(workspace)}: ${answer.text}`);
   }
   assert.equal((await send(server, "GET", "/v2/runs", { workspace: "x".repeat(128) })).status, 200, "128 characters is a name");
-  for (const [method, path] of [["DELETE", "/v2/agents/a1"], ["GET", "/v2/usage"], ["POST", "/v2/files"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
+  for (const [method, path] of [["DELETE", "/v2/agents/a1"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
     const answer = await inW1(server, method, path, method === "GET" || method === "DELETE" ? {} : { body: {} });
     assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.reason], [403, "forbidden", "not_scoped"], `${method} ${path}: ${answer.text}`);
   }
@@ -497,7 +523,8 @@ test("workspace-backfill refuses a Postgres store below the workspace migration 
   const io = { out: (line) => lines.push(line), err: (line) => lines.push(`err ${line}`) };
   assert.equal(await workspaceBackfillMain([map, "--data", dir, "--apply"], dir, "usage", io), 2, lines.join("\n"));
   assert.equal(lines.length, 1, lines.join("\n"));
-  assert.match(lines[0], /^err agentrun-serve workspace-backfill: the store is behind this build, and this command never migrates it: .*from version 32 to 33.*Start a server of this build once \(it applies every migration, the workspace columns' 0033 among them\), then run this again\. Nothing was written\.$/);
+  assert.match(lines[0], /^err agentrun-serve workspace-backfill: the store is behind this build, and this command never migrates it: .*from version 32 to \d+.*Start a server of this build once \(it applies every migration, the workspace columns' 0033 among them\), then run this again\. Nothing was written\.$/);
+  assert.ok(lines[0].includes(`from version 32 to ${Math.max(...migrationsIn().map((m) => m.version))}`), lines[0]);
   assert.equal(await versionNow(), 32, "nothing migrated");
 });
 
@@ -510,13 +537,214 @@ test("capabilities say whether this server keeps workspaces apart: features.work
   const check = (body) => assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/Capabilities" }, body), [], JSON.stringify(body.features.workspaces));
   for (const answer of [await unscoped(scoped, "GET", "/v2/capabilities"), await inW1(scoped, "GET", "/v2/capabilities")]) {
     assert.equal(answer.status, 200, answer.text);
-    assert.deepEqual(answer.body.features.workspaces, { header: "AgentRun-Workspace", enforced: true, routes });
+    assert.deepEqual(answer.body.features.workspaces, { header: "AgentRun-Workspace", enforced: true, required_for_tokens: true, routes });
     check(answer.body);
   }
-  assert.notDeepEqual(schemaProblems(doc, described, { header: "AgentRun-Workspace", enforced: "yes", routes }), [], "the positive control: a wrong value is seen");
+  assert.notDeepEqual(schemaProblems(doc, described, { header: "AgentRun-Workspace", enforced: "yes", required_for_tokens: true, routes }), [], "the positive control: a wrong value is seen");
+  assert.notDeepEqual(schemaProblems(doc, described, { header: "AgentRun-Workspace", enforced: true, routes }), [], "required_for_tokens is required");
+  // API-only with no token that must send it: a request without the header is served unscoped.
+  const open = await scopedServer(t, { workspaceTokens: [] });
+  const openAnswer = await unscoped(open, "GET", "/v2/capabilities");
+  assert.deepEqual(openAnswer.body.features.workspaces, { header: "AgentRun-Workspace", enforced: true, required_for_tokens: false, routes });
+  check(openAnswer.body);
   const whole = await serve(t, { runner: false });
   const answer = await whole.api("GET", "/capabilities");
   assert.equal(answer.status, 200);
-  assert.deepEqual(answer.body.features.workspaces, { header: "AgentRun-Workspace", enforced: false, routes }, "a server that is not API-only refuses the header");
+  assert.deepEqual(answer.body.features.workspaces, { header: "AgentRun-Workspace", enforced: false, required_for_tokens: false, routes }, "a server that is not API-only refuses the header");
   check(answer.body);
+});
+
+test("a scoped request's files are its workspace's: made in it, read, sent and deleted in it alone, listed in it page by page, and its own runs take them", { timeout: 120_000 }, async (t) => {
+  await serverStoreOnTarget();
+  const server = await scopedServer(t);
+  const definition = (name) => ({ definition: { version: 1, name, instructions: "Answer.", skills: [], tools: [] } });
+  const a1 = (await inW1(server, "POST", "/v2/agents", { body: definition("W1 agent") })).body.agent_id;
+  const a2 = (await inW2(server, "POST", "/v2/agents", { body: definition("W2 agent") })).body.agent_id;
+  const oneCall = async (workspace, path) => {
+    const answer = await bytes(server, workspace, { path });
+    assert.equal(answer.status, 201, JSON.stringify(answer.body));
+    assert.equal(answer.body.file.workspace, undefined, "no answer names a workspace");
+    return answer.body.file.file_id;
+  };
+  // W1 reserves one and sends its bytes, and sends another in one call; W2 sends three, the operator one, between them.
+  const f1 = await reserved(inW1, server, "notes.md");
+  const g1 = await oneCall(W2, "g1.md");
+  const f2 = await oneCall(W1, "report.md");
+  const g2 = await oneCall(W2, "g2.md");
+  const u1 = await oneCall(undefined, "ops.md");
+  const g3 = await oneCall(W2, "g3.md");
+  assert.equal((await bytes(server, W2, { id: f1 })).status, 404, "W2 sends no bytes to W1's file");
+  const sent = await bytes(server, W1, { id: f1 });
+  assert.deepEqual([sent.status, sent.body.status], [200, "ready"], JSON.stringify(sent.body));
+  // Another workspace's file reads as a missing one, the same 404 to the byte, for a read and a delete.
+  for (const method of ["GET", "DELETE"]) {
+    const theirs = await inW2(server, method, `/v2/files/${f2}`);
+    const missing = await inW2(server, method, `/v2/files/${missingLike(f2)}`);
+    assert.equal(theirs.status, 404, theirs.text);
+    assert.equal(shape(theirs, f2), shape(missing, missingLike(f2)), `${method}: W1's file reads as a missing one`);
+  }
+  assert.equal((await inW1(server, "GET", `/v2/files/${f2}`)).status, 200, "W1's file stands");
+  // Each workspace lists its own alone, a page of one at a time, none of another's filling a page; the operator all.
+  const listed = async (request) => {
+    const ids = [];
+    let pages = 0;
+    for (let cursor = null; pages < 10; ) {
+      const answer = await request(server, "GET", `/v2/files?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      assert.equal(answer.status, 200, answer.text);
+      assert.ok(answer.body.files.length === 1, `a full page: ${answer.text}`);
+      ids.push(...answer.body.files.map((file) => file.file_id));
+      pages += 1;
+      if ((cursor = answer.body.next_cursor) === null) break;
+    }
+    return { ids, pages };
+  };
+  assert.deepEqual(await listed(inW1), { ids: [f2, f1], pages: 2 });
+  assert.deepEqual(await listed(inW2), { ids: [g3, g2, g1], pages: 3 });
+  assert.deepEqual((await unscoped(server, "GET", "/v2/files?limit=10")).body.files.map((file) => file.file_id), [g3, u1, g2, f2, g1, f1]);
+  // A run takes its own workspace's files; another's, or one made unscoped, reads as no file.
+  const run = await inW1(server, "POST", `/v2/agents/${a1}/runs`, { body: { input: { content: "Read them." }, file_ids: [f1, f2] } });
+  assert.equal(run.status, 202, run.text);
+  for (const id of [f1, u1]) {
+    const refused = await inW2(server, "POST", `/v2/agents/${a2}/runs`, { body: { input: { content: "Read it." }, file_ids: [id] } });
+    assert.equal(refused.status, 422, refused.text);
+    assert.equal(refused.body.error.fields[0].message, `There is no file ${id}: reserve it with POST /v2/files.`);
+  }
+  assert.equal((await inW2(server, "POST", `/v2/agents/${a2}/runs`, { body: { input: { content: "Read it." }, file_ids: [g1] } })).status, 202);
+  // W1 deletes its own; the operator reads and deletes any.
+  assert.equal((await inW1(server, "DELETE", `/v2/files/${f1}`)).status, 204);
+  assert.equal((await inW1(server, "GET", `/v2/files/${f1}`)).status, 404);
+  assert.equal((await unscoped(server, "GET", `/v2/files/${g1}`)).status, 200);
+  assert.equal((await unscoped(server, "DELETE", `/v2/files/${g1}`)).status, 204);
+});
+
+test("a scoped file list pages over its workspace's files alone when another workspace's newer files run past one batch of reads", { timeout: 180_000 }, async (t) => {
+  await serverStoreOnTarget();
+  const server = await scopedServer(t);
+  const sent = async (workspace, path) => {
+    const answer = await bytes(server, workspace, { path });
+    assert.equal(answer.status, 201, JSON.stringify(answer.body));
+    return answer.body.file.file_id;
+  };
+  // W1's older file sits behind 70 of W2's (past the 64 records the list reads at once), its newer one before them.
+  const older = await sent(W1, "older.md");
+  const theirs = [];
+  for (let i = 0; i < 70; i += 1) theirs.push(await sent(W2, `g${i}.md`));
+  const newer = await sent(W1, "newer.md");
+  const pages = async (request, limit) => {
+    const seen = [];
+    for (let cursor = null, n = 0; n < 100; n += 1) {
+      const answer = await request(server, "GET", `/v2/files?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`);
+      assert.equal(answer.status, 200, answer.text);
+      seen.push(answer.body.files.map((file) => file.file_id));
+      if ((cursor = answer.body.next_cursor) === null) break;
+    }
+    return seen;
+  };
+  assert.deepEqual(await pages(inW1, 1), [[newer], [older]], "W1's two files, one a page, none of W2's, the last page saying none follows");
+  const w2 = await pages(inW2, 50);
+  assert.deepEqual(w2.map((page) => page.length), [50, 20]);
+  assert.deepEqual(w2.flat(), [...theirs].reverse(), "W2's 70, newest first, each once");
+});
+
+test("a scoped run names no Archil disk that is another workspace's agent's own: it reads as a disk Archil does not have; its own agent's, or a disk no agent owns, it names", { timeout: 120_000 }, async (t) => {
+  const API = "fake-archil-account-key-0001";
+  const REGION = "aws-us-east-1";
+  const CUSTOMER = "dsk-c0570000000000c1";
+  const W1_DISK = "dsk-0000000000000a01";
+  const FREE_DISK = "dsk-0000000000000f01";
+  const MISSING = "dsk-0000000000000bad";
+  withEnv(t, { ARCHIL_API_KEY: API });
+  const control = archilControlFetch({ region: REGION, strict: true, disks: [{ id: CUSTOMER, name: "customer-1" }, { id: W1_DISK, name: "w1-agent" }, { id: FREE_DISK, name: "unscoped-agent" }] });
+  const server = await scopedServer(t, { archilControl: { baseUrl: control.baseUrl, fetch: control.fetch } });
+  await saveArchilSettings(server.store, { region: REGION, s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+  const definition = (name) => ({ definition: { version: 1, name, instructions: "Answer.", skills: [], tools: [] } });
+  const a1 = (await inW1(server, "POST", "/v2/agents", { body: definition("W1 agent") })).body.agent_id;
+  const a2 = (await inW2(server, "POST", "/v2/agents", { body: definition("W2 agent") })).body.agent_id;
+  // An agent in no workspace (made before the header, say), with a disk of its own.
+  await server.store.agents.create({ id: "agent-free", name: "Unscoped agent" }, { id: "rev-free", kind: "agentic", body: { instructions: "Answer." } });
+  await storeAgentDisk(server.store, a1, { diskId: W1_DISK });
+  await storeAgentDisk(server.store, "agent-free", { diskId: FREE_DISK });
+  const start = (request, agent, disk) => request(server, "POST", `/v2/agents/${agent}/runs`, { body: { input: { content: "Hello." }, archil_disk: { disk_id: disk } } });
+  const missing = await start(inW2, a2, MISSING);
+  assert.equal(missing.status, 422, missing.text);
+  for (const disk of [W1_DISK, FREE_DISK]) {
+    const theirs = await start(inW2, a2, disk);
+    assert.equal(theirs.status, 422, theirs.text);
+    assert.equal(shape(theirs, disk), shape(missing, MISSING), `${disk}: another's agent disk reads as a missing one`);
+  }
+  for (const [request, agent, disk, why] of [[inW1, a1, W1_DISK, "W1 names its own agent's disk"], [inW2, a2, CUSTOMER, "a disk no agent owns is the backend's to give"], [unscoped, a1, FREE_DISK, "the operator names any"]]) {
+    const answer = await start(request, agent, disk);
+    assert.equal(answer.status, 202, `${why}: ${answer.text}`);
+  }
+});
+
+test("an unscoped import of a package name a workspace holds is 409 name_taken and changes nothing; the operator deletes it first, then imports it", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const upload = (content, extra = {}) => ({ files: [{ path: "agent.md", encoding: "utf8", content }], ...extra });
+  const signal = AbortSignal.timeout(30_000);
+  const mine = await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal));
+  assert.equal(mine.status, 201);
+  const theirs = UPLOADED.replace("Answers a question.", "The operator's.");
+  for (const extra of [{ dry_run: true }, {}]) {
+    await assert.rejects(importTemplate(deps, upload(theirs, extra), signal), (error) => error.code === "name_taken" && /DELETE \/v2\/templates\/upload:notes/.test(error.message), JSON.stringify(extra));
+  }
+  // The store's own write keeps W1's row whatever the check before it found (an operator's import racing W1's).
+  assert.equal(await store.importedTemplates.put({ id: "upload:notes", source: "upload:notes", sha: "f".repeat(40), publisher: "", files: {} }), false);
+  const kept = (await store.importedTemplates.list()).find((row) => row.id === "upload:notes");
+  assert.equal(kept.sha, mine.pkg.origin.sha, "W1's package stands");
+  assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), W1);
+  assert.equal(registry.get("upload:notes").origin.sha, mine.pkg.origin.sha, "and is the one served");
+  await deleteTemplate(deps, "upload:notes");
+  const ops = await importTemplate(deps, upload(theirs), signal);
+  assert.deepEqual([ops.status, ops.replaced], [201, null]);
+  assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), null, "the operator's, in no workspace");
+  // An unscoped package the operator imports again is replaced in place.
+  const again = await importTemplate(deps, upload(UPLOADED), signal);
+  assert.deepEqual([again.status, again.replaced], [201, ops.pkg.origin.sha]);
+});
+
+test("the trigger engine's timer, armed by a scoped request, fires out of that workspace: a later firing of another workspace's agent starts unscoped", { timeout: 60_000 }, async (t) => {
+  const clock = fakeClock("2026-06-01T00:00:00Z");
+  // As setTimeout does, the timer runs its callback in the context it was armed in.
+  const arm = clock.arm;
+  clock.arm = (fire, ms) => arm(AsyncResource.bind(fire), ms);
+  const { store } = await storeOn(t, { clock: { get now() { return clock.now(); } } });
+  for (const [id, workspace] of [["a", W1], ["b", W2]]) await store.agents.create({ id, name: id, workspace }, { id: `rev-${id}`, kind: "agentic", body: {} });
+  const started = [];
+  const triggers = new Triggers({
+    store, clock, targetIssues: async () => [], statusOf: async () => null, runOf: async () => null, notify: () => "queued", say: () => {}, settings: () => ({ mint: () => "unused", remove: () => {} }), message: async () => undefined,
+    start: async (target, input, origin) => {
+      started.push({ agent: target.agent_id, workspace: workspaceNow() });
+      const id = `run-${started.length}`;
+      await store.triggers.fire({ triggerId: origin.id, key: origin.firing_key }, { id, agentId: target.agent_id, revisionId: `rev-${target.agent_id}` });
+      return { run_id: id };
+    },
+  });
+  t.after(() => triggers.close());
+  await triggers.start();
+  const schedule = (agent, at) => ({ name: `at ${at}`, source: { kind: "schedule", at }, target: { kind: "start_run", agent_id: agent, input: { content: "Hello." }, max_cost_usd: 0.5 } });
+  const a = await triggers.create(schedule("a", "2026-06-01T00:05:00Z"));
+  // W2's request makes its agent's trigger, and arms the engine's one timer again, for W1's firing, the soonest.
+  await inWorkspace(W2, () => triggers.create(schedule("b", "2026-06-01T00:10:00Z")));
+  await until(() => clock.timer !== null && clock.timer.at <= Date.parse("2026-06-01T00:05:00Z"), 5_000, "the timer armed for 00:05");
+  clock.to("2026-06-01T00:05:00Z");
+  await until(() => started.length === 1, 5_000, "W1's firing started");
+  assert.deepEqual(started, [{ agent: "a", workspace: undefined }], "W1's agent's run starts in no request's workspace");
+  // A firing a request drives (run now, here in W2's context) is driven as no request's too.
+  await inWorkspace(W2, () => triggers.fire(a.id, "now-1"));
+  await until(() => started.length === 2, 5_000, "the run-now firing started");
+  assert.deepEqual(started[1], { agent: "a", workspace: undefined });
+});
+
+test("a scoped run is its agent's workspace's through its agent alone: its row keeps no workspace of the request's", { ...sqliteOnly("the SQLite store's row"), timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  const { agent, run } = await seedW1(server);
+  const raw = new DatabaseSync(join(server.data, "store.sqlite"), { readOnly: true });
+  t.after(() => raw.close());
+  assert.deepEqual({ ...raw.prepare("SELECT workspace FROM runs WHERE id = ?").get(run) }, { workspace: null }, "the request's workspace is not written on the run");
+  assert.equal(await server.store.runs.workspace(run), W1, "it reads as its agent's");
+  assert.equal((await inW1(server, "GET", `/v2/runs/${run}`)).status, 200);
+  assert.equal(await server.store.agents.workspace(agent), W1);
 });

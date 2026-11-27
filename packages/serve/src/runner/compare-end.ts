@@ -1,5 +1,5 @@
-// A replay run's and an audit shadow's own comparison, at its end (learn/promote.ts gradeAnswers): with no agree_on and
-// a fast model, the run asks that model once whether its answer and the other one (the agent's; for a replay of a graded
+// A replay run's and an audit shadow's own comparison, at its end (learn/promote.ts gradeAnswers): with no agree_on, the
+// run asks its grader (the fast model, else the agent's own model: adapter-run-spec.ts graderRouteOf) once whether its answer and the other one (the agent's; for a replay of a graded
 // run, the grade's expected answer written over the agent's; of a run its owner corrected by message, the agent's with
 // the owner's correction beside it, which wins) reach the same decision, through its
 // own session (the grader's route, a tier proxy beside the session's) on its own cap, booked as its own spend: a replay's
@@ -89,7 +89,7 @@ export function compareEndOfRun(launch: RunLaunch, deps: CompareEndDeps): EndOfR
       // Equal answers ask no model; a replay's record still keeps the grade it was judged with (Compared.graded).
       if (pair.corrected === undefined && sameAnswer(pair.agent, pair.workflow)) return pair.graded === undefined ? undefined : { also: [], compared: { same: true, pair: answersPair(pair.agent, pair.workflow), graded: pair.graded } };
       const grade = input.grade;
-      const verdict = await gradeAnswers(inputText(launch.input), pair.agent, pair.workflow, { model: input.grader, ask: (request) => grade(request) }, pair.corrected);
+      const verdict = await gradeAnswers(inputText(launch.input), pair.agent, pair.workflow, { model: input.grader, ...(input.graderOwn ? { own: true as const } : {}), ask: (request) => grade(request) }, pair.corrected);
       const compared: Compared = pair.graded !== undefined ? { ...verdict, graded: pair.graded, ...(pair.corrected !== undefined ? { corrected: pair.corrected } : {}) } : verdict;
       return { also: [], compared };
     } catch (error) {
@@ -128,10 +128,11 @@ export async function graderAsk(models: PortModels, request: { readonly system: 
   }
 }
 
-/** `step` with the run's grader handed in: its fast model's name and one request to it, over `models` (the run's port on
- *  GRADER), cut by the step's `signal` (the loop aborts it on a person's stop or cancel, a lost claim or the session
- *  closing) or at GRADER_DEADLINE_MS. No grader: no step at all, so the run ends as it did before there was one. */
-export function withGrader(step: EndOfRunTurn | undefined, grader: { readonly model: string; readonly models: () => Promise<PortModels> } | undefined): EndOfRunTurn | undefined {
+/** `step` with the run's grader handed in: its model's name (the fast model, else the run's own: `own`) and one request
+ *  to it, over `models` (the run's port on GRADER), cut by the step's `signal` (the loop aborts it on a person's stop or
+ *  cancel, a lost claim or the session closing) or at GRADER_DEADLINE_MS. No grader: no step at all, so the run ends as
+ *  it did before there was one. */
+export function withGrader(step: EndOfRunTurn | undefined, grader: { readonly model: string; readonly own?: boolean; readonly models: () => Promise<PortModels> } | undefined): EndOfRunTurn | undefined {
   if (!step || !grader) return undefined;
-  return (input) => step({ ...input, grader: grader.model, grade: async (request) => graderAsk(await grader.models(), request, { signal: input.signal }) });
+  return (input) => step({ ...input, grader: grader.model, ...(grader.own ? { graderOwn: true } : {}), grade: async (request) => graderAsk(await grader.models(), request, { signal: input.signal }) });
 }

@@ -660,6 +660,7 @@ export interface components {
     workspaces?: {
       header: "AgentRun-Workspace";
       enforced: boolean;
+      required_for_tokens: boolean;
       routes: string[];
     };
     api_keys?: {

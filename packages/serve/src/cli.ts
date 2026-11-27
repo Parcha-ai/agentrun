@@ -136,8 +136,8 @@ is off unless set to an address.
 AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
 other address is a 404, and there are no accounts). AGENTRUN_API_ONLY_MCP_ORIGINS: the MCP origins the token may save a
 per_run MCP server at (README, API only). AGENTRUN_WORKSPACE_TOKENS: the ids of the AGENTRUN_TOKENS tokens whose every
-request carries the AgentRun-Workspace header, which keeps each of the backend's workspaces to its own agents, runs and
-templates (README, API only).
+request carries the AgentRun-Workspace header, which keeps each of the backend's workspaces to its own agents, runs,
+templates and files (README, API only).
 
 AGENTRUN_LAUNCH_HOOK_URL with AGENTRUN_LAUNCH_HOOK_SECRET (a whsec_ secret): each trigger firing that would start a run
 is POSTed to that URL, signed as Standard Webhooks, and the host starts the run through the API; this server starts
@@ -187,7 +187,7 @@ refused and kept as it is. It writes nothing without --apply, and prints what it
 (AGENTRUN_STORE_URL's Postgres, else SQLite in --data), the server running or not; on SQLite it adds the workspace
 columns first when no server of this build has opened the store yet. Exit 0 when every agent is set or already there, 1
 when any is refused or missing, 2 for bad arguments, a file that is not that JSON, or a store behind this build (on
-Postgres, below migration 0033), which it never migrates: start a server of this build once.
+Postgres, below migration 0034), which it never migrates: start a server of this build once.
 
 \`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
 and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its

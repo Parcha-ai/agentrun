@@ -102,7 +102,7 @@ import { type RunMoment, type State, type Status } from "./run-view.js";
 import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runner/presence.js";
 import { openRoundsOf } from "./learning-rounds.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, runCostOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
 import { reconcileProjectCheckpoints } from "./source-sync/checkpoints.js";
 import { acknowledgeProjects } from "./source-sync/checkpoint-gate.js";
@@ -133,7 +133,7 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type AgentRow, LearningRecordRefused, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type AgentRow, LearningRecordRefused, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, RUNNER_STALE_MS, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { agentDeleting, answerOf, logged, purgedAgent } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
@@ -176,7 +176,7 @@ import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { unifiedUsage } from "./unified-usage.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
 import { printable } from "./learn/index.js";
-import { agentCostOverStore, agentLearningOverStore, costStopOverStore, learningCountsOverStore, learningSpendOverStore, runAllInOverStore, runLearningEnd } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, costStopOverStore, learningCountsOverStore, learningSpendOverStore, runLearningEnd } from "./store-reads/learning.js";
 import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
@@ -231,7 +231,7 @@ import { agentTools, BROWSER_VENDOR_IDS, browserKeyRow, DEFAULT_BROWSER_VENDOR, 
 import { wakeAnsweredBySetting } from "./settings-wake.js";
 import { toolSettingsOverStore } from "./tool-settings-store.js";
 import { readApprovers, writeApprovers } from "./server-approvers.js";
-import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR, type UploadStore } from "./uploads.js";
+import { MAX_FILES_PER_RUN, MAX_UPLOAD_BYTES, Uploads, UPLOADS_DIR, type UploadedFile, type UploadStore } from "./uploads.js";
 import { archilUploads, runKeepsUploads, UPLOAD_RETENTION_ENV, UPLOAD_SWEEP_EVERY_MS, uploadRetentionMs } from "./uploads-archil.js";
 import { entryAt, listFiles, sendFile as sendWorkspaceFile, viewOf } from "./run-files.js";
 import { recordingsOf, recordingsWorkspace } from "./run-recordings.js";
@@ -252,7 +252,7 @@ import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
-import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, noExecRegionOf, noExecWords, runDiskKept, runDiskKey } from "./archil-settings.js";
+import { agentDiskOf, agentsOnDisk, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, loadArchilSettings, noExecRegionOf, noExecWords, runDiskKept, runDiskKey } from "./archil-settings.js";
 import { learningWorkKey } from "./learning-work.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView, settingOfDefinition } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
@@ -289,6 +289,8 @@ const TEMPLATE_UPLOAD_BODY = Math.ceil((IMPORT_LIMITS.packageBytes * 4) / 3) + M
 const IMPORT_STARTS = 3;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
+/** The file records a scoped file list reads at once while it fills a page from every workspace's newest-first ids. */
+const FILE_LIST_BATCH = 64;
 /** A run body's fields that a launch hook's host can't set on a firing's run (RunCreate `trigger_firing`): its trigger's
  *  target fixes them. */
 const HANDED_FIXED = ["revision", "hold", "hold_minutes"] as const;
@@ -1194,10 +1196,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false, said: true },
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: true, read: true, range: true, during_run: true },
-      /** Whether a request's workspace keeps it to its own agents, runs and imported packages (workspace-scope.ts): the
-       *  header that names it, `enforced` on an API-only server alone (set at the answer, as api_keys.routes is), and the
-       *  operations a scoped request is served (WORKSPACE_ROUTES). */
-      workspaces: { header: WORKSPACE_NAME, enforced: false, routes: [...WORKSPACE_ROUTES].sort() },
+      /** Whether a request's workspace keeps it to its own agents, runs, imported packages and files (workspace-scope.ts):
+       *  the header that names it, `enforced` on an API-only server alone and `required_for_tokens` when a token must send
+       *  it (both set at the answer, as api_keys.routes is), and the operations a scoped request is served (WORKSPACE_ROUTES). */
+      workspaces: { header: WORKSPACE_NAME, enforced: false, required_for_tokens: false, routes: [...WORKSPACE_ROUTES].sort() },
       quotes: false,
       usage: { basis: "estimate", meters: ["tokens", "tools", "browser_time", "learning"] },
       efforts: [...EFFORTS],
@@ -2253,16 +2255,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (`learning_usd`) and the two (`all_in_usd`), with what makes up `learning_usd` (`compile_usd`, `followup_usd`,
    *  `shadow_usd`, `check_usd`, `share_usd`): the figures the agent's cost page gives the run (learn/ledger.ts figuresOf, one formula).
    *  A cost known only as a bound keeps its bound, and all-in is unknown.
-   *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore). Both are read in one
-   *  snapshot of the store: a follow-up that opens the run again between the two reads never puts its paid calls beside
-   *  the previous end's `usd` (run-usage.ts reads a run's lines the same way). */
+   *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore), read with `usd` at one
+   *  moment (store-view.ts runCostOverStore). */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
-    const { all, tools_usd } = await store.snapshot(async (snapshot) => {
-      const all = await runAllInOverStore(snapshot, runId, own);
-      return { all, tools_usd: all ? await toolsUsdOverStore(snapshot, runId) : null };
-    });
+    const { all, tools_usd } = await runCostOverStore(store, runId, own);
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (its ledger row's, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
@@ -2478,6 +2476,30 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(refusedTimer);
     await refusedSweep;
   });
+  // The reopened runs' ledger rows, recorded again at the store's open (run-patch.ts backfillLedger), are marked done only
+  // by a pass that started with no runner of an earlier build there and no run held by a claim taken before the store's
+  // open and RUNNER_STALE_MS (an earlier runner whose name a rolling restart took): one such runner ends its runs until
+  // its floor read stops it, under the split before. Until a pass marks it, the pass runs again every RUNNER_STALE_MS (the age at which
+  // such a runner's row reads as gone), so a run it ended meanwhile is recorded under this build's split with no restart;
+  // then the timer stops. A pass that fails is said on stderr and tried at the next tick.
+  let rerecordPass: Promise<void> = Promise.resolve();
+  let rerecordStopped = store.rerecordReopened === undefined;
+  const rerecordTimer = setInterval(() => {
+    rerecordPass = rerecordPass.then(async () => {
+      if (rerecordStopped) return;
+      if (!(await store.rerecordReopened!())) return;
+      rerecordStopped = true;
+      clearInterval(rerecordTimer);
+    }).catch((error: Error) => void process.stderr.write(`agentrun-serve: the ledger rows of the runs a follow-up opened again could not be recorded again (tried again in ${RUNNER_STALE_MS / 1000} s): ${error.message}\n`));
+  }, RUNNER_STALE_MS);
+  rerecordTimer.unref();
+  if (rerecordStopped) clearInterval(rerecordTimer);
+  const stopRerecord = async () => {
+    rerecordStopped = true;
+    clearInterval(rerecordTimer);
+    await rerecordPass;
+  };
+  stops.unshift(stopRerecord);
   // The runner beside this server, when its run isolation was refused (cli.ts): its word, kept in this store until the stop.
   let refusedBeside: Presence | undefined;
   const sourceWorkspaces = { data, sealKey, env: withSecrets(process.env, "own"), ...(options.archilControl ? { control: options.archilControl } : {}) };
@@ -2556,10 +2578,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The run's Archil disk for its launch record (run-launch.ts archilDisk): the body's, else its agent's when it has one.
     // A disk the body names is read at Archil once, before the run is made (archil-routes.ts checkLaunchDisk): one that is
     // not there or not in the key's region is a 422 here, and Mode 1 is too. An agent whose disk is being removed
-    // (archil-routes.ts removeAgentDisk) starts no run on it: 409 until the removal is done.
+    // (archil-routes.ts removeAgentDisk) starts no run on it: 409 until the removal is done. A scoped request (workspace-
+    // scope.ts) names no disk that is an agent's own outside its workspace: it reads as a disk Archil does not have. A disk
+    // no agent owns is the backend's to give its tenants.
     launchDiskOf: async (agentId, named) => {
       if (named !== undefined) {
-        await archil.checkLaunchDisk(named);
+        const unseen = workspaceNow() !== undefined && (await Promise.all((await agentsOnDisk(store, named)).map((owner) => agentOutOfScope(owner)))).some(Boolean);
+        await archil.checkLaunchDisk(named, undefined, unseen);
         return { diskId: named, kind: "launch" };
       }
       if (!(await inArchilMode(store, process.env))) return undefined;
@@ -5293,7 +5318,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (req.headers.authorization !== undefined && !byOwnerSession(req) && !bearer(req.headers.authorization, req)) authFailed(`/v2${path}`, "wrong_token");
       // tools[].held: the server's keyless holds on each web tool now (web-run.ts withHeld), never cached.
       // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
-      return send(res, 200, { ...answer, tools: withHeld(answer.tools), ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly }, workspaces: { ...answer.features.workspaces, enforced: options.apiOnly === true } } });
+      return send(res, 200, { ...answer, tools: withHeld(answer.tools), ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly }, workspaces: { ...answer.features.workspaces, enforced: options.apiOnly === true, required_for_tokens: (options.workspaceTokens ?? []).length > 0 } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
@@ -6324,8 +6349,28 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const limit = limitOf(url.searchParams.get("limit"));
         const offset = cursorOf(url.searchParams.get("cursor"));
         const ids = await kept.ids();
-        const files = (await Promise.all(ids.slice(offset, offset + limit).map((fileId) => kept.get(fileId)))).filter((file) => file !== null);
-        return send(res, 200, { files, next_cursor: nextCursor(offset + limit, ids.length) });
+        if (workspaceNow() === undefined) {
+          const files = (await Promise.all(ids.slice(offset, offset + limit).map((fileId) => kept.get(fileId)))).filter((file) => file !== null);
+          return send(res, 200, { files, next_cursor: nextCursor(offset + limit, ids.length) });
+        }
+        // A scoped request's: its workspace's files alone (get reads another's as none), counted from the newest before the
+        // page is cut, so a page is never short of them and the cursor counts them alone. One read more says if one follows.
+        // Records are read FILE_LIST_BATCH at a time in parallel (each may be a remote read), taken in order.
+        const files: UploadedFile[] = [];
+        let skipped = 0;
+        let more = false;
+        for (let at = 0; at < ids.length && !more; at += FILE_LIST_BATCH) {
+          for (const file of await Promise.all(ids.slice(at, at + FILE_LIST_BATCH).map((fileId) => kept.get(fileId)))) {
+            if (!file) continue;
+            if (skipped < offset) skipped += 1;
+            else if (files.length < limit) files.push(file);
+            else {
+              more = true;
+              break;
+            }
+          }
+        }
+        return send(res, 200, { files, next_cursor: more ? nextCursor(offset + limit, Infinity) : null });
       }
       case "getFile": {
         const file = await (await uploadsHere()).get(id);
@@ -7639,6 +7684,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     clearInterval(refusedTimer);
     await refusedSweep;
     await refusedBeside?.close();
+    // No more tries at the reopened runs' ledger mark: a pass in flight ends before the store closes, and the next start
+    // tries again.
+    await stopRerecord();
     // A ChatGPT renewal OpenAI is answering saves its new pair first (renewalsStopped, above): none started since.
     await renewalsStopped;
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.

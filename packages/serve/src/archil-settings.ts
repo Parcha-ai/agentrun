@@ -181,6 +181,13 @@ export async function agentDiskOf(store: { settings: Pick<Settings, "get"> }, ag
   return { diskId: row.diskId, ...(row.removing === true ? { removing: true as const } : {}), ...(row.pending === true ? { pending: true as const } : {}) };
 }
 
+/** The agents whose own disk (agentDiskOf) is `diskId`, read from every agent's disk row. */
+export async function agentsOnDisk(store: { settings: Pick<Settings, "all"> }, diskId: string): Promise<string[]> {
+  const prefix = agentDiskKey("");
+  const rows = await store.settings.all({ prefix });
+  return rows.filter((row) => typeof row.value === "object" && row.value !== null && (row.value as Record<string, unknown>).diskId === diskId).map((row) => row.key.slice(prefix.length));
+}
+
 /** Stores `disk` on agent `agentId`, as removing when it says so. */
 export async function storeAgentDisk(store: { settings: Pick<Settings, "put"> }, agentId: string, disk: AgentDisk): Promise<void> {
   await store.settings.put(agentDiskKey(agentId), { diskId: disk.diskId, ...(disk.removing ? { removing: true } : {}), ...(disk.pending ? { pending: true } : {}) });

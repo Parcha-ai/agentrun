@@ -483,8 +483,9 @@ async function startCheck(deps: PromotionDeps, workflow: LearnedWorkflow, digest
 /** The words a stopped check's record starts with when it had nothing to check its draft on. */
 export const NOTHING_TO_CHECK = "nothing to check it on";
 /** What a held check compared on the whole answer says when it answered some inputs alone and agreed on none: only a
- *  check no grader compared (no agree_on, and no fast model to read the answers). */
-export const NEVER_WORD_FOR_WORD = "its answers never matched the agent's word for word, and no fast model compared their decisions (a learning agent with no agree_on wants one: AGENT_MODEL_FAST, or its model_tiers.fast); name the fields that carry the decision (learning.agree_on)";
+ *  check no grader compared (no agree_on, and no model's verdict was kept: its route could not be made, or its run kept
+ *  none). */
+export const NEVER_WORD_FOR_WORD = "its answers never matched the agent's word for word, and no model compared their decisions (the replays kept no grader's verdict); name the fields that carry the decision (learning.agree_on)";
 /** What a held check the grader compared says of the inputs it disagreed on: k of n, with one of the decisions. */
 export const differentDecisionWords = (k: number, n: number, example: string | undefined): string => `its answers reached a different decision from the agent's on ${k} of ${n}${example ? ` (for example: ${example})` : ""}`;
 
@@ -663,19 +664,21 @@ async function settleCheck(deps: PromotionDeps, workflow: LearnedWorkflow, diges
 /** A check's rows judged field by field (learn/field-check.ts check) on its bar, added to `before` (a connected agent's
  *  turns checked so far): each field of agree_on, else the whole answer (checkInputOf), against its best known answer;
  *  the inputs it did not agree on (not answered alone, or a field wrong), each naming the fields it had wrong, each text
- *  cut of the host's secrets whole, then shortened (learn/secrets.ts excerptShown); and the fast model that compared,
- *  when it read any input's answers. */
+ *  cut of the host's secrets whole, then shortened (learn/secrets.ts excerptShown); and the model that compared, when it
+ *  read any input's answers: the fast model, else the agent's own (`own`). */
 async function judgeRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: readonly CheckRow[], before: CheckTurns | undefined) {
   const ran = rows.filter((row) => row.outcome !== "skipped_write");
   // With no agree_on, the draft's answer is compared whole with its known answer: equal, else the grader's verdict on
-  // that pair, which its replay run asked (with no grader, no fast model, they differ). Under agree_on, fields and
+  // that pair, which its replay run asked (with no verdict, they differ). Under agree_on, fields and
   // grades are compared as values (checkInputOf).
   const on = bar.agree_on?.length ? bar.agree_on : undefined;
   const judged = new Map(rows.map((row) => [row, checkInputOf(row, on)]));
   const verdict = checkFields([...judged.values()].map((one) => one.input), bar, before);
   const missed = new Map<string, string[]>();
   for (const miss of verdict.misses) missed.set(miss.input_id, [...(missed.get(miss.input_id) ?? []), miss.field]);
-  const grader = [...judged.values()].find((one) => one.compared?.grader !== undefined)?.compared?.grader;
+  const by = [...judged.values()].find((one) => one.compared?.grader !== undefined)?.compared;
+  const grader = by?.grader;
+  const own = by?.own === true;
   const shown = await deps.shown();
   const cut = (text: string) => excerptShown(text, shown, CHECK_TEXT_MAX);
   // The known answers (a grade's, or the owner's correction in their words) each input's draft missed, for the
@@ -699,7 +702,7 @@ async function judgeRows(deps: Pick<DecideDeps, "shown">, bar: CheckBar, rows: r
       ...(expected ? { expected } : {}),
     };
   })];
-  return { verdict, disagreements, grader };
+  return { verdict, disagreements, grader, own };
 }
 
 /** Two outcome counts added. */
@@ -715,7 +718,7 @@ const outcomesAdded = (a: ReplayOutcomes, b: ReplayOutcomes | undefined): Replay
 export async function decideCheck(deps: DecideDeps, name: string, digest: string, bar: CheckBar, read: { rows: readonly CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number; exactMismatchReason?: string; fresh_reads?: number; before?: CheckTurns }, still: Parameters<typeof recordPromotion>[3], extra: Partial<PromotionRecord>) {
   const now = deps.now ?? Date.now;
   const { before } = read;
-  const { verdict, disagreements, grader } = await judgeRows(deps, bar, read.rows, before);
+  const { verdict, disagreements, grader, own } = await judgeRows(deps, bar, read.rows, before);
   const { tally, fields, failing, joint } = verdict;
   const score = { n: tally.n, agreed: tally.agreed, alone: tally.alone };
   const fieldCount = Object.keys(fields).length;
@@ -745,7 +748,7 @@ export async function decideCheck(deps: DecideDeps, name: string, digest: string
   // and the words say none ran.
   const said = read.unstarted === score.n
     ? `none of its ${plural(score.n, "check run")} started by the check's deadline (its launch was interrupted: the server stopped after reserving it, say): nothing was checked`
-    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)})${Object.keys(fields).length ? `; ${Object.values(fields).map((one) => one.reason).join("; ")}` : ""}${saysJoint ? `; right on every field at once: ${joint.agreed} of ${joint.alone} (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})` : ""}${grader ? `; compared by the fast model (${grader})` : ""}${aside ? ` (${aside})` : ""}`;
+    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)})${Object.keys(fields).length ? `; ${Object.values(fields).map((one) => one.reason).join("; ")}` : ""}${saysJoint ? `; right on every field at once: ${joint.agreed} of ${joint.alone} (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})` : ""}${grader ? (own ? `; compared by the agent's own model (${grader}; no fast model is set)` : `; compared by the fast model (${grader})`) : ""}${aside ? ` (${aside})` : ""}`;
   // The whole answer compared with the agent's: with the grader, how many answered alone reached another decision, with
   // one it named; never once the same and no grader: free text two runs never repeat, most likely, so the owner is told
   // what to set.

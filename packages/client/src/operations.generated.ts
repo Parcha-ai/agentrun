@@ -1406,6 +1406,7 @@ export type Features = {
   workspaces?: {
     header: "AgentRun-Workspace";
     enforced: boolean;
+    required_for_tokens: boolean;
     routes: Array<string>;
   };
   api_keys?: {
