@@ -7048,6 +7048,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { ...packageDetail(pkg, await computerHere([pkg]), await tiersHere([pkg])), console_url: templateLink(linkOrigin(req), pkg.id) });
       }
       case "deleteTemplate":
+        // A scoped request deletes its own workspace's package alone: another's reads as a missing one.
+        if (!(await templateSeen(id))) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
         await deleteTemplate(importDeps, id);
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       case "applyTemplate": {

@@ -178,13 +178,14 @@ export const apiOnlyRefusal = (raw: string): string => `this server serves the r
 /** The operations a scoped request (the AgentRun-Workspace header, workspace-scope.ts) is served: its own agents, runs,
  *  imported template packages, uploaded files and the triggers on its own agents, and the server's description. Every
  *  other is refused with 403 not_scoped, whatever API_ONLY_ROUTES serves an unscoped request. listAgents, createAgent,
- *  updateDefinition, getTemplate, listTemplates, getOpenapi, createTrigger, deleteTrigger and fireTrigger are not in
- *  API_ONLY_ROUTES: an API-only server serves them to a scoped request alone (a new trigger under apiOnlyTriggerMade, a
- *  firing under apiOnlyTurnsOn). */
+ *  updateDefinition, getTemplate, listTemplates, deleteTemplate, getOpenapi, createTrigger, deleteTrigger and fireTrigger
+ *  are not in API_ONLY_ROUTES: an API-only server serves them to a scoped request alone (a new trigger under
+ *  apiOnlyTriggerMade, a firing under apiOnlyTurnsOn). */
 export const WORKSPACE_ROUTES: ReadonlySet<string> = new Set([
   "listAllRuns", "listRuns", "getRun", "getTimeline", "listRunFiles", "readRunFile", "getRunExport",
   "listAgents", "getAgent", "listRevisions", "createAgent", "updateDefinition", "setCurrent",
-  "importTemplate", "applyTemplate", "getTemplate", "listTemplates",
+  "archiveAgent", "unarchiveAgent", "deleteAgent",
+  "importTemplate", "applyTemplate", "getTemplate", "listTemplates", "deleteTemplate",
   "createRun", "sendMessage", "stopRun", "cancelRun",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",
   "listTriggers", "getTrigger", "listTriggerFirings", "createTrigger", "updateTrigger", "deleteTrigger", "fireTrigger",
