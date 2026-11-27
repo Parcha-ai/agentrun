@@ -5662,7 +5662,9 @@ release is sent and charges and says it in one commit once that release answers,
 that ends, or a release that does not answer, leaves every released browser charged and said, or recorded; the next
 claim's open charges and says a recorded one: to when that claim's sweep of the run's older-epoch sessions answered,
 where that sweep released it, else to when its release went out (one its vendor says still runs is released then and
-charged to then). The run's timeline and its root record say it, one line per browser: `AgentRun: Released 1
+charged to then). A release cut at its bound (a session's own release that never answers) releases these browsers
+too, before it says the cut, so a hung release leaves none of them to the vendor's lifetime; one both the cut and the
+release it cut see is charged once. The run's timeline and its root record say it, one line per browser: `AgentRun: Released 1
 browser a create race left running (…); this run did not hold it, and its time is booked on the run and absorbed, not
 billed.` On the run's usage that time is a `browser_time` line of its own, `absorbed` and not billable ([Attempts: what
 the infrastructure redid](#attempts-what-the-infrastructure-redid)). A browser of another run, or of a later claim, is

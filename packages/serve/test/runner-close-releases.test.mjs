@@ -249,6 +249,30 @@ test("pi: a vendor's release that never answers is cut at the release's bound: t
   await next.close();
 });
 
+test("pi: a cut releases the session of the run's labels that nobody held, which the let-go never reached behind a release that never answers: recorded before its release is sent, released once, and its time charged once, absorbed", { timeout: 120_000 }, async (t) => {
+  const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
+  t.after(() => writeFileSync(hold, ""));
+  const { dir, server, runner, releases } = await piRun(t, "runner-close-cut-unheld-", { runnerOptions: { cleanupMs: CLEANUP_MS }, launch: { max_cost_usd: 1 }, env: { FAUX_BROWSER_RELEASE_HOLD: hold, FAUX_BROWSER_UNHELD: "600", FAUX_BROWSER_UNHELD_LISTED: "1" }, opened: false });
+  const made = readFileSync(join(dir, "faux-browser.log"), "utf8").trim().split("\n").map((line) => JSON.parse(line)).find((row) => row.op === "unheld-made");
+  assert.ok(made, "the faux vendor made a session nobody holds beside the run's own");
+
+  await runner.close();
+
+  assert.ok(existsSync(`${hold}.asked`), "the run's own session's release was sent and never answered");
+  const records = await recordsOf(server);
+  assert.equal(cutsOf(records).length, 1, "the run says its release was cut");
+  assert.equal(releases().filter((row) => row.id === made.id).length, 1, `the session nobody held was released once: ${JSON.stringify(releases())}`);
+  const owed = records.entries.filter((entry) => entry.kind === "agentrun.browser_unheld_owed" && entry.data?.id === made.id);
+  assert.equal(owed.length, 1, "it was recorded on the run's root before its release was sent");
+  const charged = chargesOf(records).filter((charge) => charge.tag === `unheld:${made.id}`);
+  assert.equal(charged.length, 1, `its time was charged once: ${JSON.stringify(chargesOf(records))}`);
+  assert.equal(charged[0].final, true);
+  assert.ok(charged[0].seconds >= 600, `from when its vendor made it: ${charged[0].seconds} s`);
+  const said = records.entries.filter((entry) => entry.kind === "agentrun.browsers_unheld" && entry.data?.released?.includes(made.id));
+  assert.equal(said.length, 1, "the run's root says it once");
+  writeFileSync(hold, "");
+});
+
 test("pi: a cut reaches every conversation of the run: a subagent's browser session, its release never answering, is charged through the cut", { timeout: 120_000 }, async (t) => {
   const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
   const { server, runner, live } = await piRun(t, "runner-close-subagent-cut-", { runnerOptions: { cleanupMs: CLEANUP_MS }, launch: { max_cost_usd: 1 }, env: { FAUX_BROWSER_RELEASE_HOLD: hold }, origin: subagentOrigin, tools: ["browser", "subagent"], ready: 3 });
