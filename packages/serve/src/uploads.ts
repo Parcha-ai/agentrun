@@ -91,12 +91,13 @@ export type FileRecord = UploadedFile & { workspace?: string };
 /** `file`'s record to keep, in `workspace` when it has one. */
 export const recordText = (file: UploadedFile, workspace: string | undefined): string => `${JSON.stringify(workspace === undefined ? file : { ...file, workspace })}\n`;
 
-/** A kept record's File, its workspace cut; null for none. `scoped`: null too when it is out of the request's workspace
- *  (a run's file_ids). */
-export function fileSeen(record: FileRecord | null, scoped = false): UploadedFile | null {
+/** A kept record's File, its workspace cut; null for none, and for one out of the request's workspace (workspace-scope.ts):
+ *  a scoped request reads, sends bytes to, deletes, lists and starts runs with its own workspace's files alone, another's
+ *  reading as missing. */
+export function fileSeen(record: FileRecord | null): UploadedFile | null {
   if (!record) return null;
   const { workspace, ...file } = record;
-  return scoped && outOfScope(workspace ?? null) ? null : file;
+  return outOfScope(workspace ?? null) ? null : file;
 }
 
 /** Why `path` is not the contract's FilePathString (relative, `/` between segments, no empty segment and none that starts
@@ -367,7 +368,7 @@ export class Uploads {
 
   /** A run's `file_ids`: each a file that is ready, none twice, at most MAX_FILES_PER_RUN, or 422 at `file_ids`. */
   async readyFiles(ids: readonly unknown[]): Promise<UploadedFile[]> {
-    return readyFilesOf(ids, async (id) => fileSeen(await this.kept(id), true), (path) => this.problemOf(path));
+    return readyFilesOf(ids, async (id) => fileSeen(await this.kept(id)), (path) => this.problemOf(path));
   }
 
   /** Copies `files` into the run's `inputs/` through its Workspace, each at its `path` with its folders, in order, before
