@@ -9,8 +9,9 @@
 // starts from the learning as it is then, and only a run started once that turn's job ended waits on its round. A run
 // queued, parked on a person, or still at its job is none: a new run never waits on a person or on a job.
 import { readLaunchBody } from "./run-launch.js";
-import { journalEntries } from "./runner/journal-reader.js";
+import { newestRootEntryOf } from "./runner/journal-reader.js";
 import { keptEndOf } from "./runner/feedback-round.js";
+import { KINDS } from "./runner/journal-kinds.js";
 import type { Command, RunRow, Store } from "./store/index.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
@@ -20,12 +21,14 @@ const OPEN_ROUNDS_PAGES = 10;
 
 /** Whether run `row`'s learning round is going: running (never queued, parked or ended) and looking back after its job's
  *  end (its end-of-run learning step: keptEndOf), whatever person's message waits untaken meanwhile, never while a
- *  follow-up's turn runs. Its root entries only (no tasks, no submissions); its command rows `commands` when the caller
- *  read them already, else read here. */
+ *  follow-up's turn runs. Of its journal only the newest root entry that is a job's end kept or a run's end, all that
+ *  keptEndOf reads: a run that worked long costs this read no more than one that worked a little, though it runs for
+ *  every waiting claim (runner/learning-reseed.ts) and every steered running run at a run's start. Its command rows
+ *  `commands` when the caller read them already, else read here. */
 export async function roundOpen(store: Pick<Store, "readJournal" | "commands">, row: RunRow, commands?: readonly Command[]): Promise<boolean> {
   if (row.state !== "running") return false;
-  const entries = await journalEntries(store.readJournal(row.id), BACKGROUND_CONTEXT);
-  return keptEndOf(entries, commands ?? (await store.commands(row.id, 0))) !== undefined;
+  const newest = await newestRootEntryOf(store.readJournal(row.id), [KINDS.jobEnd, KINDS.end], BACKGROUND_CONTEXT);
+  return keptEndOf(newest ? [newest] : [], commands ?? (await store.commands(row.id, 0))) !== undefined;
 }
 
 /** The agent's runs on the default disk that hold a steer, learn from a seed (a learning start that is no `use`) and
