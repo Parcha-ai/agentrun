@@ -103,6 +103,29 @@ async function until(done, what) {
   }
 }
 
+// A server with a public address (AGENTRUN_PUBLIC_URL), a placeholder one too, may be opened from another machine, so it
+// never starts the CLI's sign-in, which opens a browser on its own machine: the view says so, naming the address, and so
+// does a start it refuses, in the same words.
+test("a server with a public address never starts the CLI's sign-in itself, and says why in words that name the address and what to do", { timeout: 120_000 }, async (t) => {
+  const fake = await fakeCli(t);
+  withEnv(t, { PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}` }, MODEL_VARS);
+  const PUBLIC = "https://agentrun.example.test";
+  const { api } = await serve(t, { faux: undefined, harnesses: false, runner: false, publicUrl: PUBLIC });
+  const view = await api("GET", "/settings/claude-login");
+  assert.equal(view.status, 200, JSON.stringify(view.body));
+  assert.equal(view.body.can_start, false);
+  assert.match(view.body.start_off ?? "", /^In-browser sign-in is off because AGENTRUN_PUBLIC_URL is set to https:\/\/agentrun\.example\.test\b/);
+  assert.match(view.body.start_off, /run the command shown in a terminal on this machine/);
+  assert.match(view.body.start_off, /unset AGENTRUN_PUBLIC_URL and restart the server/);
+  const on = await api("PUT", "/settings/claude-login", { only_me: true });
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.equal(on.body.start_off, view.body.start_off, "the view after Turn on says it too");
+  const started = await api("POST", "/settings/claude-login/login");
+  assert.equal(started.status, 403, JSON.stringify(started.body));
+  assert.equal(started.body.error.message, view.body.start_off, "a start it refuses says the same");
+  assert.equal(fake.calls().filter((call) => call.argv.startsWith("auth login")).length, 0, "no sign-in started");
+});
+
 test("Claude Code's login on this machine: turned on with the owner's word, its status asked of the CLI alone, the CLI's own sign-in started here, turned off", { timeout: 180_000 }, async (t) => {
   // No pinned CLI here (claude-agent installs on first use), so the server asks the `claude` on PATH: the fake. A Claude
   // token a person may set in their own server env is never passed on.
@@ -118,6 +141,7 @@ test("Claude Code's login on this machine: turned on with the owner's word, its 
   assert.equal(before.body.state, "off");
   assert.equal(before.body.place, "agentrun");
   assert.equal(before.body.can_start, true, "a server on loopback with no public address starts the sign-in on its own machine");
+  assert.equal(before.body.start_off, undefined, "and says nothing of a sign-in that is off");
   assert.match(before.body.command, new RegExp(`CLAUDE_SECURESTORAGE_CONFIG_DIR=${login.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} .* auth login$`));
 
   // The owner's word that they alone run agents here, and a place the mode knows.
