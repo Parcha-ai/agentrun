@@ -61,7 +61,7 @@ import type { McpPin } from "../mcp-gateway.js";
 import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
-import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset, STOP_RESTARTS, stoppedRecord } from "../learn/compile.js";
+import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset, STOP_RESTARTS, stoppedRecord, stopsOf } from "../learn/compile.js";
 import { answerAt, answerValue, type CheckBar, type CheckDisagreement, type CheckKnown, type CheckRecord, type CheckTurns, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedGrade, comparedOf, gradesOf, knownAnswerText, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf, valueAtPath } from "../learn/promote.js";
 import { check as checkFields, type CheckInput, type CheckTally, type FieldAnswers, jointSaid, KNOWN, tallyOf } from "../learn/field-check.js";
 import { sendCommand } from "./commands.js";
@@ -793,10 +793,12 @@ export const heldOnGiveBacks = (check: CheckRecord | undefined): boolean => (che
 /** Which attempt a revision compile of `held` is when its draft fails its checks (runner/learning-end.ts
  *  recordDraftFailed): 2, the recompile, for any hold but a connected agent's on give-backs, which spends none: its
  *  check's own attempt, until a revise of it has failed once already (the workflow's newest record that failed draft).
- *  A stopped hold is revised only on its restart (learning-end.ts compileAskOf), a first compile again: 1, until a revise
- *  of that restart has failed once already, then 2 (it stops again). */
+ *  A stopped workflow is revised only on its restart (learning-end.ts compileAskOf), a first compile again: 1, until a
+ *  revise of that restart has failed once already, then 2 (it stops again). Stopped by `held` itself (a recompile's
+ *  check), or by the workflow's newest record (learn/compile.ts stopsOf): a recompile's failed draft stops it under that
+ *  run's own digest, `held` still the attempt-1 hold it revised. */
 export function reviseAttemptOf(records: readonly PromotionRecord[], held: { readonly workflow: string; readonly decided?: string; readonly check?: CheckRecord; readonly audit?: { readonly stopped?: true } }): 1 | 2 {
-  if (stoppedRecord({ decided: "hold", ...held } as PromotionRecord)) return newCompileAttempt(records.filter((one) => one.workflow === held.workflow)) === 2 ? 2 : 1;
+  if (stoppedRecord({ decided: "hold", ...held } as PromotionRecord) || stopsOf(records).has(held.workflow)) return newCompileAttempt(records.filter((one) => one.workflow === held.workflow)) === 2 ? 2 : 1;
   if (!held.check || !heldOnGiveBacks(held.check)) return 2;
   return newCompileAttempt(records.filter((one) => one.workflow === held.workflow)) === 2 ? 2 : held.check.attempt;
 }
