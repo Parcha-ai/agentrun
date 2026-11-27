@@ -373,7 +373,7 @@ const observedStops = (createLoop, stopped) => (deps) => {
   });
 };
 
-test("pi: a close whose shutdown seals the journal while a claim's open is still committing (its reopen's hold under way) still has the release cut, its charge booked and the cut recorded; the next claim resumes the turn, each request billed once", { timeout: 180_000 }, async (t) => {
+test("pi: a close whose shutdown seals the journal while a claim's open is still committing (its reopen's hold under way) still has the release cut, its charge booked and the cut recorded; the stopped claim's recovery sends no model request, and the next claim resumes the turn, each request billed once", { timeout: 180_000 }, async (t) => {
   // runner-a's close is cut, as above. runner-b's claim reopens the session: its owed hold is held at the store, past the
   // loop's gate, while runner-b's close stops its loop for the shutdown (the stop seals the journal at once). The claim's
   // open goes on once the hold lands, its next commit made after the seal; the release still runs, is cut, and books.
@@ -452,20 +452,19 @@ test("pi: a close whose shutdown seals the journal while a claim's open is still
   assert.equal(modelLedger(wholeRecords).total, PRICE * 2, `the uninterrupted run: two requests: ${JSON.stringify(modelLedger(wholeRecords))}`);
   assert.equal(ledger.total, modelLedger(wholeRecords).total, `the run's model spend reads as the uninterrupted run's: ${shown}`);
 
-  // What runner-b's stop cut: the request pi's recovery sent once the stop had closed the session's model proxy. It never
-  // reached the model: no request started for it, none booked, its message priced at $0.
+  // runner-b's stop leaves the turn to the next claim: once its loop is stopped, no recovery of its claim sends a model
+  // request (the release's drain runs pi's tasks, the turn's recovery among them), so nothing of the turn fails on the
+  // closed session: no answer of the model written in runner-b's claim, no error answer on the run, no failed request on
+  // its timeline. runner-c resumes the turn.
+  assert.deepEqual(seen.flat().filter((kind) => kind === "pi.assistant"), [], `runner-b's claim wrote no answer of the model: ${JSON.stringify(seen)}`);
   const failed = records.entries.filter((entry) => entry.kind === "pi.assistant" && entry.model?.[0]?.stopReason === "error");
-  assert.equal(failed.length, 1, shown);
-  assert.match(failed[0].model[0].errorMessage, /^Connection error\.: connect ECONNREFUSED /, JSON.stringify(failed[0].model[0]));
-  assert.equal(failed[0].model[0].usage.cost.total, 0, "its message priced at $0");
+  assert.deepEqual(failed.map((entry) => entry.model[0].errorMessage), [], `no request of the run failed: ${shown}`);
+  const errors = rows.filter((row) => row.kind === "error").map((row) => row.summary);
+  assert.deepEqual(errors, [], `the run's timeline shows no failed request: ${shown}`);
+  assert.deepEqual(wholeRows.filter((row) => row.kind === "error"), [], "nor does the uninterrupted run's");
   const started = records.entries.filter((entry) => entry.kind === "agentrun.request_started");
   assert.equal(started.length, requests.length, `a request started for each the model was sent, and no other: ${JSON.stringify({ started: started.length, sent: requests.length })}`);
   assert.equal(ledger.requests, requests.length, `a request booked for each the model was sent, and no other: ${shown}`);
-  // The run's timeline shows it as one failed request, at no cost; the uninterrupted run shows none.
-  const errors = rows.filter((row) => row.kind === "error").map((row) => row.summary);
-  assert.equal(errors.length, 1, shown);
-  assert.match(errors[0], /^Model request failed: Connection error\.: connect ECONNREFUSED 127\.0\.0\.1:\d+$/, shown);
-  assert.deepEqual(wholeRows.filter((row) => row.kind === "error"), [], "the uninterrupted run's timeline shows no failed request");
   const usage = (all) => all.findLast((row) => row.kind === "usage")?.summary;
   // Its usage row counts the requests the model was sent: three (the two answered and runner-a's cut), the uninterrupted
   // run's two.

@@ -32,7 +32,7 @@ LaunchAgent on macOS or a systemd user unit on Linux, which starts again at logi
 to the same file. With no terminal to ask on, or its output captured (CI, a script, an agent's shell), it installs the
 service without asking; `--service` and `--no-service` choose without the question. Where there is no service manager (a
 container, say), it starts AgentRun in the background. In the background it runs until the machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGKILL to the launcher and its server
-after 45 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
+after 60 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
 installs only, `--version V` installs another version, `--node-version V` installs that Node.js (at least the floor),
 and `--service` fails where there is no service manager. Running it again upgrades, or installs an older version, and
 first stops the AgentRun it started in the background itself, whatever version that is. An older version does not start on

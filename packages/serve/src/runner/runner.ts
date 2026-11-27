@@ -62,7 +62,7 @@ export const RUNNER_STOP_MARGIN_MS = 5_000;
 export const runnerStopBy = (closedAt: number, stopFrom: number, leaseMs: number, stopMarginMs: number, cleanupMs?: number): number => Math.max(stopFrom + leaseMs - stopMarginMs, closedAt + releaseBoundMs(cleanupMs) + stopMarginMs);
 /** The longest close() takes with the default lease and cleanup bound (Runner.close, runnerStopBy): its drain and the
  *  lease less its margin, or the providers' cleanup bound and its margins, whichever is longer (40 s with the default
- *  6 s drain). A stop deadline that cuts the process sooner cuts a run's end or release short, and the run waits out its
+ *  6 s drain). A claim in flight at the close is waited for inside them, never in a window of its own. A stop deadline that cuts the process sooner cuts a run's end or release short, and the run waits out its
  *  lease before another runner resumes it. */
 export const runnerCloseBoundMs = (drainMs: number): number => runnerStopBy(0, drainMs, RUNNER_LEASE_MS, RUNNER_STOP_MARGIN_MS);
 /** How long into its close a runner goes on serving what its caller stops when told (Runner.close's loopsStopping: a
@@ -1559,18 +1559,26 @@ export function startRunner(options: RunnerOptions): Runner {
       };
       const servedTimer = setTimeout(() => tell(Date.now() + leaseMs - stopMarginMs), RUNNER_RENEWALS_SERVED_MS);
       clearTimeout(pollTimer);
-      // A claim the poll already has in flight lands first: one it makes now is given back at once (claimMore, closed),
-      // all before close resolves, so nothing is claimed by this runner after it (a raise sent then wakes no claim here).
+      // `what`, or the time `at` (ms since the epoch), whichever comes first; at once when there is nothing to wait for.
+      const until = async (at: number, what: Promise<unknown> | undefined): Promise<void> => {
+        if (!what) return;
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([what, new Promise<void>((resolve) => (timer = setTimeout(resolve, Math.max(0, at - Date.now()))))]);
+        clearTimeout(timer);
+      };
+      // A claim the poll has in flight lands while the runner closes: one it makes now is given back at once (claimMore,
+      // closed), and close waits for it before it resolves, so nothing is claimed by this runner after it (a raise sent
+      // then wakes no claim here). A claim recovery under way (re-reads after an Unanswered commit) is bound by the close's
+      // own window (claimBy: the lease less its margin from the close's start), past which the lease settles what the
+      // recovery had not. That wait runs beside the drain and the loops' stop, never ahead of them: runnerCloseBoundMs
+      // counts the drain and one window, and a wait of its own before the drain would add a window to the close.
       draining = drainMs > 0;
-      // A claim recovery under way (re-reads after an Unanswered commit) is bound by the close's own window: past it the
-      // close goes on to stop the loops, and the lease settles what the recovery had not.
-      recoverBy = Date.now() + leaseMs - stopMarginMs;
-      let recoverTimer: NodeJS.Timeout | undefined;
-      await Promise.race([claiming, new Promise<void>((resolve) => (recoverTimer = setTimeout(resolve, Math.max(0, recoverBy - Date.now()))))]);
-      clearTimeout(recoverTimer);
+      const claimBy = closedAt + leaseMs - stopMarginMs;
+      recoverBy = claimBy;
       // The drain: each held run goes on to its own end (an answer, a park, a person's stop: their commands still reach
-      // them), its claims renewed, for up to drainMs; a turn in flight then finishes, never cut and paid again on the
-      // resume. Whatever is still going at the bound is stopped below, for a shutdown, where it can resume.
+      // them), its claims renewed, for up to drainMs from the close's start; a turn in flight then finishes, never cut
+      // and paid again on the resume. Whatever is still going at the bound is stopped below, for a shutdown, where it can
+      // resume.
       const going = [...runs.values()].filter((held) => !held.fence.lost && !held.ending);
       const drainFrom = Date.now();
       if (draining && going.length > 0) {
@@ -1616,11 +1624,8 @@ export function startRunner(options: RunnerOptions): Runner {
       // than RUNNER_RENEWALS_SERVED_MS, so that wait ends inside RUNNER_RENEWAL_BOUND_MS.
       tell(Date.now() + leaseMs - stopMarginMs);
       // Claims are renewed while the loops stop; a loop that never stops is given up at the end of the window the read
-      // above began (runnerStopBy).
-      let timeout: NodeJS.Timeout | undefined;
-      const late = new Promise<void>((resolve) => (timeout = setTimeout(resolve, Math.max(0, stopBy - Date.now()))));
-      await Promise.race([Promise.all([...live.map((held) => held.done), ...endings]), late]);
-      clearTimeout(timeout);
+      // above began (runnerStopBy). A claim still in flight is waited for up to claimBy, inside that window.
+      await until(stopBy, Promise.all([...live.map((held) => held.done), ...endings, until(claimBy, claiming)]));
       // A lost create's recovery in this process (one under way at the close's start, or one a create the stop cut began)
       // ends before the close does, so the browser it finds is released before the process goes: each waited for to
       // its own bound from the close's start, or the drain, whichever is later, and its margin, within the window.
