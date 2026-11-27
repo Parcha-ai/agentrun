@@ -5,7 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { filesBody, packageOf } from "./deploy.mjs";
+import { filesBody } from "./deploy.mjs";
 
 /** The refusal of the cases `names` lists that the package in `dir` does not have (a case is a folder in its evals/), in
  *  the words the server uses (template-eval.ts readCases), or undefined: every one is there, or `dir` is no folder, which
@@ -61,9 +61,11 @@ function githubReach(env, hosts) {
   return test ? { api: test, hosts: [new URL(test).host], anonymous } : { api: "https://api.github.com", hosts, anonymous };
 }
 
-/** The package `args[0]` names read from GitHub here, by the server's own reader (its `template-source` export), at the
- *  commit its ref is at now, and uploaded ({files}, as `agentrun deploy` sends a folder's) with --dry-run passed on: for a
- *  server that takes uploads alone. An upload keeps no publisher, so without --dry-run it needs --trust, asked before
+/** The package `args[0]` names read from GitHub here, by the server's own reader (its `template-source` export, with its
+ *  import's limits), at the commit its ref is at now, and uploaded ({files}, encoded as `agentrun deploy` sends a
+ *  folder's) with --dry-run passed on: for a server that takes uploads alone. The upload is the folder whole, as the
+ *  server's own import of the source keeps it, so the server checks the same package and refuses what that import
+ *  refuses; only a hidden file or folder is not sent, as an upload never keeps one. An upload keeps no publisher, so without --dry-run it needs --trust, asked before
  *  anything is read. `{ response, bytes, code, read }`, `read` the source and the commit uploaded. */
 async function uploadFromGithub({ values, args, env, io, cli, client }) {
   if (!values.trust && !values["dry-run"]) throw cli.fail(1, `This server takes uploaded packages only and keeps no publisher's trust, so this command reads ${args[0]} from GitHub itself and uploads its files. Read it first (--dry-run), then run this again with --trust.`);
@@ -86,7 +88,8 @@ async function uploadFromGithub({ values, args, env, io, cli, client }) {
     throw cli.fail(1, `${args[0]} could not be read from GitHub, so nothing was uploaded: ${error.message}`);
   }
   io.stderr.write(`This server takes uploaded packages only, so this command read ${source.id} from GitHub itself at ${sha} and uploads its files.\n`);
-  const body = JSON.stringify({ files: filesBody(await packageOf(files, cli.fail)), ...(values["dry-run"] ? { dry_run: true } : {}) });
+  const sent = new Map([...files].filter(([path]) => !path.split("/").some((part) => part.startsWith("."))));
+  const body = JSON.stringify({ files: filesBody(sent), ...(values["dry-run"] ? { dry_run: true } : {}) });
   return { ...(await cli.request(client, { method: "POST", path: "/templates/import", body, type: "application/json" })), read: { source, sha } };
 }
 

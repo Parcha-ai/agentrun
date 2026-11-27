@@ -114,17 +114,6 @@ async function readFolder(dir, fail) {
   return { files, hidden: hidden.sort() };
 }
 
-/** What of `files` (every file of a package's folder by path, as GitHub's tarball holds it) its package is, as readFolder
- *  takes it from a folder: agent.md, the skills/, rules/ and evals/ trees and the answer's schema file the manifest names
- *  at the root, no hidden file or folder. No agent.md leaves the rest for the target to refuse, in its own words. */
-export async function packageOf(files, fail) {
-  const schema = files.has(MANIFEST) ? rootSchemaOf(files.get(MANIFEST), await serverManifest(fail)) : undefined;
-  return new Map([...files].filter(([path]) => {
-    const parts = path.split("/");
-    return !parts.some((part) => part.startsWith(".")) && (path === MANIFEST || path === schema || (parts.length > 1 && TREES.includes(parts[0])));
-  }));
-}
-
 /** The files as an upload sends them: text as it is, unless JSON's escapes make it longer than base64 would (a file of
  *  newlines or control characters), and any other bytes base64. So the body stays within the base64 size the server's
  *  upload limit allows for. */
