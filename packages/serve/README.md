@@ -4100,11 +4100,14 @@ holds the workspace's rows alone; bundled template packages are every workspace'
 agent (made or applied), an imported package (an import whose name another workspace holds is `409 name_taken`). A run
 is its agent's workspace's, so a run a request with no header starts on that agent is the workspace's too. A run's
 `file_ids` naming a file out of the workspace read as no file. An `Idempotency-Key` is the workspace's own: the same key
-in another workspace starts afresh.
+in another workspace starts afresh. `GET /capabilities` says so in `features.workspaces`: the header's name, `enforced`
+(true on an API-only server alone) and the operations a scoped request is served, so a proxy can check before it forwards.
 
 `agentrun-serve workspace-backfill FILE [--apply]` puts agents made before the backend sent the header in a workspace:
 FILE is `{"<agent id>": "<workspace>"}`. It sets an agent with none, refuses one in another workspace and keeps it, and
-without `--apply` writes nothing and prints what it would do.
+without `--apply` writes nothing and prints what it would do. On SQLite it adds the workspace columns first when a server
+of this build has not yet opened the store. A store behind this build (on Postgres, below migration 0033) is refused with
+exit 2 and never migrated: start a server of this build once, then run it again.
 
 ### Share host
 

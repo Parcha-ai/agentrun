@@ -4827,6 +4827,16 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "/settings/webhook: one URL each of `events` is POSTed to, signed by the Standard Webhooks spec; its secret kept `sealed` under the seal key the server was handed, `unavailable` with none, when no webhook is set.",
       "x-agentrun-serve": "webhook/1",
     },
+    workspaces: {
+      type: "object", additionalProperties: false, required: ["header", "enforced", "routes"],
+      properties: {
+        header: { const: "AgentRun-Workspace", description: "The request header that names a request's workspace: an opaque name, 1 to 128 letters, digits, `:`, `.`, `_` or `-`, sent with a server token." },
+        enforced: { type: "boolean", description: "Whether this server keeps workspaces apart: true on an API-only server (AGENTRUN_API_ONLY=1), where a request that names a workspace reaches that workspace's agents, runs and imported template packages alone, another workspace's reading as missing (404), and is refused any operation outside `routes` (403 not_scoped). False on any other server, which refuses the header (400). A proxy that forwards one tenant's requests checks this first." },
+        routes: { type: "array", items: { type: "string" }, description: "The operationIds a request in a workspace is served, sorted." },
+      },
+      description: "Workspaces: how a backend in front of this server keeps each of its tenants to its own rows.",
+      "x-agentrun-serve": "workspaces/1",
+    },
     api_keys: {
       type: "object", additionalProperties: false, required: ["routes", "limit", "at_rest"],
       properties: { routes: { type: "boolean", description: "Whether this server serves the keys' routes: false on an API-only server, which has no owner to make one and takes no key." }, limit: { type: "integer", minimum: 1, description: "The most keys the server keeps at once." }, at_rest: { const: "hashed" } },

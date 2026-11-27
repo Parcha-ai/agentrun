@@ -35,7 +35,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
-import { API_ONLY_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
+import { API_ONLY_ROUTES, WORKSPACE_ROUTES, apiOnlyMcpSave, apiOnlyRefusal, apiOnlyTriggerEdit, apiOnlyTriggerSkipped, apiOnlyTurnsOn, servedApiOnly, servedScoped } from "./api-only.js";
 import { inWorkspace, outOfScope, scopedSlot, slotPath, WORKSPACE, WORKSPACE_HEADER, WORKSPACE_NAME, WORKSPACE_TOKENS_ENV, workspaceNow, workspaceTokensFrom } from "./workspace-scope.js";
 import { API_ONLY_ENV, API_ONLY_MCP_ORIGINS_ENV, apiOnlyMcpOriginsFrom, RUN_KEYS_ENV } from "./env-switch.js";
 import { composioOutsideNamespaceServers, holdApiOnlyMcpOrigins, offApiOnlyMcpServers } from "./mcp-api-only-origins.js";
@@ -1191,6 +1191,10 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: true, read: true, range: true, during_run: true },
+      /** Whether a request's workspace keeps it to its own agents, runs and imported packages (workspace-scope.ts): the
+       *  header that names it, `enforced` on an API-only server alone (set at the answer, as api_keys.routes is), and the
+       *  operations a scoped request is served (WORKSPACE_ROUTES). */
+      workspaces: { header: WORKSPACE_NAME, enforced: false, routes: [...WORKSPACE_ROUTES].sort() },
       quotes: false,
       usage: { basis: "estimate", meters: ["tokens", "tools", "browser_time", "learning"] },
       efforts: [...EFFORTS],
@@ -4769,7 +4773,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // factory's part is built first, once: the page shows that build whether or not its write landed (a run that moved
     // again meanwhile stays behind, for the lister or the next page), so a busy run costs one build a page, never the
     // several a status filter makes below (listNow), which this page has no need of.
-    if (url.searchParams.has("scope")) return factoryRunsPage(store, url, filter, async (rows) => {
+    if (url.searchParams.has("scope")) return factoryRunsPage(store, url, { ...filter, ...scopeOf() }, async (rows) => {
       const secrets = serverSecrets();
       const now = vd.now ?? Date.now;
       const ids = rows.map((row) => row.id);
@@ -5281,7 +5285,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (req.headers.authorization !== undefined && !byOwnerSession(req) && !bearer(req.headers.authorization, req)) authFailed(`/v2${path}`, "wrong_token");
       // tools[].held: the server's keyless holds on each web tool now (web-run.ts withHeld), never cached.
       // features.api_keys.routes: false on an API-only server, which serves none of the keys' routes and reads no key.
-      return send(res, 200, { ...answer, tools: withHeld(answer.tools), ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly } } });
+      return send(res, 200, { ...answer, tools: withHeld(answer.tools), ...storeSchema, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) }, claude_login: loginServed, api_keys: { ...answer.features.api_keys, routes: !options.apiOnly }, workspaces: { ...answer.features.workspaces, enforced: options.apiOnly === true } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, ownerCookieName(req)));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'

@@ -1216,8 +1216,9 @@ export interface Runs {
    *  import's read of the sessions it holds, never a reader of a run's content.
    *  `scope` selects, before the limit, the runs the Agent Factory shows, never an imported one: `active`, every
    *  execution still going (a resumable agentic stop and a built-in learning run included); `review`, unarchived ended
-   *  escalations and failures. `before` is an exclusive keyset boundary in descending (startedAt, id) order. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean; scope?: "active" | "review"; before?: { startedAt: number; id: string } }): Promise<RunRow[]>;
+   *  escalations and failures. `before` is an exclusive keyset boundary in descending (startedAt, id) order. `workspace`:
+   *  only the runs in it (Runs.workspace: the run's own, else its agent's). */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean; scope?: "active" | "review"; before?: { startedAt: number; id: string }; workspace?: string }): Promise<RunRow[]>;
   /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
    *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
    *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:
@@ -1886,9 +1887,11 @@ export interface ImportedTemplates {
   list(): Promise<ImportedTemplateRow[]>;
   /** Every imported package's id, sorted, with none of its files read. */
   ids(): Promise<string[]>;
-  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it). `workspace`: the
-   *  workspace a scoped request imported it in (workspace-scope.ts), written with it; absent, the row's stays as it was. */
-  put(row: Omit<ImportedTemplateRow, "importedAt">, workspace?: string): Promise<void>;
+  /** Keeps the package under its id, in place of the one there (a re-import at a new SHA replaces it): true. `workspace`:
+   *  the workspace a scoped request imported it in (workspace-scope.ts), written with it, and the one there is replaced
+   *  only while it is that workspace's: one of another workspace or none is kept, nothing is written, and the answer is
+   *  false. Absent, the row is written whatever its workspace, which stays as it was. */
+  put(row: Omit<ImportedTemplateRow, "importedAt">, workspace?: string): Promise<boolean>;
   /** Every imported package's workspace by id (null: none), with none of its files read. */
   workspaces(): Promise<ReadonlyMap<string, string | null>>;
   /** Removes the package: false when none had that id. */

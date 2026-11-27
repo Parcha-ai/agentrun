@@ -3,14 +3,17 @@
 // Each agent with no workspace is put in the one named; one already in it is left; one in another is refused, never
 // moved. Without --apply it writes nothing and prints what it would do. A run with no workspace of its own reads as its
 // agent's, so the agent's runs follow it. The store is the one the server opens (store/open.ts), opened as a runner opens
-// it: no owner lock, so a running server keeps serving. Exit 0 when every agent is set or already there, 1 when any is
-// refused or missing (with --apply, the others are set), 2 for bad arguments or a file that is not that JSON.
+// it: no owner lock, so a running server keeps serving. A SQLite store an earlier build of this version made gets the
+// workspace columns first, as the server's open adds them; a store behind this build (on Postgres, one below the
+// workspace migration) is refused, never migrated here. Exit 0 when every agent is set or already there, 1 when any is
+// refused or missing (with --apply, the others are set), 2 for bad arguments, a file that is not that JSON, or a store
+// behind this build.
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { openStore, type Store, storeTarget } from "./store/index.js";
-import { STORE_FILE } from "./store/sqlite/store.js";
+import { openStore, type Store, StoreAwaitsServer, storeTarget } from "./store/index.js";
+import { prepareWorkspaceColumns, STORE_FILE } from "./store/sqlite/store.js";
 import { WORKSPACE } from "./workspace-scope.js";
 
 /** What the backfill does with one agent: `set` (put in the workspace, or would be without --apply), `already` (in it),
@@ -70,11 +73,25 @@ export async function workspaceBackfillMain(argv: readonly string[], dataDefault
     return 2;
   }
   const dir = values.data ?? dataDefault;
-  if (storeTarget(dir).kind === "sqlite" && !existsSync(join(dir, STORE_FILE))) {
-    io.err(`agentrun-serve workspace-backfill: there is no store in ${dir}.`);
-    return 1;
+  const target = storeTarget(dir);
+  if (target.kind === "sqlite") {
+    if (!existsSync(join(dir, STORE_FILE))) {
+      io.err(`agentrun-serve workspace-backfill: there is no store in ${dir}.`);
+      return 1;
+    }
+    // A store an earlier build of this version made has no workspace columns, and a runner's open adds none: added here
+    // as the server's open adds them.
+    await prepareWorkspaceColumns(join(dir, STORE_FILE));
   }
-  const store = await openStore({ dataDir: dir, role: "runner" });
+  let store: Store;
+  try {
+    store = await openStore({ dataDir: dir, role: "runner" });
+  } catch (error) {
+    // A store behind this build (on Postgres, one below the workspace migration, 0033) is the server's to migrate.
+    if (!(error instanceof StoreAwaitsServer)) throw error;
+    io.err(`agentrun-serve workspace-backfill: the store is behind this build, and this command never migrates it: ${error.message} Start a server of this build once${target.kind === "postgres" ? " (it applies every migration, the workspace columns' 0033 among them)" : ""}, then run this again. Nothing was written.`);
+    return 2;
+  }
   try {
     const apply = values.apply === true;
     const outcomes = await backfillWorkspaces(store, wanted, apply);

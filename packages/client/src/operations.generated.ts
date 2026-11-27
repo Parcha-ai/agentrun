@@ -1399,6 +1399,11 @@ export type Features = {
     signing: "standard-webhooks/v1";
     at_rest: "sealed";
   };
+  workspaces?: {
+    header: "AgentRun-Workspace";
+    enforced: boolean;
+    routes: Array<string>;
+  };
   api_keys?: {
     routes: boolean;
     limit: number;

@@ -184,8 +184,10 @@ bad arguments or a run the store does not hold.
 \`agentrun-serve workspace-backfill FILE\` puts agents made before an API-only server's backend sent the AgentRun-Workspace
 header in a workspace: FILE is JSON, {"<agent id>": "<workspace>"}. An agent with none is set; one in another workspace is
 refused and kept as it is. It writes nothing without --apply, and prints what it would do. The store is the server's
-(AGENTRUN_STORE_URL's Postgres, else SQLite in --data), the server running or not. Exit 0 when every agent is set or
-already there, 1 when any is refused or missing, 2 for bad arguments or a file that is not that JSON.
+(AGENTRUN_STORE_URL's Postgres, else SQLite in --data), the server running or not; on SQLite it adds the workspace
+columns first when no server of this build has opened the store yet. Exit 0 when every agent is set or already there, 1
+when any is refused or missing, 2 for bad arguments, a file that is not that JSON, or a store behind this build (on
+Postgres, below migration 0033), which it never migrates: start a server of this build once.
 
 \`agentrun-serve eval-template DIR\` runs a template package's eval cases (all, or each --case) as real runs of its agent
 and grades each run with the case's graders (templates/README.md, "Running the evals"). By default on a server of its

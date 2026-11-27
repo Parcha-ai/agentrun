@@ -641,13 +641,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       const ledgerNow = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('learning_ledger')")).map((column) => column.name));
       const ledgerMissing = Object.entries(LEARNING_LEDGER_ADDED).filter(([column]) => !ledgerNow.has(column)).map(([, sql]) => ({ sql }));
       if (ledgerMissing.length > 0) await connection.write(ledgerMissing, { full: true });
-      // An agents, runs or imported_templates table an earlier build of this version made keeps no workspace (schema.ts
-      // WORKSPACE_ADDED): each added where missing, every row unscoped, then their indexes.
-      const workspaceMissing: { sql: string }[] = [];
-      for (const [table, sql] of Object.entries(WORKSPACE_ADDED)) {
-        if (!(await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).some((column) => column.name === "workspace")) workspaceMissing.push({ sql });
-      }
-      await connection.write([...workspaceMissing, ...WORKSPACE_INDEXES.map((sql) => ({ sql }))], { full: true });
+      await addWorkspaceColumns(connection);
       await backfillNativeCommandOwners(connection);
       // Here `found` is SCHEMA_VERSION or a version in the window (any other was refused above): each step runs for the
       // versions before the one that first kept what it adds.
@@ -682,6 +676,30 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     return { version, runnerFloor: version, known: SCHEMA_VERSION };
   };
   return Object.assign(store, { schemaState });
+}
+
+/** An agents, runs or imported_templates table an earlier build of this version made keeps no workspace (schema.ts
+ *  WORKSPACE_ADDED): each added where missing, every row unscoped, then their indexes. The server's open runs it, and so
+ *  does prepareWorkspaceColumns. */
+async function addWorkspaceColumns(connection: Connection): Promise<void> {
+  const missing: { sql: string }[] = [];
+  for (const [table, sql] of Object.entries(WORKSPACE_ADDED)) {
+    if (!(await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).some((column) => column.name === "workspace")) missing.push({ sql });
+  }
+  await connection.write([...missing, ...WORKSPACE_INDEXES.map((sql) => ({ sql }))], { full: true });
+}
+
+/** The workspace columns of the store at `file`, added as the server's open adds them (addWorkspaceColumns), for a
+ *  command that opens the store as a runner does, which adds none (workspace-backfill.ts). Only on a store at this
+ *  build's version: any other is left as it is, for the runner's open to refuse in its words. Additive and idempotent,
+ *  with no owner lock: on a store a server of this build has opened, nothing is added. */
+export async function prepareWorkspaceColumns(file: string): Promise<void> {
+  const connection = await Connection.open(file);
+  try {
+    if ((await versionOf(connection)) === SCHEMA_VERSION) await addWorkspaceColumns(connection);
+  } finally {
+    await connection.close();
+  }
 }
 
 /** Every unrefused approve or deny after the first for one approval of a run, refused with why (the open above). */
@@ -1562,7 +1580,7 @@ class SqliteStore implements Store {
       projectCheckpoints: (filter) => readProjectCheckpoints(db, filter),
       learningStarts: (agentId) => readLearningStarts(db, agentId, NOT_A_LEARNING_RUN),
       seededBefore: (agentId, at) => readSeededBefore(db, agentId, at),
-      list: async ({ agentId, revisionId, state, archived, labels, disk, limit, purged = false, scope, before }) => {
+      list: async ({ agentId, revisionId, state, archived, labels, disk, limit, purged = false, scope, before, workspace }) => {
         // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
         // count, stat or notice names it. A purged run is a tombstone: only the readers that sum or count ask for it.
         // The Agent Factory's active scope alone lists a learning run: there it is an execution like any other. Its review
@@ -1571,6 +1589,8 @@ class SqliteStore implements Store {
         const params: SqliteValue[] = [];
         if (agentId !== undefined) (where.push("agent_id = ?"), params.push(agentId));
         if (revisionId !== undefined) (where.push("revision_id = ?"), params.push(revisionId));
+        // A run with no workspace of its own is its agent's (Runs.workspace), as the plain list reads it (listed, below).
+        if (workspace !== undefined) (where.push("COALESCE(runs.workspace, (SELECT agents.workspace FROM agents WHERE agents.id = runs.agent_id)) = ?"), params.push(workspace));
         if (state !== undefined) (where.push("state = ?"), params.push(state));
         if (archived !== undefined) where.push(`archived_at IS ${archived ? "NOT NULL" : "NULL"}`);
         // Each label, key and value bound as parameters (never spliced into a JSON path), all of them held.
@@ -2579,10 +2599,18 @@ class SqliteStore implements Store {
       })),
       ids: async () => (await db.all<{ id: string }>("SELECT id FROM imported_templates ORDER BY id")).map((row) => row.id),
       put: async ({ id, source, sha, publisher, files }, workspace) => {
-        await db.write([{
-          sql: "INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET source = excluded.source, sha = excluded.sha, publisher = excluded.publisher, files = excluded.files, imported_at = excluded.imported_at",
-          params: [id, source, sha, publisher, JSON.stringify(files), now()],
-        }, ...(workspace === undefined ? [] : [{ sql: "UPDATE imported_templates SET workspace = ? WHERE id = ?", params: [workspace, id] }])]);
+        const replace = "ON CONFLICT (id) DO UPDATE SET source = excluded.source, sha = excluded.sha, publisher = excluded.publisher, files = excluded.files, imported_at = excluded.imported_at";
+        if (workspace === undefined) {
+          await db.write([{ sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at) VALUES (?, ?, ?, ?, ?, ?) ${replace}`, params: [id, source, sha, publisher, JSON.stringify(files), now()] }]);
+          return true;
+        }
+        // In one statement: the row is made in the workspace, or replaced only while it is that workspace's, so of two
+        // imports of one name at once the later one writes nothing (and is refused), whatever each checked before.
+        const [result] = await db.write([{
+          sql: `INSERT INTO imported_templates (id, source, sha, publisher, files, imported_at, workspace) VALUES (?, ?, ?, ?, ?, ?, ?) ${replace} WHERE imported_templates.workspace = excluded.workspace`,
+          params: [id, source, sha, publisher, JSON.stringify(files), now(), workspace],
+        }]);
+        return (result?.changes ?? 0) === 1;
       },
       workspaces: async () => new Map((await db.all<{ id: string; workspace: string | null }>("SELECT id, workspace FROM imported_templates")).map((row) => [row.id, row.workspace])),
       remove: async (id) => {

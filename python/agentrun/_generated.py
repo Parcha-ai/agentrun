@@ -359,6 +359,7 @@ __all__ = [
     "FeaturesTriggersWebhook",
     "FeaturesUsage",
     "FeaturesWebhooks",
+    "FeaturesWorkspaces",
     "File",
     "FileCreate",
     "FilePathString",
@@ -8880,6 +8881,7 @@ class Features(_FeaturesRequired, total=False):
     mcp_client: FeaturesMcpClient
     tool_permissions: bool
     webhooks: FeaturesWebhooks
+    workspaces: FeaturesWorkspaces
     api_keys: FeaturesApiKeys
     slack: FeaturesSlack
     triggers: FeaturesTriggers
@@ -8978,6 +8980,12 @@ class FeaturesWebhooks(TypedDict):
     events: list[Literal["run.needs_input", "run.ended", "trigger.failed"]]
     signing: Literal["standard-webhooks/v1"]
     at_rest: Literal["sealed"]
+
+
+class FeaturesWorkspaces(TypedDict):
+    header: Literal["AgentRun-Workspace"]
+    enforced: bool
+    routes: list[str]
 
 
 class FeaturesApiKeys(TypedDict):
