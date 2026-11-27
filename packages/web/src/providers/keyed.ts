@@ -83,7 +83,16 @@ export async function paidSend(pay: Pay, fee: Fee, signal: AbortSignal | undefin
       return unsentAnswer(why);
     }
   });
-  if (unsent) throw unsent.error !== null && typeof unsent.error === "object" ? Object.assign(unsent.error, { unsent: true }) : unsent.error;
+  if (unsent) {
+    const { error } = unsent;
+    // Marked where it can be: a frozen or sealed error is thrown as it was, never replaced by the marking's own failure.
+    if (error !== null && typeof error === "object") {
+      try {
+        Object.assign(error, { unsent: true });
+      } catch {}
+    }
+    throw error;
+  }
   return answer;
 }
 

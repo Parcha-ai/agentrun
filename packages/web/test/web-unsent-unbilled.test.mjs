@@ -120,6 +120,14 @@ test("a keyed client's post: an unsent failure is rethrown as it was thrown, mar
   }
 });
 
+test("a keyed client's post: an unsent failure that cannot be marked (frozen) is rethrown as it was, still settled at $0", async () => {
+  const cap = capLike();
+  const thrown = Object.freeze(DNS());
+  const client = keyedClient({ who: "Exa", base: "https://api.example", headers: {}, feeOf: () => ({ name: "Exa's search", by: "exa", usd: 0.007, basis: "a price" }), timeoutMs: 1_000, refuseOn: [] }, async () => { throw thrown; }, cap.pay);
+  await assert.rejects(client.post("/search", {}), (error) => error === thrown);
+  assert.deepEqual(cap.settles, [["Exa's search", 0]]);
+});
+
 test("searchInTurn on a signal already stopped starts no backend, and answers a stopped turn", async () => {
   const asked = [];
   const backend = (name) => ({ name, ask: async () => (asked.push(name), { answer: { error: `${name} answered` } }) });
