@@ -91,6 +91,52 @@ describe("an archived agent offers Unarchive by name", () => {
     expect(host.textContent).not.toContain("Gambling check");
   });
 
+  // A deferred answer: what a test resolves when it chooses.
+  const later = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((r) => (resolve = r)); return { promise, resolve }; };
+  const unarchiveButton = (host: HTMLElement) => [...host.querySelectorAll("li button")].find((b) => b.textContent?.trim() === "Unarchive") as HTMLButtonElement;
+
+  it("an Archived list read that started before the Unarchive answer does not bring the card back", async () => {
+    const one = agentOf("gambling-check", "Gambling check", DECISION_STARTER, true);
+    const reads: { resolve: (page: { agents: Agent[]; next_cursor: null }) => void }[] = [];
+    const done = later<Agent>();
+    const v2 = {
+      listAgents: () => { const read = later<{ agents: Agent[]; next_cursor: null }>(); reads.push(read); return read.promise; },
+      unarchiveAgent: () => done.promise,
+    };
+    const host = await mount(createElement(AgentsPage, { v2: v2 as never, archived: true, go: () => {} }));
+    await act(async () => reads[0].resolve({ agents: [one], next_cursor: null }));
+    await settle();
+    await act(async () => { unarchiveButton(host).click(); });
+    // The window regains focus while the write is out: a read the server answers from before the write.
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    const stale = reads.at(-1)!;
+    await act(async () => done.resolve({ ...one, archived_at: null }));
+    await settle();
+    await act(async () => stale.resolve({ agents: [one], next_cursor: null }));
+    for (const read of reads.slice(reads.indexOf(stale) + 1)) await act(async () => read.resolve({ agents: [], next_cursor: null }));
+    await settle();
+    expect(host.textContent).not.toContain("Gambling check");
+  });
+
+  it("a person who moved to Active while Unarchive was out sees the restored agent there", async () => {
+    const one = agentOf("gambling-check", "Gambling check", DECISION_STARTER, true);
+    const restored = { ...one, archived_at: null };
+    const steps = agentOf("steps", "Steps", WORKFLOW_STARTER);
+    const done = later<Agent>();
+    const v2 = {
+      listAgents: async ({ archived: wants }: { archived?: boolean }) => ({ agents: wants ? [one] : [steps, restored], next_cursor: null }),
+      unarchiveAgent: () => done.promise,
+    };
+    const host = await mount(createElement(AgentsPage, { v2: v2 as never, archived: true, go: () => {} }));
+    await act(async () => { unarchiveButton(host).click(); });
+    act(() => root!.render(createElement(AgentsPage, { v2: v2 as never, archived: false, go: () => {} })));
+    await settle();
+    expect(host.textContent).toContain("Gambling check");
+    await act(async () => done.resolve(restored));
+    await settle();
+    expect(host.textContent, "the active list keeps the agent the write restored").toContain("Gambling check");
+  });
+
   it("not on an active agent's card", async () => {
     const v2 = { listAgents: async () => ({ agents: [agentOf("steps", "Steps", WORKFLOW_STARTER)], next_cursor: null }) };
     const host = await mount(createElement(AgentsPage, { v2: v2 as never, archived: false, go: () => {} }));
