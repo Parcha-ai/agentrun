@@ -269,6 +269,16 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
         if (refused) return { text: refused.deny, isError: true, refused: true };
       }
       if (live) ctx.live({ type: 'tool_start', name: tool.name, args, callId });
+      // Its result as the harness gets it (deliver): one that cannot be handed (its length not kept) halts the drive, as an
+      // effect's failure does, so the harness is never handed it.
+      const handed = async (whole: string, error?: true): Promise<{ text: string; truncated?: true }> => {
+        try {
+          return await deliver(callId, whole, nested, error);
+        } catch (err) {
+          ctx.halt?.(err);
+          throw err;
+        }
+      };
       let output: string | ToolOutput;
       try {
         output = await tool.execute(args, { signal: aborted, progress: () => {}, ctx, stepId: `${toolKey(callId)}#0`, nested: nestedIn(callId, aborted) });
@@ -277,12 +287,12 @@ export function toolBridge(ctx: DriveContext, tools: HostTool[], options: ToolBr
           ctx.halt?.(err);
           throw err;
         }
-        const { text, truncated } = await deliver(callId, err instanceof Error ? err.message : String(err), nested, true);
+        const { text, truncated } = await handed(err instanceof Error ? err.message : String(err), true);
         if (live) ctx.live({ type: 'tool_end', name: tool.name, callId, isError: true, result: text, ...(truncated ? { truncated } : {}) });
         return { text, isError: true, ...(truncated ? { truncated } : {}) };
       }
       const { text: whole, images, structured } = typeof output === 'object' && output !== null ? output : { text: String(output), images: undefined, structured: undefined };
-      const { text, truncated } = await deliver(callId, String(whole), nested);
+      const { text, truncated } = await handed(String(whole));
       if (live) ctx.live({ type: 'tool_end', name: tool.name, callId, result: text, ...(truncated ? { truncated } : {}) });
       return { text, isError: false, ...(images?.length ? { images } : {}), ...(structured !== undefined ? { structured } : {}), ...(truncated ? { truncated } : {}) };
     };
