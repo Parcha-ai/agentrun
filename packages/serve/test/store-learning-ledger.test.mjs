@@ -509,3 +509,47 @@ test("the server's open records the runs with no row a page at a time and marks 
   ({ store: again } = await storeOn(t, { file, clock }));
   assert.deepEqual((await again.learning.ledger("agent-1", ["r00"])).rows, [], "marked whole: no open reads the runs again");
 });
+
+/** Rewrites run `runId`'s ledger row as a build before #4050's split wrote it for a run a follow-up opened again: its job
+ *  its first round's figure (`firstJob`), the rest of its row (`rowUsd`) its look-back; and marks the store as no server
+ *  of this build has opened it yet (store_meta.ledger_rerecorded 0). */
+async function oldSplit(db, runId, firstJob, rowUsd) {
+  await db.run("UPDATE learning_ledger SET job_usd = ?, look_back_usd = ? WHERE run_id = ?", firstJob, Math.round((rowUsd - firstJob) * 1e9) / 1e9, runId);
+  const columns = db.kind === "postgres"
+    ? await db.all("SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'store_meta'")
+    : await db.all("SELECT name FROM pragma_table_info('store_meta')");
+  if (columns.some((column) => column.name === "ledger_rerecorded")) await db.run("UPDATE store_meta SET ledger_rerecorded = 0 WHERE singleton = 1");
+}
+
+test("a run a follow-up opened again whose row an earlier build wrote (its job the first round's figure, the follow-up its look-back) is recorded again under this build's split, once, at the server's open, a page at a time: its usd is its row less every round's look-back and its learning leaves the follow-up out; a run of one round and a purged run are left as they are, and once marked no open reads the runs again", async (t) => {
+  const { store, file, clock, end } = await ledgerStore(t);
+  // R: round 1's job $0.90 and its end-of-run turn $0.10; a follow-up of $5.50 (model and a paid call) and its own
+  // end-of-run turn $0.10. Its row: $6.60.
+  await end("R", 6.6, { path: "agent" }, { also: [kept(1, 0.9, 0.1), kept(2, 6.5, 0.1)] });
+  // Past one page (64 runs a transaction) of runs with a follow-up, and one run of one round.
+  for (let at = 0; at < 66; at++) await end(`m${String(at).padStart(2, "0")}`, 2, { path: "agent" }, { also: [kept(1, 0.5, 0.1), kept(2, 1.8, 0.2)] });
+  await end("one", 1.3, { path: "agent" }, { also: [kept(1, 1, 0.3)] });
+  // Purged with its follow-up: its purge took its row, and the pass writes none back.
+  await end("P", 2, { path: "agent" }, { also: [kept(1, 0.5, 0.1), kept(2, 1.8, 0.2)] });
+  await store.runs.purge("P", { meters: null, spend: { usd: 2, basis: "list" }, learning: null });
+  const now = await runAllInOverStore(store, "R");
+  assert.deepEqual([now.usd, now.learning_usd, now.followup_usd], [6.4, 0, 0], "this build's split: the follow-up is the job's");
+  const rows = (await store.learning.ledger("agent-1")).rows;
+  await store.close();
+  let db = await raw(file);
+  await oldSplit(db, "R", 0.9, 6.6);
+  for (let at = 0; at < 66; at++) await oldSplit(db, `m${String(at).padStart(2, "0")}`, 0.5, 2);
+  await db.close();
+  let { store: again } = await storeOn(t, { file, clock });
+  const read = await runAllInOverStore(again, "R");
+  assert.ok(read.usd >= 5.5, `usd holds the follow-up's $5.50 (its paid call among it): ${JSON.stringify(read)}`);
+  assert.deepEqual(read, now, "R recorded again from its row and rounds, as this build's end records it");
+  assert.deepEqual((await again.learning.ledger("agent-1")).rows, rows, "every run with a follow-up recorded again, past the first page; the run of one round as it was; no row for the purged run");
+  await again.close();
+  // Marked: an open after it reads no run again, so a row written as the earlier build wrote it stays.
+  db = await raw(file);
+  await db.run("UPDATE learning_ledger SET job_usd = 0.9, look_back_usd = 5.7 WHERE run_id = 'R'");
+  await db.close();
+  ({ store: again } = await storeOn(t, { file, clock }));
+  assert.deepEqual((await again.learning.ledger("agent-1", ["R"])).rows.map((row) => [row.jobUsd, row.lookBackUsd]), [[0.9, 5.7]], "marked: no open reads the runs again");
+});
