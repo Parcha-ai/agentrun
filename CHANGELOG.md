@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 0.1.0-beta.67 (2026-11-27)
+
+This release makes three fixes. A run's release that is cut at its bound, because a browser session's own release never answers, now also releases every browser the run left that nothing it holds names, and books that browser's time once (#4097). Before, such a browser ran on to the vendor's own lifetime with no record on the run. `GET /v2/runs/{run_id}/usage` keeps a browser charge's seconds when the charge was recorded in a learning round's end-of-run turn and booked later under a follow-up's claim. Before, the `browser_time` line kept its dollars but read its `quantity` as null (#4095). Redaction now reads text as a terminal shows it. A held value split by a colour code, a title or hyperlink sequence, or a backspace overstrike is withheld, in any of the escapings a tool's output uses. Characters that show as a box or a blank are dropped the way a zero-width character is (#3963).
+
+**Upgrading and going back:**
+
+- No store migration: the Postgres store stays at `0034`, SQLite at 18, and the runner floor at 34. Servers and runners of beta.66 and beta.67 run against the same store, so going back to beta.66 is the image alone.
+- No client contract changed: `runusage/7`, `toolsusd/4` and `billable/1` are as beta.66 shipped them. The usage line that #4095 fixes reads its seconds where it read null, and its dollars are unchanged.
+- Output that held a credential in a terminal-escaped form was shown before and is now withheld. Coloured output with no held value is shown as before.
+
+**Known issues:**
+
+- A run stopped while it was still queued and then reopened by a message ends `ended`, and its first input reaches the model, because its end is written off the run's root conversation. The fix ships in a later beta.
+- In Mode 2, a run with no computer mounting its folder files no fal results (`evidence/fal`); the call works as before (#3777).
+- A learned workflow refused for a host setting (a tool gated, denied or missing) still reads `serving`, while every run it is given hands back to the agent.
+- For up to about 10 minutes after the release is published, an install can fail while npm shows the new packages one by one. Try again a few minutes later.
+- An API token's `GET /v2/settings/calendar` is refused 403 in the words for saving a secret. Reading the calendar's settings takes the owner's signed-in session in the console, as saving them does.
+- Workspaces: a caller-picked agent id another workspace holds answers `409 agent_exists`; trusting a template publisher applies to every workspace; packages imported before the backend sent the header belong to no workspace; and a launch disk no agent owns is served to any workspace. The serve README's Workspaces section lists these.
+
+Each change is listed in `packages/serve/CHANGELOG.md`.
+
 ## 0.1.0-beta.66 (2026-11-27)
 
 This release books a learning run's follow-up as the job's on every run it opened again, the ones that ended before it included (#4065). It also fixes several paths where a learned workflow never served or stopped for good. A learning agent with no fast model has its check's answers compared by its own model (#4091). A run corrected by message is checked against the owner's correction (#4089). A workflow whose recompile was held restarts on new evidence (#4090). A runner's graceful close books the browser and computer time it cuts (#4051). A cloud browser that a create race left running is released when the run lets its claim go, and its time is booked and absorbed, not billed (#4059). The browser's `screenshot` tool can save its capture into the workspace with `save_as` (#4068). Web providers type a thrown failure one way (#4088). Settings says why the Claude sign-in never starts where `AGENTRUN_PUBLIC_URL` is set (#4093). A run opened again right after its end gets its grade or message in its first turn (#4065). On a run with a spend cap, an owner who takes over its browser just as the session opens no longer takes the room kept for the session's reserve (#4094).
