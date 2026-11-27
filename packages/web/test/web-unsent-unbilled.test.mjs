@@ -131,3 +131,51 @@ test("searchInTurn on a signal already stopped starts no backend, and answers a 
   assert.deepEqual(answer, { error: "the search was stopped" });
   assert.deepEqual(tries.map(({ provider, outcome, failure }) => [provider, outcome, failure?.class, failure?.code]), [["exa", "error", "infra", "STOPPED"]]);
 });
+
+test("unsentWhy: a connect-phase fetch failure or a stop before the send is unsent; anything that may have left is not", async () => {
+  const { unsentWhy } = await import("../dist/providers/keyed.js");
+  for (const code of ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "UND_ERR_CONNECT_TIMEOUT", "CERT_HAS_EXPIRED", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY", "DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "ERR_TLS_CERT_ALTNAME_INVALID", "ERR_TLS_HANDSHAKE_TIMEOUT"]) {
+    assert.equal(unsentWhy(fetchFailed(code), false), code, code);
+  }
+  for (const code of ["ECONNRESET", "UND_ERR_SOCKET", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "ETIMEDOUT", "EPIPE", "ERR_TLS_RENEGOTIATION_DISABLED", "ERR_TLS_SESSION_ATTACK", "ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC", undefined]) {
+    assert.equal(unsentWhy(fetchFailed(code), false), undefined, String(code));
+  }
+  // The code alone is not enough: only undici's "fetch failed" says the cause is the connection's.
+  assert.equal(unsentWhy(Object.assign(new TypeError("unexpected redirect"), { cause: { code: "ENOTFOUND" } }), false), undefined);
+  assert.equal(unsentWhy(Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" }), false), undefined);
+  assert.equal(unsentWhy(new DOMException("This operation was aborted", "AbortError"), false), undefined, "a stop after the send started");
+  assert.equal(unsentWhy(new DOMException("The operation was aborted due to timeout", "TimeoutError"), false), undefined, "a timeout");
+  assert.equal(unsentWhy(new DOMException("This operation was aborted", "AbortError"), true), "stopped", "a stop before the send started");
+  assert.equal(unsentWhy("a thrown string", false), undefined);
+});
+
+/** A keyed client on `send`, paid through `pay`. */
+const exaOn = (send, pay) => keyedClient({ who: "Exa", base: "https://api.example", headers: {}, feeOf: () => ({ name: "Exa's search", by: "exa", usd: 0.007, basis: "a price" }), timeoutMs: 60_000, refuseOn: [] }, send, pay);
+
+test("a stop that lands while the cap admits the request (before its send) settles at $0; one after the send started settles at the fee", async () => {
+  const early = capLike();
+  const stopEarly = new AbortController();
+  const admitting = (fee, send) => (stopEarly.abort(), early.pay(fee, send));
+  const client = exaOn((_url, init) => Promise.reject(init.signal.reason), admitting);
+  await assert.rejects(client.post("/search", {}, stopEarly.signal), (error) => error === stopEarly.signal.reason && error.unsent === true);
+  assert.deepEqual(early.settles, [["Exa's search", 0]]);
+
+  const late = capLike();
+  const stopLate = new AbortController();
+  const sending = exaOn((_url, init) => (stopLate.abort(), Promise.reject(init.signal.reason)), late.pay);
+  await assert.rejects(sending.post("/search", {}, stopLate.signal), (error) => error === stopLate.signal.reason && error.unsent === undefined);
+  assert.deepEqual(late.settles, [["Exa's search", 0.007]], "a stop after the send started may have been billed");
+});
+
+test("an unsent request whose settle failed: its receipt line keeps the hold, as the cap keeps it, and says why", async () => {
+  const net = network();
+  const guard = { fetch: (url, options) => publicFetch(url, { lookup: net.lookup, fetchImpl: net.fetchImpl, ...options }), check: (url, options) => publicCheck(url, { lookup: net.lookup, ...options }), html: readPage };
+  const pay = async (_fee, send, _charged, settled) => {
+    const response = await send();
+    settled?.(false);
+    return response;
+  };
+  const w = web.createWeb({ order: { search: ["exa"], fetch: ["exa"] }, keys: { exa: KEY }, send: { exa: async () => { throw DNS(); } }, guard, pay, now: () => START });
+  const { receipt } = await w.search("widgets");
+  assert.deepEqual(receipt.cost.lines.map(({ usd, basis }) => [usd, basis]), [[0.007, "Exa's list price for a auto search of 10 results; its settle failed, so the hold stands, not $0 (not sent: ENOTFOUND)"]]);
+});
