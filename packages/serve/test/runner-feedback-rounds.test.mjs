@@ -273,6 +273,28 @@ test("a run whose agent called learned_workflow itself, graded wrong, label and 
   assert.equal(await server.learning.proposal("run-called", 2), undefined, "no second round");
 });
 
+test("a run whose agent called its learned workflow, the answer the workflow's, is served by that revision as a platform-served one is: its record, its view and its ledger row name the call's digest, and the revision's spend is shared over it", { timeout: 180_000 }, async (t) => {
+  const { summarize } = await import("../dist/learn/ledger.js");
+  const { server, start } = await world(t, { calls: new Set([5]), reads: new Set([1]) });
+  const digest = workflowDigest({ workflow: JSON.stringify(answerFlow) });
+  await start("run-hand", 1, { byHand: true });
+  const platform = await start("run-served", 6);
+  assert.deepEqual([platform.metrics?.path, platform.metrics?.workflow_digest], ["workflow", digest], `the platform served it first: ${JSON.stringify(platform.metrics)}`);
+  const called = await start("run-called", 5, { byHand: true, offered: true });
+  const calls = called.metrics?.workflow_calls ?? [];
+  assert.deepEqual(calls.map((call) => [call.caller, call.digest]), [["agent", digest]], `the agent's own call, at the revision: ${JSON.stringify(called.metrics)}`);
+  assert.deepEqual([called.metrics?.path, called.metrics?.workflow, called.metrics?.workflow_digest], ["workflow", "answer", digest], `its record names the call's digest: ${JSON.stringify(called.metrics)}`);
+  assert.equal((await viewOverStore(server, "run-called", VIEW_DEPS)).workflow?.digest, digest, "the run view names the revision that ran");
+  const { rows } = await server.learning.ledger("agent-1");
+  assert.equal(rows.find((one) => one.runId === "run-called")?.digest, digest, "its ledger row names the revision");
+  // The revision's $0.40 compile (kept on the run by hand) spread over its first two served runs: the platform's and the
+  // agent's, $0.20 each.
+  const spend = [{ runId: "run-hand", agentId: "agent-1", round: 1, kind: "compile", ofRun: null, workflow: "answer", digest, usd: 0.4 }];
+  const out = summarize({ rows, spend, shadows: new Map(), revisions: [{ workflow: "answer", digest, k: 2, state: "serving" }], compileAfter: 2 });
+  assert.deepEqual(["run-served", "run-called"].map((id) => out.figures.get(id)?.share_usd), [0.2, 0.2], "each served run carries its share");
+  assert.deepEqual(out.bill.revisions.map((one) => [one.served, one.attributed_usd, one.unattributed_usd]), [[2, 0.4, 0]], JSON.stringify(out.bill.revisions));
+});
+
 test("a graded run keeps its answer: its feedback round's words are no message of the job's, so result.final_answer and result.output stand after the round (#2648 review)", { timeout: 120_000 }, async (t) => {
   const { server, start, grade } = await world(t, { outputSchema: ANSWER_SCHEMA });
   const first = await start("run-graded", 1, { byHand: true });
