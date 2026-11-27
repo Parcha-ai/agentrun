@@ -260,7 +260,7 @@ land (native and picked web search and tool settings, monid on every harness, th
 **Seam.**
 - Takes from the kernel:
   - the run's pinned revision (the tools it names);
-  - the run's secrets over its pipe (a tool key only to a run that needs it; Parallel's key on the decision descriptor);
+  - the run's secrets over its pipe (a tool key only to a run that needs it);
   - pi's tool binding (`TOOLS[name].bind`);
   - the host-tool slot the claude-agent and codex adapters serve (`hostTools`, served over MCP or app-server dynamic
     tools);
