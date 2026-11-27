@@ -213,7 +213,10 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   // The run told to use the workflow called it: "workflow" when its records hold only that call and the answer (the
   // first unit test above pins which records say which), "handed_back" when a loaded machine left more in them.
   assert.ok(["workflow", "handed_back"].includes(body.runs[2].path), `the run told to use the workflow: ${body.runs[2].path}`);
-  assert.deepEqual(body.runs.map((run) => [run.digest, run.audited]), [[null, false], [null, false], [null, false], [null, false]], "the agent called the workflow itself: no revision ran first, so none is named (never the learning folder's commit); no audit ran");
+  // The agent called the workflow itself: the revision its call ran is named, as on a run the platform served first
+  // (never the learning folder's commit); `back`'s call ran none, so it names none. No audit ran.
+  const digest = workflowDigest({ workflow: JSON.stringify(answerFlow()) });
+  assert.deepEqual(body.runs.map((run) => [run.digest, run.audited, run.took_over]), [[null, false, false], [null, false, false], [digest, false, true], [null, false, false]], "the revision the agent's call ran, where it took over; no audit ran");
   // One classifier: the agent called the tool itself (no workflow-first step), and its run record's metrics.path, written
   // at its end, is the path the cost per run shows.
   const metricsOf = (runId) => {
@@ -244,7 +247,6 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   assert.deepEqual([body.total_runs, body.unknown_cost_runs, body.unknown_path_runs], [4, 0, 0], "every run that learns ended with its path");
   // The money rule holds a workflow to every run that called it, the agent's own call too: `alone` called answer (its one
   // call that ran a workflow; `back` named one it has not, which ran none).
-  const digest = workflowDigest({ workflow: JSON.stringify(answerFlow()) });
   assert.deepEqual(body.workflows.map(({ workflow, digest: at, served }) => [workflow, at, served.runs]), [["answer", digest, 1]], "the agent's own call counts on its served side");
 
   const last = await cost("?limit=2");
@@ -257,7 +259,7 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   const lines = String(csv.body).trimEnd().split("\r\n");
   assert.equal(lines[0], "n,run_id,started_at,path,workflow,digest,audited,cost_usd,cost_upper_bound,learning_usd,total_usd");
   assert.equal(lines.length, 5);
-  assert.ok(lines[3].startsWith(`3,${alone},`) && lines[3].includes(`,workflow,answer,,false,`), lines[3]);
+  assert.ok(lines[3].startsWith(`3,${alone},`) && lines[3].includes(`,workflow,answer,${digest},false,`), lines[3]);
 
   for (const query of ["?limit=0", "?limit=10001", "?limit=two", "?format=xml"]) assert.equal((await api("GET", `/agents/${id}/learning/cost${query}`)).status, 400, query);
   assert.equal((await api("GET", "/agents/nobody/learning/cost")).status, 404);
