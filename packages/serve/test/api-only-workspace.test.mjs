@@ -129,6 +129,21 @@ const TABLE = {
   archiveAgent: { method: "POST", path: "/v2/agents/{agent}/archive", row: "agent" },
   unarchiveAgent: { method: "POST", path: "/v2/agents/{agent}/unarchive", row: "agent" },
   deleteAgent: { method: "DELETE", path: "/v2/agents/{agent}", row: "agent" },
+  getAgentLearning: { method: "GET", path: "/v2/agents/{agent}/learning", row: "agent" },
+  deleteAgentLearning: { method: "DELETE", path: "/v2/agents/{agent}/learning", row: "agent" },
+  getLearningCost: { method: "GET", path: "/v2/agents/{agent}/learning/cost", row: "agent" },
+  listLearningPromotions: { method: "GET", path: "/v2/agents/{agent}/learning/promotions", row: "agent" },
+  listLearningAudits: { method: "GET", path: "/v2/agents/{agent}/learning/audits", row: "agent" },
+  getLearningLoop: { method: "GET", path: "/v2/agents/{agent}/learning/loop", row: "agent" },
+  listLearningLog: { method: "GET", path: "/v2/agents/{agent}/learning/log", row: "agent" },
+  getLearningCorrections: { method: "GET", path: "/v2/agents/{agent}/learning/corrections", row: "agent" },
+  putLearningCorrections: { method: "PUT", path: "/v2/agents/{agent}/learning/corrections", row: "agent", body: "- W2's words.\n" },
+  readLearningFile: { method: "GET", path: "/v2/agents/{agent}/learning/files/answer", row: "agent" },
+  retireLearningFile: { method: "POST", path: "/v2/agents/{agent}/learning/files/answer/retire", row: "agent" },
+  listLearnedWorkflowRevisions: { method: "GET", path: "/v2/agents/{agent}/learning/workflows/answer/revisions", row: "agent" },
+  getLearnedWorkflowReplay: { method: "GET", path: "/v2/agents/{agent}/learning/workflows/answer/revisions/d1/replays/rp1", row: "agent" },
+  getRunLearning: { method: "GET", path: "/v2/runs/{run}/learning", row: "run" },
+  getRunLearningDiff: { method: "GET", path: "/v2/runs/{run}/learning/diff", row: "run" },
   getTemplate: { method: "GET", path: "/v2/templates/{template}", row: "template" },
   applyTemplate: { method: "POST", path: "/v2/templates/{template}/apply", row: "template", body: { parameters: {} } },
   deleteTemplate: { method: "DELETE", path: "/v2/templates/{template}", row: "template" },
@@ -154,7 +169,8 @@ test("every operation of WORKSPACE_ROUTES is a route of the server, and the tabl
   assert.equal(servedScoped(ROUTES, "GET", "/v2/runs/r1"), "served");
   assert.equal(servedScoped(ROUTES, "HEAD", "/v2/agents/a1"), "served");
   assert.equal(servedScoped(ROUTES, "DELETE", "/v2/agents/a1"), "served");
-  assert.equal(servedScoped(ROUTES, "DELETE", "/v2/agents/a1/learning"), "not_scoped");
+  assert.equal(servedScoped(ROUTES, "DELETE", "/v2/agents/a1/learning"), "served");
+  assert.equal(servedScoped(ROUTES, "DELETE", "/v2/agents/a1/archil"), "not_scoped");
   assert.equal(servedScoped(ROUTES, "GET", "/v2/usage"), "not_scoped");
   assert.equal(servedScoped(ROUTES, "GET", "/v2/runs/r1/computer/live/v/x"), "not_scoped");
   assert.equal(servedScoped(ROUTES, "GET", "/v2/nothing-here"), "none");
@@ -254,6 +270,46 @@ test("with no header, the operator archives, unarchives and deletes any agent as
     assert.match(refused.body.error.message, /serves the run API only/);
   }
   assert.equal((await inW1(server, "GET", `/v2/templates/${encodeURIComponent(template)}`)).status, 200, "W1's package stands");
+});
+
+test("a workspace reads and changes its own agent's learning, texts and all; W2's write changes none of it; with no header the learning routes are served or refused as before", { timeout: 120_000 }, async (t) => {
+  const server = await scopedServer(t);
+  const { agent, run } = await seedW1(server);
+  for (const [name, op] of Object.entries(TABLE)) {
+    if (!/Learn/.test(name)) continue;
+    const path = op.path.replace("{agent}", agent).replace("{run}", run);
+    const answer = await inW1(server, op.method, path, op.method === "GET" || op.method === "DELETE" ? {} : { body: {} });
+    assert.notEqual(answer.body?.error?.details?.reason, "not_scoped", `${name}: ${answer.text}`);
+  }
+  // A learned workflow's approve, restore and replay take the owner's signed-in page, never a token: not a scoped request's.
+  for (const path of ["files/answer/approve", "files/answer/restore", "workflows/answer/revisions/d1/replays"]) {
+    const refused = await inW1(server, "POST", `/v2/agents/${agent}/learning/${path}`, { body: {} });
+    assert.deepEqual([refused.status, refused.body.error?.details?.reason], [403, "not_scoped"], refused.text);
+  }
+  // The writes on an agent with no run going: a reset waits for a run of its own to end.
+  const learner = (await inW1(server, "POST", "/v2/agents", { body: { definition: { version: 1, name: "W1 learner", instructions: "Answer.", skills: [], tools: [] } } })).body.agent_id;
+  const corrections = `/v2/agents/${learner}/learning/corrections`;
+  const put = (workspace, text, etag) => fetch(`${server.url}${corrections}`, { method: "PUT", headers: { authorization: `Bearer ${SCOPED}`, "agentrun-workspace": workspace, "content-type": "text/plain", ...(etag ? { "if-match": etag } : {}) }, body: text });
+  const before = await inW1(server, "GET", corrections);
+  assert.equal(before.status, 200, before.text);
+  const written = await put(W1, "- Answer in a table.\n", before.headers.get("etag"));
+  assert.equal(written.status, 200, await written.text());
+  assert.equal((await put(W2, "- W2's words.\n")).status, 404, "W2 writes nothing of W1's");
+  assert.match((await inW1(server, "GET", corrections)).body.text, /Answer in a table\./);
+  assert.equal((await inW1(server, "GET", `/v2/agents/${agent}/learning`)).status, 200);
+  assert.equal((await inW1(server, "GET", `/v2/runs/${run}/learning`)).status, 200);
+  assert.equal((await inW2(server, "DELETE", `/v2/agents/${learner}/learning`)).status, 404);
+  assert.match((await inW1(server, "GET", corrections)).body.text, /Answer in a table\./, "W2's reset changed nothing");
+  const reset = await inW1(server, "DELETE", `/v2/agents/${learner}/learning`);
+  assert.equal(reset.status, 204, reset.text);
+  assert.doesNotMatch((await inW1(server, "GET", corrections)).body.text, /Answer in a table\./, "W1's reset is its own");
+  // The operator's token, with no header: the reads the API-only profile serves, and the texts it refuses.
+  assert.equal((await unscoped(server, "GET", `/v2/agents/${agent}/learning/loop`)).status, 200);
+  for (const path of [corrections, `/v2/agents/${agent}/learning`, `/v2/runs/${run}/learning/diff`]) {
+    const refused = await unscoped(server, "GET", path);
+    assert.deepEqual([refused.status, refused.body.error?.code], [404, "not_found"], `${path}: ${refused.text}`);
+    assert.match(refused.body.error.message, /serves the run API only/);
+  }
 });
 
 test("a workspace's template delete whose ownership read went stale removes nothing of the package another workspace imported since", { timeout: 60_000 }, async (t) => {
@@ -366,7 +422,7 @@ test("a listed token without the header is 403; the header off an API-only serve
     assert.deepEqual([answer.status, answer.body.error?.code], [400, "bad_request"], `${JSON.stringify(workspace)}: ${answer.text}`);
   }
   assert.equal((await send(server, "GET", "/v2/runs", { workspace: "x".repeat(128) })).status, 200, "128 characters is a name");
-  for (const [method, path] of [["DELETE", "/v2/agents/a1/learning"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
+  for (const [method, path] of [["DELETE", "/v2/agents/a1/archil"], ["GET", "/v2/usage"], ["DELETE", "/v2/runs/r1"], ["GET", "/v2/triggers"], ["POST", "/v2/runs"]]) {
     const answer = await inW1(server, method, path, method === "GET" || method === "DELETE" ? {} : { body: {} });
     assert.deepEqual([answer.status, answer.body.error?.code, answer.body.error?.details?.reason], [403, "forbidden", "not_scoped"], `${method} ${path}: ${answer.text}`);
   }

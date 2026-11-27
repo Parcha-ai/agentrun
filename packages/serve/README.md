@@ -4109,7 +4109,10 @@ as before.
 
 A request in a workspace is served only: the runs' reads and lists (`GET /runs`, `/runs/{id}`, its timeline, files and
 export), a run's message, stop and cancel; the agents' list, read, create, revisions, definition and current revision,
-archive, unarchive and delete, and a run started on one; the templates' list, read, import, apply and delete (a bundled
+archive, unarchive and delete, and a run started on one; an agent's learning (`/agents/{id}/learning`: its view, reset,
+cost, promotions, audits, loop, log, corrections read and write, a learned file's read and retire, a workflow's
+revisions and a replay's read) and a run's (`/runs/{id}/learning` and its diff), but a learned workflow's approve,
+restore and replay, which take the owner's signed-in page; the templates' list, read, import, apply and delete (a bundled
 package stays `403`); the uploaded files' create, upload, list, read and
 delete (`/files`); and `/capabilities`, `/health` and `/openapi.json`. Every other route is `403 forbidden` with
 `details.reason: "not_scoped"`. In it, an agent, run, imported template package or file of another workspace (or of none)
