@@ -614,6 +614,35 @@ test("the reopened runs are marked recorded again only by a pass that started wi
   assert.equal(await again.rerecordReopened(), true, "a runner of this build there: marked");
 });
 
+test("a runner of this build started under the same name as a runner of an earlier build still ending its runs leaves that runner's row as it is: the mark waits until that runner went", async (t) => {
+  const { store, file, clock, end } = await ledgerStore(t);
+  await end("R", 6.6, { path: "agent" }, { also: [kept(1, 0.9, 0.1), kept(2, 6.5, 0.1)] });
+  const rows = (await store.learning.ledger("agent-1")).rows;
+  // A rolling restart: the earlier build's process, still draining, and this build's, started under its name.
+  await store.runners.put({ runner: "runner-1", incarnation: "i-before", refused: null, version: "0.1.0", slots: 4 });
+  await store.close();
+  // R's row as the build before wrote it, and the store as no server of this build opened it.
+  let db = await raw(file);
+  await oldSplit(db, "R", 0.9, 6.6);
+  await db.close();
+  const { store: again } = await storeOn(t, { file, clock });
+  assert.equal(await rerecordedMark(file), 0, "the earlier runner there at the open's pass: not marked");
+  const presence = keepPresence(again.runners, "runner-1", null, { renewMs: 3_600_000, incarnation: "i-now" });
+  t.after(() => presence.stop());
+  await presence.relay(null);
+  assert.deepEqual((await again.runners.live(RUNNER_STALE_MS)).map((row) => [row.incarnation, row.knows]), [["i-before", null]], "the draining runner is still the one there");
+  assert.equal(await again.rerecordReopened(), false, "the earlier runner is still there: not marked");
+  // It ends R under the split before as it drains (after the passes), then goes.
+  db = await raw(file);
+  await db.run("UPDATE learning_ledger SET job_usd = 0.9, look_back_usd = 5.7 WHERE run_id = 'R'");
+  await db.close();
+  clock.now += RUNNER_STALE_MS + 1;
+  await presence.relay(null);
+  assert.deepEqual((await again.runners.live(RUNNER_STALE_MS)).map((row) => [row.incarnation, row.knows]), [["i-now", (await again.schemaState()).known]], "gone: this build's process has the name");
+  assert.equal(await again.rerecordReopened(), true, "marked");
+  assert.deepEqual((await again.learning.ledger("agent-1")).rows, rows, "R recorded under this build's split");
+});
+
 test("a SQLite store at 17 gains runners.knows at the split's step (18): the row a runner of 17 put reads as knowing nothing, and while that runner is there the mark waits", sqliteOnly("SQLite's upgrade chain; Postgres 0034 adds the column"), async (t) => {
   const { store, file, clock, end } = await ledgerStore(t);
   await end("R", 6.6, { path: "agent" }, { also: [kept(1, 0.9, 0.1), kept(2, 6.5, 0.1)] });

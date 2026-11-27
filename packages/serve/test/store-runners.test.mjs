@@ -73,7 +73,8 @@ function tracked(runners) {
     return landed;
   };
   return {
-    runners: { ...runners, put: track(runners.put), renew: track(runners.renew), remove: track(runners.remove) },
+    // live too: a first put reads the live rows before it writes (keepPresence leaves an earlier build's live row).
+    runners: { ...runners, live: track(runners.live), put: track(runners.put), renew: track(runners.renew), remove: track(runners.remove) },
     // A tick only queues its write behind the one before (writing.then), so each round first lets what is queued start
     // (setImmediate is real here: only setInterval is mocked), then waits for every write started; done when none is.
     async settled() {
@@ -165,6 +166,30 @@ test("an earlier process's relay close and its presence's close leave a later pr
   await earlier.relay(null);
   await earlier.close();
   assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.host, row.port]), [["inc-later", "127.0.0.1", 40_001]], "the later one's row and relay stand");
+});
+
+test("keepPresence of a build that knows a later schema leaves a live row of its name that an earlier build's process keeps (knows null or below) until that process goes, then puts its own: the server still sees the earlier process while it drains", async (t) => {
+  const clock = { now: T0 };
+  const { store } = await storeOn(t, { clock });
+  // The earlier build's process: a build before runners.knows writes none, as one at a lower version writes its own.
+  for (const knows of [null, store.runners.knows - 1]) {
+    await store.runners.remove("same", "inc-later").catch(() => undefined);
+    await store.runners.put({ runner: "same", incarnation: "inc-earlier", refused: null, port: 40_000, host: "127.0.0.1", knows });
+    const later = keepPresence(store.runners, "same", null, { renewMs: 3_600_000, incarnation: "inc-later" });
+    await later.relay({ host: "127.0.0.1", port: 40_001 });
+    assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.port, row.knows]), [["inc-earlier", 40_000, knows]], `knows ${knows}: the earlier process's row stands while it renews`);
+    // That process went (its row stale): this one's next renewal takes the name.
+    clock.now += RUNNER_STALE_MS + 1;
+    await later.relay({ host: "127.0.0.1", port: 40_001 });
+    assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.port, row.knows]), [["inc-later", 40_001, store.runners.knows]], `knows ${knows}: gone, so this one's row`);
+    later.stop();
+  }
+  // A process of the same build (or a later one) is taken over at once, as any restart's is.
+  await store.runners.put({ runner: "peer", incarnation: "inc-same", refused: null, knows: store.runners.knows });
+  const next = keepPresence(store.runners, "peer", null, { renewMs: 3_600_000, incarnation: "inc-next" });
+  t.after(() => next.stop());
+  await next.relay(null);
+  assert.deepEqual((await store.runners.list()).filter((row) => row.runner === "peer").map((row) => row.incarnation), ["inc-next"]);
 });
 
 test("put unlessLiveMs puts a row where none is, or over its own or a stale one, and leaves another incarnation's live row as it is; a put without it takes the row", async (t) => {
