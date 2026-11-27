@@ -46,7 +46,7 @@ const REFUSED = "Parallel refused this run's key (401 or 403): it is not asked a
  *  any failure, why it read none, typed; `read`, the same with why in Parallel's words alone; `post`, one request to
  *  another of its endpoints (web_search's, parallelSearched), a URL below Parallel's API. Neither retries, and each stops
  *  at 60 s. `live` is false once a 401 or 403 to either said the key is not served. */
-export type Extract = { live(): boolean; extract(url: string, signal?: AbortSignal, client?: WebClient): Promise<Read | Failed>; read(url: string, signal?: AbortSignal, client?: WebClient): Promise<Read | string>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response> };
+export type Extract = { live(): boolean; extract?(url: string, signal?: AbortSignal, client?: WebClient): Promise<Read | Failed>; read(url: string, signal?: AbortSignal, client?: WebClient): Promise<Read | string>; post(url: string, body: unknown, signal?: AbortSignal): Promise<Response> };
 
 /** What Parallel is told of `client` on a search or an extract, as its guidance asks (one session_id for a task's Search
  *  and Extract): its model as client_model, its session as session_id cut at SESSION_MAX, each only where known. */
@@ -160,7 +160,11 @@ export function parallelReads(client: Extract | null, told: WebClient = {}): Req
   return {
     async read(url, { signal, client: call }) {
       if (!client) return failed("refused", "NO_KEY", "not tried: this run holds no Parallel key");
-      return client.extract(url as string, signal, { ...told, ...call });
+      const asked = { ...told, ...call };
+      // A stand-in client (a test's) may give its read alone, why in words.
+      if (client.extract) return client.extract(url as string, signal, asked);
+      const read = await client.read(url as string, signal, asked);
+      return typeof read === "string" ? { error: read } : read;
     },
     unready: () => (!client ? failure("refused", "NO_KEY", "not tried: this run holds no Parallel key") : client.live() ? undefined : failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run")),
   };

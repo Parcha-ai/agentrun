@@ -6,7 +6,7 @@ import type { Pay } from "./fees.js";
 import type { Guard, GuardOptions } from "./guard.js";
 import type { Read, Unread } from "./page.js";
 import type { Words } from "./providers/mcp.js";
-import { type Breaker, type Failed, type Failure, failure, type Holding, type SearchAsk, type SearchBounds, type Searched } from "./search.js";
+import { type Breaker, type Failure, failure, type Holding, type Limit, type SearchAsk, type SearchBounds, type Searched } from "./search.js";
 
 export type { SearchAsk };
 
@@ -37,9 +37,9 @@ export type WebClient = { model?: string; session?: string };
 /** A read's options: the guard's, and `client`, the call's own, each field in place of the Web's where given. */
 export type ReadOptions = GuardOptions & { client?: WebClient };
 
-/** A read that gave no page: in our words, the failure typed, and the limit it met, if any (for the run's breaker): a
- *  failure as every provider answers one (search.ts Failed). */
-export type ReadFailed = Failed;
+/** A read that gave no page: in our words, the failure typed (search.ts Failed; a stand-in's may give the words alone),
+ *  and the limit it met, if any (for the run's breaker). */
+export type ReadFailed = { error: string; failure?: Failure; limit?: Limit };
 
 /** A provider made for one Web. `search`: one search, ended by `deadline` (the call's one deadline for every provider it
  *  asks) or kept on the caller's `signal` and the provider's own bound, as the provider says; `bounds`, the call's own,
@@ -113,7 +113,7 @@ export function readerOf(run: ProviderRun, breaker: Breaker): Reader {
     holding: () => breaker.holding(),
     async read(url, options) {
       const got = await read(url, options);
-      if (!("ok" in got) && got.limit) breaker.read({ answer: { error: got.error }, limit: got.limit, failure: got.failure });
+      if (!("ok" in got) && got.limit) breaker.read({ answer: { error: got.error }, limit: got.limit, ...(got.failure ? { failure: got.failure } : {}) });
       return got;
     },
   };

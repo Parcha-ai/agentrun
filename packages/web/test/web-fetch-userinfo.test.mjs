@@ -131,8 +131,8 @@ test("the root's own reads quote no user name or password from an error: fetchPa
 test("an error any client gives that quotes a URL with a user name and password is scrubbed whole and then cut: neither the receipt, the page nor the log holds any part of them", async () => {
   const words = quoting(280);
   assert.ok(straddles(words, 300), "the cut of what Firecrawl said ends inside them");
-  // A reader as web_fetch is given one (a Reader: held, and a read that answers why it gave no page, typed).
-  const firecrawl = { held: () => undefined, read: async () => ({ error: words, failure: { class: "error", code: "FAILED", message: words } }) };
+  // A reader as web_fetch is given one (a Reader: held, and a read that answers why it gave no page).
+  const firecrawl = { held: () => undefined, read: async () => ({ error: words }) };
   const parallel = { live: () => true, read: async () => `failed: ${credentialed()}`, post: async () => { throw new Error("not posted"); } };
   const leaks = [];
   const said = [];

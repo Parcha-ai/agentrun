@@ -112,7 +112,7 @@ async function readOnce(url: unknown, { readers, order, guard, checkMs, options,
     // whole as it is read, before any cut (a second scrub behind the client's own, kept on purpose).
     const error = withoutUserinfo(read.error ?? "");
     const limit: Limit | undefined = "limit" in read ? read.limit : undefined;
-    const typed = "failure" in read ? { failure: { ...read.failure, message: withoutUserinfo(read.failure.message) } } : {};
+    const typed = "failure" in read && read.failure ? { failure: { ...read.failure, message: withoutUserinfo(read.failure.message) } } : {};
     // A read that met a limit is said by what holds the provider now, never by the provider's words for it.
     const holding = limit ? reader.holding?.() : undefined;
     const words = holding ? holdingWords(holding) : error;
