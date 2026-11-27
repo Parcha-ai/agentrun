@@ -168,6 +168,26 @@ describe("Settings → Model keys, Claude Code's login on this machine: Sign out
     expect(host.textContent).not.toContain("Refused late.");
   });
 
+  it("where the server never starts the sign-in itself (AGENTRUN_PUBLIC_URL set), Turn on shows the command and says why, in the server's words", async () => {
+    const OFF_HERE = "In-browser sign-in is off because AGENTRUN_PUBLIC_URL is set to https://agentrun.example.test: run the command shown in a terminal on this machine, or unset AGENTRUN_PUBLIC_URL and restart the server.";
+    const here = { ...OFF, can_start: false, start_off: OFF_HERE };
+    let view: ClaudeLoginView = here;
+    const { v2, calls } = server(() => view, () => (view = { ...here, state: "signed_out" }));
+    const page = await open(v2);
+    await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    await page.click(page.buttons(/^Turn on$/)[0]);
+    expect(calls.filter((c) => c.method !== "GET").map((c) => c.method), "turned on, no sign-in started").toEqual(["PUT"]);
+    expect(page.row()!.textContent).toContain(COMMAND);
+    expect(page.row()!.textContent).toContain(OFF_HERE);
+    expect(page.buttons(/Open the CLI's sign-in here/)).toHaveLength(0);
+  });
+
+  it("where the server may start the sign-in, no such words", async () => {
+    const { v2 } = server(() => ({ ...OFF, state: "signed_out" }), () => OFF);
+    const page = await open(v2);
+    expect(page.row()!.textContent).not.toMatch(/In-browser sign-in is off/);
+  });
+
   it("Check again says it is checking, then that it checked just now", async () => {
     let release: () => void = () => {};
     let reads = 0;

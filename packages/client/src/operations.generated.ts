@@ -3473,6 +3473,7 @@ export type GetClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;
@@ -4429,6 +4430,7 @@ export type SignOutClaudeLoginResponse = {
     place: "agentrun" | "machine";
     command: string;
     can_start: boolean;
+    start_off?: string;
     refused?: string;
     account?: {
       method?: string;
@@ -4466,6 +4468,7 @@ export type StartClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;
@@ -4575,6 +4578,7 @@ export type TurnOffClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;
@@ -4609,6 +4613,7 @@ export type TurnOnClaudeLoginResponse = {
   place: "agentrun" | "machine";
   command: string;
   can_start: boolean;
+  start_off?: string;
   refused?: string;
   account?: {
     method?: string;

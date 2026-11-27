@@ -2915,6 +2915,7 @@ export interface operations {
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
+      start_off?: string;
       refused?: string;
       account?: {
         method?: string;
@@ -7366,6 +7367,7 @@ export interface operations {
         place: "agentrun" | "machine";
         command: string;
         can_start: boolean;
+        start_off?: string;
         refused?: string;
         account?: {
           method?: string;
@@ -7413,6 +7415,7 @@ export interface operations {
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
+      start_off?: string;
       refused?: string;
       account?: {
         method?: string;
@@ -7670,6 +7673,7 @@ export interface operations {
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
+      start_off?: string;
       refused?: string;
       account?: {
         method?: string;
@@ -7704,6 +7708,7 @@ export interface operations {
       place: "agentrun" | "machine";
       command: string;
       can_start: boolean;
+      start_off?: string;
       refused?: string;
       account?: {
         method?: string;

@@ -165,7 +165,7 @@ async function rig(t, { place = "agentrun", logout = async () => said(true), env
     },
     claudeKeychainService: (at) => harness.claudeKeychainService(at),
   };
-  const deps = { signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {} };
+  const deps = { signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), claude: async () => cli, saved: () => {}, changed: async () => {} };
   return { data, rows, deps, logouts, started, pinned };
 }
 

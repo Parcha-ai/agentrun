@@ -205,6 +205,8 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
           <div className="space-y-2">
             <p className="text-body">{view.state === "signed_out" ? SIGNED_OUT : view.state === "no_cli" ? NO_CLI : UNKNOWN}</p>
             {command}
+            {/* Where the server never starts the sign-in itself (AGENTRUN_PUBLIC_URL set, or listening past loopback), why. */}
+            {!view.can_start && view.start_off && <p className="text-small text-muted-foreground" role="status">{view.start_off}</p>}
             {signIn && <p className="text-body" role="status">{signIn}</p>}
             <div className="flex flex-wrap gap-2">
               {writable && view.can_start && view.state !== "no_cli" && (
