@@ -7,8 +7,8 @@ export type ParallelSearchMode = "turbo" | "fast" | "basic" | "advanced";
  *  `mode`: `turbo` or `fast` $1 per 1,000 requests, `basic` or `advanced` $5 per 1,000, each with 10 results included,
  *  and each result past those 10 $1 per 1,000. Extract: $1 per 1,000 URLs. */
 export const PARALLEL_SEARCH_MODE_USD: Readonly<Record<ParallelSearchMode, number>> = Object.freeze({ turbo: 0.001, fast: 0.001, basic: 0.005, advanced: 0.005 });
-/** A `fast` search's price: the mode the web tools search in (web-search.ts). */
-export const PARALLEL_SEARCH_USD = 0.001;
+/** A `fast` search's price, the mode the web tools search in by default (parallel.ts PARALLEL_DEFAULTS). */
+export const PARALLEL_SEARCH_USD: number = PARALLEL_SEARCH_MODE_USD.fast;
 export const PARALLEL_SEARCH_RESULT_USD = 0.001;
 export const PARALLEL_SEARCH_INCLUDED = 10;
 export const PARALLEL_EXTRACT_USD = 0.001;

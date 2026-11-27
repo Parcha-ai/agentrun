@@ -77,8 +77,8 @@ Both endpoints authenticate with the `x-api-key` header. Each answer carries `co
 | `query` | string | call | — | — |
 | `type` | `auto` (balanced, the default); `lite` (the index only, no page fetched at query time); `deep-lite` (~4 s); `deep` (multi-step); legacy `instant`, `fast`, `deep-reasoning` | setting `type` | `auto` | lite and instant $0.004; auto and fast $0.007; deep-lite and deep $0.012; deep-reasoning $0.015 |
 | `numResults` | 1 to 100 (10) | call: `n` (1 to 25) | 10 | $0.001 for each result past 10 |
-| `contents.highlights` | `{maxCharacters}`, the total per result; or `{query}`; beta `verbosity` and `dynamic` | setting `snippet: "highlights"`; `snippetChars` sets `maxCharacters` | highlights, 3,000 | **none in a search** (Exa's own cost report) |
-| `contents.text` | `{maxCharacters, verbosity, includeSections, linkStyle, includeHtmlTags}` | setting `snippet: "text"`; `snippetChars` sets `maxCharacters` | — | **none in a search** (Exa's own cost report) |
+| `contents.highlights` | `true` (bare: Exa sizes them to the query); `{maxCharacters}`, the total per result; or `{query}`; beta `verbosity` and `dynamic` | setting `snippet: "highlights"`; `snippetChars` sets `maxCharacters` | highlights, bare (Exa's guidance: a limit only where one is required); our snippet cut, 3,000, after | **none in a search** (Exa's own cost report) |
+| `contents.text` | `{maxCharacters, verbosity, includeSections, linkStyle, includeHtmlTags}` | setting `snippet: "text"`; `snippetChars` sets `maxCharacters` (unset: 3,000) | — | **none in a search** (Exa's own cost report) |
 | `contents.summary` | `{query, schema}` | no | — | $0.001 per page |
 | `contents.maxAgeHours` | -1 (cache only) to 720; 0 is a live crawl (default: the cache, a live crawl only for a page Exa has none of) | setting `maxAgeHours` (shared with fetch) | unset | none listed |
 | `contents.livecrawlTimeout` | ms, up to 90,000 (10,000) | no | — | — |
@@ -102,8 +102,8 @@ bills a search's text and highlights at nothing. These were measured live on 202
 `exaFeeOf` books a search at what Exa bills for it. The per-page contents price applies to `/contents`, and to a
 search's summaries.
 
-**Highlights run short of the cap.** With `maxCharacters` at 3,000, Exa's highlights came back 245 to 592 characters
-per result. Text from the page's start fills the cap. So `snippet: "text"` gives the agent more characters, and
+**Highlights run short of the cap.** With `maxCharacters` at 3,000 (the default before highlights went bare), Exa's
+highlights came back 245 to 592 characters per result. Text from the page's start fills the cap. So `snippet: "text"` gives the agent more characters, and
 `"highlights"` gives it fewer, more query-relevant ones.
 
 ### Contents, `POST /contents` (web_fetch)

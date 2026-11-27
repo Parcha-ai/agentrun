@@ -36,7 +36,13 @@ export const HTML_READ_CHARS = 1_000_000;
  *  held equal by web-fetch-direct-cut.test), and keyless Firecrawl's scrape's too. */
 export const PAGE_MAX_BYTES = 5 * 1024 * 1024;
 
-export const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
+/** `text`'s first `max` UTF-16 units, one fewer where the cut would split a surrogate pair: the one pair-safe cut. */
+export function cutAt(text: string, max: number): string {
+  const split = (text.charCodeAt(max - 1) & 0xfc00) === 0xd800 && (text.charCodeAt(max) & 0xfc00) === 0xdc00;
+  return text.slice(0, split ? max - 1 : max);
+}
+/** `text` at most `max` units: whole when it fits, else cut (cutAt) with an ellipsis ending it. */
+export const clip = (text: string, max: number) => (text.length > max ? `${cutAt(text, max - 1)}…` : text);
 /** `text` with any URL in it stripped of its user name and password (`//user:pass@host` to `//host`). An error may quote
  *  a URL that holds them (undici's refusal of a redirect to one quotes it whole). Run it on the whole text, before any
  *  cut: a cut can end inside them, leaving no "@" for it to find. It reads on to the last "@" before the host, as a URL
@@ -102,12 +108,10 @@ export function partEnd(text: string, start: number, budget: number): number {
  *  past them (`beyond`), and its whole length where it is known (`length`). */
 export type Text = { text: string; beyond: boolean; length?: number };
 /** `text` as read: `whole` says whether it is all of the page's text, so its length is the page's (a provider that cut
- *  it, or readPage's cut of its HTML, gives none). The cut at PAGE_READ_MAX_CHARS never splits a surrogate pair: where
- *  it would, it is one unit short. */
+ *  it, or readPage's cut of its HTML, gives none). The cut at PAGE_READ_MAX_CHARS never splits a surrogate pair (cutAt). */
 export function textOf(text: string, whole: boolean): Text {
   const beyond = text.length > PAGE_READ_MAX_CHARS;
-  const split = (text.charCodeAt(PAGE_READ_MAX_CHARS - 1) & 0xfc00) === 0xd800 && (text.charCodeAt(PAGE_READ_MAX_CHARS) & 0xfc00) === 0xdc00;
-  return { text: beyond ? text.slice(0, PAGE_READ_MAX_CHARS - (split ? 1 : 0)) : text, beyond, ...(whole ? { length: text.length } : {}) };
+  return { text: beyond ? cutAt(text, PAGE_READ_MAX_CHARS) : text, beyond, ...(whole ? { length: text.length } : {}) };
 }
 
 /** The part of a page's text an answer holds, and what it says of the rest. */

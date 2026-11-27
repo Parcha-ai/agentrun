@@ -4,6 +4,7 @@
 // bytes are the caller's, which the store never opens.
 import { type LaunchSealed, type RunLaunchInput, type RunLaunchRow, type Runs, StoreLaunchMissing } from "../store.js";
 import type { Dialect } from "../dialect.js";
+import { claimFence, type StoreNow } from "../fence.js";
 import type { SqliteExecutor } from "./connection.js";
 
 type RunLaunchRecord = { run_id: string; body: string; sealed: Uint8Array | null; census: string | null; created_at: number };
@@ -49,12 +50,14 @@ export async function writeLaunchSealed(tx: Pick<SqliteExecutor, "run" | "get">,
 }
 
 /** Run `runId`'s launch body with its `learning` member replaced by `learning`, read and written inside `tx` (Runs
- *  reseedLearning), fenced by the claim: only while the run's epoch is still `epoch`, its row held shared (`shareLock`) so
- *  a claim, release or end that moves it waits for this write or comes first. False, nothing written, when it moved (the
- *  claim was lost) or the run is gone. StoreLaunchMissing when the run has no launch row. */
-export async function writeLaunchLearning(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, learning: unknown, epoch: number, shareLock: string): Promise<boolean> {
-  const run = await tx.get<{ epoch: number | string }>(`SELECT epoch FROM runs WHERE id = ?${shareLock}`, runId);
-  if (!run || Number(run.epoch) !== epoch) return false;
+ *  reseedLearning), fenced by the claim (fence.ts claimFence): only while the run's epoch is still `epoch` and its lease
+ *  has not run out on the store's clock `now`, its row held shared (`shareLock`) first so a claim, release or end that
+ *  moves it waits for this write or comes first. False, nothing written, when the claim no longer holds the run (its
+ *  epoch moved, its lease lapsed) or the run is gone. StoreLaunchMissing when the run has no launch row. */
+export async function writeLaunchLearning(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, learning: unknown, epoch: number, shareLock: string, now: StoreNow): Promise<boolean> {
+  await tx.run(`SELECT 1 FROM runs WHERE id = ?${shareLock}`, runId);
+  const fence = claimFence({ runId, epoch }, now);
+  if ((await tx.get(`SELECT 1 AS held FROM runs WHERE ${fence.where}`, ...fence.params)) === undefined) return false;
   const row = await tx.get<{ body: string }>("SELECT body FROM run_launch WHERE run_id = ?", runId);
   if (!row) throw new StoreLaunchMissing(runId);
   const body = JSON.parse(row.body) as Record<string, unknown> | null;

@@ -73,7 +73,7 @@ import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } fr
 import { IMPORT_ASKED, IMPORT_HEAP_MB, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import { inLearningQueue, LEARNING_LABEL, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
+import { inLearningQueue, LEARNING_LABEL, SAID_MAX, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
 import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, learningLog, pendingCount, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/workflow-draft.js";
@@ -1184,7 +1184,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
       archive: { agents: true, runs: true, list_param: "archived", routes: ["POST /agents/{id}/archive", "POST /agents/{id}/unarchive", "POST /runs/{id}/archive", "POST /runs/{id}/unarchive"] },
       home: { export: false, import: false, check: false },
       runs: { stop: true, cancel: true, kill: false, list: true, kinds: ["agentic", "workflow"], pause_workflow_runs: true, graph: true },
-      messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false },
+      messages: { steer: true, answer: true, follow_up: true, steer_workflow_runs: false, said: true },
       timeline: { long_poll: true, sse: true, live_rows: true, live_workflow_rows: false },
       files: { upload: true, read: true, range: true, during_run: true },
       quotes: false,
@@ -2240,16 +2240,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (`learning_usd`) and the two (`all_in_usd`), with what makes up `learning_usd` (`compile_usd`, `followup_usd`,
    *  `shadow_usd`, `check_usd`, `share_usd`): the figures the agent's cost page gives the run (learn/ledger.ts figuresOf, one formula).
    *  A cost known only as a bound keeps its bound, and all-in is unknown.
-   *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore). */
+   *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore). Both are read in one
+   *  snapshot of the store: a follow-up that opens the run again between the two reads never puts its paid calls beside
+   *  the previous end's `usd` (run-usage.ts reads a run's lines the same way). */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
-    const all = await runAllInOverStore(store, runId, own);
+    const { all, tools_usd } = await store.snapshot(async (snapshot) => {
+      const all = await runAllInOverStore(snapshot, runId, own);
+      return { all, tools_usd: all ? await toolsUsdOverStore(snapshot, runId) : null };
+    });
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (its ledger row's, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
     const { learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } = all;
-    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd: await toolsUsdOverStore(store, runId), learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } };
+    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd, learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } };
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
@@ -5869,17 +5874,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
           const secrets = await handed();
           const seal = await messageSeal(run, secrets);
-          const extra = unknownFields(body, ["content"]);
+          const extra = unknownFields(body, ["content", "said"]);
           if (extra.length) throw invalid(extra);
           const given = body.content;
           if (typeof given !== "string" || !/\S/.test(given)) throw invalid([{ field: "content", reason: given === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (given.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
+          // The person's own words, when `content` is a host's text around them: what the run's learning keeps of the
+          // message (runner/learning-end.ts ownerWords); the model gets `content`. It need not be inside `content`; text
+          // shaped like a secret is the learning checker's to refuse, as any correction's is.
+          const words = body.said;
+          if (words !== undefined && typeof words !== "string") throw invalid([{ field: "said", reason: "wrong_type", message: "said is a string when sent: the person's own words" }]);
+          if (typeof words === "string" && !words.trim()) throw invalid([{ field: "said", reason: "empty", message: "said is not empty when sent: the person's own words" }]);
+          // Counted in code points, as its schema's maxLength and a host's len() count it: an emoji is one, not two.
+          if (typeof words === "string" && [...words].length > SAID_MAX) throw invalid([{ field: "said", reason: "too_long", message: `said is at most ${SAID_MAX} characters (code points)` }]);
           // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
           // In its agent's delete turn (runWrite): a message that may open the run again never lands under its purge.
           // Its text is cut of what it hands and of what the run holds, read in that turn (cutHeld).
           const { mode, messageId } = await runWrite(run.agentId, run.id, async () => {
             const content = await cutHeld(run.id, given, handedSecretValues(secrets));
-            return message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
+            const said = typeof words === "string" ? await cutHeld(run.id, words, handedSecretValues(secrets)) : undefined;
+            return message(store, run, content, { ...(said !== undefined ? { said } : {}), ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
           });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);

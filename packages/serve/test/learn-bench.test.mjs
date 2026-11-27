@@ -128,7 +128,7 @@ test("the active and pending items: corrections.md's lines, the active workflows
 test("a step's kept texts: corrections.md from its own route (the file route refuses it), the workflow draft by file", async () => {
   // As the server answers: the file route takes a workflow draft only (learning-routes.ts fileOf), corrections.md has its own.
   const api = async (method, path) => {
-    if (path.endsWith("/learning/corrections")) return { status: 200, body: { text: "- Say the total.\n", etag: "\"e1\"", cap_bytes: 2048 }, headers: new Headers() };
+    if (path.endsWith("/learning/corrections")) return { status: 200, body: { text: "- Say the total.\n", etag: "\"e1\"", cap_bytes: 8192 }, headers: new Headers() };
     if (path.endsWith(`/learning/files/${encodeURIComponent("workflows/sort/workflow.json")}`)) return { status: 200, body: { steps: [] }, headers: new Headers() };
     if (path.includes("/learning/files/")) return { status: 400, body: { error: { code: "bad_request" } }, headers: new Headers() };
     return { status: 404, body: null, headers: new Headers() };

@@ -189,7 +189,7 @@
    "via": "direct",
    "parallel": "not tried: the URL did not pass the public-host guard"
   },
-  "text": "{\"ok\":false,\"url\":\"http://evil.example/\",\"status\":0,\"title\":\"\",\"text\":\"\",\"links\":[],\"refused\":\"refused: evil.example is not a public host\",\"via\":\"direct\",\"parallel\":\"not tried: the URL did not pass the public-host guard\"}\nParallel gave no page (not tried: the URL did not pass the public-host guard); this one was fetched directly.",
+  "text": "{\"ok\":false,\"url\":\"http://evil.example/\",\"status\":0,\"title\":\"\",\"text\":\"\",\"links\":[],\"refused\":\"refused: evil.example is not a public host\",\"via\":\"direct\",\"parallel\":\"not tried: the URL did not pass the public-host guard\"}\nParallel gave no page (not tried: the URL did not pass the public-host guard); the direct fetch failed too.",
   "receipt": {
    "op": "fetch",
    "asked": "http://evil.example/",
@@ -222,8 +222,8 @@
    },
    "injection": "unjudged",
    "out": {
-    "bytes": 331,
-    "chars": 331
+    "bytes": 329,
+    "chars": 329
    },
    "cost": {
     "usd": 0,
