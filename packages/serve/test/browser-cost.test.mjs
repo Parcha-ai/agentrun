@@ -1242,6 +1242,29 @@ test("a real Harness whose store fails: the Session's failed end is logged once,
   assert.equal(lines.filter((line) => line.includes("browser_spend_uncounted")).length, 1, lines.join("\n"));
 });
 
+test("a real Harness over a loop's journal that the loop's stop sealed: a write the seal refuses fails the Session, whose every stored commit reached the count: the count stands, with no line", async (t) => {
+  const [{ BACKGROUND_CONTEXT: ctx }, durable, { createModels }, { Gate, Interrupted }] = await Promise.all([import("@earendil-works/chord/context"), import("@earendil-works/pi-durable"), import("@earendil-works/pi-ai/models"), import("../dist/runner/loop.js")]);
+  const paid = await ledgerFor(t, 5);
+  const lines = [];
+  const gate = new Gate(new durable.MemoryStorage());
+  const harness = await durable.Harness.open(gate.journal, { models: createModels(), registry: durable.createRegistry(), onReport: () => {} }, ctx);
+  const root = await harness.root(ctx, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+  const spend = browserSpend("browserbase", BROWSERBASE, 180, async () => undefined, (line) => lines.push(line), { paid });
+  spend.watch(harness);
+  const charge = { conversationId: 1, tag: "ar-run-1", provider: "browserbase", at: new Date(T0).toISOString(), seconds: 3, usd: 0.0001, final: true, state: "priced" };
+  await harness.commit((tx) => spend.onCharge(charge, tx), ctx);
+  await spend.ledgerIdle();
+  // A shutdown's stop seals the journal; a write pi makes after it (a turn's generation the stop cut) is refused.
+  gate.seal(new Interrupted("shutdown"));
+  await harness.commit(async (tx) => { (await tx.doc(durable.AgentDoc, root.id)).thinkingLevel = "high"; }, ctx).catch(() => undefined);
+  const ended = await harness.closed;
+  assert.equal(ended.kind, "failed", "the seal's refusal failed the Session");
+  await new Promise((resolve) => setImmediate(resolve));
+  await spend.ledgerIdle();
+  assert.equal(paid.spentUsd(), 0.0001, "the charge stays booked");
+  assert.deepEqual(lines, [], "no line: every commit the store took reached the count");
+});
+
 /** A run whose first process opened one browser session and ended without letting the run go (the session still live at
  *  the provider, as after a crash): `open()` starts its next process on the same store, booking on the run's one ledger
  *  `paid` (one RunTools here for both: the first process's reserve stays open on it, where a lost claim's would be given
