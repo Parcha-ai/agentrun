@@ -2975,6 +2975,39 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       ...ARCHIL_MARK,
     },
   },
+  "/settings/prices": {
+    get: {
+      operationId: "getPrices", tags: ["local"], summary: "The prices this server meters computer time and browser time at, with where each comes from",
+      description: "Read from the same settings the run's meters read, at each request: a caller turns a budget of its own into this server's figures, or shows an estimate. Each price is a decimal string, as its setting writes it (never a float's rounding, never an exponent), or null where there is none. `source`: `setting`, the operator's setting (AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_<PROVIDER>, _GIB_SECOND_, _GPU_SECOND_<PROVIDER>_<GPU_TYPE>, _DISK_GB_MONTH_; AGENTRUN_BROWSER_USD_PER_HOUR_<PROVIDER>); `list`, a price built in (a browser provider's list price; $0 for a computer provider whose descriptor bills nothing, on every compute row whatever a setting says, and on its browser row when no setting names it: a browser setting wins on every browser row); `unpriced`, no price, or a setting that is not a plain non-negative decimal: that time runs outside a run's cap, its usage line `unpriced`, never $0.",
+      responses: { "200": json({
+        type: "object", additionalProperties: false, required: ["compute", "browser"],
+        properties: {
+          compute: { type: "array", description: "Each computer provider's price per resource: vcpu, memory and disk, and one row per GPU type a setting names for it. Sorted by provider, then vcpu, memory, disk, then GPU type.", items: {
+            type: "object", additionalProperties: false, required: ["provider", "resource", "gpu_type", "unit", "usd", "source"],
+            properties: {
+              provider: { type: "string", description: "The computer provider's id." },
+              resource: { enum: ["vcpu", "memory", "gpu", "disk"] },
+              gpu_type: { type: ["string", "null"], description: "A GPU row's type, as its setting spells it; null on the other rows." },
+              unit: { enum: ["vcpu_second", "gib_second", "gpu_second", "gb_month"], description: "What `usd` is the price of: a vCPU-second, a GiB-second of memory, a GPU-second, a GB-month of disk (730 hours)." },
+              usd: { type: ["string", "null"], pattern: "^(\\d+(\\.\\d*)?|\\.\\d+)$", description: "USD per `unit`, a decimal string; null when unpriced." },
+              source: { enum: ["setting", "list", "unpriced"] },
+            },
+          } },
+          browser: { type: "array", description: "Each browser provider's price an hour: those with a list price, those a setting names, and each computer provider that bills nothing. Sorted by provider.", items: {
+            type: "object", additionalProperties: false, required: ["provider", "unit", "usd", "minimum_s", "source"],
+            properties: {
+              provider: { type: "string", description: "The browser provider's name (a setting's provider in lower case)." },
+              unit: { const: "hour" },
+              usd: { type: ["string", "null"], pattern: "^(\\d+(\\.\\d*)?|\\.\\d+)$", description: "USD an hour of session time, a decimal string; null when unpriced." },
+              minimum_s: { type: "integer", minimum: 0, description: "The least a session is billed for, in seconds (Browserbase's minute)." },
+              source: { enum: ["setting", "list", "unpriced"] },
+            },
+          } },
+        },
+      }, "The prices in force."), ...errors(401, 429, 500) },
+      "x-agentrun-serve": "prices/1",
+    },
+  },
   "/settings/tool-keys": {
     get: {
       operationId: "listToolKeys", tags: ["local"], summary: "The tool keys a person may save, and which are set: names only, never a value",

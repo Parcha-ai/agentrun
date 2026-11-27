@@ -135,7 +135,7 @@ export const exa = defineProvider(
     return {
       search: (ask, _deadline, signal) => exaSearched(ask, client, asked, signal),
       read: (url, { signal }) => exaRead(url as string, client, asked, signal),
-      unready: () => (client && !client.live() ? failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run") : undefined),
+      unready: () => (!client ? failure("refused", "NO_KEY", "not tried: this run holds no Exa key") : client.live() ? undefined : failure("refused", "KEY_REFUSED", "not tried: refused earlier in this run")),
     };
   },
 );

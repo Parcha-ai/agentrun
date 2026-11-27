@@ -1527,7 +1527,7 @@ class SqliteStore implements Store {
         return row && runOf(row);
       },
       launch: (runId) => readLaunch(db, runId),
-      reseedLearning: (runId, learning, epoch) => db.transaction((tx) => writeLaunchLearning(tx, runId, learning, epoch, d.shareLock)),
+      reseedLearning: (runId, learning, epoch) => db.transaction((tx) => writeLaunchLearning(tx, runId, learning, epoch, d.shareLock, clock())),
       learningDeadlines: async (runIds) => {
         const out = new Map<string, number>();
         if (runIds.length === 0) return out;
@@ -3149,7 +3149,9 @@ class SqliteStore implements Store {
     );
     for (const row of rows) {
       const command = commandOf(row);
-      out.set(command.runId, [...(out.get(command.runId) ?? []), command]);
+      const held = out.get(command.runId);
+      if (held) held.push(command);
+      else out.set(command.runId, [command]);
     }
     return out;
   }

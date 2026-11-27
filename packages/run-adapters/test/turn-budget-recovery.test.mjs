@@ -149,5 +149,21 @@ test("a journal that could not keep a length fails only its own drive: the next 
   assert.deepEqual(records.slice(last + 1).map((record) => record.settled), [{ callId: 'c1', chars: 1_000 }, { callId: 'c2', chars: 1_000 }], 'both lengths after it');
 });
 
+test("a nesting tool whose result's length the journal could not keep halts its drive: the harness is never handed that result", async () => {
+  // MUTATION: runNesting's deliver outside a try: its rejection throws past the drive, which is never halted.
+  const store = memorySessionStore();
+  const halted = [];
+  const drive = await openDrive({ writer: await store.open('r7'), signal: new AbortController().signal, halt: (reason) => void halted.push(reason) });
+  const turn = new TurnBudget();
+  const broken = { append: () => true, flush: () => Promise.reject(new Error('the journal could not write')), records: () => [] };
+  journalTurn(turn, broken);
+  turn.open({ inputTokens: HELD, outputTokens: 0, calls: 1 });
+  const script = { name: 'script', description: 'Runs a script.', inputSchema: { type: 'object' }, replay: 'safe', nests: true, execute: async () => 'scripted' };
+  const bridge = toolBridge(drive, [script], { budget: { contextWindow: WINDOW, turn } });
+  await assert.rejects(bridge.call('script', {}, 'c1'), /could not write/);
+  assert.equal(halted.length, 1, 'the drive was halted');
+  assert.match(String(halted[0]?.message ?? halted[0]), /could not write/, 'by the journal\'s failure');
+});
+
 /** The turn records a drive's journal holds. */
 const journalRecords = (drive) => new NativeJournal(drive).records(processExports.TURN_STREAM).map((record) => record.data);
