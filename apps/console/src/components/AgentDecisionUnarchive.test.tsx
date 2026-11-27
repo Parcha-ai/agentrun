@@ -18,9 +18,9 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
 const ARCHIVED_AT = "2026-11-26T04:00:00Z";
-const agentOf = (id: string, name: string, workflow: unknown, archived = false): Agent => ({
+const agentOf = (id: string, name: string, workflow: object, archived = false): Agent => ({
   ...SERVED_AGENT, agent_id: id, kind: "workflow", revision: "r1", revisions: 1, archived_at: archived ? ARCHIVED_AT : null,
-  definition: { version: 1, name, workflow, skills: [], tools: [] },
+  definition: { version: 1, name, workflow: workflow as Record<string, unknown>, skills: [], tools: [] },
 });
 const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
 const mount = async (element: ReturnType<typeof createElement>) => {
@@ -99,8 +99,8 @@ describe("an archived agent offers Unarchive by name", () => {
 
   it("on its page, beside Status: Archived, which unarchives it there", async () => {
     const calls: string[] = [];
-    const one = agentOf("gambling-check", "Gambling check", DECISION_STARTER, true);
-    const host = await mount(createElement(AgentPage, { v2: pageV2(one, { unarchiveAgent: async (id: string) => { calls.push(id); return { ...one, archived_at: null }; } }) as never, agentId: "gambling-check", go: () => {} }));
+    let one = agentOf("gambling-check", "Gambling check", DECISION_STARTER, true);
+    const host = await mount(createElement(AgentPage, { v2: pageV2(one, { getAgent: async () => ({ agent: one, etag: "r1" }), unarchiveAgent: async (id: string) => { calls.push(id); one = { ...one, archived_at: null }; return one; } }) as never, agentId: "gambling-check", go: () => {} }));
     const status = () => [...host.querySelectorAll("dt")].find((dt) => dt.textContent === "Status")?.nextElementSibling?.textContent;
     expect(status()).toBe("Archived");
     const button = [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Unarchive") as HTMLButtonElement | undefined;
