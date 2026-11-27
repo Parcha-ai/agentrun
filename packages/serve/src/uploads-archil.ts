@@ -217,7 +217,7 @@ export class WorkspaceUploads implements UploadStore {
   }
 
   readyFiles(ids: readonly unknown[]): Promise<UploadedFile[]> {
-    return readyFilesOf(ids, async (id) => fileSeen(await this.kept(id), true), archilPathProblem);
+    return readyFilesOf(ids, async (id) => fileSeen(await this.kept(id)), archilPathProblem);
   }
 
   /** File `file`'s bytes. */
