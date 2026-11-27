@@ -22,7 +22,8 @@
 //   (13) a run its owner corrected by message (no grade), whose recorded answer stays wrong: each replay's grader is
 //       shown the correction beside that answer, and a draft that answers per the correction promotes;
 //   (14) a replay repeating that wrong recorded answer word for word: the grader, asked with the correction, says it
-//       differs, and with no verdict kept each input is unjudged (equal answers are no agreement);
+//       differs, and with no verdict kept each input is unjudged (equal answers are no agreement), its disagreement
+//       naming the owner's correction;
 //   (15) an agent that answered again per the correction: a replay equal to that recorded answer is still asked with
 //       the correction, and the grader's same decision promotes (only a verdict asked with the correction counts);
 //   (16) a correction the checks refused was never taken, so it changes nothing.
@@ -459,6 +460,8 @@ test("(14) a replay repeating the corrected run's wrong recorded answer word for
   assert.deepEqual(held.check.fields.answer.by, {});
   assert.equal(held.check.fields.answer.unjudged, 3, JSON.stringify(held.check.fields.answer));
   assert.equal(none.graderRequests().length, 0, "no fast model: no grader request");
+  // The recompile is told the owner's correction, unjudged: never a grade that contradicts itself (there was no grade).
+  assert.deepEqual(held.check.disagreements.map((one) => one.expected), Array.from({ length: 3 }, () => [{ field: "answer", known: "correction", value: CORRECTION }]));
 });
 
 test("(15) an agent that answered again per its owner's correction: a replay equal to that recorded answer is still asked with the correction (no equal-answer shortcut), the verdict says the same decision, and it promotes", { timeout: 300_000 }, async (t) => {
@@ -570,7 +573,7 @@ test("a known answer its owner corrected: only a verdict asked with the correcti
 
 test("correctionOf: each round's merged correction, oldest first, the oldest dropped past corrections.md's cap all told; a dropped or refused round keeps none", async () => {
   const { correctionOf } = await import("../dist/runner/promotion.js");
-  const { CORRECTIONS_CAP } = await import("../dist/learn/corrections.js");
+  const { CORRECTIONS_CAP, correctionLine } = await import("../dist/learn/corrections.js");
   const of = (rows) => ({ learning: { proposal: async (_runId, round) => { const row = round === undefined ? rows.at(-1) : rows[round - 1]; return row ? { round: round ?? rows.length, proposal: row } : undefined; } } });
   const merged = (correction) => ({ state: "merged", corrections: 1, correction });
   assert.equal(await correctionOf(of([]), "r"), undefined);
@@ -580,6 +583,12 @@ test("correctionOf: each round's merged correction, oldest first, the oldest dro
   const words = await correctionOf(of([merged(`a${big}`), merged(`b${big}`), merged("newest")]), "r");
   assert.equal(words, `b${big}\nnewest`, "the oldest round dropped to fit the cap");
   assert.ok(Buffer.byteLength(words) <= CORRECTIONS_CAP);
+  // The merge measured the words with their whitespace folded (correctionLine): read back the same way, a message whose
+  // raw text is past the cap but whose folded line fit is kept, never dropped.
+  const spaced = `It is${" \n".repeat(200)}${"z".repeat(CORRECTIONS_CAP - 100)}`;
+  assert.ok(Buffer.byteLength(spaced) > CORRECTIONS_CAP && Buffer.byteLength(correctionLine(spaced)) <= CORRECTIONS_CAP);
+  assert.equal(await correctionOf(of([merged(spaced)]), "r"), `It is ${"z".repeat(CORRECTIONS_CAP - 100)}`, "folded as merged, and kept");
+  assert.equal(await correctionOf(of([merged("It  is\n 2.")]), "r"), "It is 2.");
 });
 
 /** The learning rows a promotion record is written through, in memory: one agent's records of each kind, and workflow
