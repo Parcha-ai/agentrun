@@ -116,15 +116,20 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   }, [v2, awaitingLogin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!view) return null;
-  const act = async (write: () => Promise<ClaudeLoginView>, changes: boolean) => {
+  // `write` may report a refusal beside the view it answers (`refuse`): it shows under the same check as the view.
+  const act = async (write: (refuse: (e: unknown) => void) => Promise<ClaudeLoginView>, changes: boolean) => {
     setProblem(null); setBusy(true); setChecked(0);
     writing.current = true;
     // The row switched off while this write was out bumps `asked` (as it drops a read's answer), so neither its answer
     // nor its failure lands after.
     const n = ++asked.current;
     try {
-      const next = claudeLoginView(await write());
-      if (n === asked.current) setView(next);
+      let refused: unknown;
+      const next = claudeLoginView(await write((e) => { refused = e; }));
+      if (n === asked.current) {
+        setView(next);
+        if (refused !== undefined) setProblem(words(refused));
+      }
       if (changes) onChange?.();
       return true;
     } catch (e) {
@@ -153,21 +158,18 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   };
   // Turn on, and where the login it turned on reads signed out and the CLI's sign-in can start here, that sign-in too, in
   // the same press: it opens the browser, so a person who just signed out signs in fresh. A start the server refuses
-  // leaves the row on, signed out, with its words in the row's alert line.
-  const turnOn = async () => {
-    let refused: unknown;
-    const done = await act(async () => {
-      const on = await v2.turnOnClaudeLogin(place);
-      if (on.state !== "signed_out" || !on.can_start) return on;
-      try {
-        return await v2.startClaudeLogin();
-      } catch (e) {
-        refused = e;
-        return on;
-      }
-    }, true);
-    if (done && refused !== undefined) setProblem(words(refused));
-  };
+  // leaves the row on, signed out, with its words in the row's alert line. A sign-in that already waits (another tab
+  // started it) is left alone: a new start would end it, and the page that person is finishing with it.
+  const turnOn = () => act(async (refuse) => {
+    const on = await v2.turnOnClaudeLogin(place);
+    if (on.state !== "signed_out" || !on.can_start || on.sign_in?.state === "waiting") return on;
+    try {
+      return await v2.startClaudeLogin();
+    } catch (e) {
+      refuse(e);
+      return on;
+    }
+  }, true);
   const state = STATE[view.state];
   const on = view.state !== "off";
   const command = <pre className="overflow-x-auto border bg-card p-3 font-mono text-small"><code>{view.command}</code></pre>;
