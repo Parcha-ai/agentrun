@@ -1632,36 +1632,34 @@ const STARTS: Readonly<Record<Exclude<JoinKind, "both">, readonly string[]>> = {
   again: ['"', '"\\"', "\"'"],
 };
 
-/** `text`'s parts as the join of `kind` reads them (partsOf). With `again`, each value written in quotes is read one
- *  level down, as joinOf's again join reads it, and each other part of the quoted join as it stands, where the again
- *  join reads none: a stretch that leaves a value written in quotes counts what follows as the quoted join does. */
-function partsFor(text: string, kind: Exclude<JoinKind, "both">): Part[] {
+/** `text`'s parts as the join of `kind` reads them (partsOf), read as main's reading reads them with `main`, and how
+ *  main's reading reads them otherwise (partsOf's OPERATES, PAIRS). With `again`, each value written in quotes is read
+ *  one level down, as joinOf's again join reads it, and each other part of the quoted join as it stands, where the
+ *  again join reads none: a stretch that leaves a value written in quotes counts what follows as the quoted join does. */
+function partsFor(text: string, kind: Exclude<JoinKind, "both">, main = false): { parts: Part[]; differs: number } {
   const parts: Part[] = [];
-  if (kind !== "again") {
-    partsOf(text, 0, text.length, 0, parts, kind);
-    return parts;
-  }
+  if (kind !== "again") return { parts, differs: partsOf(text, 0, text.length, 0, parts, kind, undefined, main) };
   const outer: Part[] = [];
   const written: Span[] = [];
-  partsOf(text, 0, text.length, 0, outer, "quoted", written);
+  let differs = partsOf(text, 0, text.length, 0, outer, "quoted", written, main);
   let next = 0;
   for (const part of outer) {
     if (written[next]?.[0] === part.from && written[next]?.[1] === part.to) {
-      partsOf(text, part.from, part.to, 1, parts, "quoted");
+      differs |= partsOf(text, part.from, part.to, 1, parts, "quoted", undefined, main);
       next++;
     } else parts.push(part);
   }
-  return parts;
+  return { parts, differs };
 }
 
 /** One pass of the join of `parts` of `text`, written as joinOf writes each (each part followed by a space, SEPARATOR
- *  last): of every part, or, with `values`, of each that is no property name's; and the place in `text` after what each
- *  of its characters comes from (a part's space: the part's end). */
-function passOf(text: string, parts: readonly Part[], values: boolean): { text: string; ends: number[] } {
+ *  last): of each part `keep` keeps; and the place in `text` after what each of its characters comes from (a part's
+ *  space: the part's end). */
+function passOf(text: string, parts: readonly Part[], keep: (part: Part) => boolean): { text: string; ends: number[] } {
   const pieces: string[] = [];
   const ends: number[] = [];
   for (const part of parts) {
-    if (values && part.name) continue;
+    if (!keep(part)) continue;
     pieces.push(text.slice(part.from, part.to), " ");
     for (let k = part.from + 1; k <= part.to; k++) ends.push(k);
     ends.push(part.to);
@@ -1715,8 +1713,10 @@ const OPENERS: readonly (readonly [number, string])[] = [
  *  is one a needle is read against: never a join's SEPARATOR, nor, with `fold`, a separator the fold view drops
  *  (flatOf). Every view of VIEWS is read, whether or not the text holds what its `when` asks for: a view the matcher
  *  would not read only adds a reading another view makes too. A join view reads the stretch's join (partsFor) from each
- *  place it can start at (STARTS), of all its parts, and, where the stretch holds a property name, of its values alone
- *  (holds reads both passes); a `both` view reads its quoted join and its again join each. A reading with a terminal
+ *  place it can start at (STARTS), of all its parts, and, where the stretch holds a property name or an operator that
+ *  joins two strings ("+"), of its values alone, those operators left out (joinOf's passes); and where main's reading
+ *  pairs the stretch's quotes otherwise, main's join of it too (holds reads both); a `both` view reads its quoted join
+ *  and its again join each. A reading with a terminal
  *  control in it is read as readingsOf reads it, twice, as a terminal shows it first, where a sequence the stretch ends
  *  inside hides all that follows (screenOf's `cut`): it could end past the stretch. Where the stretch may start inside
  *  a terminal sequence (`open`, OPEN_OSC and the rest), each view also reads it as a terminal shows it after that
@@ -1774,12 +1774,17 @@ export function* shownIn(
       for (const start of STARTS[kind]) {
         for (const opener of ["", ...openers]) {
           const written = start + opener + source;
-          const parts = partsFor(written, kind);
-          const all = passOf(written, parts, false);
-          found.push(inputOf(all.text, all.ends, start.length + opener.length, opener ? start.length + opener.length : 0));
-          if (parts.some((part) => part.name)) {
-            const values = passOf(written, parts, true);
-            found.push(inputOf(values.text, values.ends, start.length + opener.length, opener ? start.length + opener.length : 0));
+          const ours = partsFor(written, kind);
+          // Where main's reading pairs the stretch's quotes otherwise (PAIRS), its parts too, as holds reads that join.
+          for (const { parts } of ours.differs & PAIRS ? [ours, partsFor(written, kind, true)] : [ours]) {
+            // joinOf's passes of every part and of the values, the operators that join two strings left out. Its other
+            // passes read a part of these, so they show no fewer characters: the read reaches as far for them.
+            const passes: ((part: Part) => boolean)[] = [() => true];
+            if (parts.some((part) => part.name || part.joins)) passes.push((part) => !part.name && !part.joins);
+            for (const keep of passes) {
+              const pass = passOf(written, parts, keep);
+              found.push(inputOf(pass.text, pass.ends, start.length + opener.length, opener ? start.length + opener.length : 0));
+            }
           }
         }
       }
