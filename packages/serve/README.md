@@ -1872,7 +1872,9 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   the login's place, for a terminal on the server's machine; it is empty where the login's folders are refused, and
   `folder` is then the folder as the environment names it. Where the console is on that machine (a server on loopback
   with no public address), `can_start` is true and `POST /v2/settings/claude-login/login` starts the pinned CLI's own
-  `auth login`, which opens a browser there. It runs with the same variables as `command`, so it signs in at `folder`,
+  `auth login`, which opens a browser there. Elsewhere `start_off` says why it never starts, naming
+  `AGENTRUN_PUBLIC_URL`'s value (a placeholder one too) or the address past loopback the server listens on, and the
+  console shows it beside the command. It runs with the same variables as `command`, so it signs in at `folder`,
   and the status is read there too, since `auth login` writes the account it signed in to its config dir. On
   `machine` with the default `~/.claude`, the CLI is signed in as the person's own `claude` runs: no
   `CLAUDE_CONFIG_DIR` or `CLAUDE_SECURESTORAGE_CONFIG_DIR`, in their home, so it writes the account in `~/.claude.json`

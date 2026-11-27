@@ -5343,6 +5343,7 @@ class _GetClaudeLoginResponseRequired(TypedDict):
 
 
 class GetClaudeLoginResponse(_GetClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: GetClaudeLoginResponseAccount
     sign_in: GetClaudeLoginResponseSignIn
@@ -6957,6 +6958,7 @@ class _SignOutClaudeLoginResponseLoginRequired(TypedDict):
 
 
 class SignOutClaudeLoginResponseLogin(_SignOutClaudeLoginResponseLoginRequired, total=False):
+    start_off: str
     refused: str
     account: SignOutClaudeLoginResponseLoginAccount
     sign_in: SignOutClaudeLoginResponseLoginSignIn
@@ -7006,6 +7008,7 @@ class _StartClaudeLoginResponseRequired(TypedDict):
 
 
 class StartClaudeLoginResponse(_StartClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: StartClaudeLoginResponseAccount
     sign_in: StartClaudeLoginResponseSignIn
@@ -7153,6 +7156,7 @@ class _TurnOffClaudeLoginResponseRequired(TypedDict):
 
 
 class TurnOffClaudeLoginResponse(_TurnOffClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: TurnOffClaudeLoginResponseAccount
     sign_in: TurnOffClaudeLoginResponseSignIn
@@ -7205,6 +7209,7 @@ class _TurnOnClaudeLoginResponseRequired(TypedDict):
 
 
 class TurnOnClaudeLoginResponse(_TurnOnClaudeLoginResponseRequired, total=False):
+    start_off: str
     refused: str
     account: TurnOnClaudeLoginResponseAccount
     sign_in: TurnOnClaudeLoginResponseSignIn

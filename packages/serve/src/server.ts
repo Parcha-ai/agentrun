@@ -162,7 +162,7 @@ import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from 
 import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, RENEWAL_DRAIN_MS, SIGN_OUT_UNCONFIRMED, stopRenewals, withPlan } from "./chatgpt-plan.js";
 import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
-import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin } from "./claude-login.js";
+import { CLAUDE_LOGIN_ROUTES, LOGIN_REFUSES_API_KEYS, oneOwnerDeps, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginServed, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, loginOnRunnerOnly, loopback, signOutClaudeLogin, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, withClaudeLogin, signInHereOff } from "./claude-login.js";
 import { ClaudeSignIns } from "./claude-sign-in.js";
 import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
@@ -1936,7 +1936,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       pinned: async () => claudeCliIn(installDirOf(data, LOGIN_HARNESS), (await import("@parcha/agentrun-harness-claude")).claudeAgentPlatform()),
       // `refused` and `turn`: the keys are counted when the refusal is asked (inside the turn-on's turn, the keys' own).
       ...oneOwner,
-      sameMachine: isLoopback(host) && !options.publicUrl,
+      startOff: signInHereOff(host, options.publicUrl, isLoopback(host)),
       claude: () => import("@parcha/agentrun-harness-claude"),
       saved: (login) => {
         made = handOver(login, "turn");

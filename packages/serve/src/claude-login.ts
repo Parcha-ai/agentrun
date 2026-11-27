@@ -578,6 +578,18 @@ export function whyNotOneOwner(facts: { apiOnly: boolean; tokens: number; keys?:
 /** Why a server with Claude Code's login on makes no API key for an app, in one line: the same rule from the other side. */
 export const LOGIN_REFUSES_API_KEYS = "Claude Code's login on this machine is on, and a Claude plan is one person's: an API key would let an app start runs on it. Turn the login off under Settings → Model keys first.";
 
+/** Why a server on `host` (`loopback`: whether that is a loopback address) with public address `publicUrl` never starts
+ *  the CLI's sign-in itself, in words that name the setting and say what to do; undefined where it may. The sign-in opens
+ *  a browser on the server's machine, and a server with a public address or one listening past loopback may be opened
+ *  from another: a placeholder AGENTRUN_PUBLIC_URL turns it off too, so the console says so instead of falling back to the
+ *  command in silence. */
+export function signInHereOff(host: string, publicUrl: string | undefined, loopback: boolean): string | undefined {
+  const what = "run the command shown in a terminal on this machine";
+  if (publicUrl) return `In-browser sign-in is off because AGENTRUN_PUBLIC_URL is set to ${publicUrl}, and a server with a public address never opens a browser itself: ${what}, or unset AGENTRUN_PUBLIC_URL and restart the server.`;
+  if (!loopback) return `In-browser sign-in is off because this server listens on ${host}, past loopback, and such a server never opens a browser itself: ${what}, or restart it on 127.0.0.1.`;
+  return undefined;
+}
+
 /** GET /settings/claude-login. `state`: `off` (not turned on), `other_machine` (turned on for another machine),
  *  `refused` (turned on for this machine and kept, but its folders are ones this server's user may not use: `refused`
  *  says why, nothing runs on it, and a turn-off removes it as it does any other), else what the CLI says: `signed_in`,
@@ -590,6 +602,8 @@ export type ClaudeLoginView = {
   command: string;
   /** Whether this server may start the CLI's own sign-in itself (a browser on this machine). */
   can_start: boolean;
+  /** Why this server never starts the CLI's sign-in itself, in words that say what to do (signInHereOff). */
+  start_off?: string;
   /** Why the mode can't be turned on here, in one line. */
   refused?: string;
   account?: { method?: string; email?: string; organization?: string; plan?: string };
@@ -637,8 +651,8 @@ export const claudeLoginServed = (off: string | undefined, apiOnly: boolean): bo
 export const claudeLoginRouteOff = (name: string, why: string): string => `${name}: Claude Code's login on this machine is off on this server: ${why}.`;
 
 /** What the routes need of the server. `pinned`: the pinned CLI's path when installed. `refused`: whyNotOneOwner of this
- *  server. `sameMachine`: the request comes from a browser on this machine to a server bound to loopback with no public
- *  address, so a sign-in the CLI opens in a browser here reaches the person. `status`/`start`: the harness's
+ *  server. `startOff`: why the CLI's sign-in, which opens a browser on this machine, is never started here (signInHereOff);
+ *  undefined on a server bound to loopback with no public address, whose console is on this machine. `status`/`start`: the harness's
  *  claudeLoginStatus and startClaudeLogin. `saved`: the login runs here go on after a turn on or off (none once off),
  *  handed over inside the turn that saved it, so two changes never leave the server's copy out of order. `changed`: env
  *  read again after that turn, outside the queue, so a sign-in pressed meanwhile never waits on it. `signIns`: the
@@ -655,7 +669,8 @@ export type ClaudeLoginDeps = {
   /** Runs `work` once nothing that changes `refused` is under way, and holds such changes off until it settles: the
    *  API keys' turn (api-keys.ts inTurn). The turn-on decides and writes inside it. */
   turn: <T>(work: () => Promise<T>) => Promise<T>;
-  sameMachine: boolean;
+  /** Why this server never starts the CLI's sign-in itself (signInHereOff), or undefined where it may. */
+  startOff?: string;
   claude: () => Promise<ClaudeLoginCli>;
   saved: (login: ClaudeAgentLogin | undefined) => void;
   changed: () => Promise<void>;
@@ -718,7 +733,7 @@ export async function claudeLoginView(deps: ClaudeLoginDeps): Promise<ClaudeLogi
   const cli = loginCli(await deps.pinned(), deps.env);
   const signIn = deps.signIns.view();
   const refused = deps.refused() ?? unusable;
-  const base = { place, command: login ? (await deps.claude()).claudeLoginCommand(login, cli ?? "claude") : "", can_start: deps.sameMachine && cli !== undefined && refused === undefined, ...(refused ? { refused } : {}), folder: login?.dir ?? givenFolder(place, deps.data, deps.env), machine: machineFolder(deps.env, deps.uid), ...(signIn ? { sign_in: signIn } : {}) };
+  const base = { place, command: login ? (await deps.claude()).claudeLoginCommand(login, cli ?? "claude") : "", can_start: deps.startOff === undefined && cli !== undefined && refused === undefined, ...(refused ? { refused } : {}), ...(deps.startOff ? { start_off: deps.startOff } : {}), folder: login?.dir ?? givenFolder(place, deps.data, deps.env), machine: machineFolder(deps.env, deps.uid), ...(signIn ? { sign_in: signIn } : {}) };
   if (!setting) return { state: "off", ...base };
   if (!thisMachine(setting, deps.data)) return { state: "other_machine", ...base, can_start: false };
   // Folders the server's user may not use: no login here (loginOf), and the CLI is not asked, since its check runs in
@@ -964,7 +979,7 @@ export async function startLoginHere(deps: ClaudeLoginDeps): Promise<ClaudeLogin
     const at = loginAt(setting.place, deps.data, deps.env, deps.uid);
     if (at.refused !== undefined) throw new ClaudeLoginRefused("forbidden", at.refused);
     if (!thisMachine(setting, deps.data)) throw new ClaudeLoginRefused("agent_not_runnable", "It was turned on for another machine: sign in there.");
-    if (!deps.sameMachine) throw new ClaudeLoginRefused("forbidden", "The CLI's sign-in opens a browser on the server's machine: run the command shown in a terminal there.");
+    if (deps.startOff) throw new ClaudeLoginRefused("forbidden", deps.startOff);
     const cli = loginCli(await deps.pinned(), deps.env);
     if (!cli) throw new ClaudeLoginRefused("agent_not_runnable", "No Claude Code CLI here yet: claude-agent's first run installs it, or run the command shown.");
     // The person's home (the login's `userHome`) and desktop, so the CLI can open their browser.

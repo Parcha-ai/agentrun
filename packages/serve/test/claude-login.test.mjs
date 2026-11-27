@@ -870,7 +870,6 @@ test("the CLI's sign-in is refused for a login turned on over another data folde
     env: { HOME: data, PATH: "/usr/bin:/bin" },
     pinned: async () => pinned,
     refused: () => undefined,
-    sameMachine: true,
     claude: async () => ({
       claudeLoginCommand: () => "claude auth login",
       claudeLoginStatus: async () => ({ signedIn: false, method: "none" }),
@@ -943,7 +942,7 @@ async function loginRig(t) {
     },
     claudeLogout: async () => ({ signedOut: true, leftoverGone: true }),
   };
-  const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), sameMachine: true, claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
+  const deps = (over) => ({ signIns, settings, data, env, pinned: async () => pinned, refused: () => undefined, turn: (work) => work(), claude: async () => cli, saved: () => {}, changed: async () => {}, ...over });
   const stale = (keeps) => started.filter((one) => !one.stopped && one.dir !== keeps);
   return { data, env, rows, settings, started, signIns, pinned, deps, stale };
 }
@@ -1373,7 +1372,7 @@ test("the person's home is read once, where the login is made: with the server's
     const env = { HOME: person, PATH: `${dirname(fake.cli)}${delimiter}${process.env.PATH}`, ...extra };
     const rows = new Map([[CLAUDE_LOGIN_SETTING, settingFor(place, data)]]);
     const settings = { get: async (key) => rows.get(key) ?? null, put: async (key, value) => void rows.set(key, value), remove: async (key) => void rows.delete(key) };
-    const deps = { signIns, settings, data, env, pinned: async () => undefined, refused: () => undefined, sameMachine: true, claude: async () => claude, changed: async () => {} };
+    const deps = { signIns, settings, data, env, pinned: async () => undefined, refused: () => undefined, claude: async () => claude, changed: async () => {} };
     const from = fake.calls().length;
     assert.equal((await claudeLoginView(deps)).state, "signed_out", place);
     await startLoginHere(deps);
@@ -2774,7 +2773,7 @@ test("the Settings view feeds the same answer: after it read the login signed in
     env: { HOME: data, PATH: "/usr/bin:/bin" },
     pinned: async () => pinned,
     refused: () => undefined,
-    sameMachine: false,
+    startOff: "In-browser sign-in is off here.",
     claude: async () => ({
       claudeLoginCommand: () => "claude auth login",
       claudeLoginStatus: async () => {
@@ -2840,7 +2839,7 @@ test("a runner in a process of its own on the same data folder takes the Setting
     env: { HOME: data, PATH: "/usr/bin:/bin" },
     pinned: async () => pinned,
     refused: () => undefined,
-    sameMachine: false,
+    startOff: "In-browser sign-in is off here.",
     claude: async () => ({ claudeLoginCommand: () => "claude auth login", claudeLoginStatus: async () => said }),
     changed: async () => {},
   };
