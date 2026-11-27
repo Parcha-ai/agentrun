@@ -1470,7 +1470,7 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // The whole pipeline reads a text in work linear in its length: every character a stage visits, counted by match.ts
 // (the shapes' prefixes and runs, each form, hex and folded search, each view built, its decoders and its cover, each
 // needle searched in it, the cut) and by key-refusal.ts (each piece's end found, each peek, the pass's join), is at most
-// WORK per character of the text, at 128 KiB and at 512 KiB, through each reader, for one held value.
+// WORK per character of the text, at 32 KiB, 128 KiB and 512 KiB, through each reader, for one held value.
 //
 // WORK, from the code's structure, per character of the text, one held value (at most 7 forms and 7 plain needles: as
 // written, and its base64 at three alignments in two alphabets; one hex; at most one folded):
@@ -1520,13 +1520,30 @@ test("adversarial texts: the characters the shape scanners visit are at most a f
 // 2.3 billion times over.
 const WORK = 1536;
 
-test("adversarial texts: the characters the whole pipeline visits are at most WORK per character, at 128 KiB and 512 KiB", async (t) => {
+// So that work per character does not grow with the text's length (counted, not timed), each adversarial text read at
+// 512 KiB visits at most GROWTH more characters per character than the same text at 32 KiB, through the readers that
+// read a text whole (redactSecrets and redactLearned): 0.9 at most now (the text of a hundred single-quoted strings);
+// each find searched for from the first covered stretch read 2.2 to 14.9 more on seven of these texts. The readers that
+// read in pieces of 8,192 characters are left out: a piece's work depends on where in the text's repeating unit it
+// starts, and 32 KiB is four or five pieces, so their work per character there is a sample of a few starts (the prose
+// text's pieces at 32 KiB all start where a piece reads least: 939.3 per character, then 955.9 at 128 KiB and 957.2 at
+// 2 MiB). So are a held RSA key's texts: the key is made anew each run, and with some keys its lines in reverse order
+// read about 10 more per character at one length than at the others, in no order of length (one key 256.5, 266.9 and
+// 256.4 at 32, 128 and 512 KiB, another 267.2, 267.0 and 256.3).
+const GROWTH = 2;
+const WHOLE = new Set(["redactSecrets", "redactLearned"]);
+
+test("adversarial texts: the characters the whole pipeline visits are at most WORK per character, at 32 KiB, 128 KiB and 512 KiB, and at most GROWTH more at 512 KiB than at 32 KiB", async (t) => {
   const { scanned } = await import("../dist/redact/match.js");
   const over = [];
-  for (const size of [128 * 1024, 512 * 1024]) {
+  const grown = [];
+  const sizes = [32 * 1024, 128 * 1024, 512 * 1024];
+  const first = new Map();
+  let growth = { rise: -Infinity, where: "" };
+  for (const size of sizes) {
     let most = 0;
     let where = "";
-    for (const { text, values } of adversarial(size)) {
+    for (const [i, { text, values }] of adversarial(size).entries()) {
       let its = 0;
       let by = "";
       for (const [name, read] of Object.entries(READERS)) {
@@ -1536,13 +1553,21 @@ test("adversarial texts: the characters the whole pipeline visits are at most WO
         if (per > its) [its, by] = [per, name];
         if (per > most) [most, where] = [per, `${name} ${short(text)}`];
         if (scanned.chars > WORK * text.length) over.push(`${size}: ${name} ${short(text)}: ${scanned.chars} for ${text.length}`);
+        if (!WHOLE.has(name) || values.includes(RSA_PEM)) continue;
+        if (size === sizes[0]) first.set(`${i} ${name}`, per);
+        else if (size === sizes.at(-1)) {
+          const rise = per - first.get(`${i} ${name}`);
+          if (rise > growth.rise) growth = { rise, where: `${name} ${short(text)}` };
+          if (rise > GROWTH) grown.push(`${name} ${short(text)}: ${first.get(`${i} ${name}`).toFixed(1)} at 32 KiB, ${per.toFixed(1)} at 512 KiB`);
+        }
       }
       // Each text's most, so a change that moves one text shows up here.
       t.diagnostic(`${size / 1024} KiB: ${its.toFixed(1)} per character, ${by}, ${short(text)}`);
     }
     t.diagnostic(`${size / 1024} KiB: the most characters visited per character of a text: ${most.toFixed(1)}, ${where}`);
   }
-  assert.deepEqual(over, []);
+  t.diagnostic(`the most a text read whole grew per character from 32 KiB to 512 KiB: ${growth.rise.toFixed(2)}, ${growth.where}`);
+  assert.deepEqual({ over, grown }, { over: [], grown: [] });
 });
 
 // A text of very many shape finds, read whole (no byte bound, as learning's compile reads a previous answer): its finds
