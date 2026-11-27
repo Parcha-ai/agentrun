@@ -1241,7 +1241,11 @@ as a caller's labels, with no code of its own: Docker writes them with `--label`
   one of another epoch, another run, or the agent's tenure. A browser one create of a request made and then lost, kept
   by its recovery, is one: nothing holds it, and the vendor alone would end it. It returns
   `{ released, held, failed }`, each released computer with its labels and, when the listing gives it, `createdAt`,
-  from which its time is charged; a release that fails is named in `failed` and the rest go on.
+  from which its time is charged; a release that fails is named in `failed` and the rest go on. Its options may carry
+  `releasing(computer)`, run before each release is sent (a host saves what it books the computer's time by, so a
+  process that ends before the booking leaves a record a later one books from; one that throws holds that computer back,
+  named in `failed`), and `released(computer)`, run as each release answers, before the next is sent (a host books it
+  there, so a later release that hangs leaves it booked).
 - **Fenced.** A computer of the run with a higher epoch means a later claim holds the run: `releaseOlder` is refused
   (`refused`, `fenced: run "r1" has computer-… at epoch 4, above this claim's epoch 3; …`) before it releases
   anything.

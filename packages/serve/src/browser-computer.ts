@@ -26,7 +26,7 @@ import { BrowserFailureError, browserFailure, cdpCall, type CdpSession } from "@
 import { BROWSER_IMAGE, type BrowserSpec, type ComputerProvider, isBrowserProvider, releaseOlder, runLabels } from "@parcha/agentrun-computer";
 import { providerFromEnv } from "./computer-keys.js";
 import { claimBrowser } from "./workspace/computer-for-claim.js";
-import type { BrowserHolds, ClaimBrowser, UnheldSessions } from "./workspace/resolve-computer.js";
+import type { BrowserHolds, ClaimBrowser, UnheldOptions, UnheldSessions } from "./workspace/resolve-computer.js";
 
 /** Custody's own refusal of a second saver, in its words: no session was started. */
 const ONE_SAVER = "one session at a time may save to this agent's saved sign-in, and another session is saving to it now. Wait for it to end, or start without saving. No session was started.";
@@ -293,10 +293,10 @@ export function browserHolds(rows: ReadonlyArray<{ readonly tag: string; readonl
 }
 
 /** At the claim's let-go: every session of the run's labels (its run, this claim's epoch) that what `rows` reads
- *  (browserHolds, read once the vendor's list answered) does not hold, released (ClaimBrowser.releaseUnheld); undefined
- *  for a browser that names no run and epoch. */
-export async function releaseUnheldBrowsers(computer: ClaimBrowser, rows: () => Promise<ReadonlyArray<{ readonly tag: string; readonly resourceId: string | null }>>, custody: Iterable<string> = [], signal?: AbortSignal): Promise<UnheldSessions | undefined> {
-  return computer.releaseUnheld?.(async () => browserHolds(await rows(), custody), signal);
+ *  (browserHolds, read once the vendor's list answered) does not hold, released (ClaimBrowser.releaseUnheld), with
+ *  `options` recording around each release; undefined for a browser that names no run and epoch. */
+export async function releaseUnheldBrowsers(computer: ClaimBrowser, rows: () => Promise<ReadonlyArray<{ readonly tag: string; readonly resourceId: string | null }>>, custody: Iterable<string> = [], options: UnheldOptions = {}): Promise<UnheldSessions | undefined> {
+  return computer.releaseUnheld?.(async () => browserHolds(await rows(), custody), options);
 }
 
 /** The sessions pi-browser's onRaceReleased tells (a release by `tag` ended them beside its own), as the charge of the

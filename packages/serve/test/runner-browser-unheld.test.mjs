@@ -35,7 +35,7 @@ const { FAUX_ENV } = await import("../dist/model.js");
 const browserComputer = await import("../dist/browser-computer.js");
 const { unheldWords } = await import("../dist/browser-cost.js");
 const { runUsageOverStore } = await import("../dist/run-usage.js");
-const { billableUsdOf, runCostOverStore } = await import("../dist/store-view.js");
+const { billableUsdOf, runCostOverStore, runViewOverStore } = await import("../dist/store-view.js");
 after(closeOpenSessions);
 
 /** A test seal key, no real one. */
@@ -224,6 +224,15 @@ test("a reopen after the let-go charged the session nobody held books that charg
   assertLetGo("the park", before, made);
   const [charge] = before.charged;
   assert.ok(charge.data.usd > 0, JSON.stringify(charge.data));
+  // Parked, the run is still at work: its read subtracts what its own view found absorbed, read from the same journal
+  // records as its usd, never a charge the journal booked after that view (one read apart would subtract it from a usd
+  // that does not hold it).
+  const viewed = await runViewOverStore(run.server, RUN, { origin: "", serverSecrets: () => [] });
+  assert.equal(eight(viewed.absorbedAtWork), eight(charge.data.usd), "the parked run's own view finds the raced charge");
+  const usdBefore = 0.01;
+  const readBefore = await runCostOverStore(run.server, RUN, usdBefore, 0);
+  assert.equal(readBefore.absorbed_usd, 0, `a view read before the charge subtracts none of it, whatever the journal holds now: ${JSON.stringify(readBefore)}`);
+  assert.equal(billableUsdOf(usdBefore, readBefore.absorbed_usd), usdBefore);
   await sendCommand(run.server, RUN, { kind: "raise", body: { capUsd: 5 } });
   const row = await until(async () => {
     const now = await run.server.runs.get(RUN);

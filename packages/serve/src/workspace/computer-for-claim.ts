@@ -62,7 +62,7 @@ import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites, stderrLo
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
 import { bounded, deleteKept, dropKept, endKept, finishedKept, heldElsewhere, keepKept, KEEP_MS, KEPT_DELETE_MS, type Kept, keptBy, type KeptHolder, keptTaken, type ParkCause, type ParkedEnd, pinnedOf, readKept, restoreKept, takeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type BrowserHolds, type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace } from "./resolve-computer.js";
+import { type BrowserHolds, type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace, type UnheldOptions, type UnheldSession } from "./resolve-computer.js";
 import { computerDenied } from "../tool-gate.js";
 import { loadToolSettings } from "../tool-plane.js";
 import { computerDeniedWords, computerStillOffWords } from "../refusal-words.js";
@@ -476,11 +476,12 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
   const epoch = spec.labels ? epochOf(spec.labels) : undefined;
   const unheld = run !== undefined && epoch?.ok
     ? {
-        async releaseUnheld(holds: () => BrowserHolds | Promise<BrowserHolds>, signal?: AbortSignal) {
+        async releaseUnheld(holds: () => BrowserHolds | Promise<BrowserHolds>, { signal, releasing, released }: UnheldOptions = {}) {
           // Read once, at the first computer of the run and epoch the list gave (after the list).
           let read: Promise<{ ids: ReadonlySet<string>; tags: Set<string> }> | undefined;
           const held = () => (read ??= Promise.resolve(holds()).then((got) => ({ ids: got.ids, tags: new Set([...got.tags].map(labelValue)) })));
           const left: string[] = [];
+          const session = (one: { ref: { id: string }; labels: Record<string, string>; createdAt?: Date }): UnheldSession => ({ id: one.ref.id, tag: one.labels[SESSION_TAG] ?? null, createdAt: one.createdAt?.toISOString() ?? null });
           const swept = await valueOf(
             releaseUnheld(
               provider,
@@ -495,12 +496,16 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
                 const { ids, tags } = await held();
                 return ids.has(info.ref.id) || tags.has(tag);
               },
-              signal ? { signal } : {},
+              {
+                ...(signal ? { signal } : {}),
+                ...(releasing ? { releasing: (one) => releasing(session(one)) } : {}),
+                ...(released ? { released: (one) => released(session(one)) } : {}),
+              },
             ),
           );
           for (const one of swept.released) open.delete(one.ref.id);
           return {
-            released: swept.released.map((one) => ({ id: one.ref.id, tag: one.labels[SESSION_TAG] ?? null, createdAt: one.createdAt?.toISOString() ?? null })),
+            released: swept.released.map(session),
             failed: swept.failed.map((one) => `${one.ref.id}: ${one.problem}`),
             creating: left,
           };

@@ -726,6 +726,15 @@ const browserTool: ToolEntry = {
       // unless a call uses it.
       await browser.reconcile(harness as never, () => true, context);
       await spend.reopened(harness, browser.docs, context);
+      // A browser an earlier process's let-go released, or sent the release of, and never charged (spend.letGo's record)
+      // is charged now; one this cannot settle stays owed, said in the log, and never fails the open.
+      if ("browser" in made) {
+        try {
+          await spend.recoverOwed(harness as never, made.browser, context);
+        } catch (error) {
+          runLog(`the browsers an earlier let-go released could not be charged: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       // A session kept across the restart has no viewer in this process yet, and reconcile tells no session's change: each
       // one's viewer is opened here and handed over, as a launch's is. It starts with nobody holding the browser.
       const kept = Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null; state: string }> } | undefined)?.rows ?? {});
@@ -768,15 +777,15 @@ const browserTool: ToolEntry = {
         }
         await browser.drain(harness as never, context);
         // A session of the run's labels that nothing holds now (a create whose reply was lost, which its recovery kept)
-        // goes with the claim, and its time is charged (releaseUnheld, spend.unheld), before the ledger is waited on. What
-        // the run holds is read once the vendor's list answered (the inventory, and every id its custody held here); a
-        // session whose create is still in flight is left to it. One that cannot be released, or a list that fails, is
-        // said in the log and never fails the let-go.
+        // goes with the claim, and its time is charged (releaseUnheld, spend.letGo), before the ledger is waited on: each
+        // one recorded before its release is sent and charged as its release answers, so one this process cannot charge
+        // is owed to the next claim's open. What the run holds is read once the vendor's list answered (the inventory,
+        // and every id its custody held here); a session whose create is still in flight is left to it. One that cannot
+        // be released, or a list that fails, is said in the log and never fails the let-go.
         if ("browser" in made) {
           try {
             const rows = async () => Object.values(((await harness.snapshot(browser.docs.Inventory as never, context)) as { rows?: Record<string, { tag: string; resourceId: string | null }> } | undefined)?.rows ?? {});
-            const swept = await releaseUnheldBrowsers(made.browser, rows, custodyIds);
-            if (swept) await spend.unheld(harness as never, swept, context);
+            await spend.letGo(harness as never, (hooks) => releaseUnheldBrowsers(made.browser, rows, custodyIds, hooks), context);
           } catch (error) {
             runLog(`the browsers a create race left running could not be released: ${error instanceof Error ? error.message : String(error)}`);
           }

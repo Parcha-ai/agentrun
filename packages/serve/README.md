@@ -5274,7 +5274,7 @@ and says how its figure was reached.
   caller bills the run's owner by. `usd`, `total` and `all_in_usd` keep the absorbed time so the run's cost record is
   whole; `billable_usd` alone leaves it out. With no absorbed line it is exactly `usd` (an imported, native or SDK run
   has none), so a run whose `usd` is known never has it null for want of a race; while the run is at work it is `usd`
-  less the absorbed time booked so far, and a bound `usd` gives a bound. Null only when `usd` is null or an absorbed
+  less the absorbed time booked so far, read from the same journal records as `usd`, and a bound `usd` gives a bound. Null only when `usd` is null or an absorbed
   line's cost is unknown.
 - `GET /stats` (`cost.basis`) and `GET /usage` (`basis`) say the same words over the runs they sum: `estimate` when any
   run's is, else `reported` when any run's is, else `unpriced`. A run whose end stored no basis (one that ended before
@@ -5648,7 +5648,11 @@ alone, and a browser whose create this process still has in flight is left to th
 session's tag that ends such a browser beside the session's own (the vendor already lists it) charges it there. Either
 way its time, from when its vendor listing says it was made, is charged on the run with the rest (one whose listing
 gives no time is charged unpriced, never $0), under one key per browser (`unheld:<id>`), so whichever release sees it
-end charges it once and a reopen books it once; and the run's timeline and its root record say it: `AgentRun: Released 1
+end charges it once and a reopen books it once. The let-go records each such browser on the run's root before its
+release is sent and charges it once that release answers, before the next is sent, so a process that ends, or a release
+that does not answer, leaves every released browser charged or recorded; the next claim's open charges a recorded one
+to when its release went out (one its vendor says still runs is released then and charged to then). The run's timeline
+and its root record say it: `AgentRun: Released 1
 browser a create race left running (…); this run did not hold it, and its time is booked on the run and absorbed, not
 billed.` On the run's usage that time is a `browser_time` line of its own, `absorbed` and not billable ([Attempts: what
 the infrastructure redid](#attempts-what-the-infrastructure-redid)). A browser of another run, or of a later claim, is

@@ -102,7 +102,7 @@ import { type RunMoment, type State, type Status } from "./run-view.js";
 import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runner/presence.js";
 import { openRoundsOf } from "./learning-rounds.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, billableUsdOf, runCostOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, billableUsdOf, runCostOverStore, runViewOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
 import { reconcileProjectCheckpoints } from "./source-sync/checkpoints.js";
 import { acknowledgeProjects } from "./source-sync/checkpoint-gate.js";
@@ -2258,11 +2258,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore), read with `usd` at one
    *  moment (store-view.ts runCostOverStore). `billable_usd`: `usd` less its absorbed lines' cost (the infrastructure's,
    *  run-usage.ts absorbedUsdOf), what a caller bills: `usd` itself with none, null only when `usd` is or an absorbed
-   *  line's cost is unknown. A bound stays a bound. */
-  const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
+   *  line's cost is unknown. A bound stays a bound. `atWork`: what the view's own read found absorbed while the run was at
+   *  work (store-view.ts runViewOverStore), so a run at work subtracts only time its `usd` holds. */
+  const allInViewOf = async (runId: string, view: Record<string, unknown>, atWork?: number | null): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
-    const { all, tools_usd, absorbed_usd } = await runCostOverStore(store, runId, own);
+    const { all, tools_usd, absorbed_usd } = await runCostOverStore(store, runId, own, atWork);
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (its ledger row's, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
@@ -2650,8 +2651,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const runReadDepsFor = (origin: string): ViewDeps => ({ ...viewDepsFor(origin), recordings });
   /** A run as GET /v2/runs/{run_id} answers it, its links at `origin`. */
   const runRead = async (runId: string, origin: string): Promise<Record<string, unknown> | undefined> => {
-    const view = await viewOverStore(store, runId, runReadDepsFor(origin));
-    return view && { ...view, ...(await runComputerRead(store, runId, view, { context: ctx })), ...(await allInViewOf(runId, view)) };
+    const read = await runViewOverStore(store, runId, runReadDepsFor(origin));
+    if (!read) return undefined;
+    const { view, absorbedAtWork } = read;
+    return { ...view, ...(await runComputerRead(store, runId, view, { context: ctx })), ...(await allInViewOf(runId, view, absorbedAtWork)) };
   };
   const ownOriginOf = (): string => options.publicUrl ?? url;
   // The run read routes (a run's files, its browser state, its workflow graph) over the one store (run-reads-over-store):

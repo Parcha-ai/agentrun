@@ -210,6 +210,17 @@ export async function releaseOlder(provider: ComputerProvider, run: string, epoc
 	return ok({ released, detached, kept, unproven });
 }
 
+/** What a host records around each release releaseUnheld makes. `releasing` runs before a computer's release is sent: a
+ *  host saves what it will book the computer's time by (its id, and when its vendor made it), so a process that ends
+ *  between the release and its booking leaves a record a later one books from. One that throws holds that computer back:
+ *  it is not released, and is named in `failed`. `released` runs once a computer's release answered, before the next
+ *  release is sent: a host books that one's time there, so a later release that does not answer leaves it booked. One
+ *  that throws ends the sweep with its error. */
+export interface UnheldHooks {
+	releasing?: (computer: { ref: ComputerRef; labels: Record<string, string>; createdAt?: Date }) => Promise<void>;
+	released?: (computer: { ref: ComputerRef; labels: Record<string, string>; createdAt?: Date }) => Promise<void>;
+}
+
 export interface ReleasedUnheld {
 	/** The run's computers of this epoch that nothing held, released: each with its labels and, where its listing says,
 	 *  when its vendor made it (the time a host books for it). */
@@ -237,7 +248,7 @@ export interface ReleasedUnheld {
  * released whatever the others did, so a host books each. A list that fails is the error. An aborted call starts no
  * further release; the result names what it released.
  */
-export async function releaseUnheld(provider: ComputerProvider, run: string, epoch: number, held: (info: ComputerInfo) => boolean | Promise<boolean>, { signal }: CallContext = {}): Promise<Result<ReleasedUnheld>> {
+export async function releaseUnheld(provider: ComputerProvider, run: string, epoch: number, held: (info: ComputerInfo) => boolean | Promise<boolean>, { signal, releasing, released: told }: CallContext & UnheldHooks = {}): Promise<Result<ReleasedUnheld>> {
 	const problem = runProblem(run) ?? epochProblem(epoch);
 	if (problem !== undefined) return fail("invalid", problem);
 	if (signal?.aborted) return fail("aborted", `the release of run ${JSON.stringify(run)}'s unheld computers was aborted before it began`);
@@ -255,9 +266,20 @@ export async function releaseUnheld(provider: ComputerProvider, run: string, epo
 			continue;
 		}
 		if (signal?.aborted) break;
+		const computer = { ref, labels, ...(info.createdAt instanceof Date ? { createdAt: info.createdAt } : {}) };
+		try {
+			await releasing?.(computer);
+		} catch (error) {
+			result.failed.push({ ref, problem: `its release was not sent, as what books its time could not be saved first: ${error instanceof Error ? error.message : String(error)}` });
+			continue;
+		}
 		const released = await provider.release(ref, "delete");
-		if (released.ok) result.released.push({ ref, labels, ...(info.createdAt instanceof Date ? { createdAt: info.createdAt } : {}) });
-		else result.failed.push({ ref, problem: released.error.message });
+		if (!released.ok) {
+			result.failed.push({ ref, problem: released.error.message });
+			continue;
+		}
+		result.released.push(computer);
+		await told?.(computer);
 	}
 	return ok(result);
 }

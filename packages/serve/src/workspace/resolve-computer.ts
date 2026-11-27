@@ -85,6 +85,13 @@ export type BrowserHolds = { readonly ids: ReadonlySet<string>; readonly tags: R
  *  session's tag that ended others beside it): each with its tag's label (null where it carries none) and when its vendor
  *  made it (an ISO time; null where the vendor does not say); each release that failed, in words; and each session left
  *  to a create of this claim still in flight, by id. */
+/** A released session as a host books it (UnheldSessions' `released`). */
+export type UnheldSession = UnheldSessions["released"][number];
+
+/** What ClaimBrowser.releaseUnheld is called with beside the holds: its abort, and what the host records around each
+ *  release (the janitor's UnheldHooks, each session as UnheldSession). */
+export type UnheldOptions = { readonly signal?: AbortSignal; readonly releasing?: (session: UnheldSession) => Promise<void>; readonly released?: (session: UnheldSession) => Promise<void> };
+
 export type UnheldSessions = {
   readonly released: ReadonlyArray<{ readonly id: string; readonly tag: string | null; readonly createdAt: string | null }>;
   readonly failed: readonly string[];
@@ -128,8 +135,11 @@ export type ClaimBrowser = {
    *  it (null where it does not say), and each release that failed, in words. `holds` is read once the vendor's list has
    *  answered, so a session listed was made after its custody's record (pi-browser's create waits for that record): the
    *  record holds it. A session whose create this claim still has in flight is held too, and named (creating). A list
-   *  that fails throws its words. Absent where the run's labels name no run and epoch (a browser no claim opened). */
-  readonly releaseUnheld?: (holds: () => BrowserHolds | Promise<BrowserHolds>, signal?: AbortSignal) => Promise<UnheldSessions>;
+   *  that fails throws its words. Absent where the run's labels name no run and epoch (a browser no claim opened).
+   *  `releasing` runs before each release is sent, with the session as `released` names it (the janitor's UnheldHooks: one
+   *  that throws holds that session back, named in `failed`); `released` once its release answered, before the next is
+   *  sent. */
+  readonly releaseUnheld?: (holds: () => BrowserHolds | Promise<BrowserHolds>, options?: UnheldOptions) => Promise<UnheldSessions>;
   /** When the vendor's listing said session `id` was made (an ISO time), for one a find listed; null otherwise. */
   readonly madeAt?: (id: string) => string | null;
   /** The files a session downloaded, kept by the provider: where its features declare downloads. */
