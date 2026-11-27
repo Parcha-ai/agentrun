@@ -244,7 +244,7 @@ test("a workspace reads and removes its own agent's Archil disk: on a server kee
 test("a workspace removes its own agent's existing Archil disk: refused until it archives the agent, then deleted at Archil; another workspace's remove is the unknown-path 404", { timeout: 120_000 }, async (t) => {
   const REGION = "aws-us-east-1";
   const DISK = "dsk-0000000000000a11";
-  withEnv(t, { ARCHIL_API_KEY: "fake-archil-account-key-0001" });
+  withEnv(t, { ARCHIL_API_KEY: "fake-test-key" });
   const control = archilControlFetch({ region: REGION, strict: true, disks: [{ id: DISK, name: "w1-agent" }] });
   const server = await scopedServer(t, { archilControl: { baseUrl: control.baseUrl, fetch: control.fetch } });
   await saveArchilSettings(server.store, { region: REGION, s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
