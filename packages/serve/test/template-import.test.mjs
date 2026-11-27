@@ -322,6 +322,34 @@ test("an import from GitHub keeps no hidden file or folder of the package, as an
   assert.equal(read.size, own.length, "the hidden files beside it count against neither limit");
 });
 
+test("a package's folder that holds hidden files alone is there, a package with no agent.md: the import is refused as one is, never as a folder that is not there", { timeout: 60_000 }, async (t) => {
+  // A tarball with no entry for the package's folder itself (GitHub's carry one; the reader never depends on it), so a
+  // file in the folder is all that says the folder is there.
+  const bare = (files) => {
+    const top = "acme-agents-aaaaaaa";
+    const blocks = [...entry("pax_global_header", { type: "g", data: Buffer.from(`52 comment=${SHA_A}\n`) }), ...entry(`${top}/`, { type: "5" })];
+    for (const [path, data] of files) blocks.push(...entry(`${top}/templates/only/${path}`, { data: Buffer.from(data) }));
+    blocks.push(Buffer.alloc(1024));
+    return gzipSync(Buffer.concat(blocks));
+  };
+  const HIDDEN_ONLY = "c".repeat(40);
+  const github = await fauxGitHub(t, { refs: { plain: SHA_B, hidden: HIDDEN_ONLY }, tarballs: { [SHA_B]: bare([["README.md", "# only a readme\n"]]), [HIDDEN_ONLY]: bare([[".env", `${SECRET}\n`]]) } });
+  const server = await serve(t, { templateImportApi: github.url, runner: false });
+  const refusal = async (ref) => {
+    const answer = await server.api("POST", "/templates/import", { source: `github:acme/agents/templates/only@${ref}`, trust_publisher: true });
+    assert.equal(answer.status, 422, JSON.stringify(answer.body));
+    return answer.body.error;
+  };
+  const plain = await refusal("plain");
+  assert.deepEqual(plain.fields.map((f) => [f.field, f.reason]), [["package", "invalid"]], JSON.stringify(plain));
+  assert.match(plain.fields[0].message, /^agent\.md: missing: /, "a folder with no agent.md is refused for it");
+  const hidden = await refusal("hidden");
+  assert.deepEqual(hidden.fields, plain.fields, JSON.stringify(hidden));
+  assert.equal(hidden.message, plain.message, "the same refusal, word for word");
+  assert.ok(!JSON.stringify(hidden).includes("hidden-file-marker"));
+  assert.deepEqual(await server.store.importedTemplates.list(), [], "nothing stored");
+});
+
 test("an App token GitHub refuses (403, no contents read) on the commit or the tarball is dropped: the public package is read anonymously", async (t) => {
   const { fetchPackageFiles, resolveSha, parseSource } = await import("../dist/template-source.js");
   const source = parseSource(`${ID}@main`);
