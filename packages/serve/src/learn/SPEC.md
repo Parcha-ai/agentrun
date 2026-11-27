@@ -38,7 +38,8 @@ picks, ranks or summarizes it: the cap keeps it short, oldest lines out first.
 
 - An owner's feedback on a run (a grade's words, or a message they sent after the job's first) appends one line, at
   the run's end, in the same commit as anything the run compiled (`LearningChange.correction`). The run is a feedback
-  round, `correction`.
+  round, `correction`. A compile the same round asks is told that line, on every attempt, after the corrections it
+  already knows; a line the checks refuse is never told.
 - A person replaces the file whole over v2 (`PUT /v2/agents/{id}/learning/corrections`, under the ETag its GET
   gave); an empty body empties it.
 - `CORRECTIONS_CAP` is 8192 bytes. A run's correction that would take the file past it drops the file's oldest lines
