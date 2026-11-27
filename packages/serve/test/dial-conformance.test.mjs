@@ -52,7 +52,8 @@ function run(args, env, onLine = () => {}, { exit = true } = {}) {
     partial = lines.pop();
     for (const line of lines) if (line) onLine(line, child);
   });
-  return new Promise((done) => child.once("exit", (code, signal) => done({ code, signal, stdout, stderr })));
+  // "close", not "exit": a child that wrote its report and ended at once can exit before its stdout is read to the end.
+  return new Promise((done) => child.once("close", (code, signal) => done({ code, signal, stdout, stderr })));
 }
 
 /** The report between the marker lines of a run's stdout, parsed; without them, the run's stderr says why. */

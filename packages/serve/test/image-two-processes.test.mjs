@@ -100,7 +100,14 @@ function start({ script, log, scripts }, args, { secrets, env = {} } = {}) {
   const seen = { out: "", err: "" };
   child.stdout.on("data", (chunk) => (seen.out += chunk));
   child.stderr.on("data", (chunk) => (seen.err += chunk));
-  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+  // The script can exit before the last of its stdout and stderr is read. "close" waits for both, but the server and
+  // runner it starts hold the same pipes, so one left running would hold "close" until the suite's timeout: settle once
+  // both have ended, or 2 s after the exit, and a child left over still fails by name.
+  const ended = Promise.all([child.stdout, child.stderr].map((stream) => new Promise((resolve) => stream.once("end", resolve))));
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => {
+    let timer;
+    Promise.race([ended, new Promise((done) => (timer = setTimeout(done, 2000)))]).then(() => (clearTimeout(timer), resolve({ code, signal })));
+  }));
   scripts.push({ child, exited });
   return { child, seen, exited };
 }
