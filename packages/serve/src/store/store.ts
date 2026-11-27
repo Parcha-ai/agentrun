@@ -1901,6 +1901,8 @@ export interface ImportedTemplates {
    *  replaced only while it is in that same workspace (or none): one of another is kept, nothing is written, and the
    *  answer is false. */
   put(row: Omit<ImportedTemplateRow, "importedAt">, workspace?: string): Promise<boolean>;
+  /** One package's sha and import time, with none of its files read: undefined when none has that id. */
+  stamp(id: string): Promise<Pick<ImportedTemplateRow, "sha" | "importedAt"> | undefined>;
   /** Every imported package's workspace by id (null: none), with none of its files read. */
   workspaces(): Promise<ReadonlyMap<string, string | null>>;
   /** Removes the package: false when none had that id. `workspace`: removes it only while it is in that workspace, in
