@@ -127,9 +127,11 @@ async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap, 
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Graded" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: [], learning } });
+  // The tier of each route the runner asked for ("default": the run's own model; "fast": the host's fast model).
+  const tiers = [];
   const price = (model, usage) => (priced ? priced(model, usage) : ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6);
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
-  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: () => {} };
+  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async (_ask, _env, tier) => (tiers.push(tier), route), computerForClaim: async () => ({ release: async () => {} }), log: () => {} };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
   runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
   const ended = (id) => until(async () => {
@@ -166,7 +168,7 @@ async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap, 
   const replays = async () => launches((launch) => launch?.replay);
   const audits = () => readAudits(server.learning, "agent-1");
   const graderRequests = () => gw.requests.filter((request) => isGrader(request.body));
-  return { dir, server, gw, start, ended, replays, replaysEnded, shadowOf, audits, graderRequests };
+  return { dir, server, gw, start, ended, replays, replaysEnded, shadowOf, audits, graderRequests, tiers };
 }
 
 /** Lands `workflow` as the next revision of `answer` on the agent's learning. */
@@ -190,7 +192,7 @@ async function checked(w, ids) {
   return { record, replays };
 }
 
-test("(1) no agree_on: the check's answers, worded apart, agree through the fast model and it promotes; with no fast model they are compared whole and held, 0 agreed", { timeout: 300_000 }, async (t) => {
+test("(1) no agree_on: the check's answers, worded apart, agree through the fast model and it promotes; with no fast model the agent's own model compares them, one request per replay, and it promotes, saying so", { timeout: 300_000 }, async (t) => {
   const ids = undrawn("one");
   const w = await world(t, { learning: { compile_after: 3 }, prior: 3 });
   const { record } = await checked(w, ids);
@@ -198,14 +200,30 @@ test("(1) no agree_on: the check's answers, worded apart, agree through the fast
   assert.deepEqual([record.check.n, record.check.alone, record.check.agreed, record.check.grader], [3, 3, 3, MODEL], JSON.stringify(record.check));
   assert.match(record.reason, /compared by the fast model \(claude-sonnet-5-5\)/);
   assert.equal(w.graderRequests().length, 3, "one grader request per replay");
+  assert.ok(w.tiers.includes("fast"), "the grader on the fast tier");
 
-  const ids2 = undrawn("whole");
-  const none = await world(t, { learning: { compile_after: 3 }, prior: 3, env: {} });
-  const held = (await checked(none, ids2)).record;
-  assert.equal(held.decided, "hold", held.reason);
-  assert.deepEqual([held.check.agreed, held.check.grader], [0, undefined]);
-  assert.ok(held.reason.includes(NEVER_WORD_FOR_WORD), held.reason);
-  assert.equal(none.graderRequests().length, 0, "no fast model: no grader request");
+  const ids2 = undrawn("own");
+  const own = await world(t, { learning: { compile_after: 3 }, prior: 3, env: {} });
+  const promoted = (await checked(own, ids2)).record;
+  assert.equal(promoted.decided, "promote", promoted.reason);
+  assert.deepEqual([promoted.check.n, promoted.check.alone, promoted.check.agreed, promoted.check.grader], [3, 3, 3, MODEL], JSON.stringify(promoted.check));
+  assert.match(promoted.reason, /compared by the agent's own model \(claude-sonnet-5-5; no fast model is set\)/);
+  assert.ok(!promoted.reason.includes(NEVER_WORD_FOR_WORD), promoted.reason);
+  assert.equal(own.graderRequests().length, 3, "no fast model: one request per replay, on the agent's own model");
+  assert.ok(!own.tiers.includes("fast"), `no fast tier is routed: ${own.tiers}`);
+});
+
+test("(1b) no agree_on and no fast model: a replay whose answer is another decision than the agent's is held by the agent's own model, each disagreement in its words", { timeout: 300_000 }, async (t) => {
+  // The agent answered 41 on each input; the workflow answers 42.
+  const w = await world(t, { learning: { compile_after: 3 }, prior: 3, env: {}, says: AGENT_41 });
+  const { record } = await checked(w, undrawn("own-wrong"));
+  assert.equal(record.decided, "hold", record.reason);
+  assert.deepEqual([record.check.agreed, record.check.grader], [0, MODEL], JSON.stringify(record.check));
+  assert.equal(record.check.disagreements.length, 3);
+  assert.match(record.reason, /its answers reached a different decision from the agent's on 3 of 3/);
+  assert.match(record.reason, /compared by the agent's own model \(claude-sonnet-5-5; no fast model is set\)/);
+  assert.ok(!record.reason.includes(NEVER_WORD_FOR_WORD), record.reason);
+  assert.equal(w.graderRequests().length, 3, "one request per replay");
 });
 
 test("(2) an agree_on revision's check compares on its fields and sends no grader request", { timeout: 300_000 }, async (t) => {

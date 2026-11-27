@@ -332,13 +332,18 @@ export const traceOfRoute = (route: ModelRoute) => {
   return routeTrace({ ...(route.named ? { named: route.named } : {}), ...(origin ? { origin } : {}), model: route.model });
 };
 
-/** A replay run's or an audit shadow's grader route (runner/compare-end.ts): on the fast tier routedSubagentTiers names
- *  (the revision's modelTiers.fast, else AGENT_MODEL_FAST), on pi's wires, when its revision names no agree_on. Its route
- *  reads the saved key of that tier's model alone (subagentTierKeys), held by the run's redactors, on the route's env
- *  alone; in a run's own process its runner hands it that tier's model's key (run-child-host.ts subagentTierKeys). A run
- *  with its own model key carries that key, and no saved key is read. Undefined, with nothing read, when
- *  there is no fast tier or the revision names agree_on; undefined when no route can be made (logged: the pair is then
- *  compared whole). */
+/** A replay run's or an audit shadow's grader route (runner/compare-end.ts), on pi's wires, when its revision names no
+ *  agree_on: on the fast tier routedSubagentTiers names (the revision's modelTiers.fast, else AGENT_MODEL_FAST), else on
+ *  the run's own model (`ownAsk`, the ask its session is routed on: `own`), so a free-text agent's answers are compared
+ *  by a model on every install, never word for word alone. A fast tier's route reads the saved key of that tier's model
+ *  alone (subagentTierKeys), held by the run's redactors, on the route's env alone; in a run's own process its runner
+ *  hands it that tier's model's key (run-child-host.ts subagentTierKeys). The own model's route reads the keys the claim
+ *  opened for that model (`claimed`), as the session's does. A run with its own model key carries that key, and no saved
+ *  key is read. Undefined, with nothing read, when the revision names agree_on; undefined when no route can be made
+ *  (logged: the pair is then compared whole). */
+/** A grader's route, and whether it is the run's own model (no fast tier): the check's reason says which compared. */
+export type GraderRoute = { readonly route: ModelRoute; readonly own: boolean };
+
 export async function graderRouteOf(
   body: { readonly modelTiers?: Readonly<Partial<Record<SubagentTier, string>>>; readonly learning?: unknown },
   keyed: boolean,
@@ -348,17 +353,18 @@ export async function graderRouteOf(
   log: (line: string) => void,
   deps: Pick<AdapterSpecDeps, "store" | "sealKey" | "env" | "routeOf"> & PlanHandBack,
   holds: readonly HeldRedact[] = [cut],
-  claim?: Pick<Claim, "runId" | "turn" | "attempt">,
-): Promise<ModelRoute | undefined> {
+  claim: Pick<Claim, "runId" | "turn" | "attempt"> | undefined,
+  ownAsk: string | PinnedModel | undefined,
+): Promise<GraderRoute | undefined> {
   if (agreeOnOf(body.learning)?.length) return undefined;
   const { tiers, refs } = routedSubagentTiers(body, deps.env ?? {});
-  if (!tiers.includes("fast")) return undefined;
-  const savedKeys = keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env, handBack: deps.handBack, signal: deps.signal }, ["fast"], refs);
+  const fast = tiers.includes("fast");
+  const savedKeys = !fast ? {} : keyed ? {} : await subagentTierKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env, handBack: deps.handBack, signal: deps.signal }, ["fast"], refs);
   for (const redact of new Set(holds)) holdClaimed(redact, savedKeys);
   // The claim's run, turn and attempt on its grader's requests too (request-metadata.ts): they spend on the run's cap.
   const env = claimModelEnv(deps.env, [claimed, savedKeys], runKey, claim);
   try {
-    return await deps.routeOf(refs.fast, env, "fast", PI_WIRES, undefined, cut);
+    return fast ? { route: await deps.routeOf(refs.fast, env, "fast", PI_WIRES, undefined, cut), own: false } : { route: await deps.routeOf(ownAsk, env, "default", PI_WIRES, undefined, cut), own: true };
   } catch (error) {
     log(`learning: no grader route (${error instanceof Error ? error.message : String(error)}): the answers are compared whole`);
     return undefined;
@@ -942,8 +948,8 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a route of its own beside the session's, on the
   // session's booking under the run's one cap. None: the pair is compared whole, in words saying so. None for a held run
   // its model kept from running, whose model runs nowhere.
-  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, { ...deps, handBack: run.handBack, signal: run.signal }, [cut], claim) : undefined;
-  if (graderRoute) tierRoutes.set(GRADER, graderRoute);
+  const graderRoute = (launch.replay || launch.audit) && heldRefusal === undefined ? await graderRouteOf(body as RevisionBody & { learning?: unknown }, keyed, runKey, toolEnv, cut, log, { ...deps, handBack: run.handBack, signal: run.signal }, [cut], claim, modelAskOf(launch.model, body.model)) : undefined;
+  if (graderRoute) tierRoutes.set(GRADER, graderRoute.route);
 
   // The tool host's install lifecycle: what a binding registers to run in each conversation's creating commit, once the
   // Harness is open before the session, and at the run's end (the browser tool's reconcile and release hang off these). The
@@ -1047,7 +1053,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
   // A held run (no audits) takes none, and its runner refuses one too (run-child-host.ts heldFor).
-  const endOfRun = audits === undefined ? undefined : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, log, redact: run.redact }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
+  const endOfRun = audits === undefined ? undefined : launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, log, redact: run.redact }), graderRoute ? { model: graderRoute.route.model, own: graderRoute.own, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),

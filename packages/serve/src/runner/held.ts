@@ -97,7 +97,8 @@ export interface Held {
   githubAppAccess(): Promise<GithubAppAccessAt | undefined>;
   /** The saved model keys of the models of the claim's subagent tiers (claim-secrets.ts subagentTierKeys asks): an agentic
    *  run granted the subagent tool gets its routed tiers' keys; a replay's or an audit's grader, its fast tier's key alone
-   *  (none when its revision names agree_on or routes no fast tier). None to any other run, to one that holds a model key
+   *  (none when its revision names agree_on or routes no fast tier: its grader is then the run's own model, on the key
+   *  the run already holds). None to any other run, to one that holds a model key
    *  of its own, or to a held run its model kept from running. */
   subagentTierKeys(): Promise<Record<string, string>>;
   /** The model keys the host's models of `tiers` need (claim-secrets.ts tierModelKeys), the plan's reader with them: of

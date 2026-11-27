@@ -63,10 +63,12 @@ export type EndOfRunTurn = (input: {
    *  earlier claim (or this one) started, readable before `ask`, so a step that skips or is cut never asks, and still
    *  closes that look-back with its first ask's figures. Undefined when none asked it, or the loop keeps no record (pi's). */
   keptOf?(round: number): EndOfRunKept | undefined;
-  /** A replay run's or an audit shadow's grader (learn/promote.ts): its fast model's name (`grader`), and one request to
-   *  it (`grade`), sent through the run's own session on its one cap, booked as the run's spend; a refusal of that cap
-   *  never parks the run (`refused`). Absent when the run has no grader route (no fast model, or agree_on named). */
+  /** A replay run's or an audit shadow's grader (learn/promote.ts): its model's name (`grader`: the fast model, else the
+   *  run's own, `graderOwn`), and one request to it (`grade`), sent through the run's own session on its one cap, booked
+   *  as the run's spend; a refusal of that cap never parks the run (`refused`). Absent when the run has no grader route
+   *  (agree_on named, or no route could be made). */
   readonly grader?: string;
+  readonly graderOwn?: boolean;
   grade?(request: { readonly system: string; readonly user: string }): Promise<GraderReply>;
   readonly signal: AbortSignal;
 }) => Promise<{ readonly also: readonly AlsoRow[]; readonly compared?: Compared } | undefined>;
