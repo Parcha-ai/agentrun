@@ -9,6 +9,10 @@ import type { ClaudeLoginView } from "@/lib/v2";
 /** How often the login is read while the server says the CLI's sign-in it started waits for the browser, while the page is
  *  in view. The server ends the sign-in at its limit, which ends the reading too. */
 const POLL_MS = 2_000;
+/** How long the row says Check again checked. */
+const CHECKED_MS = 15_000;
+/** Said after Check again's read lands. */
+const CHECKED = "Checked just now.";
 
 const words = (e: unknown): string => (e instanceof ClientError ? e.message : e instanceof Error ? e.message : String(e));
 
@@ -24,7 +28,8 @@ const STATE: Record<ClaudeLoginView["state"], { tone: ChipTone; words: string }>
 
 /** Settings → Model keys' "Use Claude Code's login on this machine" row, over /v2/settings/claude-login. Off: where the
  *  login is (AgentRun's own by default, this machine's own by choice) and the owner's word that only they run agents
- *  here, then Turn on; where the server refuses the mode, its one line instead. On: what the CLI says (who and which
+ *  here, then Turn on, which also starts the CLI's own sign-in where the login then reads signed out and the browser is on
+ *  the server's machine; where the server refuses the mode, its one line instead. On: what the CLI says (who and which
  *  plan), or the command that signs it in on the server's machine and, where the browser is on that machine, a button
  *  that starts the CLI's own sign-in; Turn off. On but kept while the server refuses its folders (`refused`): that, and
  *  the server's words for why; Turn off. Nothing on a server with the mode switched off (its GET is a 404).
@@ -43,6 +48,15 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
   const [signedOut, setSignedOut] = useState<string | null>(null);
   const modeOn = view !== null && view.state !== "off";
   useEffect(() => { if (modeOn) setSignedOut(null); }, [modeOn]);
+  // Check again: its button reads checking while the read is out, then the row says it checked, for a while, so a check
+  // that finds nothing new still shows it ran.
+  const [checking, setChecking] = useState(false);
+  const [checked, setChecked] = useState(0);
+  useEffect(() => {
+    if (!checked) return;
+    const timer = setTimeout(() => setChecked(0), CHECKED_MS);
+    return () => clearTimeout(timer);
+  }, [checked]);
   // A read's answer is shown only if no other read or write began or ended since it was asked (`asked`), and none starts
   // while a write is out (`writing`): a status read that raced a turn on or off never puts back what it replaced.
   const asked = useRef(0);
@@ -58,14 +72,25 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
     v2.claudeLogin().then((body) => { if (live) setView(claudeLoginView(body)); }, () => { if (live) setView(null); });
     return () => { live = false; };
   }, [v2, available]);
-  const refresh = () => {
-    if (!availableNow.current || reading.current || writing.current) return;
+  // `byHand`: Check again, which says it checks and then that it checked (where its answer is the one shown). Pressed
+  // while a read is out (the window's focus starts one as the press brings it back), that read is the check.
+  const byHandNow = useRef(false);
+  const refresh = (byHand = false) => {
+    if (!availableNow.current || writing.current) return;
+    if (byHand) { byHandNow.current = true; setChecking(true); setChecked(0); }
+    if (reading.current) return;
     reading.current = true;
     const n = ++asked.current;
     v2.claudeLogin().then((body) => {
       const next = claudeLoginView(body);
-      if (n === asked.current && next) setView(next);
-    }, () => {}).finally(() => { reading.current = false; });
+      if (n === asked.current && next) {
+        setView(next);
+        if (byHandNow.current) setChecked(Date.now());
+      }
+    }, () => {}).finally(() => {
+      reading.current = false;
+      if (byHandNow.current) { byHandNow.current = false; setChecking(false); }
+    });
   };
 
   // While the server says the CLI's sign-in it started waits for the browser (after a reload too), the login is read until
@@ -92,7 +117,7 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
 
   if (!view) return null;
   const act = async (write: () => Promise<ClaudeLoginView>, changes: boolean) => {
-    setProblem(null); setBusy(true);
+    setProblem(null); setBusy(true); setChecked(0);
     writing.current = true;
     // The row switched off while this write was out bumps `asked` (as it drops a read's answer), so neither its answer
     // nor its failure lands after.
@@ -112,8 +137,9 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
     }
   };
   // AgentRun's own login removed and the mode off (the answer's view): the row reads off, and Turn on then finds no login
-  // and offers the sign-in. Where the CLI didn't confirm its own sign-out, the server's words say what may remain. An
-  // answer that finds the mode on again (another tab turned it on first) keeps no words: nothing would clear them.
+  // and starts the CLI's sign-in (turnOn). Where the CLI didn't confirm its own sign-out, the server's words say what may
+  // remain. An answer that finds the mode on again (another tab turned it on first) keeps no words: nothing would clear
+  // them.
   const signOut = async () => {
     let said: string | null = null;
     const done = await act(async () => {
@@ -124,6 +150,23 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
     if (!done) return;
     setConfirming(false);
     setSignedOut(said);
+  };
+  // Turn on, and where the login it turned on reads signed out and the CLI's sign-in can start here, that sign-in too, in
+  // the same press: it opens the browser, so a person who just signed out signs in fresh. A start the server refuses
+  // leaves the row on, signed out, with its words in the row's alert line.
+  const turnOn = async () => {
+    let refused: unknown;
+    const done = await act(async () => {
+      const on = await v2.turnOnClaudeLogin(place);
+      if (on.state !== "signed_out" || !on.can_start) return on;
+      try {
+        return await v2.startClaudeLogin();
+      } catch (e) {
+        refused = e;
+        return on;
+      }
+    }, true);
+    if (done && refused !== undefined) setProblem(words(refused));
   };
   const state = STATE[view.state];
   const on = view.state !== "off";
@@ -167,14 +210,15 @@ export function ClaudeLoginRow({ v2, writable, whyNot = "sign_in", onChange, ava
                   {waiting ? "Waiting for the browser…" : "Open the CLI's sign-in here"}
                 </Button>
               )}
-              <Button type="button" size="sm" disabled={busy} onClick={refresh}>Check again</Button>
+              <Button type="button" size="sm" disabled={busy || checking} onClick={() => refresh(true)}>{checking ? "Checking…" : "Check again"}</Button>
             </div>
+            {checked > 0 && !checking && <p className="text-small text-muted-foreground" role="status">{CHECKED}</p>}
           </div>
         )}
         {!on && view.refused && <p className="text-body" role="status">{view.refused}</p>}
         {!on && !view.refused && !writable && <p className="text-body" role="status">{WHY_NOT_WORDS[whyNot]}</p>}
         {!on && !view.refused && writable && (
-          <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); void act(() => v2.turnOnClaudeLogin(place), true); }}>
+          <form className="space-y-2" onSubmit={(e) => { e.preventDefault(); void turnOn(); }}>
             <fieldset className="space-y-1">
               <legend className="caps mb-1 text-small font-semibold">The login it uses</legend>
               {(["agentrun", "machine"] as const).map((p) => (

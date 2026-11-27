@@ -1938,7 +1938,10 @@ has the row **Use Claude Code's login on this machine**, over these routes:
   Sign out again. The runner's own renewal, for
   runs that are users of their own, never writes back to a removed login. This machine's own login (`place` `machine`)
   is the person's: the sign-out is refused (403) with nothing touched, and the words say to run `claude auth logout` in
-  a terminal there. The console's Claude login row offers Sign out only while AgentRun's own login is signed in.
+  a terminal there. The console's Claude login row offers Sign out only while AgentRun's own login is signed in. Its
+  Turn on, where the login then reads `signed_out` and the server says the sign-in can start here (`can_start`), also
+  starts the CLI's sign-in (`POST /v2/settings/claude-login/login`), which opens the browser; the API's turn-on alone
+  never does.
 
 While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
 `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key, no model proxy runs, and the CLI's sandbox denies its commands

@@ -114,7 +114,7 @@ describe("Settings → Model keys, Claude Code's login on this machine: Sign out
   it("a sign-in the server refuses after Turn on leaves the row on, signed out, and says why", async () => {
     let view: ClaudeLoginView = OFF;
     const { v2 } = server(() => view, (call) => {
-      if (call.path === "/v2/settings/claude-login/login") return json(403, { code: "forbidden", message: "The CLI's sign-in opens a browser on the server's machine: run the command shown in a terminal there." });
+      if (call.path === "/v2/settings/claude-login/login") return json(403, { error: { code: "forbidden", message: "The CLI's sign-in opens a browser on the server's machine: run the command shown in a terminal there." } });
       return (view = { ...OFF, state: "signed_out" });
     });
     const page = await open(v2);
@@ -143,6 +143,16 @@ describe("Settings → Model keys, Claude Code's login on this machine: Sign out
     for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(page.buttons(/^Check again$/)).toHaveLength(1);
     expect(page.row()!.textContent).toContain(CHECKED);
+    // Pressed as the window's focus starts a read (the press brings the window back): that read is the check.
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    expect(reads).toBe(3);
+    await page.click(page.buttons(/^Check again$/)[0]);
+    expect(reads, "no second read while one is out").toBe(3);
+    expect(page.buttons(/^Checking…$/)).toHaveLength(1);
+    expect(page.row()!.textContent).not.toContain(CHECKED);
+    await act(async () => { release(); });
+    for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(page.row()!.textContent).toContain(CHECKED);
   });
 
   it("a sign-out the CLI didn't confirm shows the server's words", async () => {
@@ -167,8 +177,8 @@ describe("Settings → Model keys, Claude Code's login on this machine: Sign out
     await page.click(page.buttons(/^Sign out$/).at(-1));
     expect(page.row()!.textContent).toContain(UNCONFIRMED);
     await act(async () => { page.row()!.querySelector<HTMLInputElement>('input[name="only_me"]')!.click(); });
+    // Turn on starts the CLI's sign-in itself (the fake's answers signed in at once).
     await page.click(page.buttons(/^Turn on$/)[0]);
-    await page.click(page.buttons(/Open the CLI's sign-in here/)[0]);
     expect(page.row()!.textContent).toContain("Signed in as person@example.com");
     await page.click(page.buttons(/^Turn off$/)[0]);
     const text = page.row()!.textContent ?? "";
