@@ -25,6 +25,7 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
+const { runTimeline } = await import("../dist/store-reads/journal.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { computerForClaim } = await import("../dist/workspace/index.js");
@@ -45,6 +46,8 @@ const TIMING = { leaseMs: 30_000, renewEveryMs: 5_000, stopMarginMs: 5_000, poll
 const CLEANUP_MS = 1_500;
 /** How long after close() a late release would still land: longer than any the loop's teardown takes. */
 const AFTER_CLOSE_MS = 3_500;
+/** A priced model request, for the tests that read the run's model spend: each one at this. */
+const PRICE = 0.01;
 /** $0.01 a vCPU-second and $0.001 a GiB-second on faux-desktop. */
 const PRICES = { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_FAUX_DESKTOP: "0.01", AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_FAUX_DESKTOP: "0.001" };
 
@@ -126,8 +129,11 @@ function subagentOrigin(requests) {
  *  session, under runner-a of `runnerOptions`; `launch` adds to the run's launch, `env` to the process's for the test.
  *  `origin` is its model (the run's own conversation's snapshot, by default), `tools` its agent's, and `ready` how many
  *  requests have been asked once the snapshot's session is open. `again(name)` starts another runner (runner-b), of the
- *  same options, on the same store. */
-async function piRun(t, prefix, { runnerOptions = {}, launch = {}, env = {}, origin = (requests) => holdingOrigin([{ call: "snapshot" }], requests), tools = ["browser"], ready = 2 } = {}) {
+ *  same options, on the same store. `journalOf(claim, journal)` is the journal a runner reads and writes for a claim (the
+ *  store's, by default), and `loopOf(name, createLoop)` makes the loops of the runner `name`. `price` prices each model
+ *  request (free, by default); `opened: false` is a run that may have ended by the time its requests are asked, its
+ *  session already let go. */
+async function piRun(t, prefix, { runnerOptions = {}, launch = {}, env = {}, origin = (requests) => holdingOrigin([{ call: "snapshot" }], requests), tools = ["browser"], ready = 2, journalOf = (_claim, journal) => journal, loopOf = (_name, createLoop) => createLoop, price = () => 0, opened = true } = {}) {
   const { dir, server, store } = await stores(t, prefix);
   for (const [name, value] of Object.entries(BROWSERBASE)) await putSealedKey(server, SEAL_KEY, name, value);
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Browse.", tools } });
@@ -143,12 +149,20 @@ async function piRun(t, prefix, { runnerOptions = {}, launch = {}, env = {}, ori
     for (const [name, value] of Object.entries(before)) value === undefined ? delete process.env[name] : (process.env[name] = value);
   });
   const requests = [];
-  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: origin(requests), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
+  const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: origin(requests), price, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const deps = { env: { [FAUX_ENV]: "faux", [FAUX_BROWSER_ENV]: FAUX_BROWSER }, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }) };
   const start = (name) => {
+    // The runner's store, whose journals are journalOf's.
+    const journaled = new Proxy(store, {
+      get(target, key) {
+        if (key === "journal") return (claim) => journalOf(claim, target.journal(claim));
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
     const runner = startRunner({
-      store, name, ...TIMING, ...runnerOptions,
-      createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (harness, given) => (harness === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
+      store: journaled, name, ...TIMING, ...runnerOptions,
+      createLoop: loopOf(name, createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (harness, given) => (harness === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) })),
     });
     t.after(() => runner.close().catch(() => {}));
     return runner;
@@ -157,7 +171,7 @@ async function piRun(t, prefix, { runnerOptions = {}, launch = {}, env = {}, ori
   // The snapshot opened a session, and the turn's next request is in flight.
   await until(() => requests.length >= ready, "the request after the snapshot is in flight");
   const live = () => (existsSync(state) ? JSON.parse(readFileSync(state, "utf8")) : []);
-  assert.equal(live().length, 1, "the snapshot opened one session");
+  if (opened) assert.equal(live().length, 1, "the snapshot opened one session");
   const releases = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line)).filter((row) => row.op === "release") : []);
   return { dir, server, store, runner, live, releases, requests, again: (name = "runner-b") => start(name) };
 }
@@ -288,6 +302,165 @@ test("pi: the reserve a cut's charge holds again on a claim that reopened the se
   assert.equal(typeof final.usd, "number");
   await third.close();
 });
+
+/** The entries a commit writes, as kind and data. */
+const entriesOf = (batches) => batches.flatMap((batch) => batch.filter((write) => write.type === "entry").map((write) => ({ kind: write.value.kind, data: write.value.data })));
+/** A browser session's reserve held again, owed (the step a claim's reopen of the session writes). */
+const owedHold = (entry) => entry.kind === "runner.request" && entry.data?.tool === "browser" && entry.data.hold === true && entry.data.owed === true;
+
+/** `journal`, whose first commit that `matches` is held at the store, once the loop's gate has taken it, until `go`
+ *  resolves; `held` resolves once it is. `seen` lists each commit's entries, in order. Every other commit passes. */
+function holdingJournal(journal, matches, go, held, seen) {
+  let holding = true;
+  return new Proxy(journal, {
+    get(target, key) {
+      if (key === "commit") {
+        return async (batches, receive, context) => {
+          seen.push(entriesOf(batches).map((entry) => entry.kind));
+          if (holding && entriesOf(batches).some(matches)) {
+            holding = false;
+            held();
+            await go;
+          }
+          return target.commit(batches, receive, context);
+        };
+      }
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
+/** `createLoop`, each of whose loops calls `stopped(reason)` once its own stop() has begun (its synchronous part done). */
+const observedStops = (createLoop, stopped) => (deps) => {
+  const loop = createLoop(deps);
+  return new Proxy(loop, {
+    get(target, key) {
+      if (key === "stop") {
+        return (reason) => {
+          const stopping = target.stop(reason);
+          stopped(reason);
+          return stopping;
+        };
+      }
+      const value = Reflect.get(target, key, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+};
+
+test("pi: a close whose shutdown seals the journal while a claim's open is still committing (its reopen's hold under way) still has the release cut, its charge booked and the cut recorded; the next claim resumes the turn, each request billed once", { timeout: 180_000 }, async (t) => {
+  // runner-a's close is cut, as above. runner-b's claim reopens the session: its owed hold is held at the store, past the
+  // loop's gate, while runner-b's close stops its loop for the shutdown (the stop seals the journal at once). The claim's
+  // open goes on once the hold lands, its next commit made after the seal; the release still runs, is cut, and books.
+  const hold = join(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "release-hold-")), "let-go");
+  let go = () => {};
+  const going = new Promise((resolve) => (go = resolve));
+  let held = () => {};
+  const holding = new Promise((resolve) => (held = resolve));
+  let shutDown = () => {};
+  const shutting = new Promise((resolve) => (shutDown = resolve));
+  const seen = [];
+  t.after(() => go());
+  // The model holds every request after the snapshot's until runner-c's claim, which it answers.
+  let answering = false;
+  const origin = (requests) => {
+    const holding = holdingOrigin([{ call: "snapshot" }], requests);
+    const answers = scriptedOrigin([{ call: "snapshot" }, { say: "all done" }], requests);
+    return (url, init) => (answering ? answers(url, init) : holding(url, init));
+  };
+  const { server, runner, again, requests } = await piRun(t, "runner-close-open-sealed-", {
+    runnerOptions: { cleanupMs: CLEANUP_MS },
+    launch: { max_cost_usd: 1 },
+    env: { FAUX_BROWSER_RELEASE_HOLD: hold },
+    origin,
+    price: () => PRICE,
+    journalOf: (claim, journal) => (claim.runner === "runner-b" ? holdingJournal(journal, owedHold, going, held, seen) : journal),
+    loopOf: (name, createLoop) => (name === "runner-b" ? observedStops(createLoop, (reason) => reason.kind === "shutdown" && shutDown()) : createLoop),
+  });
+  t.after(() => writeFileSync(hold, ""));
+  const said = warnings(t);
+  await runner.close();
+  const second = again("runner-b");
+  await holding;
+  const closedAt = Date.now();
+  const closing = second.close();
+  await shutting;
+  go();
+  await closing;
+
+  const atClose = await recordsOf(server);
+  const context = JSON.stringify({ cuts: cutsOf(atClose), commits: seen, said: said.filter((line) => /beforeRelease|releaseCut|Session|cut could not/.test(line)) });
+  assert.equal(cutsOf(atClose).length, 2, `runner-b's release was cut and its cut recorded, as runner-a's: ${context}`);
+  const holds = atClose.entries.filter((entry) => owedHold({ kind: entry.kind, data: entry.data }));
+  assert.equal(holds.length, 2, `runner-b's reopen held the session's reserve, and its cut's charge held it again: ${context}`);
+  const charges = chargesOf(atClose);
+  assert.equal(charges.filter((charge) => !charge.final && Date.parse(charge.at) >= closedAt).length, 1, `runner-b's cut charged the session through the cut: ${JSON.stringify({ charges, closedAt: new Date(closedAt).toISOString() })}`);
+  assert.deepEqual(unbookedCharges(atClose), [], `every charge is booked on the run's ledger: ${JSON.stringify(charges)}`);
+  // A release the cut left running fails once the run's Harness closes under it (each close's cut): no other refusal.
+  assert.deepEqual(said.filter((line) => /Session failed|releaseCut failed|cut could not be written/.test(line)), [], "no host's release, booking or cut was refused");
+
+  // runner-c claims the run, the vendor and the model now answering: the turn resumes and the run ends on its answer.
+  answering = true;
+  writeFileSync(hold, "");
+  const third = again("runner-c");
+  const ended = await until(async () => {
+    const row = await server.runs.get(RUN);
+    return ["ended", "failed", "stopped"].includes(row.state) && row.runner === null && row;
+  }, "the run's end on runner-c");
+  await third.close();
+  const records = await recordsOf(server);
+  const rows = await runTimeline(server, RUN, ctx);
+  const shown = JSON.stringify({ ledger: modelLedger(records), rows: rows.map((row) => [row.kind, row.summary]) });
+  assert.equal(ended.state, "ended", `the resumed turn answered: ${JSON.stringify({ state: ended.state, summary: ended.summary })}`);
+  assert.deepEqual(rows.filter((row) => row.kind === "final_answer").map((row) => row.summary), ["all done"], shown);
+  const ledger = modelLedger(records);
+  assert.deepEqual(ledger.twice, [], `no step of the run is settled twice: ${shown}`);
+
+  // The same run uninterrupted: the snapshot, then the answer.
+  const whole = await piRun(t, "runner-close-open-whole-", { runnerOptions: { cleanupMs: CLEANUP_MS }, launch: { max_cost_usd: 1 }, origin: (asked) => scriptedOrigin([{ call: "snapshot" }, { say: "all done" }], asked), price: () => PRICE, opened: false });
+  await until(async () => {
+    const row = await whole.server.runs.get(RUN);
+    return row.state === "ended" && row.runner === null;
+  }, "the uninterrupted run's end");
+  const wholeRecords = await recordsOf(whole.server);
+  const wholeRows = await runTimeline(whole.server, RUN, ctx);
+  assert.equal(modelLedger(wholeRecords).total, PRICE * 2, `the uninterrupted run: two requests: ${JSON.stringify(modelLedger(wholeRecords))}`);
+  assert.equal(ledger.total, modelLedger(wholeRecords).total, `the run's model spend reads as the uninterrupted run's: ${shown}`);
+
+  // What runner-b's stop cut: the request pi's recovery sent once the stop had closed the session's model proxy. It never
+  // reached the model: no request started for it, none booked, its message priced at $0.
+  const failed = records.entries.filter((entry) => entry.kind === "pi.assistant" && entry.model?.[0]?.stopReason === "error");
+  assert.equal(failed.length, 1, shown);
+  assert.match(failed[0].model[0].errorMessage, /^Connection error\.: connect ECONNREFUSED /, JSON.stringify(failed[0].model[0]));
+  assert.equal(failed[0].model[0].usage.cost.total, 0, "its message priced at $0");
+  const started = records.entries.filter((entry) => entry.kind === "agentrun.request_started");
+  assert.equal(started.length, requests.length, `a request started for each the model was sent, and no other: ${JSON.stringify({ started: started.length, sent: requests.length })}`);
+  assert.equal(ledger.requests, requests.length, `a request booked for each the model was sent, and no other: ${shown}`);
+  // The run's timeline shows it as one failed request, at no cost; the uninterrupted run shows none.
+  const errors = rows.filter((row) => row.kind === "error").map((row) => row.summary);
+  assert.equal(errors.length, 1, shown);
+  assert.match(errors[0], /^Model request failed: Connection error\.: connect ECONNREFUSED 127\.0\.0\.1:\d+$/, shown);
+  assert.deepEqual(wholeRows.filter((row) => row.kind === "error"), [], "the uninterrupted run's timeline shows no failed request");
+  const usage = (all) => all.findLast((row) => row.kind === "usage")?.summary;
+  // Its usage row counts the requests the model was sent: three (the two answered and runner-a's cut), the uninterrupted
+  // run's two.
+  assert.equal(requests.length, 3, shown);
+  assert.match(usage(rows), / over 3 model requests /, usage(rows));
+  assert.match(usage(wholeRows), / over 2 model requests /, usage(wholeRows));
+});
+
+/** The run's model requests on its ledger (each runner.request of no tool), how many, and what they settled at in
+ *  all; `twice`: any step of the ledger settled more than once. */
+const modelLedger = (records) => {
+  const requests = records.entries.filter((entry) => entry.kind === "runner.request" && entry.data?.tool === undefined);
+  const keys = new Set(requests.map((entry) => `${entry.conversationId}:${entry.data.turn}`));
+  const turns = records.entries.filter((entry) => entry.kind === "runner.turn");
+  const keyOf = (entry) => `${entry.conversationId}:${entry.data.turn}`;
+  const total = Math.round(turns.filter((entry) => keys.has(keyOf(entry))).reduce((sum, entry) => sum + (entry.data.usd ?? 0), 0) * 1e9) / 1e9;
+  const twice = [...new Set(turns.map(keyOf))].filter((key) => turns.filter((entry) => keyOf(entry) === key).length > 1);
+  return { requests: requests.length, total, twice, settled: turns.filter((entry) => keys.has(keyOf(entry))).map((entry) => entry.data) };
+};
 
 /** Each browser charge of the run's root (BROWSER_CHARGED) whose money is not booked on the run's ledger: no step names
  *  its ref (browser-cost.ts chargeRef), or the step that does was never settled. */

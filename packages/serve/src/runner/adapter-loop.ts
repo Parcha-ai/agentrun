@@ -1094,6 +1094,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** While the tool hosts' release runs: sets its cut again by its bound and LoopDeps.releaseBy as they read now (a
    *  shutdown that comes while it runs, its close's window then known). */
   let releaseRearm: (() => void) | undefined;
+  /** Ends the hold a shutdown's stop puts on the claim's journal (holdForRelease), while it stands. */
+  let releaseHold: (() => void) | undefined;
   /** A tool host's beforeRelease, once per claim: before a park's seal and before the end's commit (the end is the
    *  claim's release), so what it writes (a browser release's charge, its paid booking on run.ledger.paid) lands in its
    *  own commits under the live claim, just before. A shutdown seals the journal first, while the runner still holds the
@@ -1108,6 +1110,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  shutdown comes (one a run began in the close's drain) takes both from then: its cut is set again by the window, and
    *  its commits, the cut's charge and record among them, are taken through the seal the shutdown makes. */
   const releaseHost = async (on: Harness | undefined): Promise<void> => {
+    try {
+      await releaseHostNow(on);
+    } finally {
+      releaseHold?.();
+    }
+  };
+  const releaseHostNow = async (on: Harness | undefined): Promise<void> => {
     endWait();
     if (hostReleased || !on) return;
     hostReleased = true;
@@ -1155,6 +1164,29 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     };
     const journal = gate;
     await (journal ? journal.through(release, shutDown) : release());
+  };
+  /** A shutdown's stop seals the claim's journal while the run may still be making a commit it began before (its claim's
+   *  open booking what an earlier claim left, a turn's step): a commit refused there fails the run's Session, and its tool
+   *  hosts' release with it. So the stop holds the journal open (Gate.through) from the seal until the release has run
+   *  (releaseHost returns) or the close's window ends (LoopDeps.releaseBy; the release's bound from the stop when no close
+   *  set one), whichever comes first, and once the loop has ended in any case: the seal refuses every commit after that.
+   *  Only while the release is still owed: one already under way takes its own commits through the seal. */
+  const holdForRelease = (): void => {
+    const journal = gate;
+    if (!journal || journal.sealed || hostReleased || releaseHold || !finished) return;
+    const by = deps.releaseBy?.() ?? Date.now() + (deps.releaseBoundMs ?? releaseBoundMs());
+    let end = (): void => {};
+    const ended = new Promise<void>((resolve) => (end = resolve));
+    const timer = setTimeout(() => releaseHold?.(), Math.max(0, by - Date.now()));
+    timer.unref();
+    releaseHold = () => {
+      clearTimeout(timer);
+      releaseHold = undefined;
+      end();
+    };
+    void journal.through(() => ended);
+    const over = (): void => releaseHold?.();
+    void finished.then(over, over);
   };
   /** The current pass's spec's release, until it is called (closeSession). */
   let releaseNow: AdapterRunSpec["release"];
@@ -4629,6 +4661,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         cutHeld();
       }
       stopReason ??= reason;
+      if (reason.kind === "shutdown") holdForRelease();
       if (reason.kind !== "command") gate?.seal(new Interrupted(reason.kind));
       // A release under way takes the close's window as its cut from now (releaseHost).
       if (reason.kind === "shutdown") releaseRearm?.();
