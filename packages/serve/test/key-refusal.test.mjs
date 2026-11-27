@@ -528,6 +528,32 @@ for (const [what, kind, pad] of OUTSIDE_THE_READ) {
   });
 }
 
+// String literals joined by the operators the join leaves out between two strings ("+", a line's ending backslash,
+// or both): the values' pass reads the literals as one, so a read past a call's stop, or after a run too long to read,
+// must read the operators as that pass does, as dropped between two strings. [what, operator, literal between].
+const JOINED_LITERALS = [
+  ['"+" between empty literals', "+", ""],
+  ['"+" between literals holding Python\'s ESC and a CSI', "+", `${B}x1b[31m`],
+  ['"+" and a line\'s ending backslash between empty literals', `+${B}\n`, ""],
+  ['"+" and a line\'s ending backslash between literals holding Python\'s ESC and a CSI', `+${B}\n`, `${B}x1b[31m`],
+  ['a line\'s ending backslash, then "+", between empty literals', `${B}\n+ `, ""],
+  ['a line\'s ending backslash, then "+", between literals holding Python\'s ESC and a CSI', `${B}\n+ `, `${B}x1b[31m`],
+];
+const joinedPad = (op, between, units) => `${op}'${between}'`.repeat(units) + op;
+
+for (const [what, op, between] of JOINED_LITERALS) {
+  test(`kr-9 (${what}): a held value split at a call's stop, 300 joined literals past the read after the stop, is withheld`, () => {
+    let body = "";
+    while (body.length < 8192 - 100) body += "word ";
+    assert.equal(redactedCall(`${body}'see ${PY_HEAD}'${joinedPad(op, between, 300)}'${PY_REST} more'`, [`${PY_HEAD}${PY_REST}`], 200), "[redacted]");
+  });
+
+  test(`kr-10 (${what}): a held value whose head ends a run too long to read, 300 joined literals after it, and whose rest follows is withheld`, () => {
+    const text = `x = '${"a".repeat(9000)}${PY_HEAD}'${joinedPad(op, between, 300)}'${PY_REST} more'`;
+    for (const out of [redactedCall(text, [`${PY_HEAD}${PY_REST}`], 100_000), redactedAnswer(text, [`${PY_HEAD}${PY_REST}`])]) assert.equal(out.includes(PY_REST), false);
+  });
+}
+
 // The smallest texts of the corpus (KEY_REFUSAL_PAD_CORPUS=all) and the fuzz's seeds 2 to 5 (KEY_REFUSAL_PAD_FUZZ=all)
 // a rule of the marks was found missing on, each three times between a held value's halves: [what the marks missed,
 // padding, wraps].
@@ -553,6 +579,8 @@ test("the padding above: where a view hides a character as a terminal does, a re
   add(endingAString(`see ${PY_HEAD} `, `${PY_REST} more`));
   for (const [, pad, wraps] of MIXED_PADS) for (const wrap of wraps) add(WRAPS[wrap](`see ${PY_HEAD}${pad.repeat(3)} ${PY_REST} more`));
   for (const [, kind, pad] of OUTSIDE_THE_READ) add(inKind(kind, `see ${PY_HEAD}${pad} ${PY_REST} more`));
+  // And a raw ESC whose CSI the next literal holds, joined by each operator: the join reads the sequence whole.
+  for (const [, op, between] of JOINED_LITERALS) for (const fill of [between, `\u001b'${op}'[31m`]) add(`x = 'see ${PY_HEAD}'${joinedPad(op, fill, 3)}'${PY_REST} more'`);
   console.log(`# ${tally.texts} texts, ${tally.checked} hidden places checked, ${tally.misses} missed`);
   assert.ok(tally.checked > 0);
   assert.deepEqual(tally.missed, []);
