@@ -367,13 +367,12 @@ for (const [status, code] of [["401", "auth"], ["402", "payment_required"]]) {
 
 // An agent's own Jev switch: `jev: "off"` on web_search or web_fetch in its definition's tool_settings turns Jev off for
 // both of its web tools, as the server's AGENTRUN_WEB_JEV_OFF does for every agent. The run's plane carries it, so no
-// TypeSafe key is handed and its Web has no decider; capabilities' why for this agent says so.
+// TypeSafe key is handed and its Web has no decider.
 
 /** A server holding TypeSafe's key and Parallel's, with no Jev switch of its own. */
 const KEYED = { TYPESAFE_API_KEY: JEV_KEY, PARALLEL_API_KEY: PARALLEL_KEY };
 /** A pi agent granted both web tools, its own tool settings `overrides`. */
 const webAgent = (overrides) => ({ harness: "pi", tools: ["web_search", "web_fetch"], ...(overrides ? { overrides } : {}) });
-const AGENT_OFF = "Jev off (this agent's setting)";
 
 for (const on of ["web_search", "web_fetch"]) {
   test(`an agent's own jev "off" on ${on} turns Jev off for both web tools: its plane says so, no TypeSafe key is handed, its Web has no decider`, async (t) => {
@@ -419,22 +418,6 @@ test("an agent with no jev setting is unchanged: Jev on, the key handed, the why
   for (const why of Object.values(view.web_search.why).filter((one) => one.includes("Jev"))) assert.ok(why.endsWith(`; ${ON}`), why);
   for (const why of Object.values(view.web_fetch.why)) assert.ok(why.endsWith(`; ${FETCH_ON}`), why);
   assert.equal(planeFor(KEYED, { harness: "pi", tools: ["read"], overrides: { web_search: { jev: "off" } } }, {}).jev, undefined, "a plane with no web tool carries no jev, as under the server's switch");
-});
-
-test("capabilities' why for an agent whose own setting turns Jev off ends with that on both web tools; the server's switch keeps its own words", () => {
-  for (const on of ["web_search", "web_fetch"]) {
-    const view = (env) => explainsView(env, {}, { [on]: { jev: "off" } });
-    const keyed = view({ TYPESAFE_API_KEY: JEV_KEY });
-    const ours = Object.keys(keyed.web_search.resolves).find((harness) => keyed.web_search.resolves[harness] === "firecrawl-keyless");
-    assert.ok(ours, `a harness whose web_search is the run's own: ${JSON.stringify(keyed.web_search.resolves)}`);
-    assert.ok(keyed.web_search.why[ours].endsWith(`; ${AGENT_OFF}`), `${on}: ${keyed.web_search.why[ours]}`);
-    for (const [harness, why] of Object.entries(keyed.web_fetch.why)) {
-      assert.ok(why.endsWith(`; ${AGENT_OFF}`) && !/TypeSafe/.test(why), `${on}, ${harness}: web_fetch ${why}`);
-    }
-    const switched = view({ TYPESAFE_API_KEY: JEV_KEY, AGENTRUN_WEB_JEV_OFF: "1" });
-    assert.ok(switched.web_search.why[ours].endsWith("; Jev off (AGENTRUN_WEB_JEV_OFF)"), `the server's switch wins: ${switched.web_search.why[ours]}`);
-    for (const why of Object.values(switched.web_fetch.why)) assert.ok(why.endsWith("; Jev off (AGENTRUN_WEB_JEV_OFF)"), why);
-  }
 });
 
 test("settings: jev is an agent's own, on web_search or web_fetch, and only \"off\"; the one form keeps it; the server's file drops it", () => {

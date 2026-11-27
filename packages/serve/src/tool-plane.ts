@@ -437,10 +437,6 @@ export const JEV_TOOLS: readonly string[] = ["web_search", "web_fetch"];
 /** Whether an agent's own tool settings turn Jev off for its web tools: `jev: "off"` on web_search or on web_fetch turns
  *  it off for both. */
 export const agentJevOff = (overrides: ToolSettingsMap | undefined): boolean => JEV_TOOLS.some((name) => overrides?.[name]?.jev === "off");
-/** What capabilities' why says of Jev on an agent whose own setting turns it off (agentJevOff), where the server's switch
- *  is not on: the server's switch wins, and says so in its own words. */
-export const AGENT_JEV_OFF = "Jev off (this agent's setting)";
-
 /** The server's environment's part of every resolution: its gateway and Parallel's key, and where the key is from. */
 const served = (env: NodeJS.ProcessEnv) => {
   const parallelKey = PARALLEL_KEY_ENV in decisionKeysOf(env);
@@ -451,11 +447,10 @@ const served = (env: NodeJS.ProcessEnv) => {
 
 /** Each pickable capability on each harness under the server's `settings` and an agent's `overrides`, on `model`
  *  (default each harness's host model, the one a run that names none runs on: hostModel): what it resolves to and why, as
- *  capabilities and the tool catalog show them. Where `overrides` turn Jev off (agentJevOff) and the server's switch is
- *  not on, each web tool's why says the agent's setting (AGENT_JEV_OFF) in place of the server's Jev sentence. */
+ *  capabilities and the tool catalog show them. */
 export function explainsView(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, overrides: ToolSettingsMap = {}, model?: string): Record<Pickable, { resolves: Record<HarnessId, Resolution>; why: Record<HarnessId, string> }> {
   return Object.fromEntries(PICKABLE.map((name) => {
-    const input = { ...served(env), ...(agentJevOff(overrides) && !webJevOff(env) ? { jevWhy: AGENT_JEV_OFF, jevFetchWhy: AGENT_JEV_OFF } : {}), ...picked(name, settings, overrides) };
+    const input = { ...served(env), ...picked(name, settings, overrides) };
     const each = HARNESSES.map((harness) => {
       const on = model ?? hostModel(env, "default", harness);
       return [harness, explainCapability(name, { ...input, ...(on ? { model: on } : {}), harness, ...withFacts(env, harness), openRouter: ownSearchViaOpenRouter(env, harness, on) })] as const;
