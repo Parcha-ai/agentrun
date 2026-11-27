@@ -313,6 +313,7 @@ export interface components {
     };
     learning_usd?: number | null;
     tools_usd?: number | null;
+    billable_usd?: number | null;
     all_in_usd?: number | null;
     compile_usd?: number | null;
     followup_usd?: number | null;

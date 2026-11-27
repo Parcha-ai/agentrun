@@ -5268,6 +5268,14 @@ and says how its figure was reached.
   turn left out, as its `usd` does: a follow-up's turns are the job's, not learning's. 0 when it made no paid call. Null while a paid call's charge is unknown (as `usd` is then); while the run
   is at work (until it ended, stopped or failed); and for an imported, native or SDK run, whose `usd` is its import's or its harness's own figure
   and whose tool calls the server never books. Each call's own charge is its span's `usd` on `GET /runs/{id}/trace`.
+  Since `toolsusd/4`, the time of a browser a create race left running that the run never held is not in `tools_usd`:
+  it is absorbed (`absorbed: "create_race"` on its usage line), booked in `usd` and never billed.
+- `billable_usd` (on `GET /runs/{id}` alone, `billable/1`): `usd` less what its absorbed usage lines cost, the figure a
+  caller bills the run's owner by. `usd`, `total` and `all_in_usd` keep the absorbed time so the run's cost record is
+  whole; `billable_usd` alone leaves it out. With no absorbed line it is exactly `usd` (an imported, native or SDK run
+  has none), so a run whose `usd` is known never has it null for want of a race; while the run is at work it is `usd`
+  less the absorbed time booked so far, and a bound `usd` gives a bound. Null only when `usd` is null or an absorbed
+  line's cost is unknown.
 - `GET /stats` (`cost.basis`) and `GET /usage` (`basis`) say the same words over the runs they sum: `estimate` when any
   run's is, else `reported` when any run's is, else `unpriced`. A run whose end stored no basis (one that ended before
   this, or a workflow run: its run read still says its basis from its booking) counts as `estimate` when it cost anything.

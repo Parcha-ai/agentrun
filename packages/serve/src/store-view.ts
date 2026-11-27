@@ -52,6 +52,7 @@ import {
   windDownOf,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
+import { absorbedUsdOf, holdsAbsorbed, withoutAbsorbed } from "./run-usage.js";
 import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
 import { booksDecisions, decisionsOverStore, parallelChargedDecisions } from "./store-reads/decisions.js";
 import { type BookedSpend, bookedDecisionsOf, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, endCostOf, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
@@ -679,34 +680,57 @@ function costOfView(run: StoreRun): Record<string, unknown> {
  *  (not ended, stopped or failed), as its `usd` is the view's snapshot and a paid call booked after it would be read here
  *  and not there (an ended run's record no longer moves); and for an imported, native or SDK run, whose `usd` is its import's or its
  *  harness's own figure, with no booking of its paid tool calls (a native or SDK run never opens the paid-tools session),
- *  and for an unknown run. */
+ *  and for an unknown run. A browser a create race left running that the run never held is in none of it: its time is
+ *  absorbed (run-usage.ts withoutAbsorbed), booked in `usd` and never billed. */
 export async function toolsUsdOverStore(store: Store, runId: string): Promise<number | null> {
+  return (await paidPartsOverStore(store, runId)).tools_usd;
+}
+
+/** Two parts of run `runId`'s `usd` from its journal: `tools_usd` (toolsUsdOverStore) and `absorbed_usd`, what its
+ *  absorbed lines cost (run-usage.ts absorbedUsdOf: the infrastructure's, booked in `usd` and never billed), the part the
+ *  run read's `billable_usd` leaves out. `absorbed_usd` is null only when an absorbed line's cost is unknown (and for an
+ *  unknown run): while the run is at work it is what its journal has absorbed so far, and an imported, native or SDK run
+ *  books no paid call, so it absorbed nothing (0). `tools_usd` is null in both, and while the run is at work. */
+export async function paidPartsOverStore(store: Store, runId: string): Promise<{ tools_usd: number | null; absorbed_usd: number | null }> {
   const runRow = await store.runs.get(runId);
+  if (!runRow) return { tools_usd: null, absorbed_usd: null };
   const launch = await launchOf(store, runId);
-  if (!runRow || !FINAL_STATES.includes(runRow.state) || runRow.importedFrom || launch?.native || launch?.sdk) return null;
+  if (runRow.importedFrom || launch?.native || launch?.sdk) return { tools_usd: null, absorbed_usd: 0 };
+  const ended = FINAL_STATES.includes(runRow.state);
   // A run a follow-up opened again: every round's job and follow-up turns, each round's end-of-run turn left out, as its
   // `usd` reads them (learn/ledger.ts roundsLooked).
   const records = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
   const turns = reflectRanges(records.submissions ?? [], records.entries);
   const entries = records.entries.filter((entry) => !inReflect(turns, Number(entry.id))) as unknown as EntryLike[];
+  // Its claims' attempts, which name each absorbed line as /usage does; a store that keeps none (a test's) reads as none.
+  const attempts = holdsAbsorbed(entries) && store.runAttempts ? await store.runAttempts.forRun(runId) : [];
+  const absorbed_usd = absorbedUsdOf(entries, attempts);
+  if (!ended) return { tools_usd: null, absorbed_usd };
   const parallel = booksDecisions(entries) ? parallelChargedDecisions(await decisionsOverStore(store, runId, BACKGROUND_CONTEXT)) : new Set<string>();
-  const words = costWordsOf([bookedSpend(entries, "paid"), ...(parallel.size ? [bookedDecisionsOf(entries, parallel)] : [])]);
-  return words.upper_bound ? null : words.usd;
+  const words = costWordsOf([bookedSpend(withoutAbsorbed(entries), "paid"), ...(parallel.size ? [bookedDecisionsOf(entries, parallel)] : [])]);
+  return { tools_usd: words.upper_bound ? null : words.usd, absorbed_usd };
+}
+
+/** The run read's `cost.billable_usd`: its `usd` less `absorbed` (paidPartsOverStore's `absorbed_usd`), what a caller
+ *  bills. Null only when `usd` is null or an absorbed line's cost is unknown; with nothing absorbed, `usd` itself. */
+export function billableUsdOf(usd: unknown, absorbed: number | null): number | null {
+  if (typeof usd !== "number" || absorbed === null) return null;
+  return absorbed === 0 ? usd : Math.max(0, Math.round((usd - absorbed) * 1e12) / 1e12);
 }
 
 /** Run `runId`'s costs as GET /runs/{id} reads them (server.ts allInViewOf): its path and figures (`all`,
  *  store-reads/learning.ts runAllInOverStore; undefined for an unknown run) with `own`, the cost its view read, and its
- *  `tools_usd` (toolsUsdOverStore). The run's own reads (runOwnOverStore: its row, its ledger row) and its journal are in
+ *  `tools_usd` and `absorbed_usd` (paidPartsOverStore). The run's own reads (runOwnOverStore: its row, its ledger row) and its journal are in
  *  one snapshot of the store: a follow-up that opens the run again between the two reads never puts its paid calls
  *  beside the previous end's `usd` (run-usage.ts reads a run's lines the same way). A served run's share of its
  *  revision's spend is read after, over the agent's ledger (runAllInOf), so the snapshot, which holds SQLite's one
  *  connection, never grows with the agent's runs. */
-export async function runCostOverStore(store: Store, runId: string, own: number | null): Promise<{ all: RunAllIn | undefined; tools_usd: number | null }> {
+export async function runCostOverStore(store: Store, runId: string, own: number | null): Promise<{ all: RunAllIn | undefined; tools_usd: number | null; absorbed_usd: number | null }> {
   const read = await store.snapshot(async (snapshot) => {
     const mine = await runOwnOverStore(snapshot, runId, own);
-    return { mine, tools_usd: mine ? await toolsUsdOverStore(snapshot, runId) : null };
+    return { mine, ...(mine ? await paidPartsOverStore(snapshot, runId) : { tools_usd: null, absorbed_usd: null }) };
   });
-  return { all: read.mine && (await runAllInOf(store, read.mine)), tools_usd: read.tools_usd };
+  return { all: read.mine && (await runAllInOf(store, read.mine)), tools_usd: read.tools_usd, absorbed_usd: read.absorbed_usd };
 }
 
 /** How a run's cost was reached (metrics.ts CostBasis): by how its model requests were priced, as its booking says, while

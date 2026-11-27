@@ -525,6 +525,43 @@ function jobSessions(job: readonly EntryLike[], all: readonly EntryLike[], attem
  *  and whether that attempt is billable (RunUsageLine). */
 export type RunBrowserSession = BrowserSessionLine & AttemptTag;
 
+/** Whether `entries` hold any absorbed time: a charge, or a paid step, of a browser a create race left running that the
+ *  run never held (its tag, cap.ts unheldBrowserTag). Most runs hold none, so their readers skip the line rule below. */
+export function holdsAbsorbed(entries: readonly EntryLike[]): boolean {
+  return entries.some((e) => (e.kind === BROWSER_CHARGED || e.kind === RUNNER_RECORDS.request) && unheldBrowserTag((e.data as { tag?: unknown } | undefined)?.tag));
+}
+
+/** `entries` less the paid-tools session's requests and bookings of absorbed time (the turns whose request is a browser
+ *  charge under an unheld tag, the ones usageLinesOf puts on an `absorbed` line), so bookedSpend over them counts every
+ *  paid charge but those. */
+export function withoutAbsorbed(entries: readonly EntryLike[]): EntryLike[] {
+  const paid = entries.find((e) => e.kind === KINDS.sessionKey && (e.data as { key?: unknown } | undefined)?.key === TOOL_SESSION)?.data as { conversation?: unknown } | undefined;
+  const paidConv = Number(paid?.conversation ?? Number.NaN);
+  const turnOf = (e: EntryLike) => `${String(e.conversationId)}:${String((e.data as { turn?: unknown } | undefined)?.turn)}`;
+  const absorbed = new Set<string>();
+  for (const e of entries) {
+    const d = (e.data ?? {}) as { tool?: unknown; tag?: unknown };
+    if (e.kind === RUNNER_RECORDS.request && Number(e.conversationId) === paidConv && d.tool === "browser" && unheldBrowserTag(d.tag)) absorbed.add(turnOf(e));
+  }
+  if (absorbed.size === 0) return [...entries];
+  return entries.filter((e) => !((e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn) && absorbed.has(turnOf(e))));
+}
+
+/** What the absorbed lines of a run whose journal is `entries` cost, the run read's absorbed part of `usd`
+ *  (`cost.billable_usd` is `usd` less this): the sum of its `absorbed` lines' `usd` as GET /runs/{run_id}/usage serves
+ *  them (usageLinesOf, the one line rule, over its claims' `attempts`), 0 with none, null when one of them has no known
+ *  figure. */
+export function absorbedUsdOf(entries: readonly EntryLike[], attempts: readonly RunAttemptRow[]): number | null {
+  if (!holdsAbsorbed(entries)) return 0;
+  let sum = 0;
+  for (const line of usageLinesOf(entries, undefined, new Map(), { rows: [], at: 0 }, attempts).lines) {
+    if (!line.absorbed) continue;
+    if (line.usd === null) return null;
+    sum += line.usd;
+  }
+  return Math.round(sum * 1e12) / 1e12;
+}
+
 /** The sum of the lines no customer is charged for (`billable: false`): null when one of them has no known figure. */
 export function infraUsdOf(lines: readonly RunUsageLine[]): number | null {
   let sum = 0;

@@ -3543,6 +3543,7 @@ class Cost(_CostRequired, total=False):
     tokens: CostTokens
     learning_usd: float | None
     tools_usd: float | None
+    billable_usd: float | None
     all_in_usd: float | None
     compile_usd: float | None
     followup_usd: float | None

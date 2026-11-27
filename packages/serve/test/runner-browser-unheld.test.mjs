@@ -35,6 +35,7 @@ const { FAUX_ENV } = await import("../dist/model.js");
 const browserComputer = await import("../dist/browser-computer.js");
 const { unheldWords } = await import("../dist/browser-cost.js");
 const { runUsageOverStore } = await import("../dist/run-usage.js");
+const { billableUsdOf, runCostOverStore } = await import("../dist/store-view.js");
 after(closeOpenSessions);
 
 /** A test seal key, no real one. */
@@ -162,6 +163,13 @@ async function assertAbsorbed(what, run, row, charge) {
   const billed = usage.lines.filter((one) => one.billable).reduce((sum, one) => sum + one.usd, 0);
   assert.equal(eight(billed), eight(row.costUsd - charge.data.usd), `${what}: a bill of the billable lines leaves the raced session's time out`);
   assert.ok(browser.some((one) => one.billable && one.usd > 0), `${what}: the run's own session's time stays billable: ${JSON.stringify(browser)}`);
+  // The run read (GET /runs/{id}): usd keeps the raced session's time; tools_usd and billable_usd leave it out.
+  const read = await runCostOverStore(run.server, RUN, row.costUsd);
+  assert.equal(eight(read.all.usd), eight(row.costUsd), `${what}: cost.usd holds the raced session's time`);
+  assert.equal(eight(read.absorbed_usd), eight(charge.data.usd), `${what}: the absorbed part is the raced session's charge`);
+  const paid = usage.lines.filter((one) => one.meter !== "tokens" && !one.absorbed).reduce((sum, one) => sum + one.usd, 0);
+  assert.equal(eight(read.tools_usd), eight(paid), `${what}: tools_usd counts the run's paid charges but the absorbed one: ${read.tools_usd}`);
+  assert.equal(eight(billableUsdOf(read.all.usd, read.absorbed_usd)), eight(row.costUsd - charge.data.usd), `${what}: billable_usd is usd less the raced session's time`);
 }
 
 test("at the run's end, the session of the run's labels that nobody held, which the vendor did not list at its companion's release, is released by the let-go once and its time is in the run's cost once; the run's own goes by its own release, and the timeline says it", { timeout: 120_000 }, async (t) => {
@@ -241,7 +249,9 @@ test("at the run's stop, the session nobody held is released once and charged on
   await sendCommand(run.server, RUN, { kind: "stop", body: {} });
   const row = await run.rest(["ended", "failed", "stopped"]);
   assert.equal(row.state, "stopped", JSON.stringify(row));
-  assertLetGo("the stop", letGo(run, made, await run.records(row.epoch, row.state)), made);
+  const got = letGo(run, made, await run.records(row.epoch, row.state));
+  assertLetGo("the stop", got, made);
+  await assertAbsorbed("the stop", run, row, got.charged[0]);
 });
 
 test("at the run's park (its claim's release), the session nobody held is released once and charged once, the run's own by its own release", { timeout: 120_000 }, async (t) => {

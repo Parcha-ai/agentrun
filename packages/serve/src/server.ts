@@ -102,7 +102,7 @@ import { type RunMoment, type State, type Status } from "./run-view.js";
 import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runner/presence.js";
 import { openRoundsOf } from "./learning-rounds.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, runCostOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { builtOfNow, factsOverStore, keptFactory, listedItem, liveOf, lookingBackEnd, momentOverStore, billableUsdOf, runCostOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
 import { reconcileProjectCheckpoints } from "./source-sync/checkpoints.js";
 import { acknowledgeProjects } from "./source-sync/checkpoint-gate.js";
@@ -2256,16 +2256,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  `shadow_usd`, `check_usd`, `share_usd`): the figures the agent's cost page gives the run (learn/ledger.ts figuresOf, one formula).
    *  A cost known only as a bound keeps its bound, and all-in is unknown.
    *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore), read with `usd` at one
-   *  moment (store-view.ts runCostOverStore). */
+   *  moment (store-view.ts runCostOverStore). `billable_usd`: `usd` less its absorbed lines' cost (the infrastructure's,
+   *  run-usage.ts absorbedUsdOf), what a caller bills: `usd` itself with none, null only when `usd` is or an absorbed
+   *  line's cost is unknown. A bound stays a bound. */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
-    const { all, tools_usd } = await runCostOverStore(store, runId, own);
+    const { all, tools_usd, absorbed_usd } = await runCostOverStore(store, runId, own);
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (its ledger row's, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
     const { learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } = all;
-    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd, learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } };
+    const usd = cost.upper_bound === true ? cost.usd : all.usd;
+    const billable_usd = billableUsdOf(usd, absorbed_usd);
+    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd, billable_usd, learning_usd, all_in_usd, compile_usd, followup_usd, shadow_usd, check_usd, share_usd } };
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
