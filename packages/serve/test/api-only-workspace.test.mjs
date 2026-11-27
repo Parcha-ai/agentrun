@@ -25,7 +25,7 @@ const { migrate, openPostgresStore, openSqliteStore, migrationsIn, runnerOn } = 
 const { SCHEMA_VERSION } = await import("../dist/store/schema.js");
 const { workspaceTokensFrom } = await import("../dist/workspace-scope.js");
 const { backfillMapOf, backfillWorkspaces, workspaceBackfillMain } = await import("../dist/workspace-backfill.js");
-const { deleteTemplate, importTemplate } = await import("../dist/template-import.js");
+const { deleteTemplate, importTemplate, templateNames } = await import("../dist/template-import.js");
 const { TemplateRegistry } = await import("../dist/templates.js");
 const { inWorkspace, outsideWorkspace, workspaceNow } = await import("../dist/workspace-scope.js");
 const { Triggers } = await import("../dist/triggers.js");
@@ -272,7 +272,7 @@ test("a workspace's template delete whose ownership read went stale removes noth
   assert.equal(registry.get("upload:notes").origin.sha, theirs.pkg.origin.sha, "and is the one served");
 });
 
-test("a template delete takes the registry's copy only while it is the package the delete read: the operator's import landed between the store's delete and the registry's stands", { timeout: 60_000 }, async (t) => {
+test("the operator's import of a name sent between a template delete's store delete and its registry's lands after the delete, kept and served", { timeout: 60_000 }, async (t) => {
   const { store } = await storeOn(t);
   const registry = new TemplateRegistry([]);
   const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
@@ -283,40 +283,89 @@ test("a template delete takes the registry's copy only while it is the package t
   const racing = { ...deps, store: { importedTemplates: { ...store.importedTemplates, remove: async (id, workspace, read) => {
     const removed = await store.importedTemplates.remove(id, workspace, read);
     // Another workspace's import of the name is refused here (the registry still serves W1's package); the operator's,
-    // with no header, is not.
-    theirs = await outsideWorkspace(() => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "The operator's.")), signal));
+    // with no header, is not: it waits for the name the delete holds.
+    theirs = outsideWorkspace(() => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "The operator's.")), signal));
+    await until(() => templateNames(registry).waiting(id) > 0, 10_000, "the operator's import never waited for the name");
     return removed;
   } }, settings: store.settings } };
   await inWorkspace(W1, () => deleteTemplate(racing, "upload:notes"));
+  theirs = await theirs;
   assert.equal(theirs.status, 201);
   assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), null, "the operator's row");
   assert.equal(registry.get("upload:notes")?.origin.sha, theirs.pkg.origin.sha, "the operator's package is still served");
 });
 
-test("a workspace's reimport of a package its delete is removing, landing before the store's delete runs, stands kept and served, and the delete that lost to it is 404", { timeout: 60_000 }, async (t) => {
+test("a workspace's reimport of a package its delete is removing, sent while the store's delete runs, lands after the delete, kept and served", { timeout: 60_000 }, async (t) => {
   const { store } = await storeOn(t);
   const registry = new TemplateRegistry([]);
   const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
   const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
   const signal = AbortSignal.timeout(30_000);
   assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal))).status, 201);
-  let kept;
-  const keptOnce = new Promise((resolve) => { kept = resolve; });
-  const templates = { ...store.importedTemplates, put: async (row, workspace) => { const done = await store.importedTemplates.put(row, workspace); kept(); return done; } };
   let again;
-  const racing = { ...deps, store: { importedTemplates: { ...templates, remove: async (id, workspace, read) => {
-    // The reimport starts while the delete waits on its statement, which runs once the reimport kept its row.
-    again = inWorkspace(W1, () => importTemplate({ ...deps, store: { importedTemplates: templates, settings: store.settings } }, upload(UPLOADED.replace("Answers a question.", "Its second version.")), signal));
-    await keptOnce;
+  const racing = { ...deps, store: { importedTemplates: { ...store.importedTemplates, remove: async (id, workspace, read) => {
+    // The reimport starts while the delete waits on its statement, and waits for the name the delete holds.
+    again = inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "Its second version.")), signal));
+    await until(() => templateNames(registry).waiting(id) > 0, 10_000, "the reimport never waited for the name");
     return store.importedTemplates.remove(id, workspace, read);
   } }, settings: store.settings } };
-  await assert.rejects(inWorkspace(W1, () => deleteTemplate(racing, "upload:notes")), (error) => error.code === "not_found");
+  await inWorkspace(W1, () => deleteTemplate(racing, "upload:notes"));
   again = await again;
   assert.equal(again.status, 201);
   const row = (await store.importedTemplates.list()).find((one) => one.id === "upload:notes");
   assert.equal(row?.sha, again.pkg.origin.sha, "the reimport's row is kept");
   assert.equal(registry.get("upload:notes")?.origin.sha, again.pkg.origin.sha, "and its package served");
   assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), W1);
+});
+
+test("a workspace's delete whose row another server on the store replaced after the delete read it is 404, and that row stands", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
+  const signal = AbortSignal.timeout(30_000);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal))).status, 201);
+  const theirs = { id: "upload:notes", source: "upload:notes", sha: "f".repeat(64), publisher: "", files: { "agent.md": Buffer.from(UPLOADED.replace("Answers a question.", "Another server's.")).toString("base64") } };
+  const racing = { ...deps, store: { importedTemplates: { ...store.importedTemplates, remove: async (id, workspace, read) => {
+    // Another server's reimport, on the same store, lands before this delete's statement runs: no lock here holds it.
+    assert.equal(await store.importedTemplates.put(theirs, W1), true);
+    return store.importedTemplates.remove(id, workspace, read);
+  } }, settings: store.settings } };
+  await assert.rejects(inWorkspace(W1, () => deleteTemplate(racing, "upload:notes")), (error) => error.code === "not_found");
+  const row = (await store.importedTemplates.list()).find((one) => one.id === "upload:notes");
+  assert.equal(row?.sha, theirs.sha, "the other server's row is kept");
+  assert.equal((await store.importedTemplates.workspaces()).get("upload:notes"), W1);
+});
+
+test("a reimport racing its package's delete leaves no ghost: the registry serves the name only while the store keeps its row, and the name stays the workspace's to import", { timeout: 60_000 }, async (t) => {
+  const { store } = await storeOn(t);
+  const registry = new TemplateRegistry([]);
+  const deps = { registry, store: { importedTemplates: store.importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
+  const signal = AbortSignal.timeout(30_000);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal))).status, 201);
+  // The reimport's row is committed before the delete reads the row, and its write answers only once the delete is
+  // done, so its package would reach the registry after the delete dropped the registry's copy (a store whose answer
+  // lags its commit, as a pooled Postgres connection's can).
+  let kept = false;
+  let deleted;
+  const deleteDone = new Promise((resolve) => { deleted = resolve; });
+  const lagging = { ...store.importedTemplates, put: async (row, workspace) => { const done = await store.importedTemplates.put(row, workspace); kept = true; await deleteDone; return done; } };
+  let again;
+  const racing = { ...deps, store: { importedTemplates: { ...store.importedTemplates, stamp: async (id) => {
+    again = inWorkspace(W1, () => importTemplate({ ...deps, store: { importedTemplates: lagging, settings: store.settings } }, upload(UPLOADED.replace("Answers a question.", "Its second version.")), signal));
+    // On until the reimport kept its row, or waits for the name the delete holds.
+    await until(() => kept || (templateNames?.(registry).waiting(id) ?? 0) > 0, 10_000, "the reimport neither kept its row nor waited for the name");
+    return store.importedTemplates.stamp(id);
+  } }, settings: store.settings } };
+  const deleting = await inWorkspace(W1, () => deleteTemplate(racing, "upload:notes")).then(() => 204, (error) => error.code);
+  deleted();
+  again = await again;
+  const row = (await store.importedTemplates.list()).find((one) => one.id === "upload:notes");
+  assert.equal(registry.get("upload:notes")?.origin.sha ?? null, row?.sha ?? null, `the registry serves what the store keeps (delete ${deleting}, reimport ${again.status})`);
+  assert.equal((await inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "Its third version.")), signal))).status, 201, "the name is still W1's to import");
+  await inWorkspace(W1, () => deleteTemplate(deps, "upload:notes"));
+  assert.equal(registry.get("upload:notes"), undefined);
 });
 
 test("a template delete reads the one package's sha and import time, never every package's files", { timeout: 60_000 }, async (t) => {
@@ -574,11 +623,12 @@ test("a scoped request's Agent Factory pages (scope=active, scope=review) hold i
   assert.deepEqual(await ids(unscoped, "/v2/runs?scope=review"), new Set([w1Review, w2Review]));
 });
 
-test("two workspaces importing one new package name at once: one takes it, the other is 409 name_taken, and the name stays the first's", { timeout: 60_000 }, async (t) => {
+test("two workspaces importing one new package name at once, on two servers of one store: one takes it, the other is 409 name_taken, and the name stays the first's", { timeout: 60_000 }, async (t) => {
   const { store } = await storeOn(t);
   const registry = new TemplateRegistry([]);
   const rows = store.importedTemplates;
-  // W1's import is held after its check (no package of the name yet), before its write, while W2's runs whole.
+  // W1's import is held after its check (no package of the name yet), before its write, while W2's runs whole on
+  // another server (its own registry, so no lock of this one's holds it).
   let reached, release;
   const atWrite = new Promise((resolve) => (reached = resolve));
   const held = new Promise((resolve) => (release = resolve));
@@ -587,21 +637,23 @@ test("two workspaces importing one new package name at once: one takes it, the o
     return rows.put(row, workspace);
   } };
   const deps = { registry, store: { importedTemplates, settings: store.settings }, reach: async () => { throw new Error("no GitHub read here"); }, apiOnly: true };
+  const theirs = { ...deps, registry: new TemplateRegistry([]) };
   const upload = (content) => ({ files: [{ path: "agent.md", encoding: "utf8", content }] });
   const signal = AbortSignal.timeout(30_000);
   const first = inWorkspace(W1, () => importTemplate(deps, upload(UPLOADED), signal));
   first.catch(() => undefined);
   await atWrite;
-  const second = await inWorkspace(W2, () => importTemplate(deps, upload(UPLOADED.replace("Answers a question.", "Answers W2's question.")), signal));
+  const second = await inWorkspace(W2, () => importTemplate(theirs, upload(UPLOADED.replace("Answers a question.", "Answers W2's question.")), signal));
   assert.equal(second.status, 201);
   release();
   await assert.rejects(first, (error) => error.code === "name_taken", "the import held between its check and its write is refused");
   assert.equal((await rows.workspaces()).get("upload:notes"), W2, "W2 keeps the name");
   const kept = (await rows.list()).find((row) => row.id === "upload:notes");
   assert.equal(kept.sha, second.pkg.origin.sha, "W2's package stands, its files as W2 sent them");
-  assert.equal(registry.get("upload:notes").origin.sha, second.pkg.origin.sha, "and is the one served");
+  assert.equal(theirs.registry.get("upload:notes").origin.sha, second.pkg.origin.sha, "and is the one served");
+  assert.equal(registry.get("upload:notes"), undefined, "the refused import serves nothing");
   // W2 imports its own package again: replaced in place, still W2's.
-  const again = await inWorkspace(W2, () => importTemplate(deps, upload(UPLOADED), signal));
+  const again = await inWorkspace(W2, () => importTemplate(theirs, upload(UPLOADED), signal));
   assert.deepEqual([again.status, again.replaced], [201, second.pkg.origin.sha]);
   assert.equal((await rows.workspaces()).get("upload:notes"), W2);
 });
