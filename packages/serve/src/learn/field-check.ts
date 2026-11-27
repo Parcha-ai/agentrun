@@ -48,6 +48,9 @@ export type FieldAnswers = {
    *  with the correction, never equal answers alone). A workflow equal to the agent's answer can be right: an agent
    *  that answered again after the correction recorded the corrected answer. */
   readonly correction?: string;
+  /** With `correction`: no verdict was asked with it (no fast model, or its request failed), so nothing read the words,
+   *  which may be a question or thanks: unjudged, neither right nor wrong, its miss naming the correction. */
+  readonly unasked?: true;
 };
 
 /** One input: what the workflow did with it (`answered` alone, handed it back, failed, or skipped at a write: no evidence
@@ -101,6 +104,7 @@ export type FieldVerdict = FieldCount & {
 
 /** One field the workflow had wrong on one input it answered alone: its value, the known one, and where that came from;
  *  "correction" (the owner's words its value) where the owner corrected the agent's answer (FieldAnswers.correction),
+ *  judged against it or not (FieldAnswers.unasked),
  *  "unknown" (no expected value) where a grade marked the agent's answer wrong without giving the right one, and
  *  "contradicts" (none) where its grade contradicts itself (FieldAnswers.no_known). */
 export type Miss = { readonly field: string; readonly input_id: string; readonly workflow: unknown; readonly expected: unknown; readonly known: Known | "correction" | "unknown" | "contradicts" };
@@ -140,12 +144,12 @@ function knownOf(one: FieldAnswers): { value: unknown; known: Known } {
  *  undefined when it has none (the agent's answer graded wrong with no expected one, and the workflow said another).
  *  `marked`: judged by a grade that gave no right answer (the workflow repeated the answer it marked wrong). A value equal
  *  to an answer a grade marked wrong is never right, whatever `agrees` says; where the agent gave no value, the agent is
- *  never right either. `corrected`: judged against its owner's correction (FieldAnswers.correction), counted as a
- *  grade's known answer: the agent never right, the workflow right only as `agrees` says (only a verdict asked with the
- *  correction counts), equal to the agent's answer or not. */
-function judged(one: FieldAnswers): { known: Known; expected: unknown; workflow: boolean; agent: boolean; marked?: true; corrected?: true } | undefined {
+ *  never right either. Against its owner's correction (FieldAnswers.correction), counted as a grade's known answer: the
+ *  agent never right, the workflow right only as `agrees` says (only a verdict asked with the correction counts), equal
+ *  to the agent's answer or not; undefined where no verdict was asked with it (FieldAnswers.unasked). */
+function judged(one: FieldAnswers): { known: Known; expected: unknown; workflow: boolean; agent: boolean; marked?: true } | undefined {
   if (one.no_known) return undefined;
-  if (one.correction !== undefined) return { known: "grade", expected: one.correction, workflow: one.agrees === true, agent: false, corrected: true };
+  if (one.correction !== undefined) return one.unasked ? undefined : { known: "grade", expected: one.correction, workflow: one.agrees === true, agent: false };
   const { value, known } = knownOf(one);
   const repeatsWrong = one.agent_correct === false && right(one.workflow, one.agent);
   if (known === "grade") {
@@ -201,12 +205,13 @@ const countsOf = (by: FieldTally): Counting => ({
 });
 
 /** The misses in `rows`: each field the workflow had wrong on an input it answered alone, inputs in order, and each it
- *  had no known answer on (never right), no value: "contradicts" where its grade contradicts itself, else "unknown". */
+ *  had no known answer on (never right): the owner's correction where nothing judged against it (FieldAnswers.unasked),
+ *  else no value: "contradicts" where its grade contradicts itself, else "unknown". */
 export function missesOf(rows: readonly CheckInput[]): Miss[] {
   return rows.flatMap((row) => row.outcome !== "answered" ? [] : Object.entries(row.fields ?? {}).flatMap(([field, one]): Miss[] => {
     const j = judged(one);
     if (j?.workflow) return [];
-    return [{ field, input_id: row.input_id, workflow: one.workflow, expected: j?.expected, known: one.no_known ? "contradicts" : !j || j.marked ? "unknown" : j.corrected ? "correction" : j.known }];
+    return [{ field, input_id: row.input_id, workflow: one.workflow, expected: one.correction ?? j?.expected, known: one.no_known ? "contradicts" : one.correction !== undefined ? "correction" : !j || j.marked ? "unknown" : j.known }];
   }));
 }
 
