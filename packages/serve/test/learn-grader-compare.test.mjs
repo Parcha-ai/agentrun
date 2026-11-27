@@ -21,9 +21,8 @@
 //   (12) a draft equal to the agent's answer asks no model, and its replay still keeps the grade it was judged with;
 //   (13) a run its owner corrected by message (no grade), whose recorded answer stays wrong: each replay's grader is
 //       shown the correction beside that answer, and a draft that answers per the correction promotes;
-//   (14) a replay repeating that wrong recorded answer word for word: the grader, asked with the correction, says it
-//       differs, and with no verdict kept each input is unjudged (equal answers are no agreement), its disagreement
-//       naming the owner's correction;
+//   (14) a replay repeating that wrong recorded answer word for word: the grader (the fast model, else the agent's own
+//       model), asked with the correction, says it differs, its disagreement naming the owner's correction;
 //   (15) an agent that answered again per the correction: a replay equal to that recorded answer is still asked with
 //       the correction, and the grader's same decision promotes (only a verdict asked with the correction counts);
 //   (16) a correction the checks refused was never taken, so it changes nothing.
@@ -457,7 +456,7 @@ test("(13) a run corrected by message (no grade) whose recorded answer stays wro
   assert.ok(users.every((one) => one.includes(CORRECTION)), `each is shown the correction: ${users[0]}`);
 });
 
-test("(14) a replay repeating the corrected run's wrong recorded answer word for word: the fast model is asked with the correction (no equal-answer shortcut) and, judging per it, says they differ: held; with no fast model, no verdict kept, each input is unjudged (equal answers are no agreement) and it holds", { timeout: 300_000 }, async (t) => {
+test("(14) a replay repeating the corrected run's wrong recorded answer word for word: the fast model is asked with the correction (no equal-answer shortcut) and, judging per it, says they differ: held; with no fast model the agent's own model is asked the same and holds it the same", { timeout: 300_000 }, async (t) => {
   const says = JSON.stringify({ answer: 42, sure: true });
   const w = await world(t, { learning: { compile_after: 3 }, prior: 3, says, corrects: CORRECTION, grader: correctionGrader });
   await correctedPriors(w, "merged");
@@ -469,16 +468,16 @@ test("(14) a replay repeating the corrected run's wrong recorded answer word for
   assert.ok(w.graderRequests().every((request) => JSON.stringify(request.body).includes(CORRECTION)), "each is asked with the correction");
   assert.deepEqual(record.check.disagreements.map((one) => one.expected), Array.from({ length: 3 }, () => [{ field: "answer", known: "correction", value: CORRECTION }]));
 
-  const none = await world(t, { learning: { compile_after: 3 }, prior: 3, env: {}, says, corrects: CORRECTION });
-  await correctedPriors(none, "merged");
-  const held = (await checked(none, undrawn("repeats-none"))).record;
+  // No fast model: the agent's own model is the grader, asked with the correction the same way.
+  const own = await world(t, { learning: { compile_after: 3 }, prior: 3, env: {}, says, corrects: CORRECTION, grader: correctionGrader });
+  await correctedPriors(own, "merged");
+  const held = (await checked(own, undrawn("repeats-own"))).record;
   assert.equal(held.decided, "hold", held.reason);
   assert.equal(held.check.agreed, 0, JSON.stringify(held.check));
-  // No model read the words beside the answer: each input unjudged, neither right nor wrong (they may be a question).
-  assert.deepEqual(held.check.fields.answer.by, {});
-  assert.equal(held.check.fields.answer.unjudged, 3, JSON.stringify(held.check.fields.answer));
-  assert.equal(none.graderRequests().length, 0, "no fast model: no grader request");
-  // The recompile is told the owner's correction, unjudged: never a grade that contradicts itself (there was no grade).
+  assert.deepEqual(held.check.fields.answer.by, { grade: { n: 3, workflow_right: 0, agent_right: 0 } });
+  assert.equal(own.graderRequests().length, 3, "no fast model: one request per replay, on the agent's own model");
+  assert.ok(own.graderRequests().every((request) => JSON.stringify(request.body).includes(CORRECTION)), "each is asked with the correction");
+  assert.match(held.reason, /compared by the agent's own model \(claude-sonnet-5-5; no fast model is set\)/);
   assert.deepEqual(held.check.disagreements.map((one) => one.expected), Array.from({ length: 3 }, () => [{ field: "answer", known: "correction", value: CORRECTION }]));
 });
 
