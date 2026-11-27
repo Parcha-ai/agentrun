@@ -137,6 +137,29 @@ describe("an archived agent offers Unarchive by name", () => {
     expect(host.textContent, "the active list keeps the agent the write restored").toContain("Gambling check");
   });
 
+  it("a reread that fails, then one that answers, leaves no refresh error on screen", async () => {
+    const one = agentOf("gambling-check", "Gambling check", DECISION_STARTER, true);
+    const two = agentOf("steps", "Steps", WORKFLOW_STARTER, true);
+    let list = [one, two];
+    let reads = 0;
+    const v2 = {
+      listAgents: async () => {
+        reads++;
+        if (reads === 2) throw new Error("the list could not be read");
+        return { agents: list, next_cursor: null };
+      },
+      unarchiveAgent: async (id: string) => { list = list.filter((a) => a.agent_id !== id); return { ...one, archived_at: null }; },
+    };
+    const host = await mount(createElement(AgentsPage, { v2: v2 as never, archived: true, go: () => {} }));
+    await act(async () => { unarchiveButton(host).click(); });
+    await settle();
+    expect(host.textContent, "the failed reread is said").toContain("the list could not be read");
+    await act(async () => { unarchiveButton(host).click(); });
+    await settle();
+    expect(reads).toBe(3);
+    expect(host.textContent, "the answered reread clears it").not.toContain("the list could not be read");
+  });
+
   it("not on an active agent's card", async () => {
     const v2 = { listAgents: async () => ({ agents: [agentOf("steps", "Steps", WORKFLOW_STARTER)], next_cursor: null }) };
     const host = await mount(createElement(AgentsPage, { v2: v2 as never, archived: false, go: () => {} }));
