@@ -284,6 +284,44 @@ test("each read limit refuses the import when passed, and an aborted read ends a
   assert.ok(Date.now() - began < 5_000, `an aborted read ends at once, in ${Date.now() - began} ms`);
 });
 
+// A hidden file or folder in the package's folder (a .env committed beside it, a tool's .cache/) is no part of the package
+// on an import from GitHub, as on an upload (template-import.ts uploadFiles): never shown, never stored, never counted
+// against the package's own limits.
+const SECRET = "KEY=hidden-file-marker-not-a-package-file";
+const HIDDEN = [[".env", { data: Buffer.from(`${SECRET}\n`) }], ["skills/.cache/x", { data: Buffer.from(`${SECRET} cached\n`) }], ["skills/kyb/.DS_Store", { data: Buffer.from(SECRET) }]];
+const hiddenPath = (path) => path.split("/").some((part) => part.startsWith("."));
+
+test("an import from GitHub keeps no hidden file or folder of the package, as an upload keeps none: a dry run shows none, the stored package holds none, and none counts against the package's limits", { timeout: 120_000 }, async (t) => {
+  const github = await fauxGitHub(t, { tarballs: { [SHA_A]: tarball(HIDDEN) } });
+  const server = await serve(t, { templateImportApi: github.url, runner: false });
+  const { api } = server;
+
+  const preview = await api("POST", "/templates/import", { source: `${ID}@main`, dry_run: true });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.ok(!JSON.stringify(preview.body).includes("hidden-file-marker"), "a dry run shows no hidden file");
+  assert.deepEqual(Object.keys(preview.body.skill_files).filter(hiddenPath), []);
+
+  const imported = await api("POST", "/templates/import", { source: `${ID}@main`, trust_publisher: true });
+  assert.equal(imported.status, 201, JSON.stringify(imported.body));
+  const [row] = await server.store.importedTemplates.list();
+  assert.equal(row.id, ID);
+  assert.deepEqual(Object.keys(row.files).filter(hiddenPath), [], "the stored package holds no hidden path");
+  assert.ok(Object.values(row.files).every((data) => !Buffer.from(data, "base64").toString("utf8").includes("hidden-file-marker")));
+  assert.ok(row.files["agent.md"] && row.files["skills/kyb/SKILL.md"], "the package itself is kept");
+  const shown = await api("GET", `/templates/${enc(ID)}`);
+  assert.equal(shown.status, 200, JSON.stringify(shown.body));
+  assert.ok(!JSON.stringify(shown.body).includes("hidden-file-marker"));
+
+  // The package's own files and bytes are what the limits count: a package exactly at both, with hidden files beside
+  // it, reads.
+  const { fetchPackageFiles, parseSource } = await import("../dist/template-source.js");
+  const own = [...(await fetchPackageFiles(parseSource(`${ID}@main`), SHA_A, { api: github.url, hosts: [new URL(github.url).host] }, new AbortController().signal))];
+  assert.deepEqual(own.map(([path]) => path).filter(hiddenPath), []);
+  const limits = { files: own.length, packageBytes: own.reduce((sum, [, data]) => sum + data.length, 0) };
+  const read = await fetchPackageFiles(parseSource(`${ID}@main`), SHA_A, { api: github.url, hosts: [new URL(github.url).host], limits }, new AbortController().signal);
+  assert.equal(read.size, own.length, "the hidden files beside it count against neither limit");
+});
+
 test("an App token GitHub refuses (403, no contents read) on the commit or the tarball is dropped: the public package is read anonymously", async (t) => {
   const { fetchPackageFiles, resolveSha, parseSource } = await import("../dist/template-source.js");
   const source = parseSource(`${ID}@main`);
